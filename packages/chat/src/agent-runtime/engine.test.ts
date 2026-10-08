@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import BasicCompactionEngine from "@deepseek-ai/dsh-compaction-basic";
 import { LlmAdapter, LlmError, type GenerateOptions, type StreamChunk, type TokenUsage } from "@deepseek-ai/dsh-llm";
 import type {
   CompanionEvent,
@@ -10,11 +11,12 @@ import type {
   CompanionToolCall,
   CompanionToolResult,
 } from "./contracts";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { companionCompositionDigest, companionIgrepConfig } from "./composition";
 import {
   CompanionEngine,
   CompanionCapacityError,
+  buildReplaySeed,
   type CompanionEngineOptions,
   type CompanionRuntimePort,
 } from "./engine";
@@ -60,7 +62,8 @@ class ToolThenTextAdapter extends LlmAdapter {
 
   constructor(
     private readonly imagePrompt = "Mira fully nude at the blue-lit observatory tonight",
-    private readonly reply = "I sent the observatory view to the image studio.",
+    private readonly reply = "Give me a moment, love.",
+    private readonly requestedNudity: "unspecified" | "none" | "full" = "full",
   ) {
     super();
   }
@@ -68,7 +71,7 @@ class ToolThenTextAdapter extends LlmAdapter {
   async *stream(): AsyncIterable<StreamChunk> {
     this.calls += 1;
     if (this.calls === 1) {
-      const args = JSON.stringify({ prompt: this.imagePrompt });
+      const args = JSON.stringify({ prompt: this.imagePrompt, subject: "companion", requestedNudity: this.requestedNudity });
       yield { type: "block-start", index: 0, blockType: "tool-call" };
       yield {
         type: "tool-call-delta",
@@ -108,7 +111,15 @@ class LeadInThenToolAdapter extends LlmAdapter {
 
   async *stream(): AsyncIterable<StreamChunk> {
     this.calls += 1;
-    const args = JSON.stringify({ prompt: "Mira at the blue-lit observatory tonight" });
+    if (this.calls > 1) {
+      const text = "Give me a moment, love.";
+      yield { type: "block-start", index: 0, blockType: "text" };
+      yield { type: "text-delta", index: 0, text };
+      yield { type: "block-end", index: 0, block: { type: "text", text } };
+      yield { type: "finish", reason: { kind: "stop" } };
+      return;
+    }
+    const args = JSON.stringify({ prompt: "Mira at the blue-lit observatory tonight", subject: "companion" });
     yield { type: "block-start", index: 0, blockType: "text" };
     yield { type: "text-delta", index: 0, text: this.leadIn };
     yield { type: "block-end", index: 0, block: { type: "text", text: this.leadIn } };
@@ -172,7 +183,7 @@ function invocation(withTool = false): CompanionInvocation {
     ),
     deadlineAt: new Date(Date.now() + 30_000).toISOString(),
     preparedTurn: {
-      version: 5,
+      version: 6,
       model: "deepseek/test",
       characterName: "Mira",
       messages: [
@@ -222,26 +233,14 @@ function invocation(withTool = false): CompanionInvocation {
         sceneVersion: 1,
         contextRevision: "3",
       },
-      requiredAction: null,
     },
   };
 }
 
-function requiredImageInvocation(): CompanionInvocation {
+function imageInvocation(): CompanionInvocation {
   const value = invocation(true);
-  return {
-    ...value,
-    invocationId: "invocation-required-image",
-    attemptId: "attempt-required-image",
-    preparedTurn: {
-      ...value.preparedTurn,
-      requiredAction: {
-        name: "generate_image_async",
-        requestedNudity: "full",
-        replyLocale: "en",
-      },
-    },
-  };
+  value.preparedTurn.messages.at(-1)!.content = "Send me a nude photo at the observatory.";
+  return value;
 }
 
 async function engine(
@@ -256,7 +255,7 @@ async function engine(
       canonicalRoot: join(root, "canonical"),
       privateRoot: join(root, "private"),
     }),
-    plugin: async () => ({ name: "igrep", apply() {} }),
+    plugin: async () => ({ name: "igrep", Compaction: BasicCompactionEngine, apply() {} }),
     adapter: () => adapter,
     igrepCommand: "igrep",
     igrepLlm: IGREP_LLM,
@@ -383,15 +382,17 @@ describe("Chat embedded companion runtime", () => {
     { missingAttempt: 2, zero: false, expected: null },
     { missingAttempt: 0, zero: false, expected: { promptTokens: 80, completionTokens: 20, reasoningTokens: 0 } },
     { missingAttempt: 0, zero: true, expected: { promptTokens: 0, completionTokens: 0, reasoningTokens: 0 } },
-  ])("preserves complete or unknown usage across real forced-tool adapter attempts: $missingAttempt $zero", async ({ missingAttempt, zero, expected }) => {
-    const value = requiredImageInvocation();
+  ])("preserves complete or unknown usage across native image and answer requests: $missingAttempt $zero", async ({ missingAttempt, zero, expected }) => {
+    const value = imageInvocation();
     let requests = 0;
     const adapter = new OpenAiCompatibleAdapter({
-      profile: value.preparedTurn.profile, apiKey: "fixture-key", requiredToolName: "generate_image_async",
+      profile: value.preparedTurn.profile, apiKey: "fixture-key",
       fetch: async () => {
         requests++;
         return new Response(`data: ${JSON.stringify({
-          choices: [{ delta: { content: requests === 1 ? "I will frame the view." : '{"prompt":"Mira at the observatory","subject":"companion"}' }, finish_reason: "stop" }],
+          choices: [{ delta: requests === 1
+            ? { tool_calls: [{ index: 0, id: "image-1", function: { name: "generate_image_async", arguments: JSON.stringify({ prompt: "Mira at the observatory", subject: "companion" }) } }] }
+            : { content: "Give me a moment, love." }, finish_reason: requests === 1 ? "tool_calls" : "stop" }],
           ...(requests === missingAttempt ? {} : { usage: { input_tokens: zero ? 0 : 40, output_tokens: zero ? 0 : 10 } }),
         })}\n\ndata: [DONE]\n\n`);
       },
@@ -403,12 +404,11 @@ describe("Chat embedded companion runtime", () => {
     expect(connection.candidates).toHaveLength(1);
     expect(connection.candidates[0]).toMatchObject({ usage: expected, execution: { toolCalls: 1 } });
     expect(connection.events.some(event => event.type === "failed")).toBe(false);
-    // The local acknowledgement is measured zero; a missing physical receipt
-    // still leaves the terminal total unknown and never publishes a partial sum.
-    expect(connection.events.filter(event => event.type === "usage").map(event => event.usage)).toEqual([
-      ...(expected === null ? [] : [expected]),
-      { promptTokens: 0, completionTokens: 0, reasoningTokens: 0 },
-    ]);
+    // Every physical request contributes its own receipt; unknown usage
+    // cannot become a known terminal sum by omitting that request.
+    expect(connection.events.filter(event => event.type === "usage").map(event => event.usage)).toEqual(
+      [1, 2].filter(attempt => attempt !== missingAttempt).map(() => ({ promptTokens: zero ? 0 : 40, completionTokens: zero ? 0 : 10, reasoningTokens: 0 })),
+    );
   });
 
   it.each(["normal", "private"] as const)("rejects %s pool pressure before execution without producing a failure event", async (mode) => {
@@ -429,7 +429,7 @@ describe("Chat embedded companion runtime", () => {
     await first;
   });
 
-  it("fits a compiled free-tier Turn after actual DSH memory composition and records the final physical request", async () => {
+  it.each([true, false])("compacts a free-tier Turn through DSH and accounts for known or missing summary usage (%s)", async (withSummaryUsage) => {
     const policy = resolvePolicy({ modelTier: "free", unlimitedMessages: false, voiceEnabled: false, imageToolEnabled: false });
     const source: BuiltContext = {
       userLocale: "en", hasRecentImageContext: false,
@@ -445,52 +445,67 @@ describe("Chat embedded companion runtime", () => {
       policy: { ...policy, modelProfile: { ...policy.modelProfile, adapter: "openai-compatible-v1", provider: "openai", baseUrl: "https://provider.example/v1", model: "fixture", supportsTools: true } },
       recentMessages: Array.from({ length: 7 }, (_, index) => ({
         id: `message-${index}`, role: index % 2 === 0 ? "user" : "assistant",
-        // Leave just enough room for the pinned product contract. The additional
+        // Leave room for the product contract and the distinct clock authorities. The additional
         // DSH memory guidance and tool schema must still force one whole exchange out.
-        content: index === 6 ? "How are you tonight?" : `Established fact ${index}: ${"t".repeat(3_500)}`,
+        content: index === 6 ? "How are you tonight?" : `Established fact ${index}: ${"t".repeat(3_400)}`,
       })),
       scene: { schemaVersion: 1, version: 1, location: "the library", time: "tonight", participants: ["Mara"], emotionalBeat: "calm", unresolvedThreads: [] },
       sceneVersion: 1, lastExchangeAt: null, dropped: [], contextRevision: 0n,
     };
-    const { context: _context, ...preparedTurn } = compilePreparedTurn(source, "message-6", new Date("2026-08-24T15:04:00Z"));
-    expect(preparedTurn.budget.usedInputTokens).toBeLessThan(preparedTurn.budget.maxInputTokens);
-    expect(preparedTurn.budget.dropped).toEqual([]);
+    const { context: _context, ...compiled } = compilePreparedTurn(source, "message-6", new Date("2026-08-24T15:04:00Z"));
+    // Current snapshots trim old exchanges for the runtime reserve, so DSH compaction is
+    // only a last resort. A snapshot admitted before that reserve (replayed on recovery)
+    // still carries the whole transcript; DSH must compact it safely.
+    expect(compiled.budget.dropped).toEqual(["transcript"]);
+    const firstReplay = compiled.messages.findIndex(message => message.sourceKind === "replay");
+    const preparedTurn = {
+      ...compiled,
+      messages: [...compiled.messages.slice(0, firstReplay), ...(compiled.omittedMessages ?? []), ...compiled.messages.slice(firstReplay)],
+      omittedMessages: undefined,
+      budget: { ...compiled.budget, dropped: [] },
+    };
     const value = { ...normalInvocation(), preparedTurn };
     let body = "";
+    const bodies: string[] = [];
     let requests = 0;
     const runtime = await engine(new OneStepAdapter(), undefined, {
       ...memoryPorts,
-      plugin: async () => ({ name: "igrep", inject: ["tools"], apply(ctx) {
+      plugin: async () => ({ name: "igrep", Compaction: BasicCompactionEngine, inject: ["tools"], apply(ctx) {
         ctx.tools.register({ name: "memory_search", description: "Recall shared facts.",
           parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
           output: { schema: { type: "object", properties: {} }, render: () => [] },
           async execute() { return { results: [] }; },
         });
       } }),
-      adapter: (profile, requiredToolName, requestPolicy) => new OpenAiCompatibleAdapter({
-        profile, requiredToolName, ...requestPolicy, apiKey: "fixture-key",
+      adapter: (profile, requestPolicy) => new OpenAiCompatibleAdapter({
+        profile, ...requestPolicy, apiKey: "fixture-key",
         fetch: async (_url, init) => {
           requests += 1;
           body = String(init?.body);
-          return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: "Ready." }, finish_reason: "stop" }], usage: { prompt_tokens: 100, completion_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
+          bodies.push(body);
+          return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: "Ready." }, finish_reason: "stop" }], ...(withSummaryUsage || requests > 1 ? { usage: { prompt_tokens: 100, completion_tokens: 2 } } : {}) })}\n\ndata: [DONE]\n\n`);
         },
       }),
     });
     const connection = port();
     await runtime.run(value, connection.runtimePort);
-    expect(requests).toBe(1);
+    expect(requests).toBe(2);
     expect(connection.candidates).toHaveLength(1);
     expect(connection.events.some(event => event.type === "failed")).toBe(false);
+    expect(connection.events).toContainEqual(expect.objectContaining({ type: "igrep_observation", operation: "compaction", outcome: "hit" }));
+    expect(connection.candidates[0]?.usage).toEqual(withSummaryUsage ? { promptTokens: 200, completionTokens: 4, reasoningTokens: 0 } : null);
     const request = JSON.parse(body) as { messages: unknown[]; tools: unknown[] };
-    const evidence = connection.candidates[0]?.modelRequests?.[0];
-    expect(evidence?.droppedReplayMessageIds).toEqual(["message-0", "message-1"]);
+    const evidence = connection.candidates[0]?.modelRequests?.at(-1);
+    expect(evidence?.droppedReplayMessageIds).toBeUndefined();
+    expect(connection.candidates[0]?.modelRequests?.[0]?.purpose).toBe("compaction");
+    for (const text of ["Established fact 0:", "Established fact 5:"]) expect(bodies[0]).toContain(text);
     expect(evidence?.bodyDigest).toBe(createHash("sha256").update(body).digest("hex"));
     expect(evidence?.estimatedInputTokens).toBe(Math.ceil(JSON.stringify({ messages: request.messages, tools: request.tools }).length / 4));
     expect(evidence?.estimatedInputTokens).toBeLessThanOrEqual(preparedTurn.budget.maxInputTokens);
     const wire = JSON.stringify(request.messages);
     expect(wire).not.toContain("Established fact 0:");
     expect(wire).not.toContain("Established fact 1:");
-    for (const text of ["Established fact 2:", "Established fact 5:", "Stay specific and grounded.", "the library", "How are you tonight?", "memory_search"]) expect(wire).toContain(text);
+    for (const text of ["Stay specific and grounded.", "the library", "How are you tonight?", "memory_search"]) expect(wire).toContain(text);
     expect(source.recentMessages).toHaveLength(7);
   });
 
@@ -511,6 +526,53 @@ describe("Chat embedded companion runtime", () => {
     expect(connection.candidates).toHaveLength(1);
   });
 
+  it.each(["length", "empty", "oversize"].flatMap(rejection => [true, false].map(withUsage => ({ rejection, withUsage }))))(
+    "accounts for a rejected $rejection summary independently of its completion anchor (receipt=$withUsage)",
+    async ({ rejection, withUsage }) => {
+      const value = invocation();
+      value.preparedTurn.budget.maxInputTokens = 6_000;
+      value.preparedTurn.messages.splice(1, 0, ...Array.from({ length: 6 }, (_, index) => ({
+        id: `history-${index}`, sourceKind: "replay" as const, role: index % 2 ? "assistant" as const : "user" as const,
+        content: `Long authorized history. ${"t".repeat(3_500)}`,
+      })));
+      let purpose: string | undefined;
+      let normalCalls = 0;
+      const requests: Array<string | undefined> = [];
+      const runtime = await engine(new OneStepAdapter(), undefined, {
+        plugin: async () => ({ name: "igrep", Compaction: BasicCompactionEngine, inject: ["tools"], apply(ctx) {
+          ctx.tools.register({ name: "igrep_search", description: "Find an observation.",
+            parameters: { type: "object", properties: { user_question: { type: "string" } }, required: ["user_question"] },
+            output: { schema: { type: "object", properties: {} }, render: () => [{ type: "text", text: "Original observation." }] },
+            async execute() { return { results: [{ citation: "controlled:1", snippet: "Original observation." }] }; },
+          });
+        } }),
+        adapter: (profile, policy) => new OpenAiCompatibleAdapter({
+          profile, ...policy, apiKey: "fixture-key",
+          observeRequest: evidence => { purpose = evidence.purpose; policy.observeRequest(evidence); },
+          fetch: async () => {
+            requests.push(purpose);
+            const compacting = purpose === "compaction";
+            const firstReply = !compacting && normalCalls++ === 0;
+            const delta = compacting ? { content: rejection === "empty" ? "" : rejection === "oversize" ? "x".repeat(30_000) : "Truncated summary." }
+              : firstReply ? { tool_calls: [{ index: 0, id: "lookup", function: { name: "igrep_search", arguments: '{"user_question":"Recall that observation."}' } }] }
+                : { content: "Good evening." };
+            return new Response(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: compacting && rejection === "length" ? "length" : firstReply ? "tool_calls" : "stop" }],
+              ...(!compacting || withUsage ? { usage: { prompt_tokens: 100, completion_tokens: 10 } } : {}),
+            })}\n\ndata: [DONE]\n\n`);
+          },
+        }),
+      });
+      const connection = port();
+      await runtime.run(value, connection.runtimePort);
+
+      expect(requests).toEqual([undefined, "compaction", undefined]);
+      expect(connection.events).toContainEqual(expect.objectContaining({ type: "igrep_observation", operation: "compaction", outcome: "failure" }));
+      expect(connection.candidates).toHaveLength(1);
+      expect(connection.candidates[0]?.usage).toEqual(withUsage ? { promptTokens: 300, completionTokens: 30, reasoningTokens: 0 } : null);
+      expect(connection.events.filter(event => event.type === "usage")).toHaveLength(withUsage ? 3 : 2);
+    },
+  );
+
   it("does not call the model when snapshot reproject fails", async () => {
     const adapter = new MemoryReplyAdapter("Must not execute.");
     const runtime = await engine(adapter, undefined, { runIgrep: async () => { throw new Error("snapshot binding unavailable"); } });
@@ -522,7 +584,7 @@ describe("Chat embedded companion runtime", () => {
   });
 
   it.each([false, true])("preserves group speakers through DSH into the provider request (image=%s)", async (image) => {
-    const value = image ? requiredImageInvocation() : invocation();
+    const value = image ? imageInvocation() : invocation();
     const speakers = [
       { characterId: "briar", sessionId: "briar-session", name: "Briar" },
       { characterId: "cedar", sessionId: "cedar-session", name: "Cedar" },
@@ -537,14 +599,13 @@ describe("Chat embedded companion runtime", () => {
     const adapter = new OpenAiCompatibleAdapter({
       profile: value.preparedTurn.profile,
       apiKey: "fixture-key",
-      ...(image ? { requiredToolName: "generate_image_async" as const } : {}),
       fetch: async (_url, init) => {
         requests.push(JSON.parse(String(init?.body)) as { messages: unknown[] });
         return new Response(`data: ${JSON.stringify({ choices: [{
-          delta: image ? { tool_calls: [{ index: 0, id: "image-1", function: {
+          delta: image && requests.length === 1 ? { tool_calls: [{ index: 0, id: "image-1", function: {
             name: "generate_image_async", arguments: JSON.stringify({ prompt: "A rainy observatory portrait" }),
           } }] } : { content: "Briar brought the cup; Cedar moved the book." },
-          finish_reason: image ? "tool_calls" : "stop",
+          finish_reason: image && requests.length === 1 ? "tool_calls" : "stop",
         }] })}\n\ndata: [DONE]\n\n`);
       },
     });
@@ -553,17 +614,75 @@ describe("Chat embedded companion runtime", () => {
     await runtime.run(value, connection.runtimePort);
     expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
     const request = JSON.stringify(requests[0]?.messages);
-    if (image) {
-      for (const speaker of speakers) expect(request).toContain(JSON.stringify(speaker).replaceAll('"', '\\"'));
-    } else {
-      // Native turns: each Character line is an assistant message under its own name.
-      for (const speaker of speakers) expect(request).toContain(`${speaker.name}: I `);
-      // Saved preferences ride inside the current user message, ahead of the user's own words.
-      const last = requests[0]!.messages.at(-1) as { role: string; content: string };
-      expect(last.role).toBe("user");
-      expect(last.content.startsWith("Saved interaction preferences:")).toBe(true);
-    }
+    for (const speaker of speakers) expect(request).toContain(`${speaker.name}: I `);
+    const last = requests[0]!.messages.at(-1) as { role: string; content: string };
+    expect(last.role).toBe("user");
+    expect(last.content.startsWith("Saved interaction preferences:")).toBe(true);
     expect(request.indexOf("I brought the cup.")).toBeLessThan(request.indexOf("I moved the book."));
+  });
+
+  // SPEC (2026-10-08): budget-omitted dialogue is not seeded into the live session, so
+  // a long conversation does not cross DSH's compaction trigger on every turn.
+  it("does not seed dialogue the PreparedTurn omitted for budget", () => {
+    const value = invocation();
+    value.preparedTurn.omittedMessages = [{ id: "old-1", sourceKind: "replay", role: "user", content: "An old line trimmed for budget." }];
+    const texts = buildReplaySeed(value).flatMap(event => JSON.stringify(event));
+    expect(texts.some(text => text.includes("An old line trimmed for budget."))).toBe(false);
+  });
+
+  it.each([false, true])("binds recalled group speakers to original events without altering passages (invalid=%s)", async (invalid) => {
+    const value = invocation();
+    const speakers = [
+      { characterId: "briar", sessionId: "briar-session", name: "Briar" },
+      { characterId: "cedar", sessionId: "cedar-session", name: "Cedar" },
+      { characterId: value.characterId, sessionId: value.sessionId, name: value.preparedTurn.characterName },
+    ];
+    const originals = ["I brought the cup.\n原文 ␊", "I moved the book.", "I carried the map."];
+    // Retained group history: omitted dialogue is no longer seeded (it stays searchable
+    // through igrep_search), so speaker binding is exercised on seeded passages.
+    value.preparedTurn.messages.splice(value.preparedTurn.messages.length - 1, 0, ...speakers.map((speaker, index) => ({
+      id: `group-${index}`, sourceKind: "replay" as const, role: "assistant" as const,
+      ...(index < 2 ? { speaker } : {}), content: originals[index]!,
+    })));
+    const sources = buildReplaySeed(value).filter(event => event.type === "assistant/message");
+    const hits = sources.map((source, index) => ({
+      id: `seq:${source.seq}#1`, ref: `seq:${invalid && index === 0 ? 999_999 : source.seq}`,
+      kind: "assistant/message", title: "assistant/message", snippet: originals[index]!,
+    }));
+    const requests: Array<{ messages: { role: string; content: string }[] }> = [];
+    const runtime = await engine(new OneStepAdapter(), undefined, {
+      plugin: async () => ({ name: "igrep", Compaction: BasicCompactionEngine, inject: ["tools"], apply(ctx) {
+        ctx.tools.register({ name: "session_recall", description: "Recall archived dialogue.", parameters: { type: "object", properties: {} },
+          output: { schema: { type: "object", properties: {} }, render: (_args, result) => [{ type: "text", text: JSON.stringify(result) }] },
+          async execute() { return { archived: { complete: true }, hits }; },
+        });
+      } }),
+      adapter: (profile, policy) => new OpenAiCompatibleAdapter({
+        profile, ...policy, apiKey: "fixture-key",
+        fetch: async (_url, init) => {
+          requests.push(JSON.parse(String(init?.body)));
+          const first = requests.length === 1;
+          return new Response(`data: ${JSON.stringify({ choices: [{ delta: first
+            ? { tool_calls: [{ index: 0, id: "group-recall", function: { name: "session_recall", arguments: "{}" } }] }
+            : { content: "Ready." }, finish_reason: first ? "tool_calls" : "stop" }] })}\n\ndata: [DONE]\n\n`);
+        },
+      }),
+    });
+    const connection = port();
+    await runtime.run(value, connection.runtimePort);
+    expect(connection.candidates).toHaveLength(1);
+    const messages = requests[1]!.messages;
+    const tool = messages.find(message => message.role === "tool")!;
+    expect(connection.events).toContainEqual(expect.objectContaining({ type: "igrep_observation", operation: "session", outcome: invalid ? "failure" : "hit" }));
+    if (invalid) {
+      expect(tool.content).toContain("unverifiable evidence");
+      expect(messages.some(message => message.role === "user" && message.content.includes("Speakers for recalled"))).toBe(false);
+    } else {
+      expect(JSON.parse(tool.content).hits).toEqual(hits);
+      for (const [index, speaker] of speakers.entries()) {
+        expect(messages.some(message => message.role === "user" && message.content.includes(`${hits[index]!.id} ${JSON.stringify(speaker)}`))).toBe(true);
+      }
+    }
   });
 
   it.each(["normal", "private"] as const)("restricts plugin tools in %s mode at presentation and dispatch", async (mode) => {
@@ -572,7 +691,7 @@ describe("Chat embedded companion runtime", () => {
     const adapter = new MemoryReplyAdapter("I can read only the permitted memories.");
     const runtime = await engine(adapter, undefined, {
       ...memoryPorts,
-      plugin: async () => ({ name: "igrep", inject: ["tools"], apply(ctx) {
+      plugin: async () => ({ name: "igrep", Compaction: BasicCompactionEngine, inject: ["tools"], apply(ctx) {
         for (const name of ["memory_search", "memory_record", "unexpected_plugin_tool"]) {
           ctx.tools.register({ name, description: name,
             parameters: { type: "object", properties: {} },
@@ -648,7 +767,7 @@ describe("Chat embedded companion runtime", () => {
     ]);
     const runtime = await engine(adapter, undefined, {
       ...memoryPorts,
-      plugin: async () => ({ name: "igrep", inject: ["tools"], apply(ctx) {
+      plugin: async () => ({ name: "igrep", Compaction: BasicCompactionEngine, inject: ["tools"], apply(ctx) {
         ctx.tools.register({
           name: "memory_search", description: "Recall a shared conversation.",
           parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
@@ -689,7 +808,7 @@ describe("Chat embedded companion runtime", () => {
         }
         return options.args.includes("wake") ? { markdownContext: "" } : { results: [] };
       },
-      plugin: async () => ({ name: "igrep", inject: ["tools"], apply(ctx) {
+      plugin: async () => ({ name: "igrep", Compaction: BasicCompactionEngine, inject: ["tools"], apply(ctx) {
         ctx.tools.register({
           name: "memory_search", description: "Recall attributed conversations.",
           parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
@@ -723,6 +842,40 @@ describe("Chat embedded companion runtime", () => {
     }
   });
 
+  it("logs only fixed memory failure categories and still blocks a failed native recall", async () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const adapter = new MemoryReplyAdapter("Must not commit.", true);
+      const runtime = await engine(adapter, undefined, {
+        runIgrep: async ({ args }) => args.includes("reproject")
+          ? { provider: "igrep", action: "reproject", migrated: false }
+          : args.includes("wake") ? { markdownContext: "" }
+            : { results: [], warnings: ["PRIVATE_MEMORY_WARNING"] },
+        plugin: async () => ({ name: "igrep", Compaction: BasicCompactionEngine, inject: ["tools"], apply(ctx) {
+          ctx.tools.register({ name: "memory_search", description: "Recall shared facts.",
+            parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+            output: { schema: { type: "object", properties: {} }, render: () => [] },
+            async execute() { return { results: [], warnings: ["PRIVATE_NATIVE_WARNING"] }; },
+          });
+        } }),
+      });
+      const connection = port();
+      await runtime.run(normalInvocation(), connection.runtimePort);
+      expect(adapter.requests).toHaveLength(1);
+      expect(connection.candidates).toHaveLength(0);
+      expect(connection.events).toContainEqual(expect.objectContaining({
+        type: "failed", error: expect.objectContaining({ code: "igrep_memory_failed" }),
+      }));
+      const lines = stderr.mock.calls.map(([line]) => String(line));
+      const records = lines.map(line => JSON.parse(line));
+      expect(records).toContainEqual(expect.objectContaining({ event: "companion_recall_degraded", memoryFailure: "partial_evidence" }));
+      expect(records).toContainEqual(expect.objectContaining({ event: "companion_memory_tool_failed", memoryFailure: "partial_evidence" }));
+      expect(lines.join("\n")).not.toContain("PRIVATE_");
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
   it("streams one terminal candidate and commits it directly through Chat", async () => {
     const runtime = await engine(new OneStepAdapter());
     const connection = port();
@@ -747,26 +900,14 @@ describe("Chat embedded companion runtime", () => {
       .toEqual(connection.events.map((_event, index) => index + 1));
   });
 
-  it("does not execute an unsolicited image tool even when an invocation exposes it", async () => {
-    const runtime = await engine(new ToolThenTextAdapter());
-    const calls: CompanionToolCall[] = [];
-    const connection = port({
-      executeTool: async (call) => {
-        calls.push(call);
-        return {
-          attemptId: call.attemptId,
-          callId: call.callId,
-          name: call.name,
-          outcome: "succeeded",
-          output: { generationJobId: "job-1" },
-        };
-      },
-    });
-
+  it("lets the Agent choose an exposed image tool without a host-classified required action", async () => {
+    const adapter = new ToolThenTextAdapter(undefined, "Give me a moment…");
+    const runtime = await engine(adapter);
+    const connection = port();
     await runtime.run(invocation(true), connection.runtimePort);
-
-    expect(calls).toHaveLength(0);
-    expect(connection.events.some(event => event.type === "tool_started")).toBe(false);
+    expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
+    expect(connection.candidates[0]?.execution.toolCalls).toBe(1);
+    expect(adapter.calls).toBe(2);
   });
 
   it("requires the Agent to author and execute the concrete image prompt", async () => {
@@ -785,7 +926,7 @@ describe("Chat embedded companion runtime", () => {
       },
     });
 
-    await runtime.run(requiredImageInvocation(), connection.runtimePort);
+    await runtime.run(imageInvocation(), connection.runtimePort);
 
     expect(calls).toEqual([
       expect.objectContaining({
@@ -806,6 +947,50 @@ describe("Chat embedded companion runtime", () => {
     });
   });
 
+  // SPEC (2026-10-08): a clear photo request is kept even when the Agent answers in
+  // words only; the host reserves the same Turn action with the user's own words.
+  it("keeps a clear photo request when the Agent answered without calling the tool", async () => {
+    const runtime = await engine(new OneStepAdapter());
+    const calls: CompanionToolCall[] = [];
+    const connection = port({
+      executeTool: async (call) => {
+        calls.push(call);
+        return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded", output: { generationJobId: "job-host" } };
+      },
+    });
+    const value = invocation(true);
+    value.preparedTurn.messages.at(-1)!.content = "Send me a selfie.";
+    value.preparedTurn.imageRequest = { name: "generate_image_async", requestedNudity: "unspecified", userText: "Send me a selfie." };
+
+    await runtime.run(value, connection.runtimePort);
+
+    expect(calls).toEqual([expect.objectContaining({
+      name: "generate_image_async",
+      effectScope: "turn_action",
+      callId: `host-image-request:${value.attemptId}`,
+      arguments: { prompt: "The photo they asked for in this message: Send me a selfie.", subject: "companion", requestedNudity: "unspecified" },
+    })]);
+    expect(connection.candidates[0]).toMatchObject({ execution: { toolCalls: 1 } });
+  });
+
+  it("does not add a host photo when the Agent already called the image tool", async () => {
+    const runtime = await engine(new ToolThenTextAdapter());
+    const calls: CompanionToolCall[] = [];
+    const connection = port({
+      executeTool: async (call) => {
+        calls.push(call);
+        return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded", output: { generationJobId: "job-agent" } };
+      },
+    });
+    const value = imageInvocation();
+    value.preparedTurn.imageRequest = { name: "generate_image_async", requestedNudity: "full", userText: "Send me a nude photo at the observatory." };
+
+    await runtime.run(value, connection.runtimePort);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.callId).not.toContain("host-image-request");
+  });
+
   it("lets the Character answer when Main rejects the image action", async () => {
     const adapter = new ToolThenTextAdapter(undefined, "One at a time, love. Let me finish the one I'm already making for you.");
     const runtime = await engine(adapter);
@@ -819,7 +1004,7 @@ describe("Chat embedded companion runtime", () => {
       }),
     });
 
-    await runtime.run(requiredImageInvocation(), connection.runtimePort);
+    await runtime.run(imageInvocation(), connection.runtimePort);
 
     expect(connection.events.filter((event) => event.type === "failed")).toEqual([]);
     expect(connection.events).toContainEqual(expect.objectContaining({ type: "tool_finished", outcome: "failed" }));
@@ -837,14 +1022,13 @@ describe("Chat embedded companion runtime", () => {
     { scene: "It is a rainy morning.", request: "Take a fully clothed photo.", prompt: "A fully clothed portrait on a rainy morning." },
     { scene: "The book is left of the cup; the lamp is right of the vase.", request: "Take a fully clothed photo.", prompt: "A fully clothed portrait. The book is left of the cup; the lamp is right of the vase." },
   ])("preserves authorized scene direction without inferring contradictions from isolated words: $scene", async ({ scene, request, prompt }) => {
-    const value = requiredImageInvocation();
-    value.preparedTurn.requiredAction!.requestedNudity = "none";
+    const value = imageInvocation();
     value.preparedTurn.messages.splice(1, 0, {
       id: "user:scene", sourceKind: "replay", role: "user", content: scene,
     });
     value.preparedTurn.messages.at(-1)!.content = request;
     const calls: CompanionToolCall[] = [];
-    const runtime = await engine(new ToolThenTextAdapter(prompt));
+    const runtime = await engine(new ToolThenTextAdapter(prompt, undefined, "none"));
     const connection = port({ executeTool: async (call) => {
       calls.push(call);
       return { attemptId: call.attemptId, callId: call.callId, name: call.name,
@@ -856,9 +1040,9 @@ describe("Chat embedded companion runtime", () => {
     expect(connection.candidates).toHaveLength(1);
   });
 
-  it("forwards structured nudity intent even when the Agent prompt drops it", async () => {
+  it("forwards the Agent's structured wardrobe intent without host text classification", async () => {
     const runtime = await engine(new ToolThenTextAdapter(
-      "Mira wearing a silk robe at the blue-lit observatory tonight",
+      "Mira wearing a silk robe at the blue-lit observatory tonight", undefined, "none",
     ));
     const calls: CompanionToolCall[] = [];
     const connection = port({
@@ -874,12 +1058,12 @@ describe("Chat embedded companion runtime", () => {
       },
     });
 
-    await runtime.run(requiredImageInvocation(), connection.runtimePort);
+    await runtime.run(imageInvocation(), connection.runtimePort);
 
     expect(calls).toEqual([
       expect.objectContaining({
         effectScope: "turn_action",
-        intent: { requestedNudity: "full" },
+        intent: { requestedNudity: "none" },
         arguments: expect.objectContaining({ prompt: expect.stringContaining("silk robe") }),
       }),
     ]);
@@ -897,91 +1081,57 @@ describe("Chat embedded companion runtime", () => {
       attemptId: call.attemptId, callId: call.callId, name: call.name,
       outcome, error: { code: "main_effect_unconfirmed", message: "Unconfirmed", retryable: true },
     }) });
-    await runtime.run(requiredImageInvocation(), connection.runtimePort);
+    await runtime.run(imageInvocation(), connection.runtimePort);
     expect(adapter.calls).toBe(1);
     expect(connection.candidates).toEqual([]);
     expect(connection.events.some(event => event.type === "text_delta")).toBe(false);
     expect(connection.events.at(-1)?.type).toBe("failed");
   });
 
-  it("confirms an accepted image in the user's script without asking the caption provider", async () => {
-    const value = requiredImageInvocation();
-    const invocation = {
-      ...value,
-      preparedTurn: {
-        ...value.preparedTurn,
-        messages: value.preparedTurn.messages.map((message) =>
-          message.sourceKind === "current_user"
-            ? { ...message, content: "给我一张今晚的自拍" }
-            : message,
-        ),
-      },
-    };
-    const adapter = new ToolThenTextAdapter(
-      "A concrete selfie at the observatory tonight",
-      "Je peux te renvoyer la dernière photo.",
-    );
+  it("lets the Agent answer in the user's language after observing Main's result", async () => {
+    const value = imageInvocation();
+    value.preparedTurn.messages.at(-1)!.content = "给我一张今晚的自拍";
+    const adapter = new ToolThenTextAdapter("A concrete selfie at the observatory tonight", "等我一下，今晚的我给你看。", "unspecified");
     const runtime = await engine(adapter);
     const connection = port();
-
-    await runtime.run(invocation, connection.runtimePort);
-
-    expect(adapter.calls).toBe(1);
-    expect(connection.candidates[0]).toMatchObject({
-      content: "等我一下……",
-      acknowledgement: { version: "image-action-ack-1", locale: "zh" },
-    });
-    expect(connection.events).not.toContainEqual(expect.objectContaining({
-      type: "text_delta",
-      delta: expect.stringContaining("Je peux"),
-    }));
-    expect(connection.events.some(event => event.type === "failed")).toBe(false);
+    await runtime.run(value, connection.runtimePort);
+    expect(adapter.calls).toBe(2);
+    expect(connection.candidates[0]).toMatchObject({ content: "等我一下，今晚的我给你看。" });
+    expect(connection.candidates[0]).not.toHaveProperty("acknowledgement");
+    expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
   });
 
-  it("keeps the Character's sentence from the tool step without appending the system receipt", async () => {
-    const adapter = new LeadInThenToolAdapter(
-      "Elbow-deep in clay tonight, so give me a second to wash my hands.",
-    );
+  it("retracts provisional tool-step text and commits the Agent's observed-result answer", async () => {
+    const adapter = new LeadInThenToolAdapter("Elbow-deep in clay tonight, so give me a second to wash my hands.");
     const runtime = await engine(adapter);
     const connection = port();
-
-    await runtime.run(requiredImageInvocation(), connection.runtimePort);
-
-    // 不额外要一次模型：台词来自工具那一步。
-    expect(adapter.calls).toBe(1);
-    expect(connection.candidates[0]).toMatchObject({
-      content: "Elbow-deep in clay tonight, so give me a second to wash my hands.",
-      acknowledgement: { version: "image-action-ack-1", locale: "en" },
-    });
-    expect(connection.events.some(event => event.type === "failed")).toBe(false);
+    await runtime.run(imageInvocation(), connection.runtimePort);
+    expect(adapter.calls).toBe(2);
+    expect(connection.events).toContainEqual(expect.objectContaining({ type: "text_reset" }));
+    expect(connection.candidates[0]).toMatchObject({ content: "Give me a moment, love." });
+    expect(connection.candidates[0]).not.toHaveProperty("acknowledgement");
+    expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
   });
 
-  it("does not leave a lead-in colon dangling once the receipt is gone", async () => {
-    const adapter = new LeadInThenToolAdapter("Hold still, let me grab the camera:");
+  it("permits only one image effect even if the Agent tries a second native call", async () => {
+    let requests = 0;
+    const value = imageInvocation();
+    const calls: CompanionToolCall[] = [];
+    const adapter = new OpenAiCompatibleAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture-key", fetch: async () => {
+      requests++;
+      return new Response(`data: ${JSON.stringify({ choices: [{
+        delta: requests <= 2 ? { tool_calls: [{ index: 0, id: `image-${requests}`, function: { name: "generate_image_async", arguments: JSON.stringify({ prompt: "A portrait beside the rainy window", subject: "companion" }) } }] } : { content: "Give me a moment, love." },
+        finish_reason: requests <= 2 ? "tool_calls" : "stop",
+      }] })}\n\ndata: [DONE]\n\n`);
+    } });
     const runtime = await engine(adapter);
-    const connection = port();
-
-    await runtime.run(requiredImageInvocation(), connection.runtimePort);
-
-    expect(connection.candidates[0]).toMatchObject({ content: "Hold still, let me grab the camera…" });
-  });
-
-  it("drops a tool-step sentence that announces the image already arrived", async () => {
-    const adapter = new LeadInThenToolAdapter("Here's your selfie, hope you like it.");
-    const runtime = await engine(adapter);
-    const connection = port();
-
-    await runtime.run(requiredImageInvocation(), connection.runtimePort);
-
-    expect(adapter.calls).toBe(1);
-    expect(connection.candidates[0]).toMatchObject({
-      content: "Give me a moment…",
-    });
-    expect(connection.events).not.toContainEqual(expect.objectContaining({
-      type: "text_delta",
-      delta: expect.stringContaining("Here's your selfie"),
-    }));
-    expect(connection.events.some(event => event.type === "failed")).toBe(false);
+    const connection = port({ executeTool: async call => {
+      calls.push(call);
+      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded", output: { accepted: true } };
+    } });
+    await runtime.run(value, connection.runtimePort);
+    expect(calls).toHaveLength(1);
+    expect(connection.candidates[0]?.execution.toolCalls).toBe(1);
   });
 
   it("turns a rejected Main CAS into a failed runtime terminal", async () => {

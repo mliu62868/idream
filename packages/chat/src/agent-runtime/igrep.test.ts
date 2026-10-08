@@ -5,6 +5,7 @@ import type { CompanionWorkspaceRebuild } from "@idream/shared/chat/companion-ru
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   IgrepMemoryBuilder,
+  igrepFailureCategory,
   observeIgrepWake,
   recallIgrepMemory,
   probeIgrepLifecycle,
@@ -64,6 +65,18 @@ async function recallFixture(messages: { role: string; content: string; source_a
 }
 
 describe("igrep subprocess bounds", () => {
+  it("classifies plugin and subprocess failures without echoing their private text", () => {
+    const prefix = "memory unavailable (an availability error, not an empty memory): ";
+    expect(igrepFailureCategory(new BoundedCommandError("exit_nonzero", "a".repeat(64)))).toBe("command_exit_nonzero");
+    expect(igrepFailureCategory({ message: `${prefix}igrep memory contract mismatch: PRIVATE_CONTRACT` })).toBe("contract_mismatch");
+    expect(igrepFailureCategory({ message: `${prefix}invalid igrep JSON output: PRIVATE_BODY` })).toBe("command_invalid_output");
+    expect(igrepFailureCategory({ message: `${prefix}igrep mem-api timed out after 10000ms` })).toBe("command_timeout");
+    expect(igrepFailureCategory({ message: `${prefix}PRIVATE_CHILD_ERROR` })).toBe("memory_unavailable");
+    expect(igrepFailureCategory(new Error("PRIVATE_PROVIDER_BODY"))).toBe("unknown");
+    expect(igrepFailureCategory({ code: "PRIVATE_ERROR_CODE", message: "PRIVATE_PROVIDER_BODY" })).toBe("unknown");
+    expect(igrepFailureCategory({ code: "ENOENT", path: "/PRIVATE_PATH" })).toBe("source_missing");
+  });
+
   it("kills an unbounded stderr producer and returns only a stable failure code", async () => {
     const script = `process.stderr.write("PRIVATE_STDERR_SENTINEL".repeat(5000));setInterval(()=>{},1000)`;
     let thrown: unknown;
@@ -130,6 +143,25 @@ describe("official igrep wake observation", () => {
 });
 
 describe("official igrep pre-recall", () => {
+  it.each([
+    { payload: { results: [], warnings: ["PRIVATE_MEMORY_WARNING"] }, reason: "partial_evidence" },
+    { payload: { results: [], failed: true, error: "PRIVATE_MEMORY_ERROR" }, reason: "failed_envelope" },
+    { payload: { results: [], provider: "PRIVATE_PROVIDER" }, reason: "provider_mismatch" },
+    { payload: { results: [], workspaceRoot: "/PRIVATE_OTHER_WORKSPACE" }, reason: "workspace_mismatch" },
+    { payload: { results: "PRIVATE_INVALID_RESULTS" }, reason: "invalid_envelope" },
+  ])("classifies rejected memory evidence without retaining private envelope bytes ($reason)", async ({ payload, reason }) => {
+    let thrown: unknown;
+    try {
+      await recallIgrepMemory("igrep", "/w", "PRIVATE_QUERY", {}, async () => payload);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({ reason });
+    expect(String(thrown)).toContain("unverifiable evidence");
+    expect(String(thrown)).not.toContain("PRIVATE_");
+    expect(JSON.stringify(thrown)).not.toContain("PRIVATE_");
+  });
+
   it("searches memory in fast mode and renders dialogue notes without profile hits", async () => {
     const calls: JsonCommandOptions[] = [];
     const fixture = await recallFixture([
@@ -421,6 +453,31 @@ describe("official igrep canonical rebuild", () => {
 
     expect(commands[0]?.args.slice(0, 2)).toEqual(["mem", "maintain"]);
     expect(commands[0]?.args).not.toContain("--rebuild");
+  });
+
+  it("initializes an empty memory root before strict doctor without inventing facts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-runtime-igrep-empty-"));
+    temporary.push(root);
+    await mkdir(join(root, ".igrep"));
+    const commands: JsonCommandOptions[] = [];
+    const builder = new IgrepMemoryBuilder(
+      "igrep",
+      { status: async () => ({ dialogueFiles: 0, pendingProfileRows: 0, processedProfileRows: 0, lastMaintainAt: null }) },
+      async (options) => {
+        commands.push(options);
+        if (options.args[1] === "doctor") {
+          expect(options.args).toContain("--strict");
+          expect((await stat(join(root, ".igrep/mem"))).isDirectory()).toBe(true);
+          expect(await readdir(join(root, ".igrep/mem"))).toEqual([]);
+        }
+        return { ok: true };
+      },
+    );
+
+    await expect(builder.build(root, {
+      scope: "relationship", userId: "user-1", characterId: "character-1", mode: "rebuild", messages: [],
+    })).resolves.toEqual({ sessions: 0, messages: 0, sourceReady: true, derivation: "accepted" });
+    expect(commands.map(command => command.args.slice(0, 2))).toEqual([["mem", "maintain"], ["mem", "doctor"]]);
   });
 
   it("does not expose malformed ingest output in rebuild errors", async () => {

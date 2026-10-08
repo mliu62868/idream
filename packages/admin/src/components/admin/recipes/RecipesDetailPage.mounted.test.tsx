@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { RecipesDetailPage } from "./RecipesDetailPage";
 import { RecipesSection } from "./RecipesSection";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -17,6 +18,31 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
+});
+
+it("reloads recipe details through shell refresh without remounting an unfinished prompt", async () => {
+  const recipe = {
+    id: "recipe-1", recipeKey: "portrait", label: "Original recipe", mode: "image", useCase: "freeplay",
+    body: "Original body", negativeBase: "blur", version: 1, status: "draft", sampleMatrix: [], dryRunSummary: null,
+    createdAt: "2026-09-01T00:00:00.000Z", updatedAt: "2026-09-01T00:00:00.000Z",
+  };
+  const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async input =>
+    Response.json({ ok: true, data: String(input).includes("/model-profiles") ? { items: [] } : { recipe } }));
+  vi.stubGlobal("fetch", fetchMock);
+  await act(async () => root.render(<RecipesDetailPage canWrite id={recipe.id} />));
+  await waitFor(() => button("Edit recipe") !== undefined);
+  await act(async () => button("Edit recipe")!.click());
+  await changeInput(field("Body"), "Unfinished recipe prompt");
+  let finish!: (response: Response) => void;
+  fetchMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  const href = window.location.href;
+  await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+  expect(fetchMock.mock.calls.filter(([path]) => String(path).endsWith(`/recipes/${recipe.id}`))).toHaveLength(2);
+  expect(field("Body").value).toBe("Unfinished recipe prompt");
+  await act(async () => finish(Response.json({ ok: true, data: { recipe: { ...recipe, label: "Fresh recipe label" } } })));
+  expect(field("Body").value).toBe("Unfinished recipe prompt");
+  expect(window.location.href).toBe(href);
+  expect(fetchMock.mock.calls.every(([, init]) => init?.method === "GET")).toBe(true);
 });
 
 it.each([true, false])("recovers an initial recipe 503 with only reads (canWrite=%s)", async (canWrite) => {

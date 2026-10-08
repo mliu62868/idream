@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
-import { renderCharacterSoulMarkdown } from "./persona-render";
-export { legacySoulDetailsMarkdown } from "./persona-render";
+import { CHARACTER_SOUL_SCHEMA_VERSION, renderCharacterSoulMarkdown } from "./persona-render";
+export { CHARACTER_SOUL_SCHEMA_VERSION, legacySoulDetailsMarkdown } from "./persona-render";
 
-export const CHARACTER_SOUL_SCHEMA_VERSION = 3 as const;
 export const CHARACTER_SOUL_COMPILER_VERSION = "character-soul-3" as const;
 
 export type CharacterSoulGender = "female" | "male" | "trans";

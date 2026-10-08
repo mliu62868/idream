@@ -21,6 +21,7 @@ import { FilterBar, type FilterChip } from "@/components/admin/ui/FilterBar";
 import { useAdminFormat } from "@/components/admin/ui/format";
 import { Pagination } from "@/components/admin/ui/Pagination";
 import { useUrlFilters } from "@/components/admin/ui/useUrlFilters";
+import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import {
   authorityRequestFailed,
@@ -152,6 +153,8 @@ export function JobsView({ permissions }: { readonly permissions: JobsViewPermis
     },
   });
   const { apply, draft, pushUrl, query, reload, setDraft } = filters;
+
+  useWorkspaceRefresh(reload);
 
   useEffect(() => {
     const gate = jobsGate.current;

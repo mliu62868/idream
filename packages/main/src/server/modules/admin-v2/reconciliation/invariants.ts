@@ -154,14 +154,17 @@ const sqlChecks: readonly SqlInvariant[] = [
   },
   {
     key: "serving_validation_stale",
-    description: "Current Releases require an exact, non-revoked public qualification",
+    description: "Live current Releases require an exact, non-revoked public qualification",
     evidence: `PublicCatalogQualification plus ReleaseValidationRun snapshotHash + ${CHARACTER_RELEASE_POLICY_VERSION}, or the editorial import policy`,
+    // Paused/retired Serving retains its historical pointer without granting
+    // customer access. Resume revalidates current authority before becoming live.
     query: Prisma.sql`
       SELECT r.id, c.id AS "characterId", count(*) OVER()::int AS total
       FROM character_serving s
       JOIN character_releases r ON r.id = s."currentReleaseId"
       LEFT JOIN characters c ON c.id = s."characterId"
-      WHERE NOT EXISTS (
+      WHERE s.state = 'live'
+      AND NOT EXISTS (
         SELECT 1
         FROM public_catalog_qualifications q
         WHERE q."releaseId" = r.id

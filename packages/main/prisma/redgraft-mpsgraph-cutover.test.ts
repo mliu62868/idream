@@ -15,6 +15,7 @@ beforeEach(async () => {
   await prisma.generationModelProfile.deleteMany({ where: { profileKey: key } });
   const old = JSON.parse(JSON.stringify({ ...original, id: "test-mpsgraph-default", version: 4,
     runnerConfig: { ...JSON.parse(JSON.stringify(original.runnerConfig)), workflowVersion: 3 },
+    defaultWidth: 768, defaultHeight: 1152, allowedOrientations: ["2:3"],
     costMultiplier: 1.75, dryRunSummary: { source: "historical-proof" } }));
   delete old.runnerConfig.videoOptions;
   await prisma.generationModelProfile.create({ data: old });

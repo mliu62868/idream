@@ -56,7 +56,7 @@ export function isPricingQueryFiltered(query: PricingQuery) {
 
 export function canCreatePricingRule(draft: PricingDraft) {
   const ruleKey = draft.ruleKey.trim();
-  return Boolean(ruleKey && draft.label.trim() && draft.baseCost.trim() !== "" && draft.reason.trim().length >= 3 && draft.confirmation.trim() === ruleKey);
+  return Boolean(ruleKey && draft.label.trim() && validPricingAmounts(draft.baseCost, draft.multiplier) && draft.reason.trim().length >= 3 && draft.confirmation.trim() === ruleKey);
 }
 
 export function pricingDraftPayload(draft: PricingDraft): Record<string, unknown> {
@@ -64,8 +64,8 @@ export function pricingDraftPayload(draft: PricingDraft): Record<string, unknown
     ruleKey: draft.ruleKey.trim(),
     label: draft.label.trim(),
     mode: draft.mode,
-    baseCost: number(draft.baseCost, 5, true),
-    multiplier: number(draft.multiplier, 1, false),
+    baseCost: Number(draft.baseCost),
+    multiplier: Number(draft.multiplier),
     reason: draft.reason.trim(),
     confirmation: draft.confirmation.trim(),
   };
@@ -74,12 +74,6 @@ export function pricingDraftPayload(draft: PricingDraft): Record<string, unknown
 function set(params: URLSearchParams, key: string, value: string) {
   const normalized = value.trim();
   if (normalized && normalized !== "all") params.set(key, normalized);
-}
-
-function number(value: string, fallback: number, integer: boolean) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return fallback;
-  return integer ? Math.trunc(parsed) : parsed;
 }
 
 export type PricingEdit = { id: string; ruleKey: string; mode: string; label: string; baseCost: string; multiplier: string };
@@ -98,9 +92,16 @@ export function pricingEditFromRow(row: Record<string, unknown>): PricingEdit {
 // INVARIANT: 判据抄的是 adminPricingRulePatchRequestSchema —— 权威会再校一遍，
 //            这里只是别让运营白发一次请求。
 export function canSavePricingEdit(edit: PricingEdit): boolean {
-  const baseCost = Number(edit.baseCost);
-  const multiplier = Number(edit.multiplier);
   return edit.label.trim().length > 0
+    && validPricingAmounts(edit.baseCost, edit.multiplier);
+}
+
+// INVARIANT: Both draft forms follow the create/patch authority bounds; an
+// empty field is missing input, not an operator's explicit zero-cost price.
+function validPricingAmounts(baseCostText: string, multiplierText: string): boolean {
+  const baseCost = Number(baseCostText);
+  const multiplier = Number(multiplierText);
+  return baseCostText.trim() !== "" && multiplierText.trim() !== ""
     && Number.isInteger(baseCost) && baseCost >= 0 && baseCost <= 100_000
     && Number.isFinite(multiplier) && multiplier >= 0.1 && multiplier <= 20;
 }

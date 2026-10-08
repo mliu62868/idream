@@ -85,9 +85,9 @@ describe("generation quote workflow authority", () => {
   });
 
   it.each([
-    { profile: PRODUCTION_REDGRAFT_LTX25_VIDEO_PROFILE, frames: 121, width: 768, height: 1152 },
-    { profile: PRODUCTION_H3_VIDEO_PROFILE, frames: 124, width: 512, height: 512 },
-  ])("quotes the exact result envelope of $profile.profileKey", async ({ profile: selected, frames, width, height }) => {
+    { profile: PRODUCTION_REDGRAFT_LTX25_VIDEO_PROFILE, profileVersion: 8, frames: 121, width: 448, height: 768, orientation: "7:12" },
+    { profile: PRODUCTION_H3_VIDEO_PROFILE, profileVersion: 4, frames: 124, width: 512, height: 512, orientation: "1:1" },
+  ])("quotes the exact result envelope of $profile.profileKey", async ({ profile: selected, profileVersion, frames, width, height, orientation }) => {
     authority.entitlementMap.mockResolvedValue({ premium_controls: true, video_generation: true });
     authority.featureFlagEnabled.mockResolvedValue(true);
     authority.generationCharacter.mockResolvedValue({ id: "character", imageAssetId: "source" });
@@ -98,9 +98,10 @@ describe("generation quote workflow authority", () => {
     const { quote } = await quoteGeneration({ userId: "user-1", body: {
       ...request, mode: "video", freeplay: false, characterId: "character", controls: { model: selected.profileKey },
     }, profileSelectionAuthority: "public_generator" });
-    expect(quote).toMatchObject({ profileId: selected.profileKey, profileVersion: selected.version,
+    expect(quote).toMatchObject({ profileId: selected.profileKey, profileVersion,
       video: { durationSeconds: frames / 24, width, height, audio: "generated" } });
-    expect(quote.orientations).toEqual(selected.allowedOrientations);
+    expect(quote.orientations).toEqual([orientation]);
+    expect(quote.defaultOrientation).toBe(orientation);
   });
 
   it("rejects a ComfyUI plan before quote authority when its descriptor is missing", async () => {

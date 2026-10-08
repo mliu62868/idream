@@ -217,5 +217,7 @@ describe("Character launch preview — zh operators", () => {
     expect(container.textContent).not.toContain("Launch checks");
     expect(container.querySelector('input[type="checkbox"]')).toBeNull();
     expect(container.querySelector("button")).toBeNull();
+    // 预览就绪时页头的下一步会隐藏，这里必须给出去发布的出口。
+    expect(container.querySelector('a[href$="?tab=release"]')?.textContent).toBe("Continue to Release");
   });
 });

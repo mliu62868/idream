@@ -30,6 +30,7 @@ import {
   type PollingTask,
 } from "@/lib/authority-resource";
 import { cn } from "@/lib/utils";
+import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 
 type Permissions = { read: boolean; write: boolean; review: boolean; place: boolean; manageIncident?: boolean };
 
@@ -270,6 +271,7 @@ function RunList({ permissions }: { permissions: Permissions }) {
     ),
   });
   const items = runs.data?.items ?? EMPTY_CREATIVE_RUNS;
+  useWorkspaceRefresh(runs.refresh, permissions.read);
   const pageInfo = runs.data?.pageInfo ?? EMPTY_PAGE_INFO;
   const asOf = runs.data?.asOf ?? null;
   const loading = runs.loading;
@@ -791,6 +793,7 @@ function RunDetail({
     },
   );
   const run = runResource.data;
+  useWorkspaceRefresh(runResource.refresh, permissions.read);
   const loading = runResource.loading;
   const [selected, setSelected] = useState(0);
   // SPEC: error 只承载写入侧（重试命令）的失败；取数失败归 runResource.error。

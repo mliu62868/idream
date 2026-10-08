@@ -3,6 +3,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 const { apiGet } = vi.hoisted(() => ({ apiGet: vi.fn() }));
 vi.mock("@/components/admin/api", () => ({ apiGet }));
@@ -44,6 +45,15 @@ describe("WorkflowsView diagnostics", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+  });
+
+  it("reloads the workflow catalog once per shell refresh", async () => {
+    await act(async () => root.render(<WorkflowsView />));
+    await waitUntil(() => (container.textContent ?? "").includes("workflow-1"));
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    expect(apiGet.mock.calls.filter(([path]) => path === "/api/v2/admin/generation/workflows")).toHaveLength(2);
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    expect(apiGet.mock.calls.filter(([path]) => path === "/api/v2/admin/generation/workflows")).toHaveLength(3);
   });
 
   it("loads full workflow authority only on the first expansion", async () => {

@@ -14,18 +14,21 @@ import * as composition from "./video-composition";
 import * as jobReads from "./generation-job-read-model";
 import { PRODUCTION_REDGRAFT_LTX25_VIDEO_OPTIONS_PROFILE } from "@/server/modules/generation/production-video-profile";
 import * as dispatchAuthority from "@/server/modules/generation/generation-attempt-authority";
-import { videoSequenceDtoSchema } from "@idream/shared/contracts";
+import { CHAT_TO_MAIN_EVENTS, REDGRAFT_VIDEO_OPTIONS, videoSequenceDtoSchema } from "@idream/shared/contracts";
+import { ACCOUNT_DELETION_GRACE_PERIOD_MS, accountDeletionSubjectHash, dispatchPendingAccountDeletionBlobDeletes, requestAccountDeletion } from "@/server/account-deletion-authority";
+import { ACCOUNT_ERASURE_COMPLETION_V2_SOURCE_SERVICE, applyChatEvent } from "@/processes/event-consumer";
 import { api, createCharacter, createMedia, createUser, dreamcoinBalance, expectError, expectOk, generationTestProviders, grantCoins, purgeTestData, runQueuedGenerationJobs } from "@/server/test/helpers";
 import { videoFixture, narrationFixture } from "@/server/test/video-fixtures";
 import { advanceVideoSequences } from "./video-sequence";
 import { reconcileUnknownGenerationRequest } from "@/server/modules/admin-v2/jobs/unknown-reconciliation";
 
 const P = "zt-video-sequence-";
-const profileId = `${P}profile`, sourceKeys: string[] = [];
+const profileId = `${P}profile`, sourceKeys: string[] = [], erasureUserIds: string[] = [];
 let userId: string, characterId: string, nativeBytes: Uint8Array;
 const prior = { provider: env.VOICE_PROVIDER, language: env.POCKET_TTS_LANGUAGE, voice: providers.voice };
 
 async function purgeSequenceTestData(prefix: string) {
+  await prisma.accountDeletion.deleteMany({ where: { subjectHash: { in: erasureUserIds.map(accountDeletionSubjectHash) } } });
   const jobs = await prisma.generationJob.findMany({ where: { userId: { startsWith: prefix } }, select: { id: true } });
   await purgeTestData(prefix);
   // Attempts intentionally outlive User/Job deletion in production. Remove
@@ -39,7 +42,7 @@ beforeAll(async () => {
   await purgeSequenceTestData(P);
   nativeBytes = await videoFixture({ width: 512, height: 512, frames: 73 });
   await prisma.generationModelProfile.create({ data: { id: profileId, ...PRODUCTION_REDGRAFT_LTX25_VIDEO_OPTIONS_PROFILE,
-    runnerConfig: JSON.parse(JSON.stringify(PRODUCTION_REDGRAFT_LTX25_VIDEO_OPTIONS_PROFILE.runnerConfig)), allowedOrientations: ["2:3", "1:1"],
+    runnerConfig: JSON.parse(JSON.stringify(PRODUCTION_REDGRAFT_LTX25_VIDEO_OPTIONS_PROFILE.runnerConfig)), allowedOrientations: [...REDGRAFT_VIDEO_OPTIONS.orientations],
     label: "Local transport fixture: bounded video options", mode: "video", costMultiplier: 1, status: "active", enabled: true, publishedAt: new Date() } });
   await prisma.featureFlag.upsert({ where: { key: "video_gen" }, create: { key: "video_gen", label: "Video fixture", enabled: true, rolloutPercent: 100, targetRoles: [], targetPlans: [] }, update: { enabled: true, rolloutPercent: 100 } });
   await prisma.featureFlag.upsert({ where: { key: "voice_gen" }, create: { key: "voice_gen", label: "Voice fixture", enabled: true, rolloutPercent: 100, targetRoles: [], targetPlans: [] }, update: { enabled: true, rolloutPercent: 100 } });
@@ -74,7 +77,7 @@ async function createSequenceActor() {
   await prisma.character.update({ where: { id: actor.characterId }, data: { imageAssetId: actor.sourceId } });
   return actor;
 }
-async function quote(value = body(), actorId = userId) { const result = await api("POST", "generation/video-sequences/quote", { userId: actorId, ageGate: true, body: value }); expectOk(result); return result.data.quote; }
+async function quote(value: unknown = body(), actorId = userId) { const result = await api("POST", "generation/video-sequences/quote", { userId: actorId, ageGate: true, body: value }); expectOk(result); return result.data.quote; }
 async function create(value = body(), key = randomUUID(), actorId = userId) {
   const price = await quote(value, actorId);
   const result = await api("POST", "generation/video-sequences", { userId: actorId, ageGate: true, headers: { "idempotency-key": key }, body: { ...value, quoteFingerprint: price.fingerprint } });
@@ -90,7 +93,101 @@ async function finish(id: string, count = 2) {
   return read(id);
 }
 
+async function requestSequenceAccountDeletion() {
+  erasureUserIds.push(userId);
+  return prisma.$transaction(tx => requestAccountDeletion(tx, { userId, now: new Date(Date.now() - ACCOUNT_DELETION_GRACE_PERIOD_MS - 10_000) }));
+}
+async function acknowledgeSequenceAccountDeletion() {
+  await prisma.mainOutboxEvent.update({ where: { id: `user_deleted_${userId}` }, data: { status: "delivered", deliveredAt: new Date() } });
+  await applyChatEvent({ eventId: `${P}erasure-${randomUUID()}`, eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2, schemaVersion: 2,
+    sourceService: ACCOUNT_ERASURE_COMPLETION_V2_SOURCE_SERVICE, aggregateId: userId,
+    payload: { version: 2, binding: "request_bound", userId, fileMutationId: randomUUID(), deletionRequestEventId: `user_deleted_${userId}` } });
+}
+
 describe("ordered video Requests, ledger settlement and packaging", () => {
+  it("quotes and pins the 448x768 portrait when a new request omits ratio and quality", async () => {
+    const request = { characterId, scenes: [{ prompt: "A controlled friendly wave", seconds: 5 }] };
+    const price = await quote(request);
+    expect(price.scenes[0].video).toMatchObject({ width: 448, height: 768, durationSeconds: 121 / 24 });
+    const admitted = await api("POST", "generation/video-sequences", { userId, ageGate: true,
+      headers: { "idempotency-key": randomUUID() }, body: { ...request, quoteFingerprint: price.fingerprint } });
+    expectOk(admitted, 202);
+    const sequence = videoSequenceDtoSchema.parse(admitted.data.sequence);
+    expect(sequence.request).toMatchObject({ orientation: "7:12", quality: "preview" });
+    const job = await prisma.generationJob.findUniqueOrThrow({ where: { id: sequence.scenes[0].job.id } });
+    expect(job.controls).toMatchObject({ width: 448, height: 768, workflowVersion: 5,
+      generationProfileVersion: 9, videoOptionsVersion: REDGRAFT_VIDEO_OPTIONS.version });
+  });
+  it("account erasure prevents a deleted owner from newly claiming completed scenes", async () => {
+    await mockedNativeSuccess(); const { sequence } = await create(body(1)); await runQueuedGenerationJobs(10);
+    await requestSequenceAccountDeletion();
+    const composer = vi.spyOn(composition, "composeVideoScenes");
+    await advanceVideoSequences();
+    expect(composer).not.toHaveBeenCalled();
+    expect(await prisma.videoSequence.findUniqueOrThrow({ where: { id: sequence.id } })).not.toMatchObject({ status: "completed" });
+    expect(await prisma.mediaAsset.count({ where: { ownerId: userId, metadata: { path: ["source"], equals: "video_sequence" } } })).toBe(0);
+  });
+
+  it("account erasure waits for an expired active composer and fences its upload", async () => {
+    await mockedNativeSuccess(); const { sequence } = await create(body(1)); await runQueuedGenerationJobs(10);
+    const output = await composition.composeVideoScenes({ scenes: [{ video: nativeBytes }], audio: "generated" });
+    const started = barrier(), release = barrier(), writes: string[] = [];
+    vi.spyOn(composition, "composeVideoScenes").mockImplementation(async () => { started.release(); await release.promise; return output; });
+    const store = providers.blob.putPrivate.bind(providers.blob);
+    vi.spyOn(providers.blob, "putPrivate").mockImplementation(async input => {
+      if (input.key.startsWith(`video-sequences/${userId}/${sequence.id}/`)) writes.push(input.key);
+      return store(input);
+    });
+    const advancing = advanceVideoSequences();
+    try {
+      await started.promise;
+      const deletion = await requestSequenceAccountDeletion();
+      await prisma.videoSequence.update({ where: { id: sequence.id }, data: { compositionLeaseAt: new Date(Date.now() - 1000) } });
+      await acknowledgeSequenceAccountDeletion();
+      const erased = await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [deletion.id], batch: 100 });
+      const retainedWhileRunning = await prisma.user.findUnique({ where: { id: userId } });
+      release.release(); await advancing;
+      expect(erased.completed).toBe(0);
+      expect(retainedWhileRunning).not.toBeNull();
+      expect(writes).toEqual([]);
+      await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [deletion.id], batch: 100 });
+      expect(await prisma.accountDeletion.findUniqueOrThrow({ where: { id: deletion.id } })).toMatchObject({ status: "completed" });
+    } finally { release.release(); await advancing; }
+  });
+
+  it("account erasure retains ownership of an inflight packaging object when cleanup delete fails", async () => {
+    await mockedNativeSuccess(); const { sequence } = await create(body(1)); await runQueuedGenerationJobs(10);
+    const uploaded = barrier(), release = barrier(); let outputKey = "";
+    const store = providers.blob.putPrivate.bind(providers.blob), remove = providers.blob.delete.bind(providers.blob);
+    vi.spyOn(providers.blob, "putPrivate").mockImplementation(async input => {
+      const result = await store(input);
+      if (input.key.startsWith(`video-sequences/${userId}/${sequence.id}/`) && input.key.endsWith(".mp4")) {
+        outputKey = input.key; uploaded.release(); await release.promise;
+      }
+      return result;
+    });
+    let denyOutputDelete = true;
+    vi.spyOn(providers.blob, "delete").mockImplementation(input => input.key === outputKey && denyOutputDelete
+      ? Promise.resolve({ ok: false as const, error: { code: "blob_unavailable", message: "controlled delete failure", retryable: true } }) : remove(input));
+    const advancing = advanceVideoSequences();
+    try {
+      await uploaded.promise;
+      const deletion = await requestSequenceAccountDeletion(); await acknowledgeSequenceAccountDeletion();
+      const erasedWhileRunning = await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [deletion.id], batch: 100 });
+      release.release(); await advancing;
+      await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [deletion.id], batch: 100 });
+      const receipt = await prisma.accountDeletionBlobReceipt.findFirst({ where: { deletionId: deletion.id, storageKey: outputKey } });
+      expect(erasedWhileRunning.completed).toBe(0);
+      expect(receipt).not.toBeNull();
+      expect(await prisma.user.findUnique({ where: { id: userId } })).not.toBeNull();
+      expect((await providers.blob.getPrivate!({ key: outputKey })).ok).toBe(true);
+      denyOutputDelete = false;
+      await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [deletion.id], now: new Date(Date.now() + 60_000), batch: 100 });
+      expect(await prisma.accountDeletion.findUniqueOrThrow({ where: { id: deletion.id } })).toMatchObject({ status: "completed" });
+      expect((await providers.blob.getPrivate!({ key: outputKey })).ok).toBe(false);
+    } finally { denyOutputDelete = false; release.release(); await advancing; if (outputKey) await remove({ key: outputKey }); }
+  });
+
   it("quotes actual bounded dimensions, atomically admits two paid children and replays one receipt", async () => {
     const { sequence, request, key } = await create();
     const jobs = sequence.scenes.map(scene => scene.job.id);
@@ -98,7 +195,7 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
     expect(await prisma.generationAttempt.count({ where: { requestId: { in: jobs } } })).toBe(2);
     expect(await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: `generation_initial_${jobs[0]}` } })).toMatchObject({ status: "delivered", attempts: 1 });
     expect(await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: `generation_initial_${jobs[1]}` } })).toMatchObject({ status: "pending", attempts: 0 });
-    expect((await prisma.generationJob.findUniqueOrThrow({ where: { id: jobs[0] } })).controls).toMatchObject({ width: 512, height: 512, seconds: 3, generationProfileVersion: PRODUCTION_REDGRAFT_LTX25_VIDEO_OPTIONS_PROFILE.version, videoOptionsVersion: "redgraft-video-options-v1" });
+    expect((await prisma.generationJob.findUniqueOrThrow({ where: { id: jobs[0] } })).controls).toMatchObject({ width: 512, height: 512, seconds: 3, generationProfileVersion: PRODUCTION_REDGRAFT_LTX25_VIDEO_OPTIONS_PROFILE.version, videoOptionsVersion: REDGRAFT_VIDEO_OPTIONS.version });
     const replies = await Promise.all(Array.from({ length: 3 }, () => api("POST", "generation/video-sequences", { userId, ageGate: true, headers: { "idempotency-key": key }, body: request })));
     for (const reply of replies) { expectOk(reply, 202); expect(reply.data.sequence.id).toBe(sequence.id); }
     expect(await prisma.generationJob.count({ where: { userId } })).toBe(2); expect(await dreamcoinBalance(userId)).toBe(800);
@@ -356,9 +453,12 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
     const actual = composition.composeVideoScenes;
     vi.spyOn(composition, "composeVideoScenes").mockImplementation(async input => { reached(); await delayed; return actual(input); });
     const advancing = advanceVideoSequences(); await started;
-    const stopped = await api("POST", `generation/video-sequences/${sequence.id}/stop`, { userId, ageGate: true }); expectOk(stopped); release(); await advancing;
+    const stopped = await api("POST", `generation/video-sequences/${sequence.id}/stop`, { userId, ageGate: true }); expectOk(stopped);
+    expect((await prisma.videoSequence.findUniqueOrThrow({ where: { id: sequence.id } })).activeCompositionOwners).toHaveLength(1);
+    release(); await advancing;
     const result = await read(sequence.id); expect(result.status).toBe("cancelled"); expect(result.asset).toBeNull(); expect(result.scenes[0]?.assets).toHaveLength(1); expect(result.cost.finalCharge).toBe(100);
     expect(await prisma.mediaAsset.count({ where: { ownerId: userId, metadata: { path: ["source"], equals: "video_sequence" } } })).toBe(0);
+    expect((await prisma.videoSequence.findUniqueOrThrow({ where: { id: sequence.id } })).activeCompositionOwners).toEqual([]);
   });
 
   it("keeps delivered video readable when an expired composer cleans up after the new lease delivers identical bytes", async () => {
@@ -366,8 +466,18 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
     const output = await composition.composeVideoScenes({ scenes: [{ video: nativeBytes }], audio: "generated" });
     const oldStarted = barrier(), newStarted = barrier(), releaseOld = barrier(), releaseNew = barrier(), deleting = barrier(), releaseDelete = barrier();
     vi.spyOn(composition, "composeVideoScenes")
-      .mockImplementationOnce(async () => { oldStarted.release(); await releaseOld.promise; return output; })
+      .mockResolvedValueOnce(output)
       .mockImplementationOnce(async () => { newStarted.release(); await releaseNew.promise; return output; });
+    // The old PUT has crossed its permission check. Hold its ACK so cleanup is
+    // still required after takeover; a pre-PUT old composer is now rejected.
+    const store = providers.blob.putPrivate.bind(providers.blob); let firstPut = true;
+    vi.spyOn(providers.blob, "putPrivate").mockImplementation(async input => {
+      const stored = await store(input);
+      if (firstPut && input.key.startsWith(`video-sequences/${userId}/${sequence.id}/`) && input.key.endsWith(".mp4")) {
+        firstPut = false; oldStarted.release(); await releaseOld.promise;
+      }
+      return stored;
+    });
     const remove = providers.blob.delete.bind(providers.blob); const discardedKeys: string[] = [];
     vi.spyOn(providers.blob, "delete").mockImplementation(async input => {
       if (input.key.startsWith(`video-sequences/${userId}/${sequence.id}/`) && input.key.endsWith(".mp4")) {
@@ -383,7 +493,9 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
       releaseOld.release(); await deleting.promise;
       releaseNew.release(); await newAdvance;
       const delivered = await read(sequence.id); expect(delivered.status).toBe("completed");
+      expect((await prisma.videoSequence.findUniqueOrThrow({ where: { id: sequence.id } })).activeCompositionOwners).toHaveLength(1);
       releaseDelete.release(); await oldAdvance;
+      expect((await prisma.videoSequence.findUniqueOrThrow({ where: { id: sequence.id } })).activeCompositionOwners).toEqual([]);
       const content = await api("GET", `media/${delivered.asset!.id}/content`, { userId, ageGate: true });
       expectOk(content); expect(content.bytes).toEqual(output.bytes);
       const stored = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: delivered.asset!.id } });
@@ -397,7 +509,7 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
     }
   });
 
-  it("retains the winning narration and removes an unpublished late voice after its composition lease expires", async () => {
+  it("retains the winning narration and prevents a late voice upload after its composition lease expires", async () => {
     env.VOICE_PROVIDER = "pocket-tts"; env.POCKET_TTS_LANGUAGE = "english"; providers.voice = createVoicePortsForKey("pocket_tts");
     const defaults = await getVoiceDefaultSettings();
     vi.spyOn(providers.voice.identity!, "inspectCapabilities").mockResolvedValue({ ok: true, data: { voiceCloning: false, catalogVoices: [defaults.defaultVoiceId] } });
@@ -421,10 +533,9 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
       releaseOld.release(); await oldAdvance;
       expect(await read(sequence.id)).toMatchObject({ status: "completed", asset: { id: delivered.asset!.id } });
       const scene = await prisma.videoSequenceScene.findFirstOrThrow({ where: { sequenceId: sequence.id }, include: { narrationMediaAsset: true } });
-      expect(scene.narrationState).toBe("completed"); expect(voiceKeys).toHaveLength(2);
+      expect(scene.narrationState).toBe("completed"); expect(voiceKeys).toHaveLength(1);
       expect(scene.narrationMediaAsset!.storageKey).toBe(voiceKeys[0]);
       const voice = await api("GET", `media/${scene.narrationMediaAsset!.id}/content`, { userId, ageGate: true }); expectOk(voice); expect(voice.bytes).toEqual(winningSpeech);
-      expect((await providers.blob.getPrivate!({ key: voiceKeys[1]! })).ok).toBe(false);
       expectOk(await api("GET", `media/${delivered.asset!.id}/content`, { userId, ageGate: true }));
       expect(await prisma.mediaAsset.count({ where: { ownerId: userId, metadata: { path: ["source"], equals: "video_narration" } } })).toBe(1);
       expect(native).toHaveBeenCalledTimes(1); expect(await dreamcoinBalance(userId)).toBe(900);

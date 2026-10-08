@@ -8,9 +8,10 @@ import type { SceneState } from "./scene.js";
 
 /**
  * SPEC: the system prompt carries only what stays constant across a
- * character's turns — the pinned Soul and the product contract. Scene and
- * time change every turn and travel in `buildTurnStateBlock`, folded into the
- * current user message.
+ * character's turns — the pinned Soul and the product contract, including
+ * identity precedence when a saved user persona is enabled. Persona values,
+ * Scene and time travel in `buildTurnStateBlock`, folded into the current
+ * user message.
  * INTENT: the local model server caches prompt prefixes in 2048-token blocks
  * (measured 2026-08-24: an identical prefix cut first-token latency from
  * 2.2 s to 0.45 s). Per-turn data inside the system prompt invalidated that
@@ -21,14 +22,22 @@ export function buildCompanionSystemPrompt(context: BuiltContext): string {
   const persona = context.persona;
   const prompt = composeCompanionSystemPrompt({
     memoryEnabled: context.policy.memoryEnabled,
-    imageToolEnabled: context.policy.imageToolEnabled,
+    imageToolEnabled: context.policy.imageToolEnabled && context.policy.modelProfile.supportsTools,
     soulPrompt: persona.systemPrompt ?? persona.description,
     identityPromptLine: identityPromptLine(persona),
     characterName: persona.name,
   });
-  return context.group
-    ? `${prompt}\n\nGroup conversation: several Characters share this chat and the user picks who answers each time. You are only ${persona.name}. Speak only for yourself; the other Characters' lines, actions and memories are theirs, and you never write their next reply.`
-    : prompt;
+  const layers = [prompt];
+  // INTENT: a real group greeting chose an old remembered name over the
+  // enabled profile. Resident memory also enters the system prompt, so the
+  // authority rule belongs here while the current profile stays turn state.
+  if (context.userPersona?.enabled) {
+    layers.push("When the turn includes a current saved chat persona, use it for the user's identity. It overrides conflicting names or self-descriptions in resident profiles, recalled memories and conversation history. It describes the user, never your Character identity.");
+  }
+  if (context.group) {
+    layers.push(`Group conversation: several Characters share this chat and the user picks who answers each time. You are only ${persona.name}. Speak only for yourself; the other Characters' lines, actions and memories are theirs, and you never write their next reply.`);
+  }
+  return layers.join("\n\n");
 }
 
 /**
@@ -44,7 +53,12 @@ export function buildCompanionSystemPrompt(context: BuiltContext): string {
 export function buildTurnStateBlock(context: BuiltContext, now: Date): string {
   const userPersona = context.userPersona?.enabled ? context.userPersona : null;
   const them = userPersona?.name?.trim() || "them";
-  const lines = [`Time: ${formatUtc(now)}`];
+  // INTENT: an unlabeled runtime clock overrode the user's "midnight" scene
+  // in a real follow-up. Keep calendar authority separate from story continuity.
+  const lines = [
+    `Real-world clock: ${formatUtc(now)}. Use it for real-world time and calendar questions.`,
+    "Story time follows the user's latest established time in the conversation or, if none, the saved Scene. Keep it until the story explicitly changes it; the real-world clock never advances it.",
+  ];
   if (context.lastExchangeAt) {
     lines.push(`Since you last talked: ${describeGap(now.getTime() - context.lastExchangeAt.getTime())}`);
   }
@@ -55,7 +69,7 @@ export function buildTurnStateBlock(context: BuiltContext, now: Date): string {
     lines.push(`Replying now: ${context.persona.name}`);
   }
   if (userPersona) {
-    lines.push(`About ${them}, in their own words: ${oneLine(userPersona.description)}${userPersona.name ? ` (they go by ${userPersona.name})` : ""}. This is their current saved profile; use it instead of earlier names or self-descriptions in the conversation history.`);
+    lines.push(`About ${them}, in their own words: ${oneLine(userPersona.description)}${userPersona.name ? ` (they go by ${userPersona.name})` : ""}. This is their current saved profile; use it instead of earlier names or self-descriptions in the conversation history or recalled memories.`);
   }
   const pins = context.contextDirectives?.filter((item) => item.kind === "pinned_memory") ?? [];
   for (const pin of pins) lines.push(`${them === "them" ? "They" : them} asked you to keep in mind: ${oneLine(pin.content)}`);
@@ -103,6 +117,18 @@ export function describeUserLanguage(userText: string): string {
   ];
   const language = scripts.find(([pattern]) => pattern.test(userText))?.[1];
   return language ? `They are writing in ${language}; answer in ${language}.` : "";
+}
+
+// INTENT: A request for exactly one sentence is a hard per-turn limit. The
+// soft "short" preference and the history's own reply pattern (answer plus a
+// follow-up question) outvote it otherwise: real-model A/B on the failing
+// Turn went 1/12 compliant without this line and 12/12 with it. Naming the
+// forbidden tail matters — "one sentence" alone lets the model splice the
+// question on with a semicolon.
+export function describeRequestedLength(userText: string): string {
+  return /\b(?:exactly\s+|just\s+|only\s+)?(?:one|1|a single)\s+(?:short\s+|brief\s+)?sentence\b|一句话/iu.test(userText)
+    ? "Their message asks for exactly one short sentence. Reply with only that sentence: no question, scene beat or suggestion after it."
+    : "";
 }
 
 function describeScene(scene: SceneState): string {

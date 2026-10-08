@@ -228,7 +228,7 @@ describe("createGenerationJobForUser", () => {
   });
 });
 
-describe("public generation prompt budget responses", () => {
+describe("complete generation prompt admission", () => {
   async function lookFixture(key: string, appearanceDelta: { description: string }, identityPrompt = "The same adult face and brown hair") {
     const userId = `${P}prompt-budget-${key}`;
     const characterId = `${userId}-char`;
@@ -247,27 +247,56 @@ describe("public generation prompt budget responses", () => {
   }
 
   it.each([
-    { key: "scene", prompt: "x".repeat(901), look: "blue jacket", identity: undefined, budget: 900 },
-    { key: "look", prompt: "Read by the window", look: "x".repeat(501), identity: undefined, budget: 500 },
-    { key: "combined", prompt: "x".repeat(850), look: "blue jacket", identity: "x".repeat(900), budget: 2000 },
-  ])("returns a readable 400 for schema-valid $key facts without reserving or charging", async ({ key, prompt, look, identity, budget }) => {
+    { key: "scene", prompt: `${"x".repeat(1969)} keep the green notebook closed`, look: "blue jacket", identity: undefined },
+    { key: "look", prompt: "Read by the window", look: `${"x".repeat(501)} preserve the silver bracelet`, identity: undefined },
+    { key: "combined", prompt: `${"x".repeat(850)} keep the notebook closed`, look: "blue jacket", identity: `${"x".repeat(1900)} preserve the left cheek scar` },
+  ])("admits complete schema-valid ordinary $key facts at their exact quote", async ({ key, prompt, look, identity }) => {
     const fixture = await lookFixture(key, { description: look }, identity);
     const body = generationJobSchema.parse({ characterId: fixture.characterId, visualProfileId: fixture.visualProfileId,
       prompt, controls: { lookId: fixture.lookId }, outputCount: 1 });
     const openingBalance = await dreamcoinBalance(fixture.userId);
-    const attemptsBefore = await prisma.generationAttempt.count();
-    const outboxBefore = await prisma.mainOutboxEvent.count();
-
     const response = await api("POST", "generation/jobs", { userId: fixture.userId, ageGate: true, body });
 
-    expect(response.status).toBe(400);
-    expect(response.error).toMatchObject({ code: "bad_request", message: expect.stringContaining(`${budget}-character generation budget`) });
-    expect(response.error?.message).not.toBe("Internal error");
+    expectOk(response, 202);
+    const job = await prisma.generationJob.findFirstOrThrow({ where: { userId: fixture.userId } });
+    expect(job.prompt).toContain(`Requested scene: ${prompt}`);
+    expect(job.prompt).toContain(`Active look: ${JSON.stringify({ description: look })}`);
+    if (identity) expect(job.prompt).toContain(`Locked identity: ${identity}`);
+    expect(await prisma.generationJob.count({ where: { userId: fixture.userId } })).toBe(1);
+    expect(await prisma.generationAttempt.count({ where: { requestId: job.id } })).toBe(1);
+    expect(await prisma.dreamcoinLedger.findMany({ where: { userId: fixture.userId, reason: "generation_spend" }, select: { sourceId: true, delta: true } }))
+      .toEqual([{ sourceId: job.id, delta: -job.costDreamcoins }]);
+    expect(await dreamcoinBalance(fixture.userId)).toBe(openingBalance - job.costDreamcoins);
+  });
+
+  it("rejects a complete Chat direction beyond its published budget before reservation or debit", async () => {
+    const fixture = await lookFixture("chat-budget", { description: "blue jacket" });
+    const body = generationJobSchema.parse({ characterId: fixture.characterId, visualProfileId: fixture.visualProfileId,
+      prompt: `${"x".repeat(901)} keep the notebook closed`, outputCount: 1 });
+    const balance = await dreamcoinBalance(fixture.userId);
+    const error = await expectAppError(createGenerationJobForUser(fixture.userId, body, {
+      idempotencyKey: `${P}chat-budget`, source: { sourceType: "chat_image", sourceId: `${P}authorized-chat-direction` },
+    }), 400);
+    expect(error.message).toContain("900-character generation budget");
     expect(await prisma.generationJob.count({ where: { userId: fixture.userId } })).toBe(0);
-    expect(await prisma.generationAttempt.count()).toBe(attemptsBefore);
-    expect(await prisma.mainOutboxEvent.count()).toBe(outboxBefore);
     expect(await prisma.dreamcoinLedger.count({ where: { userId: fixture.userId, reason: "generation_spend" } })).toBe(0);
-    expect(await dreamcoinBalance(fixture.userId)).toBe(openingBalance);
+    expect(await dreamcoinBalance(fixture.userId)).toBe(balance);
+  });
+
+  it("persists the full user and sealed negative constraints without replacing the recipe", async () => {
+    const fixture = await lookFixture("negative-tail", { description: "blue jacket" });
+    const identityNegative = `${"No altered facial identity. ".repeat(65)}keep the left cheek scar`;
+    await prisma.characterVisualProfile.update({ where: { id: fixture.visualProfileId }, data: { negativeIdentityPrompt: identityNegative } });
+    const negativePrompt = `${"No extra objects. ".repeat(52)}no visible text`;
+    const response = await api("POST", "generation/jobs", { userId: fixture.userId, ageGate: true, body: {
+      characterId: fixture.characterId, visualProfileId: fixture.visualProfileId,
+      prompt: "Standing in the greenhouse", negativePrompt, outputCount: 1,
+    } });
+    expectOk(response, 202);
+    const job = await prisma.generationJob.findFirstOrThrow({ where: { userId: fixture.userId } });
+    expect(job.negativePrompt).toContain(negativePrompt);
+    expect(job.negativePrompt).toContain(identityNegative);
+    expect(job.negativePrompt).toContain("distorted anatomy");
   });
 
   it("still admits complete short Look directions at their accepted quote", async () => {

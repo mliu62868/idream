@@ -53,7 +53,10 @@ const generationReferenceImageSchema = z
     contentType: z.string().optional(),
     width: z.number().int().positive().optional(),
     height: z.number().int().positive().optional(),
-    weight: z.number().min(0).max(2).optional(),
+    // Preserve the sealed Reference Set publication range (positive through
+    // 10); zero remains valid for historical wire callers. Conditioning use
+    // is backend-specific and is not implied by transporting this metadata.
+    weight: z.number().min(0).max(10).optional(),
     b64Json: z.string().optional(),
   })
   .passthrough();
@@ -314,6 +317,7 @@ const aiFinalizeVariantsSchema = z.discriminatedUnion("kind", [
       terminalRecordRef: z.string().min(1),
       terminalRecordChecksum: z.string().regex(/^[a-f0-9]{64}$/),
       mode: z.enum(["image", "video"]),
+      cleanupKeys: z.array(z.string().min(1)).min(1).max(4).optional(),
       error: z.object({
         code: z.string(),
         message: z.string(),

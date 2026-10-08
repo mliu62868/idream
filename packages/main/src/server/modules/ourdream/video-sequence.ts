@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
-import { videoSequenceRequestSchema, REDGRAFT_VIDEO_OPTIONS, type VideoSequenceRequest } from "@idream/shared/contracts";
+import { videoSequenceRequestSchema, REDGRAFT_VIDEO_OPTIONS, REDGRAFT_VIDEO_DEFAULTS, type VideoSequenceRequest } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
@@ -25,7 +25,7 @@ import { generationJobSchema } from "./generation-request-schema";
 import { quoteGeneration, quoteAuthorityFor } from "./generation-quote";
 import { createGenerationJobForUser } from "./generation-job-create";
 import { appendGenerationEvent, generationWriteRequestFingerprint } from "./generation-job-authority";
-import { generationJobInclude, generationJobDTO, latestGenerationAttemptStatuses } from "./generation-job-read-model";
+import { generationJobInclude, readGenerationJobs, latestGenerationAttemptStatuses } from "./generation-job-read-model";
 import { composeVideoScenes } from "./video-composition";
 
 const voicePinSchema = z.object({ provider: z.literal("pocket_tts"), voiceId: z.string().min(1), settingVersion: z.number().int().nonnegative(), language: z.literal("en"), model: z.string().min(1) }).strict();
@@ -37,7 +37,7 @@ export async function videoSequenceCapabilities(userId: string) {
   if (!entitlements.video_generation || !await featureFlagEnabled("video_gen")) throw Errors.paymentRequired("Video generation is unavailable for this account");
   const profile = await selectGenerationProfile({ mode: "video", accessibleEntitlements: entitlements });
   const narration = providers.voice.clip.providerKey === "pocket_tts" && ["english", "en"].includes(env.POCKET_TTS_LANGUAGE.toLowerCase()) && await featureFlagEnabled("voice_gen");
-  return { options: hasProductionVideoOptions(profile) ? REDGRAFT_VIDEO_OPTIONS : { seconds: [5], orientations: ["2:3"], qualities: ["standard"] }, audio: narration ? ["generated", "silent", "narration"] : ["generated", "silent"] };
+  return { options: hasProductionVideoOptions(profile) ? REDGRAFT_VIDEO_OPTIONS : { seconds: [5], orientations: [REDGRAFT_VIDEO_DEFAULTS.orientation], qualities: [REDGRAFT_VIDEO_DEFAULTS.quality] }, audio: narration ? ["generated", "silent", "narration"] : ["generated", "silent"] };
 }
 
 function nativeSceneBody(request: VideoSequenceRequest, ordinal: number) {
@@ -76,7 +76,7 @@ export async function quoteVideoSequence(userId: string, body: VideoSequenceRequ
   const facts = { version: "video-sequence-quote-v1", requestFingerprint: requestIdentity(body), scenes: resolved, voicePin, costDreamcoins,
     audio: body.audio, narrationExtendsLastFrame: body.audio === "narration", narrationExtraCostDreamcoins: 0 };
   return { ...facts, fingerprint: canonicalJsonHash(facts), costs, balance: await dreamcoinBalance(userId),
-    options: resolved.every(scene => scene.supportsOptions) ? REDGRAFT_VIDEO_OPTIONS : { seconds: [5], orientations: ["2:3"], qualities: ["standard"] } };
+    options: resolved.every(scene => scene.supportsOptions) ? REDGRAFT_VIDEO_OPTIONS : { seconds: [5], orientations: [REDGRAFT_VIDEO_DEFAULTS.orientation], qualities: [REDGRAFT_VIDEO_DEFAULTS.quality] } };
 }
 
 export async function createVideoSequence(userId: string, body: VideoSequenceRequest, idempotencyKey: string) {
@@ -113,8 +113,8 @@ export async function createVideoSequence(userId: string, body: VideoSequenceReq
 export async function readVideoSequence(userId: string, id: string) {
   const row = await prisma.videoSequence.findFirst({ where: { id, userId }, include });
   if (!row) throw Errors.notFound("Video sequence not found");
-  const statuses = await latestGenerationAttemptStatuses(row.scenes.map(scene => scene.generationJobId));
-  const scenes = row.scenes.map(scene => ({ ordinal: scene.ordinal, job: generationJobDTO(scene.generationJob, statuses.get(scene.generationJobId) ?? null),
+  const jobs = await readGenerationJobs(row.scenes.map(scene => scene.generationJob));
+  const scenes = row.scenes.map((scene, index) => ({ ordinal: scene.ordinal, job: jobs[index]!,
     narrationState: scene.narrationState, assets: scene.generationJob.assets.filter(asset => !asset.deletedAt).map(asset => ({ id: asset.id, url: `/api/v1/media/${asset.id}/content`, downloadUrl: `/api/v1/media/${asset.id}/content?download=1` })) }));
   const cost = scenes.reduce((sum, scene) => ({ charged: sum.charged + scene.job.cost.charged, refunded: sum.refunded + scene.job.cost.refunded, finalCharge: sum.finalCharge + scene.job.cost.finalCharge }), { charged: 0, refunded: 0, finalCharge: 0 });
   return { id: row.id, status: row.status, errorCode: row.errorCode, request: row.request, acceptedQuote: row.acceptedQuote, scenes, cost, createdAt: row.createdAt.toISOString(), completedAt: row.completedAt?.toISOString() ?? null,
@@ -152,12 +152,60 @@ export async function stopVideoSequence(userId: string, id: string) {
 }
 
 export async function retryVideoComposition(userId: string, id: string) {
-  const row = await prisma.videoSequence.findFirst({ where: { id, userId }, include });
-  if (!row) throw Errors.notFound("Video sequence not found");
-  if (row.status === "completed") return readVideoSequence(userId, id);
-  if (row.status !== "composition_failed" || row.scenes.some(scene => scene.generationJob.status !== "completed")) throw Errors.conflict("Only packaging may be retried here. Native generation is never repeated.");
-  await prisma.videoSequence.updateMany({ where: { id, userId, status: "composition_failed" }, data: { status: "generating", errorCode: null } });
+  await prisma.$transaction(async tx => {
+    await lockUserLedger(tx, userId);
+    const user = await tx.user.findUnique({ where: { id: userId }, select: { status: true, deletedAt: true } });
+    if (!user || user.status !== "active" || user.deletedAt) throw Errors.gone("This account is no longer active");
+    await tx.$queryRaw`SELECT id FROM video_sequences WHERE id = ${id} AND "userId" = ${userId} FOR UPDATE`;
+    const row = await tx.videoSequence.findFirst({ where: { id, userId }, include });
+    if (!row) throw Errors.notFound("Video sequence not found");
+    if (row.status === "completed") return;
+    if (row.status !== "composition_failed" || row.scenes.some(scene => scene.generationJob.status !== "completed")) throw Errors.conflict("Only packaging may be retried here. Native generation is never repeated.");
+    await tx.videoSequence.update({ where: { id }, data: { status: "generating", errorCode: null } });
+  });
   return readVideoSequence(userId, id);
+}
+
+async function lockSequence(tx: Prisma.TransactionClient, row: { id: string; userId: string }) {
+  await lockUserLedger(tx, row.userId);
+  await tx.$queryRaw`SELECT id FROM video_sequences WHERE id = ${row.id} AND "userId" = ${row.userId} FOR UPDATE`;
+  return tx.videoSequence.findUnique({ where: { id: row.id } });
+}
+
+async function ownedComposition(tx: Prisma.TransactionClient, row: SequenceRow, owner: string) {
+  const current = await lockSequence(tx, row);
+  const user = await tx.user.findUnique({ where: { id: row.userId }, select: { status: true, deletedAt: true } });
+  if (!user || user.status !== "active" || user.deletedAt) throw Errors.gone("This account is no longer active");
+  if (current?.status !== "composing" || current.compositionOwner !== owner || !current.activeCompositionOwners.includes(owner)) throw new Error("Video composition ownership changed");
+  return current;
+}
+
+function ownedArtifactKey(row: { id: string; userId: string }, key: string) {
+  const prefix = `video-sequences/${row.userId}/${row.id}/`;
+  return key.startsWith(prefix) && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\/(?:[a-f0-9]{64}\.mp4|narration-[0-2]-[a-f0-9]{64}\.wav)$/.test(key.slice(prefix.length));
+}
+
+async function reserveArtifactKey(row: SequenceRow, owner: string, key: string) {
+  if (!ownedArtifactKey(row, key) || !key.startsWith(`video-sequences/${row.userId}/${row.id}/${owner}/`)) throw new Error("Invalid video composition artifact authority");
+  await prisma.$transaction(async tx => {
+    const current = await ownedComposition(tx, row, owner);
+    if (!current.artifactKeys.includes(key)) await tx.videoSequence.update({ where: { id: row.id }, data: { artifactKeys: { push: key } } });
+  });
+}
+
+async function removeUnpublishedArtifact(row: { id: string; userId: string }, key: string) {
+  if (!ownedArtifactKey(row, key)) throw new Error("Invalid video composition cleanup authority");
+  const unpublished = await prisma.$transaction(async tx => {
+    const current = await lockSequence(tx, row);
+    return current?.artifactKeys.includes(key) && !await tx.mediaAsset.findUnique({ where: { storageKey: key }, select: { id: true } });
+  });
+  if (!unpublished) return;
+  const removed = await providers.blob.delete({ key });
+  if (!removed.ok) throw new Error(`${removed.error.code}: ${removed.error.message}`);
+  await prisma.$transaction(async tx => {
+    const current = await lockSequence(tx, row);
+    if (current) await tx.videoSequence.update({ where: { id: row.id }, data: { artifactKeys: { set: current.artifactKeys.filter(value => value !== key) } } });
+  });
 }
 
 async function loadAssetBytes(asset: { storageKey: string | null; url: string; metadata: unknown; deletedAt: Date | null }) {
@@ -176,33 +224,29 @@ async function narrationForScene(row: SequenceRow, scene: SequenceRow["scenes"][
   const text = request.scenes[scene.ordinal]!.narration!;
   const requestId = `video-narration:${row.id}:${scene.ordinal}`;
   const owned = { id: scene.id, sequence: { is: { status: "composing", compositionOwner: owner } } };
-  const started = await prisma.videoSequenceScene.updateMany({ where: owned, data: { narrationState: "running" } });
-  if (started.count !== 1) throw new Error("Video composition ownership changed before narration");
+  await prisma.$transaction(async tx => {
+    await ownedComposition(tx, row, owner);
+    const started = await tx.videoSequenceScene.updateMany({ where: owned, data: { narrationState: "running" } });
+    if (started.count !== 1) throw new Error("Video composition ownership changed before narration");
+  });
+  let key: string | null = null;
   try {
-    const result = await createVoiceClipPortForKey(pin.provider).synthesize({ requestId, attemptNo: 1, idempotencyKey: requestId, text, voiceId: pin.voiceId });
+    const result = await createVoiceClipPortForKey(pin.provider).synthesize({ ownerId: row.userId, requestId, attemptNo: 1, idempotencyKey: requestId, text, voiceId: pin.voiceId });
     if (!result.ok) throw new Error(result.error.message);
     const digest = createHash("sha256").update(result.data.body).digest("hex");
-    const key = `video-sequences/${row.userId}/${row.id}/${owner}/narration-${scene.ordinal}-${digest}.wav`;
+    key = `video-sequences/${row.userId}/${row.id}/${owner}/narration-${scene.ordinal}-${digest}.wav`;
+    await reserveArtifactKey(row, owner, key);
     const stored = await providers.blob.putPrivate({ key, body: result.data.body, contentType: result.data.contentType });
     if (!stored.ok) throw new Error(stored.error.message);
-    try {
-      await prisma.$transaction(async tx => {
-        await tx.$queryRaw`SELECT id FROM video_sequences WHERE id = ${row.id} FOR UPDATE`;
-        const current = await tx.videoSequence.findUnique({ where: { id: row.id } });
-        if (current?.status !== "composing" || current.compositionOwner !== owner) throw new Error("Video composition ownership changed");
-        const asset = await tx.mediaAsset.upsert({ where: { storageKey: key }, update: {}, create: { ownerId: row.userId, characterId: row.characterId, type: "voice", url: `blob:${key}`, storageKey: key,
-          contentType: result.data.contentType, visibility: "private", safetyStatus: "passed", metadata: toInputJson({ source: "video_narration", sequenceId: row.id, ordinal: scene.ordinal, voicePin: pin, durationMs: result.data.durationMs }) } });
-        await tx.videoSequenceScene.update({ where: { id: scene.id }, data: { narrationMediaAssetId: asset.id, narrationState: "completed" } });
-      });
-    } catch (error) {
-      if (!await prisma.mediaAsset.findUnique({ where: { storageKey: key }, select: { id: true } })) {
-        const removed = await providers.blob.delete({ key });
-        if (!removed.ok) logger.error({ sequenceId: row.id, ordinal: scene.ordinal, error: removed.error }, "unpublished narration blob could not be removed");
-      }
-      throw error;
-    }
+    await prisma.$transaction(async tx => {
+      await ownedComposition(tx, row, owner);
+      const asset = await tx.mediaAsset.upsert({ where: { storageKey: key! }, update: {}, create: { ownerId: row.userId, characterId: row.characterId, type: "voice", url: `blob:${key}`, storageKey: key,
+        contentType: result.data.contentType, visibility: "private", safetyStatus: "passed", metadata: toInputJson({ source: "video_narration", sequenceId: row.id, ordinal: scene.ordinal, voicePin: pin, durationMs: result.data.durationMs }) } });
+      await tx.videoSequenceScene.update({ where: { id: scene.id }, data: { narrationMediaAssetId: asset.id, narrationState: "completed" } });
+    });
     return result.data.body;
   } catch (error) {
+    if (key) await removeUnpublishedArtifact(row, key).catch(cleanupError => logger.error({ sequenceId: row.id, ordinal: scene.ordinal, error: cleanupError }, "unpublished narration cleanup remains owned"));
     // A failed or stopped composer cannot change its successor's narration.
     await prisma.videoSequenceScene.updateMany({ where: owned, data: { narrationState: "failed" } });
     throw error;
@@ -222,12 +266,11 @@ async function composeSequence(row: SequenceRow, owner: string) {
     const output = await composeVideoScenes({ scenes, audio: z.enum(["generated", "silent", "narration"]).parse(row.audio) });
     // A lost lease can only clean up its own unpublished blob, never its successor's delivery.
     key = `video-sequences/${row.userId}/${row.id}/${owner}/${createHash("sha256").update(output.bytes).digest("hex")}.mp4`;
+    await reserveArtifactKey(row, owner, key);
     const stored = await providers.blob.putPrivate({ key, body: output.bytes, contentType: "video/mp4" });
     if (!stored.ok) throw new Error(stored.error.message);
     await prisma.$transaction(async tx => {
-      await tx.$queryRaw`SELECT id FROM video_sequences WHERE id = ${row.id} FOR UPDATE`;
-      const current = await tx.videoSequence.findUnique({ where: { id: row.id } });
-      if (current?.status !== "composing" || current.compositionOwner !== owner) throw new Error("Video composition ownership changed before delivery");
+      await ownedComposition(tx, row, owner);
       const asset = await tx.mediaAsset.upsert({ where: { storageKey: key! }, update: {}, create: { ownerId: row.userId, characterId: row.characterId, type: "video", url: `blob:${key}`, storageKey: key,
         width: output.media.width, height: output.media.height, contentType: "video/mp4", visibility: "private", safetyStatus: "passed",
         metadata: toInputJson({ source: "video_sequence", sequenceId: row.id, audio: row.audio, durationSeconds: output.media.durationSeconds, sceneDurations: output.sceneDurations,
@@ -235,10 +278,21 @@ async function composeSequence(row: SequenceRow, owner: string) {
       await tx.videoSequence.update({ where: { id: row.id }, data: { status: "completed", mediaAssetId: asset.id, errorCode: null, completedAt: new Date(), compositionOwner: null, compositionLeaseAt: null } });
     });
   } catch (error) {
-    await prisma.videoSequence.updateMany({ where: { id: row.id, status: "composing", compositionOwner: owner }, data: { status: "composition_failed", errorCode: "video_composition_failed", compositionOwner: null, compositionLeaseAt: null } });
-    if (key && !await prisma.mediaAsset.findUnique({ where: { storageKey: key }, select: { id: true } })) await providers.blob.delete({ key });
+    await prisma.$transaction(async tx => {
+      await lockSequence(tx, row);
+      await tx.videoSequence.updateMany({ where: { id: row.id, status: "composing", compositionOwner: owner }, data: { status: "composition_failed", errorCode: "video_composition_failed", compositionOwner: null, compositionLeaseAt: null } });
+    });
+    if (key) await removeUnpublishedArtifact(row, key).catch(cleanupError => logger.error({ error: cleanupError, sequenceId: row.id }, "unpublished composition cleanup remains owned"));
     logger.error({ error, sequenceId: row.id }, "video composition failed; native scenes retained");
-  } finally { clearInterval(heartbeat); }
+  } finally {
+    clearInterval(heartbeat);
+    // Retain every old owner through its final provider/Blob I/O and compensation.
+    // Failure/crash before this write stays conservatively non-quiescent.
+    await prisma.$transaction(async tx => {
+      const current = await lockSequence(tx, row);
+      if (current) await tx.videoSequence.update({ where: { id: row.id }, data: { activeCompositionOwners: { set: current.activeCompositionOwners.filter(value => value !== owner) } } });
+    });
+  }
 }
 
 export type VideoSequenceAdvanceCursor = { readonly createdAt: Date; readonly id: string };
@@ -275,7 +329,12 @@ export async function advanceVideoSequences(limit = 10, cursor: VideoSequenceAdv
       }
       if (row.scenes.length !== videoSequenceRequestSchema.parse(row.request).scenes.length || row.scenes.some(scene => scene.generationJob.status !== "completed")) continue;
       const owner = randomUUID();
-      const claimed = await prisma.videoSequence.updateMany({ where: { id: row.id, OR: [{ status: { in: ["generating", "unknown"] } }, { status: "composing", compositionLeaseAt: { lte: new Date() } }] }, data: { status: "composing", compositionOwner: owner, compositionLeaseAt: new Date(Date.now() + 5 * 60_000) } });
+      const claimed = await prisma.$transaction(async tx => {
+        await lockSequence(tx, row);
+        const user = await tx.user.findUnique({ where: { id: row.userId }, select: { status: true, deletedAt: true } });
+        if (!user || user.status !== "active" || user.deletedAt) return { count: 0 };
+        return tx.videoSequence.updateMany({ where: { id: row.id, OR: [{ status: { in: ["generating", "unknown"] } }, { status: "composing", compositionLeaseAt: { lte: new Date() } }] }, data: { status: "composing", compositionOwner: owner, compositionLeaseAt: new Date(Date.now() + 5 * 60_000), activeCompositionOwners: { push: owner } } });
+      });
       if (claimed.count === 1) await composeSequence(row, owner);
     } catch (error) {
       // Keep the failed row recoverable on the next sweep without preventing

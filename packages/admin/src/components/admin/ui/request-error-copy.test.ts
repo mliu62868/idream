@@ -59,6 +59,25 @@ describe("operatorErrorCopy", () => {
     });
   });
 
+  // SPEC: 候选 Release 冻结草稿时，运营只需要知道去 Release 发布或放弃它。
+  // 守卫在写事务内、任何写入之前抛出，所以「没有写入」是权威给出的事实。
+  it("sends a candidate-frozen draft to Release instead of a generic precondition", () => {
+    const copy = operatorErrorCopy(
+      new AdminV2RequestError("A candidate Release waiting in Release pins the current image set", 409, "conflict", {
+        blocker: "candidate_release_pending", releaseId: "rel-1", status: "approved", deepLink: "/admin/characters/c1?tab=release",
+      }, "req-3"),
+    );
+
+    expect(copy.headline).toBe("A candidate release is waiting, so this character's draft is locked.");
+    expect(copy.nextStep).toContain("Open Release");
+    expect(copy.technical.details).toMatchObject({ blocker: "candidate_release_pending" });
+  });
+
+  it("explains a locked look instead of a generic precondition", () => {
+    const copy = operatorErrorCopy(new AdminV2RequestError("locked", 409, "conflict", { blocker: "visual_identity_locked" }, "req-4"));
+    expect(copy.headline).toBe("The look is locked to the current portrait.");
+  });
+
   // INVARIANT: 未分类的冲突不能猜测成版本竞争。
   it("does not invent a version race for a conflict that carried no version precondition", () => {
     const copy = operatorErrorCopy(

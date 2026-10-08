@@ -14,6 +14,7 @@ vi.mock("@/lib/admin-v2-api", () => ({
 
 import { AdminI18nProvider } from "@/components/admin/i18n";
 import { VisualIdentityExperimentWorkbench } from "./VisualIdentityExperimentWorkbench";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
   characterWorkspaceDetail,
   withCharacterWorkspaceDetail,
@@ -233,7 +234,7 @@ describe("Visual Identity experiment activation", () => {
     root = createRoot(container);
     adminV2Request.mockReset();
     adminV2Request.mockImplementation(async (path: string) => {
-      if (path.endsWith("/image-sources")) return { items: [] };
+      if (new URL(path, "http://admin.test").pathname.endsWith("/image-sources")) return { items: [] };
       if (path.includes("/api/v2/admin/creative/runs?")) {
         return {
           items: [run],
@@ -249,6 +250,21 @@ describe("Visual Identity experiment activation", () => {
     await act(async () => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+  });
+
+  it("reloads uploaded sources and the current experiment through shell refresh while retaining prompt input", async () => {
+    await act(async () => root.render(<VisualIdentityExperimentWorkbench canActivate canCreate canReview canUploadSource
+      data={data} onActivateCandidate={vi.fn(async () => undefined)} />));
+    await waitUntil(() => adminV2Request.mock.calls.some(([path]) => path === `/api/v2/admin/creative/runs/${run.id}`));
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => setTextAreaValue(textarea, "Unfinished identity prompt"));
+    const before = adminV2Request.mock.calls.length;
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    const refreshed = adminV2Request.mock.calls.slice(before).map(([path]) => String(path));
+    expect(refreshed.filter(path => new URL(path, "http://admin.test").pathname.endsWith("/image-sources"))).toHaveLength(1);
+    expect(refreshed.filter(path => path.includes("/creative/runs?"))).toHaveLength(1);
+    expect(refreshed.filter(path => path === `/api/v2/admin/creative/runs/${run.id}`)).toHaveLength(1);
+    expect(container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("Unfinished identity prompt");
   });
 
   // SPEC: 历史只含视觉身份校准 —— 用途必须由服务端筛，否则最近 30 条别的用途会把它挤空。

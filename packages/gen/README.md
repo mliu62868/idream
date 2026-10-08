@@ -108,6 +108,12 @@ They use the BF16 diffusion checkpoint, ConvRot INT8 Qwen3-VL encoder,
 Qwen Image 2.1 VAE, and the Viggle six-step adapter. Production profiles must
 pin the matching descriptor key and version.
 
+The dispatch contract preserves published reference weights through 10.
+Current Qwen graphs bind references by their semantic role and frozen order;
+their image slots do not apply this numeric weight to selection or
+conditioning. A preserved weight is not evidence of weighted identity
+fidelity; qualify any future workflow that actually applies it separately.
+
 Krea text-to-image and Identity Edit routes are retired. Their descriptors,
 Draw Things patches, smoke controls, and benchmark entry point have been
 removed. The database retirement script is
@@ -127,7 +133,22 @@ request time.
 
 The host defaults to one image worker. Image and video backend calls also share
 `GEN_ACCELERATOR_LOCK_PATH`, so separate ComfyUI processes cannot execute large
-MPS jobs concurrently on the same unified-memory GPU.
+MPS jobs concurrently on the same unified-memory GPU. Bun holds an OS `flock`
+on one permanent inode for the full submit/poll window; closing the descriptor
+or a worker crash releases the lock. File contents are diagnostic metadata,
+not ownership authority. Never unlink or replace this file while any worker
+or benchmark using it is alive.
+
+The previous existence/PID/mtime lease and this native lease cannot run together:
+the old stale-owner reclaimer can unlink the new worker's held inode.
+For this protocol upgrade, use `bun run pm2:stop` to drain and stop both
+`gen-image` and `gen-video`, then the matching `pm2:start` or
+`pm2:start:production` wrapper to start the new source. Do not roll or reload
+one worker at a time. An old unlocked file can stay in place. Native loading
+fails closed; there is no existence-lock fallback. Darwin uses libSystem;
+Linux currently requires the glibc `libc.so.6` / `__errno_location` ABI. The
+native multiprocess/crash regression has passed on macOS; run that regression
+on the actual Linux target before qualifying its deployment.
 
 ```bash
 cd packages/gen
@@ -261,7 +282,8 @@ COMFYUI_H3_API_URL=http://127.0.0.1:8190
 ```text
 default model: redgraft-ltx25-fast2k-int8-convrot
 default workflow: redgraft-ltx25-i2v
-default output: 768x1152, 121 frames / 5.042 seconds, 24 fps, MP4 with audio
+default output: 448x768 (7:12 portrait, 480p tier), 121 frames / 5.042 seconds, 24 fps, MP4 with audio
+default video options: orientation=7:12, quality=preview
 
 explicit model: minimax-h3-redcraft-a2a-int8-convrot
 explicit workflow: minimax-h3-redcraft-i2v
@@ -277,7 +299,7 @@ which the worker binds to H3's native 124-frame grid. Workflow v4 routes H3 to
 about eight seconds of an eleven-minute prompt while changing generated pixels,
 which was not enough evidence to accept approximation.
 
-RedGraft workflow v4 uses `IDreamMPSGraphAttention` in explicit BF16 mode on
+RedGraft workflow v5 uses `IDreamMPSGraphAttention` in explicit BF16 mode on
 both sampling stages. It preserves the 8+3 Euler schedule, CFG 1, current
 weights, MLX Q8 Gemma and accelerated Conv VAE. Long compatible attention
 shapes use MPSGraph; short or unsupported calls retain the original split
@@ -297,6 +319,14 @@ after admission/worker quiescence. An already active options-v5 becomes active
 v7 with the same 3/5-second, portrait/square, preview/standard choices; a
 disabled draft remains disabled. Old jobs and profiles retain their pins.
 See [the controlled A/B/A, numerical and recovery evidence](../../docs/research/LTX25_MPSGRAPH_IMPLEMENTATION_2026-10-02.md).
+
+`db/sql/2026-10-05-redgraft-480p.sql` publishes the current default as immutable
+profile v8/v9 and workflow v5 after admission/worker quiescence. The new 7:12
+preview option is 448×768; its standard option is 896×1536. Explicit 2:3 and
+1:1 choices retain their previous sizes. Old profiles and job pins remain
+unchanged. The single native 448×768 sample took 210.574 seconds of ComfyUI
+execution on M4 Max; resource waiting is recorded separately. See
+[the 480p validation](../../docs/research/REDGRAFT_LTX25_480P_VALIDATION_2026-10-05.md).
 
 Every checked-in ComfyUI image/video workflow places
 `IDreamUnloadOffDeviceModels` after every text/reference conditioning branch

@@ -1,3 +1,4 @@
+import BasicCompactionEngine from "@deepseek-ai/dsh-compaction-basic";
 import { describe, expect, it } from "vitest";
 import { COMPANION_PRODUCT_PROMPT_VERSION } from "@idream/shared";
 import type { AgentRuntimeConfig } from "./config";
@@ -65,12 +66,14 @@ const successfulRuntimeEvidence = {
   providerWarmup: async () => {},
   memoryLifecycleProbe: async () => igrepVerification,
   bridgeProbe: async () => {},
+  retrievalProbe: async () => {},
   workspaceRebuildProbe: async () => {},
 };
 
 const plugin = {
   module: {
     name: "igrep",
+    Compaction: BasicCompactionEngine,
     apply() {},
     resolveConfig(raw: Record<string, unknown>) {
       return {
@@ -120,10 +123,11 @@ describe("fail-closed companion readiness", () => {
     expect(readiness.profiles.normal.executionCompositionDigest).toBe(
       companionCompositionDigest("normal", plugin.module.resolveConfig({
         command: config.igrepCommand,
-        search: false,
+        search: true,
         webProvider: false,
-        webTool: false,
-        sessionRecall: false,
+        webTool: true,
+        sessionRecall: true,
+        searchMode: "fast",
         memory: true,
         ingest: false,
         wake: false,
@@ -179,6 +183,7 @@ describe("fail-closed companion readiness", () => {
       "providerWarmup",
       "memoryLifecycleProbe",
       "bridgeProbe",
+      "retrievalProbe",
       "workspaceRebuildProbe",
     ] as const) {
       await expect(createReadinessProbe({
@@ -192,8 +197,8 @@ describe("fail-closed companion readiness", () => {
   });
 
   it.each([
-    { memory: true, sessionRecall: true },
-    { memory: false, sessionRecall: true },
+    { memory: true, sessionRecall: false },
+    { memory: false, sessionRecall: false },
     { memory: true, maintainIntervalMs: 1000 },
     { memory: false, webProvider: true },
   ])("rejects plugin defaults that escape the host capability policy: %j", async (drift) => {

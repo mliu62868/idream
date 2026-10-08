@@ -13,6 +13,7 @@ import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useUnsavedChanges } from "@/components/admin/ui/useUnsavedChanges";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
+import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 import { InfoGrid, WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 import {
   MODES,
@@ -79,6 +80,8 @@ export function RecipesDetailPage({ canWrite, id }: { canWrite: boolean; id: str
       setLoading(false);
     }
   }, [id, t]);
+
+  useWorkspaceRefresh(reload);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -176,7 +179,7 @@ export function RecipesDetailPage({ canWrite, id }: { canWrite: boolean; id: str
     };
   }, [canWrite, awaitingReadback, pending, row, id, t, reload, reportSuccess]);
 
-  if (loading) {
+  if (loading && !row) {
     return <>{guard}<LoadingWorkspace label="Loading…" /></>;
   }
 

@@ -4,7 +4,7 @@ import type { ChatToolEffect } from "@idream/shared/contracts";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { proxyChatRequest } from "@/server/bff/chat-proxy";
-import { createCharacter, createUser, dreamcoinBalance, grantCoins, purgeTestData } from "@/server/test/helpers";
+import { createCharacter, createUser, grantCoins, purgeTestData } from "@/server/test/helpers";
 import * as generation from "../ourdream/service";
 import { createGroupConversation, getGroupConversation, groupSpeakerSession, listGroupCandidates, listGroupConversations, updateGroupConversation } from "./group-conversations";
 import { beginChatTurn, cancelChatTurn, commitChatTerminal, createChatSession, deleteChatMessage, deleteChatSession, deleteGroupChatConversation, editChatTurn, listChatSessions, regenerateChatTurn, setChatMemory } from "./turn-ledger";
@@ -173,7 +173,7 @@ describe("Main group conversation authority", () => {
     expect(await prisma.chatTurnUsageFact.count({ where: { userId: f.userId, voidedAt: null } })).toBe(1);
   });
 
-  it.each([1, 0])("binds group image confirmation to the offering Character (speaker %s)", async selectedSpeaker => {
+  it.each([1, 0])("binds the Agent image decision to the selected Character and preserves the offering speaker (%s)", async selectedSpeaker => {
     const f = await fixture();
     await grantCoins(f.userId, 40);
     const offer = await f.begin(0, "Let's sit by the cafe window.");
@@ -187,8 +187,9 @@ describe("Main group conversation authority", () => {
       name: "generate_image_async", effectScope: "turn_action", intent: { requestedNudity: "unspecified" },
       arguments: { subject: "companion", prompt: "One person seated by a rain-streaked cafe window.", outputCount: 1, orientation: "4:5" },
     };
-    // Generation's reservation boundary is replaced only in this consent
-    // fixture; the delivery suite exercises the real debit and dispatch.
+    // The Agent interprets the cross-speaker confirmation; Main binds its
+    // concrete decision to this Turn's Character. The delivery suite covers
+    // the real debit and dispatch, stubbed here to isolate that authority.
     const generated = vi.spyOn(generation, "createChatImageGenerationJob").mockImplementation(async payload => {
       const job = await prisma.generationJob.create({ data: {
         userId: f.userId, characterId: payload.characterId, mode: "image", prompt: payload.promptHint,
@@ -202,17 +203,11 @@ describe("Main group conversation authority", () => {
       return job;
     });
     try {
-      if (selectedSpeaker === 0) {
-        expect(await applyChatToolEffect(call)).toMatchObject({ accepted: true, costDreamcoins: 8 });
-        expect(generated).toHaveBeenCalledTimes(1);
-        expect(await prisma.generationJob.findFirstOrThrow({ where: { userId: f.userId } })).toMatchObject({ characterId: f.characters[0].id });
-      } else {
-        await expect(applyChatToolEffect(call)).rejects.toMatchObject({ status: 403, code: "forbidden" });
-        expect(generated).not.toHaveBeenCalled();
-        expect(await prisma.chatTurnAttachment.count({ where: { turnId: snapshot.turnId } })).toBe(0);
-        expect(await prisma.generationJob.count({ where: { userId: f.userId } })).toBe(0);
-        expect(await dreamcoinBalance(f.userId)).toBe(40);
-      }
+      expect(await applyChatToolEffect(call)).toMatchObject({ accepted: true, costDreamcoins: 8 });
+      expect(generated).toHaveBeenCalledTimes(1);
+      expect(await prisma.generationJob.findFirstOrThrow({ where: { userId: f.userId } }))
+        .toMatchObject({ characterId: f.characters[selectedSpeaker].id });
+      expect(await prisma.chatTurnAttachment.count({ where: { turnId: snapshot.turnId } })).toBe(1);
     } finally { generated.mockRestore(); }
   });
 

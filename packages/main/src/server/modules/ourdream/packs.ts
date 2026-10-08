@@ -10,6 +10,7 @@ import { env } from "@/server/lib/env";
 import { ok } from "@/server/lib/http";
 import { jsonBody, toInputJson } from "@/server/lib/request-json";
 import { resolveMediaAssetBlobLocator } from "@/server/lib/media-asset-authority";
+import { mediaByteResponse } from "@/server/lib/media-byte-response";
 import { providers } from "@/server/providers";
 import { lockCharacterMediaAssetAuthorities } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { canonicalJsonHash, requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
@@ -260,9 +261,8 @@ async function packContent(request: Request, packId: string, releaseId: string, 
   // Block, account changes and cover withdrawal during I/O must win before bytes escape.
   await readableContent(packId, read.release.id, read.item.id, viewerId, cover);
   if (blob.data.body.byteLength !== read.item.sizeBytes || createHash("sha256").update(blob.data.body).digest("hex") !== read.item.sha256) throw Errors.unavailable("The Pack file failed its integrity check. Your claim is retained.");
-  const buffer = new ArrayBuffer(blob.data.body.byteLength); new Uint8Array(buffer).set(blob.data.body);
   const download = new URL(request.url).searchParams.get("download") === "1";
-  return new Response(buffer, { headers: { ...noStore, "content-type": read.item.contentType, "x-content-type-options": "nosniff", ...(download ? { "content-disposition": `attachment; filename="pack-${read.release.id}-${read.item.type}.${read.item.contentType.split("/")[1]?.replace("x-", "") ?? "bin"}"` } : {}) } });
+  return mediaByteResponse(request, blob.data.body, { ...noStore, "content-type": read.item.contentType, "x-content-type-options": "nosniff", ...(download ? { "content-disposition": `attachment; filename="pack-${read.release.id}-${read.item.type}.${read.item.contentType.split("/")[1]?.replace("x-", "") ?? "bin"}"` } : {}) });
 }
 
 async function sources(request: Request, viewerId: string) {

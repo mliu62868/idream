@@ -24,6 +24,50 @@ function normalizeEndpoint(value: string) {
   return value.replace(/\/+$/, "");
 }
 
+// INVARIANT: the worker file lease alone does not prove device ownership. A
+// timed-out/crashed worker can leave an accepted native prompt running. Before
+// a new backend call, inspect every runner under the same lease and wait for
+// its native queue to empty. Unreadable queues are not evidence of idleness.
+export async function waitForComfyUiAcceleratorIdle(options: MemoryTransitionOptions & {
+  readonly onWait?: () => Promise<void>;
+  readonly pollMs?: number;
+  readonly waitTimeoutMs?: number;
+} = {}) {
+  const endpoints = [...new Set(Object.values(options.endpoints ?? defaultEndpoints()).map(normalizeEndpoint))];
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const deadline = Date.now() + (options.waitTimeoutMs ?? env.ACCELERATOR_WAIT_TIMEOUT_MS);
+  while (true) {
+    if (Date.now() >= deadline) throw new Error("Generation accelerator native queue wait timed out before provider invocation");
+    const busy = await Promise.all(endpoints.map(async (endpoint) => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), Math.min(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, Math.max(1, deadline - Date.now())));
+      try {
+        const response = await fetchImpl(`${endpoint}/queue`, { signal: controller.signal });
+        if (!response.ok) throw new Error(`ComfyUI queue ${endpoint} HTTP ${response.status}`);
+        const queue = await response.json() as { queue_running?: unknown; queue_pending?: unknown };
+        if (!Array.isArray(queue.queue_running) || !Array.isArray(queue.queue_pending)) {
+          throw new Error(`ComfyUI queue ${endpoint} returned malformed evidence`);
+        }
+        return queue.queue_running.length > 0 || queue.queue_pending.length > 0;
+      } catch (error) {
+        if (connectionWasRefused(error)) return false;
+        throw error;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }));
+    if (busy.every((value) => !value)) return;
+    await options.onWait?.();
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(options.pollMs ?? env.ACCELERATOR_LOCK_POLL_MS, Math.max(1, deadline - Date.now()))));
+  }
+}
+
+function connectionWasRefused(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { code?: unknown; cause?: unknown };
+  return candidate.code === "ECONNREFUSED" || (candidate.cause !== error && connectionWasRefused(candidate.cause));
+}
+
 // SPEC: once the host-wide accelerator lease is held, the selected ComfyUI
 // runner keeps its hot cache while every distinct competing runner is asked to
 // release model references and its MPS allocator cache before submission.

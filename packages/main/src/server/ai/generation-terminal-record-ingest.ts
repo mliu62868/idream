@@ -26,6 +26,7 @@ import {
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import { resolveExactGenerationDispatchAuthority } from "./generation-dispatch-evidence-authority";
 import { generationAttemptOutputPrefix } from "@/server/modules/generation/attempt-dispatch";
+import { generationCleanupKeysMatchDispatch, recordGenerationBlobCleanup } from "./generation-blob-cleanup";
 
 export async function ingestGenerationTerminalRecord(
   rawInput: unknown,
@@ -151,17 +152,17 @@ export async function ingestGenerationTerminalRecord(
       );
       return { acknowledged: false, status: "quarantined" as const, receiptId: quarantined.id };
     }
-    const authorityMismatch = await terminalRecordAuthorityMismatch(
+    const authority = await resolveTerminalRecordAuthority(
       tx,
       input,
       existingAttempt,
     );
-    if (authorityMismatch) {
+    if (!authority.ok) {
       const quarantined = await quarantineTerminalRecordEnvelope(
         tx,
         input.terminalRecord.attemptId,
         receiptPayloadHash,
-        authorityMismatch,
+        authority.code,
       );
       return {
         acknowledged: false,
@@ -169,6 +170,9 @@ export async function ingestGenerationTerminalRecord(
         receiptId: quarantined.id,
       };
     }
+    // This non-delivery intent shares the terminal Receipt transaction. Late
+    // and cancelled attempts retain cleanup even when finalize is suppressed.
+    await recordGenerationBlobCleanup(tx, input, authority.maxOutputs);
     if (receipt) {
       await tx.inboundEventReceipt.delete({ where: receiptWhere });
     }
@@ -399,9 +403,9 @@ async function ingestUnknownTerminalResolution(
   ) {
     return quarantine("generation_unknown_resolution_attempt_mismatch");
   }
-  const authorityMismatch = await terminalRecordAuthorityMismatch(tx, input, attempt);
-  if (authorityMismatch) {
-    return quarantine(authorityMismatch);
+  const authority = await resolveTerminalRecordAuthority(tx, input, attempt);
+  if (!authority.ok) {
+    return quarantine(authority.code);
   }
 
   let originalTerminalRecordRef: string | null = null;
@@ -548,7 +552,7 @@ async function ingestUnknownTerminalResolution(
   };
 }
 
-async function terminalRecordAuthorityMismatch(
+async function resolveTerminalRecordAuthority(
   tx: Prisma.TransactionClient,
   input: GenerationTerminalRecordIngest,
   attempt: {
@@ -562,17 +566,17 @@ async function terminalRecordAuthorityMismatch(
     workflowVersion: number | null;
     status: string;
   },
-) {
+): Promise<{ ok: true; maxOutputs: number } | { ok: false; code: string }> {
   if (input.terminalRecord.outcome === "succeeded") {
     const ordinals = input.terminalRecord.assets.map((asset) => asset.ordinal);
     if (ordinals.some((ordinal, index) => ordinal !== index)) {
-      return "generation_terminal_asset_ordinals_invalid";
+      return { ok: false, code: "generation_terminal_asset_ordinals_invalid" };
     }
     const requiredPrefix = `${input.terminalRecord.mode}/`;
     if (input.terminalRecord.assets.some(
       (asset) => !asset.contentType.startsWith(requiredPrefix),
     )) {
-      return "generation_terminal_asset_content_type_mismatch";
+      return { ok: false, code: "generation_terminal_asset_content_type_mismatch" };
     }
   }
   const dispatch = await resolveExactGenerationDispatchAuthority(tx, {
@@ -585,10 +589,10 @@ async function terminalRecordAuthorityMismatch(
     model: input.terminalRecord.model,
     providerIdempotencyKey: input.terminalRecord.providerIdempotencyKey,
   }, attempt);
-  if (!dispatch.ok) return dispatch.code;
+  if (!dispatch.ok) return { ok: false, code: dispatch.code };
   const { mode: expectedMode, queuePayload: payload } = dispatch.authority;
   if (input.terminalRecord.mode !== expectedMode) {
-    return "generation_terminal_mode_mismatch";
+    return { ok: false, code: "generation_terminal_mode_mismatch" };
   }
   if (terminalRecordProviderInvoked(input) && attempt.status !== "unknown") {
     const existingTransport = await tx.generationTransportExecution.findUnique({
@@ -612,7 +616,7 @@ async function terminalRecordAuthorityMismatch(
         (existingTransport.terminalRecordRef !== null &&
           existingTransport.terminalRecordRef !== input.terminalRecordRef))
     ) {
-      return "generation_terminal_transport_identity_conflict";
+      return { ok: false, code: "generation_terminal_transport_identity_conflict" };
     }
     if (
       existingTransport &&
@@ -621,7 +625,7 @@ async function terminalRecordAuthorityMismatch(
         expectedTransportStatus,
       )
     ) {
-      return "generation_terminal_transport_status_conflict";
+      return { ok: false, code: "generation_terminal_transport_status_conflict" };
     }
     if (
       existingTransport &&
@@ -630,7 +634,7 @@ async function terminalRecordAuthorityMismatch(
         terminalRecordUsageFactInput(input, existingTransport.id),
       )
     ) {
-      return "generation_terminal_accounting_replay_conflict";
+      return { ok: false, code: "generation_terminal_accounting_replay_conflict" };
     }
   }
   if (input.terminalRecord.outcome === "succeeded") {
@@ -647,7 +651,7 @@ async function terminalRecordAuthorityMismatch(
       keys.some((key) => !key.startsWith(outputPrefix)) ||
       new Set(keys).size !== keys.length
     ) {
-      return "generation_terminal_asset_storage_authority_mismatch";
+      return { ok: false, code: "generation_terminal_asset_storage_authority_mismatch" };
     }
     if (
       (expectedMode === "image" &&
@@ -656,10 +660,18 @@ async function terminalRecordAuthorityMismatch(
           assets.length > payload.count)) ||
       (expectedMode === "video" && assets.length !== 1)
     ) {
-      return "generation_terminal_asset_count_mismatch";
+      return { ok: false, code: "generation_terminal_asset_count_mismatch" };
     }
   }
-  return null;
+  const maxOutputs = expectedMode === "video" ? 1 : Number(payload.count);
+  if (input.terminalRecord.outcome === "failed" && input.terminalRecord.cleanupKeys?.length &&
+      !generationCleanupKeysMatchDispatch({
+        requestId: attempt.requestId, attemptId: attempt.id, mode: expectedMode,
+        outputPrefix: payload.outputPrefix, maxOutputs, cleanupKeys: input.terminalRecord.cleanupKeys,
+      })) {
+    return { ok: false, code: "generation_terminal_cleanup_storage_authority_mismatch" };
+  }
+  return { ok: true, maxOutputs };
 }
 
 // INVARIANT: a canonical processed Receipt is an immutable ACK. A conflicting
@@ -1008,7 +1020,8 @@ function finalizePayload(input: GenerationTerminalRecordIngest) {
   if (record.outcome === "unknown") {
     return { ...common, kind: "generation.unknown" as const, error };
   }
-  return { ...common, kind: "generation.failed" as const, error };
+  return { ...common, kind: "generation.failed" as const, error,
+    ...(record.cleanupKeys ? { cleanupKeys: record.cleanupKeys } : {}), };
 }
 
 export async function dispatchPendingGenerationTerminalRecords(

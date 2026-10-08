@@ -56,6 +56,13 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
     async def post(self, body=None, **kwargs):
         return await self.client.post("/v1/transcriptions", content=wav() if body is None else body, headers=self.headers(**kwargs))
 
+    async def test_health_advertises_english_product_support(self):
+        result = await self.client.get("/health", headers=self.headers())
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json()["languages"], ["en"])
+        self.assertEqual(result.json()["model"], "moondream/parakeet-redux")
+        self.assertEqual(result.json()["modelRevision"], "2bf128600aac4b16946f7ed8372e56117fe5e23b")
+
     async def test_real_decode_replay_conflict_and_scope(self):
         first = await self.post()
         self.assertEqual(first.status_code, 200)

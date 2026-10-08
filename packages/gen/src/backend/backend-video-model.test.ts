@@ -20,8 +20,8 @@ const descriptor = workflowDescriptorSchema.parse(productionDescriptor);
 const h3Descriptor = workflowDescriptorSchema.parse(h3ProductionDescriptor);
 const redgraftDescriptor = descriptor;
 const VERIFIED_VIDEO: VerifiedVideoMedia = {
-  width: 768,
-  height: 1152,
+  width: 448,
+  height: 768,
   durationSeconds: 121 / 24,
   framesPerSecond: 24,
   frameCount: 121,
@@ -45,8 +45,8 @@ function backend(
     poll: vi.fn(async () => ({
       assets: [{
         body: MP4,
-        width: 768,
-        height: 1152,
+        width: 448,
+        height: 768,
         contentType: "video/mp4",
         ...(verifiedVideo ? { verifiedVideo } : {}),
       }],
@@ -63,8 +63,8 @@ function validGenerationInput() {
     controls: {
       workflowKey: "redgraft-ltx25-i2v",
       workflowVersion: productionDescriptor.version,
-      width: 768,
-      height: 1152,
+      width: 448,
+      height: 768,
     },
     referenceImages: [{
       assetId: "source-1",
@@ -75,18 +75,28 @@ function validGenerationInput() {
 }
 
 describe("BackendVideoModel", () => {
-  it.each([3, 5].flatMap(seconds => ["2:3", "1:1"].flatMap(orientation => ["preview", "standard"].map(quality => ({ seconds, orientation, quality })))))
-    ("binds bounded v7 $seconds-second $orientation $quality inputs and verifies measured output", async options => {
+  it("uses 448x768 when current options omit quality and rejects superseded pins", async () => {
+    const stub = backend();
+    const model = new BackendVideoModel({ resolveForModel: vi.fn(() => ({ backend: stub, descriptor })) });
+    const input = validGenerationInput();
+    const controls = { ...input.controls, orientation: "7:12", generationProfileVersion: 9, videoOptionsVersion: REDGRAFT_VIDEO_OPTIONS.version };
+    expect(await model.generate({ ...input, controls })).toMatchObject({ ok: true, data: { asset: { width: 448, height: 768 } } });
+    expect(await model.generate({ ...input, controls: { ...controls, generationProfileVersion: 7 } })).toMatchObject({ ok: false, error: { code: "unsupported_video_envelope" } });
+    expect(await model.generate({ ...input, controls: { ...controls, videoOptionsVersion: "redgraft-video-options-v1" } })).toMatchObject({ ok: false, error: { code: "unsupported_video_envelope" } });
+    expect(stub.submit).toHaveBeenCalledTimes(1);
+  });
+  it.each([3, 5].flatMap(seconds => ["7:12", "2:3", "1:1"].flatMap(orientation => ["preview", "standard"].map(quality => ({ seconds, orientation, quality })))))
+    ("binds bounded v9 $seconds-second $orientation $quality inputs and verifies measured output", async options => {
       const accepted = redgraftVideoEnvelope(options);
       const stub = backend({ width: accepted.width, height: accepted.height, durationSeconds: accepted.expectedDurationSeconds, framesPerSecond: 24, frameCount: accepted.frameCount, hasAudio: true });
       const model = new BackendVideoModel({ resolveForModel: vi.fn(() => ({ backend: stub, descriptor })) });
       const result = await model.generate({ ...validGenerationInput(), seconds: options.seconds,
-        controls: { ...validGenerationInput().controls, width: accepted.width, height: accepted.height, orientation: options.orientation, videoQuality: options.quality, generationProfileVersion: 7, videoOptionsVersion: REDGRAFT_VIDEO_OPTIONS.version } });
+        controls: { ...validGenerationInput().controls, width: accepted.width, height: accepted.height, orientation: options.orientation, videoQuality: options.quality, generationProfileVersion: 9, videoOptionsVersion: REDGRAFT_VIDEO_OPTIONS.version } });
       expect(result).toMatchObject({ ok: true, data: { asset: { width: accepted.width, height: accepted.height, seconds: accepted.expectedDurationSeconds } } });
       expect(stub.submit).toHaveBeenCalledWith(expect.objectContaining({ slots: expect.objectContaining({ width: accepted.width, height: accepted.height, seconds: options.seconds, fps: 24 }) }));
     });
 
-  it("cannot use a v7 parameter contract under a historical v2 profile or return mismatched measured frames", async () => {
+  it("cannot use a v9 parameter contract under a historical v2 profile or return mismatched measured frames", async () => {
     const stub = backend();
     const model = new BackendVideoModel({ resolveForModel: vi.fn(() => ({ backend: stub, descriptor })) });
     const controls = { ...validGenerationInput().controls, width: 512, height: 512, orientation: "1:1", videoQuality: "preview", videoOptionsVersion: REDGRAFT_VIDEO_OPTIONS.version };
@@ -96,7 +106,7 @@ describe("BackendVideoModel", () => {
     expect(await model.generate({ ...validGenerationInput(), seconds: 3, controls: { ...controls, generationProfileVersion: 5 } })).toMatchObject({ ok: false, error: { code: "unsupported_video_envelope" } });
     expect(await model.generate({ ...validGenerationInput(), seconds: 3, controls: { ...controls, generationProfileVersion: 6 } })).toMatchObject({ ok: false, error: { code: "unsupported_video_envelope" } });
     expect(stub.submit).not.toHaveBeenCalled();
-    expect(await model.generate({ ...validGenerationInput(), seconds: 3, controls: { ...controls, generationProfileVersion: 7 } })).toMatchObject({ ok: false, error: { code: "invalid_video_output" } });
+    expect(await model.generate({ ...validGenerationInput(), seconds: 3, controls: { ...controls, generationProfileVersion: 9 } })).toMatchObject({ ok: false, error: { code: "invalid_video_output" } });
     expect(stub.submit).toHaveBeenCalledTimes(1);
   });
 
@@ -123,7 +133,7 @@ describe("BackendVideoModel", () => {
       },
     );
 
-    const result = await model.generate({ ...validGenerationInput(), executionBoundary: { onResourceWait: async () => { events.push("wait"); }, beforeProviderInvocation: async () => { events.push("admit"); } }, });
+    const result = await model.generate({ ...validGenerationInput(), executionBoundary: { onResourceWait: async () => { events.push("wait"); }, beforeProviderInvocation: async () => { events.push("admit"); }, beforeNextProviderInvocation: async () => {} }, });
 
     expect(result.ok).toBe(true);
     expect(events).toEqual([
@@ -166,8 +176,8 @@ describe("BackendVideoModel", () => {
       controls: {
         workflowKey: "redgraft-ltx25-i2v",
         workflowVersion: productionDescriptor.version,
-        width: 768,
-        height: 1152,
+        width: 448,
+        height: 768,
       },
       referenceImages,
     });
@@ -197,8 +207,8 @@ describe("BackendVideoModel", () => {
           prompt:
             "She smiles, blinks, and waves naturally.\n\nAvoid in the result: flicker, identity drift. Treat every item in that list as excluded content, not requested content.",
           negative: "",
-          width: 768,
-          height: 1152,
+          width: 448,
+          height: 768,
           seconds: 5,
           fps: 24,
           seed: 100,
@@ -274,8 +284,8 @@ describe("BackendVideoModel", () => {
 
   it("binds RedGraft LTX 2.5 to the validated 121-frame production envelope", async () => {
     const verifiedRedGraft: VerifiedVideoMedia = {
-      width: 768,
-      height: 1152,
+      width: 448,
+      height: 768,
       durationSeconds: 121 / 24,
       framesPerSecond: 24,
       frameCount: 121,
@@ -299,8 +309,8 @@ describe("BackendVideoModel", () => {
       controls: {
         workflowKey: "redgraft-ltx25-i2v",
         workflowVersion: productionDescriptor.version,
-        width: 768,
-        height: 1152,
+        width: 448,
+        height: 768,
         fps: 24,
       },
       referenceImages: [{
@@ -327,8 +337,8 @@ describe("BackendVideoModel", () => {
           prompt:
             "She smiles, speaks, and waves naturally.\n\nAvoid in the result: flicker, identity drift. Treat every item in that list as excluded content, not requested content.",
           negative: "",
-          width: 768,
-          height: 1152,
+          width: 448,
+          height: 768,
           seconds: 5,
           fps: 24,
           seed: 42,
@@ -386,7 +396,7 @@ describe("BackendVideoModel", () => {
     {
       label: "decoded dimensions",
       media: { ...VERIFIED_VIDEO, width: 640 },
-      message: "640x1152",
+      message: "640x768",
     },
     {
       label: "decoded duration",
@@ -655,7 +665,7 @@ describe("BackendVideoModel", () => {
       prompt: "wave",
       seconds: 5,
       model: "redgraft-ltx25-i2v",
-      controls: { width: 768, height: 1152 },
+      controls: { width: 448, height: 768 },
       referenceImages,
     });
     expect(missingPins).toMatchObject({
@@ -671,7 +681,7 @@ describe("BackendVideoModel", () => {
         workflowKey: "redgraft-ltx25-i2v",
         workflowVersion: productionDescriptor.version,
         width: 1024,
-        height: 1152,
+        height: 768,
       },
       referenceImages,
     });
@@ -698,8 +708,8 @@ describe("BackendVideoModel", () => {
       controls: {
         workflowKey: "redgraft-ltx25-i2v",
         workflowVersion: productionDescriptor.version,
-        width: 768,
-        height: 1152,
+        width: 448,
+        height: 768,
       },
       referenceImages: [{
         assetId: "source-1",

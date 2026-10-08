@@ -81,14 +81,14 @@ export const minimaxH3VideoProductionRecipe = {
 // SPEC: RedGraft is the default LTX video route validated on the isolated MPS
 // ComfyUI runtime. H3 remains an explicit alternative.
 export const redgraftLtx25VideoProductionRecipe = {
-  recipeVersion: 6,
-  optionsProfileVersion: 7,
+  recipeVersion: 8,
+  optionsProfileVersion: 9,
   profileKey: "profile_video_redgraft_ltx25_v1",
   modelLabel: "RedGraft LTX 2.5 Fast 2K",
   runner: "comfyui",
   pipelineModel: "redgraft-ltx25-fast2k-int8-convrot",
   workflowKey: "redgraft-ltx25-i2v",
-  workflowVersion: 4,
+  workflowVersion: 5,
   sourceModelPath:
     "diffusion_models/redgraftLTX25Fast2K_ltx25RedgraftNSFW.safetensors",
   checkpointFilename:
@@ -101,9 +101,9 @@ export const redgraftLtx25VideoProductionRecipe = {
   expectedDurationSeconds: 121 / 24,
   frameCount: 121,
   fps: 24,
-  width: 768,
-  height: 1152,
-  orientation: "2:3",
+  width: 448,
+  height: 768,
+  orientation: "7:12",
   outputCount: 1,
   sourceImageCount: 1,
   steps: 13,
@@ -111,7 +111,7 @@ export const redgraftLtx25VideoProductionRecipe = {
   scheduler: "manual_sigmas",
   cfgScale: 1,
   workflowGraphSha256:
-    "7a51857f6c929855dd0e150391bd280ab62206ac3d46ba969d423d4f44b6bc87",
+    "580d16c686623cfb83bd72ad05594deed1caf48824523b8eff87831db4d05217",
   modelAssets: [
     {
       path: "diffusion_models/redgraftLTX25Fast2K_ltx25RedgraftNSFW.safetensors",

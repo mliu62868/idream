@@ -70,12 +70,11 @@ function createRuntime(): AgentRuntime {
     instance,
     workspaces,
     plugin: async () => (await plugin).module,
-    adapter: (profile, requiredToolName, requestPolicy) => new OpenAiCompatibleAdapter({
+    adapter: (profile, requestPolicy) => new OpenAiCompatibleAdapter({
       profile,
       apiKey: config.modelProfile.apiKey,
       openRouterProviderOnly: config.openRouterProviderOnly,
       ...requestPolicy,
-      ...(requiredToolName ? { requiredToolName } : {}),
     }),
     igrepCommand: config.igrepCommand,
     igrepLlm: config.igrepLlm,

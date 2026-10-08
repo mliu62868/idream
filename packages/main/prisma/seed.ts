@@ -1495,14 +1495,13 @@ async function seedAdminControlPlane() {
         dryRunSummary: {
           status: "not_run",
           source: "seed_configuration_state",
-          qualificationReference: "docs/research/LTX25_MPSGRAPH_IMPLEMENTATION_2026-10-02.md",
+          qualificationReference: "docs/research/REDGRAFT_LTX25_480P_VALIDATION_2026-10-05.md",
           resolution: `${recipe.width}x${recipe.height}`,
           frames: recipe.frameCount,
           seconds: recipe.expectedDurationSeconds,
           fps: recipe.fps,
-          referenceWallTimeSeconds: 616.334,
           notes:
-            "RedGraft MPSGraph BF16 attention with MLX Q8 Gemma completed 768x1152/121-frame I2V with AAC audio on fixed ComfyUI 0.34.2 / PyTorch 2.11; isolated native graph qualification, without Main billing verification. This seed is configuration, not qualification of the installation being seeded.",
+            "RedGraft default is 448x768/121-frame I2V with AAC audio, MPSGraph BF16 attention and MLX Q8 Gemma on fixed ComfyUI 0.34.2 / PyTorch 2.11. The referenced validation covers the native backend, without Main billing verification. This seed is configuration, not qualification of the installation being seeded.",
         },
         publishedAt: new Date("2026-10-02T00:00:00.000Z"),
       },

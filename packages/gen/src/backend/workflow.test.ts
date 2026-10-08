@@ -246,7 +246,7 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     expect(redGraft).toMatchObject({
       modelId: "redgraft-ltx25-fast2k-int8-convrot",
       backendKind: "comfyui",
-      version: 4,
+      version: 5,
       capabilities: [
         "video",
         "img2video",

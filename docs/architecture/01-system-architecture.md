@@ -88,4 +88,4 @@ Next Route/BFF
 7. 删除产品 Turn 与清理 AgentRun 是不同数据类别；两者分别由 Main 和 Chat 执行并通过精确回执协调。
 8. 旧 Chat PG 只可作为一次性离线导入来源，不能重新接回运行时。
 
-Chat 的详细协议见 [14-chat-service-tech-design.md](./14-chat-service-tech-design.md) 与 [ADR-20](./20-local-file-chat-authority.md)；队列与生成见 [06-async-jobs-and-ai.md](./06-async-jobs-and-ai.md)。
+Chat 的现行执行、终态与记忆协议以 [ADR-21](./21-companion-chat-deep-runtime.md) 为准；ADR-19/20 记录已被取代的边界。队列与生成见 [06-async-jobs-and-ai.md](./06-async-jobs-and-ai.md)。

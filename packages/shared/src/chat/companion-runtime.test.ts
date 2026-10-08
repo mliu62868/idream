@@ -63,6 +63,21 @@ const imageReservation = {
 };
 
 describe("shared companion authority contracts", () => {
+  it("allows private attempt retrieval while still refusing cross-session memory access", () => {
+    const evidence = {
+      ...imageToolEvidence(imageReservation), memoryMode: "private", execution: { steps: 3, toolCalls: 0 }, tools: [],
+      igrepObservations: {
+        wake: { calls: 0, hits: 0, failures: 0, evidenceMatches: 0 },
+        memory: { calls: 0, hits: 0, failures: 0, evidenceMatches: 0 },
+        search: { calls: 1, hits: 1, failures: 0, evidenceMatches: 0 },
+        session: { calls: 1, hits: 1, failures: 0, evidenceMatches: 0 },
+      },
+    };
+    expect(projectCompanionProbeDshEvidence(evidence, "private")).toMatchObject({ ok: true, error: null, igrepSearchCalls: 1, memorySearchCalls: 0 });
+    evidence.igrepObservations.memory.calls = 1;
+    expect(projectCompanionProbeDshEvidence(evidence, "private")).toMatchObject({ ok: false, error: expect.stringContaining("privateMemoryIsolation") });
+  });
+
   it.each(["generate_image_async", "edit_last_image"])("accepts current %s reservation authority without exposing its intent", (name) => {
     const projected = projectCompanionProbeDshEvidence(imageToolEvidence({ ...imageReservation, name }), "normal");
     expect(projected).toMatchObject({ ok: true, error: null, memorySearchEvidenceMatches: 1 });

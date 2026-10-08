@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PresetsDetailPage } from "./PresetsDetailPage";
 import { PresetsSection } from "./PresetsSection";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 vi.mock("next/link", () => ({ default: ({ href, children }: { href: string; children: React.ReactNode }) => <a href={href}>{children}</a> }));
@@ -35,6 +36,21 @@ describe("preset edits under pending and failed writes", () => {
     await waitFor(() => button("Edit preset") !== undefined);
     await act(async () => button("Edit preset")!.click());
   }
+
+  it("reloads preset details through shell refresh without remounting the edited controls", async () => {
+    await edit();
+    await changeInput(field("Controls (JSON)"), '{"prompt":"Unfinished preset controls"}');
+    let finish!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const href = window.location.href;
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "GET")).toHaveLength(2);
+    expect(field("Controls (JSON)").value).toBe('{"prompt":"Unfinished preset controls"}');
+    await act(async () => finish(Response.json({ ok: true, data: { preset: { ...preset, label: "Fresh preset label" } } })));
+    expect(field("Controls (JSON)").value).toBe('{"prompt":"Unfinished preset controls"}');
+    expect(window.location.href).toBe(href);
+    expect(writes()).toHaveLength(0);
+  });
 
   it.each([true, false])("recovers an initial network failure with only a read (canWrite=%s)", async (canWrite) => {
     fetchMock.mockRejectedValueOnce(new TypeError("Preset network unavailable"));

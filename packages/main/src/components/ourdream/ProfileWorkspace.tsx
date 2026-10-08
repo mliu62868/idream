@@ -555,6 +555,11 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
   const [mediaCollectionsAuthority, setMediaCollectionsAuthority] = useState(
     initialAuthorityStatus,
   );
+  // Recent also renders the media cards' Add to collection control.
+  const needsMediaCollections = tab === "media" || items.some((item) =>
+    item.type === "image" || item.type === "video" || item.type === "voice" ||
+    item.type === "audio" || item.contentType?.toLowerCase().startsWith("audio/"),
+  );
   const [publishedCollectionHref, setPublishedCollectionHref] = useState("");
   const libraryTabRef = useRef<LibraryTab | null>(null);
   const libraryCursorTrailRef = useRef<Array<string | null>>([null]);
@@ -754,13 +759,13 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
     if (
       !ageGateAccepted ||
       !profileOwnerScope ||
-      tab !== "media"
+      !needsMediaCollections
     ) {
       return;
     }
     const timer = window.setTimeout(() => void refreshMediaCollections(), 0);
     return () => window.clearTimeout(timer);
-  }, [ageGateAccepted, profileOwnerScope, refreshMediaCollections, tab]);
+  }, [ageGateAccepted, profileOwnerScope, refreshMediaCollections, needsMediaCollections]);
 
   async function redeem() {
     setRedeemFeedback(null);
@@ -1475,7 +1480,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
             </Link></li>)}
           </ul>
         </section>}
-        {tab === "media" && mediaCollectionsAuthority.phase === "error" ? (
+        {needsMediaCollections && mediaCollectionsAuthority.phase === "error" ? (
           <ProfileAuthorityNotice
             hasSnapshot={mediaCollectionsAuthority.hasSnapshot}
             message={
@@ -1485,7 +1490,7 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
             onRetry={() => void refreshMediaCollections()}
           />
         ) : null}
-        {tab === "media" &&
+        {needsMediaCollections &&
         mediaCollectionsAuthority.phase === "loading" &&
         !mediaCollectionsAuthority.hasSnapshot ? (
           <p className="mt-4 text-[12px] font-semibold text-[rgb(170,170,170)]">

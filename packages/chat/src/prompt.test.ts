@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCompanionSystemPrompt, buildTurnPreferencesBlock, buildTurnStateBlock, describeUserLanguage } from "./prompt.js";
+import { buildCompanionSystemPrompt, buildTurnPreferencesBlock, buildTurnStateBlock, describeRequestedLength, describeUserLanguage } from "./prompt.js";
 
 const persona = {
   name: "Mira",
@@ -30,7 +30,7 @@ describe("companion prompt instruction hierarchy", () => {
     } as never);
 
     expect(prompt.startsWith("Speak softly.")).toBe(true);
-    expect(prompt).toContain("iDream companion contract (companion-product-7)");
+    expect(prompt).toContain("iDream companion contract (companion-product-8)");
     expect(prompt).toContain("Write in first person as Mira");
     // An ordinary memory-on turn adds no capability section: nothing about
     // photos or memory mode seeds the reply, and the bytes stay cacheable.
@@ -59,14 +59,14 @@ describe("companion prompt instruction hierarchy", () => {
   it("names the image tools only when the turn authorises them", () => {
     const enabled = buildCompanionSystemPrompt({
       persona,
-      policy: { memoryEnabled: true, imageToolEnabled: true },
+      policy: { memoryEnabled: true, imageToolEnabled: true, modelProfile: { supportsTools: true } },
       recentMessages: [],
       scene: emptyScene,
       sceneVersion: 0,
       lastExchangeAt: null,
     } as never);
-    expect(enabled).toContain("call generate_image_async");
-    expect(enabled).toContain("call edit_last_image");
+    expect(enabled).toContain("Choose generate_image_async for a new photo");
+    expect(enabled).toContain("edit_last_image for a change to the delivered photo");
 
     const disabled = buildCompanionSystemPrompt({
       persona,
@@ -111,19 +111,24 @@ describe("per-turn state block", () => {
 
     expect(block).toBe([
       "Right now:",
-      "- Time: 2026-08-24 15:04 UTC, Monday",
+      "- Real-world clock: 2026-08-24 15:04 UTC, Monday. Use it for real-world time and calendar questions.",
+      "- Story time follows the user's latest established time in the conversation or, if none, the saved Scene. Keep it until the story explicitly changes it; the real-world clock never advances it.",
       "- Since you last talked: 2 days",
       "- Scene: at home; tonight; mood: calm; open threads: pack for the trip",
     ].join("\n"));
   });
 
-  it("omits every empty fact so a fresh private turn only learns the time", () => {
+  it("omits empty scene facts while keeping the real clock and story-time authority distinct", () => {
     const block = buildTurnStateBlock(
       { scene: emptyScene, lastExchangeAt: null } as never,
       new Date("2026-08-24T15:04:00Z"),
     );
 
-    expect(block).toBe("Right now:\n- Time: 2026-08-24 15:04 UTC, Monday");
+    expect(block).toBe([
+      "Right now:",
+      "- Real-world clock: 2026-08-24 15:04 UTC, Monday. Use it for real-world time and calendar questions.",
+      "- Story time follows the user's latest established time in the conversation or, if none, the saved Scene. Keep it until the story explicitly changes it; the real-world clock never advances it.",
+    ].join("\n"));
   });
 
   it("describes short gaps in minutes and hours", () => {
@@ -152,8 +157,9 @@ describe("per-turn state block", () => {
 
     expect(block).toBe([
       "Right now:",
-      "- Time: 2026-08-24 15:04 UTC, Monday",
-      "- About Sam, in their own words: 29, nurse, lives alone with a parrot (they go by Sam). This is their current saved profile; use it instead of earlier names or self-descriptions in the conversation history.",
+      "- Real-world clock: 2026-08-24 15:04 UTC, Monday. Use it for real-world time and calendar questions.",
+      "- Story time follows the user's latest established time in the conversation or, if none, the saved Scene. Keep it until the story explicitly changes it; the real-world clock never advances it.",
+      "- About Sam, in their own words: 29, nurse, lives alone with a parrot (they go by Sam). This is their current saved profile; use it instead of earlier names or self-descriptions in the conversation history or recalled memories.",
       "- Sam asked you to keep in mind: I am allergic to cats",
     ].join("\n"));
     expect(block).not.toContain("pin-1");
@@ -168,6 +174,17 @@ describe("user language line", () => {
     expect(describeUserLanguage("안녕")).toBe("They are writing in Korean; answer in Korean.");
     expect(describeUserLanguage("come sit with me")).toBe("");
     expect(describeUserLanguage("ça va, mon amour ?")).toBe("");
+  });
+});
+
+describe("requested length line", () => {
+  it("fires only for an explicit one-sentence request", () => {
+    for (const text of ["Acknowledge in exactly one short sentence.", "Answer in one sentence", "just a single brief sentence please", "用一句话回答"]) {
+      expect(describeRequestedLength(text)).toContain("exactly one short sentence");
+    }
+    for (const text of ["Be brief.", "Keep it short", "one more sentence about the beach", "Tell me a story in three sentences"]) {
+      expect(describeRequestedLength(text)).toBe("");
+    }
   });
 });
 

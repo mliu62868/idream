@@ -15,6 +15,7 @@ export function supportedProfileOrientations(value: Prisma.JsonValue) {
   return jsonStringArray(value).filter(
     (orientation) =>
       orientation === "2:3" ||
+      orientation === "7:12" ||
       orientation === "original" ||
       imageOrientations.includes(
         orientation as (typeof imageOrientations)[number],

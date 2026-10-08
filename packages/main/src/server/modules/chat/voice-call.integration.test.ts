@@ -260,6 +260,48 @@ describe("canonical Call recording, recovery and settlement", () => {
     expect(await dreamcoinBalance(f.userId)).toBe(20);
     await run(f, "POST", `/${call.id}/end`, { token: call.leaseToken });
   });
+  it.each([
+    { gatewayStatus: 422, detail: "invalid_audio", expectedStatus: 400 },
+    { gatewayStatus: 410, detail: "unknown_request", expectedStatus: 410 },
+  ])("settles a definitive ASR $gatewayStatus failure and admits the next recording", async ({ gatewayStatus, detail, expectedStatus }) => {
+    const f = await fixture(), call = await start(f), id = randomUUID(), audio = await recording();
+    asr.mockResolvedValueOnce(Response.json({ requestId: id, status: "pending", retryAfterMs: 100 }));
+    expect((await run(f, "POST", `/${call.id}/utterances/${id}`, { token: call.leaseToken, audio })).response.status).toBe(200);
+    asr.mockResolvedValueOnce(Response.json({ detail }, { status: gatewayStatus }));
+    const rejected = await run(f, "GET", `/${call.id}/utterances/${id}`, { token: call.leaseToken });
+    expect(rejected.response.status).toBe(expectedStatus);
+    expect.soft(await prisma.voiceCallUtterance.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: "failed", errorCode: detail, turnId: null });
+    const replay = await run(f, "POST", `/${call.id}/utterances/${id}`, { token: call.leaseToken, audio });
+    expect.soft(replay.response.status).toBe(200); expect.soft(replay.value).toMatchObject({ status: "failed", errorCode: detail });
+    expect.soft(asr).toHaveBeenCalledTimes(2);
+    expect.soft((await run(f, "POST", `/${call.id}/utterances/${randomUUID()}`, { token: call.leaseToken, audio })).response.status).toBe(200);
+    expect(synthesize).not.toHaveBeenCalled(); expect(await dreamcoinBalance(f.userId)).toBe(20);
+    await run(f, "POST", `/${call.id}/end`, { token: call.leaseToken });
+  });
+  it.each([429, 503])("preserves the same recording after transient ASR %s and recovers without resubmitting audio", async gatewayStatus => {
+    const f = await fixture(), call = await start(f), id = randomUUID(), audio = await recording();
+    asr.mockResolvedValueOnce(Response.json({ detail: "temporarily_unavailable" }, { status: gatewayStatus }));
+    expect((await run(f, "POST", `/${call.id}/utterances/${id}`, { token: call.leaseToken, audio })).response.status).toBe(gatewayStatus);
+    expect(await prisma.voiceCallUtterance.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: "transcribing", turnId: null });
+    const resumed = await run(f, "GET", `/${call.id}/utterances/${id}`, { token: call.leaseToken });
+    expect(resumed.response.status).toBe(200); expect(resumed.value.assistantMessageId).toBeTruthy();
+    expect(await prisma.chatTurn.count({ where: { sessionId: f.sessionId } })).toBe(1);
+    expect(asr).toHaveBeenCalledTimes(2); expect(synthesize).not.toHaveBeenCalled(); expect(await dreamcoinBalance(f.userId)).toBe(20);
+    await run(f, "POST", `/${call.id}/end`, { token: call.leaseToken });
+  });
+  it("does not overwrite an interrupted recording when its ASR failure arrives late", async () => {
+    const f = await fixture(), call = await start(f), id = randomUUID(), audio = await recording();
+    let complete!: (value: Response) => void;
+    asr.mockImplementationOnce(() => new Promise<Response>(resolve => { complete = resolve; }));
+    const pending = run(f, "POST", `/${call.id}/utterances/${id}`, { token: call.leaseToken, audio });
+    while (!complete) await new Promise(resolve => setTimeout(resolve, 5));
+    expect((await run(f, "POST", `/${call.id}/interrupt`, { token: call.leaseToken })).response.status).toBe(200);
+    complete(Response.json({ requestId: id, status: "failed", errorCode: "no_speech" }));
+    await pending;
+    expect(await prisma.voiceCallUtterance.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: "cancelled", turnId: null });
+    expect(await prisma.chatTurn.count({ where: { sessionId: f.sessionId } })).toBe(0);
+    await run(f, "POST", `/${call.id}/end`, { token: call.leaseToken });
+  });
   it("drives recorded multipart through ASR, Main Turn, voice delivery and free replay once", async () => {
     const f = await fixture(), call = await start(f), id = await utterance(f, call);
     const sent = await run(f, "GET", `/${call.id}/utterances/${id}`, { token: call.leaseToken });

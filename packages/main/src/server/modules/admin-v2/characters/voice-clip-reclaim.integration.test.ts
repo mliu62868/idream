@@ -13,6 +13,7 @@ import {
   createUser,
   publishCharacterForPublicAudience,
   purgeTestData,
+  voiceReplyBody,
 } from "@/server/test/helpers";
 import { reclaimCharacterVoiceClip } from "./voice-clip-reclaim";
 
@@ -117,9 +118,9 @@ describe("Character Voice clip reclaim authority", () => {
         transportRequestId: randomUUID(),
         request: reclaimBody(requestId),
       });
+    const owner = command();
     try {
-      const owner = command();
-      await providerStarted;
+      await Promise.race([providerStarted, owner.then(() => { throw new Error("Reclaim completed before reaching the provider pause"); }, cause => { throw cause; })]);
       await expect(command()).rejects.toMatchObject({ code: "conflict" });
       release();
       await expect(owner).resolves.toMatchObject({
@@ -152,6 +153,7 @@ describe("Character Voice clip reclaim authority", () => {
       ).resolves.toBe(1);
     } finally {
       release();
+      await owner.catch(() => undefined);
       providerCall.mockRestore();
     }
   });
@@ -176,8 +178,7 @@ describe("Character Voice clip reclaim authority", () => {
         await providerRelease;
         return original(providerInput);
       });
-    try {
-      const staleOwner = reclaimCharacterVoiceClip({
+    const staleOwner = reclaimCharacterVoiceClip({
         characterId,
         requestId,
         actor,
@@ -185,7 +186,8 @@ describe("Character Voice clip reclaim authority", () => {
         transportRequestId: randomUUID(),
         request: reclaimBody(requestId),
       });
-      await providerStarted;
+    try {
+      await Promise.race([providerStarted, staleOwner.then(() => { throw new Error("Reclaim completed before reaching the provider pause"); }, cause => { throw cause; })]);
       const reserved = await prisma.controlPlaneCommand.findFirstOrThrow({
         where: { actorId, idempotencyKey },
       });
@@ -231,6 +233,7 @@ describe("Character Voice clip reclaim authority", () => {
       expect(providerCall).toHaveBeenCalledTimes(1);
     } finally {
       release();
+      await staleOwner.catch(() => undefined);
       providerCall.mockRestore();
     }
   });
@@ -452,6 +455,19 @@ describe("Character Voice clip reclaim authority", () => {
     } finally { synthesize.mockRestore(); }
   });
 
+  it.each(["missing-session", "legacy-reply-attempt"])("rejects %s reply authority before invoking a provider", async reason => {
+    const requestId = `${prefix}${reason}`;
+    await createExpiredRequest(requestId, reason === "missing-session"
+      ? { synthesisPayload: { version: 1, text: "Reclaim this exact Voice request", sessionId: null, intent: "play" } }
+      : { replyAttempt: 0 });
+    const synthesize = vi.spyOn(providers.voice.clip, "synthesize");
+    try {
+      await expect(reclaimExpiredVoiceClip({ characterId, requestId, deps })).rejects.toMatchObject({ code: "gone" });
+      expect(synthesize).not.toHaveBeenCalled();
+      expect(await prisma.voiceClipRequest.findUniqueOrThrow({ where: { id: requestId } })).toMatchObject({ status: "failed", errorCode: "voice_reply_delivery_revoked", leaseOwner: null });
+    } finally { synthesize.mockRestore(); }
+  });
+
   it("automatically recovers a crashed invocation under its original provider key", async () => {
     const requestId = `${prefix}zz-sweep-a`;
     await createExpiredRequest(requestId, { providerRequestId: `voice:${requestId}:provider` });
@@ -517,22 +533,26 @@ describe("Character Voice clip reclaim authority", () => {
       readonly status?: string;
       readonly providerPayload?: object;
       readonly providerRequestId?: string;
+      readonly replyAttempt?: number;
     } = {},
   ) {
+    const reply = await voiceReplyBody(userId, { characterId, messageId: `${requestId}-message`, text: "Reclaim this exact Voice request" });
+    const turn = await prisma.chatTurn.findFirstOrThrow({ where: { sessionId: reply.sessionId, assistantMessageId: reply.messageId }, select: { attempt: true } });
     return prisma.voiceClipRequest.create({
       data: {
         id: requestId,
         userId,
         characterId,
         messageId: `${requestId}-message`,
+        replyAttempt: overrides.replyAttempt ?? turn.attempt,
         requestFingerprint: `${requestId}-fingerprint`,
         synthesisPayload:
           overrides.synthesisPayload === null
             ? undefined
             : overrides.synthesisPayload ?? {
                 version: 1,
-                text: "Reclaim this exact Voice request",
-                sessionId: null,
+                text: reply.text,
+                sessionId: reply.sessionId,
                 intent: "play",
               },
         providerPayload: overrides.providerPayload ?? providerPayload,

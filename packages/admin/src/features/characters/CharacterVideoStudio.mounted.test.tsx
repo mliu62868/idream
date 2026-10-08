@@ -3,6 +3,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { AdminI18nProvider } from "@/components/admin/i18n";
 
 const { adminV2Request, runCommittedMutationSpy } = vi.hoisted(() => ({
@@ -160,7 +161,7 @@ const pendingRun = {
   title: "Mira motion portrait",
   reviewContext: {
     brief: "A subtle smile.",
-    orientation: "2:3",
+    orientation: "7:12",
     profile: {
       key: "profile_video_redgraft_ltx25_v1",
       version: 1,
@@ -274,6 +275,22 @@ describe("Character Video Studio", () => {
     await act(async () => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+  });
+
+  it("reloads the Character video list and selected Run once through shell refresh without replacing playback", async () => {
+    adminV2Request.mockImplementation(async (path: string) => path.endsWith("/video-run-1")
+      ? readyRun : { items: [readyRun], pageInfo: { endCursor: null, hasNextPage: false } });
+    await act(async () => root.render(<CharacterVideoStudio actorId="actor-1" data={data} onCreateImage={vi.fn()}
+      permissions={{ create: true, read: true }} runCommittedMutation={runCommittedMutation} />));
+    await waitUntil(() => container.querySelector("video") !== null);
+    const playback = container.querySelector("video");
+    const before = adminV2Request.mock.calls.length;
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    const refreshed = adminV2Request.mock.calls.slice(before).map(([path]) => path);
+    expect(refreshed.filter(path => path.includes("/creative/runs?"))).toHaveLength(1);
+    expect(refreshed.filter(path => path.endsWith("/video-run-1"))).toHaveLength(1);
+    expect(container.querySelector("video")).toBe(playback);
+    expect(adminV2Request.mock.calls.every(([, options]) => options?.method === "GET")).toBe(true);
   });
 
   it("explains committed video recovery in Chinese and verifies by GET without creating a duplicate", async () => {
@@ -435,7 +452,7 @@ describe("Character Video Studio", () => {
         targetId: "character-video-1",
         profileId: "profile_video_redgraft_ltx25_v1",
         referenceAssetIds: ["source-cover"],
-        orientation: "2:3",
+        orientation: "7:12",
         count: 1,
         negativePrompt: "hand distortion, camera shake, visible text",
       },

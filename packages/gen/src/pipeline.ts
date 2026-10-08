@@ -29,6 +29,10 @@ import {
   type GenerationExecutionPorts,
 } from "./generation-execution";
 import { enhancedImageDimensions, prepareImageEnhancement } from "./image-enhancement";
+import sharp from "sharp";
+import { characterVideoProductionRecipeForWorkflow } from "@idream/shared";
+import { redgraftVideoEnvelope, REDGRAFT_VIDEO_DEFAULTS } from "@idream/shared/contracts";
+import { probeVideoMedia, type VideoMediaProbe, type VerifiedVideoMedia } from "./backend/video-media-probe";
 
 type AttemptDeps = {
   attemptsMade?: number;
@@ -37,6 +41,7 @@ type AttemptDeps = {
 
 export interface PipelineDeps extends AttemptDeps, GenerationExecutionPorts {
   providers?: GenProviders;
+  probeVideoMedia?: VideoMediaProbe;
 }
 
 class GeneratedAssetBodyMissingError extends Error {
@@ -119,22 +124,23 @@ export async function processImageGenerate(
           false,
         );
       }
-      const createdKeys: string[] = [];
+      const attemptedKeys = new Set<string>();
       try {
         // Validate every provider artifact before creating any blob. Persist
         // sequentially so a later failure has a complete, race-free list of
         // objects owned by this invocation and can roll them back exactly.
-        const normalized = await Promise.all(output.assets.map(async (asset, index) => {
-          const hasProviderMedia = Boolean(asset.body || asset.sourceUrl);
-          let contentType = hasProviderMedia
-            ? (asset.contentType ?? "image/webp")
-            : "image/png";
+        const normalized = await Promise.all(output.assets.slice(0, payload.count).map(async (asset, index) => {
           const body = await imageAssetBody(asset);
-          const dimensions = enhancement ? await enhancedImageDimensions(body, enhancement.pin) : null;
-          if (dimensions) contentType = dimensions.contentType;
+          const decoded = await decodedGeneratedImage(body);
+          const dimensions = enhancement ? await enhancedImageDimensions(body, enhancement.pin) : decoded;
+          if ((typeof payload.controls.width === "number" && dimensions.width !== payload.controls.width) ||
+              (typeof payload.controls.height === "number" && dimensions.height !== payload.controls.height)) {
+            throw new GeneratedImageSanityError("Generated image dimensions do not match the accepted dimensions");
+          }
+          const contentType = dimensions.contentType;
           const key = generatedAssetStorageKey(payload.outputPrefix, `image-${index + 1}`, contentType, ".png");
           const sanityEvidence = assertGeneratedImageSanity(
-            Buffer.from(body),
+            decoded.sanityPng,
             `${payload.generationJobId} asset ${index + 1}`,
             {
               singleContinuousFrame:
@@ -146,18 +152,20 @@ export async function processImageGenerate(
         }));
         const assets = [];
         for (const item of normalized) {
+          // A failed acknowledgement cannot prove the store did not write.
+          attemptedKeys.add(item.key);
           const persisted = await providers.blob.putPrivateIfAbsent({
             key: item.key,
             body: item.body,
             contentType: item.contentType,
           });
           if (!persisted.ok) throw new Error(persisted.error.message);
-          if (persisted.data.created) createdKeys.push(item.key);
+          if (!persisted.data.created) attemptedKeys.delete(item.key);
           assets.push({
             ordinal: item.index,
             key: item.key,
-            width: item.dimensions?.width ?? item.asset.width,
-            height: item.dimensions?.height ?? item.asset.height,
+            width: item.dimensions.width,
+            height: item.dimensions.height,
             contentType: item.contentType,
             providerKey: item.asset.key ?? null,
             quality: generatedImageQuality(item.sanityEvidence),
@@ -165,13 +173,18 @@ export async function processImageGenerate(
         }
         return {
           assets,
-          usage: { model: payload.model },
+          usage: {
+            model: payload.model,
+            ...(output.assets.length !== payload.count ? { expectedOutputs: payload.count, providerOutputs: output.assets.length, deliveredOutputs: assets.length } : {}),
+          },
         };
       } catch (error) {
-        await Promise.allSettled(
-          createdKeys.map((key) => providers.blob.delete({ key })),
-        );
-        if (error instanceof GenerationArtifactError) throw error;
+        const cleanupKeys = await rollbackGeneratedAssets(providers.blob, [...attemptedKeys]);
+        if (error instanceof GenerationArtifactError) {
+          if (!cleanupKeys.length) throw error;
+          throw new GenerationArtifactError(error.code, error.message, error.retryBeforeFinalAttempt,
+            [...new Set([...(error.cleanupKeys ?? []), ...cleanupKeys])]);
+        }
         throw new GenerationArtifactError(
           error instanceof GeneratedImageSanityError ||
             error instanceof GeneratedAssetBodyMissingError
@@ -181,6 +194,7 @@ export async function processImageGenerate(
             ? error.message
             : "Generated asset persistence failed",
           true,
+          cleanupKeys.length ? cleanupKeys : undefined,
         );
       }
     },
@@ -192,6 +206,28 @@ export async function processImageGenerate(
     acknowledgeTerminalRecord: deps.acknowledgeTerminalRecord,
     recordTransportExecution: deps.recordTransportExecution,
   });
+}
+
+// SPEC: provider annotations cannot certify the delivered file. Decode every
+// still image before persistence; use decoded pixels for all supported formats
+// and preserve the provider's original bytes with their actual MIME and size.
+async function decodedGeneratedImage(body: Uint8Array) {
+  try {
+    const image = sharp(body, { failOn: "warning", limitInputPixels: 16_777_216 });
+    const metadata = await image.metadata();
+    // Preserve the native PNG CRC and blankness checks before raster conversion
+    // so a decoder cannot repair a corrupt file and certify the original bytes.
+    assertGeneratedImageSanity(Buffer.from(body), "provider image");
+    if (!["png", "jpeg", "webp"].includes(metadata.format ?? "") ||
+        (metadata.pages ?? 1) !== 1) {
+      throw new Error("Generated image must be one PNG, JPEG or WebP still");
+    }
+    const { data, info } = await image.autoOrient().flatten({ background: "white" }).toColourspace("srgb").raw().toBuffer({ resolveWithObject: true });
+    const sanityPng = await sharp(data, { raw: { width: info.width, height: info.height, channels: info.channels } }).png().toBuffer();
+    return { width: info.width, height: info.height, contentType: `image/${metadata.format}`, sanityPng };
+  } catch (error) {
+    throw new GeneratedImageSanityError(`Generated image cannot be decoded: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 async function imageAssetBody(
@@ -255,35 +291,54 @@ export async function processVideoGenerate(
         contentType,
         ".mp4",
       );
-      // Same persistence transaction as the image path: create-if-absent, so a
-      // duplicate delivery of this attempt cannot overwrite bytes an earlier
-      // invocation already published under the same key. No rollback branch
-      // here — unlike images this writes exactly one object, so there is never
-      // a partially-created set to undo.
+      // Create-if-absent protects published bytes. A lost write acknowledgement
+      // still needs compensation even though video writes exactly one object.
+      let media: VerifiedVideoMedia;
+      const body = await videoAssetBody(output.asset, payload.generationJobId);
+      try {
+        if (contentType !== "video/mp4" || body.byteLength < 12 || Buffer.from(body).toString("ascii", 4, 8) !== "ftyp") {
+          throw new Error("Generated video must be a nonempty MP4 container");
+        }
+        media = await (deps.probeVideoMedia ?? probeVideoMedia)(body);
+        const recipe = characterVideoProductionRecipeForWorkflow(String(payload.controls.workflowKey ?? ""));
+        const envelope = recipe && payload.controls.videoOptionsVersion !== undefined
+          ? redgraftVideoEnvelope({ seconds: payload.seconds, orientation: String(payload.controls.orientation), quality: String(payload.controls.videoQuality ?? REDGRAFT_VIDEO_DEFAULTS.quality) })
+          : recipe;
+        if ((typeof payload.controls.width === "number" && media.width !== payload.controls.width) ||
+            (typeof payload.controls.height === "number" && media.height !== payload.controls.height) ||
+            Math.abs(media.durationSeconds - (envelope?.expectedDurationSeconds ?? payload.seconds)) > 0.25 ||
+            (envelope && (media.width !== envelope.width || media.height !== envelope.height ||
+              Math.abs(media.framesPerSecond - envelope.fps) > 0.05 || media.frameCount !== envelope.frameCount || !media.hasAudio))) {
+          throw new Error("Decoded video does not match the accepted stream envelope");
+        }
+      } catch (error) {
+        throw new GenerationArtifactError("invalid_video_output", error instanceof Error ? error.message : "Generated video cannot be decoded", false);
+      }
       try {
         const persisted = await providers.blob.putPrivateIfAbsent({
           key: assetKey,
-          body: await videoAssetBody(output.asset, payload.generationJobId),
+          body,
           contentType,
         });
         if (!persisted.ok) throw new Error(persisted.error.message);
       } catch (error) {
+        const cleanupKeys = await rollbackGeneratedAssets(providers.blob, [assetKey]);
         throw new GenerationArtifactError(
           "asset_persist_failed",
           error instanceof Error
             ? error.message
             : "Generated asset persistence failed",
           true,
+          cleanupKeys.length ? cleanupKeys : undefined,
         );
       }
       return {
         assets: [{
           ordinal: 0,
           key: assetKey,
-          seconds: output.asset.seconds,
-          ...(output.asset.width && output.asset.height
-            ? { width: output.asset.width, height: output.asset.height }
-            : {}),
+          seconds: media.durationSeconds,
+          width: media.width,
+          height: media.height,
           contentType,
           providerKey: output.asset.key ?? null,
         }],
@@ -298,6 +353,14 @@ export async function processVideoGenerate(
     acknowledgeTerminalRecord: deps.acknowledgeTerminalRecord,
     recordTransportExecution: deps.recordTransportExecution,
   });
+}
+
+async function rollbackGeneratedAssets(blob: GenProviders["blob"], keys: readonly string[]): Promise<string[]> {
+  const results = await Promise.allSettled(keys.map(async (key) => {
+    const result = await blob.delete({ key });
+    if (!result.ok) throw new Error(result.error.message);
+  }));
+  return keys.filter((_, index) => results[index]!.status === "rejected");
 }
 
 

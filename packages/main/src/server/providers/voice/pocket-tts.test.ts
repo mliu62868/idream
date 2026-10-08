@@ -8,6 +8,62 @@ const voiceSynthesisIdentity = {
 } as const;
 
 describe("PocketTtsVoiceModel", () => {
+  it("binds durable speech to its account and verifies the authenticated erasure receipt", async () => {
+    const calls: Array<[URL, RequestInit]> = [];
+    let acknowledged = true;
+    const voice = new PocketTtsVoiceModel({ baseUrl: "http://127.0.0.1:8063/v1", model: "pocket-tts", language: "english", apiKey: "gateway-token",
+      fetchImpl: async (endpoint, init) => { calls.push([new URL(String(endpoint)), init!]); return String(endpoint).endsWith("/account-erasure") ? Response.json({ erased: acknowledged }) : new Response(wavBytes(1_000), { headers: { "content-type": "audio/wav" } }); } });
+    expect((await voice.synthesize({ ...voiceSynthesisIdentity, ownerId: "private-account", text: "Private speech" })).ok).toBe(true);
+    const owner = new Headers(calls[0][1].headers).get("x-idream-owner-hash");
+    expect(owner).toMatch(/^[a-f0-9]{64}$/); expect(owner).not.toBe("private-account");
+    const erase = { subjectHash: owner!, requestKeys: [voiceSynthesisIdentity.idempotencyKey], voiceIds: ["private-voice"] };
+    expect(await voice.eraseAccount(erase)).toEqual({ ok: true, data: { erased: true } });
+    expect(calls[1][0].toString()).toBe("http://127.0.0.1:8063/v1/account-erasure");
+    expect(new Headers(calls[1][1].headers).get("authorization")).toBe("Bearer gateway-token");
+    expect(JSON.parse(String(calls[1][1].body))).toEqual({ subject_hash: owner, request_keys: erase.requestKeys, voice_ids: erase.voiceIds });
+    acknowledged = false;
+    expect(await voice.eraseAccount(erase)).toMatchObject({ ok: false, error: { code: "invalid_voice_erasure_receipt", retryable: true } });
+  });
+  it("bounds response-body delivery after the gateway sends its headers", async () => {
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const cancelled = vi.fn();
+    const stream = new ReadableStream<Uint8Array>({ start(controller) { streamController = controller; controller.enqueue(wavBytes(1_000)); }, cancel: cancelled });
+    const voice = new PocketTtsVoiceModel({ baseUrl: "http://127.0.0.1:8063/v1", model: "pocket-tts", language: "english", timeoutMs: 250,
+      fetchImpl: async () => new Response(stream, { headers: { "content-type": "audio/wav" } }) });
+    let timer!: ReturnType<typeof setTimeout>;
+    try {
+      const result = await Promise.race([voice.synthesize({ ...voiceSynthesisIdentity, text: "A reply." }),
+        new Promise(resolve => { timer = setTimeout(() => resolve("unbounded response body"), 600); })]);
+      expect(result).toMatchObject({ ok: false, error: { code: "voice_timeout", retryable: true } });
+      expect(cancelled).toHaveBeenCalledTimes(1);
+    } finally { clearTimeout(timer); if (!cancelled.mock.calls.length) streamController.close(); }
+  });
+
+  it("sends the complete longest accepted reply without dropping its ending", async () => {
+    const ending = " The final sentence must be heard aloud.";
+    const text = "a".repeat(2_000 - ending.length) + ending;
+    const fetchMock = vi.fn(async () => new Response(wavBytes(1_000), { headers: { "content-type": "audio/wav" } }));
+    const voice = new PocketTtsVoiceModel({ baseUrl: "http://127.0.0.1:8063/v1", model: "pocket-tts", language: "english", fetchImpl: fetchMock });
+    expect((await voice.synthesize({ ...voiceSynthesisIdentity, text })).ok).toBe(true);
+    expect(JSON.parse(String((fetchMock.mock.calls[0] as unknown as [URL, RequestInit])[1].body)).input).toBe(text);
+  });
+
+  it("rejects input beyond the configured bound before invoking the provider", async () => {
+    const fetchMock = vi.fn(async () => new Response(wavBytes(1_000), { headers: { "content-type": "audio/wav" } }));
+    const voice = new PocketTtsVoiceModel({ baseUrl: "http://127.0.0.1:8063/v1", model: "pocket-tts", language: "english", maxInputChars: 10, fetchImpl: fetchMock });
+    expect(await voice.synthesize({ ...voiceSynthesisIdentity, text: "The reply must stay complete." })).toMatchObject({ ok: false, error: { code: "voice_input_too_long", retryable: false } });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["garbage", "truncated", "invalid-frame-rate", "mislabeled"])("rejects %s provider audio instead of estimating billable duration", async fault => {
+    const bytes = wavBytes(1_000);
+    const body = fault === "garbage" ? new TextEncoder().encode("not playable audio") : fault === "truncated" ? bytes.slice(0, -10) : bytes;
+    if (fault === "invalid-frame-rate") new DataView(body.buffer).setUint32(28, 1, true);
+    const voice = new PocketTtsVoiceModel({ baseUrl: "http://127.0.0.1:8063/v1", model: "pocket-tts", language: "english",
+      fetchImpl: async () => new Response(body, { headers: { "content-type": fault === "mislabeled" ? "audio/mpeg" : "audio/wav" } }) });
+    expect(await voice.synthesize({ ...voiceSynthesisIdentity, text: "A reply." })).toMatchObject({ ok: false, error: { code: "invalid_voice_response" } });
+  });
+
   it("reports the official CPU runtime and reusable voice-cloning capability", async () => {
     const fetchMock = vi.fn(async () =>
       Response.json({

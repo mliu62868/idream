@@ -115,7 +115,7 @@ export async function selectCharacterDraftImage(
     await assertNoCandidateRelease(tx, {
       projectId: project.id,
       characterId: input.characterId,
-      message: "The active Character Release already pins an immutable image set",
+      message: "A candidate Release waiting in Release pins the current image set; publish or discard it before changing images",
     });
 
     const selection = await resolveSelectableCharacterImage(tx, {

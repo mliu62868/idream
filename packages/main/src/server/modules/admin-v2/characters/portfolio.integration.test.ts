@@ -1,3 +1,4 @@
+import { compileCharacterSoul } from "@idream/shared";
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -230,6 +231,8 @@ describe("Character Portfolio authority/read model", () => {
         policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
       },
     });
+    const releasableSoul = compileCharacterSoul({ name: "Portfolio A", age: 25, gender: "female", characterPromise: "A curious companion", detailsMarkdown: "" });
+    if (!releasableSoul.ok) throw new Error("Invalid fixture Soul");
     await prisma.characterContentVersion.createMany({
       data: [
         {
@@ -237,8 +240,9 @@ describe("Character Portfolio authority/read model", () => {
           characterId: characterA,
           version: 1,
           contentHash: `hash-a-${suffix}`,
-          personaSnapshot: {},
-          openingSnapshot: {},
+          // A releasable Soul, so the journey reaches Preview instead of Soul repair.
+          personaSnapshot: JSON.parse(JSON.stringify(releasableSoul.snapshot)),
+          openingSnapshot: { firstMessage: "Hello." },
           appearanceSnapshot: {},
           sourceType: "test",
         },

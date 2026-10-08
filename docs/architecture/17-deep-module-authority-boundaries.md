@@ -108,9 +108,19 @@ Gen 只执行已发布的 workflow-native backend 与精确版本 pins；已退�
 
 但这句话此前只在**串行**下成立。clamp 是一次「先读后发」，而 ledger 自己的锁是**按用户**的：它串行化两笔写，不串行化决定这两笔写的两次读。两个 cause 各自读到 `refunded = 0`，就各自全额发一次——幂等键不同，`postDreamcoinEntry` 也不会拦。六个退款调用点里五个碰巧先拿了 `generation_jobs` 行锁，唯独完成路径的缺量部分退款没拿；而事件退款（`incident_action`）压根不改 Request，因此也不会让部分退款那笔的版本 CAS 失败。40 币的扣费实测退回 80。
 
-现在这把行锁收进 `ensureGenerationSettlementLinks` 本身——产出 `refundable` 的那次读**不可能**不持锁，clamp 因此是判断而不是猜测。锁序固定为 `generation_jobs → users`（该读永远先于 `postDreamcoinEntry`）。这是 §3.3 第 2 条的写法：与其加一条「调用方必须先上锁」的检查，不如让「不上锁地读 clamp」不可表达。
+现在行锁收进 `lockGenerationRequestForSettlement`，`ensureGenerationSettlementLinks` 在读取退款上界前调用它——产出 `refundable` 的那次读**不可能**不持锁，clamp 因此是判断而不是猜测。锁序固定为 `users → generation_jobs → attachments`，与 Generation admission、Chat mutation 及账本写入一致；不能先锁 Request 再等用户锁（见 ADR-21）。这是 §3.3 第 2 条的写法：与其加一条「调用方必须先上锁」的检查，不如让「不上锁地读 clamp」不可表达。
+
+用户侧费用也只从 `GenerationSettlementLink → DreamcoinLedger` 批量读取实际捕获与退款，列表、详情与 VideoSequence 共用 `readGenerationJobs`。`costDreamcoins` 是订单报价，`GenerationJobEvent` 是可读时间线；二者不能推导实际扣款。GET 不建立 settlement link、不修复账本、不触发退款。
 
 顺带修掉一个白发币口子：缺量部分退款此前完全不查 settlement，只凭 `costDreamcoins > 0` 就发币，而它是**记账值**——未真正扣费的 Request 会凭空得币。
+
+#### 2.1.5 失败产物清理是独立持久意图
+
+Gen 的 failed TerminalRecord 可携带 `cleanupKeys`；这些对象没有交付资格，不能被写成 succeeded assets 来换取清理入口。字段无默认值，历史记录的 checksum 格式保持不变。每次 put 调用前记录精确 key，即使存储写成功但 ACK 丢失也进入回滚范围；确认 `created: false` 的既存对象排除。立即删除的 throw 和 `ok: false` 都保留清理意图。
+
+Main 在不可变 dispatch 校验后，验证 `gen/{requestId}/attempts/{attemptId}/`、规范文件名及 dispatch 数量预算；与 terminal receipt 原子提交 `generation.blob_cleanup.requested.v1` outbox。独立 event-consumer lane 持 lease/CAS 重试，全部删除确认成功才标 delivered。取消或旧 attempt 的 failed 终态也能持久化清理，不恢复用户交付。账号擦除枚举该 outbox（包括 delivered）和 failed finalize 的 keys，最后再次枚举，未删除的 receipt 阻止 completion。
+
+有待清理 key 的同一 attempt 不自动重放 provider；精确终态重放保留原 checksum 与 keys。新 attempt 仍使用独立前缀。本协议不证明成功 put 后、首次 terminal record 持久化前的任意崩溃已自动补偿；queued/running/unknown Attempt 或 running/unknown TransportExecution 阻止账号硬删，未决产物须与运营裁决一起收敛。
 
 ### 2.2 Dreamcoin Ledger 只有一个类型化写入口
 
@@ -499,6 +509,10 @@ admission/direct producer，后停 Gen worker，finalizer 最后。`pm2 jlist` �
 与 Main 专属 Route Handler；generic ingress/dispatcher 都拒绝或不选择该事件。Main completion
 receipt 使用独立 namespace，不能被旧 generic no-op receipt 阻断；Chat 前滚时把旧 `consumed`
 receipt 视为可修复证据，只有专属 Main ACK 后才写 `consumed_v2`。
+
+Chat ACK 也不代替媒体擦除完成。Main 保留所有者映射，直到生成执行、Main 语音写入与视频合成均已收敛、私有 Blob 删除回执完成，以及每个历史 pinned TTS provider 的擦除回执完成。租约过期允许受控恢复，不能证明旧调用已经停止 I/O；取消或接班后的产品终态也不能自动抹掉旧写入者的执行证据。新接纳、恢复、写入和交付须在 User 根锁下重新验证账号权威，数据库锁不跨 provider/Blob I/O。
+
+TTS gateway 持久化账号、精确 request key 和 clone alias 的擦除屏障，拒绝迟到写入与重启重放；Main `AccountDeletion.voiceErasure` 按历史 provider 保存独立 ACK，最终只留完成证据。官方声音属于既有平台 owner，运营 `createdById` 是审计来源；私人角色声音属于 creator。未交付或提交结果未知的语音仍可按 canonical request key 枚举全部支持格式，不依赖 MediaAsset 必须存在。未决执行或删除失败保留映射和待处理回执，不得宣称账号擦除完成。
 
 本 ADR 不要求新增数据库表。必要 schema 变更交付 migration/SQL；开发/专用测试库按项目授权核对目标与隔离后执行，生产库由用户或发布系统执行。
 

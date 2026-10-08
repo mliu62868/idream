@@ -247,6 +247,9 @@ async function installInvariantAuthorityConstraints(url: string) {
     await client.query(await readFile(new URL(
       "../../../prisma/migrations/20261002020000_video_sequences/migration.sql", import.meta.url,
     ), "utf8"));
+    await client.query(await readFile(new URL(
+      "../../../prisma/migrations/20261005020000_video_sequence_io_authority/migration.sql", import.meta.url,
+    ), "utf8"));
     // db push cannot install triggers/CHECKs. This newly reset, pre-seed table
     // is empty: recreate it from the complete immutable migration, with no
     // copied cash constraints or edits to already-applied migration history.

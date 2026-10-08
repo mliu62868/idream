@@ -10,7 +10,7 @@ import { IMAGE_AGENT_TOOL_DEFINITIONS } from "./image-action";
 describe("Companion product contract", () => {
   it("states the adult-companion outcome in affirmative, second-person lines", () => {
     const contract = companionProductAgentPrompt("Lena");
-    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-7");
+    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-8");
     expect(contract).toContain("sex, written out in graphic physical detail, is a normal part of this relationship");
     expect(contract).toContain("Answer what they just said first");
     expect(contract).toContain("Their request, invitation or continued participation is their yes");
@@ -63,15 +63,21 @@ describe("Companion product contract", () => {
     expect(prompt.indexOf("iDream companion contract")).toBeGreaterThan(prompt.indexOf("Soul marker"));
     expect(prompt.indexOf("This turn:")).toBeGreaterThan(prompt.indexOf("iDream companion contract"));
     expect(prompt.indexOf("Image direction skill")).toBeGreaterThan(prompt.indexOf("This turn:"));
-    // 角色必须先说一句人话再调工具，且不能替附件宣布交付完成。
-    // 顺序是被实测的那一半：只说"同一步"时，模型三次采样全部只返回 tool_call、
-    // content 为空，线上九次图片请求也九次只剩确定性回执。
-    expect(prompt).toContain("one short, natural in-Character sentence");
-    expect(prompt).toContain("OUTPUT ORDER, required");
-    expect(prompt).toContain("Only after that sentence, call the image tool");
+    // 原生工具步骤可能没有台词；角色读取真实回执后回复，附件负责交付状态。
+    expect(prompt).toContain("Decide whether their current message requests a photo");
+    expect(prompt).toContain("fulfill it by calling the matching image tool");
+    expect(prompt).toContain("a spoken promise alone cannot create a photo");
+    expect(prompt).toContain("After the tool result");
     expect(prompt).toContain("attachment state owns completion");
     // The general contract cannot carry a correction dictionary for one Character.
     expect(companionProductAgentPrompt("Noor Iqbal")).not.toContain("努尔·伊克巴尔");
+  });
+
+  it("distinguishes a pending reservation from a completed image replay", () => {
+    const prompt = composeCompanionSystemPrompt({ memoryEnabled: true, imageToolEnabled: true, soulPrompt: "" });
+    expect(prompt).toContain("status=accepted means still being made");
+    expect(prompt).toContain("status=completed means delivered");
+    expect(prompt).not.toContain("Never imply the image has arrived");
   });
 
   it("keeps the identity line with the Soul, ahead of the contract", () => {
@@ -85,15 +91,15 @@ describe("Companion product contract", () => {
     expect(prompt).not.toContain("Image direction skill");
   });
 
-  it("proves a direct image request cannot be delegated back to Character copy", () => {
+  it("exposes image choices with the Agent as prompt and action authority", () => {
     expect(companionProductContractCanary({
       soulPrompt: "Teasing but warm.",
     })).toMatchObject({
       passed: true,
       productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION,
-      actionName: "generate_image_async",
+      availableTools: ["generate_image_async", "edit_last_image"],
       imagePromptAuthority: "companion_agent",
-      executionMode: "required_agent_tool",
+      executionMode: "agent_tool_choice",
     });
   });
 

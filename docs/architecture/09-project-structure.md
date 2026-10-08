@@ -1,12 +1,12 @@
 # 09 · 工程结构与约定
 
-更新日期：2026-09-01
+更新日期：2026-10-05
 
 落地 01 的分层到目录结构，定义命名与"东西放哪"。原则：**按 feature/domain 组织，不按类型**；many small files；代码、测试、文档就近（global rules）。
 
 ## 1. 目录结构（as-built）
 
-仓库是 npm workspaces monorepo（根 `package.json` 的 `workspaces: ["packages/*"]`）：
+仓库使用 Bun workspaces（根 `package.json` 的 `workspaces: ["packages/*"]`），通过 workspace 脚本与 Turbo 执行检查：
 
 ```
 idream/
@@ -31,12 +31,12 @@ idream/
 │  │     ├─ e2e/  types/       # e2e 用例 / 共享类型
 │  │     └─ server/            # ★ 后台核心
 │  │        ├─ modules/
-│  │        │  ├─ ourdream/service.ts  # 产品域 mega-module（dispatchV1）+ 就近 *.test.ts
-│  │        │  └─ admin/               # service.ts + characters/（official/templates/tags/review/assist）
+│  │        │  ├─ ourdream/service.ts  # dispatchV1 与产品 HTTP 编排；领域权威按 feature 就近实现
+│  │        │  └─ admin-v2/            # 运营命令、权限、审计、reconciliation 与读模型
 │  │        ├─ jobs/queue.ts   # JobQueue + claim
 │  │        ├─ providers/      # Main 只注册 chat/voice/moderation/payment/blob/verify；不含 image/video
 │  │        ├─ bff/chat-proxy.ts   # legacy 文件名；Main Turn Ledger façade，仅 AgentRun admission/cancel/SSE 跨 Chat
-│  │        ├─ ai/             # Main 文本/兼容 schema；legacy external media adapter 不拥有 image/video 执行
+│  │        ├─ ai/             # Generation 证据接纳、交付、结算与恢复；不执行 image/video provider
 │  │        ├─ admin/          # permissions、effective-permissions、dev-login
 │  │        └─ lib/
 │  │           ├─ db.ts        # PrismaClient 单例
@@ -64,7 +64,7 @@ idream/
 | `server/moderation/*` | `lib/db`、`lib/*`、`providers/*`；不 import 产品域模块 |
 | `providers/*` | SDK、`lib/*`（除业务模块） |
 | `lib/*` | 仅彼此与基础库，**不 import 任何 modules** |
-| 跨包 | 经 `packages/shared` 共享契约；Main 经 `server/bff/chat-proxy` 发送不可变 `PreparedTurn`，Chat 只返回执行证据 |
+| 跨包 | 经 `packages/shared` 共享契约；Main 经 BFF 发送不可变产品执行快照，Chat 内编译成 `PreparedTurn` 并返回执行证据（ADR-21） |
 
 **禁止**：catch-all route 写业务逻辑或直接用 Prisma；provider/lib import 业务模块；把 Chat 本地文件、SSE 或 DSH transcript 当成产品历史/账本；循环依赖（用事件/job 打破）。Chat 不拥有产品权威表。
 
@@ -72,7 +72,7 @@ idream/
 
 ## 3. 命名约定
 
-- 文件：`kebab-case`；产品域聚合在 `ourdream/service.ts`，就近 `*.test.ts`；admin 子域按 `characters/<topic>.ts` + `<topic>.test.ts`。
+- 文件：`kebab-case`；HTTP 编排集中在 `ourdream/service.ts`，领域操作按 feature 就近实现与测试；边界遵循 ADR-17 的权威模块，不因入口集中而把事务与恢复协议复制进 handler。
 - 导出：**命名导出**（不用 default，除 Next 约定的 page/route 文件）。
 - 类型/接口：PascalCase；函数/变量：camelCase；常量枚举值：lower_snake（与 DB 字符串一致）。
 - DTO 函数：`toPublicDTO` / `toOwnerDTO` / `toAdminDTO`（按可见层级）。
@@ -126,7 +126,7 @@ export const JOB_STATUS = ["queued","running","completed","failed","dead"] as co
 
 ## 5. 加一个 endpoint（as-built）
 
-不新建 `route.ts`，而是在 mega-module 里加 handler + 在 `dispatchV1` 注册一条分发规则：
+产品 API 由既有 catch-all 分发，不为每个产品动作新建 `route.ts`。在 `dispatchV1` 注册 HTTP handler，鉴权与输入解析后调用所属领域权威；简单查询可直接用 Prisma，涉及锁序、计费、交付或恢复时复用已有领域入口（ADR-17）：
 
 ```ts
 // modules/ourdream/service.ts

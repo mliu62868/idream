@@ -1,6 +1,6 @@
 # 06 · 异步任务与 AI 执行
 
-更新日期：2026-08-28
+更新日期：2026-10-05
 
 ## 1. 两种执行模型
 
@@ -24,6 +24,7 @@ iDream 不把所有慢任务塞进同一队列：
 | `reward.ledger` | product reward intent | Main ledger worker | source id |
 | `report.triage` | report API | Main trust worker | report id |
 | Main durable outbox | Main authority transaction | target service HTTP ingest | event id |
+| `generation.blob_cleanup.requested.v1` outbox | Main terminal ingest | Main event-consumer 独立 cleanup lane | `attemptId` |
 
 Chat 没有 `chat.generate`、`chat.memory.extract` 或 `chat.outbox.deliver` queue。
 
@@ -35,13 +36,15 @@ Main transaction commits Turn
   -> Chat atomically creates AgentRun
   -> DSH emits model/tool events
   -> Chat streams transient tokens through Redis/SSE
+  -> Chat persists immutable pending proposal.json
   -> Chat posts terminal candidate to Main
   -> Main exact-attempt CAS + usage commit
   -> durable ACK
-  -> Chat writes terminal.json, emits done, permits memory ingest
+  -> Chat emits done and cleans accepted successful trace
+Main committed Turn -> durable memory projection -> Chat prepare/promote
 ```
 
-重连从 Redis/AgentRun events 恢复传输，但产品完成状态必须重新向 Main 查询。相同 idempotency key 对已终态 Turn 只返回当前产品结果，不重启模型。
+重连从 Redis/AgentRun events 恢复传输，但产品完成状态必须重新向 Main 查询。相同 idempotency key 对已终态 Turn 只返回当前产品结果，不重启模型。Main ACK 未确定时保留精确 proposal；成功提交后清理本地成功轨迹，失败或未决轨迹最多保留七天。记忆只从 Main 已提交 Turn 异步投影，不从 Chat 终态候选直接 ingest（ADR-21）。
 
 ## 4. ToolEffect 与 Generation
 
@@ -70,6 +73,8 @@ Request admitted
 - Request/Attempt 是执行身份；Job 展示字段不能反推或补造它们。
 - provider 超时、进程退出和 terminal relay 重试都不能产生第二笔结算。
 - 图片/视频 worker ownership 在启动和恢复时必须精确；mock video 不注册真实 video worker。
+- 写入失败的私有产物不进入 Artifact/Delivery。Gen 对所有已尝试的精确 key 回滚，确认已存在的对象不回滚；未获删除成功确认的 key 进入 failed TerminalRecord 的可选 `cleanupKeys`。Main 验证不可变 dispatch 的 attempt 前缀、文件名与数量预算，在同一接收事务建立清理 outbox，并以 lease/CAS 独立重试；账号擦除也枚举该终态和所有状态的清理 outbox，未删完不能完成。
+- 已有待清理 key 时，不自动重用同一 attempt 调用 provider；终态重放只重投原始记录。该协议覆盖已观察到的写入/回滚失败，不宣称覆盖成功 put 后、首次 TerminalRecord 持久化前的所有进程崩溃；open/unknown 生成执行仍须运营收敛后才允许账号硬删。
 
 ## 6. Provider 边界
 
@@ -77,6 +82,7 @@ Request admitted
 - 图片/视频 provider 只由 `packages/gen` 执行。
 - Main 持有产品策略、moderation、entitlement、ledger、Generation 和交付状态机。
 - Provider adapter 只做协议、超时、错误映射与原始执行证据，不做余额更新。
+- Main 的同步 VoiceClip 和视频后期合成也拥有持久请求/租约与写入证据。账号擦除不能只等待 Gen 的原生生成终态；还须等待 Main 在途私有写入退出、枚举未交付文件，并取得历史 TTS 缓存/alias 的持久擦除 ACK（ADR-17 §6）。
 
 ## 7. 可靠性与可观测
 

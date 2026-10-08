@@ -88,6 +88,7 @@ function completedDshTrace() {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
@@ -100,7 +101,7 @@ afterEach(() => {
 });
 
 function installFailFastProbeFetch(
-  scenario: "normal_fatal" | "recall_fatal" | "recall_mismatch" | "regenerate_fatal"
+  scenario: "normal_fatal" | "normal_pending" | "recall_fatal" | "recall_mismatch" | "regenerate_fatal"
     | "recall_create_failed" | "recall_session_reused" | "archive_failed",
 ): string[] {
   let recallSessionId = "session-probe";
@@ -235,7 +236,7 @@ function installFailFastProbeFetch(
           ...(sessionMatch[1] === "session-probe" ? [{
             id: "assistant-normal",
             role: "assistant",
-            status: "sent",
+            status: scenario === "normal_pending" ? "pending" : "sent",
             content: "ok",
             attempt: 1,
             memoryExtractedAttempt: 1,
@@ -855,5 +856,50 @@ describe("chat service conversation probe", () => {
         request.endsWith("/messages")),
     ).toHaveLength(2);
     expect(conversation.cleanup?.ok).toBe(true);
+  });
+
+  it("observes already-settled messages when the first read crosses a deadline clock tick", async () => {
+    db.findUser.mockResolvedValue(auditActor);
+    vi.stubEnv("CHAT_SERVICE_PROBE_SETTLE_TIMEOUT_MS", "1");
+    vi.stubEnv("CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS", "100");
+    const requests = installFailFastProbeFetch("regenerate_fatal");
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => ++now);
+
+    const report = await runProbe({
+      serviceUrl: "http://127.0.0.1:3100",
+      secret: "probe-secret",
+      internalToken: "internal-probe-token",
+      userId: auditActor.id,
+      characterId: "lola-moonstruck",
+    });
+
+    expect(requests).toContain("GET /api/v1/chat/sessions/session-probe");
+    expect(requests).toContain("GET /api/v1/chat/sessions/session-recall");
+    expect(requests).toContain("POST /api/v1/chat/messages/assistant-recall/regenerate");
+    expect(report.conversation?.regenerateAnchor.error).toBe("regenerate stream failed: provider_failed");
+    expect(report.conversation?.cleanup.ok).toBe(true);
+  });
+
+  it("still rejects a pending message after the deadline's first observation", async () => {
+    db.findUser.mockResolvedValue(auditActor);
+    vi.stubEnv("CHAT_SERVICE_PROBE_SETTLE_TIMEOUT_MS", "1");
+    vi.stubEnv("CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS", "100");
+    const requests = installFailFastProbeFetch("normal_pending");
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => ++now);
+
+    const report = await runProbe({
+      serviceUrl: "http://127.0.0.1:3100",
+      secret: "probe-secret",
+      internalToken: "internal-probe-token",
+      userId: auditActor.id,
+      characterId: "lola-moonstruck",
+    });
+
+    expect(report.conversation?.getSession.ok).toBe(false);
+    expect(report.conversation?.ok).toBe(false);
+    expect(requests.some(request => request.endsWith("/archive") || request.endsWith("/regenerate"))).toBe(false);
+    expect(report.conversation?.cleanup.ok).toBe(true);
   });
 });

@@ -5,6 +5,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { TagsView } from "./TagsView";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
@@ -53,6 +54,28 @@ describe("TagsView write gating", () => {
     expect(labels).not.toContain("Merge");
     expect(labels).not.toContain("Create tag");
     expect(container.textContent).toContain("ask an admin owner to grant it");
+  });
+
+  it("reloads taxonomy once per shell refresh while preserving filters and an unfinished edit", async () => {
+    window.history.replaceState(null, "", "/admin/characters/taxonomy?fixture=retain");
+    await act(async () => root.render(<TagsView canWrite />));
+    await waitFor(() => container.textContent?.includes("Elf") ?? false);
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search by slug, label, or category"]')!;
+    await changeInput(search, "elf");
+    await act(async () => button(container, "Edit")?.click());
+    const label = container.querySelector<HTMLInputElement>('tbody input[aria-label="Label"]')!;
+    await changeInput(label, "Unfinished taxonomy label");
+    fetchMock.mockImplementation(async () => Response.json({ ok: true, data: { items: [{ ...tag, characterCount: 7 }] } }));
+
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+
+    expect(fetchMock.mock.calls.filter(([path]) => path === "/api/v2/admin/content/tags")).toHaveLength(2);
+    expect(container.querySelector<HTMLInputElement>('tbody input[aria-label="Label"]')?.value).toBe("Unfinished taxonomy label");
+    expect(search.value).toBe("elf");
+    expect(container.querySelector("tbody")?.textContent).toContain("7");
+    expect(window.location.pathname + window.location.search).toBe("/admin/characters/taxonomy?fixture=retain");
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    expect(fetchMock.mock.calls.filter(([path]) => path === "/api/v2/admin/content/tags")).toHaveLength(3);
   });
 
   it("creates a tag with the derived slug as confirmation", async () => {

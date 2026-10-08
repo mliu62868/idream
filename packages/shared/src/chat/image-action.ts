@@ -10,11 +10,13 @@ export const generateImageAsyncArgsSchema = z.object({
   caption: z.string().trim().min(1).max(500).optional(),
   orientation: z.enum(["4:5", "1:1", "16:9"]).optional(),
   outputCount: z.number().int().min(1).max(4).optional(),
+  requestedNudity: z.enum(["unspecified", "none", "full"]).optional(),
 }).strict();
 
 export const editLastImageArgsSchema = z.object({
   instruction: z.string().trim().min(4).max(1_200),
   caption: z.string().trim().min(1).max(300).optional(),
+  requestedNudity: z.enum(["unspecified", "none", "full"]).optional(),
 }).strict();
 
 export interface GenerateImageAsyncArgs {
@@ -23,6 +25,7 @@ export interface GenerateImageAsyncArgs {
   caption?: string;
   orientation: "4:5" | "1:1" | "16:9";
   outputCount: number;
+  requestedNudity?: RequestedNudity;
 }
 export type EditLastImageArgs = z.infer<typeof editLastImageArgsSchema>;
 
@@ -38,10 +41,6 @@ export interface EditLastImageToolCall {
 
 export type ImageAgentToolCall = GenerateImageAsyncToolCall | EditLastImageToolCall;
 export type RequestedNudity = "unspecified" | "none" | "full";
-export interface RequiredImageAction {
-  readonly name: ImageAgentToolCall["name"];
-  readonly requestedNudity: RequestedNudity;
-}
 
 export const IMAGE_AGENT_TOOL_DEFINITIONS: readonly ChatToolDefinition[] = [
   {
@@ -50,7 +49,7 @@ export const IMAGE_AGENT_TOOL_DEFINITIONS: readonly ChatToolDefinition[] = [
     // capability). Advertising a count or a square format let the Character
     // promise "three ways" or "both angles" and deliver one.
     description:
-      "Send exactly one photo. If several are requested, send the best one now and offer the next.",
+      "Create exactly one photo for a new photo request by calling this tool. A spoken promise creates no photo. Returns acceptance; the attachment delivers it.",
     parameters: {
       type: "object",
       properties: {
@@ -67,6 +66,7 @@ export const IMAGE_AGENT_TOOL_DEFINITIONS: readonly ChatToolDefinition[] = [
           type: "string",
           description: "Short in-character message to accompany the photo",
         },
+        requestedNudity: { type: "string", enum: ["unspecified", "none", "full"], description: "Current wardrobe intent: none for clothed, full for nude, unspecified when neither is requested. All wardrobe clauses in prompt must agree with this value: full depicts a fully nude adult without clothes; none preserves requested clothing. Drop conflicting outfits from earlier photos or default appearance." },
         orientation: { type: "string", enum: ["4:5", "16:9"], description: "4:5 portrait (default) or 16:9 landscape" },
       },
       required: ["prompt", "subject"],
@@ -81,12 +81,13 @@ export const IMAGE_AGENT_TOOL_DEFINITIONS: readonly ChatToolDefinition[] = [
       properties: {
         instruction: {
           type: "string",
-          description: "Concrete description of the edit to make to the last photo (4-1200 chars)",
+          description: "English description of every requested edit to the last photo (4-1200 chars)",
         },
         caption: {
           type: "string",
           description: "Short in-character message to accompany the edited photo",
         },
+        requestedNudity: { type: "string", enum: ["unspecified", "none", "full"], description: "Wardrobe intent in the current user request; preserve all concrete edit and clothing constraints in instruction." },
       },
       required: ["instruction"],
     },
@@ -119,248 +120,8 @@ export function parseImageAgentToolCall(
   return null;
 }
 
-const CHINESE_IMAGE_NOUN = "(?:裸照|自拍照?|随手照|写真(?:照|片)?|照片|相片|图片|图像)";
-const ENGLISH_IMAGE_NOUN = "(?:photo|picture|pic|selfie|image|portrait|nude)";
-const CHINESE_NON_NUDE_IMAGE_NOUN = "(?:自拍照?|随手照|写真(?:照|片)?|照片|相片|图片|图像)";
-const ENGLISH_NON_NUDE_IMAGE_NOUN = "(?:photo|picture|pic|selfie|image|portrait)";
-
-export type ImageIntentDecision =
-  | {
-      kind: "generate";
-      reason: "explicit_media_command" | "show_companion_command" | "visual_gift_command" | "confirmed_image_offer" | "classified_media_request";
-      action: RequiredImageAction & { readonly name: typeof GENERATE_IMAGE_ASYNC_TOOL };
-      confirmedOffer?: string;
-    }
-  | {
-      kind: "edit";
-      reason: "explicit_last_image_edit" | "contextual_image_edit" | "classified_image_edit";
-      action: RequiredImageAction & { readonly name: typeof EDIT_LAST_IMAGE_TOOL };
-    }
-  | { kind: "none"; reason: "empty" | "negated" | "discussion_or_ambiguous" };
-
-/**
- * SPEC: Chat owns explicit image actions. Soul may shape the accompanying words,
- * but neither the character nor the language model may negotiate the action away.
- */
-export function imageIntentForUserRequest(input: {
-  userText: string;
-  hasRecentImageContext?: boolean;
-  previousAssistantText?: string;
-}): ImageIntentDecision {
-  const userText = input.userText.replace(/\s+/g, " ").trim();
-  if (!userText) return { kind: "none", reason: "empty" };
-  if (negatesImageAction(userText)) return { kind: "none", reason: "negated" };
-
-  // Discussion may quote an image command. Only the actionable sentences can
-  // authorize spending; a separate direct request still works after a question.
-  const actionableText = userText.split(/(?<=[.!?。！？])\s*/u)
-    .filter((sentence) => !isImageDiscussion(sentence)).join(" ");
-  if (explicitLastImageEdit(actionableText)) {
-    return editDecision(userText, "explicit_last_image_edit");
-  }
-  if (input.hasRecentImageContext && contextualImageEdit(actionableText)) {
-    return editDecision(userText, "contextual_image_edit");
-  }
-
-  const directReason = explicitNewImageRequest(actionableText);
-  const confirmedOffer = directReason ? null : confirmedImageOffer(userText, input.previousAssistantText);
-  const reason = directReason ?? (confirmedOffer ? "confirmed_image_offer" : null);
-  if (!reason) return { kind: "none", reason: "discussion_or_ambiguous" };
-  return {
-    kind: "generate",
-    reason,
-    ...(confirmedOffer ? { confirmedOffer } : {}),
-    action: {
-      name: GENERATE_IMAGE_ASYNC_TOOL,
-      requestedNudity: requestedNudityIntent(confirmedOffer ?? userText),
-    },
-  };
-}
-
-// SPEC: a recall-only, deterministic gate over the user's own words in this Turn.
-// INTENT: the CN/EN matchers below decide; every other language is decided by a
-// classifier that sees nothing but this same message. This gate bounds what that
-// classifier may ever be asked about, and it is the same envelope Main enforces
-// before it will spend, so no memory, instruction or persona can widen it.
-// INVARIANT: err wide. A false positive costs one classifier call; a false
-// negative makes the feature unreachable in that language.
-const IMAGE_SUBJECT_PATTERNS: readonly RegExp[] = [
-  // ASCII stems, inflection-tolerant: a word boundary keeps them off longer words.
-  /\b(?:photo|foto|selfie|selfi|selca|snap|pics?\b|picture|imagem|imagen|immagin|images?\b|portrait|portret|potret|gambar|resim|bild|billed|afbeeld|plaatje|kuva|zdjec|obrazek|poza|kep|snimok|snimk|slik|tasveer|tasvir|nude|naked)/iu,
-  // Diacritics put the stem outside \b's ASCII alphabet, so match them plainly.
-  /(?:fot[oó]|fotoğraf|fotó|zdj[eę]ci|po[zż]a|k[eé]p|sn[ií]m|ảnh|hình|chụp|brehne|çıplak)/iu,
-  // One alternation per non-Latin script family.
-  /(?:照片|相片|图片|圖片|图像|圖像|写真|自拍|画像|撮影|撮って|セルフィー|自撮り|사진|셀카|셀피|이미지|찍어)/u,
-  /(?:фот|селф|снимок|снимк|картинк|изображени|світлин)/iu,
-  /(?:صور|عکس|سلفی|سيلفي|برهنه|عاري)/u,
-  /(?:तस्वीर|फोटो|छवि|नंगी)/u,
-  /(?:รูป|ภาพ|เซลฟี|ถ่าย|เปลือย)/u,
-  /(?:φωτογραφ|תמונה|סלפי)/iu,
-];
-
-/**
- * Does this message name an image subject at all? Recall only — it answers
- * "could this be about a picture", never "is a picture authorized".
- */
-export function mentionsImageSubject(userText: string): boolean {
-  const value = userText.replace(/\s+/g, " ").trim();
-  if (!value) return false;
-  return IMAGE_SUBJECT_PATTERNS.some((pattern) => pattern.test(value));
-}
-
-export function requiredImageActionForUserRequest(input: {
-  userText: string;
-  hasRecentImageContext?: boolean;
-  previousAssistantText?: string;
-}): RequiredImageAction | null {
-  const decision = imageIntentForUserRequest(input);
-  return decision.kind === "none" ? null : decision.action;
-}
-
-function isImageDiscussion(value: string): boolean {
-  return /^\s*(?:if you (?:could|were to)\b|(?:please\s+)?(?:explain|describe|discuss|translate|imagine)\b|how (?:do|does|would|could|can|should)\b|(?:what|which|where) (?:would|could|should)\b|(?:can|could|would|will) you (?:please\s+)?(?:explain|describe|discuss|translate|tell me how)\b)/iu.test(value) ||
-    /^\s*(?:请)?(?:解释|翻译|想象|设想)/u.test(value) ||
-    /^\s*(?:假设|假如|要是|如果让你|如果你能).{0,100}(?:怎么|如何|什么|哪|你会|会选)/u.test(value) ||
-    /^\s*(?:如何|怎样|怎么|你会如何|你会怎么).{0,80}(?:拍|画|生成|制作|修改)/u.test(value);
-}
-
-function confirmedImageOffer(userText: string, previousAssistantText?: string): string | null {
-  if (!previousAssistantText) return null;
-  const affirmative = /^(?:yes|yeah|yep|sure|okay|ok|please do|go ahead)(?:[,，]?\s*(?:please|do|send it|show me|go ahead))?[.!！。\s]*$/iu.test(userText) ||
-    /^(?:好|好啊|好的|可以|行|要|想看)(?:[，,]?\s*(?:发吧|给我看|发给我|请发|看看))?[！!。\s]*$/u.test(userText);
-  if (!affirmative) return null;
-  const offer = previousAssistantText.replace(/\s+/g, " ").trim();
-  if (!/[?？]$/u.test(offer) || (offer.match(/[?？]/gu)?.length ?? 0) !== 1) return null;
-  const proposal = offer.match(new RegExp(`\\b(?:want me to|would you like me to|shall i|can i|may i|should i)\\s+(?:send|show|take|make|generate|create)\\b[^?!.]{0,60}\\b${ENGLISH_IMAGE_NOUN}s?\\b[^?!.]{0,60}\\?`, "i"))?.[0] ??
-    offer.match(new RegExp(`\\b(?:do you want|would you like|want)\\s+(?:to see\\s+)?(?:(?:a|an|one|my)\\s+)?(?:new\\s+|another\\s+)?${ENGLISH_IMAGE_NOUN}\\b[^?!.]{0,60}\\?`, "i"))?.[0] ??
-    offer.match(new RegExp(`(?:要不要|想不想)(?:我)?(?:给你|发|拍|生成|画|送你|看|看看)[^。？！]{0,24}${CHINESE_IMAGE_NOUN}[^。？！]{0,12}[？?]`, "u"))?.[0] ??
-    offer.match(new RegExp(`想(?:看|要)[^。？！]{0,24}${CHINESE_IMAGE_NOUN}[^。？！]{0,12}吗[？?]`, "u"))?.[0];
-  return proposal && !negatesImageAction(proposal) ? proposal : null;
-}
-
-function requestedNudityIntent(value: string): RequestedNudity {
-  const rejectsNudity =
-    /(?:不要|别|不用|不想要|不能).{0,10}(?:裸照|裸体|全裸|赤裸|一丝不挂|脱光|露点)/u.test(value) ||
-    /(?<!不)(?<!没)(?<!没有)(?:要|保持|继续)?穿着?(?:衣服|内衣|睡袍|长袍|泳装)/u.test(value) ||
-    /\b(?:not|never)\s+(?:fully\s+)?(?:nude|naked|unclothed)\b/i.test(value) ||
-    /\bno\s+nudity\b/i.test(value) ||
-    /\bdon['’]?t\s+(?:be|look|pose|make (?:it|me|her|him))?\s*(?:nude|naked)\b/i.test(value) ||
-    /\bkeep\b.{0,20}\bclothes\s+on\b/i.test(value);
-  if (rejectsNudity) return "none";
-  const requestsFullNudity =
-    /(?:裸照|裸体|全裸|赤裸|一丝不挂|不穿(?:任何)?(?:衣服|内衣)|(?:没有?|没)穿(?:任何)?(?:衣服|内衣)|脱光)/u.test(value) ||
-    /\b(?:nude|naked|fully unclothed|without (?:any )?clothes|no clothes)\b/i.test(value);
-  return requestsFullNudity ? "full" : "unspecified";
-}
-
-function editDecision(
-  userText: string,
-  reason: "explicit_last_image_edit" | "contextual_image_edit",
-): ImageIntentDecision {
-  return {
-    kind: "edit",
-    reason,
-    action: {
-      name: EDIT_LAST_IMAGE_TOOL,
-      requestedNudity: requestedNudityIntent(userText),
-    },
-  };
-}
-
-function negatesImageAction(value: string): boolean {
-  const english = value.toLowerCase();
-  // A preservation constraint ("do not change anything else") must not consume
-  // an image noun from a later sentence or independent semicolon clause.
-  // Genuine image cancellation in any clause still vetoes the whole request.
-  return new RegExp(
-      `(?:不要|别|不用|不必)(?:再)?(?:给我|给|发给我|发|拍|生成|创建|做|改|换|看)[^.!?;。！？；]{0,12}${CHINESE_NON_NUDE_IMAGE_NOUN}`,
-    "u",
-  ).test(value) ||
-    new RegExp(`(?:不要|别|不用|不必|不想)(?:看|要)[^.!?;。！？；]{0,8}${CHINESE_NON_NUDE_IMAGE_NOUN}`, "u")
-      .test(value) ||
-    /(?:不要|别|不用|不必)(?:给我)?看(?:你现在|你的样子|你穿什么|你的身材)/u.test(value) ||
-    new RegExp(
-      `\\b(?:don['’]?t|do not|never|no need to|stop)\\s+(?:send|show|give|make|generate|create|take|edit|change)\\b[^.!?;。！？；]{0,40}\\b${ENGLISH_NON_NUDE_IMAGE_NOUN}s?\\b`,
-      "i",
-    ).test(english) ||
-    new RegExp(`\\b(?:don['’]?t|do not)\\s+want\\b[^.!?;。！？；]{0,30}\\b${ENGLISH_NON_NUDE_IMAGE_NOUN}s?\\b`, "i")
-      .test(english);
-}
-
-function explicitLastImageEdit(value: string): boolean {
-  const english = value.toLowerCase();
-  const chineseTarget = "(?:上一张|上张|刚才那张|之前那张|这张|那张)";
-  const chineseEdit = "(?:改|换|重做|重新做|加上|加个|去掉|删掉|移除)";
-  return new RegExp(`${chineseTarget}.{0,36}${chineseEdit}`, "u").test(value) ||
-    new RegExp(`${chineseEdit}.{0,24}${chineseTarget}`, "u").test(value) ||
-    // A delivered image may be identified by a relative clause, not just
-    // "last/this photo". Discussion and negation are filtered before this seam.
-    new RegExp(
-      `\\b(?:edit|change|redo|remake|modify)\\s+(?:the\\s+)?${ENGLISH_IMAGE_NOUN}\\s+(?:that\\s+)?you\\s+(?:just\\s+)?(?:sent|generated|created|made)\\b`,
-      "i",
-    ).test(english) ||
-    new RegExp(
-      `\\b(?:edit|change|redo|remake|modify|add|remove)\\b.{0,40}\\b(?:last|previous|this|that)\\b.{0,24}\\b${ENGLISH_IMAGE_NOUN}\\b`,
-      "i",
-    ).test(english) ||
-    new RegExp(
-      `\\b(?:last|previous|this|that)\\b.{0,24}\\b${ENGLISH_IMAGE_NOUN}\\b.{0,40}\\b(?:edit|change|redo|remake|modify|add|remove)\\b`,
-      "i",
-    ).test(english);
-}
-
-function contextualImageEdit(value: string): boolean {
-  const english = value.toLowerCase();
-  return /^(?:再)?(?:换|改|试)(?:个|一下|一版)?(?:姿势|动作|背景|衣服|服装|穿搭|发型|表情|角度|场景)/u.test(value) ||
-    /^把(?:姿势|动作|背景|衣服|服装|穿搭|发型|表情|角度|场景).{0,24}(?:换|改|变|调)/u.test(value) ||
-    /\b(?:change|try|use)\b.{0,18}\b(?:another|a different|the)\b.{0,12}\b(?:pose|background|outfit|clothes|hairstyle|expression|angle|scene)\b/i.test(english);
-}
-
-function explicitNewImageRequest(
-  value: string,
-): "explicit_media_command" | "show_companion_command" | "visual_gift_command" | null {
-  const english = value.toLowerCase();
-  const chineseVerb = "(?:给|发|发给|生成|创建|做|画|拍)";
-  const chineseCount = "(?:我)?(?:一|几|个|张|一张|几张)?(?:你的)?";
-  if (
-    new RegExp(`${chineseVerb}${chineseCount}.{0,24}${CHINESE_IMAGE_NOUN}`, "u").test(value) ||
-    new RegExp(`(?:给我|发我|发给我|我要|我想要|我想看|让我看|给我看看|来(?:一|几)张).{0,48}${CHINESE_IMAGE_NOUN}`, "u").test(value) ||
-    new RegExp(`(?:${CHINESE_IMAGE_NOUN}).{0,20}(?:给我|发我|发给我|来一张)`, "u").test(value) ||
-    /拍给我(?:看|看看|看下|瞧瞧)/u.test(value) ||
-    new RegExp(
-      `\\b(?:send|show|give)\\s+(?:(?:me|your)\\s+)?(?:(?:a|an|one|some)\\s+)?(?:(?:fully|completely)\\s+)?${ENGLISH_IMAGE_NOUN}s?\\b`,
-      "i",
-    ).test(english) ||
-    new RegExp(
-      `\\b(?:i want|i['’]d like|i would like|let me see)\\b.{0,60}\\b${ENGLISH_IMAGE_NOUN}s?\\b`,
-      "i",
-    ).test(english) ||
-    new RegExp(
-      `\\b(?:make|create|generate|take)\\s+(?:me\\s+)?(?:a|an|one|some|\\d+)\\b.{0,40}\\b${ENGLISH_IMAGE_NOUN}s?\\b`,
-      "i",
-    ).test(english)
-  ) {
-    return "explicit_media_command";
-  }
-  if (
-    /(?:让我|给我|想|能|可以|可不可以)?(?:看|看看|看下|瞧瞧).{0,16}(?:你(?:现在)?(?:的)?(?:样子|模样|穿什么|穿着|打扮|身材)|你现在|你穿)/u.test(value) ||
-    /(?:穿|换上).{1,24}(?:给我|让我)(?:看|看看|看下|瞧瞧)/u.test(value) ||
-    /\b(?:show me|let me see)\b.{0,40}\b(?:you|your (?:naked )?body|your look|what you(?:'re| are) wearing)\b/i.test(english) ||
-    /\b(?:wear|put on)\b.{1,40}\b(?:for me|and show me)\b/i.test(english)
-  ) {
-    return "show_companion_command";
-  }
-  if (
-    /(?:来点|给点|整点).{0,8}(?:福利)/u.test(value) ||
-    /\b(?:send|show|give)\s+me\s+something\s+(?:spicy|sexy|hot)\b/i.test(english)
-  ) {
-    return "visual_gift_command";
-  }
-  return null;
-}
-
-/** Required image replies must at least preserve the user's writing system. */
-export function requiredImageReplyMatchesUserScript(userText: string, reply: string): boolean {
+/** Image replies must at least preserve the user's writing system. */
+export function imageReplyMatchesUserScript(userText: string, reply: string): boolean {
   const scriptChecks = [
     /\p{Script=Han}/u,
     /\p{Script=Hiragana}|\p{Script=Katakana}/u,

@@ -13,6 +13,7 @@ import {
 import { ArrowLeft, RefreshCcw, Search, UserRound } from "lucide-react";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { useAdminFormat } from "@/components/admin/ui/format";
+import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 import { Pagination } from "@/components/admin/ui/Pagination";
 import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
 import { createWorkspaceHistoryController, observeWorkspacePopState, workspaceDetailId } from "@/lib/workspace-history";
@@ -38,6 +39,8 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
   const format = useAdminFormat();
   const [initialUrlState] = useState(() => initialCustomerWorkspaceState(initialCustomerId));
   const [query, setQuery] = useState<CustomerQuery>(initialUrlState.query);
+  // INVARIANT: 未 Apply 的筛选只修改草稿；页位与空态说明必须对应当前已返回的数据。
+  const [appliedQuery, setAppliedQuery] = useState<CustomerQuery>(initialUrlState.query);
   const [list, setList] = useState<CustomerListResponse | null>(null);
   const [selectedId, setSelectedId] = useState(initialUrlState.selectedId);
   const [detail, setDetail] = useState<Customer360 | null>(null);
@@ -49,12 +52,15 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
   // INVARIANT: 栈首为空游标才证明从首页起算；恢复 URL 后栈空但游标非空时页位未知，
   //            仍可通过清游标回首页，不能把空栈解释成第一页。
   const [cursorTrail, setCursorTrail] = useState<string[]>([]);
+  const requestedCursorTrail = useRef<string[]>([]);
   const history = useRef(createWorkspaceHistoryController(initialUrlState));
   const listRequestId = useRef(0);
   const detailRequestId = useRef(0);
 
-  const loadList = useCallback(async (next: CustomerQuery) => {
+  const loadList = useCallback(async (next: CustomerQuery, trail = requestedCursorTrail.current) => {
     const requestId = ++listRequestId.current;
+    const nextTrail = [...trail];
+    requestedCursorTrail.current = nextTrail;
     setLoading(true);
     setListError(null);
     try {
@@ -65,6 +71,8 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
       });
       if (requestId !== listRequestId.current) return;
       setList(response);
+      setAppliedQuery({ ...response.query, cursor: response.query.cursor ?? undefined });
+      setCursorTrail(nextTrail);
     } catch (cause) {
       if (requestId === listRequestId.current) setListError(cause);
     } finally {
@@ -96,7 +104,7 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
       setSelectedId(restored.selectedId);
       setDetail(null);
       if (!initialCustomerId) history.current.replace(restored, writeCustomerUrl);
-      void loadList(restored.query);
+      void loadList(restored.query, []);
       if (restored.selectedId) void loadDetail(restored.selectedId);
     }, 0);
     return () => window.clearTimeout(timer);
@@ -107,16 +115,20 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
       listRequestId.current += 1;
       detailRequestId.current += 1;
       setQuery(restored.query);
-      setCursorTrail([]);
       history.current.restore(restored);
       setSelectedId(restored.selectedId);
       setDetail(null);
       setDetailError(null);
       setDetailLoading(false);
-      void loadList(restored.query);
+      void loadList(restored.query, []);
       if (restored.selectedId) void loadDetail(restored.selectedId);
     });
   }, [loadDetail, loadList]);
+
+  useWorkspaceRefresh(() => {
+    void loadList(history.current.current().query);
+    if (selectedId) void loadDetail(selectedId);
+  });
 
   function updateDraft(patch: Partial<CustomerQuery>) {
     const next = { ...query, ...patch, cursor: undefined };
@@ -127,17 +139,15 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
   function applyQuery(next: CustomerQuery) {
     const normalized = { ...next, cursor: undefined };
     setQuery(normalized);
-    setCursorTrail([]);
     history.current.navigate({ query: normalized, selectedId }, writeCustomerUrl);
-    void loadList(normalized);
+    void loadList(normalized, []);
   }
 
   function goToPage(cursor: string | undefined, trail: string[]) {
-    const next = { ...history.current.current().query, cursor };
+    const next = { ...appliedQuery, cursor };
     setQuery(next);
-    setCursorTrail(trail);
     history.current.navigate({ query: next, selectedId }, writeCustomerUrl);
-    void loadList(next);
+    void loadList(next, trail);
   }
 
   function selectCustomer(id: string | null) {
@@ -200,8 +210,8 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
             <ul className="divide-y divide-[var(--ad-border)]">
               {list.items.map((customer) => (
                 <li key={customer.id}>
-                  <button aria-current={selectedId === customer.id ? "true" : undefined} className={`grid min-h-24 w-full gap-3 p-4 text-left hover:bg-black/[0.025] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--ad-ink)] sm:grid-cols-[minmax(0,1fr)_repeat(3,110px)] ${selectedId === customer.id ? "bg-black/[0.04]" : ""}`} onClick={() => selectCustomer(customer.id)} type="button">
-                    <span className="min-w-0"><span className="flex items-center gap-2 font-semibold"><UserRound className="h-4 w-4" />{customer.displayName ?? customer.email}</span><span className="mt-1 block truncate text-xs text-[var(--ad-text-muted)]">{customer.email} · {customer.id}</span><span className="mt-2 flex flex-wrap items-center gap-2"><StatusBadge value={customer.status} />{customer.subscriptionStatus ? <span className="inline-flex items-center gap-1 text-xs text-[var(--ad-text-muted)]">{t("Subscription")}<StatusBadge value={customer.subscriptionStatus} /></span> : null}</span></span>
+                  <button aria-current={selectedId === customer.id ? "true" : undefined} className={`grid min-h-24 w-full grid-cols-3 gap-3 p-4 text-left hover:bg-black/[0.025] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--ad-ink)] ${selectedId === customer.id ? "bg-black/[0.04]" : ""}`} onClick={() => selectCustomer(customer.id)} type="button">
+                    <span className="col-span-3 min-w-0"><span className="flex items-start gap-2 break-words font-semibold"><UserRound className="mt-0.5 h-4 w-4 shrink-0" />{customer.displayName ?? customer.email}</span><span className="mt-1 block truncate text-xs text-[var(--ad-text-muted)]" title={`${customer.email} · ${customer.id}`}>{customer.email} · {customer.id}</span><span className="mt-2 flex flex-wrap items-center gap-2"><StatusBadge value={customer.status} />{customer.subscriptionStatus ? <span className="inline-flex items-center gap-1 text-xs text-[var(--ad-text-muted)]">{t("Subscription")}<StatusBadge value={customer.subscriptionStatus} /></span> : null}</span></span>
                     <ListStat label={t("Balance")} value={format.dreamcoins(customer.balanceDreamcoins)} />
                     <ListStat label={t("Active Cases")} value={customer.activeCaseCount} />
                     <ListStat label={t("Failed 30d")} value={customer.failedGenerationCount30d} />
@@ -209,7 +219,7 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
                 </li>
               ))}
             </ul>
-          ) : listError ? null : (query.search || query.status
+          ) : listError ? null : (appliedQuery.search || appliedQuery.status
             ? <EmptyState kind="filtered" onClearFilters={() => applyQuery(defaultCustomerQuery)} title={t("No customers match these filters")} />
             // INTENT: 这里是客户名册，不是待办队列 —— 空的时候要说清楚测试/内部账号去哪了。
             : <EmptyState hint={t("Internal and test accounts are not customers; find them in Team Access.")} title={t("No customer accounts yet")} />)}
@@ -217,15 +227,15 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
             <div className="border-t border-[var(--ad-border)] p-4">
               <Pagination
                 hasNext={Boolean(list.pageInfo.hasNextPage && list.pageInfo.endCursor)}
-                hasPrevious={Boolean(query.cursor)}
+                hasPrevious={Boolean(appliedQuery.cursor)}
                 loading={loading}
                 onNext={() => {
                   if (!list.pageInfo.endCursor) return;
-                  goToPage(list.pageInfo.endCursor, [...cursorTrail, query.cursor ?? ""]);
+                  goToPage(list.pageInfo.endCursor, [...cursorTrail, appliedQuery.cursor ?? ""]);
                 }}
                 onPrevious={() => goToPage(cursorTrail.at(-1) || undefined, cursorTrail.slice(0, -1))}
-                previousLabel={query.cursor && cursorTrail.length === 0 ? t("Back to first page") : undefined}
-                page={!query.cursor ? 1 : cursorTrail[0] === "" ? cursorTrail.length + 1 : null}
+                previousLabel={appliedQuery.cursor && cursorTrail.length === 0 ? t("Back to first page") : undefined}
+                page={!appliedQuery.cursor ? 1 : cursorTrail[0] === "" ? cursorTrail.length + 1 : null}
                 pageSize={CUSTOMER_PAGE_SIZE}
                 rowCount={list.items.length}
                 // 后端 count 出来的筛选后总行数；缺席时传 null，分页条就只说"本页几条"。
@@ -267,10 +277,11 @@ function CustomerInspector({ detail, onClose }: { detail: Customer360; onClose: 
   );
 }
 
-// INVARIANT: 周期已结束的订阅不「续费」。服务端已把惰性过期的行读成 expired，这里按日期兜底。
+// INVARIANT: 周期日期只表示访问期，不证明自动续费；cancelAtPeriodEnd=false 也不能据此承诺续费。
+// 服务端已把惰性过期的行读成 expired，这里仍按日期兜底。
 function subscriptionPeriodLabel(subscription: { status: string; currentPeriodEnd: string | null; cancelAtPeriodEnd: boolean }, asOf: string, t: (key: string) => string) {
   if (subscription.status === "expired" || (subscription.currentPeriodEnd && Date.parse(subscription.currentPeriodEnd) <= Date.parse(asOf))) return t("Period ended");
-  return subscription.cancelAtPeriodEnd ? t("Access ends") : t("Renews");
+  return t("Access ends");
 }
 function DetailSection({ children, title, href }: { children: React.ReactNode; title: string; href?: string }) { const { t } = useAdminI18n(); return <section className="border-t border-[var(--ad-border)] pt-4"><div className="mb-3 flex items-center justify-between gap-3"><h4 className="text-sm font-semibold">{title}</h4>{href ? <Link className="shrink-0 text-xs underline" href={href}>{t("View all")}</Link> : null}</div>{children}</section>; }
 function EmptyRows() { const { t } = useAdminI18n(); return <p className="text-xs text-[var(--ad-text-muted)]">{t("No records.")}</p>; }

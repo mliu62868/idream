@@ -290,7 +290,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Canon unknowns": "设定未知项",
   "Character Soul Behavior Evaluation": "角色 Soul 行为评测",
   "Changed from version": "相较版本",
-  "Character Soul could not be loaded": "无法加载角色 Soul",
   "Character Soul version": "角色 Soul 版本",
   "Compiled system prompt": "编译后的系统提示词",
   "Compiler diagnostics": "编译诊断",
@@ -311,7 +310,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Generated SOUL.md": "生成的 SOUL.md",
   "Immutable authority": "不可变权威",
   Interaction: "互动",
-  "Loading immutable Character Soul authority": "正在加载不可变角色 Soul 权威",
   "Negative dialogue · assistant text :: reason · one per line":
     "反例对话 · 角色文本 :: 原因 · 每行一条",
   "No valid fingerprint": "没有有效指纹",
@@ -518,6 +516,40 @@ export const adminZhCharacters: Record<string, string> = {
   "Comparison candidate": "对比候选图",
   "Complete Character Assets": "完善角色图片资产",
   "Complete image assets": "完成图片资产",
+  "Looks right?": "确认无误？",
+  "Check the renderer below, then publish from Release.":
+    "核对下方的真实渲染效果，然后到「发布版本」完成上线。",
+  "Continue to Release": "去发布",
+  "The look is locked to the current portrait. Image generation uses the description written when the look was changed; the text below is from creation and is no longer used.":
+    "长相已锁定为当前肖像。生图使用换长相时填写的描述；下面是创建时的文字，已不再使用。",
+  "The look is locked to the current portrait. The text below describes it in image generation and can no longer be edited.":
+    "长相已锁定为当前肖像。生图时仍用下面的文字描述它，但不能再修改。",
+  "Change the look": "换长相",
+  "New images follow this description until the first portrait locks the look.":
+    "在第一张肖像锁定长相之前，新图片都按这段描述生成。",
+  "Move to a checked release": "升级为经过检查的发布版本",
+  "Publishing again replaces this historical release with one that passes the current checks. Customers keep seeing the current version until then.":
+    "重新发布会用一个通过当前检查的版本替换这个历史版本。在此之前，用户看到的仍是现在的版本。",
+  "Nothing is missing. Publish from this page.": "没有缺失项，可以直接在本页发布。",
+  "Create the first identity portrait before publishing.": "发布前请先生成第一张身份肖像。",
+  "The images are ready, but the persona or opening message must be saved again before it can be published.":
+    "图片已齐，但人设或开场白需要重新保存一次才能发布。",
+  "Persona needs repair": "人设需要修复",
+  "Repair persona": "修复人设",
+  "Elapsed {duration} · usually 1–2 minutes · you can leave this page and come back":
+    "已用 {duration} · 通常 1–2 分钟 · 可以先离开，稍后回来查看",
+  "This clears the {count} cover, hero, and chat images already chosen for the draft. Choose them again afterwards. The live character is not affected.":
+    "这会清空草稿里已选好的 {count} 张封面、主视觉和聊天图，之后需要重新选择。线上角色不受影响。",
+  "A candidate release is waiting. Publish or discard it before changing images.":
+    "有一个待发布版本正在等待。请先发布或放弃它，再更换图片。",
+  "The saved persona could not be read": "已保存的人设无法读取",
+  "The form was filled from the character profile and opening message. Review it, then save to repair. Publishing is blocked until then.":
+    "表单已用角色资料和开场白预填。核对后保存即可修复；修复前无法发布。",
+  "Saved in an older format": "人设是旧格式",
+  "Save once to convert it. The content stays the same. Publishing is blocked until then.":
+    "保存一次即可转换，内容不变；转换前无法发布。",
+  "Save to repair": "保存并修复",
+  "Save in current format": "按新格式保存",
   "Complete image route setup": "完成图片线路设置",
   "Complete the Character image-readiness actions first.":
     "请先完成角色图片生产就绪步骤。",
@@ -753,7 +785,7 @@ export const adminZhCharacters: Record<string, string> = {
   Images: "图片",
   "Images & video": "图片与视频",
   "Immutable evidence": "不可变证据",
-  "In production": "制作中",
+  "Making images": "图片制作中",
   "Inspect the current Release, serving state, and performance evidence.":
     "检查当前发布、服务状态与表现证据。",
   Inspiration: "灵感",
@@ -1294,7 +1326,6 @@ export const adminZhCharacters: Record<string, string> = {
     "已在角色工作区确认初始身份权威。",
   "Review every selected image before publishing.":
     "发布前请审核每一张已选图片。",
-  "Review selected images": "审核已选图片",
   "Complete and repair the selected image pack before publishing.":
     "发布前请补齐并修复已选图片资产包。",
   "Open image assets": "打开图片资产",
@@ -1326,9 +1357,6 @@ export const adminZhCharacters: Record<string, string> = {
     "有待发布的候选版本，先发布或撤回后再改资料。",
   "Publishing stays blocked until every item below is cleared, warnings included.":
     "以下各项（包括警告）必须清零才能发布。",
-  "Image review required": "需要审核图片",
-  "Review the selected portrait, hero, and chat images before publishing.":
-    "发布前请审核已选的主肖像、头图和聊天图片。",
   "Every selected image must have an approved review decision before publishing.":
     "每张已选图片都必须先通过审核，才能发布。",
   "Video generation progress": "视频生成进度",
@@ -1745,7 +1773,6 @@ export const adminZhCharacters: Record<string, string> = {
   "review evidence incomplete": "审核信息不完整",
   "visual authority missing": "尚未建立视觉身份",
   "visual authority changed": "视觉身份已变更",
-  "Image placement could not be saved": "无法保存图片展示位",
   "Image removed from the library": "图片已移出素材库",
   "Import image": "导入图片",
   "Import video": "导入视频",
@@ -1846,7 +1873,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Short description": "一句话简介",
   "Write a one-line description.": "写一句话简介。",
   "Give the character a name, short description, and opening message.": "填写角色名称、一句话简介和开场白。",
-  "After publishing, new images reference this description. Characters with a locked visual identity follow the locked identity and its reference images.": "发布后，新图片会参考这段描述；已锁定视觉身份的角色以锁定的身份和参考图为准。",
   "Fix the highlighted fields to save.": "请先修正标红的字段再保存。",
   "Someone saved a newer version. Reload before saving again.": "已有人保存了更新的版本，请刷新后再保存。",
   "Changes could not be saved": "改动未能保存",

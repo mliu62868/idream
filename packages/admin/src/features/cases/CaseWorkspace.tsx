@@ -84,8 +84,7 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCas
   const [detailError, setDetailError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
   const [inspectorExpanded, setInspectorExpanded] = useState(true);
-  // SPEC: 「上一页」重发自己走过的那个游标；工单列表还是单向 keyset（没有 startCursor /
-  //       hasPreviousPage），栈空即第一页，置灰而不是给一个会 400 的按钮。
+  // INVARIANT: 轨迹从空游标起算才证明页位；恢复非空游标时可回首页，不能把空栈当第一页。
   const [cursorTrail, setCursorTrail] = useState<string[]>([]);
   const history = useRef(createWorkspaceHistoryController(initialUrlState));
   const listRequestId = useRef(0);
@@ -161,6 +160,7 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCas
     return observeWorkspacePopState(window, () => stateFromLocation(null), (restored) => {
       listRequestId.current += 1;
       detailRequestId.current += 1;
+      if (buildCaseQuery(history.current.current().query) !== buildCaseQuery(restored.query)) setCursorTrail([]);
       setQuery(restored.query);
       history.current.restore(restored);
       setSelectedSavedViewId(restored.savedViewId);
@@ -319,15 +319,16 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCas
           {list && list.items.length > 0 ? (
             <Pagination
               hasNext={Boolean(list.pageInfo.hasNextPage && list.pageInfo.endCursor)}
-              hasPrevious={cursorTrail.length > 0}
+              hasPrevious={Boolean(appliedQuery.cursor)}
               loading={loading || listError !== null}
               onNext={() => {
                 if (!list.pageInfo.endCursor) return;
-                goToPage(list.pageInfo.endCursor, [...cursorTrail, query.cursor ?? ""]);
+                goToPage(list.pageInfo.endCursor, [...cursorTrail, appliedQuery.cursor ?? ""]);
               }}
               onPrevious={() => goToPage(cursorTrail.at(-1) || undefined, cursorTrail.slice(0, -1))}
-              page={cursorTrail.length + 1}
-              pageSize={query.limit}
+              previousLabel={appliedQuery.cursor && cursorTrail.length === 0 ? t("Back to first page") : undefined}
+              page={!appliedQuery.cursor ? 1 : cursorTrail[0] === "" ? cursorTrail.length + 1 : null}
+              pageSize={appliedQuery.limit}
               rowCount={list.items.length}
               // 工单列表的 pageInfo 只有 endCursor / hasNextPage —— 总数拿不到就不显示"共 N 条"。
               totalCount={list.pageInfo.totalCount ?? null}

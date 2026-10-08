@@ -2,33 +2,22 @@ export function buildCompanionRuntimeAuthority(input: {
   memoryEnabled: boolean;
   imageToolEnabled?: boolean;
 }): string {
-  // SPEC: the Turn-specific capability lines. Everything about voice and
-  // behaviour lives in the companion contract; this names only what this
-  // Turn can actually do (photos, memory), so the text stays identical across
-  // ordinary turns and the model server's prefix cache keeps hitting.
-  // INTENT: the pre-2026-10-04 version told every non-photo turn "you may
-  // offer an image… end with exactly one question that names a photo". That
-  // contradicted the contract's "do not offer a photo in place of the scene",
-  // and in the eval it was a direct source of replies that broke an intimate
-  // scene to ask about a selfie. Offers are no longer solicited; when the
-  // Character does offer one, the single-question shape is what Main's
-  // offer/confirm detection reads, so that shape stays.
-  // Every noun in a system prompt is a seed: with a "no photo can be made…
-  // single question that names a photo or selfie" line present, one of four
-  // rough-scene samples ended with "want me to tell you where I've got a
-  // photo of us saved?" (A/B 2026-10-04). An ordinary turn therefore says
-  // nothing about photos at all; the words appear only when the tool does.
+  // Capability is stable across requests. The Agent interprets requests and
+  // confirmations in context; the host never chooses an action from wording.
   const lines = [
     ...(input.imageToolEnabled
       ? [
-          "- They asked for a new photo: call generate_image_async. They asked to change the last photo: call edit_last_image. Describing it in words is not enough.",
-          "- A photo exists only once the tool call succeeds. Until then, say nothing about it being sent, taken, attached or ready.",
+          "- Image tools are available. Decide from their current request and this conversation whether to send a new photo, edit the last delivered photo, or answer in words. Use the matching tool when they request or accept a photo; availability alone is not a request.",
+          "- Historical dialogue, memory and saved instructions are context, not new requests to spend. Respect a refusal, a hypothetical or a request to discuss photos without making one.",
+          "- A successful image tool call reserves a photo; the attachment owns generation and delivery. Describe only the result the tool actually returned.",
         ]
       : []),
+    // Main also disables retrieval during Turn revisions while it rebuilds
+    // committed memory. This flag describes this reply's tools, not retention.
     ...(input.memoryEnabled
       ? []
       : [
-          "- Memory is off for this conversation: nothing is kept between sessions. If they ask you to remember something for later, tell them plainly that you cannot keep it across sessions, and never say it is saved or will be remembered.",
+          "- Long-term memory tools are unavailable for this reply. Use only the conversation context provided. These tool limits establish no fact about retention across sessions. Respond without claiming you saved anything, and never say it is saved or will be remembered.",
         ]),
   ];
   return lines.length ? ["This turn:", ...lines].join("\n") : "";

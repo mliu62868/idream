@@ -3,6 +3,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 const { apiGet } = vi.hoisted(() => ({ apiGet: vi.fn<(path: string) => Promise<unknown>>() }));
 
@@ -74,6 +75,23 @@ describe("audit repeat collapsing and row selection", () => {
     });
     await waitUntil(() => checkboxes().length > 0);
   }
+
+  it("reloads the applied audit scope through shell refresh and retains its unfinished search", async () => {
+    await mounted();
+    const input = container.querySelector<HTMLInputElement>('input[placeholder="action, target, reason, or request"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Unfinished audit search");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const applied = apiGet.mock.calls.at(-1)![0];
+    const before = apiGet.mock.calls.length;
+    const href = window.location.href;
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    expect(apiGet.mock.calls).toHaveLength(before + 1);
+    expect(apiGet.mock.calls.at(-1)![0]).toBe(applied);
+    expect(input.value).toBe("Unfinished audit search");
+    expect(window.location.href).toBe(href);
+  });
 
   // SPEC: 折叠默认开着，四条同类只显示第一条。
   it("shows one row per run and says how many it hid", async () => {

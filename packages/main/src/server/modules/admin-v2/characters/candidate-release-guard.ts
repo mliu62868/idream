@@ -18,6 +18,8 @@ export async function assertNoCandidateRelease(
   });
   if (!candidate) return;
   throw Errors.conflict(input.message, {
+    // Admin keys its "publish or discard the candidate" copy on this blocker.
+    blocker: "candidate_release_pending",
     releaseId: candidate.id,
     status: candidate.status,
     deepLink: characterWorkspaceTabLink(input.characterId, "release"),

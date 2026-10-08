@@ -189,8 +189,8 @@ export class BackendImageModel implements ImageModel {
     let runnerPreparationMs: number | null = null;
     const invocationPerformance = () => ({ resourceWaitMs, runnerPreparationMs, totalMs: performance.now() - startedAt, requests });
     let failurePhase: "pre_submit" | "post_submit" = "pre_submit";
+    const assets: ImageAsset[] = [];
     try {
-      const assets: ImageAsset[] = [];
       await this.runWithAcceleratorLease(async () => {
         resourceWaitMs = performance.now() - startedAt;
         const preparationStartedAt = performance.now();
@@ -202,6 +202,7 @@ export class BackendImageModel implements ImageModel {
         runnerPreparationMs = performance.now() - preparationStartedAt;
         await input.executionBoundary?.beforeProviderInvocation();
         for (let index = 0; index < count; index += 1) {
+          if (index > 0) await input.executionBoundary?.beforeNextProviderInvocation();
           failurePhase = "pre_submit";
           const slots: SlotValues = {
             prompt: promptSlots.prompt,
@@ -245,6 +246,24 @@ export class BackendImageModel implements ImageModel {
       };
     } catch (error) {
       const failure = backendFailure(error, failurePhase);
+      // A later native request cannot erase already completed images. Main
+      // delivers this bounded subset and refunds only the missing product units;
+      // it never resubmits the interrupted non-idempotent provider request.
+      if (assets.length > 0) {
+        return {
+          ok: true,
+          data: { assets },
+          invocation: {
+            providerRequestId: providerRequestIds[0] ?? null,
+            usage: {
+              providerRequestIds, performance: invocationPerformance(),
+              expectedOutputs: count, deliveredOutputs: assets.length,
+              interruptedBy: { code: failure.code, message: failure.message, outcome: failure.outcome },
+            },
+            costMicros: null, pricingVersion: null,
+          },
+        };
+      }
       return {
         ok: false,
         error: {

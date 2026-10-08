@@ -6,6 +6,12 @@ import {
 } from "./generated-image-sanity";
 
 describe("generated image sanity", () => {
+  it("does not certify bytes whose pixels the PNG evaluator did not decode", () => {
+    const evidence = assertGeneratedImageSanity(Buffer.from("<html>backend error</html>"), "invalid-output");
+    expect(evidence.sanity.status).toBe("unscored");
+    expect(evidence.composition.status).toBe("unscored");
+  });
+
   it("rejects pure white PNG outputs", () => {
     const image = pngFromRgb(4, 4, () => [255, 255, 255]);
 
@@ -26,6 +32,11 @@ describe("generated image sanity", () => {
     ]);
 
     expect(() => assertGeneratedImageSanity(image, "varied-test")).not.toThrow();
+  });
+
+  it("rejects visually blank transparent PNGs even when their hidden RGB values vary", () => {
+    const image = pngFromRgb(4, 4, (x, y) => [x * 40, y * 60, (x + y) * 30, 0]);
+    expect(() => assertGeneratedImageSanity(image, "transparent-test")).toThrow(/degenerate|blank/);
   });
 
   it("rejects a generated contact sheet instead of treating it as one continuous image", () => {
@@ -86,23 +97,40 @@ describe("generated image sanity", () => {
       /invalid .* checksum/,
     );
   });
+
+  it("rejects PNGs without their terminal chunk", () => {
+    const image = pngFromRgb(4, 4, (x, y) => [x * 40, y * 60, (x + y) * 30]);
+    expect(() => assertGeneratedImageSanity(image.subarray(0, image.length - 12), "missing-end")).toThrow(/IEND/);
+  });
+
+  it("bounds declared PNG raster size before inflating pixels", () => {
+    const header = Buffer.alloc(13);
+    header.writeUInt32BE(16_777_217, 0);
+    header.writeUInt32BE(1, 4);
+    header[8] = 8;
+    header[9] = 2;
+    const image = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), pngChunk("IHDR", header), pngChunk("IDAT", deflateSync(Buffer.from([0, 1, 2, 3]))), pngChunk("IEND", Buffer.alloc(0))]);
+    expect(() => assertGeneratedImageSanity(image, "excessive-raster")).toThrow(/excessive dimensions/);
+  });
 });
 
 function pngFromRgb(
   width: number,
   height: number,
-  pixel: (x: number, y: number) => [number, number, number],
+  pixel: (x: number, y: number) => [number, number, number] | [number, number, number, number],
 ) {
+  const channels = pixel(0, 0).length;
   const rows: Buffer[] = [];
   for (let y = 0; y < height; y += 1) {
-    const row = Buffer.alloc(1 + width * 3);
+    const row = Buffer.alloc(1 + width * channels);
     row[0] = 0;
     for (let x = 0; x < width; x += 1) {
-      const [red, green, blue] = pixel(x, y);
-      const offset = 1 + x * 3;
+      const [red, green, blue, alpha] = pixel(x, y);
+      const offset = 1 + x * channels;
       row[offset] = red;
       row[offset + 1] = green;
       row[offset + 2] = blue;
+      if (alpha !== undefined) row[offset + 3] = alpha;
     }
     rows.push(row);
   }
@@ -110,7 +138,7 @@ function pngFromRgb(
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
   ihdr[8] = 8;
-  ihdr[9] = 2;
+  ihdr[9] = channels === 4 ? 6 : 2;
   ihdr[10] = 0;
   ihdr[11] = 0;
   ihdr[12] = 0;

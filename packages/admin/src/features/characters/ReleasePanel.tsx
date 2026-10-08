@@ -140,19 +140,28 @@ export function releaseBlockerGuidance(
       href: `${base}?tab=soul`,
     };
   }
+  // INTENT: with no identity yet, the fix is the first portrait in Images (identity
+  // bootstrap), the same place the production journey sends operators. Visual
+  // identity only repairs an identity that already exists.
+  if (["visual_identity_missing", "active_visual_profile_missing_or_unsealed"].includes(blocker)) {
+    return {
+      blocker,
+      message: "Create the first identity portrait before publishing.",
+      action: "Open image assets",
+      href: `${base}?tab=assets`,
+    };
+  }
   if (
     [
       "visual_identity_exact_version",
       "reference_set_published_snapshot",
       "generation_route_qualified",
-      "active_visual_profile_missing_or_unsealed",
       "active_visual_profile_hash_invalid",
       "active_reference_set_media_unavailable",
       "active_reference_set_missing_or_empty",
       "active_reference_set_hash_invalid",
       "qualified_generation_route_missing",
       "release_generation_authority_kind",
-      "visual_identity_missing",
       "reference_set_not_active",
       "reference_assets_unavailable",
       "generation_route_unqualified",
@@ -299,6 +308,48 @@ function ReleaseSummary({
         </p>
       </details>
     </article>
+  );
+}
+
+// SPEC: a legacy Release has no automatic check record; the only way off it is to
+// publish a checked Release. Say what is still missing, each with the place to fix it.
+// INTENT: 15 live characters sat on legacy Releases with only a badge and no path.
+function LegacyUpgradeGuide({
+  characterId,
+  draftBlockers,
+}: {
+  characterId: string;
+  draftBlockers: readonly string[];
+}) {
+  const { t } = useAdminI18n();
+  const steps = [
+    ...new Map(
+      draftBlockers
+        .map((blocker) => releaseBlockerGuidance(blocker, characterId))
+        .map((guidance) => [guidance.message, guidance] as const),
+    ).values(),
+  ];
+  return (
+    <div className="mt-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 text-sm" data-testid="legacy-upgrade-guide">
+      <h4 className="font-semibold">{t("Move to a checked release")}</h4>
+      <p className="mt-1 text-[var(--ad-text-muted)]">
+        {t("Publishing again replaces this historical release with one that passes the current checks. Customers keep seeing the current version until then.")}
+      </p>
+      {steps.length > 0 ? (
+        <ul className="mt-3 space-y-2">
+          {steps.map((step) => (
+            <li className="flex flex-wrap items-center justify-between gap-2" key={step.message}>
+              <span>{t(step.message)}</span>
+              {step.href && step.action ? (
+                <Link className="min-h-9 content-center font-semibold underline" href={step.href}>{t(step.action)}</Link>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-3 font-medium">{t("Nothing is missing. Publish from this page.")}</p>
+      )}
+    </div>
   );
 }
 
@@ -547,7 +598,10 @@ export function ReleasePanel({
   const noUnpublishedChanges = characterHasNoUnpublishedChanges(data);
   // Identical content does not restore a route qualification lost after a profile change.
   const currentReleaseStale = current?.release.status === "published" && current.release.readiness === "stale";
-  const draftBlockers = candidate || (noUnpublishedChanges && !currentReleaseStale)
+  // A legacy Release is left by publishing the same content as a checked Release,
+  // so "no unpublished changes" must not hide Publish or its blockers.
+  const legacyCurrent = current?.release.legacy === true && !candidate;
+  const draftBlockers = candidate || (noUnpublishedChanges && !currentReleaseStale && !legacyCurrent)
     ? []
     : characterReleaseDraftBlockers(data);
   // Server blockers stay visible but never hide or disable Publish: the next
@@ -563,7 +617,7 @@ export function ReleasePanel({
   ];
   const canPublish =
     data.serving?.state !== "retired" &&
-    (Boolean(candidate) || !noUnpublishedChanges || currentReleaseStale);
+    (Boolean(candidate) || !noUnpublishedChanges || currentReleaseStale || legacyCurrent);
   // characterReleaseCreateRequestSchema requires 3+ characters; empty uses the default.
   const reasonTooShort = !candidate && reason.trim().length > 0 && reason.trim().length < 3;
   const retireIsPermanent =
@@ -598,6 +652,9 @@ export function ReleasePanel({
                   ordinal={releaseOrdinals.get(current.release.id)}
                   serving={data.serving?.state === "live"}
                 />
+                {legacyCurrent ? (
+                  <LegacyUpgradeGuide characterId={data.character.id} draftBlockers={draftBlockers} />
+                ) : null}
               </section>
             ) : null}
             {candidate ? (
@@ -648,7 +705,7 @@ export function ReleasePanel({
 
       <aside className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <h3 className="font-semibold">{t("Publish Character")}</h3>
-        {noUnpublishedChanges && !currentReleaseStale && !candidate ? (
+        {noUnpublishedChanges && !currentReleaseStale && !candidate && !legacyCurrent ? (
           <p className="mt-3 text-sm text-[var(--ad-text-muted)]">
             {t("Live and draft are identical. There is nothing to release.")}
           </p>

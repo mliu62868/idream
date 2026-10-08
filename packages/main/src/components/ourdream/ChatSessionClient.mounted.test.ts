@@ -484,6 +484,16 @@ describe("ChatSessionClient streaming composer", () => {
     vi.unstubAllGlobals();
   });
 
+  it("keeps the companion's portrait beside the conversation and links it to their profile", async () => {
+    await mountSession();
+    const portrait = container.querySelector<HTMLElement>('[data-testid="chat-companion-portrait"]');
+    expect(portrait?.className).toContain("xl:block");
+    expect(portrait?.querySelector("img")?.getAttribute("src")).toBe("/media/avery-thumb.png");
+    expect(portrait?.querySelector("a")?.getAttribute("href")).toBe("/characters/character-1");
+    // The wide layout shows the face once; the header avatar is for narrow screens.
+    expect(container.querySelector('[data-testid="chat-header-avatars"]')?.className).toContain("xl:hidden");
+  });
+
   it("keeps paused Character history readable while refusing new messages and calls", async () => {
     sessionContinuation = "character_unavailable";
     await mountSession();

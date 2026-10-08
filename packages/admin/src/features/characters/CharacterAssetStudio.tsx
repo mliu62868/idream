@@ -42,6 +42,7 @@ import { createLatestRequestGate } from "@/lib/latest-request";
 import { cn } from "@/lib/utils";
 import { characterIdentityBootstrapMutation } from "@/features/image-workflow-transport";
 import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
+import { ImagePackResetNotice, draftSelectedImageCount } from "./ImagePackResetNotice";
 import {
   canChooseCharacterAssetPurpose,
   candidateState,
@@ -1876,6 +1877,9 @@ export function CharacterAssetStudio({
                 onRepair={() => void prepareImageProduction()}
                 repairing={busy === "prepare"}
               />
+              {data.visual.imageReadiness?.state === "repairable" ? (
+                <ImagePackResetNotice count={draftSelectedImageCount(data)} />
+              ) : null}
             </div>
           ) : null}
         </section>
@@ -2075,6 +2079,7 @@ export function CharacterAssetStudio({
                 items={activeRunDetail.items}
                 onActivate={activateCandidate}
                 onCompare={toggleCandidateComparison}
+                runCreatedAt={activeRunDetail.createdAt}
                 runId={activeRunDetail.id}
                 selectedPackAssetId={selectedPackAssetId}
                 subjectName={subject.name}

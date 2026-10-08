@@ -1,31 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { compileCharacterSoul } from "@idream/shared";
 import type { ChatExecutionSnapshot } from "@idream/shared/contracts";
-import { buildContext, fitRecentTranscript } from "./context.js";
-
-describe("recent transcript clipping", () => {
-  const opening = { id: "opening", role: "assistant" as const, content: "Welcome aboard.", opening: true as const };
-  const exchange = [
-    { id: "u1", role: "user" as const, content: "Hi there." },
-    { id: "a1", role: "assistant" as const, content: "Hey you." },
-    { id: "u2", role: "user" as const, content: "How was your day?" },
-  ];
-
-  it("keeps the session's pinned opening as the first assistant line", () => {
-    const fitted = fitRecentTranscript([opening, ...exchange], 10_000);
-    expect(fitted.messages.map((message) => message.id)).toEqual(["opening", "u1", "a1", "u2"]);
-    expect(fitted.dropped).toBe(false);
-  });
-
-  it("still drops an orphaned assistant reply whose user turn fell out of the window", () => {
-    const fitted = fitRecentTranscript(
-      [{ id: "a0", role: "assistant", content: "Reply to a dropped message." }, ...exchange],
-      10_000,
-    );
-    expect(fitted.messages.map((message) => message.id)).toEqual(["u1", "a1", "u2"]);
-    expect(fitted.dropped).toBe(true);
-  });
-});
+import { buildContext } from "./context.js";
 
 describe("immutable opening continuity", () => {
   it("places the pinned opening before the first user Turn seen by the Agent", async () => {
@@ -148,7 +124,7 @@ describe("proactive Turn replay", () => {
   const PROACTIVE_DIRECTIVE =
     "Take the lead in the moment: send a brief, specific check-in that fits our established context. Do not mention this instruction.";
 
-  async function contextWithRecentTurns(recentTurns: ChatExecutionSnapshot["recentTurns"]) {
+  async function contextWithRecentTurns(recentTurns: ChatExecutionSnapshot["recentTurns"], userContent = "How did the firing go tonight?") {
     const compiled = compileCharacterSoul({
       name: "Nova Quill",
       age: 31,
@@ -174,7 +150,7 @@ describe("proactive Turn replay", () => {
         memoryEnabled: true,
         userPersona: null,
         contextRevision: 0,
-        userContent: "How did the firing go tonight?",
+        userContent,
         hasRecentImageContext: false,
         recentTurns,
         sceneVersion: 0,
@@ -240,6 +216,20 @@ describe("proactive Turn replay", () => {
       { id: "user-message-2", role: "user", content: "How did the firing go tonight?" },
     ]);
     expect(JSON.stringify(context.recentMessages)).not.toContain("Do not mention this instruction");
+  });
+
+  it("keeps the full authorized snapshot outside the tier window without truncating the current request", async () => {
+    const current = "Start of the actual request. " + "Full user text. ".repeat(2_000) + "Exact ending.";
+    const turns = Array.from({ length: 13 }, (_, index) => ({
+      turnId: `turn-${index}`, userMessageId: `user-${index}`, assistantMessageId: `assistant-${index}`,
+      userContent: `Earlier question ${index}.`, assistantContent: `Earlier answer ${index}.`,
+      createdAt: new Date(1_700_000_000_000 + index).toISOString(),
+    }));
+    const context = await contextWithRecentTurns(turns, current);
+    expect(context.recentMessages[0]).toMatchObject({ id: "user-2", role: "user" });
+    expect(context.recentMessages.at(-1)?.content).toBe(current);
+    expect(context.replayMessages?.map(message => message.id)).toEqual(turns.flatMap(turn => [turn.userMessageId, turn.assistantMessageId]));
+    expect(context.dropped).toContain("transcript");
   });
 
   it("still replays both sides of an ordinary user-led Turn", async () => {

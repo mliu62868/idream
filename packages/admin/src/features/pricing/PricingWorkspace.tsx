@@ -60,8 +60,31 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
   const [coinOffersOpen, setCoinOffersOpen] = useState(false);
   const coinOffersRef = useRef<HTMLDetailsElement>(null);
   const [editing, setEditing] = useState<PricingEdit | null>(null);
+  const [previousCanWrite, setPreviousCanWrite] = useState(canWrite);
   const [blockedPublish, setBlockedPublish] = useState<{ name: string; approval: BlockedApproval } | null>(null);
   const requestGate = useRef(createLatestRequestGate());
+  const writeAuthority = useRef({ canWrite });
+  const editIntent = useRef<PricingEdit | null>(null);
+  const confirmationIntent = useRef<ConfirmSpec | null>(null);
+
+  if (previousCanWrite !== canWrite) {
+    setPreviousCanWrite(canWrite);
+    if (!canWrite) {
+      setEditing(null);
+      setConfirmation(null);
+      setBlockedPublish(null);
+    }
+  }
+
+  // INVARIANT: 撤权/卸载使旧回执失效；重新授权必须建立新的编辑或确认意图。
+  useEffect(() => {
+    writeAuthority.current = { canWrite };
+    return () => {
+      writeAuthority.current = { canWrite: false };
+      editIntent.current = null;
+      confirmationIntent.current = null;
+    };
+  }, [canWrite]);
 
   const load = useCallback(async (next: PricingQuery) => {
     const request = requestGate.current.begin();
@@ -168,28 +191,41 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
   // INTENT: 在这之前敲错一个基础价只能再建一条草稿，旧的那条既删不掉也改不动，
   //         于是定价表越用越长，而 PATCH 这条完整实现过的路从来没有调用方。
   async function saveEdit() {
-    if (!editing || !canSavePricingEdit(editing)) return;
+    const edit = editing;
+    const queryIntent = pricingListPath(query);
+    const authority = writeAuthority.current;
+    const isCurrent = () => writeAuthority.current.canWrite && writeAuthority.current === authority && editIntent.current === edit && pricingListPath(currentQuery()) === queryIntent;
+    if (!canWrite || !edit || !canSavePricingEdit(edit) || !isCurrent()) return;
     setWriting(true);
     try {
-      await apiWrite(`/api/v2/admin/pricing/rules/${encodeURIComponent(editing.id)}`, "PATCH", {
-        label: editing.label.trim(),
-        baseCost: Number(editing.baseCost),
-        multiplier: Number(editing.multiplier),
+      await apiWrite(`/api/v2/admin/pricing/rules/${encodeURIComponent(edit.id)}`, "PATCH", {
+        label: edit.label.trim(),
+        baseCost: Number(edit.baseCost),
+        multiplier: Number(edit.multiplier),
       });
-      toast({ tone: "success", title: t("Pricing draft {key} updated", { key: editing.label.trim() }) });
-      setEditing(null);
+      if (!isCurrent()) return;
+      toast({ tone: "success", title: t("Pricing draft {key} updated", { key: edit.label.trim() }) });
+      changeEdit(null);
       navigate({ ...query, cursor: "" }, "replace");
     } catch (cause) {
-      failureToast(cause);
+      if (isCurrent()) failureToast(cause);
     } finally {
       setWriting(false);
     }
   }
 
+  function changeEdit(next: PricingEdit | null) {
+    editIntent.current = next;
+    setEditing(next);
+  }
+
   function confirmVersionAction(row: PricingRecord, action: "publish" | "rollback") {
+    if (!canWrite || !writeAuthority.current.canWrite) return;
     const id = text(row.id);
     const name = text(row.label) || text(row.ruleKey) || id;
-    setConfirmation({
+    const authority = writeAuthority.current;
+    const queryIntent = pricingListPath(query);
+    const spec: ConfirmSpec = {
       title: action === "publish" ? t("Publish pricing rule") : t("Rollback pricing rule"),
       // INTENT: 这个框原来只写「名字 · 版本 N」——运营点「发布」的时候看不到自己要发布的价格
       //         是多少，也看不到它顶掉的是哪一版。定价页的整个意义就在这两个数上。
@@ -217,6 +253,8 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
       },
       submitLabel: capitalize(action),
       onSubmit: async (reason) => {
+        const isCurrent = () => writeAuthority.current.canWrite && writeAuthority.current === authority && confirmationIntent.current === spec && pricingListPath(currentQuery()) === queryIntent;
+        if (!isCurrent()) return;
         try {
           await apiWrite(
             `/api/v2/admin/pricing/rules/${encodeURIComponent(id)}/${action}`,
@@ -224,6 +262,7 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
             { reason, confirmation: id },
           );
         } catch (error) {
+          if (!isCurrent()) return;
           if (action !== "publish" || !isDualApprovalRequired(error)) throw error;
           // INVARIANT: 批准绑定这一版的价格（服务端 enforceApproval 比对 baseCost / multiplier / version），
           //            之后再改草稿，这条批准就不再匹配。
@@ -237,6 +276,7 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
           } });
           return;
         }
+        if (!isCurrent()) return;
         if (action === "publish") setBlockedPublish(null);
         toast({
           tone: "success",
@@ -248,7 +288,9 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
         const next = { ...query, cursor: "" };
         navigate(next, "replace");
       },
-    });
+    };
+    confirmationIntent.current = spec;
+    setConfirmation(spec);
   }
 
   const filtered = isPricingQueryFiltered(query);
@@ -264,10 +306,10 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
         <div className="flex items-end gap-2"><button className="min-h-11 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white" type="submit">{t("Apply")}</button>{filtered ? <button aria-label={t("Clear pricing filters")} className="grid min-h-11 min-w-11 place-items-center rounded-md border border-[var(--ad-border)]" onClick={clearFilters} type="button"><X className="h-4 w-4" /></button> : null}</div>
       </form>
 
-      {blockedPublish ? <ApprovalRequiredNotice blocked={blockedPublish.approval} message={t("Publishing {name} at this price needs a second approver. Submit an approval request; once approved, publish it again. Editing the draft afterwards voids the approval.", { name: blockedPublish.name })} onRequested={() => setBlockedPublish(null)} testId="pricing-publish-approval-required" /> : null}
-      {editing ? <PricingEditForm busy={writing} edit={editing} onCancel={() => setEditing(null)} onChange={setEditing} onSave={saveEdit} /> : null}
+      {canWrite && blockedPublish ? <ApprovalRequiredNotice blocked={blockedPublish.approval} message={t("Publishing {name} at this price needs a second approver. Submit an approval request; once approved, publish it again. Editing the draft afterwards voids the approval.", { name: blockedPublish.name })} onRequested={() => setBlockedPublish(null)} testId="pricing-publish-approval-required" /> : null}
+      {canWrite && editing ? <PricingEditForm busy={writing} edit={editing} onCancel={() => changeEdit(null)} onChange={changeEdit} onSave={saveEdit} /> : null}
       {error ? <AuthorityRequestError cause={errorCause} message={error} onRetry={() => void load(query)} snapshotAt={rows ? refreshedAt : null} /> : null}
-      {loading && rows === null ? <PricingLoading /> : rows?.length === 0 ? <EmptyState action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={clearFilters} type="button">{t("Clear filters")}</button> : undefined} hint={filtered ? "The complete authority query returned no pricing versions." : "Create a versioned pricing draft before publishing a customer-facing price."} title={filtered ? "No pricing rules match these filters" : "No pricing rules exist yet"} /> : rows ? <PricingTable canWrite={canWrite} onAction={confirmVersionAction} onEdit={(row) => setEditing(pricingEditFromRow(row))} rows={rows} /> : null}
+      {loading && rows === null ? <PricingLoading /> : rows?.length === 0 ? <EmptyState action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={clearFilters} type="button">{t("Clear filters")}</button> : undefined} hint={filtered ? "The complete authority query returned no pricing versions." : "Create a versioned pricing draft before publishing a customer-facing price."} title={filtered ? "No pricing rules match these filters" : "No pricing rules exist yet"} /> : rows ? <PricingTable canWrite={canWrite} onAction={confirmVersionAction} onEdit={(row) => changeEdit(pricingEditFromRow(row))} rows={rows} /> : null}
       {rows ? (
         <Pagination
           hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
@@ -292,7 +334,11 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
         <summary className="cursor-pointer p-4 text-sm font-semibold">{t("Dreamcoin offers")}</summary>
         <div className="p-4 pt-0"><CoinOffersPanel canWrite={canWrite} /></div>
       </details>
-      {confirmation ? <ConfirmDialog onClose={() => setConfirmation(null)} spec={confirmation} /> : null}
+      {canWrite && confirmation ? <ConfirmDialog onClose={() => {
+        if (confirmationIntent.current !== confirmation) return;
+        confirmationIntent.current = null;
+        setConfirmation((current) => current === confirmation ? null : current);
+      }} spec={confirmation} /> : null}
     </section>
   );
 }

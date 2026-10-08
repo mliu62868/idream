@@ -1,7 +1,6 @@
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { isGenerationRequestCancellableStatus } from "@idream/shared/catalog";
 import { prisma } from "@/server/lib/db";
-import { isRecord } from "@/server/lib/request-json";
 
 // SPEC: 用户侧读一条 Generation Job 时的取数形状与投影。
 //
@@ -42,9 +41,10 @@ export function generationExecutionErrorCode(
     : errorCode;
 }
 
-export function generationJobDTO(
+function generationJobDTO(
   job: GenerationJobWithRelations,
-  latestAttemptStatus: string | null = null,
+  latestAttemptStatus: string | null,
+  settlement: { charged: number; refunded: number },
 ) {
   return {
     id: job.id,
@@ -86,29 +86,38 @@ export function generationJobDTO(
     // SPEC: 每个 job 自带「收了多少 / 退了多少 / 交付几张」的账目。
     // INTENT: 退款和部分交付的文案原本只能说「已退款」，说不出退了多少、少了几张；
     //   这三项服务端本来就算得出来，让列表和详情用同一份账目，前台才能说清数。
-    cost: generationJobCost(job),
+    cost: {
+      ...settlement,
+      finalCharge: Math.max(0, settlement.charged - settlement.refunded),
+      assetCount: job.assets.length,
+      requestedCount: job.outputCount,
+      missingOutputs: Math.max(0, job.outputCount - job.assets.length),
+    },
   };
 }
 
-export function generationJobCost(job: GenerationJobWithRelations) {
-  const refunded = generationRefundAmount(job.events);
-  return {
-    charged: job.costDreamcoins,
-    refunded,
-    finalCharge: Math.max(0, job.costDreamcoins - refunded),
-    assetCount: job.assets.length,
-    requestedCount: job.outputCount,
-    missingOutputs: Math.max(0, job.outputCount - job.assets.length),
-  };
-}
-
-export function generationRefundAmount(events: GenerationJobWithRelations["events"]) {
-  return events.reduce((total, event) => {
-    if (event.type !== "refunded") return total;
-    const metadata = isRecord(event.metadata) ? event.metadata : {};
-    const amount = metadata.amount;
-    return total + (typeof amount === "number" && Number.isFinite(amount) ? amount : 0);
-  }, 0);
+export async function readGenerationJobs(jobs: readonly GenerationJobWithRelations[]) {
+  if (jobs.length === 0) return [];
+  const requestIds = jobs.map(job => job.id);
+  // INVARIANT: the quote and timeline are not financial authority. Every
+  // production ledger write links its Request in the same transaction. Reads
+  // join that immutable authority in one batch; they never repair or refund.
+  const [statuses, settlements] = await Promise.all([
+    latestGenerationAttemptStatuses(requestIds),
+    prisma.$queryRaw<Array<{ id: string; charged: bigint; refunded: bigint }>>(Prisma.sql`
+      SELECT j.id,
+        coalesce(sum(CASE WHEN l.kind = 'generation_spend' AND d.delta < 0 THEN -d.delta ELSE 0 END), 0)::bigint AS charged,
+        coalesce(sum(CASE WHEN l.kind = 'refund' AND d.delta > 0 THEN d.delta ELSE 0 END), 0)::bigint AS refunded
+      FROM generation_jobs j
+      LEFT JOIN generation_settlement_links l ON l."requestId" = j.id
+      LEFT JOIN dreamcoin_ledger d ON d.id = l."ledgerEntryId"
+        AND d."sourceId" = j.id AND d."userId" = j."userId" AND d.reason = l.kind
+      WHERE j.id IN (${Prisma.join(requestIds)})
+      GROUP BY j.id
+    `),
+  ]);
+  const costs = new Map(settlements.map(row => [row.id, { charged: Number(row.charged), refunded: Number(row.refunded) }]));
+  return jobs.map(job => generationJobDTO(job, statuses.get(job.id) ?? null, costs.get(job.id) ?? { charged: 0, refunded: 0 }));
 }
 
 export async function latestGenerationAttemptStatuses(requestIds: string[]) {

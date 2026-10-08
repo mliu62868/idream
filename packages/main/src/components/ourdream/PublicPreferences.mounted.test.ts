@@ -127,3 +127,37 @@ it("does not keyboard-select the previous account's suggestions while the next r
   await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
   expect(push).toHaveBeenCalledWith("/characters/owner-b-character");
 });
+
+it.each([
+  ["a malformed successful response", () => ok({})],
+  ["a dependency failure", () => Response.json({ ok: false, error: { code: "DEPENDENCY_UNAVAILABLE" } }, { status: 503 })],
+])("announces only the search error after %s and retries the same query", async (_failure, failedResponse) => {
+  let unavailable = true;
+  const reads: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input).startsWith("/api/v1/search/suggest")) {
+      reads.push(String(input));
+      if (unavailable) return failedResponse();
+    }
+    return responseFor(input);
+  }));
+  await mount("search");
+
+  const status = container.querySelector<HTMLElement>("#app-search-status");
+  const retry = container.querySelector<HTMLButtonElement>('[aria-label="Retry search suggestions"]');
+  expect(status?.textContent).toBe("Search suggestions unavailable");
+  expect(status?.getAttribute("role")).toBe("status");
+  expect(status?.getAttribute("aria-live")).toBe("polite");
+  expect(container.querySelector("input")?.getAttribute("aria-describedby")).toBe(status?.id);
+  expect(retry).not.toBeNull();
+  expect(status?.contains(retry)).toBe(false);
+
+  unavailable = false;
+  await act(async () => retry!.click());
+  await settle();
+
+  expect(container.textContent).toContain("owner-a preferred character");
+  expect(container.querySelector("#app-search-status")).toBeNull();
+  expect(container.querySelector<HTMLInputElement>("input")?.value).toBe("magic");
+  expect(reads).toEqual(["/api/v1/search/suggest?q=magic", "/api/v1/search/suggest?q=magic"]);
+});

@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { api, expectOk } from "@/server/test/helpers";
+import { isReservedFixtureEmail } from "@/server/lib/user-data-provenance";
 import {
+  activeCustomerUserWhere,
   publicCharacterAudienceWhere,
   publicCollectionAudienceWhere,
   publicFeedbackAudienceWhere,
@@ -404,6 +406,24 @@ describe("public content audience", () => {
       where: { id: { in: [...Object.values(releaseAssetIds), officialAssetId] } },
     });
     await prisma.user.deleteMany({ where: { id: { in: Object.values(userIds) } } });
+  });
+
+  // SPEC: a reserved test address is never a real customer on public surfaces, even when
+  // an audit script stored it as dataClass=customer (Audit Iris on the 2026-10-07 homepage).
+  it("never counts a reserved test address as a customer, whatever its stored class", async () => {
+    const ids = ["real", "local", "dottest", "example"].map((kind) => `audience-classified-${kind}-${suffix}`);
+    const emails = [`${ids[0]}@customer.invalid`, `${ids[1]}@Test.Local`, `${ids[2]}@qa.example.test`, `${ids[3]}@example.com`];
+    await prisma.user.createMany({ data: ids.map((id, index) => ({ id, email: emails[index], dataClass: "customer" })) });
+    try {
+      const rows = await prisma.user.findMany({ where: { id: { in: ids }, ...activeCustomerUserWhere }, select: { id: true } });
+      expect(rows.map((row) => row.id)).toEqual([ids[0]]);
+      // The query form and the signup classifier agree on every address.
+      for (const email of emails) {
+        expect(isReservedFixtureEmail(email)).toBe(email !== emails[0]);
+      }
+    } finally {
+      await prisma.user.deleteMany({ where: { id: { in: ids } } });
+    }
   });
 
   it("includes official and customer-created characters only", async () => {

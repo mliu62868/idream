@@ -1,6 +1,6 @@
 # 语音能力与发布检查
 
-更新日期：2026-10-04
+更新日期：2026-10-05
 
 本文承载 [PRD](PRD.md) CH-07/14/15 与 CR-02/06 的声音要求。Chat/Turn见 [Chat契约](CHAT_SERVICE_PRD.md) 与 [ADR-21](../architecture/21-companion-chat-deep-runtime.md)，费用见 [经济契约](ECONOMY_AND_PRICING.md)，实际provider、设备/语言与发布资格见 [当前覆盖](CURRENT_FUNCTIONAL_COVERAGE.md)。
 
@@ -12,7 +12,7 @@
 | 麦克风输入 / CH-15 | 录音→可编辑转写草稿→明确Send | 转写不建Turn、memory或媒体，不消费币、消息额度或TTS分钟；Send后走普通Turn |
 | 双向Voice Call / CH-14 | 接受预算与时长后能听说、静音、中断、断线恢复和结束 | Main持有Call/utterance与语音身份/结算；连接时间和生成音频时长分别记录，连接时间免费 |
 
-三者分别验收。当前Call是English turn-based的录音→ASR→Chat→TTS；语言目录可用不代表已获Call或设备资格，也不代表双工流式音频已实现。
+三者分别验收。ASR草稿输入与Call的识别仅支持英语；当前Call是English turn-based的录音→ASR→Chat→TTS，设备资格独立验收。TTS语言能力按实际声音provider另行判断。
 
 ## 2. Voice Clip
 
@@ -38,10 +38,10 @@
 
 ## 4. 麦克风草稿输入
 
-- 单聊和群聊均支持最多60秒录音，转写后用户可编辑，明确Send才形成消息。
+- 单聊和群聊均支持仅英语、最多60秒录音，转写后用户可编辑，明确Send才形成消息。
 - 取消、切后台、录音中改草稿/收件人、账号切换与迟到权限/结果都不能自动发送；候选归属与发送对象明确。
 - 录音设备、tracks、上传和在途请求及时释放；无语音、超限和转写失败给准确原因，不丢失可恢复草稿。
-- 英语与已明确的欧洲目标语言逐语验证普通、噪声、真实耳语及关键意义。WER与人工意义/听感共同判断；真实设备和浏览器链路单独验收。
+- 英语验证普通、噪声、真实耳语及关键意义。WER与人工意义/听感共同判断；真实设备和浏览器链路单独验收。
 - Send前Turn、memory、资产和账本不变，Send后仅一个权威Turn与正常消息用量。
 
 ## 5. Voice Call
@@ -75,4 +75,4 @@ bun run --filter @idream/main probe:voice -- --report .tmp/launch-voice-probe.js
 bun run check:launch
 ```
 
-每项记录所测source revision、用户/角色/selected reply attempt、ClipRequest或Call/utterance、实际provider/model/voice/profile、接受上限、时长、产物/交付与分钟/币前后差额。检查自然播放和刷新恢复，另判语言、内容、可懂度、角色声音与截断。recorded upload、有效文件、非零时长或单个English样本不能替代真人设备人声、真实耳语、多语或公开生产资格。
+每项记录所测source revision、用户/角色/selected reply attempt、ClipRequest或Call/utterance、实际provider/model/voice/profile、接受上限、时长、产物/交付与分钟/币前后差额。检查自然播放和刷新恢复，另判语言、内容、可懂度、角色声音与截断。recorded upload、有效文件、非零时长或单个English样本不能替代真人设备人声、真实耳语、口音广度或公开生产资格；TTS额外语言按provider独立验收。

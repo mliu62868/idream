@@ -9,6 +9,22 @@ import {
 import { aiUsageRecordedV2Schema } from "./metric-events";
 
 describe("durable cross-service contracts", () => {
+  it("preserves historical failed checksums while retaining bounded cleanup intent", () => {
+    const old = generationTerminalRecordSchema.parse({
+      version: 1, outcome: "failed", attemptId: "cleanup-attempt", attemptNo: 1,
+      providerIdempotencyKey: "generation:cleanup-attempt:provider", requestId: "request", generationJobId: "job",
+      mode: "image", provider: "mock", providerInvoked: true, providerRequestId: null,
+      completedAt: "2026-10-05T12:00:00.000Z", usage: {},
+      error: { code: "asset_persist_failed", message: "store unavailable", retryability: "retryable" },
+    });
+    expect(old).not.toHaveProperty("cleanupKeys");
+    expect(generationTerminalRecordChecksum(generationTerminalRecordSchema.parse(old)))
+      .toBe(generationTerminalRecordChecksum(old));
+    const cleanupKeys = ["gen/job/attempts/cleanup-attempt/image-1.png"];
+    expect(generationTerminalRecordSchema.parse({ ...old, cleanupKeys })).toMatchObject({ cleanupKeys });
+    expect(generationTerminalRecordSchema.safeParse({ ...old, cleanupKeys: [...cleanupKeys, ...cleanupKeys] }).success).toBe(false);
+    expect(generationTerminalRecordSchema.safeParse({ ...old, cleanupKeys: Array.from({ length: 5 }, (_, i) => `key-${i}`) }).success).toBe(false);
+  });
   it("uses one canonical envelope hash and makes quarantine impossible to acknowledge", () => {
     const envelope = durableEventEnvelopeSchema.parse({
       sourceService: "main",

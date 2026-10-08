@@ -11,6 +11,33 @@ describe("auth redirect helpers", () => {
   it("returns a signed-in reader to the gated changelog", () => {
     expect(safeInternalAuthRedirect("/changelog", "https://idream.test")).toBe("/changelog");
   });
+
+  it("returns a signed-in reader to the Pack they were about to claim", () => {
+    const target = "/packs/public-pack";
+    expect(safeInternalAuthRedirect(target, origin)).toBe(target);
+    expect(authNextTargetFromPath("/login", `next=${encodeURIComponent(target)}`)).toBe(target);
+  });
+
+  it("preserves Pack catalog and release targets through login and signup", () => {
+    for (const target of ["/packs", "/packs?scope=claimed#library", "/packs/public-pack?release=edition-5#content"]) {
+      expect(safeInternalAuthRedirect(target, origin)).toBe(target);
+      for (const route of ["/login", "/signup"] as const) {
+        const href = new URL(authHrefForTarget(route, target), origin);
+        expect(authNextTargetFromPath(route, href.search)).toBe(target);
+      }
+    }
+    expect(authNextTargetFromPath("/packs/public-pack", "?release=edition-5", "#content")).toBe(
+      "/packs/public-pack?release=edition-5#content",
+    );
+  });
+
+  it("rejects lookalike Pack prefixes and external Pack return targets", () => {
+    for (const target of ["/packs-evil", "/packs-evil/public-pack", "/packsother?release=edition-5", "/\\evil.example/packs", "//evil.example/packs", "https://evil.example/packs"]) {
+      expect(safeInternalAuthRedirect(target, origin)).toBe("/");
+      expect(authNextTargetFromPath("/login", `next=${encodeURIComponent(target)}`)).toBeNull();
+    }
+  });
+
   it("preserves account and checkout fragments for safe internal product routes", () => {
     expect(safeInternalAuthRedirect("/profile#billing", origin)).toBe(
       "/profile#billing",

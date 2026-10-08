@@ -184,6 +184,22 @@ describe("GeneratorWorkspace owned preset editing", () => {
     expect(container.querySelector('[data-testid="my-preset-item"]')?.textContent).toContain("Rainy window");
   });
 
+  it("describes the saved presets and prompt without implying a full generation setup", async () => {
+    await mount();
+    const type = container.querySelector<HTMLSelectElement>('[aria-label="Preset type"]');
+    const explanation = "Only style, background, pose, outfit and the main prompt are saved. Choose the character and generation settings separately.";
+    expect(type?.value).toBe("setup");
+    expect(type?.selectedOptions.item(0)?.textContent).toBe("Presets and prompt");
+    expect(container.textContent).toContain(explanation);
+
+    await select("Save as", "pose");
+    expect(container.querySelector('[aria-label="Preset description"]')).not.toBeNull();
+    expect(container.textContent).not.toContain(explanation);
+    await select("Save as", "setup");
+    expect(container.textContent).toContain(explanation);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method && init.method !== "GET")).toEqual([]);
+  });
+
   it("creates a private reusable fragment and applies its id without starting generation", async () => {
     const writes: Array<{ path: string; body: Record<string, unknown> }> = [];
     const baseFetch = globalThis.fetch;

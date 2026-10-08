@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
@@ -58,7 +58,7 @@ vi.mock("node:fs/promises", async importOriginal => {
     },
   };
 });
-import { cleanupInterruptedCompanionMemorySpools, prepareCompanionMemory } from "./companion-memory";
+import { cleanupInterruptedCompanionData, prepareCompanionMemory } from "./companion-memory";
 import { consumeAccountDeletionRequest } from "./account-deletion";
 
 let root = "";
@@ -170,8 +170,32 @@ describe("Chat memory transcript staging", () => {
       await mkdir(dirname(file), { recursive: true });
       await writeFile(file, "private erasure sentinel\n");
     }
-    await cleanupInterruptedCompanionMemorySpools();
+    await cleanupInterruptedCompanionData();
     for (const file of [legacyFile, ownedFile]) await expect(stat(file)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("clears abandoned recall plaintext before admission and preserves live or unowned roots", async () => {
+    const cases = [
+      { name: "stale", owner: { host: hostname(), pid: 2_147_483_647 }, erased: true },
+      { name: "live", owner: { host: hostname(), pid: process.pid }, erased: false },
+      { name: "foreign", owner: { host: "another-host", pid: 2_147_483_647 }, erased: false },
+      { name: "unmarked", owner: undefined, erased: false },
+      { name: "invalid", owner: { host: hostname(), pid: "unknown" }, erased: false },
+    ];
+    for (const entry of cases) {
+      const directory = join(observed.osRoot, `igrep-dsh-recall-${entry.name}`);
+      await mkdir(join(directory, "session/archive"), { recursive: true });
+      await writeFile(join(directory, "session/archive/1.txt"), "Private archived dialogue.");
+      if (entry.owner) await writeFile(join(directory, "owner.json"), JSON.stringify(entry.owner));
+    }
+
+    await cleanupInterruptedCompanionData();
+
+    for (const entry of cases) {
+      const plaintext = join(observed.osRoot, `igrep-dsh-recall-${entry.name}/session/archive/1.txt`);
+      if (entry.erased) await expect(stat(plaintext)).rejects.toMatchObject({ code: "ENOENT" });
+      else expect(await readFile(plaintext, "utf8")).toBe("Private archived dialogue.");
+    }
   });
 
   it("batches small protocol fragments without changing the complete transcript or its private lifecycle", async () => {

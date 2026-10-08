@@ -31,10 +31,11 @@ const COMMAND_TIMEOUT_MS = 120_000;
 // installed profile dump, so the two tables must stay identical.
 const PROFILE_CAPABILITIES = Object.freeze({
   normal: Object.freeze({
-    search: false,
+    search: true,
     webProvider: false,
-    webTool: false,
-    sessionRecall: false,
+    webTool: true,
+    sessionRecall: true,
+    searchMode: "fast",
     memory: true,
     ingest: false,
     wake: false,
@@ -43,14 +44,16 @@ const PROFILE_CAPABILITIES = Object.freeze({
     timeoutMs: 10000,
   }),
   private: Object.freeze({
-    search: false,
+    search: true,
     webProvider: false,
-    webTool: false,
-    sessionRecall: false,
+    webTool: true,
+    sessionRecall: true,
+    searchMode: "fast",
     memory: false,
     ingest: false,
     wake: false,
     maintainIntervalMs: 0,
+    timeoutMs: 10000,
   }),
 });
 
@@ -353,7 +356,17 @@ function discoverPlugin(profileName, dependencies, dshHome) {
     path.join(pluginPath, "package.json"),
     dependencies.fs,
   );
-  return { pluginPath };
+  const manifest = readJsonFile(dependencies.fs, path.join(pluginPath, "package.json"), "PLUGIN_MANIFEST_INVALID");
+  if (!Array.isArray(manifest.files) || ["index.mjs", "compaction.mjs", "session-recall.mjs", "handoff.mjs"].some(file => !manifest.files.includes(file))) {
+    throw new BootstrapError("PLUGIN_MANIFEST_INVALID", "igrep plugin must declare bundle files");
+  }
+  const files = ["package.json", ...manifest.files];
+  if (files.some(file => typeof file !== "string" || path.isAbsolute(file) || file.split(/[\\/]/).includes(".."))) {
+    throw new BootstrapError("PLUGIN_MANIFEST_INVALID", "igrep plugin must declare workspace-local bundle files");
+  }
+  const content = files.map(file => [file, String(dependencies.fs.readFileSync(path.join(pluginPath, file), "utf8"))]);
+  const digest = createHash("sha256").update(JSON.stringify(content)).digest("hex");
+  return { pluginPath, bundlePath: path.join(dshHome, "idream-igrep-bundles", digest), content };
 }
 
 function setupProfiles(discoveries, dependencies, dshHome) {
@@ -373,6 +386,15 @@ function setupProfiles(discoveries, dependencies, dshHome) {
       ),
       dshEnvironment(dependencies.env, dshHome),
     );
+    // npm identity stays 0.1.0 across igrep releases. An immutable file-package
+    // address forces the package manager to materialize the actual new bytes.
+    // These are installation artifacts, never another source implementation.
+    dependencies.fs.mkdirSync(discovery.bundlePath, { recursive: true, mode: 0o700 });
+    for (const [file, bytes] of discovery.content) {
+      const target = path.join(discovery.bundlePath, file);
+      dependencies.fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+      dependencies.fs.writeFileSync(target, bytes, { encoding: "utf8", mode: 0o600 });
+    }
     writeOwnedMinimalProfileManifest(
       discovery,
       dependencies.fs,
@@ -498,10 +520,11 @@ function validateProfile(discovery, fs, dshHome) {
   const profileDir = path.join(dshHome, "profiles", discovery.profileName);
   const manifestPath = path.join(profileDir, "package.json");
   const manifest = readJsonFile(fs, manifestPath, "PROFILE_MANIFEST_INVALID");
-  const expectedSpec = `file:${discovery.pluginPath}`;
+  const expectedSpec = `file:${discovery.bundlePath}`;
   if (manifest.dependencies?.[PLUGIN_PACKAGE] !== expectedSpec) {
     throw new BootstrapError(
-      "PLUGIN_PATH_MISMATCH",
+      String(manifest.dependencies?.[PLUGIN_PACKAGE]).startsWith(`file:${path.join(dshHome, "idream-igrep-bundles")}${path.sep}`)
+        ? "PLUGIN_CONTENT_MISMATCH" : "PLUGIN_PATH_MISMATCH",
       `${discovery.profileName} does not point at the igrep-owned plugin package`,
     );
   }
@@ -632,6 +655,7 @@ function writeOwnedMinimalProfileManifest(discovery, fs, dshHome) {
   const manifest = readJsonFile(fs, manifestPath, "PROFILE_MANIFEST_INVALID");
   manifest.dependencies = {
     ...(manifest.dependencies ?? {}),
+    [PLUGIN_PACKAGE]: `file:${discovery.bundlePath}`,
     ...Object.fromEntries(PLUGIN_PEERS.map((peerPackage) => [peerPackage, DSH_VERSION])),
   };
   manifest.dsh = {

@@ -52,6 +52,8 @@ export interface VoiceClipPort {
     requestId: string;
     attemptNo: number;
     idempotencyKey: string;
+    // Account owner, distinct from the shared character/voice identity.
+    ownerId?: string;
     text: string;
     voiceId?: string;
     // Free-form delivery instruction (emotion/persona/intonation). Sourced from the
@@ -78,6 +80,13 @@ export interface VoiceClipPort {
     sceneApplied?: boolean;
     sceneAdapter?: string;
   }>>;
+  // The exact-key replay store is private content outside BlobStore. Erasure
+  // must install a persistent barrier before acknowledging cache deletion.
+  eraseAccount?(input: {
+    subjectHash: string;
+    requestKeys: readonly string[];
+    voiceIds: readonly string[];
+  }): Promise<ProviderResult<{ erased: true }>>;
 }
 
 export function voiceSceneInstructions(
@@ -109,6 +118,7 @@ export interface VoiceIdentityPort {
     }>
   >;
   cloneVoice(input: {
+    ownerId?: string;
     voiceId: string;
     audio: Uint8Array;
     contentType: string;
@@ -123,6 +133,7 @@ export interface VoiceIdentityPort {
     }>
   >;
   createPresetVoice?(input: {
+    ownerId?: string;
     voiceId: string;
     presetVoiceId: string;
     language: string;

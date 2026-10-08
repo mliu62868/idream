@@ -6,6 +6,7 @@ import { GenerationMetricsView } from "./GenerationMetricsView";
 import { JobsView } from "@/features/jobs/JobsView";
 import { ToastProvider } from "./ui/Toast";
 import { GENERATION_JOBS_REFRESH_EVENT } from "@/features/jobs/query";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -41,6 +42,31 @@ describe("generation health failure drilldown through the real transport", () =>
     await act(async () => root.unmount());
     container.remove();
     vi.unstubAllGlobals();
+  });
+
+  it("reloads the selected metrics window once through shell refresh", async () => {
+    await act(async () => root.render(<GenerationMetricsView />));
+    await waitUntil(() => reads.some(url => url.searchParams.get("days") === "14"));
+    const thirty = [...container.querySelectorAll("button")].find(button => button.textContent?.trim() === "30 days")!;
+    await act(async () => thirty.click());
+    await waitUntil(() => reads.some(url => url.searchParams.get("days") === "60"));
+    reads = [];
+    const href = window.location.href;
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    expect(reads.map(url => url.searchParams.get("days"))).toEqual(["30", "60"]);
+    expect(window.location.href).toBe(href);
+    expect(thirty.className).toContain("bg-black/[0.05]");
+  });
+
+  it("reloads the Jobs scope through the shell event as well as its internal event", async () => {
+    window.history.replaceState(null, "", "/admin/ops/jobs?mode=all&profileId=profile-exact");
+    await act(async () => root.render(<ToastProvider><JobsView permissions={{ retry: false, cancel: false, reconcile: false }} /></ToastProvider>));
+    await waitUntil(() => reads.length === 1);
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    expect(reads).toHaveLength(2);
+    expect(reads[1]!.search).toBe(reads[0]!.search);
+    await act(async () => { window.dispatchEvent(new Event(GENERATION_JOBS_REFRESH_EVENT)); });
+    expect(reads).toHaveLength(3);
   });
 
   it("uses each received 7/30-day period and exact profile version, recipe and source in failure links", async () => {

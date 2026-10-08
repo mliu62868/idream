@@ -84,6 +84,50 @@ describe("SupportWorkspace mounted URL state", () => {
     vi.restoreAllMocks();
   });
 
+  it.each(["mount", "history"] as const)("keeps restored Support cursor positions unknown through next and previous after %s", async (entry) => {
+    apiWrite.mockReset();
+    apiGet.mockImplementation(async (path) => {
+      const cursor = new URL(path, "http://admin.local").searchParams.get("cursor");
+      const subject = cursor === "restored-next" ? "Next restored ticket" : cursor ? "Restored ticket" : "First ticket";
+      return {
+        items: [{ ...baseTicket, subject }],
+        pageInfo: { endCursor: cursor === "restored-next" ? null : "restored-next", hasNextPage: cursor !== "restored-next" },
+      };
+    });
+    const restoredUrl = "/admin/support?category=account&cursor=restored-page";
+    window.history.replaceState(null, "", entry === "mount" ? restoredUrl : "/admin/support?category=account");
+    root = createRoot(container);
+    await act(async () => root!.render(<SupportWorkspace canViewPlaintext={false} canWrite={false} />));
+    await waitUntil(() => container.textContent?.includes(entry === "mount" ? "Restored ticket" : "First ticket") === true);
+    if (entry === "history") {
+      await act(async () => {
+        window.history.replaceState(null, "", restoredUrl);
+        window.dispatchEvent(new PopStateEvent("popstate"));
+      });
+      await waitUntil(() => container.textContent?.includes("Restored ticket") === true);
+    }
+    const pagination = () => container.querySelector('[data-testid="admin-pagination"]')!;
+    const button = (label: string) => [...pagination().querySelectorAll("button")].find((node) => node.textContent === label);
+    expect(pagination().textContent).toContain("Page position unknown");
+    expect(pagination().textContent).not.toContain("Page 1");
+    expect(button("Back to first page")?.disabled).toBe(false);
+    await act(async () => button("Next page")!.click());
+    await waitUntil(() => container.textContent?.includes("Next restored ticket") === true);
+    expect(pagination().textContent).toContain("Page position unknown");
+    await act(async () => button("Previous page")!.click());
+    await waitUntil(() => container.textContent?.includes("Restored ticket") === true && !container.textContent?.includes("Next restored ticket"));
+    expect(pagination().textContent).toContain("Page position unknown");
+    await act(async () => button("Back to first page")!.click());
+    await waitUntil(() => container.textContent?.includes("First ticket") === true);
+    const firstRead = apiGet.mock.calls.filter(([path]) => path.startsWith("/api/v2/admin/support/requests?")).at(-1)![0];
+    const firstParams = new URL(firstRead, "http://admin.local").searchParams;
+    expect(firstParams.has("cursor")).toBe(false);
+    expect(firstParams.get("category")).toBe("account");
+    expect(pagination().textContent).toContain("Page 1");
+    expect(button("Previous page")?.disabled).toBe(true);
+    expect(apiWrite).not.toHaveBeenCalled();
+  });
+
   it("hydrates deterministic markup before restoring the URL query", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const browserWindow = window;

@@ -27,6 +27,7 @@ import {
   translateAdmin,
   useAdminI18n,
 } from "@/components/admin/i18n";
+import { ImagePackResetNotice } from "./ImagePackResetNotice";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import {
   useAuthorityResource,
@@ -39,6 +40,7 @@ import {
   textAreaClass,
 } from "@/features/operations/WorkspaceUi";
 import { cn } from "@/lib/utils";
+import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 
 type VisualIdentityExperimentData = Pick<CharacterWorkspaceDetail, "visual"> & {
   character: Pick<
@@ -188,12 +190,15 @@ export function VisualIdentityExperimentWorkbench({
   canReview,
   canActivate,
   onActivateCandidate,
+  selectedImageCount = 0,
 }: {
   data: VisualIdentityExperimentData;
   canCreate: boolean;
   canUploadSource: boolean;
   canReview: boolean;
   canActivate: boolean;
+  /** Draft cover/hero/chat selections that activating a new look will clear. */
+  selectedImageCount?: number;
   onActivateCandidate?: (
     input: ActivateIdentityCandidateInput,
   ) => Promise<void>;
@@ -396,6 +401,18 @@ export function VisualIdentityExperimentWorkbench({
     }, [data.character.id]),
   });
   const uploadedSources = uploadedSourcesResource.data ?? EMPTY_SOURCE_OPTIONS;
+
+  useWorkspaceRefresh(async () => {
+    void uploadedSourcesResource.refresh();
+    try {
+      await loadRuns();
+      if (selectedRun) await loadRun(selectedRun.id);
+    } catch (cause) {
+      setError(cause instanceof Error
+        ? cause.message
+        : translateAdmin(locale, "Generation results could not be refreshed"));
+    }
+  });
 
   // SPEC: 未落终态的实验 Run 每 3s 刷新一次，失败退避到 6s。
   // INTENT: 这里原本是一个靠 effect 依赖变化重新武装的伪轮询——刷新失败时 selectedRun
@@ -865,44 +882,6 @@ export function VisualIdentityExperimentWorkbench({
             />
           </label>
 
-          <label className="mt-4 block text-sm font-medium">
-            {t("Negative prompt")}
-            <input
-              aria-label={t("Negative prompt")}
-              className={`${fieldClass} mt-2`}
-              onChange={(event) => setNegativePrompt(event.target.value)}
-              value={negativePrompt}
-            />
-          </label>
-
-          <label className="mt-4 block text-sm font-medium">
-            {t("Seed")}
-            <span className="mt-2 flex gap-3">
-              <input
-                aria-label={t("Seed")}
-                className={`${fieldClass} min-w-0 flex-1`}
-                disabled={resolvedSeedStrategy === "reuse_source"}
-                onChange={(event) => setBaseSeed(event.target.value)}
-                value={
-                  resolvedSeedStrategy === "reuse_source"
-                    ? (selectedSource?.seed ?? "")
-                    : baseSeed
-                }
-              />
-              <button
-                className="shrink-0 px-2 text-sm font-medium underline decoration-[var(--ad-border)] underline-offset-4 disabled:opacity-40"
-                disabled={resolvedSeedStrategy === "reuse_source"}
-                onClick={() => {
-                  setSeedStrategy("locked");
-                  setBaseSeed(randomSeed(baseSeed));
-                }}
-                type="button"
-              >
-                {t("Randomize")}
-              </button>
-            </span>
-          </label>
-
           <input
             accept="image/jpeg,image/png,image/webp"
             className="hidden"
@@ -972,6 +951,44 @@ export function VisualIdentityExperimentWorkbench({
               {t("Advanced settings")}
             </summary>
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              {/* INTENT: negative prompt and seed are reproduction knobs; most looks are
+                  described in the prompt above, so they stay out of the first screen. */}
+              <label className="text-xs font-medium text-[var(--ad-text-muted)] sm:col-span-2">
+                {t("Negative prompt")}
+                <input
+                  aria-label={t("Negative prompt")}
+                  className={`${fieldClass} mt-1`}
+                  onChange={(event) => setNegativePrompt(event.target.value)}
+                  value={negativePrompt}
+                />
+              </label>
+              <label className="text-xs font-medium text-[var(--ad-text-muted)] sm:col-span-2">
+                {t("Seed")}
+                <span className="mt-1 flex gap-3">
+                  <input
+                    aria-label={t("Seed")}
+                    className={`${fieldClass} min-w-0 flex-1`}
+                    disabled={resolvedSeedStrategy === "reuse_source"}
+                    onChange={(event) => setBaseSeed(event.target.value)}
+                    value={
+                      resolvedSeedStrategy === "reuse_source"
+                        ? (selectedSource?.seed ?? "")
+                        : baseSeed
+                    }
+                  />
+                  <button
+                    className="shrink-0 px-2 text-sm font-medium underline decoration-[var(--ad-border)] underline-offset-4 disabled:opacity-40"
+                    disabled={resolvedSeedStrategy === "reuse_source"}
+                    onClick={() => {
+                      setSeedStrategy("locked");
+                      setBaseSeed(randomSeed(baseSeed));
+                    }}
+                    type="button"
+                  >
+                    {t("Randomize")}
+                  </button>
+                </span>
+              </label>
               <label className="text-xs font-medium text-[var(--ad-text-muted)]">
                 {t("Generation mode")}
                 <select
@@ -1383,6 +1400,7 @@ export function VisualIdentityExperimentWorkbench({
                   <h4 className="text-sm font-semibold">
                     {t("Set as current look")}
                   </h4>
+                  <ImagePackResetNotice count={selectedImageCount} />
                   <div className="mt-4 grid gap-4 sm:grid-cols-2">
                     <label className="text-xs font-medium text-[var(--ad-text-muted)] sm:col-span-2">
                       {t("Identity description")}

@@ -21,7 +21,6 @@
     "./admin/api-manifest": "./src/admin/api-manifest.ts",
     "./chat/limits": "./src/chat/limits.ts",
     "./chat/image-action": "./src/chat/image-action.ts",
-    "./chat/image-intent": "./src/chat/image-intent.ts",
     "./chat/companion-runtime": "./src/chat/companion-runtime.ts",
     "./chat/persona": "./src/chat/persona.ts",
     "./chat/persona-render": "./src/chat/persona-render.ts",

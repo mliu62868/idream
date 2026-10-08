@@ -7,6 +7,7 @@ import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { ApprovalRequiredNotice, isDualApprovalRequired, type BlockedApproval } from "@/features/approvals/ApprovalRequired";
+import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 
 const input = "mt-1 min-h-11 w-full rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 text-sm";
 const button = "min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-40";
@@ -21,8 +22,28 @@ export function CoinOffersPanel({ canWrite }: { canWrite: boolean }) {
   const [error, setError] = useState("");
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const [blockedPublish, setBlockedPublish] = useState<{ name: string; approval: BlockedApproval } | null>(null);
+  const [previousCanWrite, setPreviousCanWrite] = useState(canWrite);
   const mounted = useRef(false);
   const serial = useRef(0);
+  const writeAuthority = useRef(false);
+  const confirmationIntent = useRef<ConfirmSpec | null>(null);
+
+  if (previousCanWrite !== canWrite) {
+    setPreviousCanWrite(canWrite);
+    if (!canWrite) {
+      setConfirmation(null);
+      setBlockedPublish(null);
+    }
+  }
+
+  // INVARIANT: 撤权或卸载结束旧确认意图；重授不能恢复旧回执的UI作用。
+  useEffect(() => {
+    writeAuthority.current = canWrite;
+    return () => {
+      writeAuthority.current = false;
+      confirmationIntent.current = null;
+    };
+  }, [canWrite]);
 
   const load = useCallback(async () => {
     const ticket = ++serial.current; setLoading(true); setError("");
@@ -32,6 +53,7 @@ export function CoinOffersPanel({ canWrite }: { canWrite: boolean }) {
     } catch (cause) { if (mounted.current && ticket === serial.current) setError(cause instanceof Error ? cause.message : "Coin catalog could not load."); }
     finally { if (mounted.current && ticket === serial.current) setLoading(false); }
   }, []);
+  useWorkspaceRefresh(load);
   useEffect(() => {
     mounted.current = true;
     const timer = window.setTimeout(() => void load(), 0);
@@ -55,7 +77,8 @@ export function CoinOffersPanel({ canWrite }: { canWrite: boolean }) {
     finally { if (mounted.current) setBusy(false); }
   }
   function change(offer: CoinOffer, action: "publish" | "retire") {
-    setConfirmation({
+    if (!writeAuthority.current || busy) return;
+    const spec: ConfirmSpec = {
       title: action === "publish" ? "Publish coin offer" : "Retire coin offer",
       summary: <div className="space-y-3"><p>{offer.name} · {offer.dreamcoins.toLocaleString()} {t("Dreamcoins")} · {(offer.priceCents / 100).toFixed(2)} {offer.currency.toUpperCase()}</p><p className="whitespace-pre-line text-sm">{offer.terms}</p></div>,
       destructive: { expectedName: offer.name },
@@ -64,18 +87,24 @@ export function CoinOffersPanel({ canWrite }: { canWrite: boolean }) {
         : "New purchases stop. Previously accepted invoices remain payable under their original terms." },
       submitLabel: action === "publish" ? "Publish coin offer" : "Retire coin offer",
       onSubmit: async (reason) => {
+        if (!isCurrent()) return;
         try {
           await write(`/api/v2/admin/billing/coin-offers/${encodeURIComponent(offer.id)}/state`, { version: offer.version, action, confirmation: `${offer.id}:${action}`, reason });
         } catch (cause) {
+          if (!isCurrent()) return;
           if (action !== "publish" || !isDualApprovalRequired(cause)) throw cause;
           // 商品草稿不可改，批准绑定 offer id 即可（服务端 enforceApproval 不带 payload）。
           setBlockedPublish({ name: offer.name, approval: { permissionKey: "config.pricing.write", action: "config.coin_offer.publish", targetType: "coin_offer", targetId: offer.id, payload: {}, reason } });
           return;
         }
+        if (!isCurrent()) return;
         if (action === "publish") setBlockedPublish(null);
         if (mounted.current) await load();
       },
-    });
+    };
+    const isCurrent = () => mounted.current && writeAuthority.current && confirmationIntent.current === spec;
+    confirmationIntent.current = spec;
+    setConfirmation(spec);
   }
 
   return <section aria-label={t("Dreamcoin offers")} className="space-y-4 rounded-xl border border-[var(--ad-border)] p-4 md:p-5">
@@ -91,6 +120,10 @@ export function CoinOffersPanel({ canWrite }: { canWrite: boolean }) {
       <label className="mt-4 block text-sm">{t("Customer purchase and refund terms")}<textarea className={`${input} min-h-28`} disabled={busy} minLength={20} maxLength={4000} onChange={(event) => setDraft((value) => ({ ...value, terms: event.target.value }))} required value={draft.terms} /></label>
       <button className={`${button} mt-4 bg-[var(--ad-ink)] text-white`} disabled={busy} type="submit">{busy ? t("Saving…") : t("Save coin offer draft")}</button>
     </form>}
-    {confirmation && <ConfirmDialog spec={confirmation} onClose={() => setConfirmation(null)} />}
+    {canWrite && confirmation && <ConfirmDialog spec={confirmation} onClose={() => {
+      if (confirmationIntent.current !== confirmation) return;
+      confirmationIntent.current = null;
+      setConfirmation((current) => current === confirmation ? null : current);
+    }} />}
   </section>;
 }

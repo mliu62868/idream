@@ -8,6 +8,7 @@ import { createCharacterSoulVersion } from "./soul-version";
 import { previewSnapshot } from "./workspace-preview";
 import { listCharacterPortfolioData } from "./portfolio";
 import { canonicalSha256 } from "../shared/canonical-json";
+import { characterVisualProfileSnapshotHash } from "./release-snapshot";
 
 describe("Character Soul version authority", () => {
   const suffix = randomUUID();
@@ -360,7 +361,7 @@ describe("Character Soul version authority", () => {
         requestId: `candidate-soul-${suffix}`,
       })).rejects.toMatchObject({
         code: "conflict",
-        details: { releaseId: candidate.id, status: "approved", deepLink: `/admin/characters/${characterId}?tab=release` },
+        details: { blocker: "candidate_release_pending", releaseId: candidate.id, status: "approved", deepLink: `/admin/characters/${characterId}?tab=release` },
       });
       expect(await prisma.characterContentVersion.count({ where: { characterId } })).toBe(current.version);
     } finally {
@@ -415,6 +416,84 @@ describe("Character Soul version authority", () => {
       await prisma.characterContentVersion.deleteMany({ where: { characterId: historicalId } });
       await prisma.characterProject.deleteMany({ where: { id: historicalProjectId } });
       await prisma.character.delete({ where: { id: historicalId } });
+    }
+  });
+
+  // SPEC (2026-10-07): with an active visual identity, the look is the identity; the
+  // appearance direction is read-only and a persona-only save still goes through.
+  it("refuses appearance edits once a visual identity is active, but saves persona edits", async () => {
+    const profileValues = { characterId, version: 1, status: "active", style: "realistic", identityPrompt: "Locked look", negativeIdentityPrompt: null, faceTraits: {}, hairTraits: {}, bodyTraits: {}, signatureTraits: {}, styleTraits: {}, anchorAssetIds: [], adapterRefs: {}, createdFrom: "test", evidenceState: "qualified" };
+    const profile = await prisma.characterVisualProfile.create({ data: { ...profileValues, immutableHash: characterVisualProfileSnapshotHash(profileValues) } });
+    try {
+      const current = await prisma.characterContentVersion.findFirstOrThrow({ where: { characterId }, orderBy: { version: "desc" } });
+      const loaded = loadCharacterSoulSnapshot(current.personaSnapshot);
+      if (!loaded.ok) throw new Error("fixture must have a valid Soul");
+      const project = await prisma.characterProject.findUniqueOrThrow({ where: { id: projectId } });
+      const base = {
+        characterId, expectedProjectVersion: project.version, expectedContentVersionId: current.id,
+        actor: { id: actorId, role: "admin" as const }, requestId: `locked-look-${suffix}`,
+      };
+      await expect(createCharacterSoulVersion({
+        ...base,
+        persona: { ...loaded.snapshot.soul, firstMessage: "Locked look opening." },
+        visualDirection: { identityAnchor: "A different face entirely", stableTraits: ["green eyes"], style: "realistic", referenceDirection: "Studio light" },
+      })).rejects.toMatchObject({ code: "conflict", details: { blocker: "visual_identity_locked", visualProfileId: profile.id } });
+      expect(await prisma.characterContentVersion.count({ where: { characterId } })).toBe(current.version);
+
+      const saved = await createCharacterSoulVersion({
+        ...base,
+        persona: { ...loaded.snapshot.soul, characterPromise: "Edited while the look is locked.", firstMessage: "Locked look opening." },
+      });
+      expect(saved.contentVersion).toBe(current.version + 1);
+    } finally {
+      await prisma.characterVisualProfile.delete({ where: { id: profile.id } });
+    }
+  });
+
+  // Admin's "Save in current format" sends the loaded persona unchanged; it must not be
+  // treated as a no-op, or the legacy diagnostics that block publishing never clear.
+  it("upgrades an unchanged historical Soul to the current schema on save", async () => {
+    const legacyId = `legacy-upgrade-${suffix}`;
+    const legacyProjectId = `legacy-upgrade-project-${suffix}`;
+    const soul = {
+      identity: { name: "Legacy Wren", age: 33, gender: "female", relationshipArchetype: "trusted companion", characterPromise: "Keeps the lighthouse log." },
+      innerLife: { personality: "Patient and dry.", values: [], wants: [], fears: [], contradictions: [], backstory: "" },
+      voice: { tone: "Low and even.", cadence: "", vocabulary: [], habits: [], avoid: [] },
+      interaction: { initiative: "", curiosity: "", pacing: "", affection: "", conflict: "", repair: "" },
+      canon: { facts: [], unknowns: [] },
+      dialogue: { positive: [], negative: [] },
+    };
+    const compiled = { compilerVersion: "character-soul-1", systemPrompt: "Legacy lighthouse prompt." };
+    const personaSnapshot = { schemaVersion: 1, soul, compiled: { ...compiled, fingerprint: canonicalSha256({ soul, ...compiled }), estimatedTokens: 10 } };
+    const loaded = loadCharacterSoulSnapshot(personaSnapshot);
+    if (!loaded.ok) throw new Error("fixture must load as a historical Soul");
+    expect(loaded.diagnostics.length).toBeGreaterThan(0);
+    await prisma.character.create({ data: { id: legacyId, name: "Legacy Wren", age: 33, description: "", source: "official", appearance: {}, advancedDetails: {} } });
+    try {
+      await prisma.characterProject.create({ data: { id: legacyProjectId, characterId: legacyId, activeKey: legacyProjectId } });
+      const current = await prisma.characterContentVersion.create({ data: { characterId: legacyId, version: 1, contentHash: canonicalSha256(personaSnapshot), personaSnapshot, openingSnapshot: { firstMessage: "The lamp is lit." }, appearanceSnapshot: {}, sourceType: "legacy_upgrade_test" } });
+      await prisma.characterRevision.create({ data: { projectId: legacyProjectId, revision: 1, characterContentVersionId: current.id, projectSnapshot: {} } });
+      const project = await prisma.characterProject.findUniqueOrThrow({ where: { id: legacyProjectId } });
+      const result = await createCharacterSoulVersion({
+        characterId: legacyId, expectedProjectVersion: project.version, expectedContentVersionId: current.id,
+        actor: { id: actorId, role: "admin" },
+        persona: { ...loaded.snapshot.soul, firstMessage: "The lamp is lit." },
+        requestId: `legacy-upgrade-${suffix}`,
+      });
+      expect(result.contentVersion).toBe(2);
+      const upgraded = await prisma.characterContentVersion.findUniqueOrThrow({ where: { id: result.contentVersionId } });
+      const reloaded = loadCharacterSoulSnapshot(upgraded.personaSnapshot);
+      expect(reloaded).toMatchObject({ ok: true, diagnostics: [] });
+      expect(reloaded.ok && reloaded.snapshot.schemaVersion).toBe(3);
+      expect(reloaded.ok && reloaded.snapshot.soul.name).toBe("Legacy Wren");
+    } finally {
+      await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: legacyProjectId } });
+      await prisma.adminCollaborationActivity.deleteMany({ where: { targetId: legacyProjectId } });
+      await prisma.adminAuditLog.deleteMany({ where: { targetId: legacyProjectId } });
+      await prisma.characterRevision.deleteMany({ where: { projectId: legacyProjectId } });
+      await prisma.characterContentVersion.deleteMany({ where: { characterId: legacyId } });
+      await prisma.characterProject.deleteMany({ where: { id: legacyProjectId } });
+      await prisma.character.delete({ where: { id: legacyId } });
     }
   });
 

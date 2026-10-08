@@ -6,6 +6,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Context } from "@deepseek-ai/cordis";
+import type BasicCompactionEngine from "@deepseek-ai/dsh-compaction-basic";
 import {
   companionWorkspaceRebuildSessionIngestTimeoutMs,
   companionWorkspaceRebuildSchema,
@@ -27,23 +28,19 @@ import type {
 import { verifyProfileEvidence, type ProfileClaimVerifier } from "./profile-evidence";
 import { logger } from "../logger";
 
-// SPEC: the normal profile exposes exactly one model-visible igrep surface:
-// memory (wake profile + memory_search). `igrep_search` is off.
-// INTENT: the working-tree search tool only ever saw `knowledge/canon.md`,
-// whose bytes are already inside the compiled Soul, while its coding-agent
-// guidance ("grep, glob, bash, repository facts") landed verbatim in every
-// companion prompt. Removing the capability removes the tool, the guidance,
-// the routing skill and the failure-moment reminder in one place.
+// SPEC: retrieval and session archives belong to the disposable attempt.
+// Cross-session memory is a read-only snapshot of Main's committed Turns;
+// Main projection remains the only durable writer and profile maintainer.
 // INTENT: memorySearchMode "fast": the plugin default "ultra" spends 4–40 s
 // inside an LLM evidence controller that times out against the local model
 // (measured 2026-08-24); "fast" returned the same hits in 0.7 s over a
 // relationship-sized corpus. The tool subprocess budget shrinks with it.
 export const NORMAL_IGREP_CONFIG = Object.freeze({
-  search: false,
+  search: true,
   webProvider: false,
-  webTool: false,
-  // Agent execution history is disposable; Main supplies the selected Turns.
-  sessionRecall: false,
+  webTool: true,
+  sessionRecall: true,
+  searchMode: "fast",
   memory: true,
   // Main projects only committed Turns into canonical memory. Attempt-local
   // ingest would maintain a disposable copy after commit and then delete it.
@@ -57,14 +54,16 @@ export const NORMAL_IGREP_CONFIG = Object.freeze({
 });
 
 export const PRIVATE_IGREP_CONFIG = Object.freeze({
-  search: false,
+  search: true,
   webProvider: false,
-  webTool: false,
-  sessionRecall: false,
+  webTool: true,
+  sessionRecall: true,
+  searchMode: "fast",
   memory: false,
   ingest: false,
   wake: false,
   maintainIntervalMs: 0,
+  timeoutMs: 10_000,
 });
 
 export interface IgrepPluginModule {
@@ -72,6 +71,8 @@ export interface IgrepPluginModule {
   readonly inject?: readonly string[];
   apply(ctx: Context, config: Record<string, unknown>): void;
   resolveConfig?(config: Record<string, unknown>): Record<string, unknown>;
+  /** Official sibling entry point; no host copy of igrep's handoff algorithm. */
+  Compaction: typeof BasicCompactionEngine;
 }
 
 export interface LoadedIgrepPlugin {
@@ -102,7 +103,9 @@ export async function loadIgrepPlugin(specifier: string): Promise<LoadedIgrepPlu
   if (packageJson.name !== "@igrep/dsh-plugin" || packageJson.version !== "0.1.0") {
     throw new Error("igrep plugin package identity must be @igrep/dsh-plugin@0.1.0");
   }
-  return { module: namespace as IgrepPluginModule, version: packageJson.version, moduleUrl };
+  const compaction = await import(pathToFileURL(join(dirname(file), "compaction.mjs")).href);
+  if (typeof compaction.default !== "function") throw new Error("official igrep compaction backend is missing");
+  return { module: { ...namespace, Compaction: compaction.default } as IgrepPluginModule, version: packageJson.version, moduleUrl };
 }
 
 export interface JsonCommandOptions {
@@ -114,6 +117,40 @@ export interface JsonCommandOptions {
 }
 
 export type RunJsonCommand = (options: JsonCommandOptions) => Promise<unknown>;
+
+type IgrepEvidenceFailureReason =
+  | "invalid_envelope"
+  | "failed_envelope"
+  | "partial_evidence"
+  | "provider_mismatch"
+  | "workspace_mismatch"
+  | "source_unverifiable";
+
+/** A rejected envelope may contain user facts; retain only its fixed reason. */
+export class IgrepEvidenceError extends Error {
+  constructor(readonly reason: IgrepEvidenceFailureReason) {
+    super("igrep memory-search returned unverifiable evidence");
+    this.name = "IgrepEvidenceError";
+  }
+}
+
+/** Never return subprocess text, tool failure details, paths, or warnings. */
+export function igrepFailureCategory(error: unknown): string {
+  if (error instanceof IgrepEvidenceError || error instanceof MemorySourceIntegrityError) return error.reason;
+  if (error instanceof BoundedCommandError) return `command_${error.code}`;
+  const record = objectRecord(error);
+  if (record?.code === "ENOENT") return "source_missing";
+  if (record?.code === "EACCES" || record?.code === "EPERM") return "source_unreadable";
+  // The official plugin wraps child errors in model-facing text. Recognize
+  // only its fixed prefixes and return our own constants, never that text.
+  const message = error instanceof Error ? error.message : typeof record?.message === "string" ? record.message : "";
+  const unavailable = "memory unavailable (an availability error, not an empty memory): ";
+  if (message.startsWith(`${unavailable}igrep memory contract mismatch:`)) return "contract_mismatch";
+  if (message.startsWith(`${unavailable}invalid igrep JSON output:`)) return "command_invalid_output";
+  if (/^memory unavailable \(an availability error, not an empty memory\): igrep [a-z-]+ timed out after \d+ms$/u.test(message)) return "command_timeout";
+  if (message.startsWith(unavailable)) return "memory_unavailable";
+  return "unknown";
+}
 
 async function sameRealPath(left: string, right: string): Promise<boolean> {
   try {
@@ -239,12 +276,14 @@ export async function recallIgrepMemory(
     timeoutMs: RECALL_TIMEOUT_MS,
     signal: options.signal,
   }));
-  if (!payload || payload.failed === true || payload.error || !Array.isArray(payload.results)
-    || (payload.provider !== undefined && payload.provider !== "igrep")
-    || (payload.workspaceRoot !== undefined && (typeof payload.workspaceRoot !== "string"
-      || !await sameRealPath(payload.workspaceRoot, workspace)))
-    || (payload.warnings !== undefined && (!Array.isArray(payload.warnings) || payload.warnings.length > 0))) {
-    throw new Error("igrep memory-search returned unverifiable evidence");
+  if (!payload) throw new IgrepEvidenceError("invalid_envelope");
+  if (payload.failed === true || payload.error) throw new IgrepEvidenceError("failed_envelope");
+  if (!Array.isArray(payload.results)) throw new IgrepEvidenceError("invalid_envelope");
+  if (payload.provider !== undefined && payload.provider !== "igrep") throw new IgrepEvidenceError("provider_mismatch");
+  if (payload.workspaceRoot !== undefined && (typeof payload.workspaceRoot !== "string"
+    || !await sameRealPath(payload.workspaceRoot, workspace))) throw new IgrepEvidenceError("workspace_mismatch");
+  if (payload.warnings !== undefined && (!Array.isArray(payload.warnings) || payload.warnings.length > 0)) {
+    throw new IgrepEvidenceError("partial_evidence");
   }
   const results = await originalIgrepMemoryHits(workspace, payload.results, options.signal);
   const notes = results
@@ -271,7 +310,7 @@ export async function originalIgrepMemoryHits(workspace: string, hits: readonly 
     throwIfAborted(signal);
     const record = objectRecord(hit);
     if (typeof record?.citation !== "string" || typeof record.snippet !== "string" || typeof record.sourceClass !== "string") {
-      throw new Error("igrep memory-search returned unverifiable evidence");
+      throw new IgrepEvidenceError("source_unverifiable");
     }
     let snippet = record.snippet;
     if (record.sourceClass === "dialogue") {
@@ -283,7 +322,7 @@ export async function originalIgrepMemoryHits(workspace: string, hits: readonly 
         || (record.startLine !== undefined && record.startLine !== start)
         || (record.endLine !== undefined && record.endLine !== end)
         || (record.evidenceStatus !== undefined && record.evidenceStatus !== "active")) {
-        throw new Error("igrep memory-search returned unverifiable evidence");
+        throw new IgrepEvidenceError("source_unverifiable");
       }
       const file = match[1]!;
       let source = sources.get(file);
@@ -295,7 +334,7 @@ export async function originalIgrepMemoryHits(workspace: string, hits: readonly 
       if (end > bound.rows.length
         || (record.sourceAt !== undefined && (typeof record.sourceAt !== "string"
           || !bound.sourceAt.slice(start - 1, end).some(at => memorySourceInstant(at) === memorySourceInstant(record.sourceAt as string))))) {
-        throw new Error("igrep memory-search returned unverifiable evidence");
+        throw new IgrepEvidenceError("source_unverifiable");
       }
       snippet = bound.rows.slice(start - 1, end).map(row => {
         const at = objectRecord(row.source_at)!;
@@ -305,7 +344,7 @@ export async function originalIgrepMemoryHits(workspace: string, hits: readonly 
         return `[${row.role} @ ${context.join("; ")}] ${row.content}`;
       }).join("\n");
     } else if (record.sourceClass !== "profile") {
-      throw new Error("igrep memory-search returned unverifiable evidence");
+      throw new IgrepEvidenceError("source_unverifiable");
     }
     result.push({ citation: record.citation, snippet, sourceClass: record.sourceClass });
   }
@@ -441,7 +480,13 @@ export class IgrepMemoryBuilder {
   }> {
     const source = "kind" in input ? input : companionWorkspaceRebuildSchema.parse(input);
     const metrics = rebuildSourceMetrics(source);
-    await memorySourceRoot(workspace);
+    const memoryRoot = await memorySourceRoot(workspace);
+    // igrep maintain leaves an empty history untouched. Materialize its memory
+    // root so strict doctor can distinguish a valid empty projection (including
+    // a privacy wipe) from a workspace whose memory was never initialized.
+    if (metrics.messageCount === 0) {
+      await mkdir(join(memoryRoot, "mem"), { recursive: true, mode: 0o700 });
+    }
     // The transcript is transport input, not canonical memory; it never lives
     // inside .igrep. igrep binds each session to the transcript path it first
     // ingested, so callers pass a root that is stable across candidates.

@@ -12,7 +12,7 @@ beforeEach(async () => {
   const original = originals.find((profile) => profile.status === "active");
   if (!original) throw new Error("Expected the seeded RedGraft profile");
   await prisma.generationModelProfile.deleteMany({ where: { profileKey: key } });
-  const old = JSON.parse(JSON.stringify({ ...original, id: "test-gemma-mlx-old", version: 2,
+  const old = JSON.parse(JSON.stringify({ ...original, id: "test-gemma-mlx-old", version: 2, defaultWidth: 768, defaultHeight: 1152, allowedOrientations: ["2:3"],
     runnerConfig: { ...JSON.parse(JSON.stringify(original.runnerConfig)), workflowVersion: 2 },
     costMultiplier: 1.75, dryRunSummary: { source: "historical-proof" } }));
   await prisma.generationModelProfile.create({ data: old });

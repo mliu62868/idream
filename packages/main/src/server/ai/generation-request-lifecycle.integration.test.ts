@@ -106,6 +106,32 @@ describe("Generation Request cancellation", () => {
     await expect(prisma.generationJob.findUnique({ where: { id: jobId } })).resolves.toMatchObject({ status: "cancelled", deliveredOutputCount: 0, completedAt: null, finishedAt: expect.any(Date) });
   });
 
+  // INVARIANT: a cancelled request is a terminal failure for its Creative Run item. Without
+  // this, the item stays queued, the Run stays active forever, and Admin's Images tab keeps
+  // showing that dead Run ahead of the operator's current one (39 such Runs on 2026-09-25).
+  it("closes the Creative Run item and its Run when the request is cancelled", async () => {
+    const runJobId = `cancel-run-job-${suffix}`;
+    const batchId = `cancel-run-batch-${suffix}`;
+    await prisma.generationJob.create({ data: { id: runJobId, userId, mode: "image", controls: {}, presetIds: [], outputCount: 1, costDreamcoins: 0, status: "queued", provider: "mock", sourceType: "content_production" } });
+    await prisma.contentProductionBatch.create({ data: { id: batchId, title: "Cancelled cover", purpose: "character_cover", presetIds: [], status: "queued", createdById: actorId, totalItems: 1 } });
+    const item = await prisma.contentProductionItem.create({ data: { batchId, jobId: runJobId, tags: [], status: "queued" } });
+    try {
+      await cancelGenerationRequest({ requestId: runJobId, expectedVersion: 1, actor: { id: actorId, role: "admin" }, reason: "Deferred", idempotencyKey: `cancel-run-${suffix}`, traceId: `cancel-run-trace-${suffix}` });
+      await expect(prisma.contentProductionItem.findUniqueOrThrow({ where: { id: item.id } })).resolves.toMatchObject({ status: "failed" });
+      await expect(prisma.contentProductionBatch.findUniqueOrThrow({ where: { id: batchId } })).resolves.toMatchObject({
+        lifecycleState: "closed", status: "failed", failedItems: 1,
+      });
+    } finally {
+      await prisma.contentProductionItem.deleteMany({ where: { batchId } });
+      await prisma.contentProductionBatch.deleteMany({ where: { id: batchId } });
+      await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: runJobId } });
+      await prisma.generationJobEvent.deleteMany({ where: { jobId: runJobId } });
+      await prisma.generationSettlementLink.deleteMany({ where: { requestId: runJobId } });
+      await prisma.dreamcoinLedger.deleteMany({ where: { sourceId: runJobId } });
+      await prisma.generationJob.deleteMany({ where: { id: runJobId } });
+    }
+  });
+
   it("removes a job enqueued in the cancellation race window and keeps refund authority atomic", async () => {
     const raceJobId = `cancel-race-job-${suffix}`;
     const raceAttemptId = `cancel-race-attempt-${suffix}`;

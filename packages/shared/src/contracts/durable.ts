@@ -98,6 +98,12 @@ export const generationTerminalRecordSchema = z.discriminatedUnion("outcome", [
   generationTerminalRecordBaseSchema.extend({
     outcome: z.literal("failed"),
     error: generationTerminalErrorSchema,
+    // Non-delivery evidence only. Omit on historical records to preserve their
+    // checksum; Main validates exact attempt ownership before durable cleanup.
+    cleanupKeys: z.array(z.string().min(1)).min(1).max(4).refine(
+      (keys) => new Set(keys).size === keys.length,
+      "cleanup keys must be unique",
+    ).optional(),
   }),
   generationTerminalRecordBaseSchema.extend({
     outcome: z.literal("blocked"),
@@ -143,6 +149,10 @@ export const generationTerminalRecordSchema = z.discriminatedUnion("outcome", [
       path: ["accounting"],
       message: "a non-invoked provider cannot have provider accounting",
     });
+  }
+  if (record.outcome === "failed" && record.cleanupKeys && !record.providerInvoked) {
+    context.addIssue({ code: "custom", path: ["cleanupKeys"],
+      message: "generated object cleanup requires a provider invocation" });
   }
   if (!record.providerInvoked && Object.keys(record.usage).length > 0) {
     context.addIssue({

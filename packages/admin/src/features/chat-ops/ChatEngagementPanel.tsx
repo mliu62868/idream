@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { useAuthorityResource } from "@/lib/authority-resource";
+import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { DataTable } from "@/components/admin/ui/DataTable";
@@ -28,6 +29,7 @@ export function ChatEngagementPanel({
     enabled: kind !== null,
     load,
   });
+  useWorkspaceRefresh(resource.refresh, kind !== null);
   const { data, loading } = resource;
 
   function choose(next: "groups" | "proactive") {

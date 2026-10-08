@@ -2811,7 +2811,7 @@ test("mobile explore menu shares the full product navigation", async ({ page }) 
   for (const [label, href] of [
     ["Safety Center", "/safety/introduction"],
     ["More", "/resources-hub"],
-    ["Log in", "/login?next=%2F"],
+    ["Log in", "/login"],
     ["Upgrade", "/upgrade"],
   ] as const) {
     await expect(appNavigation.getByRole("link", { name: label })).toHaveAttribute("href", href);
@@ -4787,7 +4787,7 @@ test("generator UI queues an image job and surfaces completed media in the galle
   await expect(generatedMediaCard.getByRole("button", { name: "Looks like character" })).toBeVisible();
   await expect(generatedMediaCard.getByRole("button", { name: "Doesn't match character" })).toBeVisible();
   await expect(generatedMediaCard.getByRole("button", { name: "Create variation" })).toBeVisible();
-  await generatedMediaCard.getByRole("button", { name: "Report" }).click();
+  await generatedMediaCard.getByRole("button", { name: "Report", exact: true }).click();
   await submitReportDialog(page, "Broken or unusable result", "E2E: generated media report note.");
   await expect(page.getByText("Report submitted.")).toBeVisible({ timeout: 10_000 });
   await expectContentReport("media", generatedMediaId ?? "", {
@@ -4891,7 +4891,7 @@ test("generator UI quotes one video scene and delivers its completed sequence an
     const review = sequenceControls.getByRole("button", { name: "Review video price", exact: true });
     await expect(review).toBeEnabled({ timeout: 45_000 });
     await expect(sequenceControls.getByRole("combobox", { name: "Video aspect ratio" })).toHaveValue(characterVideoProductionRecipe.orientation);
-    await expect(sequenceControls.getByRole("combobox", { name: "Video resolution" })).toHaveValue("standard");
+    await expect(sequenceControls.getByRole("combobox", { name: "Video resolution" })).toHaveValue("preview");
     await expect(sequenceControls.getByRole("combobox", { name: "Video sound" })).toHaveValue("generated");
     await expect(sequenceControls.getByRole("combobox", { name: "Scene 1 duration" })).toHaveValue(String(characterVideoProductionRecipe.durationSeconds));
     const motion = "The character slowly waves toward the camera in this controlled video scene.";
@@ -4973,14 +4973,26 @@ test("generator UI quotes one video scene and delivers its completed sequence an
     expect(debits).toHaveLength(1);
     expect(debits[0]).toMatchObject({ delta: -100, reason: "generation_spend", idempotencyKey: `generation:${job.id}:reserve`, balanceAfter: price.balance - 100 });
     await page.getByRole("button", { name: "Videos" }).click();
-    // One native Scene and one packaged sequence are distinct owned deliveries.
-    // Preserve exact uniqueness of each instead of hiding either from Gallery.
-    await expect(page.getByTestId("gallery-media-video")).toHaveCount(2, { timeout: 30_000 });
-    for (const assetId of [sceneAsset.id, sequenceAsset.id]) {
+    // A completed sequence is one Gallery result; native clips remain accessible
+    // from its scene downloads (service.ts Gallery contract).
+    for (const asset of [completed.scenes[0]!.assets[0]!, sequenceAsset]) {
+      const download = await page.request.get(asset.downloadUrl);
+      expect(download.ok()).toBeTruthy();
+      expect(download.headers()["content-type"]).toContain("video/mp4");
+      expect(download.headers()["content-disposition"]).toMatch(/^attachment;/);
+      const inline = await page.request.get(asset.url);
+      expect(inline.ok()).toBeTruthy();
+      const bytes = await download.body();
+      expectMp4Bytes(bytes, asset.downloadUrl);
+      expect(bytes).toEqual(await inline.body());
+    }
+    await expect(page.getByTestId("gallery-media-video")).toHaveCount(1, { timeout: 30_000 });
+    await expect(page.locator(`[data-media-id="${sceneAsset.id}"]`)).toHaveCount(0);
+    for (const assetId of [sequenceAsset.id]) {
       const video = page.locator(`[data-media-id="${assetId}"]`).getByTestId("gallery-media-video");
       await expect(video).toHaveCount(1);
       await expect(video).toBeVisible();
-      await expect(video.locator("source")).toHaveAttribute("src", /\/user-content\/.+\.mp4$/);
+      await expect(video.locator("source")).toHaveAttribute("src", /\/user-content\/.+\/content\.mp4#t=0\.001$/);
       await video.evaluate(async (element: HTMLVideoElement) => { element.muted = true; await element.play(); });
       await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime)).toBeGreaterThan(0.1);
       await video.evaluate((element: HTMLVideoElement) => element.pause());
@@ -4990,8 +5002,8 @@ test("generator UI quotes one video scene and delivers its completed sequence an
     await page.reload();
     await expect(page.getByRole("button", { name: "Video", exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Videos", exact: true }).click();
-    await expect(page.getByTestId("gallery-media-video")).toHaveCount(2);
-    for (const assetId of [sceneAsset.id, sequenceAsset.id]) {
+    await expect(page.getByTestId("gallery-media-video")).toHaveCount(1);
+    for (const assetId of [sequenceAsset.id]) {
       await expect(page.locator(`[data-media-id="${assetId}"]`).getByTestId("gallery-media-video")).toBeVisible();
     }
   } finally {
@@ -6136,7 +6148,8 @@ test("profile UI handles redeem, referral, billing, and media actions", async ({
   await page.getByLabel("Display name").fill(nextName);
   await page.getByRole("button", { name: "Save profile" }).click();
   await expect(page.getByText("Profile updated.")).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByText(nextName)).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("main").getByText(nextName, { exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("banner").getByText(nextName, { exact: true })).toBeVisible();
 
   await page.getByRole("checkbox", { name: "Mute Slow Burn" }).check({ timeout: 10_000 });
   await page.getByRole("button", { name: "Save hidden tags" }).click();

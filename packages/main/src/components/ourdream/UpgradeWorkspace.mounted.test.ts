@@ -171,3 +171,22 @@ describe("prepaid access checkout stays with its confirmed account", () => {
     expect(readPendingCheckoutIntents(window.sessionStorage, "owner-a")[0]?.checkoutUrl).toBeUndefined();
   });
 });
+
+describe("upgrade page keeps the visitor's way back and makes plans comparable", () => {
+  it("links back to the chat that sent them and prices a yearly plan per month", async () => {
+    window.history.replaceState(null, "", "/upgrade?returnTo=%2Fchat%2Fsession-1");
+    const yearly: PublicPlan = { ...plan, id: "premium-yearly", billingPeriod: "yearly", priceCents: 9990 };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/v1/plans"
+      ? ok({ items: [plan, yearly], billing }) : read(String(input))));
+    try {
+      await mount();
+      const back = container.querySelector<HTMLAnchorElement>('[data-testid="upgrade-return-link"]');
+      expect(back?.getAttribute("href")).toBe("/chat/session-1");
+      expect(back?.textContent).toBe("Back to your chat");
+      const equivalents = [...container.querySelectorAll('[data-testid="upgrade-plan-monthly-equivalent"]')].map(node => node.textContent);
+      expect(equivalents).toEqual(["$8.33 per month, paid once for the year"]);
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
+  });
+});

@@ -17,13 +17,14 @@ import { generationCostFromAuthority, resolveGenerationPricingAuthority } from "
 import { ok } from "@/server/lib/http";
 import { logger } from "@/server/lib/logger";
 import { dreamcoinBalance, postDreamcoinEntry } from "@/server/modules/billing/ledger";
+import { lockChatScope } from "@/server/modules/chat/turn-scope";
 import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { resolveCharacterVoiceAuthority } from "@/server/modules/voice-defaults";
 import { providers } from "@/server/providers";
 import type { VoiceClipPort } from "@/server/providers/types";
 import { createVoiceClipPortForKey } from "@/server/providers/voice/factory";
-import { audioFileExtension, voiceArtifactKey } from "@/server/providers/voice/idempotency";
+import { audioFileExtension, voiceArtifactKey, voiceProviderIdempotencyKey } from "@/server/providers/voice/idempotency";
 import { encodeVoiceClipMp3 } from "@/server/providers/voice/transcode";
 import { acceptVoiceClipQuote, signVoiceClipQuote } from "./voice-clip-quote";
 import {
@@ -564,7 +565,9 @@ export async function reclaimExpiredVoiceClip(input: {
 
   const leaseOwner = randomUUID();
   const claimedAt = new Date();
-  const claimed = await prisma.voiceClipRequest.updateMany({
+  const claimed = await prisma.$transaction(async tx => {
+    if (!await lockUser(tx, existing.userId)) throw Errors.gone("Account is no longer active; the voice request was not reclaimed");
+    return tx.voiceClipRequest.updateMany({
     where: {
       id: existing.id,
       characterId: input.characterId,
@@ -591,6 +594,7 @@ export async function reclaimExpiredVoiceClip(input: {
       startedAt: claimedAt,
       completedAt: null,
     },
+    });
   });
   if (claimed.count !== 1) {
     throw Errors.conflict(
@@ -687,6 +691,7 @@ async function executeOwnedVoiceClaim(input: {
     maxCostDreamcoins,
     allowanceWindowStartsAt,
     providerKey: providerPayload.providerKey,
+    synthesisPayload: body,
   });
   if (budgetDecision.kind === "prewarm_skipped") {
     return ok(
@@ -699,6 +704,9 @@ async function executeOwnedVoiceClaim(input: {
       cost: overflowCost,
       required: overflowCost,
     });
+  }
+  if (budgetDecision.kind === "reply_revoked") {
+    throw Errors.gone("This reply changed or its conversation is no longer active; no new synthesis was started");
   }
   if (claim.request.voiceCallUtteranceId) {
     const utterance = await prisma.voiceCallUtterance.findUnique({ where: { id: claim.request.voiceCallUtteranceId }, include: { call: true } });
@@ -722,6 +730,7 @@ async function executeOwnedVoiceClaim(input: {
   // leaving an outcome nobody can resolve. There used to be a catch here that
   // quarantined the request, because one adapter could not be replayed.
   const result = await voiceProvider.synthesize({
+    ownerId: user.id,
     requestId: claim.request.id,
     attemptNo: claim.request.attemptNo,
     idempotencyKey: providerIdempotencyKey,
@@ -747,21 +756,27 @@ async function executeOwnedVoiceClaim(input: {
     providerIdempotencyKey,
     audioFileExtension(artifact.contentType),
   );
-  const stored = await providers.blob.putPrivate({
-    key: storageKey,
-    body: artifact.body,
-    contentType: artifact.contentType,
-  });
-  if (!stored.ok) {
-    await failOwnedVoiceRequest(claim, stored.error.code, stored.error);
-    throw Errors.internal("Voice artifact could not be stored", stored.error);
-  }
-
-  const proposedMediaId = `media_voice_${randomUUID()}`;
+  // Persist this I/O owner's lifetime independently of lease/status takeover.
+  // Erasure waits even after another owner delivers. No lock spans the upload;
+  // a stale HTTP authentication snapshot is not upload permission.
+  await authorizeVoiceArtifactWrite(claim);
   try {
+    const stored = await providers.blob.putPrivate({
+      key: storageKey,
+      body: artifact.body,
+      contentType: artifact.contentType,
+    });
+    if (!stored.ok) {
+      await failOwnedVoiceRequest(claim, stored.error.code, stored.error);
+      throw Errors.internal("Voice artifact could not be stored", stored.error);
+    }
+
+    const proposedMediaId = `media_voice_${randomUUID()}`;
     const commit = await prisma.$transaction(async (tx) => {
-      // Match budget authorization's User -> VoiceRequest lock order.
-      await lockUser(tx, user.id);
+      // Match Chat mutation's User -> group -> Session -> Turn ladder before
+      // taking the VoiceRequest lock. TTS can outlive edit/delete/archive.
+      const userActive = await lockUser(tx, user.id);
+      const replyDeliverable = userActive && await lockVoiceReplyAuthority(tx, claim.request, body);
       await lockVoiceRequest(tx, claim.request.id);
       const owned = await tx.voiceClipRequest.findUniqueOrThrow({
         where: { id: claim.request.id },
@@ -776,6 +791,22 @@ async function executeOwnedVoiceClaim(input: {
           status: owned.status,
           attemptNo: owned.attemptNo,
         });
+      }
+
+      const durationMs = Math.max(0, result.data.durationMs);
+      const providerUsageRecorded =
+        (await tx.voiceUsageFact.count({ where: { requestId: owned.id } })) > 0;
+      if (!replyDeliverable) {
+        await tx.voiceClipRequest.update({ where: { id: owned.id }, data: {
+          status: "failed", errorCode: userActive ? "voice_reply_delivery_revoked" : "voice_account_revoked", error: toInputJson({ reason: userActive ? "selected_reply_changed" : "account_inactive" }),
+          leaseOwner: null, leaseExpiresAt: null, completedAt: new Date(),
+        } });
+        // Execution happened, but it never became a user delivery or charge.
+        if (!providerUsageRecorded) await tx.voiceUsageFact.create({ data: {
+          id: `voice_usage_${owned.id}_${owned.attemptNo}`, requestId: owned.id, attemptNo: owned.attemptNo,
+          userId: user.id, characterId: character.id, mediaAssetId: null, durationMs, costDreamcoins: 0, intent: body.intent,
+        } });
+        return { kind: "reply_revoked" } as const;
       }
 
       const activeStaleAssets = await tx.mediaAsset.findMany({
@@ -798,10 +829,7 @@ async function executeOwnedVoiceClaim(input: {
         );
       }
       const mediaId = reusableProviderAsset?.id ?? proposedMediaId;
-      const durationMs = Math.max(0, result.data.durationMs);
       const previouslyDelivered = await hasDeliveredVoiceUsage(owned.id, tx);
-      const providerUsageRecorded =
-        (await tx.voiceUsageFact.count({ where: { requestId: owned.id } })) > 0;
       const remainingMs = await voiceMinutesRemainingMs(
         user.id,
         entitlements,
@@ -1037,6 +1065,7 @@ async function executeOwnedVoiceClaim(input: {
       });
     }
     if (commit.kind === "delivery_revoked") throw Errors.gone("Call ended, was interrupted, or reached its accepted budget before voice delivery");
+    if (commit.kind === "reply_revoked") throw Errors.gone("This reply changed or its conversation is no longer active; no audio was delivered or charged");
     return ok(voiceClipResponse(commit.asset), { status: 201 });
   } catch (cause) {
     // INTENT: keep deterministic provider bytes when the transaction result is
@@ -1050,13 +1079,25 @@ async function executeOwnedVoiceClaim(input: {
         ),
     );
     throw cause;
+  } finally {
+    await releaseVoiceArtifactOwner(claim).catch(error => logger.error(
+      { error, voiceClipRequestId: claim.request.id, leaseOwner: claim.leaseOwner },
+      "voice artifact owner could not be released; account erasure remains pending",
+    ));
   }
 }
 
 async function deleteUndeliveredVoiceBlob(key: string, requestId: string) {
   try {
     if (await prisma.mediaAsset.count({ where: { storageKey: key } })) return;
-    await providers.blob.delete({ key });
+    const result = await providers.blob.delete({ key });
+    if (!result.ok) {
+      logger.error({ voiceClipRequestId: requestId, storageKey: key, error: result.error }, "undelivered voice blob cleanup failed");
+      const request = await prisma.voiceClipRequest.findUnique({ where: { id: requestId }, select: { error: true } });
+      if (request) await prisma.voiceClipRequest.updateMany({ where: { id: requestId, status: { in: ["failed", "skipped"] } }, data: {
+        error: toInputJson({ ...jsonRecord(request.error), undeliveredBlobCleanup: { ...result.error, storageKey: key } }),
+      } });
+    }
   } catch (error) {
     logger.error(
       { error, voiceClipRequestId: requestId, storageKey: key },
@@ -1069,6 +1110,7 @@ type VoiceSynthesisBudgetDecision =
   | { readonly kind: "proceed" }
   | { readonly kind: "prewarm_skipped" }
   | { readonly kind: "payment_required"; readonly balance: number }
+  | { readonly kind: "reply_revoked" }
   | { readonly kind: "wait" };
 
 // SPEC: Provider execution is serialized per user until the preceding request
@@ -1083,12 +1125,14 @@ async function authorizeVoiceSynthesisTurn(input: {
   maxCostDreamcoins: number;
   allowanceWindowStartsAt?: Date;
   providerKey: z.infer<typeof pinnedVoiceProviderPayloadSchema>["providerKey"];
+  synthesisPayload: VoiceClipSynthesisPayload;
 }): Promise<Exclude<VoiceSynthesisBudgetDecision, { kind: "wait" }>> {
   const deadline = Date.now() + voiceClipWaitMs(input.providerKey);
   while (Date.now() <= deadline) {
     const now = new Date();
     const decision = await prisma.$transaction(async (tx) => {
-      await lockUser(tx, input.userId);
+      const userActive = await lockUser(tx, input.userId);
+      const replyDeliverable = userActive && await lockVoiceReplyAuthority(tx, input.claim.request, input.synthesisPayload);
       await lockVoiceRequest(tx, input.claim.request.id);
       const owned = await tx.voiceClipRequest.findUniqueOrThrow({
         where: { id: input.claim.request.id },
@@ -1103,6 +1147,13 @@ async function authorizeVoiceSynthesisTurn(input: {
           status: owned.status,
           attemptNo: owned.attemptNo,
         });
+      }
+      if (!replyDeliverable) {
+        await tx.voiceClipRequest.update({ where: { id: owned.id }, data: {
+          status: "failed", errorCode: userActive ? "voice_reply_delivery_revoked" : "voice_account_revoked", error: toInputJson({ reason: userActive ? "selected_reply_changed" : "account_inactive" }),
+          leaseOwner: null, leaseExpiresAt: null, completedAt: now,
+        } });
+        return { kind: "reply_revoked" } as const;
       }
 
       const earlier = await tx.voiceClipRequest.findFirst({
@@ -1217,7 +1268,9 @@ async function claimVoiceRequest(input: {
   const leaseOwner = randomUUID();
   const now = new Date();
   try {
-    const created = await prisma.voiceClipRequest.create({
+    const created = await prisma.$transaction(async tx => {
+      if (!await lockUser(tx, input.userId)) throw Errors.gone("Account is no longer active; no voice request was started");
+      return tx.voiceClipRequest.create({
       data: {
         id: requestId,
         userId: input.userId,
@@ -1235,6 +1288,7 @@ async function claimVoiceRequest(input: {
           now.getTime() + voiceClipLeaseMs(input.providerPayload.providerKey),
         ),
       },
+      });
     });
     return { kind: "owner", request: created, leaseOwner };
   } catch (error) {
@@ -1294,7 +1348,9 @@ async function claimVoiceRequest(input: {
     const existingBilling = storedVoiceBilling(existing);
     const keepExistingBilling = existingBilling &&
       (existingBilling.intent === "play" || input.synthesisPayload.intent === "prewarm");
-    const claimed = await prisma.voiceClipRequest.updateMany({
+    const claimed = await prisma.$transaction(async tx => {
+      if (!await lockUser(tx, input.userId)) throw Errors.gone("Account is no longer active; the voice request was not resumed");
+      return tx.voiceClipRequest.updateMany({
       where: {
         id: existing.id,
         status: existing.status,
@@ -1326,6 +1382,7 @@ async function claimVoiceRequest(input: {
         startedAt: claimNow,
         completedAt: null,
       },
+      });
     });
     if (claimed.count === 1) {
       const request = await prisma.voiceClipRequest.findUniqueOrThrow({
@@ -1350,7 +1407,8 @@ async function reserveVoiceProviderInvocation(input: {
   readonly voiceProvider: VoiceClipPort;
   readonly providerIdempotencyKey: string;
 }): Promise<"first_invocation" | "durable_replay"> {
-  return prisma.$transaction(async (tx) => {
+  const reservation = await prisma.$transaction(async (tx) => {
+    const userActive = await lockUser(tx, input.claim.request.userId);
     await lockVoiceRequest(tx, input.claim.request.id);
     const owned = await tx.voiceClipRequest.findUniqueOrThrow({
       where: { id: input.claim.request.id },
@@ -1369,6 +1427,13 @@ async function reserveVoiceProviderInvocation(input: {
         },
       );
     }
+    if (!userActive) {
+      await tx.voiceClipRequest.update({ where: { id: owned.id }, data: {
+        status: "failed", errorCode: "voice_account_revoked", error: toInputJson({ reason: "account_inactive" }),
+        leaseOwner: null, leaseExpiresAt: null, completedAt: new Date(),
+      } });
+      return "account_revoked" as const;
+    }
     if (owned.providerRequestId) {
       if (owned.providerRequestId === input.providerIdempotencyKey) {
         return "durable_replay" as const;
@@ -1386,6 +1451,50 @@ async function reserveVoiceProviderInvocation(input: {
       },
     });
     return "first_invocation" as const;
+  });
+  // Throw only after committing this owner's terminal state, otherwise the
+  // account eraser would wait forever on a rolled-back running request.
+  if (reservation === "account_revoked") throw Errors.gone("Account is no longer active; no voice provider was invoked");
+  return reservation;
+}
+
+async function authorizeVoiceArtifactWrite(claim: Extract<VoiceRequestClaim, { kind: "owner" }>) {
+  const rejection = await prisma.$transaction(async tx => {
+    const userActive = await lockUser(tx, claim.request.userId);
+    await lockVoiceRequest(tx, claim.request.id);
+    const owned = await tx.voiceClipRequest.findUnique({ where: { id: claim.request.id } });
+    if (!owned || owned.status !== "running" || owned.leaseOwner !== claim.leaseOwner || owned.attemptNo !== claim.request.attemptNo) {
+      return "lease_changed" as const;
+    }
+    const leaseActive = owned.leaseExpiresAt !== null && owned.leaseExpiresAt > new Date();
+    if (userActive && leaseActive) {
+      await tx.voiceClipRequest.update({ where: { id: owned.id }, data: {
+        activeArtifactOwners: [...new Set([...owned.activeArtifactOwners, claim.leaseOwner])],
+      } });
+      return null;
+    }
+    await tx.voiceClipRequest.update({ where: { id: owned.id }, data: {
+      status: "failed", errorCode: userActive ? "voice_lease_expired" : "voice_account_revoked",
+      error: toInputJson({ reason: userActive ? "lease_expired_before_upload" : "account_inactive" }),
+      leaseOwner: null, leaseExpiresAt: null, completedAt: new Date(),
+    } });
+    return userActive ? "lease_expired" as const : "account_revoked" as const;
+  });
+  if (rejection === "account_revoked") throw Errors.gone("Account is no longer active; no voice artifact was uploaded or delivered");
+  if (rejection) throw Errors.conflict("Voice clip request lease changed before artifact upload", { requestId: claim.request.id, reason: rejection });
+}
+
+async function releaseVoiceArtifactOwner(claim: Extract<VoiceRequestClaim, { kind: "owner" }>) {
+  await prisma.$transaction(async tx => {
+    // Cleanup is allowed for a deleted user: it proves this specific writer has
+    // finished, without changing the winning lease owner or its delivery state.
+    await lockUser(tx, claim.request.userId);
+    await lockVoiceRequest(tx, claim.request.id);
+    const request = await tx.voiceClipRequest.findUnique({ where: { id: claim.request.id }, select: { activeArtifactOwners: true } });
+    if (!request?.activeArtifactOwners.includes(claim.leaseOwner)) return;
+    await tx.voiceClipRequest.update({ where: { id: claim.request.id }, data: {
+      activeArtifactOwners: request.activeArtifactOwners.filter(owner => owner !== claim.leaseOwner),
+    } });
   });
 }
 
@@ -1429,8 +1538,16 @@ export async function voiceMinutesRemainingMs(
       : 0;
   if (allowanceMinutes <= 0) return 0;
   const since = windowStartsAt ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000);
+  // Provider execution and user delivery are different immutable receipts. A
+  // failed/prewarm-revoked execution never spends minutes; a later same-key
+  // delivery has duration 0 to avoid recounting provider work. Count the
+  // request's original duration only when its free delivery is in this window,
+  // and exclude the whole request if a later delivery was paid in coins.
   const usage = await db.voiceUsageFact.aggregate({
-    where: { userId, occurredAt: { gte: since }, costDreamcoins: 0 },
+    where: { userId, request: { AND: [
+      { usageFacts: { some: { userId, occurredAt: { gte: since }, mediaAssetId: { not: null }, costDreamcoins: 0 } } },
+      { usageFacts: { none: { costDreamcoins: { gt: 0 } } } },
+    ] } },
     _sum: { durationMs: true },
   });
   return Math.max(
@@ -1468,13 +1585,7 @@ function voiceAssetWhere(request: Pick<VoiceClipRequest, "id" | "userId" | "mess
   };
 }
 
-// SPEC: the provider-invocation reservation key for a request. Request-scoped,
-//   not attempt-scoped: every adapter replays durably under the same key, so a
-//   retry must present the same one rather than starting a second synthesis.
-function voiceProviderIdempotencyKey(requestId: string) {
-  return `voice:${requestId}:provider`;
-}
-
+// SPEC: selected reply attempt is part of the product request identity.
 function voiceRequestId(userId: string, messageId: string, replyAttempt: number) {
   const hash = createHash("sha256")
     .update(`${userId}\u0000${messageId}\u0000${replyAttempt}`)
@@ -1600,6 +1711,47 @@ async function lockVoiceRequest(
 
 async function lockUser(tx: Prisma.TransactionClient, userId: string) {
   await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
+  const user = await tx.user.findUnique({ where: { id: userId }, select: { status: true, deletedAt: true } });
+  return user?.status === "active" && user.deletedAt === null;
+}
+
+// Caller holds User. The shared Chat scope holds the conversation and reply
+// locks until settlement, so edit/regenerate/delete and Voice delivery choose
+// one ordering. Opening messages are Session snapshots without a ChatTurn row.
+async function lockVoiceReplyAuthority(
+  tx: Prisma.TransactionClient,
+  request: Pick<VoiceClipRequest, "userId" | "characterId" | "messageId" | "replyAttempt">,
+  payload: VoiceClipSynthesisPayload,
+): Promise<boolean> {
+  if (!payload.sessionId) return false;
+  const opening = request.messageId === `opening:${payload.sessionId}`;
+  const observedTurn = opening ? null : await tx.chatTurn.findFirst({
+    where: { sessionId: payload.sessionId, assistantMessageId: request.messageId, session: { userId: request.userId } },
+    select: { id: true },
+  });
+  if (!opening && !observedTurn) return false;
+  let scope;
+  try {
+    scope = await lockChatScope(tx, {
+      userId: request.userId,
+      at: observedTurn ? { turn: observedTurn.id } : { session: payload.sessionId },
+      expect: { characterId: request.characterId },
+    });
+  } catch (error) {
+    if (error instanceof AppError &&
+      (error.code === "not_found" || error.code === "gone" || error.code === "conflict")) return false;
+    throw error;
+  }
+  const { session, group, turn } = scope;
+  if (session.sessionId !== payload.sessionId || session.status !== "active" || (group && group.status !== "active")) return false;
+  if (opening) {
+    return request.replyAttempt === 1 && session.openingMessage?.trim() === payload.text &&
+      (payload.sceneVersion ?? 0) === 0 && (payload.scene ?? null) === null;
+  }
+  return Boolean(turn && turn.assistantMessageId === request.messageId &&
+    turn.assistantStatus === "sent" && turn.attempt === request.replyAttempt &&
+    turn.assistantContent.trim() === payload.text && turn.sceneVersion === (payload.sceneVersion ?? 0) &&
+    canonicalJsonHash(turn.scene ?? null) === canonicalJsonHash(payload.scene ?? null));
 }
 
 function isUniqueConstraintError(error: unknown) {

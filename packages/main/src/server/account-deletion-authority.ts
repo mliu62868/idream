@@ -7,13 +7,15 @@ import {
 } from "@idream/shared/contracts";
 import type { ChatAccountErasureCompletedV2Payload } from "@idream/shared/contracts";
 import { recordMainToChatEvent } from "@/processes/chat-outbox";
-import type { BlobStore } from "@/server/providers/types";
+import type { BlobStore, VoiceClipPort, VoiceProviderKey } from "@/server/providers/types";
 import { providers } from "@/server/providers";
 import { prisma } from "@/server/lib/db";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { updateCharacterProjectMetadata } from "@/server/modules/admin-v2/characters/transition";
 import { revokeAccountEmailCodes } from "@/server/modules/ourdream/account-email-challenges";
 import { packReleaseStorageKeys } from "@/server/modules/ourdream/pack-authority";
+import { materializeVoiceErasure, eraseAccountVoiceStores, erasedVoiceReceipt } from "@/server/voice-account-erasure";
+import { voiceArtifactKeys, voiceProviderIdempotencyKey } from "@/server/providers/voice/idempotency";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
@@ -288,6 +290,7 @@ type AccountDeletionDb = PrismaClient;
 export async function dispatchPendingAccountDeletionBlobDeletes(input: {
   readonly blob?: BlobStore;
   readonly db?: AccountDeletionDb;
+  readonly voice?: (provider: VoiceProviderKey) => VoiceClipPort;
   readonly now?: Date;
   readonly workerId?: string;
   readonly batch?: number;
@@ -341,11 +344,21 @@ export async function dispatchPendingAccountDeletionBlobDeletes(input: {
   for (const row of rows) {
     if (input.signal?.aborted) break;
     const held = await db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM account_deletions WHERE id = ${row.deletionId} FOR UPDATE`;
       const deletion = await tx.accountDeletion.findUnique({
         where: { id: row.deletionId },
         select: { userId: true },
       });
       if (!deletion?.userId) return false;
+      await tx.$queryRaw`SELECT id FROM users WHERE id = ${deletion.userId} FOR UPDATE`;
+      if (!await checkVoiceAuthorityTerminal(tx, deletion.userId)) {
+        await deferForMediaIo(tx, row.deletionId, "voice");
+        return true;
+      }
+      if (!await checkVideoCompositionTerminal(tx, deletion.userId)) {
+        await deferForMediaIo(tx, row.deletionId, "video_composition");
+        return true;
+      }
       const hold = await findActiveAccountDeletionLegalHold(tx, deletion.userId);
       if (!hold) return false;
       await tx.accountDeletion.updateMany({
@@ -444,6 +457,7 @@ export async function dispatchPendingAccountDeletionBlobDeletes(input: {
     : undefined;
   const completed = await finalizeReadyAccountDeletions({
     db,
+    voice: input.voice,
     now,
     signal: input.signal,
     ...(finalizationDeletionIds
@@ -502,6 +516,7 @@ async function refreshBlobReceiptCounts(
 
 export async function finalizeReadyAccountDeletions(input: {
   readonly db?: AccountDeletionDb;
+  readonly voice?: (provider: VoiceProviderKey) => VoiceClipPort;
   readonly now?: Date;
   readonly deletionIds?: readonly string[];
   readonly signal?: AbortSignal;
@@ -523,6 +538,25 @@ export async function finalizeReadyAccountDeletions(input: {
   });
   let completed = 0;
   for (const candidate of candidates) {
+    if (input.signal?.aborted) break;
+    const voiceWork = await db.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM account_deletions WHERE id = ${candidate.id} FOR UPDATE`;
+      const deletion = await tx.accountDeletion.findUniqueOrThrow({ where: { id: candidate.id } });
+      if (!["deleting_blobs", "finalizing"].includes(deletion.status) || !deletion.userId || !deletion.chatCompletedAt || deletion.graceEndsAt > now) return null;
+      await tx.$queryRaw`SELECT id FROM users WHERE id = ${deletion.userId} FOR UPDATE`;
+      if (await findActiveAccountDeletionLegalHold(tx, deletion.userId)) return null;
+      if (!await checkVoiceAuthorityTerminal(tx, deletion.userId)) {
+        await deferForMediaIo(tx, deletion.id, "voice");
+        return null;
+      }
+      if (!await checkVideoCompositionTerminal(tx, deletion.userId)) {
+        await deferForMediaIo(tx, deletion.id, "video_composition");
+        return null;
+      }
+      if (!await lockAndCheckGenerationAuthorityTerminal(tx, deletion.userId)) return null;
+      return { subjectHash: deletion.subjectHash, receipt: await materializeVoiceErasure(tx, deletion) };
+    }, { maxWait: 10_000, timeout: 60_000 });
+    if (voiceWork) await eraseAccountVoiceStores({ db, deletionId: candidate.id, ...voiceWork, now, voice: input.voice, signal: input.signal });
     if (input.signal?.aborted) break;
     const didComplete = await db.$transaction(async (tx) => {
       await tx.$queryRaw(Prisma.sql`
@@ -546,6 +580,14 @@ export async function finalizeReadyAccountDeletions(input: {
       await tx.$queryRaw(Prisma.sql`
         SELECT id FROM users WHERE id = ${deletion.userId} FOR UPDATE
       `);
+      if (!await checkVoiceAuthorityTerminal(tx, deletion.userId)) {
+        await deferForMediaIo(tx, deletion.id, "voice");
+        return false;
+      }
+      if (!await checkVideoCompositionTerminal(tx, deletion.userId)) {
+        await deferForMediaIo(tx, deletion.id, "video_composition");
+        return false;
+      }
       if (!await lockAndCheckGenerationAuthorityTerminal(tx, deletion.userId)) {
         await tx.accountDeletion.update({
           where: { id: deletion.id },
@@ -574,6 +616,17 @@ export async function finalizeReadyAccountDeletions(input: {
             version: { increment: 1 },
           },
         });
+        return false;
+      }
+
+      // Cache bytes and cloned reference states live outside BlobStore. Keep
+      // Main's owner mapping until every historical provider installs its
+      // persistent erasure barrier and acknowledges deletion.
+      const voiceReceipt = await materializeVoiceErasure(tx, deletion);
+      if (voiceReceipt.providers.some(provider => provider.completedAt === null)) {
+        await tx.accountDeletion.update({ where: { id: deletion.id }, data: {
+          status: "finalizing", lastError: toInputJson({ code: "account_deletion_voice_pending", message: "Pinned voice stores have not completed erasure" }), version: { increment: 1 },
+        } });
         return false;
       }
 
@@ -614,6 +667,25 @@ export async function finalizeReadyAccountDeletions(input: {
     if (didComplete) completed += 1;
   }
   return completed;
+}
+
+// Caller holds User. A lease timeout permits recovery while the account is
+// active; it does not prove that an old Main invocation has stopped writing.
+// New claims and recoveries reject deleted users under this same root lock.
+async function checkVoiceAuthorityTerminal(tx: Prisma.TransactionClient, userId: string) {
+  return await tx.voiceClipRequest.count({ where: { userId, OR: [{ status: "running" }, { activeArtifactOwners: { isEmpty: false } }] } }) === 0;
+}
+
+async function checkVideoCompositionTerminal(tx: Prisma.TransactionClient, userId: string) {
+  return await tx.videoSequence.count({ where: { userId, OR: [{ status: "composing" }, { activeCompositionOwners: { isEmpty: false } }] } }) === 0;
+}
+
+async function deferForMediaIo(tx: Prisma.TransactionClient, deletionId: string, kind: "voice" | "video_composition") {
+  await tx.accountDeletion.updateMany({ where: { id: deletionId, status: { in: ["deleting_blobs", "finalizing"] } }, data: {
+    status: "finalizing",
+    lastError: toInputJson({ code: `account_deletion_${kind === "voice" ? "voice_authority" : kind}_pending`, message: "A Main media invocation has not finished its artifact writes" }),
+    version: { increment: 1 },
+  } });
 }
 
 async function findActiveAccountDeletionLegalHold(
@@ -695,6 +767,9 @@ async function materializeCurrentBlobDeletes(
         select: { payload: true },
       })
     : [];
+  const cleanupOutboxes = attemptIds.length > 0
+    ? await tx.mainOutboxEvent.findMany({ where: { eventType: "generation.blob_cleanup.requested.v1", aggregateType: "generation_attempt", aggregateId: { in: attemptIds } }, select: { payload: true } })
+    : [];
   const lateEvents = requestIds.length > 0
     ? await tx.generationJobEvent.findMany({
         where: {
@@ -713,6 +788,22 @@ async function materializeCurrentBlobDeletes(
   const keys = new Set(rows.flatMap((row) =>
     row.storageKey?.trim() ? [row.storageKey.trim()] : [],
   ));
+  const voiceRequests = await tx.voiceClipRequest.findMany({ where: { userId: deletion.userId }, select: { id: true } });
+  for (const request of voiceRequests) {
+    for (const key of voiceArtifactKeys(voiceProviderIdempotencyKey(request.id))) keys.add(key);
+  }
+  const videoSequences = await tx.videoSequence.findMany({ where: { userId: deletion.userId }, select: { id: true, artifactKeys: true } });
+  for (const sequence of videoSequences) {
+    for (const key of sequence.artifactKeys) {
+      const prefix = `video-sequences/${deletion.userId}/${sequence.id}/`;
+      // Every composer reserves an owner UUID + content hash key before PUT.
+      // An unrelated path must never become an account-wide delete capability.
+      if (!key.startsWith(prefix) || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/(?:[0-9a-f]{64}\.mp4|narration-[0-2]-[0-9a-f]{64}\.wav)$/.test(key.slice(prefix.length))) {
+        throw new Error("Video sequence artifact key does not belong to its account authority");
+      }
+      keys.add(key);
+    }
+  }
   // Pack editions own their bytes. Other people's grants survive creator
   // erasure; editions with no remaining recipient follow the blob-delete receipt.
   const ungrantedPackReleases = await tx.packRelease.findMany({
@@ -729,6 +820,9 @@ async function materializeCurrentBlobDeletes(
     if (row.terminalRecordRef?.trim()) keys.add(row.terminalRecordRef.trim());
   }
   for (const row of terminalOutboxes) {
+    for (const key of generationBlobKeys(row.payload)) keys.add(key);
+  }
+  for (const row of cleanupOutboxes) {
     for (const key of generationBlobKeys(row.payload)) keys.add(key);
   }
   for (const row of lateEvents) {
@@ -819,10 +913,11 @@ function generationBlobKeys(value: Prisma.JsonValue) {
     : jsonRecord(root.recoveredSuccess);
   const terminalRefs = [root.terminalRecordRef, completed.terminalRecordRef]
     .flatMap((key) => typeof key === "string" && key.trim() ? [key.trim()] : []);
+  const cleanupKeys = [root.cleanupKeys, completed.cleanupKeys].flatMap(value => Array.isArray(value) ? value.flatMap(key => typeof key === "string" && key.trim() ? [key.trim()] : []) : []);
   if (completed.kind !== "generation.completed" || !Array.isArray(completed.assets)) {
-    return terminalRefs;
+    return [...terminalRefs, ...cleanupKeys];
   }
-  return [...terminalRefs, ...completed.assets.flatMap((asset) => {
+  return [...terminalRefs, ...cleanupKeys, ...completed.assets.flatMap((asset) => {
     const key = jsonRecord(asset).key;
     return typeof key === "string" && key.trim() ? [key.trim()] : [];
   })];
@@ -1126,6 +1221,10 @@ async function hardDeleteMainAccountAuthority(
     where: { actorId: input.userId },
     data: { actorId: erasedSubjectRef },
   });
+  await tx.characterVoiceProfile.updateMany({
+    where: { createdById: input.userId },
+    data: { createdById: erasedSubjectRef },
+  });
   await tx.adminAuditLog.updateMany({
     where: { targetType: "user", targetId: input.userId },
     data: { targetId: erasedSubjectRef },
@@ -1191,6 +1290,7 @@ async function hardDeleteMainAccountAuthority(
     data: {
       userId: null,
       status: "completed",
+      voiceErasure: erasedVoiceReceipt((await tx.accountDeletion.findUniqueOrThrow({ where: { id: input.deletionId }, select: { voiceErasure: true } })).voiceErasure),
       chatRequestEventId: null,
       blobExpectedCount: { set: await tx.accountDeletionBlobReceipt.count({
         where: { deletionId: input.deletionId },

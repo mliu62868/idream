@@ -298,7 +298,7 @@ export const navItems: NavItem[] = [
   //         它过去挂在 metrics 工作区（analytics.metric.read），于是只有 analytics.metric.read 的
   //         分析师能看到入口、点进去下拉框必 403。共用 metrics 这个 key 是接错了，不是两条配置。
   item({ id: "insights", label: "Profile Diagnostics", href: "/admin/growth/funnels", icon: BarChart3, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/generation/model-profiles"), navigation: "tool",
-    render: () => <InsightsView /> }),
+    render: (ctx) => <InsightsView canWrite={adminV2OperationAllowed("POST /api/v2/admin/generation/model-profiles/:id/commands/dry-run", ctx.permissions)} /> }),
   item({ id: "generation/config", label: "Profiles & Rollout", href: "/admin/ops/profiles", icon: SlidersHorizontal, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/generation/model-profiles", "GET /api/v2/admin/feature-flags", "GET /api/v2/admin/jobs"),
     render: (ctx) => <GenerationConfigWorkspace permissions={{
       manageProfiles: ctx.permissions.has("generation.config.write"),

@@ -8,7 +8,8 @@ import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { providers } from "@/server/providers";
-import { beginChatTurn, commitChatTerminal, createChatSession, editChatTurn, regenerateChatTurn } from "@/server/modules/chat/turn-ledger";
+import { voiceMinutesRemainingMs } from "./voice-clip";
+import { archiveChatSession, beginChatTurn, commitChatTerminal, createChatSession, deleteChatMessage, deleteChatSession, editChatTurn, regenerateChatTurn } from "@/server/modules/chat/turn-ledger";
 import { AGE_GATE_COOKIE_HEADER, api, createCharacter, createUser, dreamcoinBalance, expectOk, grantCoins, purgeTestData, voiceReplyBody } from "@/server/test/helpers";
 
 const P = "zt-voice-replay-";
@@ -42,6 +43,102 @@ afterAll(async () => {
 });
 
 describe("voice clip replay settlement", () => {
+  it("counts minutes on durable delivery, preserving provider duration across an initially undelivered replay", async () => {
+    const userId = `${P}allowance-delivery`;
+    const characterId = `${userId}-character`;
+    await createUser({ id: userId });
+    await createCharacter({ id: characterId, creatorId: userId, source: "user", visibility: "private" });
+    await grantVoice(userId, 0.01); // 600 ms, enough for one 500 ms clip.
+    await grantCoins(userId, 4, "seed");
+    const included = await voiceReplyBody(userId, { characterId, messageId: `${P}allowance-first`, text: "short" });
+    expectOk(await api("POST", "generation/voice", { userId, ageGate: true, body: included }), 201);
+    const pending = await voiceReplyBody(userId, { characterId, messageId: `${P}allowance-replay`, text: "short", intent: "prewarm" });
+    const skipped = await api("POST", "generation/voice", { userId, ageGate: true, body: pending });
+    expectOk(skipped);
+    expect(skipped.data).toMatchObject({ reason: "allowance_exhausted" });
+    const execution = await prisma.voiceUsageFact.findFirstOrThrow({ where: { userId, mediaAssetId: null } });
+    expect(execution).toMatchObject({ durationMs: 500, costDreamcoins: 0 });
+    expect(await voiceMinutesRemainingMs(userId, { voice_minutes: 0.01 })).toBe(100);
+
+    await prisma.entitlement.updateMany({ where: { userId, key: "voice_minutes" }, data: { value: 1 } });
+    const delivered = await api("POST", "generation/voice", { userId, ageGate: true, body: { ...pending, intent: "play" } });
+    expectOk(delivered, 201);
+    expect(await prisma.voiceUsageFact.findUniqueOrThrow({ where: { id: execution.id } })).toEqual(execution);
+    const delivery = await prisma.voiceUsageFact.findFirstOrThrow({ where: { requestId: execution.requestId, mediaAssetId: delivered.data.assetId } });
+    expect(delivery).toMatchObject({ durationMs: 0, costDreamcoins: 0 });
+    expect(await voiceMinutesRemainingMs(userId, { voice_minutes: 1 })).toBe(59_000);
+    // A sliding window includes delivery even if the execution receipt preceded
+    // it. Replays must retain the original duration rather than charge 0 ms.
+    expect(execution.occurredAt < delivery.occurredAt).toBe(true);
+    expect(await voiceMinutesRemainingMs(userId, { voice_minutes: 1 }, prisma, delivery.occurredAt)).toBe(59_500);
+    expect(await dreamcoinBalance(userId)).toBe(4);
+  });
+
+  it.each((["regenerate", "edit", "delete", "delete-session", "archive"] as const).flatMap(change => [
+    { change, minutes: 0 }, { change, minutes: 1 },
+  ]))("does not deliver or charge a reply revoked by $change while TTS is running ($minutes plan minutes)", async ({ change, minutes }) => {
+    const userId = `${P}late-${change}-${minutes}`;
+    const characterId = `${userId}-character`;
+    await createUser({ id: userId });
+    await createCharacter({ id: characterId, creatorId: userId, source: "user", visibility: "private" });
+    await grantVoice(userId, minutes);
+    await grantCoins(userId, 4, "seed");
+    const soul = compileCharacterSoul({ name: "Nova", age: 31, gender: "female",
+      characterPromise: "A ceramicist who works late.", detailsMarkdown: "Unhurried and specific." });
+    if (!soul.ok) throw new Error("Invalid fixture Soul");
+    const content = await prisma.characterContentVersion.create({ data: {
+      characterId, version: 1, sourceType: "test", contentHash: soul.snapshot.compiled.fingerprint,
+      personaSnapshot: JSON.parse(JSON.stringify(soul.snapshot)), openingSnapshot: {}, appearanceSnapshot: {},
+    } });
+    await prisma.character.update({ where: { id: characterId }, data: { currentContentVersionId: content.id } });
+    const session = await createChatSession(userId, { characterId });
+    const turn = await beginChatTurn({ userId, sessionId: session.id, content: "Hello.", idempotencyKey: `${P}late-${change}` });
+    if (!turn.snapshot) throw new Error("Missing Turn snapshot");
+    await commitChatTerminal({ version: 1, turnId: turn.snapshot.turnId, sessionId: session.id,
+      assistantMessageId: turn.assistant.id, attempt: 1, status: "sent", content: "The original reply.", model: "fixture",
+      promptTokens: 2, completionTokens: 2, sceneVersion: 1,
+      scene: { schemaVersion: 1, version: 1, location: null, time: null, participants: [], emotionalBeat: null, unresolvedThreads: [] },
+      terminalEvidence: { authority: "test", prompt: { productPromptVersion: "companion-product-1", preparedTurnVersion: 4,
+        systemPromptDigest: "a".repeat(64), soulFingerprint: "b".repeat(64) } },
+    });
+    const original = providers.voice.clip.synthesize.bind(providers.voice.clip);
+    let started!: () => void;
+    let release!: () => void;
+    const providerStarted = new Promise<void>(resolve => { started = resolve; });
+    const providerReleased = new Promise<void>(resolve => { release = resolve; });
+    const provider = vi.spyOn(providers.voice.clip, "synthesize").mockImplementation(async input => {
+      started(); await providerReleased; return original(input);
+    });
+    const operation = api("POST", "generation/voice", { userId, ageGate: true,
+      body: { characterId, sessionId: session.id, messageId: turn.assistant.id } });
+    let cleanup: { mockRestore(): void } | undefined;
+    try {
+      await Promise.race([providerStarted, operation.then(() => { throw new Error("TTS was not started"); })]);
+      if (change === "regenerate") await regenerateChatTurn(userId, turn.assistant.id);
+      else if (change === "edit") await editChatTurn(userId, turn.userMessage.id, "A corrected message.");
+      else if (change === "delete") await deleteChatMessage(userId, turn.assistant.id);
+      else if (change === "delete-session") await deleteChatSession(userId, session.id);
+      else await archiveChatSession(userId, session.id);
+      if (change === "regenerate" && minutes === 0) cleanup = vi.spyOn(providers.blob, "delete").mockResolvedValueOnce({ ok: false, error: { code: "controlled_voice_delete_failure", message: "Controlled delete outage", retryable: true } });
+      release();
+      const result = await operation;
+      expect(result.status).toBe(410);
+      expect(await dreamcoinBalance(userId)).toBe(4);
+      expect(await voiceMinutesRemainingMs(userId, { voice_minutes: minutes })).toBe(minutes * 60_000);
+      expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(0);
+      expect(await prisma.mediaAsset.count({ where: { ownerId: userId, type: "voice" } })).toBe(0);
+      const request = await prisma.voiceClipRequest.findFirstOrThrow({ where: { userId, messageId: turn.assistant.id } });
+      expect(request).toMatchObject({ status: "failed", errorCode: "voice_reply_delivery_revoked", mediaAssetId: null });
+      if (cleanup) expect(request.error).toMatchObject({ undeliveredBlobCleanup: { code: "controlled_voice_delete_failure", retryable: true, storageKey: expect.stringContaining("voice/") } });
+      const usage = await prisma.voiceUsageFact.findMany({ where: { requestId: request.id } });
+      expect(usage).toHaveLength(1);
+      expect(usage[0]).toMatchObject({ costDreamcoins: 0, mediaAssetId: null });
+      expect(usage[0].durationMs).toBeGreaterThan(0);
+    } finally {
+      release(); await operation; provider.mockRestore(); cleanup?.mockRestore();
+    }
+  });
+
   it("replays a migrated legacy request without changing its accepted fingerprint or charging again", async () => {
     const userId = `${P}legacy-version`;
     const characterId = `${userId}-character`;
@@ -207,10 +304,12 @@ describe("voice clip replay settlement", () => {
     expect(spendsBefore).toHaveLength(minutes > 0 ? 0 : 1);
     expect(await dreamcoinBalance(userId)).toBe(expectedBalance);
     expectOk(await api("DELETE", `media/${first.data.assetId}`, { userId, ageGate: true }));
+    if (minutes > 0) expect(await voiceMinutesRemainingMs(userId, { voice_minutes: minutes })).toBe(100);
 
     const restored = await api("POST", "generation/voice", { userId, ageGate: true, body });
     expectOk(restored, 201);
     expect(await dreamcoinBalance(userId)).toBe(expectedBalance);
+    if (minutes > 0) expect(await voiceMinutesRemainingMs(userId, { voice_minutes: minutes })).toBe(100);
     expect(await prisma.dreamcoinLedger.findMany({ where: { userId, reason: "generation_spend" } })).toEqual(spendsBefore);
     expect(await prisma.voiceUsageFact.findMany({ where: { requestId: originalRequest.id } })).toEqual(usageBefore);
     expect(await prisma.voiceClipRequest.count({ where: { userId, messageId } })).toBe(1);
@@ -266,6 +365,7 @@ describe("voice clip replay settlement", () => {
       expect(providerKeys).toHaveLength(2);
       expect(providerKeys[0]).toBe(providerKeys[1]);
       expect(await dreamcoinBalance(userId)).toBe(0);
+      expect(await voiceMinutesRemainingMs(userId, { voice_minutes: 1 })).toBe(60_000);
       const usage = await prisma.voiceUsageFact.findMany({ where: { requestId: before.requestId }, orderBy: { attemptNo: "asc" } });
       expect(usage[0]).toEqual(before);
       expect(usage.reduce((sum, fact) => sum + fact.durationMs, 0)).toBe(500);

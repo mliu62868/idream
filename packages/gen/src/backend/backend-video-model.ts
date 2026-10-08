@@ -4,7 +4,7 @@ import {
   type CharacterVideoProductionRecipe,
 } from "@idream/shared";
 import type { VideoGeneratePayload } from "@idream/shared/contracts";
-import { redgraftVideoEnvelope, REDGRAFT_VIDEO_OPTIONS } from "@idream/shared/contracts";
+import { redgraftVideoEnvelope, REDGRAFT_VIDEO_OPTIONS, REDGRAFT_VIDEO_DEFAULTS } from "@idream/shared/contracts";
 import { env } from "../env";
 import {
   stableNumericSeed,
@@ -77,7 +77,7 @@ export class BackendVideoModel implements VideoModel {
     if (input.controls?.videoOptionsVersion !== undefined) {
       try {
         if (recipe.workflowKey !== redgraftLtx25VideoProductionRecipe.workflowKey || input.controls.videoOptionsVersion !== REDGRAFT_VIDEO_OPTIONS.version || input.controls.generationProfileVersion !== redgraftLtx25VideoProductionRecipe.optionsProfileVersion) throw new Error("Video parameter authority is not the published options profile");
-        envelope = redgraftVideoEnvelope({ seconds: input.seconds, orientation: String(input.controls.orientation), quality: String(input.controls.videoQuality ?? "standard") });
+        envelope = redgraftVideoEnvelope({ seconds: input.seconds, orientation: String(input.controls.orientation), quality: String(input.controls.videoQuality ?? REDGRAFT_VIDEO_DEFAULTS.quality) });
       } catch (error) { return failure("unsupported_video_envelope", error, false); }
     }
     if (input.seconds !== envelope.seconds) {

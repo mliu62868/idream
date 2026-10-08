@@ -317,7 +317,7 @@ describe("BackendImageModel", () => {
 
     const result = await model.generate({
       prompt: "a cat",
-      executionBoundary: { onResourceWait: async () => { events.push("wait"); }, beforeProviderInvocation: async () => { events.push("admit"); } },
+      executionBoundary: { onResourceWait: async () => { events.push("wait"); }, beforeProviderInvocation: async () => { events.push("admit"); }, beforeNextProviderInvocation: async () => {} },
       count: 1,
       model: "m",
       controls: PIN,
@@ -538,6 +538,35 @@ describe("BackendImageModel", () => {
       costMicros: null,
       pricingVersion: null,
     });
+  });
+
+  it("preserves the completed part of a batch when a later provider request fails", async () => {
+    const backend = makeStubBackend();
+    vi.mocked(backend.poll).mockRejectedValueOnce(new BackendInvocationError("backend_error", "first prompt failed", "post_submit", "definitive"));
+    // A failure on the first item is still an ordinary failed attempt.
+    expect((await modelWith(backend).generate({ prompt: "a cat", count: 2, model: "m", controls: PIN })).ok).toBe(false);
+    vi.mocked(backend.poll).mockResolvedValueOnce({ assets: [{ body: PNG, width: 832, height: 1216, contentType: "image/png" }] });
+    vi.mocked(backend.poll).mockRejectedValueOnce(new BackendInvocationError("backend_error", "second prompt failed", "post_submit", "definitive"));
+
+    const result = await modelWith(backend).generate({ prompt: "a cat", count: 2, model: "m", controls: PIN });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected saved partial batch");
+    expect(result.data.assets).toHaveLength(1);
+    expect(result.invocation?.usage).toMatchObject({ expectedOutputs: 2, deliveredOutputs: 1, interruptedBy: { code: "backend_error", outcome: "definitive" } });
+  });
+
+  it("checks Main authority again before starting later native batch requests", async () => {
+    const backend = makeStubBackend();
+    const beforeNextProviderInvocation = vi.fn(async () => { throw new Error("Main authority cancelled"); });
+    await modelWith(backend).generate({ prompt: "a cat", count: 3, model: "m", controls: PIN, executionBoundary: {
+      beforeProviderInvocation: vi.fn(async () => {}),
+      beforeNextProviderInvocation,
+      onResourceWait: vi.fn(async () => {}),
+    } });
+    expect(beforeNextProviderInvocation).toHaveBeenCalledTimes(1);
+    expect(backend.submit).toHaveBeenCalledTimes(1);
+    expect(backend.poll).toHaveBeenCalledTimes(1);
   });
 
   it("maps a pre-submit rejection to a definitive failure", async () => {

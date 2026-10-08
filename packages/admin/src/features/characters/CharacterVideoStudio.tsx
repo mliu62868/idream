@@ -1,5 +1,7 @@
 "use client";
 
+import { useWorkspaceRefresh } from "@/features/workspace-refresh";
+
 import {
   characterVideoProductionRecipe,
   creativeRunCreateRequestSchema,
@@ -374,6 +376,8 @@ export function CharacterVideoStudio({
     },
   );
   const selectedRun = runDetail.data;
+  useWorkspaceRefresh(runList.refresh, permissions.read);
+  useWorkspaceRefresh(runDetail.refresh, permissions.read && activeRunId !== null);
   const progressRunId =
     selectedRun && ["pending", "running"].includes(selectedRun.executionOutcome)
       ? selectedRun.id

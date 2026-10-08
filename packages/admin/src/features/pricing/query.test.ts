@@ -25,6 +25,24 @@ describe("Pricing workspace contracts", () => {
     expect(canCreatePricingRule({ ...draft, confirmation: "other" })).toBe(false);
   });
 
+  it.each(["7.5", "abc", "-1", "100001", "", "  "])("rejects invalid draft base cost %s without changing it into another price", (baseCost) => {
+    expect(canCreatePricingRule({ ...defaultPricingDraft, baseCost, reason: "Controlled review", confirmation: defaultPricingDraft.ruleKey })).toBe(false);
+  });
+
+  it.each(["abc", "", "  ", "0", "0.05", "20.01", "Infinity"])("rejects invalid draft multiplier %s", (multiplier) => {
+    expect(canCreatePricingRule({ ...defaultPricingDraft, multiplier, reason: "Controlled review", confirmation: defaultPricingDraft.ruleKey })).toBe(false);
+  });
+
+  it.each([
+    ["0", "0.1", 0, 0.1],
+    ["100000", "20", 100000, 20],
+    ["7", "1.25", 7, 1.25],
+  ])("preserves valid draft price %s × %s", (baseCost, multiplier, expectedBaseCost, expectedMultiplier) => {
+    const draft = { ...defaultPricingDraft, baseCost, multiplier, reason: "Controlled review", confirmation: defaultPricingDraft.ruleKey };
+    expect(canCreatePricingRule(draft)).toBe(true);
+    expect(pricingDraftPayload(draft)).toMatchObject({ baseCost: expectedBaseCost, multiplier: expectedMultiplier });
+  });
+
   // SPEC: 草稿改价的判据抄 adminPricingRulePatchRequestSchema，不是另立一套。
   // INTENT: 之前没有编辑入口，敲错一个基础价只能再建一条草稿；补上入口的同时把边界钉住，
   //         免得前端放行一个权威一定会 400 的值，运营看到的是一次没有解释的失败。
@@ -36,9 +54,14 @@ describe("Pricing workspace contracts", () => {
     // baseCost 是 z.number().int()：小数会被权威拒掉。
     expect(canSavePricingEdit({ ...edit, baseCost: "7.5" })).toBe(false);
     expect(canSavePricingEdit({ ...edit, baseCost: "-1" })).toBe(false);
+    expect(canSavePricingEdit({ ...edit, baseCost: "100001" })).toBe(false);
+    expect(canSavePricingEdit({ ...edit, baseCost: "" })).toBe(false);
+    expect(canSavePricingEdit({ ...edit, baseCost: "  " })).toBe(false);
+    expect(canSavePricingEdit({ ...edit, baseCost: "0" })).toBe(true);
     // multiplier 的闭区间是 [0.1, 20]。
     expect(canSavePricingEdit({ ...edit, multiplier: "0.05" })).toBe(false);
     expect(canSavePricingEdit({ ...edit, multiplier: "20.5" })).toBe(false);
     expect(canSavePricingEdit({ ...edit, multiplier: "" })).toBe(false);
+    expect(canSavePricingEdit({ ...edit, multiplier: "  " })).toBe(false);
   });
 });

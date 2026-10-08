@@ -10,9 +10,9 @@ import {
   warmRuntime,
 } from "./runtime-readiness.js";
 import { shutdownAgentRuntime } from "./agent-runtime/runtime.js";
-import { cleanupInterruptedCompanionMemorySpools } from "./companion-memory.js";
+import { cleanupInterruptedCompanionData } from "./companion-memory.js";
 
-await cleanupInterruptedCompanionMemorySpools();
+await cleanupInterruptedCompanionData();
 const server = startWeb();
 let worker: ReturnType<typeof startWorker> | null = null;
 let warmupRetry: ReturnType<typeof setTimeout> | null = null;

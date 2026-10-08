@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildGenerationPrompt,
   compileChatImagePrompt,
+  defaultImageNegativePrompt,
   imageNegativePrompt,
   sanitizeChatImageDirection,
 } from "./generation-prompt";
@@ -9,6 +10,7 @@ import type { GenerationPromptCharacter, GenerationVisualProfile } from "./gener
 import { CHARACTER_CANONICAL_PORTRAIT_IDENTITY_PROMPT } from "@idream/shared/admin";
 import { characterVisualProfileSnapshotHash } from "../admin-v2/characters/release-snapshot";
 import { assembleIdentityPrompt, IDENTITY_ASSEMBLER_VERSION, toTraitRecord } from "./identity-assembler";
+import { generationJobSchema } from "./generation-request-schema";
 
 const character: GenerationPromptCharacter = {
   id: "raya-reyes",
@@ -42,6 +44,88 @@ function prompt(
 }
 
 describe("image generation prompt", () => {
+  it.each([
+    { label: "Character portrait", mode: "image" as const, subject: character },
+    { label: "Freeplay still", mode: "image" as const, subject: null },
+    { label: "source edit", mode: "image" as const, subject: character, sourceImageAssetId: "accepted-source" },
+    { label: "video", mode: "video" as const, subject: character },
+  ])("keeps the public 2000-character direction complete for $label", ({ mode, subject, sourceImageAssetId }) => {
+    const tail = " The only green notebook stays closed to the left of the white cup.";
+    const direction = "Keep every visible library detail unchanged. ".repeat(60).slice(0, 2_000 - tail.length) + tail;
+    const body = generationJobSchema.parse({ mode, characterId: subject?.id, freeplay: !subject, prompt: direction });
+    expect(body.prompt).toHaveLength(2_000);
+    const text = buildGenerationPrompt({ mode, character: subject, visualProfile: null, consistencyMode: "strict",
+      userPrompt: body.prompt, presetFragment: "", lookFragment: "", sourceImageAssetId });
+    expect(text).toContain(direction);
+    expect(text).toContain(tail.trim());
+  });
+
+  it("keeps full sealed identity, anchor and all schema-valid stable traits before the complete scene", () => {
+    const identity = "Stable adult facial identity. ".repeat(80).slice(0, 1_960) + " FINAL_SEALED_IDENTITY_MARK";
+    const anchor = "Stable face geometry. ".repeat(100).slice(0, 1_960) + " FINAL_ANCHOR_MARK";
+    const traits = Array.from({ length: 24 }, (_, index) => `${index}: ${"Stable distinct facial feature. ".repeat(17).slice(0, 450)} FINAL_TRAIT_${index}`);
+    const scene = "In a quiet glass conservatory at dawn holding one closed green notebook.";
+    const profile = { identityPrompt: identity } as GenerationVisualProfile;
+    const text = buildGenerationPrompt({ mode: "image", character: { ...character, appearance: { identityAnchor: anchor, stableTraits: traits } },
+      visualProfile: profile, consistencyMode: "strict", userPrompt: scene, lookFragment: "", presetFragment: "" });
+    expect(text).toContain(`Locked identity: ${identity}`);
+    expect(text).toContain(`Visual identity anchor: ${anchor}`);
+    for (const trait of traits) expect(text).toContain(trait);
+    expect(text).toContain(`Requested scene: ${scene}`);
+    expect(profile.identityPrompt).toBe(identity);
+  });
+
+  // SPEC: after "change look" the operator-written identity is the only description;
+  // the frozen creation-time appearance text may describe the previous look.
+  it("drops frozen appearance text when an operator authored the locked identity", () => {
+    const appearance = { identityAnchor: "OLD_ANCHOR dark brown hair", stableTraits: ["OLD_TRAIT brown eyes"] };
+    const build = (createdFrom: string) => buildGenerationPrompt({ mode: "image", character: { ...character, appearance },
+      visualProfile: { identityPrompt: "Long red hair, green eyes", createdFrom } as GenerationVisualProfile,
+      consistencyMode: "strict", userPrompt: "reading in a cafe", lookFragment: "", presetFragment: "" });
+    for (const createdFrom of ["identity_calibration:job-1", "admin_passport_edit"]) {
+      const text = build(createdFrom);
+      expect(text).toContain("Locked identity: Long red hair, green eyes");
+      expect(text).not.toContain("OLD_ANCHOR");
+      expect(text).not.toContain("OLD_TRAIT");
+    }
+    // A derived identity only says "match the portrait"; the appearance text stays.
+    const derived = build("editorial_live_portrait:release-1");
+    expect(derived).toContain("Visual identity anchor: OLD_ANCHOR dark brown hair");
+    expect(derived).toContain("OLD_TRAIT brown eyes");
+  });
+
+  it("keeps public direction, saved Look and selected preset facts beyond Chat budgets", () => {
+    const scene = "Keep every visible library detail unchanged. ".repeat(60).slice(0, 1_950) + " FINAL_SCENE_KEEP_THE_NOTEBOOK_CLOSED";
+    const look = JSON.stringify({ description: "Keep the navy coat detail. ".repeat(24) + " FINAL_LOOK_LEFT_BROOCH" });
+    const preset = "Keep the glass conservatory detail. ".repeat(18) + " FINAL_PRESET_ONE_CLOSED_NOTEBOOK";
+    const text = buildGenerationPrompt({ mode: "image", character, visualProfile: null, consistencyMode: "strict",
+      userPrompt: scene, lookFragment: look, presetFragment: preset });
+    expect(text).toContain(`Requested scene: ${scene}`);
+    expect(text).toContain(`Active look: ${look.replace(/\s+/g, " ")}`);
+    expect(text).toContain(`Scene details: ${preset.replace(/\s+/g, " ")}`);
+    expect(text.length).toBeGreaterThan(2_000);
+    expect(text).not.toContain("clean photographic composition");
+  });
+
+  it("retains complete user, sealed identity and template exclusions while deduplicating", () => {
+    const user = "avoid blur, ".repeat(80) + "FINAL_USER_NO_SECOND_FACE";
+    const identity = "avoid eye drift, ".repeat(115) + "FINAL_IDENTITY_NO_CHANGED_SCAR";
+    const template = "avoid poor detail, ".repeat(60) + "FINAL_TEMPLATE_NO_WATERMARK";
+    const base = `${defaultImageNegativePrompt(template)}, ${user}`;
+    const negative = imageNegativePrompt(base, { negativeIdentityPrompt: identity });
+    expect(user.length).toBeLessThanOrEqual(1_000);
+    expect(identity.length).toBeLessThanOrEqual(2_000);
+    for (const constraint of ["FINAL_USER_NO_SECOND_FACE", "FINAL_IDENTITY_NO_CHANGED_SCAR", "FINAL_TEMPLATE_NO_WATERMARK"]) expect(negative).toContain(constraint);
+    expect(negative?.split(", ").filter(term => term === "avoid blur")).toHaveLength(1);
+  });
+
+  it("keeps Chat's complete-facts rejection when long sealed identity exhausts the assembled budget", () => {
+    expect(() => buildGenerationPrompt({ mode: "image", character,
+      visualProfile: { identityPrompt: "Stable adult facial identity. ".repeat(70) } as GenerationVisualProfile,
+      consistencyMode: "strict", userPrompt: "One closed notebook at dawn", lookFragment: "", presetFragment: "", sourceType: "chat_image" }))
+      .toThrow(/2000-character generation budget/);
+  });
+
   it.each([undefined, "chat_image", "chat_handoff"])("keeps biography scenes out of image identity on %s", sourceType => {
     const scene = "One adult in a quiet conservatory at dawn, holding one closed green notebook.";
     const text = buildGenerationPrompt({
@@ -378,20 +462,24 @@ describe("image generation prompt", () => {
     expect(text.indexOf("override baseline")).toBeLessThan(text.indexOf("Locked identity:"));
   });
 
-  it("rejects an oversized Look instead of dropping its final required detail", () => {
+  it("keeps a saved Look beyond Chat's budget with its final required detail", () => {
     const look = JSON.stringify({ description: "Keep the coat detail. ".repeat(27) + "The silver brooch stays on the left lapel." });
-    expect(() => buildGenerationPrompt({
+    const text = buildGenerationPrompt({
       mode: "image", character, visualProfile: null, consistencyMode: "strict",
       userPrompt: "In a sunlit library", lookFragment: look, presetFragment: "",
-    })).toThrow(/budget/);
+    });
+    expect(text).toContain(`Active look: ${look}`);
+    expect(text).toContain("The silver brooch stays on the left lapel.");
   });
 
-  it("rejects an oversized requested scene with a Look instead of clipping its final constraint", () => {
+  it("keeps a requested scene beyond Chat's budget with its final constraint", () => {
     const scene = "Keep the library detail. ".repeat(40) + "The red notebook remains closed.";
-    expect(() => buildGenerationPrompt({
+    const text = buildGenerationPrompt({
       mode: "image", character, visualProfile: null, consistencyMode: "strict",
       userPrompt: scene, lookFragment: JSON.stringify({ description: "A navy wool coat" }), presetFragment: "",
-    })).toThrow(/budget/);
+    });
+    expect(text).toContain(`Requested scene: ${scene}`);
+    expect(text).toContain('Active look: {"description":"A navy wool coat"}');
   });
 
   it("keeps the full saved Look and scene when optional photo polish would exhaust their budget", () => {
@@ -409,13 +497,19 @@ describe("image generation prompt", () => {
     expect(text.length).toBeLessThanOrEqual(2_000);
   });
 
-  it("rejects a combined Look and identity overflow instead of truncating accepted image facts", () => {
-    expect(() => buildGenerationPrompt({
+  it("keeps combined Look, identity and scene facts beyond Chat's assembled budget", () => {
+    const identity = "Adult identity face and hair traits. ".repeat(23).trim();
+    const scene = "Keep the library detail. ".repeat(28).trim();
+    const look = JSON.stringify({ description: "Keep the coat detail. ".repeat(18) + "The brooch stays on the left lapel." });
+    const text = buildGenerationPrompt({
       mode: "image", character,
-      visualProfile: { identityPrompt: "Adult identity face and hair traits. ".repeat(23) } as GenerationVisualProfile,
-      consistencyMode: "strict", userPrompt: "Keep the library detail. ".repeat(28),
-      lookFragment: JSON.stringify({ description: "Keep the coat detail. ".repeat(18) + "The brooch stays on the left lapel." }), presetFragment: "",
-    })).toThrow(/2000-character generation budget/);
+      visualProfile: { identityPrompt: identity } as GenerationVisualProfile,
+      consistencyMode: "strict", userPrompt: scene, lookFragment: look, presetFragment: "",
+    });
+    expect(text).toContain(`Locked identity: ${identity}`);
+    expect(text).toContain(`Requested scene: ${scene}`);
+    expect(text).toContain(`Active look: ${look}`);
+    expect(text.length).toBeGreaterThan(2_000);
   });
 
   it("keeps the final selected scene preset instead of spending its budget on photo polish", () => {
@@ -433,12 +527,15 @@ describe("image generation prompt", () => {
     expect(text.length).toBeLessThanOrEqual(2_000);
   });
 
-  it("rejects oversized selected scene details with a Look instead of clipping a required preset", () => {
-    expect(() => buildGenerationPrompt({
+  it("keeps selected scene details beyond Chat's budget with a Look", () => {
+    const preset = "Keep the library detail. ".repeat(25) + "Only one closed notebook is on the left.";
+    const text = buildGenerationPrompt({
       mode: "image", character, visualProfile: null, consistencyMode: "strict",
       userPrompt: "In a sunlit library", lookFragment: JSON.stringify({ description: "A navy wool coat" }),
-      presetFragment: "Keep the library detail. ".repeat(25) + "Only one closed notebook is on the left.",
-    })).toThrow(/budget/);
+      presetFragment: preset,
+    });
+    expect(text).toContain(`Scene details: ${preset}`);
+    expect(text).toContain('Active look: {"description":"A navy wool coat"}');
   });
 });
 
@@ -532,9 +629,21 @@ describe("saved Look with a sealed derived portrait identity", () => {
     expect(text).toContain(body.trim());
   });
 
-  it("rejects complete projected stable facts that exceed the budget instead of silently clipping them", () => {
-    expect(() => lookPortrait(sealedProfile({ bodyTraits: { detail: "Stable body fact. ".repeat(130) + "Required wrist mark" } })))
-      .toThrow(/2000-character generation budget/);
+  it("keeps complete projected stable facts beyond Chat's assembled budget", () => {
+    const body = "Stable body fact. ".repeat(130) + "Required wrist mark";
+    const text = lookPortrait(sealedProfile({ bodyTraits: { detail: body } }));
+    expect(text).toContain(body);
+    expect(text).toContain('Active look: {"description":"A navy coat with a silver brooch"}');
+    expect(text).toContain("Requested scene: In a sunlit library beside one closed red notebook");
+    expect(text.length).toBeGreaterThan(2_000);
+  });
+
+  it("rejects complete projected stable facts beyond Chat's explicit assembled budget", () => {
+    expect(() => buildGenerationPrompt({ mode: "image", character,
+      visualProfile: sealedProfile({ bodyTraits: { detail: "Stable body fact. ".repeat(130) + "Required wrist mark" } }),
+      consistencyMode: "strict", userPrompt: "In a sunlit library beside one closed red notebook",
+      presetFragment: "standing beside a bookshelf", lookFragment: JSON.stringify({ description: "A navy coat with a silver brooch" }),
+      sourceType: "chat_image" })).toThrow(/2000-character generation budget/);
   });
 
   it.each([

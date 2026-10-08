@@ -3,6 +3,75 @@ import { DEFAULT_FISH_AUDIO_DELIVERY } from "@idream/shared/contracts";
 import { FishAudioVoiceModel } from "./fish-audio";
 
 describe("FishAudioVoiceModel", () => {
+  it("binds durable speech to its account and verifies the authenticated erasure receipt", async () => {
+    const calls: Array<[URL, RequestInit]> = [];
+    let acknowledged = true;
+    const voice = new FishAudioVoiceModel({ baseUrl: "http://127.0.0.1:8062/v1", model: "fish-audio", language: "auto", apiKey: "gateway-token",
+      fetchImpl: async (endpoint, init) => { calls.push([new URL(String(endpoint)), init!]); return String(endpoint).endsWith("/account-erasure") ? Response.json({ erased: acknowledged }) : new Response(wavBytes(1_000), { headers: { "content-type": "audio/wav" } }); } });
+    expect((await voice.synthesize({ requestId: "owned", attemptNo: 1, idempotencyKey: "owned", ownerId: "private-account", text: "Private speech", voiceId: "fish-female-default" })).ok).toBe(true);
+    const owner = new Headers(calls[0][1].headers).get("x-idream-owner-hash");
+    expect(owner).toMatch(/^[a-f0-9]{64}$/); expect(owner).not.toBe("private-account");
+    const erase = { subjectHash: owner!, requestKeys: ["owned"], voiceIds: ["private-voice"] };
+    expect(await voice.eraseAccount(erase)).toEqual({ ok: true, data: { erased: true } });
+    expect(calls[1][0].toString()).toBe("http://127.0.0.1:8062/v1/account-erasure");
+    expect(new Headers(calls[1][1].headers).get("authorization")).toBe("Bearer gateway-token");
+    acknowledged = false;
+    expect(await voice.eraseAccount(erase)).toMatchObject({ ok: false, error: { code: "invalid_voice_erasure_receipt", retryable: true } });
+  });
+  it("bounds response-body delivery after the gateway sends its headers", async () => {
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const cancelled = vi.fn();
+    const stream = new ReadableStream<Uint8Array>({ start(controller) { streamController = controller; controller.enqueue(wavBytes(1_000)); }, cancel: cancelled });
+    const voice = new FishAudioVoiceModel({ baseUrl: "http://127.0.0.1:8062/v1", model: "fish-audio", language: "auto", timeoutMs: 250,
+      fetchImpl: async () => new Response(stream, { headers: { "content-type": "audio/wav" } }) });
+    let timer!: ReturnType<typeof setTimeout>;
+    try {
+      const result = await Promise.race([voice.previewVoice({ text: "A reply.", voiceId: "fish-female-default" }),
+        new Promise(resolve => { timer = setTimeout(() => resolve("unbounded response body"), 600); })]);
+      expect(result).toMatchObject({ ok: false, error: { code: "voice_timeout", retryable: true } });
+      expect(cancelled).toHaveBeenCalledTimes(1);
+    } finally { clearTimeout(timer); if (!cancelled.mock.calls.length) streamController.close(); }
+  });
+
+  it("reports only the delivery controls applied by the resident gateway", async () => {
+    const fetchMock = vi.fn(async () => new Response(wavBytes(1_000), { headers: { "content-type": "audio/wav" } }));
+    const voice = new FishAudioVoiceModel({ baseUrl: "http://127.0.0.1:8062/v1", model: "fish-audio", language: "auto", fetchImpl: fetchMock });
+    const result = await voice.synthesize({ requestId: "scene-reply", attemptNo: 1, idempotencyKey: "scene-reply:provider", text: "A reply.", tone: "whisper",
+      delivery: DEFAULT_FISH_AUDIO_DELIVERY,
+      scene: { version: 1, location: "library", time: "night", participants: [], emotionalBeat: "quiet", unresolvedThreads: [] } });
+    expect(result).toMatchObject({ ok: true, data: { sceneApplied: false, sceneAdapter: "fish-audio-delivery-1" } });
+    const payload = JSON.parse(String((fetchMock.mock.calls[0] as unknown as [URL, RequestInit])[1].body));
+    expect(payload).toMatchObject({ delivery: DEFAULT_FISH_AUDIO_DELIVERY });
+    expect(payload).not.toHaveProperty("scene");
+    expect(payload).not.toHaveProperty("scene_instructions");
+    expect(payload).not.toHaveProperty("tone");
+  });
+
+  it("sends the complete longest accepted reply without dropping its ending", async () => {
+    const ending = " The final sentence must be heard aloud.";
+    const text = "a".repeat(2_000 - ending.length) + ending;
+    const fetchMock = vi.fn(async () => new Response(wavBytes(1_000), { headers: { "content-type": "audio/wav" } }));
+    const voice = new FishAudioVoiceModel({ baseUrl: "http://127.0.0.1:8062/v1", model: "fish-audio", language: "auto", fetchImpl: fetchMock });
+    expect((await voice.previewVoice({ text, voiceId: "fish-female-default" })).ok).toBe(true);
+    expect(JSON.parse(String((fetchMock.mock.calls[0] as unknown as [URL, RequestInit])[1].body)).input).toBe(text);
+  });
+
+  it("rejects input beyond the configured bound before invoking the provider", async () => {
+    const fetchMock = vi.fn(async () => new Response(wavBytes(1_000), { headers: { "content-type": "audio/wav" } }));
+    const voice = new FishAudioVoiceModel({ baseUrl: "http://127.0.0.1:8062/v1", model: "fish-audio", language: "auto", maxInputChars: 10, fetchImpl: fetchMock });
+    expect(await voice.previewVoice({ text: "The reply must stay complete.", voiceId: "fish-female-default" })).toMatchObject({ ok: false, error: { code: "voice_input_too_long", retryable: false } });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["garbage", "truncated", "invalid-frame-rate", "mislabeled"])("rejects %s provider audio instead of estimating billable duration", async fault => {
+    const bytes = wavBytes(1_000);
+    const body = fault === "garbage" ? new TextEncoder().encode("not playable audio") : fault === "truncated" ? bytes.slice(0, -10) : bytes;
+    if (fault === "invalid-frame-rate") new DataView(body.buffer).setUint32(28, 1, true);
+    const voice = new FishAudioVoiceModel({ baseUrl: "http://127.0.0.1:8062/v1", model: "fish-audio", language: "auto",
+      fetchImpl: async () => new Response(body, { headers: { "content-type": fault === "mislabeled" ? "audio/mpeg" : "audio/wav" } }) });
+    expect(await voice.previewVoice({ text: "A reply.", voiceId: "fish-female-default" })).toMatchObject({ ok: false, error: { code: "invalid_voice_response" } });
+  });
+
   it("requires the resident MLX Audio Fish runtime", async () => {
     const voice = new FishAudioVoiceModel({
       baseUrl: "http://127.0.0.1:8062/v1",

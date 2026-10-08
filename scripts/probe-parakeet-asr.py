@@ -3,6 +3,9 @@
 
 prepare streams official archives and stops after N clips (no whole-corpus download).
 run uses one resident Photon model. Derived quiet/noise are stress tests, not whispers.
+Defaults qualify English product input; explicit --languages targets are research
+only and do not expand the product's supported ASR languages. Set --output explicitly
+for a separate research run so historical evidence remains identifiable.
 """
 import argparse, array, csv, hashlib, json, math, os, pathlib, platform, random, resource, tarfile, time, unicodedata, urllib.request, uuid, wave
 MODEL_REV = '2bf128600aac4b16946f7ed8372e56117fe5e23b'
@@ -137,8 +140,8 @@ def summarize(output):
 
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='command',required=True)
-    prep=sub.add_parser('prepare');prep.add_argument('--languages',default=','.join(CONFIGS));prep.add_argument('--count',type=int,default=20)
-    runp=sub.add_parser('run');runp.add_argument('--languages',default='');runp.add_argument('--device',default='cpu',choices=['cpu','mps','cuda']);runp.add_argument('--output',default='results.jsonl')
+    prep=sub.add_parser('prepare');prep.add_argument('--languages',default='en');prep.add_argument('--count',type=int,default=20)
+    runp=sub.add_parser('run');runp.add_argument('--languages',default='en');runp.add_argument('--device',default='cpu',choices=['cpu','mps','cuda']);runp.add_argument('--output',default='results-english.jsonl')
     args=p.parse_args()
     if args.command=='prepare' and not 1<=args.count<=100: p.error('--count must be between 1 and 100')
     if args.languages and any(lang not in CONFIGS for lang in args.languages.split(',')): p.error('unknown target language')

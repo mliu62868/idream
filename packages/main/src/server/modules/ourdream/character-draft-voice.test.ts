@@ -62,6 +62,10 @@ beforeEach(() => {
 });
 
 describe("character draft catalog voice", () => {
+  it("assigns each saved alias to the actual user before external preparation", async () => {
+    const prepared = await prepareCharacterDraftVoice({ ...selection, userId: "user-owner", draftId: "draft-owner" });
+    expect(mocks.createPreset).toHaveBeenCalledWith(expect.objectContaining({ ownerId: "user-owner", voiceId: prepared.voiceId }));
+  });
   it("copies a saved preset and delivery independently of current system defaults", async () => {
     mocks.defaults.mockRejectedValue(new Error("System defaults must not replace the saved voice"));
     const delivery = { ...DEFAULT_FISH_AUDIO_DELIVERY, speed: 1.13 };

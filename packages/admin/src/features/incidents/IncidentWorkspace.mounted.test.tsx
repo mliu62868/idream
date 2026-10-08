@@ -23,6 +23,7 @@ vi.mock("@/features/collaboration/SavedViewsControl", () => ({
 }));
 
 import { IncidentWorkspace } from "./IncidentWorkspace";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -126,6 +127,22 @@ describe("IncidentWorkspace affected users", () => {
     });
     await waitUntil(() => (container.textContent ?? "").includes("customer-a"));
   }
+
+  it("reloads the applied incident list and selected inspector once through shell refresh without remounting its draft", async () => {
+    await mountInspector();
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "Unfinished incident evidence");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const before = adminV2Request.mock.calls.length;
+    const applied = adminV2Request.mock.calls.find(([path]) => path.startsWith("/api/v2/admin/incidents?"))![0];
+    const href = window.location.href;
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    expect(adminV2Request.mock.calls.slice(before).map(([path]) => path)).toEqual([applied, `/api/v2/admin/incidents/${incident.id}`]);
+    expect(container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("Unfinished incident evidence");
+    expect(window.location.href).toBe(href);
+  });
 
   it("lists each affected user and says how many occurrences could not be traced", async () => {
     await mountInspector();

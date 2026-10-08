@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { act } from "react";
-import { hydrateRoot, type Root } from "react-dom/client";
+import { createRoot, hydrateRoot, type Root } from "react-dom/client";
 import { renderToString } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -161,6 +161,83 @@ describe("CaseWorkspace browser URL interactions", () => {
     container.remove();
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it("returns to the actual preceding cursor after paging past an unapplied filter draft", async () => {
+    adminV2Request.mockImplementation(async (path) => {
+      if (!path.startsWith("/api/v2/admin/cases?")) return { items: [] };
+      const params = new URL(path, "http://admin.local").searchParams;
+      const cursor = params.get("cursor");
+      const number = cursor === "after-page-2" ? 3 : cursor === "after-page-1" ? 2 : 1;
+      return {
+        ...listResponse("unassigned"),
+        items: [{ ...adminCase, id: `case-page-${number}`, target: { type: "user", id: `user-page-${number}` } }],
+        pageInfo: { endCursor: number === 1 ? "after-page-1" : number === 2 ? "after-page-2" : null, hasNextPage: number < 3 },
+      };
+    });
+    root = createRoot(container);
+    await act(async () => root!.render(<CaseWorkspace canAssign={false} canDecide={false} />));
+    await waitUntil(() => container.textContent?.includes("user-page-1") === true);
+    await act(async () => findButton("Next page")!.click());
+    await waitUntil(() => container.textContent?.includes("user-page-2") === true);
+    await act(async () => setReactValue(container.querySelector<HTMLInputElement>('[placeholder="Search all cases"]')!, "unapplied search"));
+    await act(async () => findButton("Next page")!.click());
+    await waitUntil(() => container.textContent?.includes("user-page-3") === true);
+    const thirdRead = adminV2Request.mock.calls.filter(([path]) => path.startsWith("/api/v2/admin/cases?")).at(-1)![0];
+    expect(new URL(thirdRead, "http://admin.local").searchParams.get("search")).toBeNull();
+    await act(async () => findButton("Previous page")!.click());
+    const previousRead = adminV2Request.mock.calls.filter(([path]) => path.startsWith("/api/v2/admin/cases?")).at(-1)![0];
+    expect(new URL(previousRead, "http://admin.local").searchParams.get("cursor")).toBe("after-page-1");
+    expect(container.textContent).toContain("user-page-2");
+    expect(container.querySelector('[data-testid="admin-pagination"]')?.textContent).toContain("Page 2");
+  });
+
+  it.each(["mount", "history"] as const)("keeps restored Case cursor positions unknown through next and previous after %s", async (entry) => {
+    adminV2Request.mockImplementation(async (path) => {
+      if (!path.startsWith("/api/v2/admin/cases?")) return { items: [] };
+      const params = new URL(path, "http://admin.local").searchParams;
+      const cursor = params.get("cursor");
+      return {
+        ...listResponse("unassigned"),
+        items: [{ ...adminCase, target: { type: "user", id: cursor === "restored-next" ? "next-case-user" : cursor ? "restored-case-user" : "first-case-user" } }],
+        pageInfo: { endCursor: cursor === "restored-next" ? null : "restored-next", hasNextPage: cursor !== "restored-next" },
+      };
+    });
+    const restoredUrl = "/admin/cases?view=unassigned&search=linked&cursor=restored-page";
+    window.history.replaceState(null, "", entry === "mount" ? restoredUrl : "/admin/cases?view=unassigned&search=linked");
+    root = createRoot(container);
+    await act(async () => root!.render(<CaseWorkspace canAssign={false} canDecide={false} />));
+    await waitUntil(() => container.textContent?.includes(entry === "mount" ? "restored-case-user" : "first-case-user") === true);
+    if (entry === "history") {
+      await act(async () => findButton("Next page")!.click());
+      await waitUntil(() => container.textContent?.includes("next-case-user") === true);
+      expect(container.querySelector('[data-testid="admin-pagination"]')?.textContent).toContain("Page 2");
+      await act(async () => window.dispatchEvent(new PopStateEvent("popstate")));
+      expect(container.querySelector('[data-testid="admin-pagination"]')?.textContent).toContain("Page 2");
+      await act(async () => {
+        window.history.replaceState(null, "", restoredUrl);
+        window.dispatchEvent(new PopStateEvent("popstate"));
+      });
+      await waitUntil(() => container.textContent?.includes("restored-case-user") === true);
+    }
+    const pagination = () => container.querySelector('[data-testid="admin-pagination"]')!;
+    expect(pagination().textContent).toContain("Page position unknown");
+    expect(pagination().textContent).not.toContain("Page 1");
+    expect(findButton("Back to first page")?.disabled).toBe(false);
+    await act(async () => findButton("Next page")!.click());
+    await waitUntil(() => container.textContent?.includes("next-case-user") === true);
+    expect(pagination().textContent).toContain("Page position unknown");
+    await act(async () => findButton("Previous page")!.click());
+    await waitUntil(() => container.textContent?.includes("restored-case-user") === true);
+    expect(pagination().textContent).toContain("Page position unknown");
+    await act(async () => findButton("Back to first page")!.click());
+    await waitUntil(() => container.textContent?.includes("first-case-user") === true);
+    const firstRead = adminV2Request.mock.calls.filter(([path]) => path.startsWith("/api/v2/admin/cases?")).at(-1)![0];
+    const firstParams = new URL(firstRead, "http://admin.local").searchParams;
+    expect(firstParams.has("cursor")).toBe(false);
+    expect(firstParams.get("search")).toBe("linked");
+    expect(pagination().textContent).toContain("Page 1");
+    expect(findButton("Previous page")?.disabled).toBe(true);
   });
 
   it("hydrates the URL view, changes queues, and opens a case without losing query state", async () => {

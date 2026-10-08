@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { RequiredImageAction } from "@idream/shared/chat/image-action";
 import type { AgentRunInput, AgentRunProposal, AgentRunRecoveryScan } from "./agent-run-store.js";
 import type { CompanionTerminalCandidate } from "./agent-runtime/contracts.js";
 import { CompanionCapacityError } from "./agent-runtime/engine.js";
@@ -27,9 +26,6 @@ const runtime = vi.hoisted(() => ({
 }));
 const projection = vi.hoisted(() => ({
   projectSceneForReply: vi.fn<typeof import("./scene.js").projectSceneForReply>(),
-}));
-const imageAction = vi.hoisted(() => ({
-  requiredImageActionForUserRequest: vi.fn<() => RequiredImageAction | null>(() => null),
 }));
 const productContext = vi.hoisted(() => ({
   imageToolEnabled: true,
@@ -64,7 +60,7 @@ vi.mock("./agent-runtime/runtime.js", () => ({
 }));
 vi.mock("./prepared-turn.js", () => ({
   prepareCompanionTurn: vi.fn(async ({ snapshot }) => ({
-    version: 5,
+    version: 6,
     characterName: "Companion",
     context: {
       policy: { imageToolEnabled: productContext.imageToolEnabled },
@@ -79,9 +75,6 @@ vi.mock("./prepared-turn.js", () => ({
         unresolvedThreads: [],
       },
     },
-    requiredAction: productContext.imageToolEnabled
-      ? imageAction.requiredImageActionForUserRequest()
-      : null,
     messages: [
       {
         id: "system-1",
@@ -123,11 +116,6 @@ vi.mock("./env.js", () => ({
     CHAT_MODEL_API_KEY: "test-model-key",
     DSH_OPENROUTER_PROVIDER_ONLY: [],
   },
-}));
-vi.mock("@idream/shared/chat/image-action", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@idream/shared/chat/image-action")>(),
-  requiredImageActionForUserRequest:
-    imageAction.requiredImageActionForUserRequest,
 }));
 
 import {
@@ -214,7 +202,6 @@ describe("AgentRun account-erasure drain", () => {
     store.readAgentRunProposal.mockReset().mockResolvedValue(null);
     productContext.imageToolEnabled = true;
     productContext.userLocale = "en";
-    imageAction.requiredImageActionForUserRequest.mockReturnValue(null);
     projection.projectSceneForReply.mockImplementation(unchangedProjection);
     store.admitAgentRun.mockResolvedValue({ duplicate: false, terminal: false });
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({
@@ -480,16 +467,12 @@ describe("AgentRun account-erasure drain", () => {
     await expect(cancelAgentRunsForUser("user-1")).resolves.toBe(0);
   });
 
-  it("records Agent-authored image direction and deterministic confirmation evidence", async () => {
+  it("records Agent-authored image direction and its terminal evidence", async () => {
     const completed = Promise.withResolvers<void>();
     store.completeAgentRun.mockImplementationOnce(async () => {
       completed.resolve();
     });
     store.readAgentRunInput.mockResolvedValue(agentRunInput("给我一个你的裸照"));
-    imageAction.requiredImageActionForUserRequest.mockReturnValue({
-      name: "generate_image_async",
-      requestedNudity: "full",
-    });
     runtime.runCompanion.mockImplementation(async (invocation, port) => {
       await port.executeTool({
         attemptId: invocation.attemptId,
@@ -529,7 +512,6 @@ describe("AgentRun account-erasure drain", () => {
           argumentsDigest: "c".repeat(64),
         }],
         completedAt: "2026-08-28T12:00:01.000Z",
-        acknowledgement: { version: "image-action-ack-1", locale: "zh" },
         modelRequests: [{
           systemPromptDigest: "d".repeat(64), bodyDigest: "e".repeat(64),
           estimatedInputTokens: 100, maxInputTokens: 2_000,
@@ -558,7 +540,6 @@ describe("AgentRun account-erasure drain", () => {
           model: "test-model",
           terminalEvidence: expect.objectContaining({
             authority: "dsh_terminal_candidate",
-            acknowledgement: { version: "image-action-ack-1", locale: "zh" },
             prompt: expect.objectContaining({
               productPromptVersion: "companion-product-1",
               systemPromptDigest: "d".repeat(64),
@@ -594,10 +575,6 @@ describe("AgentRun account-erasure drain", () => {
       completed.resolve();
     });
     store.readAgentRunInput.mockResolvedValue(agentRunInput("Send me a photo"));
-    imageAction.requiredImageActionForUserRequest.mockReturnValue({
-      name: "generate_image_async",
-      requestedNudity: "unspecified",
-    });
     runtime.runCompanion.mockImplementation(async (invocation, port) => {
       await port.emit({
         invocationId: invocation.invocationId,
@@ -642,7 +619,7 @@ describe("AgentRun account-erasure drain", () => {
     expect(runtime.runCompanion).toHaveBeenCalledOnce();
   });
 
-  it("does not execute a required image action when product policy disables it", async () => {
+  it("does not execute an image action when product policy disables it", async () => {
     const completed = Promise.withResolvers<void>();
     store.completeAgentRun.mockImplementationOnce(async () => {
       completed.resolve();
@@ -650,10 +627,6 @@ describe("AgentRun account-erasure drain", () => {
     });
     store.readAgentRunInput.mockResolvedValue(agentRunInput("Send me a photo"));
     productContext.imageToolEnabled = false;
-    imageAction.requiredImageActionForUserRequest.mockReturnValue({
-      name: "generate_image_async",
-      requestedNudity: "unspecified",
-    });
     runtime.runCompanion.mockImplementation(async (invocation, port) => {
       await port.commit({
         attemptId: invocation.attemptId,
@@ -685,10 +658,6 @@ describe("AgentRun account-erasure drain", () => {
       return undefined;
     });
     store.readAgentRunInput.mockResolvedValue(agentRunInput("Send me a photo"));
-    imageAction.requiredImageActionForUserRequest.mockReturnValue({
-      name: "generate_image_async",
-      requestedNudity: "unspecified",
-    });
     runtime.runCompanion.mockImplementation(async (invocation, port) => {
       await port.executeTool({
         attemptId: invocation.attemptId,

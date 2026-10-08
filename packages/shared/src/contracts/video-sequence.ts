@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export const REDGRAFT_VIDEO_DEFAULTS = { orientation: "7:12", quality: "preview" } as const;
+
 // SPEC: A sequence is ordered native clips followed by deterministic packaging.
 // Each scene retains its own Generation Request and settlement authority.
 export const videoSequenceRequestSchema = z.object({
@@ -8,8 +10,8 @@ export const videoSequenceRequestSchema = z.object({
   generationContextToken: z.string().min(1).max(4096).optional(),
   consistencyMode: z.enum(["balanced", "strict", "creative"]).default("balanced"),
   seed: z.string().trim().min(1).max(120).optional(),
-  orientation: z.enum(["2:3", "1:1"]).default("2:3"),
-  quality: z.enum(["preview", "standard"]).default("standard"),
+  orientation: z.enum(["7:12", "2:3", "1:1"]).default(REDGRAFT_VIDEO_DEFAULTS.orientation),
+  quality: z.enum(["preview", "standard"]).default(REDGRAFT_VIDEO_DEFAULTS.quality),
   audio: z.enum(["generated", "silent", "narration"]).default("generated"),
   scenes: z.array(z.object({
     prompt: z.string().trim().min(1).max(2000),
@@ -47,14 +49,14 @@ export const videoSequenceDtoSchema = z.object({
 export type VideoSequenceDto = z.infer<typeof videoSequenceDtoSchema>;
 
 export const videoSequenceCapabilitiesSchema = z.object({
-  options: z.object({ seconds: z.array(z.union([z.literal(3), z.literal(5)])), orientations: z.array(z.enum(["2:3", "1:1"])), qualities: z.array(z.enum(["preview", "standard"])) }),
+  options: z.object({ seconds: z.array(z.union([z.literal(3), z.literal(5)])), orientations: z.array(z.enum(["7:12", "2:3", "1:1"])), qualities: z.array(z.enum(["preview", "standard"])) }),
   audio: z.array(z.enum(["generated", "silent", "narration"])),
 });
 
 export const REDGRAFT_VIDEO_OPTIONS = {
-  version: "redgraft-video-options-v1",
+  version: "redgraft-video-options-v2",
   seconds: [3, 5],
-  orientations: ["2:3", "1:1"],
+  orientations: ["7:12", "2:3", "1:1"],
   qualities: ["preview", "standard"],
 } as const;
 
@@ -62,7 +64,12 @@ export function redgraftVideoEnvelope(input: { seconds: number; orientation: str
   if (!(REDGRAFT_VIDEO_OPTIONS.seconds as readonly number[]).includes(input.seconds) ||
       !(REDGRAFT_VIDEO_OPTIONS.orientations as readonly string[]).includes(input.orientation) ||
       !(REDGRAFT_VIDEO_OPTIONS.qualities as readonly string[]).includes(input.quality)) throw new Error("Unsupported RedGraft video envelope");
-  const width = input.quality === "preview" ? 512 : 768;
-  const height = input.orientation === "1:1" ? width : width * 3 / 2;
+  // INVARIANT: both stages need 32-pixel latents, so final dimensions are
+  // multiples of 64. 448x768 is an exact 7:12 portrait in the 480p tier.
+  const width = input.orientation === "7:12"
+    ? (input.quality === "preview" ? 448 : 896)
+    : (input.quality === "preview" ? 512 : 768);
+  const height = input.orientation === "7:12" ? width * 12 / 7
+    : input.orientation === "1:1" ? width : width * 3 / 2;
   return { width, height, seconds: input.seconds, frameCount: input.seconds * 24 + 1, fps: 24, expectedDurationSeconds: (input.seconds * 24 + 1) / 24 };
 }

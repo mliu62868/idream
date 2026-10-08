@@ -266,6 +266,52 @@ describe("Generation TransportExecution authority", () => {
     }
   });
 
+  it("replays the immutable running fact but rechecks cancellation before acknowledging it", async () => {
+    const replayJobId = `transport-replay-job-${suffix}`;
+    const replayAttemptId = `transport-replay-attempt-${suffix}`;
+    const running = {
+      ...base,
+      generationJobId: replayJobId,
+      attemptId: replayAttemptId,
+      idempotencyKey: `generation:${replayAttemptId}:provider`,
+      status: "running",
+      error: null,
+    };
+    await prisma.generationJob.create({ data: {
+      id: replayJobId, userId, mode: "image", status: "running",
+      provider: base.provider, model: base.model, controls: {}, presetIds: [], outputCount: 2,
+    } });
+    await prisma.generationAttempt.create({ data: {
+      id: replayAttemptId, requestId: replayJobId, attemptNo: 1, status: "queued",
+      provider: base.provider, workflowKey: base.model, workflowVersion: 1,
+    } });
+    await createDispatchAuthority(replayAttemptId, 1, replayJobId);
+    try {
+      await expect(recordGenerationTransportExecution(running)).resolves.toMatchObject({ status: "persisted" });
+      await expect(recordGenerationTransportExecution(running)).resolves.toMatchObject({ status: "duplicate" });
+      // Each native submit must recheck authority by replaying the original fact.
+      // An updated timestamp is a different immutable event, even with the same ID.
+      await expect(recordGenerationTransportExecution({
+        ...running, occurredAt: "2026-07-11T12:00:01.000Z",
+      })).rejects.toThrow();
+      await prisma.$transaction([
+        prisma.generationJob.update({ where: { id: replayJobId }, data: { status: "cancelled" } }),
+        prisma.generationAttempt.update({ where: { id: replayAttemptId }, data: { status: "cancelled", finishedAt: new Date() } }),
+        prisma.mainOutboxEvent.update({ where: { id: `transport-dispatch-${replayAttemptId}` }, data: { status: "cancelled" } }),
+      ]);
+      await expect(recordGenerationTransportExecution(running)).rejects.toThrow("after dispatch authority was revoked");
+      await expect(prisma.generationTransportExecution.count({ where: { attemptId: replayAttemptId } })).resolves.toBe(1);
+      await expect(prisma.generationAttemptEvent.count({ where: { attemptId: replayAttemptId } })).resolves.toBe(1);
+      await expect(prisma.generationAttempt.findUniqueOrThrow({ where: { id: replayAttemptId } })).resolves.toMatchObject({ startedAt: new Date(base.occurredAt) });
+    } finally {
+      await prisma.generationTransportExecution.deleteMany({ where: { attemptId: replayAttemptId } });
+      await prisma.generationAttemptEvent.deleteMany({ where: { attemptId: replayAttemptId } });
+      await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: replayJobId } });
+      await prisma.generationAttempt.deleteMany({ where: { id: replayAttemptId } });
+      await prisma.generationJob.deleteMany({ where: { id: replayJobId } });
+    }
+  });
+
   it("rejects the pre-provider running handshake after cancellation revokes dispatch authority", async () => {
     const cancelledJobId = `transport-cancelled-job-${suffix}`;
     const cancelledAttemptId = `transport-cancelled-attempt-${suffix}`;

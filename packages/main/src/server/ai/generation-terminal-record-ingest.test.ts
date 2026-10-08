@@ -19,6 +19,7 @@ import { recordGenerationTransportExecution } from "./generation-transport-execu
 import { reserveInitialGenerationAttempt } from "@/server/modules/generation/generation-attempt-authority";
 import { redriveFailedGenerationTerminalRelays } from "./generation-terminal-relay";
 import { generationInvocationUsageFactConflicts, recordGenerationInvocationUsageFact } from "./generation-invocation-usage";
+import { dispatchPendingGenerationBlobCleanup, GENERATION_BLOB_CLEANUP_EVENT } from "./generation-blob-cleanup";
 
 const attemptId = "durable_terminal_record_attempt_1";
 const outboxId = `generation_terminal_record_${attemptId}`;
@@ -104,6 +105,80 @@ afterAll(async () => {
 });
 
 describe("generation terminal record durable ingest", () => {
+  it.each(["result", "throw"])("persists non-delivery cleanup atomically and retries delete failure (%s)", async (failure) => {
+    await reserveAttempt();
+    const cleanupKeys = [terminalRecord.assets[0]!.key];
+    const record = { ...terminalRecordBase, outcome: "failed" as const, cleanupKeys,
+      error: { code: "asset_persist_failed", message: "rollback unavailable", retryability: "retryable" as const } };
+    const input = { terminalRecord: record, terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`,
+      terminalRecordChecksum: generationTerminalRecordChecksum(record) };
+    await expect(ingestGenerationTerminalRecord(input)).resolves.toMatchObject({ acknowledged: true, status: "persisted" });
+    const cleanupId = `generation_blob_cleanup_${attemptId}`;
+    const intent = await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: cleanupId } });
+    expect(intent).toMatchObject({ eventType: GENERATION_BLOB_CLEANUP_EVENT, status: "pending",
+      aggregateType: "generation_attempt", aggregateId: attemptId,
+      payload: { userId: authorityUserId, requestId: terminalRecordJobId(), attemptId, cleanupKeys, maxOutputs: 1 } });
+    expect(await prisma.generationArtifact.count({ where: { attemptId } })).toBe(0);
+    expect(await prisma.mediaAsset.count({ where: { storageKey: { in: cleanupKeys } } })).toBe(0);
+    expect((await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: outboxId } })).payload).toMatchObject({
+      kind: "generation.failed", cleanupKeys,
+    });
+    const failedDelete = vi.fn(async () => {
+      if (failure === "throw") throw new Error("store disconnected");
+      return { ok: false as const, error: { code: "blob_delete_failed", message: "unavailable", retryable: true } };
+    });
+    await expect(dispatchPendingGenerationBlobCleanup({ outboxIds: [cleanupId], blob: { delete: failedDelete } }))
+      .resolves.toEqual({ delivered: 0, failed: 1 });
+    const retry = await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: cleanupId } });
+    expect(retry).toMatchObject({ status: "pending", attempts: 1, leaseToken: null, leaseExpiresAt: null, payload: intent.payload });
+    await expect(ingestGenerationTerminalRecord(input)).resolves.toMatchObject({ status: "duplicate" });
+    expect(await prisma.mainOutboxEvent.count({ where: { eventType: GENERATION_BLOB_CLEANUP_EVENT, aggregateId: attemptId } })).toBe(1);
+    const deleted = vi.fn(async () => ({ ok: true as const, data: { deleted: true as const } }));
+    await expect(dispatchPendingGenerationBlobCleanup({ outboxIds: [cleanupId], now: new Date(retry.nextRunAt.getTime() + 1), blob: { delete: deleted } }))
+      .resolves.toEqual({ delivered: 1, failed: 0 });
+    expect(deleted).toHaveBeenCalledWith({ key: cleanupKeys[0] });
+    expect(await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: cleanupId } })).toMatchObject({ status: "delivered", attempts: 2 });
+    expect(await prisma.generationArtifact.count({ where: { attemptId } })).toBe(0);
+  });
+
+  it.each([
+    ["gen/other/attempts/other/image-1.webp"],
+    [`gen/${terminalRecordJobId()}/attempts/${attemptId}/../other/image-1.webp`],
+    [`gen/${terminalRecordJobId()}/attempts/${attemptId}/image-2.webp`],
+    [`gen/${terminalRecordJobId()}/attempts/${attemptId}/image-1.webp`, `gen/${terminalRecordJobId()}/attempts/${attemptId}/image-1.png`],
+    [`gen/${terminalRecordJobId()}/attempts/${attemptId}/terminal.json`],
+  ])("quarantines cleanup keys outside exact dispatch ownership or output budget (%j)", async (...cleanupKeys) => {
+    await reserveAttempt();
+    const record = { ...terminalRecordBase, outcome: "failed" as const, cleanupKeys,
+      error: { code: "asset_persist_failed", message: "rollback unavailable", retryability: "retryable" as const } };
+    await expect(ingestGenerationTerminalRecord({ terminalRecord: record,
+      terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`, terminalRecordChecksum: generationTerminalRecordChecksum(record) }))
+      .resolves.toMatchObject({ acknowledged: false, status: "quarantined" });
+    expect(await prisma.mainOutboxEvent.count({ where: { eventType: GENERATION_BLOB_CLEANUP_EVENT, aggregateId: attemptId } })).toBe(0);
+  });
+
+  it("retains late cancelled-attempt cleanup and reclaims expired cleanup leases", async () => {
+    await reserveAttempt();
+    await prisma.generationAttempt.update({ where: { id: attemptId }, data: { status: "cancelled" } });
+    const cleanupKeys = [terminalRecord.assets[0]!.key];
+    const record = { ...terminalRecordBase, outcome: "failed" as const, cleanupKeys,
+      error: { code: "asset_persist_failed", message: "rollback unavailable", retryability: "retryable" as const } };
+    await expect(ingestGenerationTerminalRecord({ terminalRecord: record,
+      terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`, terminalRecordChecksum: generationTerminalRecordChecksum(record) }))
+      .resolves.toMatchObject({ acknowledged: true, status: "persisted" });
+    const cleanupId = `generation_blob_cleanup_${attemptId}`;
+    await prisma.mainOutboxEvent.update({ where: { id: cleanupId }, data: {
+      status: "processing", attempts: 1, leaseToken: "dead-owner", leaseExpiresAt: new Date(Date.now() - 1),
+    } });
+    const deleted = vi.fn(async () => ({ ok: true as const, data: { deleted: true as const } }));
+    const results = await Promise.all([1, 2].map(() => dispatchPendingGenerationBlobCleanup({ outboxIds: [cleanupId], blob: { delete: deleted } })));
+    expect(results.reduce((sum, result) => sum + result.delivered, 0)).toBe(1);
+    expect(deleted).toHaveBeenCalledTimes(1);
+    expect(await prisma.generationAttempt.findUniqueOrThrow({ where: { id: attemptId } })).toMatchObject({ status: "cancelled" });
+    expect(await prisma.generationArtifact.count({ where: { attemptId } })).toBe(0);
+    expect(await prisma.mainOutboxEvent.findUnique({ where: { id: outboxId } })).toBeNull();
+  });
+
   it("attributes terminal invocation usage to the Main audit actor and Character", async () => {
     const character = await prisma.character.create({ data: {
       id: `usage-provenance-character-${crypto.randomUUID()}`,

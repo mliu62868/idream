@@ -89,12 +89,12 @@ const characterPortfolioPrimaryActionCopy: Record<
     label: "Continue filling image pack",
     requiresAssets: true,
   },
-  review_asset_pack: {
+  repair_character_soul: {
     description:
-      "Review the selected portrait, hero, and chat images before publishing.",
-    eyebrow: "Image review required",
-    label: "Review selected images",
-    requiresAssets: true,
+      "The images are ready, but the persona or opening message must be saved again before it can be published.",
+    eyebrow: "Persona needs repair",
+    label: "Repair persona",
+    requiresAssets: false,
   },
   preview_character: {
     description: "Preview the customer-facing draft before publishing.",
@@ -244,8 +244,15 @@ export function characterPortfolioState(item: CharacterPortfolioItem) {
   if (item.journey.stage === "image_production") {
     return {
       badge: "bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]",
-      label: "In production",
+      label: "Making images",
       tone: "text-[var(--ad-blue-text)]",
+    } as const;
+  }
+  if (item.journey.primaryAction.code === "repair_character_soul") {
+    return {
+      badge: "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]",
+      label: "Persona needs repair",
+      tone: "text-[var(--ad-yellow-text)]",
     } as const;
   }
   if (item.journey.stage === "preview") {

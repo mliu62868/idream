@@ -55,6 +55,29 @@ async function issued(input = selector) {
 }
 
 describe("Chat to Generate authority", () => {
+  it.each([false, true])("returns a Group handoff to its frozen conversation rather than its private member session (scene source: %s)", async (sceneSource) => {
+    const turn = originalTurn();
+    db.chatTurn.findFirst.mockResolvedValue({ ...turn,
+      session: { ...turn.session, groupId: "group-original" },
+      executionSnapshot: { ...turn.executionSnapshot, group: { id: "group-original", ordinal: 1, members: [
+        { sessionId: selector.sessionId, characterId: "character-1", name: "Original companion" },
+        { sessionId: "second-member-session", characterId: "character-2", name: "Another companion" },
+      ] } },
+      attachments: sceneSource ? turn.attachments : [],
+    });
+    if (sceneSource) db.generationJob.findFirst.mockResolvedValue({ id: "job-original", characterId: null,
+      visualProfileId: null, visualProfileVersion: null, referenceSetRevisionId: null,
+      sourceType: "chat_image", sourceMeta: { imageSubject: "scene", chatCharacterId: "character-1", sessionId: selector.sessionId, exchangeId: selector.turnId },
+      momentSpec: { rawInput: "A basil plant in a terracotta pot on a sunny balcony, no people." } });
+    const input = sceneSource ? { ...selector, mediaAssetId: "image-original" } : selector;
+    const { handoff, token } = await issued(input);
+    expect(handoff.returnHref).toBe("/chat/groups/group-original");
+    expect(await resolveGenerationContext("user-original", token)).toMatchObject({
+      source: input, digest: handoff.digest, returnHref: "/chat/groups/group-original",
+    });
+    expect(readGenerationContextToken(token, "user-original").source).toEqual(input);
+  });
+
   it("keeps a delivered scene source-only for handoff and animation without replacing its subject", async () => {
     const prompt = "A basil plant in a terracotta pot on a sunny balcony, no people.";
     const origin = { imageSubject: "scene", chatCharacterId: "character-1", sessionId: selector.sessionId, exchangeId: selector.turnId };
@@ -63,7 +86,7 @@ describe("Chat to Generate authority", () => {
     const input = { ...selector, mediaAssetId: "image-original" };
     const { handoff, token } = await issued(input);
     expect(handoff).toMatchObject({ identityMode: "source_only", character: null, characterId: null, pins: null, prompt,
-      chatCharacterId: "character-1", sourceMedia: { id: "image-original" } });
+      chatCharacterId: "character-1", sourceMedia: { id: "image-original" }, returnHref: "/chat/session-original" });
     expect(db.characterVisualProfile.findFirst).not.toHaveBeenCalled();
     expect(generationContextSource(handoff, token, "same-request")).toMatchObject({ sourceMeta: {
       chatCharacterId: "character-1", sessionId: selector.sessionId, exchangeId: selector.turnId,
@@ -82,6 +105,7 @@ describe("Chat to Generate authority", () => {
     expect(handoff.character).toMatchObject({ name: "Original companion", age: 25, gender: "female", description: "A curious companion" });
     expect(handoff.prompt).toContain("Location: blue kitchen");
     expect(handoff.pins).toMatchObject({ characterReleaseId: "release-original", visualProfileId: "visual-original", visualProfileVersion: 3, referenceSetRevisionId: "references-original" });
+    expect(handoff.returnHref).toBe("/chat/session-original");
     expect(await resolveGenerationContext("user-original", token)).toMatchObject({ digest: handoff.digest });
     expect(db.chatTurn.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ session: { userId: "user-original", status: { not: "deleted" } } }) }));
   });

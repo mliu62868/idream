@@ -59,9 +59,9 @@ async function publish(pack: PackDetail, creator = owner) {
 async function claim(pack: PackDetail, userId = reader) {
   const result = await api("POST", `packs/${pack.id}/claim`, { userId, ageGate: true, body: { version: pack.release!.version, releaseId: pack.release!.id } }); expectOk(result); return packDetailSchema.parse(result.data);
 }
-async function binary(path: string, userId?: string) {
+async function binary(path: string, userId?: string, extraHeaders: Record<string, string> = {}) {
   const url = new URL(path, "http://localhost");
-  return dispatchV1(new Request(url, { headers: { cookie: AGE_GATE_COOKIE_HEADER, ...(userId ? { "x-idream-user-id": userId } : { "x-idream-anonymous-id": "test-age-gate-anonymous" }) } }), url.pathname.replace(/^\/api\/v1\//, "").split("/"));
+  return dispatchV1(new Request(url, { headers: { cookie: AGE_GATE_COOKIE_HEADER, ...(userId ? { "x-idream-user-id": userId } : { "x-idream-anonymous-id": "test-age-gate-anonymous" }), ...extraHeaders } }), url.pathname.replace(/^\/api\/v1\//, "").split("/"));
 }
 async function block(pack: PackDetail, body: Record<string, unknown> = {}, options: Partial<AdminV2RouteOptions> = {}) {
   return adminV2Route(adminBlock, { path: `packs/${pack.id}/block`, params: { id: pack.id }, userId: moderator, method: "POST", body: { version: pack.version, confirmation: pack.id, reason: "Operator emergency withdrawal.", ...body }, ...options });
@@ -104,6 +104,32 @@ describe("independent free Packs and exact-version persistent grants", () => {
     const read = await binary(url, reader); expect(read.status).toBe(200); expect(new Uint8Array(await read.arrayBuffer())).toEqual(bytes);
     const download = await binary(a.release!.items[0]!.downloadUrl!, reader); expect(download.headers.get("content-disposition")).toContain("attachment"); expect(download.headers.get("cache-control")).toContain("no-store");
     expect(await prisma.dreamcoinLedger.count({ where: { userId: reader } })).toBe(0);
+  });
+  it("delivers exact-version voice ranges while retaining complete downloads and access checks", async () => {
+    const voiceId = await asset("range-voice", owner, "voice");
+    const { pack } = await draft("range-delivery", { items: [{ mediaAssetId: voiceId, caption: "Voice range fixture" }] });
+    const granted = await claim(await publish(pack));
+    const item = granted.release!.items[0]!;
+    const ranged = await binary(item.url!, reader, { range: "bytes=2-5" });
+    expect(ranged.status).toBe(206);
+    expect(ranged.headers.get("accept-ranges")).toBe("bytes");
+    expect(ranged.headers.get("content-range")).toBe("bytes 2-5/8");
+    expect(ranged.headers.get("content-length")).toBe("4");
+    expect(ranged.headers.get("content-type")).toBe("audio/wav");
+    expect(ranged.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(ranged.headers.get("cache-control")).toContain("no-store");
+    expect(ranged.headers.get("vary")).toBe("Cookie, Authorization");
+    expect(new Uint8Array(await ranged.arrayBuffer())).toEqual(new Uint8Array([78, 71, 13, 10]));
+    const full = await binary(item.url!, reader);
+    expect(full.status).toBe(200);
+    expect(full.headers.get("content-length")).toBe("8");
+    expect(new Uint8Array(await full.arrayBuffer())).toEqual(bytes);
+    const download = await binary(item.downloadUrl!, reader);
+    expect(download.status).toBe(200);
+    expect(download.headers.get("content-disposition")).toBe(`attachment; filename="pack-${granted.release!.id}-voice.wav"`);
+    expect(download.headers.get("content-length")).toBe("8");
+    expect(new Uint8Array(await download.arrayBuffer())).toEqual(bytes);
+    expect((await binary(item.url!, other, { range: "bytes=2-5" })).status).toBe(404);
   });
   it("withdraws distribution but preserves claims without leaking later private editions", async () => {
     const { pack, manifest } = await draft("version-isolation"); const v1 = await publish(pack); const grant = await claim(v1);

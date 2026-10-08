@@ -20,14 +20,25 @@ describe("buildCompanionRuntimeAuthority", () => {
     );
   });
 
-  it("requires the image bridge for explicit generate and edit requests", () => {
+  it("limits private execution tools without inferring conversation retention", () => {
+    const policy = buildCompanionRuntimeAuthority({ memoryEnabled: false });
+    expect(policy).toContain("Long-term memory tools are unavailable for this reply");
+    expect(policy).toContain("Use only the conversation context provided");
+    expect(policy).toContain("These tool limits establish no fact about retention across sessions");
+    expect(policy).toContain("never say it is saved or will be remembered");
+    expect(policy).not.toContain("Memory is off for this conversation");
+    expect(policy).not.toContain("nothing is kept between sessions");
+    expect(policy).not.toContain("cannot keep it across sessions");
+  });
+
+  it("delegates image interpretation to the Agent and describes actual tool outcomes", () => {
     const enabled = buildCompanionRuntimeAuthority({
       memoryEnabled: true,
       imageToolEnabled: true,
     });
-    expect(enabled).toContain("call generate_image_async");
-    expect(enabled).toContain("call edit_last_image");
-    expect(enabled).toContain("A photo exists only once the tool call succeeds");
+    expect(enabled).toContain("Decide from their current request and this conversation");
+    expect(enabled).toContain("availability alone is not a request");
+    expect(enabled).toContain("Describe only the result the tool actually returned");
 
     const disabled = buildCompanionRuntimeAuthority({
       memoryEnabled: true,

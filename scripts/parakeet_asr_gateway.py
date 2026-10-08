@@ -27,7 +27,8 @@ MODEL_ID = "moondream/parakeet-redux"
 MODEL_REVISION = "2bf128600aac4b16946f7ed8372e56117fe5e23b"
 SDK_VERSION = "2.6.1"
 MODEL_SHA256 = "78ec25733ee0d0c1586d1346fc86db9d0c2e436e3a8ab1d32a82d1bb8f848d21"
-LANGUAGES = "bg hr cs da nl en et fi fr de el hu it lv lt mt pl pt ro ru sk sl es sv uk".split()
+# Product support, not the multilingual model's complete vocabulary.
+LANGUAGES = ["en"]
 MAX_BYTES = 8 * 1024 * 1024
 SAMPLE_RATE = 16000
 MAX_PCM_BYTES = 60 * SAMPLE_RATE * 2
@@ -170,6 +171,8 @@ async def decode(path: Path, deadline: float) -> bytes:
 def transcribe(pcm: bytes):
     import numpy as np
     audio = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768
+    # INVARIANT: pinned Parakeet rejects language forcing. English-only is our
+    # product support scope; the model still performs its native auto-detection.
     return runtime.transcribe(audio=audio, sample_rate=SAMPLE_RATE, timestamps="none")
 
 

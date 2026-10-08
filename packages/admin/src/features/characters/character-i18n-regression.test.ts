@@ -11,7 +11,7 @@ describe("Character operator Chinese copy", () => {
       "Write the first message users will receive.",
       "Identity bootstrap authority is verified in the Character workspace.",
       "Review every selected image before publishing.",
-      "Review selected images",
+      "Repair persona",
     ]) {
       expect(translateAdmin("zh", key), key).not.toBe(key);
     }

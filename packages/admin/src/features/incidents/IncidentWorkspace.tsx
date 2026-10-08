@@ -15,6 +15,7 @@ import {
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
+import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { createWorkspaceHistoryController, observeWorkspacePopState, workspaceDetailId } from "@/lib/workspace-history";
@@ -148,6 +149,11 @@ export function IncidentWorkspace({
       if (restored.selectedId) void loadDetail(restored.selectedId);
     });
   }, [loadDetail, loadList]);
+
+  useWorkspaceRefresh(() => {
+    void loadList(history.current.current().query);
+    if (selectedId) void loadDetail(selectedId);
+  });
 
   function updateDraft(patch: Partial<IncidentQueryDraft>) {
     const next = { ...query, ...patch, cursor: undefined };

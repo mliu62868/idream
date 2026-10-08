@@ -9,7 +9,7 @@ import {
 } from "./contracts";
 
 const preparedTurn = {
-  version: 5 as const,
+  version: 6 as const,
   model: "model-1",
   characterName: "Mira",
   messages: [
@@ -39,10 +39,21 @@ const preparedTurn = {
     sceneVersion: 1,
     contextRevision: "1",
   },
-  requiredAction: null,
 };
 
 describe("embedded companion runtime contracts", () => {
+  it("accepts omitted historical dialogue but refuses new authority or duplicate identities in that prefix", () => {
+    const historical = { id: "old-user", sourceKind: "replay", role: "user", content: "My boat is Cedar Finch." };
+    expect(preparedTurnSchema.safeParse({ ...preparedTurn, omittedMessages: [historical] }).success).toBe(true);
+    for (const invalid of [
+      { ...historical, sourceKind: "current_user" },
+      { ...historical, sourceKind: "plugin" },
+      { ...historical, id: "user-1" },
+      { ...historical, role: "tool", tool_call_id: "unbound" },
+    ]) expect(preparedTurnSchema.safeParse({ ...preparedTurn, omittedMessages: [invalid] }).success).toBe(false);
+    expect(preparedTurnSchema.safeParse({ ...preparedTurn, omittedMessages: [historical, historical] }).success).toBe(false);
+  });
+
   it("keeps the prepared turn strict, credential-free, and current-user anchored", () => {
     expect(preparedTurnSchema.safeParse(preparedTurn).success).toBe(true);
     expect(preparedTurnSchema.safeParse({

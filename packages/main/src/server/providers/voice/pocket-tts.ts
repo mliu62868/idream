@@ -1,9 +1,10 @@
 import {
-  voiceSceneInstructions,
   type ProviderResult,
   type VoiceClipPort,
   type VoiceIdentityPort,
 } from "../types";
+import { pcmWavDurationMs } from "./wav";
+import { requestVoiceProvider, voiceOwnerHeaders } from "./http";
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -62,7 +63,7 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     this.model = config.model;
     this.language = config.language;
     this.defaultVoiceId = config.defaultVoiceId?.trim() || "anna";
-    this.maxInputChars = Math.max(1, config.maxInputChars ?? 900);
+    this.maxInputChars = Math.min(2_000, Math.max(1, config.maxInputChars ?? 2_000));
     this.timeoutMs = Math.max(250, config.timeoutMs ?? 120_000);
     this.fetchImpl = config.fetchImpl ?? fetch;
   }
@@ -88,6 +89,7 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
   }
 
   private async renderVoice(input: {
+    ownerId?: string;
     text: string;
     voiceId?: string;
     requestId?: string;
@@ -95,10 +97,14 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     idempotencyKey?: string;
     scene?: Parameters<VoiceClipPort["synthesize"]>[0]["scene"];
   }) {
+    const text = input.text.trim();
+    if (!text) return pocketFailure("voice_input_empty", "Voice input is empty", false);
+    if (text.length > this.maxInputChars) return pocketFailure("voice_input_too_long", `Voice input exceeds ${this.maxInputChars} characters; no text was truncated`, false);
     const response = await this.request(this.speechEndpoint, {
       method: "POST",
       headers: {
         ...this.jsonHeaders(),
+        ...voiceOwnerHeaders(input.ownerId),
         ...(input.idempotencyKey
           ? { "idempotency-key": input.idempotencyKey }
           : {}),
@@ -111,35 +117,30 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
       },
       body: JSON.stringify({
         model: this.model,
-        input: limitText(input.text, this.maxInputChars),
+        input: text,
         voice: input.voiceId?.trim() || this.defaultVoiceId,
         response_format: "wav",
-        ...(input.scene ? {
-          scene: input.scene,
-          scene_instructions: voiceSceneInstructions(input.scene),
-        } : {}),
       }),
     });
     if (!response.ok) return response;
 
-    const contentType = response.data.headers.get("content-type") ?? "audio/wav";
-    if (!contentType.includes("audio/")) {
+    const contentType = response.data.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
+    if (contentType !== "audio/wav" && contentType !== "audio/x-wav") {
       return pocketFailure(
         "invalid_voice_response",
-        "Pocket TTS returned a non-audio response",
+        "Pocket TTS returned a non-WAV response",
         true,
       );
     }
     const body = new Uint8Array(await response.data.arrayBuffer());
-    if (body.byteLength === 0) {
-      return pocketFailure("invalid_voice_response", "Pocket TTS returned empty audio", true);
-    }
+    const durationMs = pcmWavDurationMs(body);
+    if (durationMs === null) return pocketFailure("invalid_voice_response", "Pocket TTS returned invalid PCM WAV audio", true);
     return {
       ok: true as const,
       data: {
         body,
         contentType: "audio/wav" as const,
-        durationMs: wavDurationMs(body) ?? estimateDurationMs(input.text),
+        durationMs,
       },
     };
   }
@@ -156,7 +157,7 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     );
     const response = await this.request(this.voicesEndpoint, {
       method: "POST",
-      headers: this.authHeaders(),
+      headers: { ...this.authHeaders(), ...voiceOwnerHeaders(input.ownerId) },
       body: form,
     });
     if (!response.ok) return response;
@@ -184,13 +185,14 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
   }
 
   async createPresetVoice(input: {
+    ownerId?: string;
     voiceId: string;
     presetVoiceId: string;
     language: string;
   }) {
     const response = await this.request(this.presetVoicesEndpoint, {
       method: "POST",
-      headers: this.jsonHeaders(),
+      headers: { ...this.jsonHeaders(), ...voiceOwnerHeaders(input.ownerId) },
       body: JSON.stringify({
         voice_id: input.voiceId,
         preset_voice_id: input.presetVoiceId,
@@ -233,6 +235,17 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     });
     if (!response.ok) return response;
     return { ok: true as const, data: { deleted: true as const } };
+  }
+
+  async eraseAccount(input: Parameters<NonNullable<VoiceClipPort["eraseAccount"]>>[0]) {
+    const response = await this.request(new URL("account-erasure", this.voicesEndpoint), {
+      method: "POST", headers: this.jsonHeaders(),
+      body: JSON.stringify({ subject_hash: input.subjectHash, request_keys: input.requestKeys, voice_ids: input.voiceIds }),
+    });
+    if (!response.ok) return response;
+    const receipt = await response.data.json().catch(() => null);
+    if (receipt?.erased !== true) return pocketFailure("invalid_voice_erasure_receipt", "Pocket TTS did not confirm account erasure", true);
+    return { ok: true as const, data: { erased: true as const } };
   }
 
   async inspectCapabilities() {
@@ -302,78 +315,14 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     init: RequestInit,
     timeoutMs = this.timeoutMs,
   ): Promise<ProviderResult<Response>> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await this.fetchImpl(endpoint, {
-        ...init,
-        signal: controller.signal,
-      });
-      if (response.ok) return { ok: true, data: response };
-      const details = await response.text().catch(() => "");
-      return pocketFailure(
-        response.status === 404 ? "voice_not_found" : "pocket_tts_failed",
-        details.trim() || `Pocket TTS returned HTTP ${response.status}`,
-        response.status >= 500 || response.status === 429,
-      );
-    } catch (error) {
-      return pocketFailure(
-        error instanceof Error && error.name === "AbortError"
-          ? "voice_timeout"
-          : "voice_request_failed",
-        error instanceof Error ? error.message : "Pocket TTS request failed",
-        true,
-      );
-    } finally {
-      clearTimeout(timeout);
-    }
+    return requestVoiceProvider({ endpoint, init, timeoutMs, fetchImpl: this.fetchImpl,
+      providerName: "Pocket TTS", failureCode: "pocket_tts_failed" });
   }
 }
 
 function pocketEndpoint(baseUrl: string, suffix: string) {
   const normalized = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
   return new URL(suffix.replace(/^\//, ""), normalized);
-}
-
-function limitText(text: string, max: number) {
-  const clean = text.trim();
-  if (clean.length <= max) return clean;
-  const clipped = clean.slice(0, max);
-  const sentence = clipped.match(/^[\s\S]*[.!?](?:\s|$)/)?.[0]?.trim();
-  return sentence || clipped.trimEnd();
-}
-
-function wavDurationMs(body: Uint8Array) {
-  if (
-    body.byteLength < 44 ||
-    ascii(body, 0, 4) !== "RIFF" ||
-    ascii(body, 8, 4) !== "WAVE"
-  ) return null;
-  const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
-  let offset = 12;
-  let byteRate: number | null = null;
-  let dataSize: number | null = null;
-  while (offset + 8 <= body.byteLength) {
-    const chunk = ascii(body, offset, 4);
-    const size = view.getUint32(offset + 4, true);
-    if (chunk === "fmt " && size >= 12 && offset + 20 <= body.byteLength) {
-      byteRate = view.getUint32(offset + 16, true);
-    }
-    if (chunk === "data") {
-      dataSize = Math.min(size, Math.max(0, body.byteLength - offset - 8));
-      break;
-    }
-    offset += 8 + size + (size % 2);
-  }
-  return byteRate && dataSize !== null ? Math.round((dataSize / byteRate) * 1_000) : null;
-}
-
-function ascii(body: Uint8Array, offset: number, length: number) {
-  return String.fromCharCode(...body.subarray(offset, offset + length));
-}
-
-function estimateDurationMs(text: string) {
-  return Math.max(500, Math.round(text.trim().length * 55));
 }
 
 function pocketFailure(

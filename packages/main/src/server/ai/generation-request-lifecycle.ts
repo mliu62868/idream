@@ -3,6 +3,7 @@ import { Prisma, type GenerationAttempt, type GenerationJob } from "@prisma/clie
 import { GENERATION_REQUEST_CANCELLABLE_STATUSES } from "@idream/shared/catalog";
 import { MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES } from "@/server/events/main-outbox-transport";
 import { jsonRecord } from "@/server/modules/ourdream/json-values";
+import { markProductionItemFailed } from "@/server/modules/content-production-state";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
@@ -87,6 +88,9 @@ export async function settleGenerationRequestCancellation(
     data: { completedAt: null, finishedAt: input.cancelledAt, deliveredOutputCount: 0 },
   });
   if (!cancelled) throw Errors.conflict("Generation Request changed before cancellation");
+  // A Creative Run item has no other writer once its request is cancelled; leaving it
+  // queued keeps the Run active forever and Admin keeps surfacing it as current work.
+  await markProductionItemFailed(tx, job.id);
   if (attempt && !(GENERATION_ATTEMPT_TERMINAL_STATUSES as readonly string[]).includes(attempt.status)) {
     await recordGenerationAttemptEvent(tx, {
       eventId: `${attempt.id}:terminal`,

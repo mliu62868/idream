@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
 
+export function voiceProviderIdempotencyKey(requestId: string) {
+  // One provider result per logical request across lease attempts/restarts.
+  return `voice:${requestId}:provider`;
+}
+
 export function voiceArtifactKey(
   idempotencyKey: string,
   extension: string,
@@ -26,14 +31,16 @@ export function voiceChunkIdempotencyKey(
 //   always used together to name one stored object.
 export function audioFileExtension(contentType: string) {
   const mediaType = contentType.split(";")[0]?.trim().toLowerCase();
-  const extensions: Record<string, string> = {
-    "audio/mpeg": ".mp3",
-    "audio/mp3": ".mp3",
-    "audio/wav": ".wav",
-    "audio/x-wav": ".wav",
-    "audio/ogg": ".ogg",
-    "audio/flac": ".flac",
-    "audio/webm": ".webm",
-  };
-  return (mediaType && extensions[mediaType]) || ".wav";
+  return (mediaType && AUDIO_FILE_EXTENSIONS[mediaType]) || ".wav";
+}
+
+const AUDIO_FILE_EXTENSIONS: Record<string, string> = {
+  "audio/mpeg": ".mp3", "audio/mp3": ".mp3", "audio/wav": ".wav",
+  "audio/x-wav": ".wav", "audio/ogg": ".ogg", "audio/flac": ".flac", "audio/webm": ".webm",
+};
+
+// An undelivered/ambiguous commit may have no MediaAsset. Account erasure can
+// still enumerate every artifact name accepted by the canonical audio port.
+export function voiceArtifactKeys(idempotencyKey: string) {
+  return [...new Set(Object.values(AUDIO_FILE_EXTENSIONS))].map(extension => voiceArtifactKey(idempotencyKey, extension));
 }

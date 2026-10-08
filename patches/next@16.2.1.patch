@@ -1,0 +1,26 @@
+diff --git a/dist/server/dev/hot-middleware.js b/dist/server/dev/hot-middleware.js
+--- a/dist/server/dev/hot-middleware.js
++++ b/dist/server/dev/hot-middleware.js
+@@ -155,7 +155,8 @@
+                 if (_devindicatorserverstate.devIndicatorServerState.disabledUntil < Date.now()) {
+                     _devindicatorserverstate.devIndicatorServerState.disabledUntil = 0;
+                 }
+-                this.publish({
++                // Initial SYNC belongs to this client; broadcasting can reload active peers.
++                this.publishToClient(client, {
+                     type: _hotreloadertypes.HMR_MESSAGE_SENT_TO_BROWSER.SYNC,
+                     hash: stats.hash,
+                     errors: [
+diff --git a/dist/esm/server/dev/hot-middleware.js b/dist/esm/server/dev/hot-middleware.js
+--- a/dist/esm/server/dev/hot-middleware.js
++++ b/dist/esm/server/dev/hot-middleware.js
+@@ -145,7 +145,8 @@
+                 if (devIndicatorServerState.disabledUntil < Date.now()) {
+                     devIndicatorServerState.disabledUntil = 0;
+                 }
+-                this.publish({
++                // Initial SYNC belongs to this client; broadcasting can reload active peers.
++                this.publishToClient(client, {
+                     type: HMR_MESSAGE_SENT_TO_BROWSER.SYNC,
+                     hash: stats.hash,
+                     errors: [

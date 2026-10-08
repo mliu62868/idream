@@ -7,6 +7,7 @@ import { SessionProjectionRegistry } from "@deepseek-ai/dsh-session-projection";
 import { SystemPrompt } from "@deepseek-ai/dsh-system-prompt";
 import * as ToolTimeoutPolicy from "@deepseek-ai/dsh-tool-call-timeout-policy";
 import { ToolRuntime } from "@deepseek-ai/dsh-tools";
+import { TokenMeter } from "@deepseek-ai/dsh-token-meter";
 import {
   COMPANION_DSH_VERSION,
   COMPANION_IGREP_PLUGIN_VERSION,
@@ -19,12 +20,14 @@ import {
 } from "./igrep";
 import { stableJson } from "../stable-json";
 import { IGREP_MAINTENANCE_SAMPLING } from "./config";
+import { CompanionSessionQuery } from "./session-query";
 
 export const COMPANION_CORE_PACKAGES = [
   "@deepseek-ai/dsh-agent",
   "@deepseek-ai/dsh-agent-loop",
   "@deepseek-ai/dsh-attachment",
   "@deepseek-ai/dsh-brand",
+  "@deepseek-ai/dsh-compaction-basic",
   "@deepseek-ai/dsh-invariants",
   "@deepseek-ai/dsh-llm",
   "@deepseek-ai/dsh-scope",
@@ -34,6 +37,7 @@ export const COMPANION_CORE_PACKAGES = [
   "@deepseek-ai/dsh-settings",
   "@deepseek-ai/dsh-system-prompt",
   "@deepseek-ai/dsh-timeout",
+  "@deepseek-ai/dsh-token-meter",
   "@deepseek-ai/dsh-tool-call-timeout-policy",
   "@deepseek-ai/dsh-tools",
   "@deepseek-ai/dsh-typert-protocol",
@@ -59,7 +63,15 @@ const IDREAM_COMPOSITION_IDENTITY = Object.freeze({
 // Scene participants and tasks require independent source-bound identity/state receipts.
 // Terminal totals remain unknown if any physical model request was unmeasured.
 // Saved expression preferences stay outside quoted facts, without tool or memory authority.
-const EXECUTION_POLICY_VERSION = 27;
+const EXECUTION_POLICY_VERSION = 29;
+export const COMPANION_COMPACTION_CONFIG = Object.freeze({
+  thresholdRatio: 0.85,
+  headroomTokens: 512,
+  retainRatio: 0.25,
+  maxTokens: 1024,
+  compactionRetries: 1,
+  maxOverflowRetries: 1,
+});
 const EFFECTFUL_TOOL_CONCURRENCY = 1;
 export const FORBIDDEN_COMPANION_EXECUTION_SERVICES = [
   "shell",
@@ -97,6 +109,7 @@ interface CompanionCompositionInput {
 const COMPANION_EXECUTION_PLUGINS = [
   { name: "llm", install: async (ctx: Context) => { await ctx.plugin(LlmRuntime); } },
   { name: "session", install: async (ctx: Context) => { await ctx.plugin(SessionStore); } },
+  { name: "session-query", install: async (ctx: Context) => { await ctx.plugin(CompanionSessionQuery); } },
   // AgentLoop injects this registry; no idream unit registers into it.
   {
     name: "session-projections",
@@ -112,6 +125,14 @@ const COMPANION_EXECUTION_PLUGINS = [
     name: "igrep",
     install: async (ctx: Context, input: CompanionCompositionInput) => {
       await ctx.plugin(input.plugin as never, input.plan.normalizedIgrepConfig as never);
+    },
+  },
+  { name: "token-meter", install: async (ctx: Context) => { await ctx.plugin(TokenMeter); } },
+  {
+    name: "igrep-compaction",
+    install: async (ctx: Context, input: CompanionCompositionInput) => {
+      if (typeof input.plugin.Compaction !== "function") throw new Error("official igrep compaction backend is missing");
+      await ctx.plugin(input.plugin.Compaction, COMPANION_COMPACTION_CONFIG);
     },
   },
   {
@@ -235,6 +256,7 @@ export function companionCompositionManifest(
     systemPrompt: SYSTEM_PROMPT_OPTIONS,
     toolRuntime: {},
     agentLoop: AGENT_LOOP_OPTIONS,
+    compaction: { backend: "@igrep/dsh-plugin/compaction", ...COMPANION_COMPACTION_CONFIG },
     idream: {
       ...IDREAM_COMPOSITION_IDENTITY,
       executionPolicy: {

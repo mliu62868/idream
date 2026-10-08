@@ -33,6 +33,9 @@ import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { operationalCharacterWhere } from "@/server/modules/metric-data-scope";
 
 const MAX_REFERENCE_BYTES = 15 * 1024 * 1024;
+// Existing seeded owner of platform official assets; the operator is audit
+// identity, not the owner of a shared character's private voice evidence.
+const PLATFORM_VOICE_OWNER_ID = "seed-system-creator";
 const MIN_REFERENCE_BYTES = 1_024;
 const ALLOWED_AUDIO_TYPES = new Set([
   "audio/flac",
@@ -303,7 +306,7 @@ export async function createCharacterVoiceClone(input: {
         referenceSha256: input.form.reference.sha256,
       },
       prepare: async () => {
-        await assertOperationalVoiceCharacter(input.characterId);
+        const ownerId = await voiceResourceOwner(input.characterId);
         const runtime = await inspectVoiceIdentityProviderRuntime(providerKey);
         if (!runtime.cloningAvailable || runtime.runtimeStatus !== "ready") {
           throw Errors.unavailable(`${voiceProviderLabel(providerKey)} voice cloning is unavailable`, runtime);
@@ -311,6 +314,7 @@ export async function createCharacterVoiceClone(input: {
         // Own the requested alias before dispatch, including a lost create response.
         preparedArtifacts.voiceId = voiceId;
         const cloned = await voice.cloneVoice({
+          ownerId,
           voiceId,
           audio: input.form.reference.body,
           contentType: input.form.reference.contentType,
@@ -366,6 +370,7 @@ export async function createCharacterVoiceClone(input: {
         }
         preparedArtifacts.referenceStored = true;
         return {
+          ownerId,
           cloned: cloned.data,
           preview: {
             key: storedPreview.data.key,
@@ -394,7 +399,7 @@ export async function createCharacterVoiceClone(input: {
         await tx.mediaAsset.create({
           data: {
             id: referenceAssetId,
-            ownerId: input.actor.id,
+            ownerId: prepared.ownerId,
             characterId: input.characterId,
             type: "voice",
             url: mediaViewUrl(
@@ -407,6 +412,7 @@ export async function createCharacterVoiceClone(input: {
             safetyStatus: "passed",
             metadata: toInputJson({
               purpose: "voice_clone_reference",
+              ownership: prepared.ownerId === PLATFORM_VOICE_OWNER_ID ? "platform_official" : "user",
               filename: input.form.reference.filename,
               referenceText: input.form.referenceText,
               sizeBytes: input.form.reference.body.byteLength,
@@ -420,7 +426,7 @@ export async function createCharacterVoiceClone(input: {
         await tx.mediaAsset.create({
           data: {
             id: previewAssetId,
-            ownerId: input.actor.id,
+            ownerId: prepared.ownerId,
             characterId: input.characterId,
             type: "voice",
             url: mediaViewUrl(previewAssetId, ".wav"),
@@ -430,6 +436,7 @@ export async function createCharacterVoiceClone(input: {
             safetyStatus: "passed",
             metadata: toInputJson({
               purpose: "voice_clone_preview",
+              ownership: prepared.ownerId === PLATFORM_VOICE_OWNER_ID ? "platform_official" : "user",
               durationMs: prepared.preview.durationMs,
               provider: providerKey,
               providerVoiceId: prepared.cloned.voiceId,
@@ -572,7 +579,7 @@ export async function createCharacterVoicePreset(input: {
         if (providers.voice.clip.providerKey !== providerKey || !voice.createPresetVoice) {
           throw Errors.unavailable("Official voice presets require the Pocket TTS system voice provider");
         }
-        await assertOperationalVoiceCharacter(input.characterId);
+        const ownerId = await voiceResourceOwner(input.characterId);
         const runtime = await inspectVoiceIdentityProviderRuntime(providerKey);
         if (runtime.runtimeStatus !== "ready" || !runtime.catalogVoiceIds.includes(input.request.presetVoiceId)) {
           throw Errors.unavailable("The requested Pocket TTS English catalog voice is unavailable", {
@@ -581,6 +588,7 @@ export async function createCharacterVoicePreset(input: {
         }
         preparedArtifacts.voiceId = voiceId;
         const created = await voice.createPresetVoice({
+          ownerId,
           voiceId,
           presetVoiceId: input.request.presetVoiceId,
           language: runtime.runtimeLanguage,
@@ -644,6 +652,7 @@ export async function createCharacterVoicePreset(input: {
         }
         preparedArtifacts.referenceStored = true;
         return {
+          ownerId,
           created: created.data,
           reference: {
             key: storedReference.data.key,
@@ -677,7 +686,7 @@ export async function createCharacterVoicePreset(input: {
         await tx.mediaAsset.create({
           data: {
             id: referenceAssetId,
-            ownerId: input.actor.id,
+            ownerId: prepared.ownerId,
             characterId: input.characterId,
             type: "voice",
             url: mediaViewUrl(referenceAssetId, ".json"),
@@ -687,6 +696,7 @@ export async function createCharacterVoicePreset(input: {
             safetyStatus: "passed",
             metadata: toInputJson({
               purpose: "voice_preset_reference",
+              ownership: prepared.ownerId === PLATFORM_VOICE_OWNER_ID ? "platform_official" : "user",
               filename: `${input.request.presetVoiceId}.pocket-voice`,
               sizeBytes: prepared.reference.sizeBytes,
               sha256: prepared.reference.sha256,
@@ -699,7 +709,7 @@ export async function createCharacterVoicePreset(input: {
         await tx.mediaAsset.create({
           data: {
             id: previewAssetId,
-            ownerId: input.actor.id,
+            ownerId: prepared.ownerId,
             characterId: input.characterId,
             type: "voice",
             url: mediaViewUrl(previewAssetId, ".wav"),
@@ -709,6 +719,7 @@ export async function createCharacterVoicePreset(input: {
             safetyStatus: "passed",
             metadata: toInputJson({
               purpose: "voice_preset_preview",
+              ownership: prepared.ownerId === PLATFORM_VOICE_OWNER_ID ? "platform_official" : "user",
               durationMs: prepared.preview.durationMs,
               provider: providerKey,
               providerVoiceId: prepared.created.voiceId,
@@ -1212,12 +1223,15 @@ async function cleanupPreparedArtifacts(input: {
   await Promise.allSettled(cleanup);
 }
 
-async function assertOperationalVoiceCharacter(characterId: string) {
+async function voiceResourceOwner(characterId: string) {
   const character = await prisma.character.findFirst({
     where: operationalCharacterWhere({ id: characterId, deletedAt: null }),
-    select: { id: true },
+    select: { source: true, creatorId: true },
   });
   if (!character) throw Errors.notFound("Character not found");
+  const ownerId = character.source === "official" ? PLATFORM_VOICE_OWNER_ID : character.creatorId;
+  if (!ownerId) throw Errors.conflict("Character voice has no resource owner");
+  return ownerId;
 }
 
 // SPEC: Character voice identity can canary independently from the system voice

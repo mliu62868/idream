@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlacementsSection } from "@/components/admin/placements/PlacementsSection";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 vi.mock("next/link", () => ({ default: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) => <a href={href} {...props}>{children}</a> }));
@@ -31,6 +32,26 @@ describe("placement drafts remain bound to their target and write permission", (
   });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
   const render = async (id: string, canPublish = true) => { await act(async () => root.render(<PlacementsSection canPublish={canPublish} view={{ kind: "detail", id }} />)); await waitFor(() => container.textContent?.includes(`Placement ID: ${id}`) === true); };
+
+  it("reloads placement details through shell refresh while retaining campaign copy and its confirmation", async () => {
+    await render("campaign-a");
+    await act(async () => button(container, "Edit")!.click());
+    await change(container.querySelector<HTMLInputElement>('[aria-label="Campaign title"]')!, "Unfinished campaign title");
+    await act(async () => button(container, "Save changes")!.click());
+    const confirmation = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    await change(confirmation.querySelector<HTMLInputElement>('[aria-label="Reason (≥3)"]')!, "Retain this campaign reason");
+    const fetchMock = vi.mocked(fetch);
+    let finish!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Campaign title"]')?.value).toBe("Unfinished campaign title");
+    expect(document.querySelector('[role="dialog"]')).toBe(confirmation);
+    expect(confirmation.querySelector<HTMLInputElement>('[aria-label="Reason (≥3)"]')!.value).toBe("Retain this campaign reason");
+    await act(async () => finish(Response.json({ ok: true, data: { placement: placement("campaign-a") } })));
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Campaign title"]')?.value).toBe("Unfinished campaign title");
+    expect(writes).toEqual([]);
+  });
 
   it("never sends an old campaign copy to a different placement", async () => {
     await render("campaign-a");

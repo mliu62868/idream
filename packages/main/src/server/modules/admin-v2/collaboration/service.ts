@@ -15,6 +15,7 @@ import { actorWithPermission, jsonBody, queryParams, type AdminActor } from "@/s
 import { canonicalJsonHash, requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { effectivePermissions } from "@/server/admin/effective-permissions";
 import { assignReviewCaseInTransaction } from "../cases/service";
+import { assertIncidentReadable } from "../incidents/scope";
 import { normalizeWorkPreferences, updateWorkPreference, workPreferenceSourceTypes } from "../shared/work-preferences";
 
 const targetDescriptors: Record<CollaborationTargetType, { read: AdminPermissionKey; write: AdminPermissionKey; exists: (id: string) => Promise<unknown> }> = {
@@ -136,9 +137,9 @@ async function targetAccess(
       : "allowed";
   }
   if (targetType === "incident") {
-    const target = await prisma.opsIncident.findUnique({ where: { id: targetId }, select: { ownerId: true } });
+    const target = await prisma.opsIncident.findUnique({ where: { id: targetId }, select: { id: true } });
     if (!target) return "missing";
-    return actor.role === "support" && target.ownerId !== actor.id ? "forbidden" : "allowed";
+    return await assertIncidentReadable(prisma, actor, targetId) ? "allowed" : "forbidden";
   }
   return await targetDescriptors[targetType].exists(targetId) ? "allowed" : "missing";
 }

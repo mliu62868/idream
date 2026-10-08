@@ -13,6 +13,7 @@ import {
   VisualIdentityExperimentWorkbench,
   type ActivateIdentityCandidateInput,
 } from "@/features/characters/VisualIdentityExperimentWorkbench";
+import { ImagePackResetNotice, draftSelectedImageCount } from "./ImagePackResetNotice";
 import type { CharacterWorkspaceTab } from "@/features/image-workflow-transport";
 import {
   StatusBadge,
@@ -28,7 +29,7 @@ import type {
 
 export type VisualIdentityPanelData = Pick<
   CharacterWorkspaceDetail,
-  "visual"
+  "visual" | "journey"
 > & {
   character: Pick<
     CharacterWorkspaceDetail["character"],
@@ -425,6 +426,7 @@ export function VisualIdentityPanel({
         canReview={permissions.reviewAssets ?? false}
         data={data}
         onActivateCandidate={activateIdentityCandidate}
+        selectedImageCount={draftSelectedImageCount(data)}
       />
       <details
         className="scroll-mt-4 rounded-xl border border-[var(--ad-border)] bg-black/[0.015]"
@@ -717,6 +719,7 @@ export function VisualIdentityPanel({
                       )}
                     </span>
                   </label>
+                  <ImagePackResetNotice count={draftSelectedImageCount(data)} />
                   <div className="mt-4">
                     <WorkspaceButton
                       disabled={
@@ -978,6 +981,7 @@ export function VisualIdentityPanel({
                   />
                   <span>{t("Activate this as a new identity version.")}</span>
                 </label>
+                <ImagePackResetNotice count={draftSelectedImageCount(data)} />
                 <div className="mt-4">
                   <WorkspaceButton
                     disabled={

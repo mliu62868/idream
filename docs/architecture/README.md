@@ -64,7 +64,7 @@ packages/main/prisma/schema.prisma + packages/*/src + 同source运行证据 ← 
 
 | 层 | 选型 | 说明 |
 | --- | --- | --- |
-| 运行时 | Node.js ≥ 24 | `.nvmrc=24`，`package.json engines.node>=24` |
+| 运行时 | Node.js 24 开发/CI 基线 | `.nvmrc=24`，CI 固定 24.14.1；`package.json engines.node>=22` 是包声明的最低版本 |
 | 框架 | Next.js 16.2.1（App Router, React 19.2） | **注意：Next 16 有破坏性变更**，middleware 已更名 **Proxy**，详见 01/02 |
 | 语言 | TypeScript 5（strict, 禁 `any`） | `@/*` → `src/*` |
 | ORM | Main 使用 Prisma 7.x（`prisma-client` 生成器） | Chat 不使用 ORM，详见 ADR-20 |

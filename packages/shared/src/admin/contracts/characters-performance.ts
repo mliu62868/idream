@@ -252,7 +252,7 @@ export const characterProductionActionCodeSchema = z.enum([
   "complete_image_route",
   "continue_image_run",
   "continue_asset_pack",
-  "review_asset_pack",
+  "repair_character_soul",
   "preview_character",
   "publish_character",
   "monitor_live_character",

@@ -206,6 +206,27 @@ export function PreviewDiff({ data }: { data: CharacterWorkspaceDetail }) {
   }
   return (
     <div>
+      {/* INTENT: 预览就绪时 journey 停在 preview_character，本页又会隐藏页头的下一步；
+          不给出口运营就卡在这里。发布前的阻塞仍由 Release 面板判定，这里只负责带路。 */}
+      <section
+        aria-labelledby="launch-preview-continue"
+        className="mb-4 flex flex-col gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div>
+          <h2 className="font-semibold" id="launch-preview-continue">
+            {t("Looks right?")}
+          </h2>
+          <p className="mt-1 text-sm leading-6 text-[var(--ad-text-muted)]">
+            {t("Check the renderer below, then publish from Release.")}
+          </p>
+        </div>
+        <Link
+          className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-md border border-[var(--ad-ink)] bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white hover:bg-[#30322e]"
+          href={`/admin/characters/${data.character.id}?tab=release`}
+        >
+          {t("Continue to Release")}
+        </Link>
+      </section>
       <ReleaseChangeSummary data={data} />
       {previewReady ? (
         <section aria-labelledby="real-renderer-preview-title">

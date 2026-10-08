@@ -293,13 +293,16 @@ export function AppSearch() {
 
           {displayStatus === "error" ? (
             <div
-              aria-live="polite"
               className="px-3 py-3 text-[12px] font-bold text-[rgb(170,170,170)]"
-              data-testid="app-search-status"
-              id="app-search-status"
-              role="status"
             >
-              Search suggestions unavailable
+              <span
+                aria-live="polite"
+                data-testid="app-search-status"
+                id="app-search-status"
+                role="status"
+              >
+                Search suggestions unavailable
+              </span>
               <button
                 aria-label="Retry search suggestions"
                 className="ml-2 rounded-full bg-white/10 px-3 py-1 text-white"

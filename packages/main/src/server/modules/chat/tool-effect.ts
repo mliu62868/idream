@@ -2,9 +2,7 @@ import { createHash } from "node:crypto";
 import {
   parseImageAgentToolCall,
   type ImageAgentToolCall,
-  type RequiredImageAction,
 } from "@idream/shared/chat/image-action";
-import { resolveImageIntent } from "@idream/shared/chat/image-intent";
 import {
   chatToolEffectSchema,
   chatExecutionSnapshotSchema,
@@ -57,34 +55,39 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
   let attachmentId = effectAttachmentId(effect, turn.userContent);
   let prior = await prisma.chatTurnAttachment.findUnique({ where: { id: attachmentId } });
   if (!prior && effect.effectScope === "turn_action") {
-    // INTENT: old identities do not carry the user's words. Preserve their ACK
-    // on regenerate, but an edited Turn authorizes a new picture. Main's durable
-    // edit markers also cover legacy actions without a Generation Job.
-    const legacyId = legacyTurnActionAttachmentId(effect.turnId, effect.name);
-    const legacy = await prisma.chatTurnAttachment.findUnique({ where: { id: legacyId } });
-    if (legacy && record(legacy.metadata)?.turnActionInvalidatedByEdit !== true) {
-      const job = legacy.generationJobId
-        ? await prisma.generationJob.findUnique({ where: { id: legacy.generationJobId }, select: { sourceMeta: true } })
-        : null;
-      if (record(record(job?.sourceMeta)?.privacyRedaction)?.reason !== "logical_turn_edited") {
-        attachmentId = legacyId;
+    // Existing receipts used a tool-specific identity. Read both old names so
+    // regenerating with another Agent choice cannot buy a second image action.
+    for (const name of ["generate_image_async", "edit_last_image"] as const) {
+      for (const oldId of [
+        `chatfx_${sha256(`${effect.turnId}:${name}:${sha256(turn.userContent)}`).slice(0, 48)}`,
+        legacyTurnActionAttachmentId(effect.turnId, name),
+      ]) {
+        const legacy = await prisma.chatTurnAttachment.findUnique({ where: { id: oldId } });
+        if (!legacy || record(legacy.metadata)?.turnActionInvalidatedByEdit === true) continue;
+        const job = legacy.generationJobId
+          ? await prisma.generationJob.findUnique({ where: { id: legacy.generationJobId }, select: { sourceMeta: true } })
+          : null;
+        if (record(record(job?.sourceMeta)?.privacyRedaction)?.reason === "logical_turn_edited") continue;
+        if (name !== effect.name) throw Errors.conflict("This Turn already has a different image action");
+        attachmentId = oldId;
         prior = legacy;
+        break;
       }
+      if (prior) break;
     }
   }
   // An exact historical ACK is a read, with no execution or reattachment.
   if (prior && prior.status !== "requesting" && turn.attempt === effect.attempt && effectAttempt(prior.metadata) === effect.attempt) {
     if (effect.effectScope === "attempt") assertEffectRequest(prior, requestDigest);
-    else assertTurnActionIntent(prior, effect.intent);
+    else assertTurnActionIntent(prior, effect);
     return existingEffect(prior, requestDigest, effect.effectScope);
   }
-  const action = await frozenImageAction(turn);
-  assertImageAction(action, effect);
+  assertBoundImageEffect(turn, effect);
   // INVARIANT: an accepted effect remains replayable after its Turn becomes
   // terminal. HTTP timeout must not turn a successful reservation into a 409.
   if (prior) {
     if (effect.effectScope === "attempt") assertEffectRequest(prior, requestDigest);
-    else assertTurnActionIntent(prior, effect.intent);
+    else assertTurnActionIntent(prior, effect);
     if (effect.effectScope === "turn_action" && record(prior.metadata)?.attempt !== effect.attempt) {
       if (
         turn.attempt !== effect.attempt ||
@@ -92,7 +95,7 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
       ) {
         throw Errors.conflict("Required effect replay does not belong to the active Chat attempt");
       }
-      prior = await rebindTurnActionAttempt(prior, effect, requestDigest, turn, action);
+      prior = await rebindTurnActionAttempt(prior, effect, requestDigest, turn);
     }
     // A rebind that reopened a never-reserved failure executes below like a new
     // reservation, with the direction frozen on its first attempt.
@@ -100,7 +103,7 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
   }
 
   if (effect.effectScope !== "turn_action") {
-    throw Errors.forbidden("New image effects must use the authorized Turn action");
+    throw Errors.forbidden("New image effects must use the Turn image action");
   }
   if (turn.attempt !== effect.attempt || !["pending", "generating"].includes(turn.assistantStatus)) {
     throw Errors.conflict("Tool effect does not belong to the active Chat attempt");
@@ -113,6 +116,9 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
     : effect.arguments;
   const parsedCall = parseImageAgentToolCall(effect.name, argumentsToParse);
   if (!parsedCall) throw Errors.badRequest("Invalid image tool arguments");
+  if (parsedCall.arguments.requestedNudity !== undefined && parsedCall.arguments.requestedNudity !== effect.intent.requestedNudity) {
+    throw Errors.badRequest("Image arguments and effect wardrobe intent differ");
+  }
   let call = sceneOwnedCall(parsedCall);
   if (!turn.characterContentVersionId) {
     throw Errors.gone("Chat Turn has no immutable Character content pin");
@@ -132,33 +138,17 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
   }
 
   if (prior) {
-    assertTurnActionIntent(prior, effect.intent);
+    assertTurnActionIntent(prior, effect);
     call = persistedTurnActionCall(prior, call);
   } else {
-    if (call.name === "generate_image_async") {
-      // A valid 1200-character tool argument may exceed the 900-character
-      // generation direction after wardrobe constraints. Reject before any
-      // attachment or paid reservation rather than losing the final fact.
-      try {
-        compileChatImagePrompt(call.arguments.prompt, call.arguments.subject === "scene" ? "unspecified" : effect.intent.requestedNudity);
-      } catch (error) {
-        if (error instanceof RangeError) throw Errors.badRequest(error.message);
-        throw error;
-      }
-    }
-    if (call.name === "edit_last_image") {
-      // assertFrozenImageAction verified this exact Main-owned userContent.
-      // Chat has no source pixels: its invented preservation details must never
-      // replace the user's edit. Historical requesting/accepted effects above
-      // retain their already-frozen direction and idempotency contract.
-      try {
-        const instruction = sanitizeChatImageDirection(turn.userContent, { rejectTruncation: true });
-        compileChatImagePrompt(instruction, effect.intent.requestedNudity, { rejectTruncation: true });
-        call = { ...call, arguments: { ...call.arguments, instruction } };
-      } catch (error) {
-        if (error instanceof RangeError) throw Errors.badRequest(error.message);
-        throw error;
-      }
+    // A valid 1200-character argument may exceed the generation direction
+    // budget after wardrobe constraints. Reject before a paid reservation
+    // rather than silently dropping the Agent's final constraint.
+    try {
+      compileChatImagePrompt(promptHint(call), call.name === "generate_image_async" && call.arguments.subject === "scene" ? "unspecified" : effect.intent.requestedNudity);
+    } catch (error) {
+      if (error instanceof RangeError) throw Errors.badRequest(error.message);
+      throw error;
     }
     try {
       await createToolEffectAttachment(prisma, {
@@ -185,7 +175,7 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
         throw error;
       }
       const raced = await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: attachmentId } });
-      assertTurnActionIntent(raced, effect.intent);
+      assertTurnActionIntent(raced, effect);
       call = persistedTurnActionCall(raced, call);
       if (raced.status !== "requesting") {
         return existingEffect(raced, requestDigest, effect.effectScope);
@@ -282,12 +272,12 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
 }
 
 function effectAttachmentId(effect: ChatToolEffect, userContent: string): string {
-  // INVARIANT: a deterministic product action survives assistant regenerate,
+  // INVARIANT: a product image action survives assistant regenerate,
   // which keeps the user's words; editing them asks for a different picture, so
   // the frozen words are part of the identity. Historical ordinary-call ACKs
   // retain their original attempt identity.
   const identity = effect.effectScope === "turn_action"
-    ? `${effect.turnId}:${effect.name}:${sha256(userContent)}`
+    ? `${effect.turnId}:image:${sha256(userContent)}`
     : `${effect.turnId}:${effect.attempt}:${effect.callId}`;
   return `chatfx_${sha256(identity).slice(0, 48)}`;
 }
@@ -303,39 +293,16 @@ function boundSnapshot(
     : null;
 }
 
-/**
- * SPEC: what this Turn's own user message authorizes, decided here and not
- * anywhere upstream.
- * INVARIANT: this re-runs the same authority Chat used, over the frozen user
- * message and nothing else. Chat's copy decides which tool the model may see;
- * this copy decides whether anything is bought, so a bug or a bypass there still
- * cannot spend. A saved instruction, a pinned fact or a persona line is not part
- * of either input, and an unreachable judge withholds rather than grants.
- */
-async function frozenImageAction(
+// The Agent owns interpretation. Main checks the immutable execution identity
+// and factual edit capability, then revalidates live permissions before spending.
+function assertBoundImageEffect(
   turn: { id: string; attempt: number; userContent: string; executionSnapshot: Prisma.JsonValue | null },
-): Promise<RequiredImageAction | null> {
+  effect: ChatToolEffect,
+) {
   const bound = boundSnapshot(turn);
-  if (!bound) return null;
-  const previous = bound.recentTurns.at(-1);
-  // A short confirmation in a group answers only the selected Character's
-  // offer. Another member's words cannot authorize this Character's purchase.
-  const previousAssistantText = !bound.group || previous?.speaker?.characterId === bound.characterId
-    ? previous?.assistantContent : undefined;
-  const decision = await resolveImageIntent({
-    userText: bound.userContent,
-    hasRecentImageContext: bound.hasRecentImageContext,
-    previousAssistantText,
-    imageToolEnabled: true,
-    onJudgeUnavailable: (reason) => logger.warn({ event: "chat_image_intent_judge" }, reason),
-  });
-  return decision.kind === "none" ? null : decision.action;
-}
-
-// Main owns consent; neither the caller's tool name nor scope can grant it.
-function assertImageAction(action: RequiredImageAction | null, effect: ChatToolEffect) {
-  if (!action || action.name !== effect.name || action.requestedNudity !== effect.intent.requestedNudity) {
-    throw Errors.forbidden("Image generation requires a confirmed user image request");
+  if (!bound) throw Errors.forbidden("Image action requires the current frozen Chat attempt");
+  if (effect.name === "edit_last_image" && !bound.hasRecentImageContext) {
+    throw Errors.conflict("There is no delivered Chat image to edit");
   }
 }
 
@@ -444,7 +411,6 @@ async function rebindTurnActionAttempt(
   effect: ChatToolEffect,
   replayRequestDigest: string,
   judged: { attempt: number; userContent: string; session: { userId: string } },
-  action: RequiredImageAction | null,
 ) {
   const attempt = effect.attempt;
   return prisma.$transaction(async (tx) => {
@@ -462,18 +428,17 @@ async function rebindTurnActionAttempt(
     if (!current || !lockedAttachment || current.id !== effect.turnId) {
       throw Errors.conflict("Required effect replay does not belong to the active Chat attempt");
     }
-    // The consent above was decided before this lock, and deciding it again here
-    // would hold the row across a network call to the judge. Re-bind it instead:
-    // the same frozen message still has to be the Turn's message under the lock.
+    // Recheck the same pinned execution under the Turn lock. This is a
+    // structural fence, with no network classifier or text interpretation.
     const bound = boundSnapshot(current);
     if (!bound || bound.attempt !== judged.attempt || bound.userContent !== judged.userContent) {
-      throw Errors.forbidden("Image generation requires a confirmed user image request");
+      throw Errors.forbidden("Image action requires the current frozen Chat attempt");
     }
-    assertImageAction(action, effect);
+    assertBoundImageEffect(current, effect);
     if (current.attempt !== attempt || !["pending", "generating"].includes(current.assistantStatus)) {
       throw Errors.conflict("Required effect replay does not belong to the active Chat attempt");
     }
-    assertTurnActionIntent(lockedAttachment, effect.intent);
+    assertTurnActionIntent(lockedAttachment, effect);
     // A concurrent delivery or paid retry may have changed status, Job and
     // cost since the first read. Rebinding carries only these locked facts.
     const metadata = record(lockedAttachment.metadata) ?? {};
@@ -545,15 +510,16 @@ function assertEffectRequest(
 
 function assertTurnActionIntent(
   attachment: { metadata: Prisma.JsonValue },
-  expectedIntent: ChatToolEffect["intent"],
+  expected: ChatToolEffect,
 ) {
   const effect = record(record(attachment.metadata)?.effect);
   const intent = record(effect?.intent);
   if (
     effect?.effectScope !== "turn_action" ||
-    intent?.requestedNudity !== expectedIntent.requestedNudity
+    (effect.name !== undefined && effect.name !== expected.name) ||
+    intent?.requestedNudity !== expected.intent.requestedNudity
   ) {
-    throw Errors.conflict("Turn-scoped image action was replayed with different user intent");
+    throw Errors.conflict("Turn image action was replayed with a different tool or wardrobe intent");
   }
 }
 

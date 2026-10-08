@@ -5,7 +5,7 @@ import { voiceCallSchema, voiceCallStartSchema, voiceClipBillingAuthoritySchema 
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { getAuthCtx, requireAgeGate, requireAgeVerified } from "@/server/lib/auth";
-import { Errors } from "@/server/lib/errors";
+import { AppError, Errors } from "@/server/lib/errors";
 import { generationCostFromAuthority, resolveGenerationPricingAuthority } from "@/server/lib/generation-pricing";
 import { dreamcoinBalance } from "@/server/modules/billing/ledger";
 import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency";
@@ -223,17 +223,33 @@ async function submitUtterance(call: VoiceCall, token: string | null, id: string
   }
   if (!utterance) throw Errors.notFound("Recording not found");
   if (utterance.turnId || utterance.status !== "transcribing") return utteranceState(call, utterance);
-  const result = await requestAsr(audio ? "POST" : "GET", { userId: call.userId, conversationId: `call:${call.id}`, requestId: id }, audio);
+  let result;
+  try {
+    result = await requestAsr(audio ? "POST" : "GET", { userId: call.userId, conversationId: `call:${call.id}`, requestId: id }, audio);
+  } catch (error) {
+    // INVARIANT: a definitive rejection/expiry releases this recording's gate;
+    // unknown transport outcomes keep the same key available for GET recovery.
+    if (error instanceof AppError && (error.code === "bad_request" || error.code === "gone")) {
+      const details = error.details as { errorCode?: unknown } | undefined;
+      await prisma.voiceCallUtterance.updateMany({
+        where: { id, callId: call.id, status: "transcribing", turnId: null },
+        data: { status: "failed", errorCode: typeof details?.errorCode === "string" ? details.errorCode : error.code === "gone" ? "asr_result_expired" : "invalid_audio" },
+      });
+    }
+    throw error;
+  }
   if (result.status === "completed") {
     if (!leaseIsLive(await ownedCall(call.userId, call.sessionId, call.id), token)) throw Errors.gone("Call stopped during transcription");
     const begun = await beginAdmittedChatTurn({ userId: call.userId, sessionId: call.sessionId, content: result.text,
       idempotencyKey: `call:${call.id}:${id}`, voiceCall: { id: call.id, leaseToken: token!, utteranceId: id } });
     return { utteranceId: id, ...begun };
   }
-  if (result.status === "failed" || result.status === "cancelled") await prisma.voiceCallUtterance.update({ where: { id }, data: { status: "failed", errorCode: result.status === "failed" ? result.errorCode : "cancelled" } });
+  if (result.status === "failed" || result.status === "cancelled") {
+    await prisma.voiceCallUtterance.updateMany({ where: { id, callId: call.id, status: "transcribing", turnId: null }, data: { status: "failed", errorCode: result.status === "failed" ? result.errorCode : "cancelled" } });
+    return utteranceState(call, await prisma.voiceCallUtterance.findUniqueOrThrow({ where: { id } }));
+  }
   return { utteranceId: id, status: result.status,
-    errorCode: result.status === "failed" ? result.errorCode : result.status === "cancelled" ? "cancelled" : undefined,
-    retryAfterMs: result.status === "pending" ? result.retryAfterMs : undefined };
+    retryAfterMs: result.retryAfterMs };
 }
 async function speakUtterance(request: Request, call: VoiceCall, token: string | null, id: string) {
   const utterance = await prisma.voiceCallUtterance.findFirst({ where: { id, callId: call.id } });

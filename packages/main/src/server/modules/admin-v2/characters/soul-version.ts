@@ -5,6 +5,7 @@ import type {
 import type { Prisma } from "@prisma/client";
 import { inTransaction, prisma } from "@/server/lib/db";
 import { assertNoCandidateRelease } from "./candidate-release-guard";
+import { assertAppearanceDirectionUnlocked } from "./appearance-lock-guard";
 import { Errors } from "@/server/lib/errors";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
@@ -90,6 +91,11 @@ export async function createCharacterSoulVersion(input: {
         cause instanceof Error ? cause.message : "Character Soul compilation failed",
       );
     }
+    await assertAppearanceDirectionUnlocked(tx, {
+      characterId: input.characterId,
+      before: currentContent.appearanceSnapshot,
+      after: snapshots.appearanceSnapshot,
+    });
     const moderation = await moderateText("character", input.characterId,
       characterContentModerationText(snapshots), "character_authoring");
     if (moderation.status === "blocked") throw Errors.forbidden("Character failed safety checks", moderation);

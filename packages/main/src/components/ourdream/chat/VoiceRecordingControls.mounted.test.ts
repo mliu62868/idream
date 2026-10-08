@@ -12,7 +12,7 @@ import { VoiceCallButton, VoiceCallControls } from "./VoiceCallControls";
 function voiceInput(overrides: Partial<VoiceInputController> = {}): VoiceInputController {
   return {
     phase: "idle", elapsedMs: 0, volume: 0, notice: null, candidate: null, canRetry: false,
-    capability: { supported: true, available: true, ownerScope: "user:voice-owner", languages: ["en", "fr"], maxDurationMs: 60_000, maxUploadBytes: 8_388_608, resultTtlMs: 120_000 },
+    capability: { supported: true, available: true, ownerScope: "user:voice-owner", languages: ["en"], maxDurationMs: 60_000, maxUploadBytes: 8_388_608, resultTtlMs: 120_000 },
     start: vi.fn(async () => undefined), finish: vi.fn(), cancel: vi.fn(), addCandidate: vi.fn(), refreshCapability: vi.fn(),
     retry: vi.fn(), transcribeClip: vi.fn(), blocksSend: false, readOnly: false, canUndo: false, undo: vi.fn(),
     ...overrides,
@@ -37,19 +37,17 @@ describe("recording scope and upload guidance", () => {
     await act(async () => root.render(createElement("div", {}, createElement(VoiceInputStatus, { voice }), createElement(VoiceInputButton, { voice, disabled: false }))));
   }
 
-  it("explains actual capability languages and editable drafts before recording, without a language picker", async () => {
+  it("explains English-only input and editable drafts before recording, without a language picker", async () => {
     const voice = voiceInput(); await input(voice);
-    expect(container.textContent).toContain("English"); expect(container.textContent).toContain("French");
+    expect(container.querySelector("summary")?.textContent).toBe("Voice input · English only");
     expect(container.textContent).toContain("editable draft"); expect(container.textContent).toContain("before sending");
     expect(container.querySelector("select")).toBeNull(); expect(voice.start).not.toHaveBeenCalled();
-    expect(container.querySelector('[aria-label="Voice input"]')?.getAttribute("title")).toContain("French");
-    await input(voiceInput({ capability: { ...voice.capability!, languages: ["en", "de"] } }));
-    expect(container.textContent).toContain("German"); expect(container.textContent).not.toContain("French");
+    expect(container.querySelector('[aria-label="Voice input"]')?.getAttribute("title")).toContain("Speak your message in English");
   });
 
   it("retains scope and review guidance while recording with the existing Done and Cancel controls", async () => {
     const voice = voiceInput({ phase: "recording", notice: "Recording…", blocksSend: true, readOnly: true }); await input(voice);
-    expect(container.textContent).toContain("English"); expect(container.textContent).toContain("French");
+    expect(container.textContent).toContain("English only");
     expect(container.textContent).toContain("editable draft"); expect(container.textContent).toContain("before sending");
     const done = [...container.querySelectorAll("button")].find(button => button.textContent === "Done")!;
     await act(async () => done.click()); expect(voice.finish).toHaveBeenCalledOnce();

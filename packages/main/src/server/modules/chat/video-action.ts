@@ -105,5 +105,5 @@ export async function dispatchChatVideo(
   if (!key || key.length < 8 || key.length > 160) throw Errors.badRequest("Idempotency-Key must be between 8 and 160 characters");
   const job = await createChatVideo(user.id, sessionId, key, raw);
   const stored = await prisma.generationJob.findUniqueOrThrow({ where: { id: job.id }, include: generationJobInclude() });
-  return ok(renderJob(stored), { status: 202 });
+  return ok(await renderJob(stored), { status: 202 });
 }

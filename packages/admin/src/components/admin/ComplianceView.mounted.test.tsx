@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminPermissionKey } from "@idream/shared/admin/permissions";
 import { navItems, type SectionContext } from "./nav-config";
 import { AdminI18nProvider, type AdminLocale } from "./i18n";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 vi.mock("next/link", () => ({ default: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) => <a href={href} {...props}>{children}</a> }));
@@ -56,6 +57,24 @@ describe("Compliance operator target and permission boundaries", () => {
     await changeInput(input("Erase reason"), "Controlled erasure request");
     await changeInput(input("Erase confirmation"), "account-A");
   }
+
+  it("reloads the compliance read sections once through shell refresh without discarding an erase draft", async () => {
+    await render();
+    await prepareErase();
+    const href = window.location.href;
+    const before = fetchMock.mock.calls.length;
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    const refreshed = fetchMock.mock.calls.slice(before).map(([path]) => String(path));
+    expect(refreshed).toEqual(expect.arrayContaining([
+      "/api/v2/admin/compliance/account-deletions?scope=open",
+      "/api/v2/admin/compliance/age-verifications?status=pending",
+    ]));
+    expect(refreshed).toHaveLength(2);
+    expect(input("User ID").value).toBe("account-A");
+    expect(input("Erase reason").value).toBe("Controlled erasure request");
+    expect(input("Erase confirmation").value).toBe("account-A");
+    expect(window.location.href).toBe(href);
+  });
 
   it("removes an old export and download when the account changes, including a failed replacement", async () => {
     await render();

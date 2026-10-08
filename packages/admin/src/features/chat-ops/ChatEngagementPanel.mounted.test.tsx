@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const { adminV2Operation } = vi.hoisted(() => ({ adminV2Operation: vi.fn() }));
 vi.mock("@/lib/admin-v2-operation", () => ({ adminV2Operation }));
 import { ChatEngagementPanel } from "./ChatEngagementPanel";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 afterEach(() => { vi.clearAllMocks(); document.body.innerHTML = ""; });
@@ -13,6 +14,25 @@ const response = (id: string) => ({
   pageInfo: { endCursor: null, hasNextPage: false }, asOf: "2026-09-13T12:00:00.000Z", freshness: "fresh",
 });
 describe("Chat engagement operations panel", () => {
+  it("reloads only the selected engagement view through shell refresh", async () => {
+    const host = document.createElement("div"); document.body.append(host); const root = createRoot(host);
+    adminV2Operation.mockResolvedValue(response("fresh-engagement"));
+    try {
+      await act(async () => root.render(<ChatEngagementPanel userId="customer" characterId="character" />));
+      await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+      expect(adminV2Operation).not.toHaveBeenCalled();
+      await act(async () => host.querySelector<HTMLButtonElement>('button[aria-pressed]')!.click());
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 15)); });
+      const query = adminV2Operation.mock.calls[0]![1].query.toString();
+      await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+      expect(adminV2Operation).toHaveBeenCalledTimes(2);
+      expect(adminV2Operation.mock.calls[1]![1].query.toString()).toBe(query);
+      expect(host.querySelector('button[aria-pressed="true"]')?.textContent).toBe("Group conversations");
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it("identifies a failed read without suggesting an unknown write and preserves its request ID", async () => {
     const host = document.createElement("div"); document.body.append(host); const root = createRoot(host);
     adminV2Operation.mockRejectedValue(new AdminV2RequestError(

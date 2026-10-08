@@ -24,6 +24,7 @@ import {
   createAuthorityState,
 } from "@/lib/authority-state";
 import { createLatestRequestGate } from "@/lib/latest-request";
+import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 import { cn } from "@/lib/utils";
 
 type BackendHealth = { ok: boolean; detail?: string; latencyMs?: number };
@@ -67,6 +68,8 @@ export function BackendsView() {
       ));
     }
   }, [t]);
+
+  useWorkspaceRefresh(load);
 
   useEffect(() => {
     const gate = requestGate.current;

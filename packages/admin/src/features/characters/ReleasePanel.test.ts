@@ -178,6 +178,10 @@ describe("Character release panel", () => {
     expect(href("approved_avatar_missing")).toBe("/admin/characters/c1?tab=assets");
     expect(href("revision_missing")).toBe("/admin/characters/c1?tab=soul");
     expect(href("release_generation_authority_kind")).toBe("/admin/characters/c1?tab=visual");
+    // No identity yet: the first portrait is created in Images, same as the journey says.
+    expect(href("visual_identity_missing")).toBe("/admin/characters/c1?tab=assets");
+    expect(href("active_visual_profile_missing_or_unsealed")).toBe("/admin/characters/c1?tab=assets");
+    expect(href("reference_set_not_active")).toBe("/admin/characters/c1?tab=visual");
     for (const blocker of ["character_missing", "project_missing", "companion_product_contract", "snapshot_hash_matches", "something_new"]) {
       expect(releaseBlockerGuidance(blocker, "c1")).toMatchObject({ href: null, action: null });
     }

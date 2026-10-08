@@ -6,6 +6,7 @@ import { auditAdminCutoverInvariants } from "./invariants";
 import { deriveCreativeRunContinuation } from "../creative/run-state";
 import { refreshContentProductionBatchStats } from "@/server/modules/content-production-state";
 import { verifyCreativeRetryCommands } from "../creative/retry-executor";
+import { CHARACTER_RELEASE_POLICY_VERSION } from "../characters/character-release-contract";
 
 describe("Admin cutover invariant report", () => {
   const suffix = randomUUID();
@@ -137,6 +138,57 @@ describe("Admin cutover invariant report", () => {
     } finally {
       await prisma.characterServing.deleteMany({ where: { characterId, currentReleaseId: releaseId } });
       await prisma.characterRelease.deleteMany({ where: { id: releaseId } });
+    }
+  });
+
+  it.each(["live", "paused", "retired"] as const)("checks stale qualified current Releases only for live Serving, including unlisted: %s", async (state) => {
+    const staleCharacterId = `invariant-stale-character-${suffix}-${state}`;
+    const releaseId = `invariant-stale-release-${suffix}-${state}`;
+    const snapshotHash = `invariant-stale-snapshot-${suffix}-${state}`;
+    const validationId = `invariant-stale-validation-${suffix}-${state}`;
+    await prisma.character.create({ data: {
+      id: staleCharacterId, name: "Unlisted stale Release fixture", age: 25,
+      description: "Retained Release authority must not imply live Serving",
+      visibility: "unlisted", status: state === "live" ? "approved" : "archived",
+      source: "official", appearance: {}, advancedDetails: {},
+    } });
+    try {
+      await prisma.characterRelease.create({ data: {
+        id: releaseId, projectId: `invariant-project-${suffix}-${state}`,
+        revisionId: `invariant-revision-${suffix}-${state}`,
+        characterContentVersionId: `invariant-content-${suffix}-${state}`,
+        generationProvenance: {}, releasePlacementManifest: {}, snapshotHash,
+        status: "published", readiness: "ready", publishedAt: new Date(),
+      } });
+      await prisma.releaseValidationRun.create({ data: {
+        id: validationId, releaseId, snapshotHash,
+        policyVersion: CHARACTER_RELEASE_POLICY_VERSION, result: "passed", finishedAt: new Date(),
+      } });
+      await prisma.publicCatalogQualification.create({ data: {
+        releaseId, releaseSnapshotHash: snapshotHash, kind: "generated_release",
+        validationRunId: validationId, evidence: {},
+      } });
+      await prisma.characterServing.create({ data: { characterId: staleCharacterId, currentReleaseId: releaseId, state } });
+      // Current route monitoring can stale a published snapshot while its
+      // historical qualification and paused/retired pointer remain intact.
+      await prisma.characterRelease.update({ where: { id: releaseId }, data: { readiness: "stale" } });
+      const report = await auditAdminCutoverInvariants(prisma);
+      const check = report.checks.find((entry) => entry.key === "serving_validation_stale");
+      expect(check).toBeDefined();
+      if (state === "live") {
+        expect(check).toMatchObject({
+          status: "failed", sampleIds: expect.arrayContaining([releaseId]),
+          sampleTargets: expect.arrayContaining([{ sampleId: releaseId, characterId: staleCharacterId }]),
+        });
+      } else {
+        expect(check?.sampleIds).not.toContain(releaseId);
+      }
+    } finally {
+      await prisma.characterServing.deleteMany({ where: { characterId: staleCharacterId } });
+      await prisma.publicCatalogQualification.deleteMany({ where: { releaseId } });
+      await prisma.releaseValidationRun.deleteMany({ where: { id: validationId } });
+      await prisma.characterRelease.deleteMany({ where: { id: releaseId } });
+      await prisma.character.deleteMany({ where: { id: staleCharacterId } });
     }
   });
 

@@ -21,6 +21,7 @@ import { EngineeringDetails } from "@/components/admin/generation/EngineeringDet
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { useAuthorityResource } from "@/lib/authority-resource";
+import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 import { permissionDenied } from "@/features/characters/character-permission-denied";
 import { hasInvariantCopy, invariantCopy, invariantOwnerBreakdown } from "./invariant-copy";
 
@@ -35,6 +36,8 @@ export function InvariantsWorkspace({ canRead }: { canRead: boolean }) {
       [],
     ),
   });
+
+  useWorkspaceRefresh(report.refresh, canRead);
 
   const data = report.data;
   // SPEC: 排序只按「坏没坏」和「坏了多少」，不按后端返回顺序。

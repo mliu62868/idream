@@ -564,6 +564,9 @@ export function GeneratorWorkspace() {
     ],
   );
 
+  // null waits for an actual jobs response; reset's empty ready projection is
+  // not that response. false allows one decision, true leaves the user's tab.
+  const videoTabRestoredRef = useRef<boolean | null>(null);
   const {
     data: jobs,
     status: jobsAuthority,
@@ -579,6 +582,9 @@ export function GeneratorWorkspace() {
     fallbackError: "Jobs could not load.",
     initialData: [],
     gate: privateViewerGate,
+    onLoaded: () => {
+      if (videoTabRestoredRef.current === null) videoTabRestoredRef.current = false;
+    },
   });
   const [showOlderCompletedJobs, setShowOlderCompletedJobs] = useState(false);
   const completedJobs = jobs.filter((job) => job.status === "completed");
@@ -708,8 +714,10 @@ export function GeneratorWorkspace() {
   const suspendedEditSourceRef = useRef<{ scope: string; source: MediaItem } | null>(null);
   const editSourceMediaId = selectedEditSource?.id ?? "";
   const [intentEditor, setIntentEditor] = useState<{ item: MediaItem; surface: "generator" | "gallery" } | null>(null);
+  const [intentEditorHidden, setIntentEditorHidden] = useState(false);
   const [intentValue, setIntentValue] = useState<"match" | "mismatch">("mismatch");
   const intentRatingRef = useRef<HTMLSelectElement>(null);
+  const intentResumeRef = useRef<HTMLButtonElement>(null);
   const [intentDirection, setIntentDirection] = useState("");
   const [intentFeedbackError, setIntentFeedbackError] = useState("");
   const [intentBusy, setIntentBusy] = useState(false);
@@ -997,12 +1005,11 @@ export function GeneratorWorkspace() {
     setCount(1);
   }
   // SPEC: 回到 /generate 时若有进行中的视频任务，默认停在 Video —— 序列进度面板只在那里渲染。
-  // INTENT: 只在首个任务快照到达时判断一次，之后用户自己切走不再抢；Chat/Remix 带来的
+  // INTENT: 只在首个成功的任务读取后判断一次，reset 的空 ready 不算。之后用户自己切走不再抢；Chat/Remix 带来的
   //   generationContext 与未确认的表单各自决定模式，优先于这里。
-  const videoTabRestoredRef = useRef(false);
   const hasActiveVideoJob = jobs.some((job) => job.mode === "video" && !isTerminalGenerationJobStatus(job.status));
   useEffect(() => {
-    if (videoTabRestoredRef.current || !jobsAuthority.hasSnapshot || !videoModeEnabled) return;
+    if (videoTabRestoredRef.current !== false || !videoModeEnabled) return;
     videoTabRestoredRef.current = true;
     if (generationContext.required || unconfirmedFormRef.current || mode !== "image" || !hasActiveVideoJob) return;
     selectVideoMode();
@@ -1127,7 +1134,7 @@ export function GeneratorWorkspace() {
 
   const clearPrivateViewerProjections = useCallback(() => {
     intentSerialRef.current += 1; intentOperationRef.current = null; intentSubmittedRef.current = null;
-    setIntentEditor(null); setIntentBusy(false); setIntentUncertain(false); setIntentDirection(""); setIntentFeedbackError(""); setIntentCanRetryOriginal(false); setVideoDirectionDraft(null);
+    setIntentEditor(null); setIntentEditorHidden(false); setIntentBusy(false); setIntentUncertain(false); setIntentDirection(""); setIntentFeedbackError(""); setIntentCanRetryOriginal(false); setVideoDirectionDraft(null);
 
     abortPrivateViewerRequests();
     suspendEnhancementReceipts(true);
@@ -2173,8 +2180,31 @@ export function GeneratorWorkspace() {
   function openIntentFeedback(item: MediaItem, value: "match" | "mismatch", surface: "generator" | "gallery") {
     if (intentOperationRef.current || intentSubmittedRef.current) { setIntentFeedbackError("Check the original feedback before starting another report."); return; }
     const serial = ++intentSerialRef.current;
+    setIntentEditorHidden(false);
     setIntentEditor({ item, surface }); setIntentValue(value); setIntentDirection(item.intentFeedback?.direction ?? "");
     setIntentFeedbackError(""); setIntentUncertain(false); setIntentCanRetryOriginal(false);
+    window.setTimeout(() => {
+      if (serial !== intentSerialRef.current) return;
+      workspaceTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      intentRatingRef.current?.focus({ preventScroll: true });
+    }, 0);
+  }
+
+  function hideIntentFeedbackEditor() {
+    if (!intentEditor || intentBusy || !intentUncertain || !intentCanRetryOriginal) return;
+    const serial = ++intentSerialRef.current;
+    // Hiding a checked-but-unconfirmed report preserves its exact retry payload.
+    setIntentEditorHidden(true);
+    window.setTimeout(() => {
+      if (serial !== intentSerialRef.current) return;
+      intentResumeRef.current?.focus({ preventScroll: true });
+    }, 0);
+  }
+
+  function resumeIntentFeedbackEditor() {
+    if (!intentEditor || !intentEditorHidden || intentBusy) return;
+    const serial = ++intentSerialRef.current;
+    setIntentEditorHidden(false);
     window.setTimeout(() => {
       if (serial !== intentSerialRef.current) return;
       workspaceTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -2874,7 +2904,12 @@ export function GeneratorWorkspace() {
   return (
     <section className="px-4 py-8 md:px-[60px] md:py-12">
       <div className="mx-auto max-w-6xl scroll-mt-24" ref={workspaceTopRef}>
-      {intentEditor && !anonymousViewer && <section aria-label="Intent feedback editor" className="mb-4 space-y-3 rounded-xl border border-white/20 bg-black p-4 text-sm text-white">
+      {intentEditor && !anonymousViewer && intentEditorHidden && <section aria-label="Unconfirmed intent feedback" className="mb-4 space-y-3 rounded-xl border border-white/20 bg-black p-4 text-sm text-white">
+        <p>Original feedback is still unconfirmed. Your report and edited draft are kept.</p>
+        {intentFeedbackError && <p role="status">{intentFeedbackError}</p>}
+        <button ref={intentResumeRef} type="button" disabled={intentBusy} onClick={resumeIntentFeedbackEditor} className="min-h-10 rounded-full border border-white/20 px-4 text-[12px] font-bold disabled:opacity-50">Resume original feedback</button>
+      </section>}
+      {intentEditor && !anonymousViewer && !intentEditorHidden && <section aria-label="Intent feedback editor" className="mb-4 space-y-3 rounded-xl border border-white/20 bg-black p-4 text-sm text-white">
         <p className="font-bold">Instruction feedback · {intentEditor.item.type} result</p>
         <p>Record whether the result followed your instructions, separately from identity. This keeps the result and costs no coins.</p>
         <label className="grid max-w-sm gap-2 font-semibold">Rating<select ref={intentRatingRef} className="h-10 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-sm text-white disabled:opacity-50" aria-label="Intent rating" value={intentValue} disabled={intentBusy} onChange={event => setIntentValue(event.target.value as "match" | "mismatch")}><option value="mismatch">Needs correction</option><option value="match">Instructions followed</option></select></label>
@@ -2885,8 +2920,9 @@ export function GeneratorWorkspace() {
         <div className="flex flex-wrap gap-3">
           {intentUncertain ? <button className="min-h-10 rounded-full bg-white px-4 text-[12px] font-bold text-black disabled:opacity-50" type="button" disabled={intentBusy} onClick={() => void submitIntentFeedback(true)}>Check recorded feedback</button> : <button className="min-h-10 rounded-full bg-white px-4 text-[12px] font-bold text-black disabled:opacity-50" type="button" disabled={intentBusy || (intentValue === "mismatch" && !intentDirection.trim())} onClick={() => void submitIntentFeedback()}>Save intent feedback</button>}
           {intentUncertain && intentCanRetryOriginal ? <button className="min-h-10 rounded-full border border-white/20 px-4 text-[12px] font-bold disabled:opacity-50" type="button" disabled={intentBusy} onClick={() => void submitIntentFeedback(false, true)}>Retry original feedback</button> : null}
+          {intentUncertain && intentCanRetryOriginal ? <button className="min-h-10 rounded-full border border-white/20 px-4 text-[12px] font-bold disabled:opacity-50" type="button" disabled={intentBusy} onClick={hideIntentFeedbackEditor}>Hide feedback editor</button> : null}
           <button className="min-h-10 rounded-full bg-[rgb(36,36,36)] px-4 text-[12px] font-bold disabled:opacity-50" type="button" disabled={intentBusy || intentUncertain || !intentDirection.trim()} onClick={prepareIntentCorrection}>Prepare correction draft</button>
-          <button className="min-h-10 rounded-full border border-white/20 px-4 text-[12px] font-bold disabled:opacity-50" type="button" disabled={intentBusy || intentUncertain} onClick={() => { intentSerialRef.current += 1; setIntentEditor(null); }}>Close feedback</button>
+          <button className="min-h-10 rounded-full border border-white/20 px-4 text-[12px] font-bold disabled:opacity-50" type="button" disabled={intentBusy || intentUncertain} onClick={() => { intentSerialRef.current += 1; setIntentEditor(null); setIntentEditorHidden(false); }}>Close feedback</button>
         </div>
       </section>}
         {/* 切换器必须和面板用同一个断点：面板已从 md 推到 lg，这里若还停在 md，
@@ -3599,7 +3635,7 @@ export function GeneratorWorkspace() {
                       <select aria-label="Preset type" className="h-11 min-w-0 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-base text-white disabled:opacity-60"
                         disabled={Boolean(editingPreset) || anonymousViewer || configAuthorityUnavailable}
                         onChange={(event) => setPresetEditorType(event.target.value as typeof presetEditorType)} value={presetEditorType}>
-                        <option value="setup">Current setup</option><option value="mode">Style</option>
+                        <option value="setup">Presets and prompt</option><option value="mode">Style</option>
                         <option value="background">Background</option><option value="pose">Pose</option><option value="outfit">Outfit</option>
                       </select>
                     </label>
@@ -3609,6 +3645,11 @@ export function GeneratorWorkspace() {
                         maxLength={80} onChange={(event) => setPresetCategory(event.target.value)} value={presetCategory} />
                     </label>
                   </div>
+                  {presetEditorType === "setup" && (
+                    <p className="text-[12px] font-medium leading-5 text-[rgb(170,170,170)]">
+                      Only style, background, pose, outfit and the main prompt are saved. Choose the character and generation settings separately.
+                    </p>
+                  )}
                   {presetEditorType !== "setup" && (
                     <label className="grid gap-1 text-[12px] font-semibold text-[rgb(170,170,170)]">
                       Description

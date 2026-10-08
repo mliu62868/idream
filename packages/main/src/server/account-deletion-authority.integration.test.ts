@@ -1,5 +1,6 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import pg from "pg";
+import { readFile } from "node:fs/promises";
 import {
   CHAT_TO_MAIN_EVENTS,
   MAIN_TO_CHAT_EVENTS,
@@ -14,6 +15,9 @@ import {
 import {
   api,
   createUser,
+  createCharacter,
+  grantCoins,
+  voiceReplyBody,
   expectError,
   expectOk,
   purgeTestData,
@@ -28,7 +32,10 @@ import {
   ACCOUNT_ERASURE_COMPLETION_V2_SOURCE_SERVICE,
   applyChatEvent,
 } from "@/processes/event-consumer";
-import type { BlobStore } from "@/server/providers/types";
+import type { BlobStore, VoiceClipPort, VoiceProviderKey } from "@/server/providers/types";
+import { voiceArtifactKey } from "@/server/providers/voice/idempotency";
+import { providers } from "@/server/providers";
+import { reclaimExpiredVoiceClip } from "@/server/modules/ourdream/voice-clip";
 
 const P = "zt-account-erasure-";
 const PUBLISHED_QUALIFICATION_ID = `${P}published-qualification`;
@@ -43,6 +50,15 @@ const TEST_USER_IDS = [
   `${P}generation-race-user`,
   `${P}legal-hold-user`,
   `${P}terminal-user`,
+  `${P}voice-user`,
+  `${P}voice-operator`,
+  `${P}voice-creator`,
+  `${P}voice-orphan-failed`,
+  `${P}voice-orphan-revoked`,
+  `${P}voice-late-before-put`,
+  `${P}voice-late-put-inflight`,
+  `${P}voice-put-takeover`,
+  `${P}voice-expired-running`,
 ];
 
 async function purgeAccountDeletionTestData() {
@@ -461,6 +477,251 @@ describe("account deletion authority", () => {
         deletionRequestEventId: `${P}wrong-forward-request`,
       },
     })).rejects.toThrow("request authority changed");
+  });
+
+  it("waits for both historical voice providers and resumes only their unfinished erasure receipt", async () => {
+    const user = await createUser({ id: `${P}voice-user`, dataClass: "customer" });
+    const character = await createCharacter({ id: `${P}voice-character`, creatorId: user.id });
+    for (const providerKey of ["pocket_tts", "fish_audio"]) {
+      await prisma.voiceClipRequest.create({ data: {
+        id: `${P}${providerKey}`, userId: user.id, characterId: character.id,
+        messageId: `${P}${providerKey}-message`, requestFingerprint: "controlled-voice-request",
+        providerPayload: { providerKey }, status: "failed", provider: providerKey,
+      } });
+    }
+    await requestDeletionPastGrace(user.id);
+    const now = new Date();
+    await prisma.mainOutboxEvent.update({ where: { id: `user_deleted_${user.id}` }, data: { status: "delivered", deliveredAt: now, nextRunAt: now } });
+    await applyChatEvent({ eventId: `${P}voice-completion`, eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2,
+      schemaVersion: 2, sourceService: ACCOUNT_ERASURE_COMPLETION_V2_SOURCE_SERVICE, aggregateId: user.id,
+      payload: chatCompletionPayload(user.id, `${P}voice-file-mutation`) });
+    const deletion = await prisma.accountDeletion.findUniqueOrThrow({ where: { userId: user.id } });
+    const pocket = vi.fn<NonNullable<VoiceClipPort["eraseAccount"]>>().mockResolvedValue({ ok: true, data: { erased: true } });
+    const fish = vi.fn<NonNullable<VoiceClipPort["eraseAccount"]>>()
+      .mockResolvedValueOnce({ ok: false, error: { code: "voice_timeout", message: "Controlled gateway outage", retryable: true } })
+      .mockResolvedValue({ ok: true, data: { erased: true } });
+    const voice = (provider: VoiceProviderKey): VoiceClipPort => ({ providerKey: provider, synthesize: async () => { throw new Error("Erasure must not synthesize"); }, eraseAccount: provider === "pocket_tts" ? pocket : fish });
+    const first = await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [deletion.id], voice });
+    expect.soft(first.completed).toBe(0);
+    expect.soft(await prisma.user.findUnique({ where: { id: user.id } })).not.toBeNull();
+    expect.soft(pocket).toHaveBeenCalledExactlyOnceWith({ subjectHash: accountDeletionSubjectHash(user.id), requestKeys: [`voice:${P}pocket_tts:provider`], voiceIds: [] });
+    expect.soft(fish).toHaveBeenCalledExactlyOnceWith({ subjectHash: accountDeletionSubjectHash(user.id), requestKeys: [`voice:${P}fish_audio:provider`], voiceIds: [] });
+    expect((await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [deletion.id], voice })).completed).toBe(1);
+    expect(pocket).toHaveBeenCalledTimes(1); expect(fish).toHaveBeenCalledTimes(2);
+    expect(await prisma.user.findUnique({ where: { id: user.id } })).toBeNull();
+    const receipt = await prisma.accountDeletion.findUniqueOrThrow({ where: { id: deletion.id } });
+    expect(receipt.voiceErasure).toMatchObject({ version: 1, providers: [
+      { providerKey: "fish_audio", completedAt: expect.any(String), requestKeys: [], voiceIds: [] },
+      { providerKey: "pocket_tts", completedAt: expect.any(String), requestKeys: [], voiceIds: [] },
+    ] });
+  });
+
+  it("preserves platform voice profiles when their operator is erased and erases a private creator's aliases", async () => {
+    const operator = await createUser({ id: `${P}voice-operator`, role: "admin", dataClass: "internal" });
+    const creator = await createUser({ id: `${P}voice-creator`, dataClass: "customer" });
+    const official = await createCharacter({ id: `${P}official-voice`, source: "official", creatorId: "seed-system-creator" });
+    const personal = await createCharacter({ id: `${P}private-voice`, source: "user", creatorId: creator.id });
+    for (const [character, ownerId] of [[official, "seed-system-creator"], [personal, creator.id]] as const) {
+      const voiceId = `${character.id}-alias`, referenceId = `${character.id}-reference`;
+      await prisma.mediaAsset.create({ data: { id: referenceId, ownerId, characterId: character.id, type: "voice", url: "blob:controlled-reference",
+        storageKey: `voice-references/${character.id}/${voiceId}.json`, metadata: { purpose: "voice_preset_reference", providerVoiceId: voiceId, ownership: character.source === "official" ? "platform_official" : "user" } } });
+      await prisma.characterVoiceProfile.create({ data: { id: `${character.id}-profile`, characterId: character.id, version: 1, provider: "pocket_tts", providerVoiceId: voiceId,
+        model: "pocket-tts", language: "english", referenceAssetId: referenceId, sampleText: "Controlled profile", createdById: operator.id, status: "active" } });
+    }
+    const erase = vi.fn<NonNullable<VoiceClipPort["eraseAccount"]>>().mockResolvedValue({ ok: true, data: { erased: true } });
+    const voice = (providerKey: VoiceProviderKey): VoiceClipPort => ({ providerKey, eraseAccount: erase, synthesize: async () => { throw new Error("Erasure must not synthesize"); } });
+    for (const user of [operator, creator]) {
+      const requested = await requestDeletionPastGrace(user.id), now = new Date();
+      await prisma.mainOutboxEvent.update({ where: { id: `user_deleted_${user.id}` }, data: { status: "delivered", deliveredAt: now, nextRunAt: now } });
+      await applyChatEvent({ eventId: `${user.id}-completion`, eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2, schemaVersion: 2,
+        sourceService: ACCOUNT_ERASURE_COMPLETION_V2_SOURCE_SERVICE, aggregateId: user.id, payload: chatCompletionPayload(user.id, `${user.id}-file-mutation`) });
+      expect((await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], voice })).completed).toBe(1);
+      expect(await prisma.characterVoiceProfile.findUnique({ where: { id: `${official.id}-profile` } })).not.toBeNull();
+      expect(await prisma.mediaAsset.findUnique({ where: { id: `${official.id}-reference` } })).not.toBeNull();
+      if (user.id === operator.id) expect(erase).not.toHaveBeenCalled();
+    }
+    expect(erase).toHaveBeenCalledExactlyOnceWith({ subjectHash: accountDeletionSubjectHash(creator.id), requestKeys: [], voiceIds: [`${personal.id}-alias`] });
+    expect(await prisma.characterVoiceProfile.findUnique({ where: { id: `${personal.id}-profile` } })).toBeNull();
+    expect(await prisma.mediaAsset.findUnique({ where: { id: `${personal.id}-reference` } })).toBeNull();
+    await prisma.characterVoiceProfile.deleteMany({ where: { characterId: official.id } });
+    await prisma.mediaAsset.deleteMany({ where: { characterId: official.id } });
+    await prisma.character.delete({ where: { id: official.id } });
+  });
+
+  it("applies the actual voice ownership migration only to official dedicated copies", async () => {
+    const operatorId = `${P}legacy-voice-operator`, characterId = `${P}legacy-official-voice`;
+    await createUser({ id: operatorId, role: "admin", dataClass: "internal" });
+    await createCharacter({ id: characterId, source: "official", creatorId: "seed-system-creator" });
+    const dedicatedAlias = `${P}legacy-dedicated`, privateAlias = `${P}legacy-private-source`;
+    const referenceId = `${P}legacy-reference`, previewId = `${P}legacy-preview`, privateId = `${P}private-upload`;
+    await prisma.mediaAsset.createMany({ data: [
+      { id: referenceId, ownerId: operatorId, characterId, type: "voice", url: "blob:reference", storageKey: `voice-references/${characterId}/${dedicatedAlias}.wav`, metadata: { purpose: "voice_clone_reference", providerVoiceId: dedicatedAlias } },
+      { id: previewId, ownerId: operatorId, characterId, type: "voice", url: "blob:preview", storageKey: `voice-previews/${characterId}/${dedicatedAlias}.wav`, metadata: { purpose: "voice_clone_preview", providerVoiceId: dedicatedAlias } },
+      // A user source pointed to by an official profile is still private. Its
+      // loose association/purpose does not grant platform ownership.
+      { id: privateId, ownerId: operatorId, characterId, type: "voice", url: "blob:private", storageKey: `user-uploads/${operatorId}/original.wav`, metadata: { purpose: "voice_clone_reference", providerVoiceId: privateAlias } },
+    ] });
+    await prisma.characterVoiceProfile.createMany({ data: [
+      { id: `${P}legacy-dedicated-profile`, characterId, version: 1, provider: "pocket_tts", providerVoiceId: dedicatedAlias, model: "pocket-tts", language: "english", referenceAssetId: referenceId, previewAssetId: previewId, sampleText: "Dedicated platform copy", createdById: operatorId },
+      { id: `${P}legacy-private-profile`, characterId, version: 2, provider: "pocket_tts", providerVoiceId: privateAlias, model: "pocket-tts", language: "english", referenceAssetId: privateId, sampleText: "Private source upload", createdById: operatorId },
+    ] });
+    const migration = await readFile(new URL("../../../../db/sql/2026-10-05-account-voice-erasure.sql", import.meta.url), "utf8");
+    try {
+      await prisma.$transaction(async tx => {
+        for (const statement of migration.split(";").map(value => value.trim()).filter(Boolean)) await tx.$executeRawUnsafe(statement);
+      });
+      for (const id of [referenceId, previewId]) expect(await prisma.mediaAsset.findUniqueOrThrow({ where: { id } })).toMatchObject({ ownerId: "seed-system-creator", metadata: { ownership: "platform_official" } });
+      expect(await prisma.mediaAsset.findUniqueOrThrow({ where: { id: privateId } })).toMatchObject({ ownerId: operatorId });
+    } finally {
+      await prisma.characterVoiceProfile.deleteMany({ where: { characterId } });
+      await prisma.mediaAsset.deleteMany({ where: { id: { in: [referenceId, previewId, privateId] } } });
+      await prisma.character.delete({ where: { id: characterId } });
+      await prisma.user.delete({ where: { id: operatorId } });
+    }
+  });
+
+  it.each(["failed", "revoked"])("keeps an account until its undelivered %s Voice WAV and MP3 bytes are actually deleted", async outcome => {
+    const user = await createUser({ id: `${P}voice-orphan-${outcome}`, dataClass: "customer" });
+    const character = await createCharacter({ id: `${user.id}-character`, creatorId: user.id });
+    const requestId = `${user.id}-request`, providerKey = `voice:${requestId}:provider`;
+    await prisma.voiceClipRequest.create({ data: { id: requestId, userId: user.id, characterId: character.id, messageId: `${user.id}-message`,
+      requestFingerprint: "controlled-orphan-request", providerPayload: { providerKey: "mock" }, status: "failed",
+      errorCode: outcome === "revoked" ? "voice_reply_delivery_revoked" : "voice_commit_failed" } });
+    const waveKey = voiceArtifactKey(providerKey, ".wav"), mp3Key = voiceArtifactKey(providerKey, ".mp3");
+    const stored = new Map([[waveKey, Uint8Array.from([82, 73, 70, 70, 1, 2, 3])], [mp3Key, Uint8Array.from([73, 68, 51, 4, 5, 6])]]);
+    let failDelete = true;
+    const blob: BlobStore = {
+      putPrivate: async () => { throw new Error("Erasure must not upload"); },
+      signGetUrl: async () => { throw new Error("Erasure must not publish"); },
+      delete: async ({ key }) => {
+        if (failDelete && key === waveKey) return { ok: false, error: { code: "controlled_delete_failure", message: "Controlled store outage", retryable: true } };
+        stored.delete(key); return { ok: true, data: { deleted: true } };
+      },
+    };
+    const requested = await requestDeletionPastGrace(user.id), chatAckAt = new Date();
+    await prisma.mainOutboxEvent.update({ where: { id: `user_deleted_${user.id}` }, data: { status: "delivered", deliveredAt: chatAckAt, nextRunAt: chatAckAt } });
+    await applyChatEvent({ eventId: `${user.id}-completion`, eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2, schemaVersion: 2,
+      sourceService: ACCOUNT_ERASURE_COMPLETION_V2_SOURCE_SERVICE, aggregateId: user.id, payload: chatCompletionPayload(user.id, `${user.id}-file-mutation`) });
+    // The ACK creates due Blob receipts; the worker tick must follow that write.
+    const now = new Date();
+    const first = await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], blob, now });
+    expect.soft(first).toMatchObject({ failed: 1, completed: 0 });
+    expect.soft(stored.has(waveKey)).toBe(true); expect.soft(stored.has(mp3Key)).toBe(false);
+    expect.soft(await prisma.user.findUnique({ where: { id: user.id } })).not.toBeNull();
+    expect.soft(await prisma.accountDeletionBlobReceipt.count({ where: { deletionId: requested.id } })).toBe(5);
+    failDelete = false;
+    expect((await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], blob, now: new Date(now.getTime() + 300_000) })).completed).toBe(1);
+    expect(stored.size).toBe(0); expect(await prisma.user.findUnique({ where: { id: user.id } })).toBeNull();
+  });
+
+  it.each(["before-put", "put-inflight"])("blocks account erasure while a real Voice invocation is paused %s and refuses late delivery", async stage => {
+    const userId = `${P}voice-late-${stage}`, characterId = `${userId}-character`;
+    await createUser({ id: userId, dataClass: "customer" });
+    await createCharacter({ id: characterId, creatorId: userId, visibility: "private" });
+    await grantCoins(userId, 4, "voice-erasure-test");
+    await prisma.entitlement.create({ data: { userId, key: "voice_enabled", value: true, source: "subscription" } });
+    await prisma.featureFlag.upsert({ where: { key: "voice_gen" }, create: { key: "voice_gen", label: "Voice", enabled: true, rolloutPercent: 100, targetRoles: [], targetPlans: [] }, update: { enabled: true, rolloutPercent: 100 } });
+    const body = await voiceReplyBody(userId, { characterId, messageId: `${userId}-message`, text: "This private reply must not survive account erasure." });
+    const stored = new Map<string, Uint8Array>();
+    const remove = vi.fn(async ({ key }: { key: string }) => { stored.delete(key); return { ok: true as const, data: { deleted: true as const } }; });
+    const blob: BlobStore = { putPrivate: async () => { throw new Error("Worker must not upload"); }, signGetUrl: async () => { throw new Error("Worker must not publish"); }, delete: remove };
+    const erase = vi.fn<NonNullable<VoiceClipPort["eraseAccount"]>>().mockResolvedValue({ ok: true, data: { erased: true } });
+    const voice = (providerKey: VoiceProviderKey): VoiceClipPort => ({ providerKey, eraseAccount: erase, synthesize: async () => { throw new Error("Worker must not synthesize"); } });
+    let ready!: () => void, release!: () => void;
+    const readyPromise = new Promise<void>(resolve => { ready = resolve; });
+    const releasePromise = new Promise<void>(resolve => { release = resolve; });
+    const originalSynthesize = providers.voice.clip.synthesize.bind(providers.voice.clip);
+    const synthesize = vi.spyOn(providers.voice.clip, "synthesize").mockImplementation(async input => {
+      const result = await originalSynthesize(input);
+      if (stage === "before-put") { ready(); await releasePromise; }
+      return result;
+    });
+    const put = vi.spyOn(providers.blob, "putPrivate").mockImplementation(async input => {
+      stored.set(input.key, input.body);
+      if (stage === "put-inflight") { ready(); await releasePromise; }
+      return { ok: true, data: { key: input.key, size: input.body.byteLength } };
+    });
+    const compensation = vi.spyOn(providers.blob, "delete").mockImplementation(remove);
+    const pending = api("POST", "generation/voice", { userId, ageGate: true, body });
+    try {
+      await Promise.race([readyPromise, pending.then(() => { throw new Error("Voice did not reach the controlled pause"); })]);
+      const requested = await requestDeletionPastGrace(userId), now = new Date();
+      await prisma.mainOutboxEvent.update({ where: { id: `user_deleted_${userId}` }, data: { status: "delivered", deliveredAt: now, nextRunAt: now } });
+      await applyChatEvent({ eventId: `${userId}-completion`, eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2, schemaVersion: 2,
+        sourceService: ACCOUNT_ERASURE_COMPLETION_V2_SOURCE_SERVICE, aggregateId: userId, payload: chatCompletionPayload(userId, `${userId}-file-mutation`) });
+      expect.soft((await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], blob, voice })).completed).toBe(0);
+      expect.soft(remove).not.toHaveBeenCalled(); expect.soft(erase).not.toHaveBeenCalled();
+      expect.soft(await prisma.user.findUnique({ where: { id: userId } })).not.toBeNull();
+      release();
+      expect.soft((await pending).status).toBe(410);
+      if (stage === "before-put") expect.soft(put).not.toHaveBeenCalled();
+      expect.soft(await prisma.mediaAsset.count({ where: { ownerId: userId } })).toBe(0);
+      expect.soft(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(0);
+      expect((await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], blob, voice, now: new Date(now.getTime() + 300_000) })).completed).toBe(1);
+      expect(stored.size).toBe(0);
+    } finally { release(); await pending; synthesize.mockRestore(); put.mockRestore(); compensation.mockRestore(); }
+  });
+
+  it("waits for an old Voice PUT owner after takeover has already delivered a new owner", async () => {
+    const userId = `${P}voice-put-takeover`, characterId = `${userId}-character`;
+    await createUser({ id: userId, dataClass: "customer" });
+    const character = await createCharacter({ id: characterId, creatorId: userId, visibility: "private" });
+    await grantCoins(userId, 4, "voice-erasure-test");
+    await prisma.entitlement.create({ data: { userId, key: "voice_enabled", value: true, source: "subscription" } });
+    await prisma.featureFlag.upsert({ where: { key: "voice_gen" }, create: { key: "voice_gen", label: "Voice", enabled: true, rolloutPercent: 100, targetRoles: [], targetPlans: [] }, update: { enabled: true, rolloutPercent: 100 } });
+    const body = await voiceReplyBody(userId, { characterId, messageId: `${userId}-message`, text: "The old uploader must finish before erasure." });
+    const stored = new Map<string, Uint8Array>();
+    const remove = vi.fn(async ({ key }: { key: string }) => { stored.delete(key); return { ok: true as const, data: { deleted: true as const } }; });
+    const blob: BlobStore = { putPrivate: async () => { throw new Error("Worker must not upload"); }, signGetUrl: async () => { throw new Error("Worker must not publish"); }, delete: remove };
+    let ready!: () => void, release!: () => void, firstPut = true;
+    const readyPromise = new Promise<void>(resolve => { ready = resolve; });
+    const releasePromise = new Promise<void>(resolve => { release = resolve; });
+    const put = vi.spyOn(providers.blob, "putPrivate").mockImplementation(async input => {
+      if (firstPut) { firstPut = false; ready(); await releasePromise; }
+      stored.set(input.key, input.body);
+      return { ok: true, data: { key: input.key, size: input.body.byteLength } };
+    });
+    const compensation = vi.spyOn(providers.blob, "delete").mockImplementation(remove);
+    const pending = api("POST", "generation/voice", { userId, ageGate: true, body });
+    try {
+      await Promise.race([readyPromise, pending.then(() => { throw new Error("Voice did not reach the old PUT pause"); })]);
+      const request = await prisma.voiceClipRequest.findFirstOrThrow({ where: { userId, messageId: body.messageId } });
+      await prisma.voiceClipRequest.update({ where: { id: request.id }, data: { leaseExpiresAt: new Date(0) } });
+      await expect(reclaimExpiredVoiceClip({ characterId, requestId: request.id, deps: {
+        entitlementMap: async () => ({ voice_enabled: true, voice_minutes: 0 }),
+        readableCharacter: async () => character,
+      } })).resolves.toMatchObject({ status: "succeeded", attemptNo: 2 });
+      const requested = await requestDeletionPastGrace(userId), chatAckAt = new Date();
+      await prisma.mainOutboxEvent.update({ where: { id: `user_deleted_${userId}` }, data: { status: "delivered", deliveredAt: chatAckAt, nextRunAt: chatAckAt } });
+      await applyChatEvent({ eventId: `${userId}-completion`, eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2, schemaVersion: 2,
+        sourceService: ACCOUNT_ERASURE_COMPLETION_V2_SOURCE_SERVICE, aggregateId: userId, payload: chatCompletionPayload(userId, `${userId}-file-mutation`) });
+      const now = new Date();
+      expect.soft((await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], blob })).completed).toBe(0);
+      expect.soft(remove).not.toHaveBeenCalled();
+      expect.soft(await prisma.user.findUnique({ where: { id: userId } })).not.toBeNull();
+      release();
+      expect.soft((await pending).status).toBe(409);
+      expect.soft(await prisma.voiceClipRequest.findUnique({ where: { id: request.id } })).toMatchObject({ status: "succeeded", attemptNo: 2 });
+      expect((await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], blob, now: new Date(now.getTime() + 300_000) })).completed).toBe(1);
+      expect(stored.size).toBe(0);
+    } finally { release(); await pending; put.mockRestore(); compensation.mockRestore(); }
+  });
+
+  it("keeps expired running Voice authority pending without deleting bytes or invoking provider erasure", async () => {
+    const user = await createUser({ id: `${P}voice-expired-running`, dataClass: "customer" });
+    const character = await createCharacter({ id: `${user.id}-character`, creatorId: user.id });
+    await prisma.voiceClipRequest.create({ data: { id: `${user.id}-request`, userId: user.id, characterId: character.id, messageId: `${user.id}-message`,
+      requestFingerprint: "controlled-unknown-writer", providerPayload: { providerKey: "pocket_tts" }, status: "running", leaseExpiresAt: new Date(0) } });
+    const requested = await requestDeletionPastGrace(user.id), now = new Date();
+    await prisma.mainOutboxEvent.update({ where: { id: `user_deleted_${user.id}` }, data: { status: "delivered", deliveredAt: now, nextRunAt: now } });
+    await applyChatEvent({ eventId: `${user.id}-completion`, eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2, schemaVersion: 2,
+      sourceService: ACCOUNT_ERASURE_COMPLETION_V2_SOURCE_SERVICE, aggregateId: user.id, payload: chatCompletionPayload(user.id, `${user.id}-file-mutation`) });
+    const remove = vi.fn(async () => ({ ok: true as const, data: { deleted: true as const } }));
+    const blob: BlobStore = { putPrivate: async () => { throw new Error("Worker must not upload"); }, signGetUrl: async () => { throw new Error("Worker must not publish"); }, delete: remove };
+    const erase = vi.fn<NonNullable<VoiceClipPort["eraseAccount"]>>().mockResolvedValue({ ok: true, data: { erased: true } });
+    expect((await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], blob, voice: providerKey => ({ providerKey, eraseAccount: erase, synthesize: async () => { throw new Error("Worker must not synthesize"); } }) })).completed).toBe(0);
+    expect(remove).not.toHaveBeenCalled(); expect(erase).not.toHaveBeenCalled();
+    expect(await prisma.user.findUnique({ where: { id: user.id } })).not.toBeNull();
   });
 
   it("finalizes a no-media account without requiring a Blob receipt to be touched", async () => {

@@ -1707,6 +1707,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
           </Link>
           <div className="flex min-w-0 items-center gap-3">
             <ChatHeaderAvatars
+              className={group ? undefined : "xl:hidden"}
               images={group
                 ? group.members.flatMap(member => memberImages[member.characterId] ? [{ id: member.characterId, name: member.name, url: memberImages[member.characterId] }] : [])
                 : characterImage ? [{ id: characterId || "character", name: title, url: characterImage }] : []}
@@ -2096,6 +2097,13 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
               accountError={viewer.error} onRetryAccount={() => void viewer.revalidate()} />
           )}
         </section>
+        {loadState === "ready" ? (
+          <ChatCompanionPortrait
+            characterId={group ? null : characterId}
+            image={group ? (characterId ? memberImages[characterId] ?? null : null) : characterImage}
+            name={group ? group.members.find(member => member.characterId === characterId)?.name ?? title : title}
+          />
+        ) : null}
       </div>
       <MobileBottomNav activeHref="/chat" />
       <ChatSessionListDrawer
@@ -2537,20 +2545,50 @@ function ChatSceneLine({ messages, characterId }: { messages: ChatMessage[]; cha
 }
 
 // 头部只放角色已有的封面小图；群聊叠成一组，最多 5 个。没有图就不占位。
-function ChatHeaderAvatars({ images }: { images: Array<{ id: string; name: string; url: string }> }) {
+// 宽屏的一对一聊天由右侧立绘承担在场感，头像在那里隐藏，避免同一张脸出现两次。
+function ChatHeaderAvatars({ images, className }: { images: Array<{ id: string; name: string; url: string }>; className?: string }) {
   if (!images.length) return null;
   return (
-    <div className="flex shrink-0 -space-x-3" data-testid="chat-header-avatars">
+    <div className={`flex shrink-0 -space-x-3 ${className ?? ""}`} data-testid="chat-header-avatars">
       {images.slice(0, 5).map(image => (
         // eslint-disable-next-line @next/next/no-img-element
         <img
           alt={image.name}
-          className="h-11 w-11 rounded-full border-2 border-[rgb(13,13,13)] bg-[rgb(36,36,36)] object-cover object-top"
+          className="h-14 w-14 rounded-full border-2 border-[rgb(13,13,13)] bg-[rgb(36,36,36)] object-cover object-top"
           key={image.id}
           src={image.url}
         />
       ))}
     </div>
+  );
+}
+
+// SPEC: 宽屏（xl+）右侧钉一列正在说话的角色立绘；群聊跟随当前发言者。
+// INTENT: 陪伴产品的对象是「人」，聊天时只剩 44px 头像等于让角色从对话里消失。
+// 窄屏不加：竖屏空间要留给消息和输入框，头像放大到 56px 作为在场提示。
+function ChatCompanionPortrait({ image, name, characterId }: { image: string | null; name: string; characterId: string | null }) {
+  if (!image) return null;
+  const portrait = (
+    <>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img alt={name} className="h-full w-full object-cover object-top" src={image} />
+      <div className="absolute inset-x-0 bottom-0 bg-[linear-gradient(0deg,rgba(8,8,8,.86)_0%,transparent_100%)] px-5 pb-5 pt-16">
+        <p className="text-[22px] font-black uppercase leading-6 text-white">{name}</p>
+        {characterId ? <p className="mt-1 text-[12px] font-bold text-white/70">View profile</p> : null}
+      </div>
+    </>
+  );
+  const frameClass = "relative block aspect-[3/4] w-full overflow-hidden rounded-[24px] border border-white/10 bg-[rgb(36,36,36)]";
+  return (
+    <aside className="hidden w-[380px] shrink-0 py-6 pr-[60px] xl:block 2xl:w-[460px]" data-testid="chat-companion-portrait">
+      <div className="sticky top-6">
+        {characterId ? (
+          <Link className={`${frameClass} transition-colors hover:border-white/25 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#ff7ac8]`} href={`/characters/${encodeURIComponent(characterId)}`}>
+            {portrait}
+          </Link>
+        ) : <div className={frameClass}>{portrait}</div>}
+      </div>
+    </aside>
   );
 }
 

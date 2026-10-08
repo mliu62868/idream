@@ -42,7 +42,9 @@ Product Contract 决定「Chat 交互共同遵循什么产品行为」，Soul �
 
 记忆维护使用独立的确定性采样（temperature 0、top_p 1、presence_penalty 0），经官方 `IGREP_LLM_EXTRA_BODY` 交给子进程，并进入 composition digest；启动时覆盖环境中的同名任意请求覆写。角色对话继续使用原 `CHAT_MODEL_*` 采样。维护返回 deferred 或非法操作时仍保留待处理数据，full readiness 仍须验证 pending 为 0。
 
-普通 Agent 在 DSH 工具注册层仅允许继承 `memory_search`；私密 Agent 不继承任何插件工具。官方插件随 `memory: true` 注册的 `memory_record` 不进入模型 schema，也不能执行。图片工具仍由本轮不可变授权在 Agent scope 注册。记忆回答优先采用用户原始陈述，完整保留被问及的名称、标识、数字和日期；助手的简写不能替换用户事实。
+普通 Agent 在 DSH 工具注册层继承 `memory_search`；普通及私密 Agent 都可使用 `igrep_search`、`session_recall` 和已配置 provider 的 `igrep_web_search`。本地检索限定于该 attempt 的 Character、Scene 和 Main 授权的对话快照，会话召回限定于该运行退出上下文的原始消息及工具结果。私密模式不加载跨会话记忆。官方插件随 `memory: true` 注册的 `memory_record` 不进入模型 schema，也不能执行，Main 已提交 Turn 投影仍是长期记忆唯一写入路径。图片工具由本轮不可变授权在 Agent scope 注册。记忆回答优先采用用户原始陈述，完整保留被问及的名称、标识、数字和日期；助手的简写不能替换用户事实。
+
+上下文压力与 provider overflow 由 DSH 官方 token meter 和 igrep compaction 后端处理，不能在 transport 中静默丢弃历史。退出输入窗口的 Main 快照仍作为完整 replay seed 提供，官方 archive 在 surface replacement 后保留原文并给出 `seq:N#K` 索引。宿主提供只覆盖当前 attempt 的异步 session query；不增加持久 DSH session log。召回的角色发言按原始事件绑定 speaker 元数据，经 DSH additionalContexts 一并交付，不改动官方分页与原文。固定 Scene、偏好、预召回与当前用户请求在模型请求边界重新投影，继续作为 plugin/current_user 消息而非 system 事实；摘要不具备新授权。每次实际模型请求的 usage 独立计入终态，包括被拒绝的摘要与兼容重试；任何回执缺失时总量保持未知。图片编辑回退也读取本轮固定请求，不能因压缩移除 surface 消息而丢失原始编辑指令。attempt 结束删除官方 archive；Chat 启动接纳请求前，另按官方 owner 标记清理本机已退出进程的 archive，保留活进程、外机或所有者不可验证的目录。full readiness 以真实插件和 CLI、受控模型响应验证压缩、群聊身份与原文召回、本地检索、私密工具隔离与清理，并独立执行真实 provider warmup 和记忆生命周期验证。
 
 编辑已有图片时，Main 从已验证的 source image 编译局部编辑指令，不再套用新建肖像提示词。Gen 的 Qwen multi-reference workflow v3 将源图接入 image1、身份图接入 image2，并使用编码器的 Picture 1 / Picture 2 标签明确编辑目标；身份图不能替换源图的构图、姿势和背景。
 

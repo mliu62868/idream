@@ -83,16 +83,16 @@ describe("Creative Run create contract", () => {
 
   it("pins RedGraft LTX 2.5 and all validated MPS assets as the default route", () => {
     expect(redgraftLtx25VideoProductionRecipe).toMatchObject({
-      recipeVersion: 6,
-      optionsProfileVersion: 7,
+      recipeVersion: 8,
+      optionsProfileVersion: 9,
       profileKey: "profile_video_redgraft_ltx25_v1",
       pipelineModel: "redgraft-ltx25-fast2k-int8-convrot",
       workflowKey: "redgraft-ltx25-i2v",
-      workflowVersion: 4,
+      workflowVersion: 5,
       checkpointFilename:
         "redgraftLTX25Fast2K_ltx25RedgraftNSFW.safetensors",
-      width: 768,
-      height: 1152,
+      width: 448,
+      height: 768,
       fps: 24,
       durationSeconds: 5,
       expectedDurationSeconds: 121 / 24,
@@ -244,7 +244,7 @@ describe("Creative Run create contract", () => {
       targetId: "character-1",
       profileId: "profile_video_redgraft_ltx25_v1",
       referenceAssetIds: ["character-source-1"],
-      orientation: "2:3",
+      orientation: "7:12",
       count: 1,
       brief: "A subtle natural smile and direct eye contact with a steady camera.",
     };

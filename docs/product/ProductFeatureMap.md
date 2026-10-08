@@ -146,7 +146,7 @@ iDream 按 OurDream 的完整用户任务对标，而不是只比较视觉页面
 | --- | --- | --- |
 | Chat landing | `/chat` | marketing route |
 | Character chat | `/chat/*` 或角色详情 | RecentChat、ChatTurn、ChatTurnAttachment |
-| Microphone input | 单聊/群聊 composer | 最多 60 秒的独立录音→ASR→可编辑草稿→用户明确 Send；转写前后不自动创建 Turn/memory/媒体，不消耗 dreamcoin、消息额度或 TTS 分钟；取消/中断/收件人变化守住录音与草稿边界 |
+| Microphone input | 单聊/群聊 composer | 仅英语、最多 60 秒的独立录音→ASR→可编辑草稿→用户明确 Send；转写前后不自动创建 Turn/memory/媒体，不消耗 dreamcoin、消息额度或 TTS 分钟；取消/中断/收件人变化守住录音与草稿边界 |
 | Conversation context | chat | Main committed Turns + Scene + official igrep memory 提供跨会话上下文 |
 | Identity continuity | chat | immutable Soul、ContentVersion/Release、VisualProfile 与 VoiceProfile pins |
 | Memory control | chat / profile | memory enabled 状态、暂停、纠正后重建、按角色清除；不建立第二套手工 memory authority |

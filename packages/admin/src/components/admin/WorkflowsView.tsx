@@ -27,6 +27,7 @@ import {
   createAuthorityState,
 } from "@/lib/authority-state";
 import { createLatestRequestGate } from "@/lib/latest-request";
+import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 
 type WorkflowSlotTarget = { nodeId: string; field: string } | { argFlag: string };
 
@@ -91,6 +92,8 @@ export function WorkflowsView() {
       ));
     }
   }, [t]);
+
+  useWorkspaceRefresh(load);
 
   useEffect(() => {
     const gate = requestGate.current;

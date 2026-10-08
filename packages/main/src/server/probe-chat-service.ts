@@ -1401,7 +1401,9 @@ async function waitForSessionMessage(input: {
   let lastStatus = 0;
   let lastMessage: ProbeSessionMessage | null = null;
   let lastMessages: ProbeSessionMessage[] | undefined;
-  while (Date.now() < deadline) {
+  // A just-committed message is evidence even when a short budget crosses a
+  // clock tick before the first read. Observe once, then bound further polls.
+  do {
     const response = await productFetch({
       ...input,
       method: "GET",
@@ -1425,8 +1427,9 @@ async function waitForSessionMessage(input: {
         settled: true,
       };
     }
+    if (Date.now() >= deadline) break;
     await delay(100);
-  }
+  } while (Date.now() < deadline);
   return {
     status: lastStatus,
     message: lastMessage,

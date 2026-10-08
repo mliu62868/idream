@@ -61,7 +61,7 @@ function invocation(memoryMode: "normal" | "private"): CompanionInvocation {
     expectedProfileDigest: "d".repeat(64),
     deadlineAt: new Date(Date.now() + 60_000).toISOString(),
     preparedTurn: {
-      version: 5,
+      version: 6,
       model: "model-1",
       characterName: "Mira",
       messages: [{
@@ -93,7 +93,6 @@ function invocation(memoryMode: "normal" | "private"): CompanionInvocation {
         sceneVersion: 1,
         contextRevision: "1",
       },
-      requiredAction: null,
     },
   };
 }

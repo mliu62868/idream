@@ -14,6 +14,7 @@ vi.mock("@/lib/admin-v2-api", async (importOriginal) => {
 });
 
 import { CustomerWorkspace } from "./CustomerWorkspace";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -74,7 +75,7 @@ describe("CustomerWorkspace 360", () => {
     adminV2Request.mockReset();
     adminV2Request.mockImplementation(async (path) => {
       if (path.startsWith("/api/v2/admin/customers/")) return customer360;
-      return listResponse;
+      return customerListFor(path);
     });
     window.history.replaceState(null, "", "/admin/customers");
     container = document.createElement("div");
@@ -96,6 +97,27 @@ describe("CustomerWorkspace 360", () => {
     });
     await waitUntil(() => container.textContent?.includes("Test Customer") === true);
   }
+
+  it("reloads the applied customer list and open 360 once through shell refresh without submitting a search draft", async () => {
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<CustomerWorkspace initialCustomerId={customer.id} />);
+    });
+    await waitUntil(() => container.textContent?.includes("Premium") === true);
+    const applied = adminV2Request.mock.calls.find(([path]) => path.startsWith("/api/v2/admin/customers?"))![0];
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Search customers"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Unfinished customer search");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const before = adminV2Request.mock.calls.length;
+    const href = window.location.href;
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    expect(adminV2Request.mock.calls.slice(before).map(([path]) => path)).toEqual([applied, `/api/v2/admin/customers/${customer.id}`]);
+    expect(input.value).toBe("Unfinished customer search");
+    expect(window.location.href).toBe(href);
+    expect(container.textContent).toContain("Premium");
+  });
 
   it("formats Dreamcoin balances with thousands separators", async () => {
     await mount();
@@ -145,6 +167,101 @@ describe("CustomerWorkspace 360", () => {
     expect(previous()?.disabled).toBe(true);
   });
 
+  it.each(["search", "status"])("keeps the returned page position while %s is an unapplied draft", async (field) => {
+    await mount();
+    await act(async () => findButton("Next page")?.click());
+    await waitUntil(() => container.textContent?.includes("Page 2") === true);
+    const requestsBeforeDraft = adminV2Request.mock.calls.length;
+
+    await act(async () => {
+      if (field === "search") {
+        const input = container.querySelector<HTMLInputElement>('input[aria-label="Search customers"]')!;
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "new customer");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      } else {
+        const select = container.querySelector<HTMLSelectElement>('select[aria-label="Customer status"]')!;
+        select.value = "active";
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+    expect(new URLSearchParams(window.location.search).get(field)).toBe(field === "search" ? "new customer" : "active");
+    expect(adminV2Request.mock.calls.length).toBe(requestsBeforeDraft);
+    expect(container.textContent).toContain("Page 2");
+    expect(findButton("Previous page")?.disabled).toBe(false);
+
+    await act(async () => container.querySelector<HTMLFormElement>("form")?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    await waitUntil(() => adminV2Request.mock.calls.length > requestsBeforeDraft);
+    expect(container.textContent).toContain("Page 1");
+    expect(findButton("Previous page")?.disabled).toBe(true);
+    const applied = new URL(adminV2Request.mock.calls.at(-1)![0], "http://admin.test").searchParams;
+    expect(applied.get(field)).toBe(field === "search" ? "new customer" : "active");
+    expect(applied.has("cursor")).toBe(false);
+  });
+
+  it("retains the returned page while the next page is pending or fails, then retries the same page", async () => {
+    let failPage: ((error: Error) => void) | undefined;
+    let pageThreeRequests = 0;
+    adminV2Request.mockImplementation(async (path) => {
+      const params = new URL(path, "http://admin.test").searchParams;
+      if (params.get("cursor") === "cursor-3" && ++pageThreeRequests === 1) {
+        return new Promise((_resolve, reject) => { failPage = reject; });
+      }
+      return customerListFor(path);
+    });
+    await mount();
+    await act(async () => findButton("Next page")?.click());
+    await waitUntil(() => container.textContent?.includes("Page 2") === true);
+    await act(async () => findButton("Next page")?.click());
+    await waitUntil(() => failPage !== undefined);
+    expect(container.textContent).toContain("Page 2");
+    expect(container.textContent).not.toContain("Page 3");
+    await act(async () => failPage!(new Error("Page three unavailable")));
+    await waitUntil(() => container.querySelector('[role="alert"]') !== null);
+    expect(container.textContent).toContain("Page 2");
+    expect(findButton("Previous page")?.disabled).toBe(false);
+    await act(async () => findButton("Retry")?.click());
+    await waitUntil(() => container.textContent?.includes("Page 3") === true);
+    expect(pageThreeRequests).toBe(2);
+    await act(async () => findButton("Previous page")?.click());
+    await waitUntil(() => container.textContent?.includes("Page 2") === true);
+    expect(new URL(adminV2Request.mock.calls.at(-1)![0], "http://admin.test").searchParams.get("cursor")).toBe("cursor-2");
+  });
+
+  it("uses the authority's normalized query for the empty-state explanation", async () => {
+    window.history.replaceState(null, "", "/admin/customers?search=%20%20");
+    adminV2Request.mockImplementation(async (path) => ({ ...customerListFor(path), items: [] }));
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<CustomerWorkspace />);
+    });
+    await waitUntil(() => container.textContent?.includes("No customer accounts yet") === true);
+    expect(container.textContent).not.toContain("No customers match these filters");
+  });
+
+  it("keeps pagination in the returned scope after applying a different filter fails", async () => {
+    window.history.replaceState(null, "", "/admin/customers?search=original");
+    adminV2Request.mockImplementation(async (path) => {
+      if (new URL(path, "http://admin.test").searchParams.get("search") === "unavailable") throw new Error("Filter query unavailable");
+      return customerListFor(path);
+    });
+    await mount();
+    await act(async () => findButton("Next page")?.click());
+    await waitUntil(() => container.textContent?.includes("Page 2") === true);
+    await act(async () => {
+      const input = container.querySelector<HTMLInputElement>('input[aria-label="Search customers"]')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "unavailable");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => container.querySelector<HTMLFormElement>("form")?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    await waitUntil(() => container.querySelector('[role="alert"]') !== null);
+    expect(container.textContent).toContain("Page 2");
+    await act(async () => findButton("Next page")?.click());
+    const pageRequest = new URL(adminV2Request.mock.calls.at(-1)![0], "http://admin.test").searchParams;
+    expect(pageRequest.get("cursor")).toBe("cursor-3");
+    expect(pageRequest.get("search")).toBe("original");
+    await waitUntil(() => container.textContent?.includes("Page 3") === true);
+  });
+
   // 回归：搜索框此前只有 placeholder、状态下拉连 placeholder 都没有，读屏在两个控件上都是空的。
   it("names both filter controls for a screen reader", async () => {
     await mount();
@@ -181,10 +298,27 @@ describe("CustomerWorkspace 360", () => {
     expect(panel).toContain("customer.note.added");
   });
 
-  // INVARIANT: 周期已结束的订阅不能写成「Renews <过去的日期>」。
-  it("labels a lapsed subscription as ended rather than renewing", async () => {
+  it("labels active prepaid access by its end date without claiming renewal", async () => {
     adminV2Request.mockImplementation(async (path) => path.startsWith("/api/v2/admin/customers/")
-      ? { ...customer360, subscription: { ...customer360.subscription, status: "expired", currentPeriodEnd: "2026-07-01T00:00:00.000Z", cancelAtPeriodEnd: false } }
+      ? { ...customer360, subscription: { ...customer360.subscription, cancelAtPeriodEnd: false } }
+      : listResponse);
+    await mount();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Customer results"] button')?.click());
+    await waitUntil(() => container.querySelector("#customer-detail-title") !== null);
+    const panel = container.querySelector<HTMLElement>('[aria-labelledby="customer-detail-title"]')?.textContent ?? "";
+    expect(panel).toContain("Access ends");
+    expect(panel).not.toContain("Renews");
+    expect(panel).not.toContain("Cancellation is already scheduled");
+  });
+
+  // INVARIANT: 已结束的状态和已过去的日期都不能写成续费或仍可访问。
+  it.each([
+    { status: "expired", currentPeriodEnd: "2026-07-01T00:00:00.000Z" },
+    { status: "active", currentPeriodEnd: "2026-07-01T00:00:00.000Z" },
+    { status: "expired", currentPeriodEnd: "2026-09-01T00:00:00.000Z" },
+  ])("labels ended access ($status, $currentPeriodEnd) without claiming renewal", async (period) => {
+    adminV2Request.mockImplementation(async (path) => path.startsWith("/api/v2/admin/customers/")
+      ? { ...customer360, subscription: { ...customer360.subscription, ...period, cancelAtPeriodEnd: false } }
       : listResponse);
     await mount();
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Customer results"] button')?.click());
@@ -192,6 +326,7 @@ describe("CustomerWorkspace 360", () => {
     const panel = container.querySelector<HTMLElement>('[aria-labelledby="customer-detail-title"]')?.textContent ?? "";
     expect(panel).toContain("Period ended");
     expect(panel).not.toContain("Renews");
+    expect(panel).not.toContain("Access ends");
   });
 
   it("retries the failed customer detail without reloading the successful list", async () => {
@@ -253,3 +388,13 @@ describe("CustomerWorkspace 360", () => {
     return [...container.querySelectorAll("button")].find((button) => button.textContent?.includes(label));
   }
 });
+
+function customerListFor(path: string) {
+  const params = new URL(path, "http://admin.test").searchParams;
+  const cursor = params.get("cursor");
+  return {
+    ...listResponse,
+    query: { ...listResponse.query, search: (params.get("search") ?? "").trim(), status: params.get("status") ?? "", cursor },
+    pageInfo: { ...listResponse.pageInfo, endCursor: cursor === "cursor-2" ? "cursor-3" : "cursor-2" },
+  };
+}

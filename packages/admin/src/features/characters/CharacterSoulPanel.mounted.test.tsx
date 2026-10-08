@@ -226,6 +226,59 @@ describe("Soul draft retention", () => {
     expect(container.textContent).toContain("Publishing stays blocked until every item below is cleared");
   });
 
+  it("lets an unchanged older-format Soul be saved once to clear the publish blocker", async () => {
+    const legacy = withCharacterWorkspaceDetail(data, { soul: { current: {
+      schemaVersion: 2,
+      diagnostics: [{ code: "historical_relationship_removed", path: ["relationshipArchetype"], severity: "warning", message: "Removed the historical relationship field." }],
+    } } });
+    await render(actor, legacy);
+    expect(container.textContent).toContain("Saved in an older format");
+    const upgrade = [...container.querySelectorAll("button")].find((button) => button.textContent === "Save in current format")!;
+    expect(upgrade.disabled).toBe(false);
+    committingMutation();
+    await act(async () => upgrade.click());
+    expect(operation).toHaveBeenCalledWith("POST /api/v2/admin/characters/:id/soul/versions", expect.objectContaining({
+      body: expect.objectContaining({ persona: expect.objectContaining({ name: "Mira", firstMessage: "Hello." }) }),
+    }));
+  });
+
+  it("opens an editor prefilled from the profile when the stored Soul cannot be read", async () => {
+    const unreadable = withCharacterWorkspaceDetail(data, { soul: { current: {
+      soul: null,
+      schemaVersion: null,
+      diagnostics: [{ code: "legacy_snapshot_incomplete", path: [], severity: "error", message: "Legacy pinned Soul is incomplete." }],
+    } } });
+    await render(actor, unreadable);
+    expect(container.textContent).toContain("The saved persona could not be read");
+    expect(container.querySelector<HTMLInputElement>('input[name="name"]')!.value).toBe(unreadable.character.name);
+    const repair = [...container.querySelectorAll("button")].find((button) => button.textContent === "Save to repair")!;
+    expect(repair.disabled).toBe(false);
+  });
+
+  it("locks the appearance to the current portrait once an identity is active", async () => {
+    const identity = (createdFrom: string) => withCharacterWorkspaceDetail(data, { visual: { activeIdentity: {
+      id: "identity-1", version: 2, status: "active", style: "realistic", identityPrompt: "Locked look", negativeIdentityPrompt: null,
+      traits: { face: {}, hair: {}, body: {}, signature: {}, style: {} }, immutableHash: "hash", evidenceState: "qualified",
+      defaultSeed: null, anchorAssetIds: [], createdFrom, createdAt: "2026-10-07T00:00:00.000Z",
+    } } });
+    await render(actor, identity("identity_bootstrap:job-1"));
+    const anchor = container.querySelector<HTMLTextAreaElement>('textarea[name="identityAnchor"]')!;
+    expect(anchor.closest("fieldset[disabled]")).not.toBeNull();
+    expect(container.textContent).toContain("describes it in image generation and can no longer be edited");
+    expect(container.querySelector('a[href$="?tab=visual"]')?.textContent).toBe("Change the look");
+    // Persona fields stay editable.
+    expect(container.querySelector<HTMLInputElement>('input[name="name"]')!.closest("fieldset[disabled]")).toBeNull();
+
+    leavePanel();
+    await render(actor, identity("identity_calibration:job-2"));
+    expect(container.textContent).toContain("the text below is from creation and is no longer used");
+  });
+
+  it("keeps Save disabled for a current-format Soul with nothing changed", async () => {
+    await render();
+    expect(saveButton().disabled).toBe(true);
+  });
+
   it("identifies an oversized trait locally and focuses the rejected field", async () => {
     await render();
     typeInto("Identity anchor", "Adult radio host");

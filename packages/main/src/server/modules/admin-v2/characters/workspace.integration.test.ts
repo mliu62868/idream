@@ -1189,140 +1189,149 @@ describe("Character operator workspace", () => {
   });
 
   it("autosaves with optimistic concurrency and writes audit/outbox atomically", async () => {
-    // Draft content is frozen beside a candidate Release; the operator discards it first.
-    await prisma.characterRelease.update({
-      where: { id: releaseId },
-      data: { status: "withdrawn" },
-    });
-    const saved = await updateCharacterProjectDraft({
-      characterId,
-      expectedVersion: 1,
-      actor: { id: `workspace-actor-${suffix}`, role: "admin" },
-      content: {
-        persona: {
-          name: "Mara V2",
-          age: 29,
-          gender: "female",
-          characterPromise: "A precise place to put the day down",
-          detailsMarkdown:
-            "Observant and gently challenging. Warm and concise. A night-shift radio host.",
-          firstMessage: "Tell me what followed you home.",
-        },
-        visualDirection: {
-          identityAnchor: "Composed late-night radio host",
-          stableTraits: ["dark wavy hair", "warm brown eyes"],
-          style: "realistic",
-          referenceDirection: "Intimate tungsten editorial portrait",
-        },
-      },
-      reason: "Autosave Character draft changes",
-      requestId,
-    });
-    expect(saved).toMatchObject({ version: 2 });
-    expect(await prisma.adminAuditLog.count({ where: { requestId } })).toBe(1);
-    expect(
-      await prisma.mainOutboxEvent.count({ where: { aggregateId: projectId } }),
-    ).toBe(1);
-    expect(
-      await prisma.characterContentVersion.findMany({ where: { characterId } }),
-    ).toHaveLength(2);
-    expect(
-      await prisma.characterRevision.findMany({ where: { projectId } }),
-    ).toHaveLength(2);
-    expect(
-      await prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
-    ).toMatchObject({
-      name: "Mara",
-      age: 28,
-    });
-    const activityResponse = await listActivityRoute(
-      new Request(
-        `http://localhost/api/v2/admin/collaboration/character_project/${projectId}/activity`,
-        {
-          headers: {
-            "x-idream-user-id": readOnlyActorId,
-            "x-idream-role": "user",
-          },
-        },
-      ),
-      {
-        params: Promise.resolve({
-          targetType: "character_project",
-          targetId: projectId,
-        }),
-      },
-    );
-    // Character operations use Audit/Outbox; retired collaboration URLs stay closed.
-    expect(activityResponse.status).toBe(400);
-
-    await prisma.character.update({
-      where: { id: characterId },
-      data: { status: "approved", visibility: "public" },
-    });
-    await prisma.characterRelease.update({
-      where: { id: releaseId },
-      data: { status: "published" },
-    });
-    await prisma.characterServing.update({
-      where: { characterId },
-      data: { state: "live", currentReleaseId: releaseId },
-    });
-    const liveCandidate = await updateCharacterProjectDraft({
-      characterId,
-      expectedVersion: 2,
-      actor: { id: `workspace-actor-${suffix}`, role: "admin" },
-      content: {
-        persona: {
-          name: "Unpublished Mara Candidate",
-          age: 30,
-          gender: "female",
-          characterPromise: "A sharper unpublished promise",
-          detailsMarkdown:
-            "Observant and direct. Warm and precise. A revised draft backstory.",
-          firstMessage: "This opening is not live yet.",
-        },
-        visualDirection: {
-          identityAnchor: "Revised late-night radio host",
-          stableTraits: ["dark wavy hair", "warm brown eyes"],
-          style: "realistic",
-          referenceDirection: "A revised unpublished portrait direction",
-        },
-      },
-      reason: "Verify live projection containment",
-      requestId: `${requestId}-live-candidate`,
-    });
-    expect(liveCandidate.version).toBe(3);
-    expect(
-      await prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
-    ).toMatchObject({
-      name: "Mara",
-      age: 28,
-      status: "approved",
-      visibility: "public",
-    });
-    expect(
-      await prisma.characterContentVersion.findMany({ where: { characterId } }),
-    ).toHaveLength(3);
-    expect(
-      await prisma.characterRevision.findMany({ where: { projectId } }),
-    ).toHaveLength(3);
-
-    await expect(
-      updateCharacterProjectDraft({
+    // This test edits the appearance direction through the creation-wizard autosave,
+    // which only runs before a look is locked (appearance-lock-guard). Unlock it here.
+    const lockedProfiles = await prisma.characterVisualProfile.findMany({ where: { characterId, status: "active" }, select: { id: true } });
+    await prisma.characterVisualProfile.updateMany({ where: { id: { in: lockedProfiles.map(({ id }) => id) } }, data: { status: "archived" } });
+    try {
+      // Draft content is frozen beside a candidate Release; the operator discards it first.
+      await prisma.characterRelease.update({
+        where: { id: releaseId },
+        data: { status: "withdrawn" },
+      });
+      const saved = await updateCharacterProjectDraft({
         characterId,
         expectedVersion: 1,
         actor: { id: `workspace-actor-${suffix}`, role: "admin" },
-        reason: "Stale tab save",
-        requestId: `${requestId}-conflict`,
-      }),
-    ).rejects.toMatchObject({ status: 409 });
-    expect(
-      await prisma.characterProject.findUniqueOrThrow({
-        where: { id: projectId },
-      }),
-    ).toMatchObject({
-      version: 3,
-    });
+        content: {
+          persona: {
+            name: "Mara V2",
+            age: 29,
+            gender: "female",
+            characterPromise: "A precise place to put the day down",
+            detailsMarkdown:
+              "Observant and gently challenging. Warm and concise. A night-shift radio host.",
+            firstMessage: "Tell me what followed you home.",
+          },
+          visualDirection: {
+            identityAnchor: "Composed late-night radio host",
+            stableTraits: ["dark wavy hair", "warm brown eyes"],
+            style: "realistic",
+            referenceDirection: "Intimate tungsten editorial portrait",
+          },
+        },
+        reason: "Autosave Character draft changes",
+        requestId,
+      });
+      expect(saved).toMatchObject({ version: 2 });
+      expect(await prisma.adminAuditLog.count({ where: { requestId } })).toBe(1);
+      expect(
+        await prisma.mainOutboxEvent.count({ where: { aggregateId: projectId } }),
+      ).toBe(1);
+      expect(
+        await prisma.characterContentVersion.findMany({ where: { characterId } }),
+      ).toHaveLength(2);
+      expect(
+        await prisma.characterRevision.findMany({ where: { projectId } }),
+      ).toHaveLength(2);
+      expect(
+        await prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
+      ).toMatchObject({
+        name: "Mara",
+        age: 28,
+      });
+      const activityResponse = await listActivityRoute(
+        new Request(
+          `http://localhost/api/v2/admin/collaboration/character_project/${projectId}/activity`,
+          {
+            headers: {
+              "x-idream-user-id": readOnlyActorId,
+              "x-idream-role": "user",
+            },
+          },
+        ),
+        {
+          params: Promise.resolve({
+            targetType: "character_project",
+            targetId: projectId,
+          }),
+        },
+      );
+      // Character operations use Audit/Outbox; retired collaboration URLs stay closed.
+      expect(activityResponse.status).toBe(400);
+
+      await prisma.character.update({
+        where: { id: characterId },
+        data: { status: "approved", visibility: "public" },
+      });
+      await prisma.characterRelease.update({
+        where: { id: releaseId },
+        data: { status: "published" },
+      });
+      await prisma.characterServing.update({
+        where: { characterId },
+        data: { state: "live", currentReleaseId: releaseId },
+      });
+      const liveCandidate = await updateCharacterProjectDraft({
+        characterId,
+        expectedVersion: 2,
+        actor: { id: `workspace-actor-${suffix}`, role: "admin" },
+        content: {
+          persona: {
+            name: "Unpublished Mara Candidate",
+            age: 30,
+            gender: "female",
+            characterPromise: "A sharper unpublished promise",
+            detailsMarkdown:
+              "Observant and direct. Warm and precise. A revised draft backstory.",
+            firstMessage: "This opening is not live yet.",
+          },
+          visualDirection: {
+            identityAnchor: "Revised late-night radio host",
+            stableTraits: ["dark wavy hair", "warm brown eyes"],
+            style: "realistic",
+            referenceDirection: "A revised unpublished portrait direction",
+          },
+        },
+        reason: "Verify live projection containment",
+        requestId: `${requestId}-live-candidate`,
+      });
+      expect(liveCandidate.version).toBe(3);
+      expect(
+        await prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
+      ).toMatchObject({
+        name: "Mara",
+        age: 28,
+        status: "approved",
+        visibility: "public",
+      });
+      expect(
+        await prisma.characterContentVersion.findMany({ where: { characterId } }),
+      ).toHaveLength(3);
+      expect(
+        await prisma.characterRevision.findMany({ where: { projectId } }),
+      ).toHaveLength(3);
+
+      await expect(
+        updateCharacterProjectDraft({
+          characterId,
+          expectedVersion: 1,
+          actor: { id: `workspace-actor-${suffix}`, role: "admin" },
+          reason: "Stale tab save",
+          requestId: `${requestId}-conflict`,
+        }),
+      ).rejects.toMatchObject({ status: 409 });
+      expect(
+        await prisma.characterProject.findUniqueOrThrow({
+          where: { id: projectId },
+        }),
+      ).toMatchObject({
+        version: 3,
+      });
+  
+    } finally {
+      await prisma.characterVisualProfile.updateMany({ where: { id: { in: lockedProfiles.map(({ id }) => id) } }, data: { status: "active" } });
+    }
   });
 
   it("rejects project PATCH without write authority and mismatched If-Match", async () => {

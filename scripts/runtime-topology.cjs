@@ -167,12 +167,11 @@ function videoWorkerCount(mode, provider) {
   assertRuntimeMode(mode);
   const resolved = provider ?? "mock";
   if (resolved === "mock") return 0;
-  if (resolved === "backend" || (mode === "development" && resolved === "pipeline")) {
+  if (resolved === "backend") {
     return 1;
   }
-  const allowed = mode === "development" ? "mock, backend or pipeline" : "mock or backend";
   throw new Error(
-    `${mode === "development" ? "Development" : "Production"} video worker topology requires GEN_VIDEO_PROVIDER=${allowed}, received ${resolved}`,
+    `${mode === "development" ? "Development" : "Production"} video worker topology requires GEN_VIDEO_PROVIDER=mock or backend, received ${resolved}`,
   );
 }
 

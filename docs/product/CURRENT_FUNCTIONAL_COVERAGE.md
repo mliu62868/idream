@@ -1,6 +1,6 @@
 # iDream 当前功能覆盖
 
-运行证据截至：2026-10-03。文档整理：2026-10-04；本次未新增功能验收。
+运行证据按各域日期与source分别记录。文档更新：2026-10-05（ASR仅英语）；范围变更不签发模型质量资格。
 
 本页按产品领域保留最后可用的实施与运行证据及其限制。完整需求见 [PRD](PRD.md)，未闭合工作仅在 [剩余计划](REMAINING_WORK_EXECUTION_PLAN.md) 维护。不同 source 的成功不能拼成当前工作树全通过；本机 development、fixture 和有限样本也不签发公开生产。
 
@@ -48,8 +48,9 @@ Character/Freeplay、Image Edit、Enhance、Presets/Look、参考来源、冻结
 | 10月2日单源 edit / 双参考 identity edit | 交付通过 | 指定修改/身份与来源场景保留通过；不代表逐像素不变或完整局部编辑资格 |
 | 10月3日源图＋身份参考加速 | 同图/指令/seed，832×1024；原生执行 479.118 → 81.536 秒 | 所测人物、衣着、杯子、姿势与构图保持，仅为该样本 |
 | 10月3日身份锚＋补充参考 | 原生执行 84.520 秒，两张参考实际进入编码/采样 | 本机所测路线有效，不代表全部人物、风格或生产容量 |
+| 10月5日默认角色图 / source `6515afad…` | REDQW21 v3、58.473秒、512×512；1 attempt/asset/spend，5币，持久化通过 | Iris身份、温室、深蓝上衣、闭合绿本在该样本符合；不关闭旧角色/场景分布资格 |
 
-证据：[原媒体审阅](../../.scratch/core-quality-remediation-20261001/REPORT.md)、[Look 与产品交付](../../.scratch/full-product-audit-2026-10-01/REPORT.md)、[多参考对照](../../.scratch/qwen21-multi-acceleration-20261003/REPORT.md)。等待分布、同质量性能/容量及全面身份/编辑质量仍需独立证据。
+证据：[原媒体审阅](../../.scratch/core-quality-remediation-20261001/REPORT.md)、[Look 与产品交付](../../.scratch/full-product-audit-2026-10-01/REPORT.md)、[多参考对照](../../.scratch/qwen21-multi-acceleration-20261003/REPORT.md)、[10月5日媒体审查](../../.scratch/media-generation-audit-20261005/REPORT.md)。等待分布、同质量性能/容量及全面身份/编辑质量仍需独立证据。
 
 ## 视频
 
@@ -60,21 +61,25 @@ Chat Animate 与 Generate GN-19 是独立能力，均已有实现；自然语言
 | Chat Animate | 10月2日已交付图片 → 报价/确认 → 真实视频 → 刷新/播放/下载，唯一 100 coin；所测角色/衣着/阳台及动作保持 | 新 source、其他人物/输入及完整质量/容量 |
 | GN-19 两场景旁白 | 真实 Chrome 完成 RedGraft-LTX2.5、Pocket Anna 旁白、合成/播放、逐段及完整下载，精确两次 100 coin | 仅证明所测两场景和参数，不证明三场景或全部 Catalog |
 | 三场景修复 | 10月3日按解码帧数对齐、composition owner、复用已保存声音及缺失提示有定向/真实 ffmpeg 证据 | 数据库集成当时因 connect EPERM 零执行；真实模型/Pocket/Gen 三场景完整链未运行 |
+| 10月5日三场景 / source `6515afad…` | RedGraft v4三次preview＋Pocket Anna旁白；583.281秒后交付11.875秒成片；3个持久化检查通过、恰好3次100币，完整解码/下载hash通过 | 身份/衣着/背景保持；第三段“点头一次”未获清晰动作证据；不能签全部像素或无缝表情连续性资格 |
 | 默认 RedGraft / H3 | 原默认视频请求完成且唯一扣费，但像素任务失败；H3 历史视频出现双脸叠影后已停用新选择 | 默认视频执行跨源码 merge，不能签发统一 source 资格；H3 重新启用须独立稳定视觉复验与显式发布 |
 
-证据：[视频产品记录](../../.scratch/full-product-audit-2026-10-01/REPORT.md)、[两场景旁白回读](../../.scratch/full-product-audit-2026-10-01/gn19-narration-asr-actual-20261002.md)、[三场景定向修复](../../.scratch/scene-three-narration-20261003/REPORT.md)、[像素失败](../../.scratch/core-quality-remediation-20261001/REPORT.md)。H3 保持禁用。
+证据：[视频产品记录](../../.scratch/full-product-audit-2026-10-01/REPORT.md)、[两场景旁白回读](../../.scratch/full-product-audit-2026-10-01/gn19-narration-asr-actual-20261002.md)、[三场景定向修复](../../.scratch/scene-three-narration-20261003/REPORT.md)、[像素失败](../../.scratch/core-quality-remediation-20261001/REPORT.md)、[10月5日三场景与独立像素复核](../../.scratch/media-generation-audit-20261005/REPORT.md)。H3 保持禁用。
 
 ## 声音
 
+2026-10-05产品决策：ASR草稿输入与Call识别仅支持英语（`en`）；模型原生多语能力不扩展产品支持范围。TTS语言支持按实际声音provider独立判断。
+
 | 链路 | 最后记录的实施/验证 | 未取得的资格 |
 | --- | --- | --- |
-| Mic 输入 → 草稿 → Send | 单聊/群聊已实施；9月30日 native MediaRecorder → Main/ffmpeg/Redux → 草稿及手动发送有受控 Chrome/PG/用量证据 | 虚拟真人音频输入不代替实体麦克风；设备/语言/真实耳语独立验收 |
+| Mic 输入 → 草稿 → Send | 单聊/群聊已实施；9月30日 native MediaRecorder → Main/ffmpeg/Redux → 草稿及手动发送有受控 Chrome/PG/用量证据 | 虚拟真人音频输入不代替实体麦克风；设备/英语口音/真实耳语独立验收 |
 | Voice Clip | Pocket/Fish 身份、Play、原 attempt 缓存、恢复及唯一用量已有实现和短样本 | 声音全量听感、全部角色身份和部署容量；片段不证明通话 |
-| Voice Call | English recorded-upload → ASR → Chat → Pocket → 播放/持久化、中断 resume 与自然过期 quote 恢复有10月2日本机证据 | 实体人声、目标浏览器/手机、欧洲语言和连续会话质量 |
+| 10月5日 Clip / source `6515afad…` | Pocket Anna 4.4秒、Fish现有角色clone 7.76秒；各1request/usage与2币，replay同asset，真实MP3完整解码；Pocket开场白经实际ASR回读正确且无Turn/费用增量 | 短合成声不证明真人、多语、长文本或声纹广度；Fish准确标Scene未应用，MLX与Gen并行容量未取得资格 |
+| Voice Call | English recorded-upload → ASR → Chat → Pocket → 播放/持久化、中断 resume 与自然过期 quote 恢复有10月2日本机证据 | 实体英语人声/口音、目标浏览器/手机和连续会话质量 |
 
-证据：[输入与费用隔离](../../.scratch/chat-voice-input/VERIFICATION.md)、[通话恢复](../../.scratch/full-product-audit-2026-10-01/browser/call-recovery-final.json)、[自然 quote 过期](../../.scratch/full-product-audit-2026-10-01/call-quote-real-chrome-natural-expiry-green.json)、[整轮声音记录](../../.scratch/full-product-audit-2026-10-01/REPORT.md)。实体 Mac 25秒静音保留/丢弃与零 Turn/TTS/扣费仅证明权限和资源边界，不证明真人人声质量。
+证据：[输入与费用隔离](../../.scratch/chat-voice-input/VERIFICATION.md)、[通话恢复](../../.scratch/full-product-audit-2026-10-01/browser/call-recovery-final.json)、[自然 quote 过期](../../.scratch/full-product-audit-2026-10-01/call-quote-real-chrome-natural-expiry-green.json)、[整轮声音记录](../../.scratch/full-product-audit-2026-10-01/REPORT.md)、[10月5日音频修复与真实运行](../../.scratch/media-generation-audit-20261005/REPORT.md)。实体 Mac 25秒静音保留/丢弃与零 Turn/TTS/扣费仅证明权限和资源边界，不证明真人人声质量。
 
-**ASR 质量仍 RED**：希腊语普通、法语及部分带噪语义未达标；Parakeet/Whisper 固定比较已结束且未切默认。数学衰减、公开朗读和人工加噪不替代真实耳语材料；25语、每语说话人广度、关键意义人工验收及 Safari/Firefox/手机仍缺资格。证据：[原语言质量](../../.scratch/chat-voice-input/qualification/REPORT.md)、[Whisper 与材料核验](../../.scratch/full-product-audit-2026-10-01/asr-whisper-evaluation/materials-and-next-candidate-readonly.md)、[固定请求对照](../../.scratch/full-product-audit-2026-10-01/asr-acoustic-review/paired-six/EXECUTION_RESULT.md)、[独立音频/decoder 复核](../../.scratch/full-product-audit-2026-10-01/asr-acoustic-review/paired-six/ASR_DECODER_INPUT_REVIEW.md)。
+**英语ASR质量资格未闭合**：历史希腊语普通、法语及部分带噪语义失败保留；其中非英语失败已移出当前发布范围，未重标为模型修复或通过。Parakeet/Whisper固定比较已结束且未切默认。英语口音/说话人广度、普通/真实耳语/环境噪声的关键意义人工验收及Safari/Firefox/手机仍缺资格；数学衰减、公开朗读和人工加噪不替代真实耳语材料。证据：[原语言质量](../../.scratch/chat-voice-input/qualification/REPORT.md)、[Whisper 与材料核验](../../.scratch/full-product-audit-2026-10-01/asr-whisper-evaluation/materials-and-next-candidate-readonly.md)、[固定请求对照](../../.scratch/full-product-audit-2026-10-01/asr-acoustic-review/paired-six/EXECUTION_RESULT.md)、[独立音频/decoder 复核](../../.scratch/full-product-audit-2026-10-01/asr-acoustic-review/paired-six/ASR_DECODER_INPUT_REVIEW.md)。
 
 ## 资产与社区
 
@@ -121,6 +126,7 @@ Main PG 持有产品事实；Chat 无数据库。recovery producer/executor/laun
 | 10月3日04:05冻结 / source `6610e59e…` | 五包7343通过、0失败、4原 opt-in 跳过；原 coverage、lint/type/build 与PM2通过 | [汇总](../../.scratch/full-product-audit-2026-10-01/verification/source-checkpoint-20261003T0405Z/SUMMARY.json)，只属于该 source |
 | 10月3日04:45冻结 / source `9494dfe0…` | lint/type/build通过；built Main/Admin 上原生 Chrome 174/174首次通过 | [与测试源的5文件差异](../../.scratch/full-product-audit-2026-10-01/verification/source-checkpoint-20261003T0445Z/DELTA_BINDING.json)、[Chrome/清理绑定](../../.scratch/full-product-audit-2026-10-01/verification/source-checkpoint-20261003T0445Z/e2e-native-chrome-built-20261003/RESULT_BINDING.json)；fixture不证明真实provider质量 |
 | 10月3日16:07 / 源码摘要 `d4817328…` | Scene/三场景定向与ffmpeg通过；Chat全套尝试696通过/7失败 | [原报告](../../.scratch/scene-three-narration-20261003/REPORT.md)；Main最终DB集成零执行，真实三场景链未运行 |
+| 10月5日媒体 / source `6515afad…` | Main媒体数据库集成、Gen342例、音频/gateway目标回归、lint/type/build与wrapper通过；真实图片/三场景/两家Clip已交付、持久化与唯一费用核对 | [新报告](../../.scratch/media-generation-audit-20261005/REPORT.md)；动作/多语/容量限制仍在，随后完整提示词修复另绑定source，不能继承此轮完整运行资格 |
 
 后续工作树变化不能继承上述全套通过。每条新证据至少绑定 source、时间/环境、实际动作、provider/model/workflow、request/attempt/artifact、交付/持久化与费用结果，并记录失败和未执行范围。
 

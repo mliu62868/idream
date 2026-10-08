@@ -11,8 +11,9 @@ import { groupChatMemberSchema, type GroupChatMember } from "@idream/shared/cont
 
 declare module "@deepseek-ai/dsh-llm" {
   interface MessageSourceMap {
-    // Only the current request is a DSH user source and eligible for ingest.
+    // Runtime context is distinct from Main-authorized user dialogue.
     idream: { kind: "idream"; context: "replay" | "snapshot" | "recall" | "projection" };
+    "plugin:igrep": { kind: "plugin:igrep"; form: "notice" | "recall"; summary?: string };
   }
   interface ModelMessageSource {
     // INVARIANT: replayed group dialogue retains its Character identity across
@@ -111,20 +112,34 @@ const preparedTrace = z.object({
   contextRevision: z.string().regex(/^\d+$/),
 }).strict();
 export const preparedTurnSchema = z.object({
-  version: z.literal(5),
+  version: z.literal(6),
   model: nonEmptyString,
   characterName: nonEmptyString,
   messages: z.array(preparedTurnMessageSchema).min(1),
+  omittedMessages: z.array(preparedTurnMessageSchema).optional(),
   tools: z.array(preparedToolDefinition),
+  // SPEC: this Turn's user message clearly asks for a photo now (resolveImageIntent).
+  // INTENT: the Agent still chooses tools; when it ends without calling the image
+  // tool anyway, the engine keeps the promise with the user's own words as direction.
+  imageRequest: z.object({
+    name: z.enum(["generate_image_async", "edit_last_image"]),
+    requestedNudity: z.enum(["unspecified", "none", "full"]),
+    userText: z.string().trim().min(1).max(4_000),
+  }).strict().nullable().optional(),
   profile: preparedTurnProfileSchema,
   budget: preparedBudget,
   trace: preparedTrace,
-  requiredAction: z.object({
-    name: toolName,
-    requestedNudity: z.enum(["unspecified", "none", "full"]),
-    replyLocale: nonEmptyString,
-  }).strict().nullable(),
 }).strict().superRefine((turn, context) => {
+  if (turn.imageRequest && !turn.tools.some(({ name }) => name === turn.imageRequest!.name)) {
+    context.addIssue({ code: "custom", path: ["imageRequest"], message: "an image request needs its tool in this Turn" });
+  }
+  const ids = new Set(turn.messages.map(message => message.id));
+  for (const [index, message] of (turn.omittedMessages ?? []).entries()) {
+    if (message.sourceKind !== "replay" || (message.role !== "user" && message.role !== "assistant") || ids.has(message.id)) {
+      context.addIssue({ code: "custom", path: ["omittedMessages", index], message: "omitted history must contain unique replayed dialogue" });
+    }
+    ids.add(message.id);
+  }
   if (turn.model !== turn.profile.model) {
     context.addIssue({ code: "custom", path: ["model"], message: "prepared model must equal profile model" });
   }
@@ -138,22 +153,8 @@ export const preparedTurnSchema = z.object({
   if (new Set(turn.tools.map(({ name }) => name)).size !== turn.tools.length) {
     context.addIssue({ code: "custom", path: ["tools"], message: "prepared tool names must be unique" });
   }
-  if (
-    turn.requiredAction &&
-    (turn.tools.length !== 1 || turn.tools[0]?.name !== turn.requiredAction.name)
-  ) {
-    context.addIssue({
-      code: "custom",
-      path: ["tools"],
-      message: "a required action must expose exactly its matching Agent tool",
-    });
-  }
-  if (turn.requiredAction && !turn.profile.supportsTools) {
-    context.addIssue({
-      code: "custom",
-      path: ["profile", "supportsTools"],
-      message: "a required action needs a tool-capable model profile",
-    });
+  if (turn.tools.length > 0 && !turn.profile.supportsTools) {
+    context.addIssue({ code: "custom", path: ["profile", "supportsTools"], message: "image tools need a tool-capable model profile" });
   }
 });
 
@@ -203,6 +204,7 @@ export const companionModelRequestEvidenceSchema = z.object({
   systemPromptDigest: sha256,
   estimatedInputTokens: positiveInteger,
   maxInputTokens: positiveInteger.optional(),
+  purpose: z.literal("compaction").optional(),
   droppedReplayMessageIds: z.array(nonEmptyString).optional(),
 }).strict();
 export type CompanionModelRequestEvidence = z.infer<typeof companionModelRequestEvidenceSchema>;
@@ -222,10 +224,6 @@ export const companionTerminalCandidateSchema = z.object({
   tools: z.array(companionToolReservationSchema),
   completedAt: isoDateTime,
   modelRequests: z.array(companionModelRequestEvidenceSchema).optional(),
-  acknowledgement: z.object({
-    version: z.literal("image-action-ack-1"),
-    locale: nonEmptyString,
-  }).strict().optional(),
   attribution: z.object({
     requestId: nonEmptyString.optional(),
     actualProvider: nonEmptyString.optional(),
@@ -268,7 +266,7 @@ export const companionEventSchema = z.discriminatedUnion("type", [
   z.object({ ...eventIdentity, type: z.literal("tool_started"), callId: nonEmptyString, name: toolName }).strict(),
   z.object({ ...eventIdentity, type: z.literal("tool_finished"), callId: nonEmptyString, name: toolName, outcome: z.enum(["succeeded", "failed", "unknown"]), durationMs: nonNegativeInteger }).strict(),
   z.object({ ...eventIdentity, type: z.literal("usage"), usage: companionUsage }).strict(),
-  z.object({ ...eventIdentity, type: z.literal("igrep_observation"), operation: z.enum(["wake", "search", "memory"]), outcome: z.enum(["hit", "empty", "failure"]), resultCount: nonNegativeInteger.optional(), evidenceMatches: nonNegativeInteger.max(8).optional(), durationMs: nonNegativeInteger }).strict(),
+  z.object({ ...eventIdentity, type: z.literal("igrep_observation"), operation: z.enum(["wake", "search", "memory", "web", "session", "compaction"]), outcome: z.enum(["hit", "empty", "failure"]), resultCount: nonNegativeInteger.optional(), evidenceMatches: nonNegativeInteger.max(8).optional(), durationMs: nonNegativeInteger }).strict(),
   z.object({ ...eventIdentity, type: z.literal("heartbeat") }).strict(),
   z.object({ ...eventIdentity, type: z.literal("terminal_candidate"), candidate: companionTerminalCandidateSchema }).strict(),
   z.object({ ...eventIdentity, type: z.literal("failed"), error: companionError }).strict(),

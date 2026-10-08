@@ -7,7 +7,7 @@ import {
   type CharacterDraftVisualDirection,
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
-import { renderCharacterSoulMarkdown } from "@idream/shared/chat/persona-render";
+import { CHARACTER_SOUL_SCHEMA_VERSION, renderCharacterSoulMarkdown } from "@idream/shared/chat/persona-render";
 import Link from "next/link";
 import { useEffect, useId, useRef, useState } from "react";
 import { clearSoulDraft, readSoulDraft, writeSoulDraft, type SoulDraft, type SoulVisualForm } from "./soul-drafts";
@@ -19,7 +19,6 @@ import { RequestErrorDetails } from "@/components/admin/ui/RequestErrorDetails";
 import { operatorErrorCopy, type OperatorErrorCopy } from "@/components/admin/ui/request-error-copy";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import {
-  LoadingWorkspace,
   WorkspaceButton,
   fieldClass,
   textAreaClass,
@@ -49,7 +48,14 @@ function SoulEditor({
   const { t } = useAdminI18n();
   const storageKey = `idream.admin.soul-draft:${actorId}:${data.character.id}`;
   const [draft, setDraft] = useState<SoulDraft | null>(null);
-  const persona = draft?.persona ?? soulDraftFromWorkspace(data);
+  const storedPersona = soulDraftFromWorkspace(data);
+  const persona = draft?.persona ?? storedPersona ?? recoveredSoulDraft(data);
+  // INTENT: 读不出的 Soul 与旧格式 Soul 都会挡住发布，唯一的修法就是在这里重新保存一次；
+  // 所以这两种状态下即使没有改动也允许保存，否则运营只能随便改一个字来解锁。
+  const lockedIdentity = data.visual.activeIdentity;
+  const needsRepair = storedPersona === null;
+  const needsUpgrade = !needsRepair &&
+    data.soul.current.schemaVersion !== CHARACTER_SOUL_SCHEMA_VERSION;
   const baseVisual = visualFormFromWorkspace(data);
   const visual = draft?.visual ?? baseVisual;
   const baseVersion = draft?.projectVersion ?? data.project.version;
@@ -61,9 +67,7 @@ function SoulEditor({
   const [validationAttempted, setValidationAttempted] = useState(false);
   const formRef = useRef<HTMLFieldSetElement>(null);
   const [requestError, setRequestError] = useState<OperatorErrorCopy | null>(null);
-  const [error, setError] = useState<string | null>(() =>
-    persona ? null : t("Character Soul could not be loaded"),
-  );
+  const [error, setError] = useState<string | null>(null);
 
   // Restore after hydration only once per editor identity; an edit made meanwhile wins.
   useEffect(() => {
@@ -88,16 +92,6 @@ function SoulEditor({
     setValidationAttempted(false);
     setRequestError(null);
     setError(persisted ? null : t("Draft cleared for this tab. Browser storage is unavailable."));
-  }
-
-  if (!persona) {
-    return error ? (
-      <p className="rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">
-        {error}
-      </p>
-    ) : (
-      <LoadingWorkspace label={t("Loading immutable Character Soul authority")} />
-    );
   }
 
   const keepDraft = (next: SoulDraft) => {
@@ -191,17 +185,34 @@ function SoulEditor({
         <Link className="min-h-9 content-center font-semibold underline" href={releaseHref}>{t("Go to Release")}</Link>
       </div> : null}
 
-      {data.soul.current.diagnostics.length > 0 ? (
-        <section className="rounded-lg border border-[var(--ad-yellow-text)] bg-[var(--ad-yellow-bg)] p-4">
-          <h3 className="font-semibold text-[var(--ad-yellow-text)]">{t("Compiler diagnostics")}</h3>
-          <p className="mt-1 text-sm text-[var(--ad-yellow-text)]">{t("Publishing stays blocked until every item below is cleared, warnings included.")}</p>
-          <ul className="mt-2 space-y-2 text-sm text-[var(--ad-yellow-text)]">
-            {data.soul.current.diagnostics.map((item) => (
-              <li key={`${item.code}:${item.path.join(".")}`}>
-                <code>{item.path.join(".") || "soul"}</code> — {item.message}
-              </li>
-            ))}
-          </ul>
+      {needsRepair || needsUpgrade || data.soul.current.diagnostics.length > 0 ? (
+        <section className="rounded-lg border border-[var(--ad-yellow-text)] bg-[var(--ad-yellow-bg)] p-4 text-[var(--ad-yellow-text)]" role="status">
+          <h3 className="font-semibold">
+            {t(needsRepair
+              ? "The saved persona could not be read"
+              : needsUpgrade
+                ? "Saved in an older format"
+                : "Compiler diagnostics")}
+          </h3>
+          <p className="mt-1 text-sm">
+            {t(needsRepair
+              ? "The form was filled from the character profile and opening message. Review it, then save to repair. Publishing is blocked until then."
+              : needsUpgrade
+                ? "Save once to convert it. The content stays the same. Publishing is blocked until then."
+                : "Publishing stays blocked until every item below is cleared, warnings included.")}
+          </p>
+          {data.soul.current.diagnostics.length > 0 ? (
+            <details className="mt-2 text-sm" open={!needsRepair && !needsUpgrade}>
+              <summary className="cursor-pointer font-semibold">{t("Technical details")}</summary>
+              <ul className="mt-2 space-y-2">
+                {data.soul.current.diagnostics.map((item) => (
+                  <li key={`${item.code}:${item.path.join(".")}`}>
+                    <code>{item.path.join(".") || "soul"}</code> — {item.message}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
         </section>
       ) : null}
 
@@ -228,8 +239,21 @@ function SoulEditor({
         </div>
 
         <h3 className="mt-8 text-lg font-semibold">{t("Appearance")}</h3>
-        <p className="mt-1 text-sm text-[var(--ad-text-muted)]">{t("After publishing, new images reference this description. Characters with a locked visual identity follow the locked identity and its reference images.")}</p>
-        <div className="mt-4 grid gap-5 lg:grid-cols-2">
+        {lockedIdentity ? (
+          // INTENT (2026-10-07): once a look is locked, the portrait is the authority. The
+          // server refuses edits here (visual_identity_locked); a new look is a new identity.
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md bg-[var(--ad-blue-bg)] px-4 py-2 text-sm text-[var(--ad-blue-text)]" role="status">
+            <span>
+              {t(identityAuthoredByOperator(lockedIdentity.createdFrom)
+                ? "The look is locked to the current portrait. Image generation uses the description written when the look was changed; the text below is from creation and is no longer used."
+                : "The look is locked to the current portrait. The text below describes it in image generation and can no longer be edited.")}
+            </span>
+            <Link className="min-h-9 content-center font-semibold underline" href={`/admin/characters/${encodeURIComponent(data.character.id)}?tab=visual`}>{t("Change the look")}</Link>
+          </div>
+        ) : (
+          <p className="mt-1 text-sm text-[var(--ad-text-muted)]">{t("New images follow this description until the first portrait locks the look.")}</p>
+        )}
+        <fieldset className="mt-4 grid gap-5 lg:grid-cols-2" disabled={lockedIdentity !== null}>
           <Area name="identityAnchor" error={fieldErrors.identityAnchor} label={t("Identity anchor")} value={visual.identityAnchor} onChange={(value) => setVisual({ identityAnchor: value })} />
           <Area name="stableTraits" error={fieldErrors.stableTraits} label={t("Stable traits (one per line)")} value={visual.stableTraits} onChange={(value) => setVisual({ stableTraits: value })} />
           <label className="text-sm font-medium">
@@ -242,7 +266,7 @@ function SoulEditor({
             </select>
           </label>
           <Area name="referenceDirection" error={fieldErrors.referenceDirection} label={t("Reference direction")} value={visual.referenceDirection} onChange={(value) => setVisual({ referenceDirection: value })} />
-        </div>
+        </fieldset>
 
         {Object.keys(fieldErrors).length > 0 ? <p className="mt-4 text-sm text-[var(--ad-red-text)]" role="alert">{t("Fix the highlighted fields to save.")}</p> : null}
         {error ? <p className="mt-4 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
@@ -253,8 +277,8 @@ function SoulEditor({
         </div> : null}
         <div className="sticky bottom-0 z-10 mt-5 flex items-center justify-between gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3">
           <p className="text-xs text-[var(--ad-text-muted)]">{t("Saved changes stay private until you publish the character.")}</p>
-          <WorkspaceButton disabled={!canWrite || busy || stale || !dirty || candidatePending} onClick={() => void save()} tone="primary">
-            {busy ? t("Saving…") : t("Save")}
+          <WorkspaceButton disabled={!canWrite || busy || stale || !(dirty || needsRepair || needsUpgrade) || candidatePending} onClick={() => void save()} tone="primary">
+            {busy ? t("Saving…") : t(!dirty && needsRepair ? "Save to repair" : !dirty && needsUpgrade ? "Save in current format" : "Save")}
           </WorkspaceButton>
         </div>
       </fieldset>
@@ -310,6 +334,32 @@ export function soulDraftFromWorkspace(data: CharacterWorkspaceDetail): Characte
     firstMessage: typeof opening.firstMessage === "string" ? opening.firstMessage : "",
   });
   return parsed.success ? parsed.data : null;
+}
+
+// Mirrors identityReplacesAppearanceText in Main's generation prompt.
+function identityAuthoredByOperator(createdFrom: string) {
+  return createdFrom === "admin_passport_edit" || createdFrom.startsWith("identity_calibration:");
+}
+
+// SPEC: the stored Soul is unreadable (e.g. legacy_snapshot_incomplete); prefill from
+// whatever is still readable so the operator can repair it with one save.
+export function recoveredSoulDraft(data: CharacterWorkspaceDetail): CharacterDraftPersona {
+  const soul = asRecord(data.soul.current.soul);
+  const text = (value: unknown, fallback: string) =>
+    typeof value === "string" && value.trim() ? value : fallback;
+  const opening = data.preview.draft.opening.firstMessage;
+  return {
+    name: text(soul.name, data.character.name),
+    age: typeof soul.age === "number" ? soul.age : data.character.age,
+    gender: [soul.gender, data.character.gender].find(isSoulGender) ?? "female",
+    characterPromise: text(soul.characterPromise, data.preview.draft.description || data.character.description),
+    detailsMarkdown: text(soul.detailsMarkdown, ""),
+    firstMessage: text(opening, ""),
+  };
+}
+
+function isSoulGender(value: unknown): value is CharacterDraftPersona["gender"] {
+  return value === "female" || value === "male" || value === "trans";
 }
 
 const visualStyles = characterDraftVisualDirectionSchema.shape.style.options;

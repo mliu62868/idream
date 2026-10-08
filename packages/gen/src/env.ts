@@ -221,12 +221,6 @@ export const env = {
     // execution windows ahead of this worker on the shared image/video device.
     return positiveIntegerEnv("GEN_ACCELERATOR_WAIT_TIMEOUT_MS", 2 * this.VIDEO_TIMEOUT_MS);
   },
-  get ACCELERATOR_LOCK_STALE_MS(): number {
-    return positiveIntegerEnv(
-      "GEN_ACCELERATOR_LOCK_STALE_MS",
-      this.VIDEO_TIMEOUT_MS + 5 * 60_000,
-    );
-  },
   /** Exact ComfyUI models root whose bytes are attested by video launch probes. */
   get COMFYUI_MODEL_ROOT(): string {
     return process.env.COMFYUI_MODEL_ROOT ?? "/Users/kk/ComfyUI-Shared/models";

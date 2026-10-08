@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { CharacterPerformanceReconciliation } from "./CharacterPerformanceReconciliation";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 const { request } = vi.hoisted(() => ({ request: vi.fn() }));
 vi.mock("@/lib/admin-v2-api", async (original) => ({ ...await original<typeof import("@/lib/admin-v2-api")>(), adminV2Request: request }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -19,6 +20,19 @@ describe("character fact reconciliation", () => {
   beforeEach(() => { request.mockReset(); container = document.createElement("div"); document.body.append(container); root = createRoot(container); });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
   const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 15)); });
+  it("reloads the performance reconciliation through shell refresh only while it is expanded", async () => {
+    request.mockResolvedValue(report);
+    await act(async () => root.render(<CharacterPerformanceReconciliation />));
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    expect(request).not.toHaveBeenCalled();
+    await act(async () => container.querySelector("button")!.click()); await settle();
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    expect(request).toHaveBeenCalledTimes(2);
+    await act(async () => container.querySelector("button")!.click());
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
   it("loads global evidence on demand and never describes empty facts as financial sign-off", async () => {
     request.mockResolvedValue(report);
     await act(async () => root.render(<CharacterPerformanceReconciliation />));

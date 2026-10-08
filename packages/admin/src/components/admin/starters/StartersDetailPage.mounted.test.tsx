@@ -7,6 +7,7 @@ import { AdminI18nProvider, translateAdmin } from "../i18n";
 import { StartersDetailPage } from "./StartersDetailPage";
 import { StartersSection } from "./StartersSection";
 import { STARTERS_LIST, type Starter } from "./starters-api";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 const { apiGet, apiWrite } = vi.hoisted(() => ({ apiGet: vi.fn(), apiWrite: vi.fn() }));
 vi.mock("../api", async (original) => ({ ...await original<typeof import("../api")>(), apiGet, apiWrite }));
@@ -50,6 +51,25 @@ describe("starter detail version protection", () => {
     });
     await act(async () => button(label, dialog()).click());
   }
+
+  it("reloads starter details through shell refresh while retaining its draft and confirmation", async () => {
+    await render();
+    await act(async () => button("Edit profile").click());
+    await act(async () => input(field("Name (≥1)"), "Unfinished starter draft"));
+    await act(async () => button("Save changes").click());
+    await act(async () => input(dialog().querySelector<HTMLInputElement>('[aria-label="Reason (≥3)"]')!, "Retain this confirmation reason"));
+    const confirmation = dialog();
+    let finish!: (value: { template: Starter }) => void;
+    apiGet.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    expect(apiGet).toHaveBeenCalledTimes(2);
+    expect(field("Name (≥1)").value).toBe("Unfinished starter draft");
+    expect(dialog()).toBe(confirmation);
+    expect(dialog().querySelector<HTMLInputElement>('[aria-label="Reason (≥3)"]')!.value).toBe("Retain this confirmation reason");
+    await act(async () => finish({ template: { ...starter, summary: "Fresh authority summary" } }));
+    expect(field("Name (≥1)").value).toBe("Unfinished starter draft");
+    expect(apiWrite).not.toHaveBeenCalled();
+  });
 
   it("shows the stored gender and style in the operator's language", async () => {
     apiGet.mockResolvedValue({ template: { ...starter, style: "realistic" } });

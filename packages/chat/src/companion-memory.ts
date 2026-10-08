@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, open, rm, type FileHandle } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, rm, type FileHandle } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   companionWorkspaceRebuildPromotionSchema,
@@ -25,12 +25,38 @@ function userSpoolRoot(userId: string): string {
   return join(resolve(env.CHAT_FS_ROOT), "rebuild-spools", `user-${userHash}`);
 }
 
-/** Startup only, before HTTP admission: no request owns a live spool yet. */
-export async function cleanupInterruptedCompanionMemorySpools(): Promise<void> {
+/** Startup only, before HTTP admission and account-erasure completion. */
+export async function cleanupInterruptedCompanionData(): Promise<void> {
   // The retired OS location has no user ownership metadata. Single-process
   // startup is the point where every surviving request directory is orphaned.
   await rm(join(tmpdir(), "idream-chat-rebuilds"), { recursive: true, force: true });
   await rm(join(resolve(env.CHAT_FS_ROOT), "rebuild-spools"), { recursive: true, force: true });
+  // Official igrep roots are process-owned and unrecoverable after that process
+  // exits. Sweep before admission, rather than waiting for a new Agent to run
+  // the plugin's lazy sweep. Live, foreign, unmarked and symlink roots stay put.
+  let entries;
+  try { entries = await readdir(tmpdir(), { withFileTypes: true }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith("igrep-dsh-recall-")) continue;
+    const root = join(tmpdir(), entry.name);
+    let owner: { host?: unknown; pid?: unknown } | null;
+    try {
+      const marker = join(root, "owner.json");
+      const metadata = await lstat(marker);
+      if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 1_024) continue;
+      owner = JSON.parse(await readFile(marker, "utf8"));
+    } catch { continue; } // Without a readable owner, deletion is unauthorized.
+    if (!owner || owner.host !== hostname() || !Number.isSafeInteger(owner.pid) || Number(owner.pid) <= 0 || owner.pid === process.pid) continue;
+    try { process.kill(Number(owner.pid), 0); }
+    catch (error) {
+      // Only ESRCH proves the owner is gone; permissions or other errors don't.
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") await rm(root, { recursive: true, force: true });
+    }
+  }
 }
 
 /** Account erasure installs the durable user fence before removing this scope. */

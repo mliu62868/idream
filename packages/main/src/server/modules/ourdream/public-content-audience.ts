@@ -1,3 +1,4 @@
+import { reservedFixtureEmailWhere } from "@/server/lib/user-data-provenance";
 import { Prisma } from "@prisma/client";
 import type { PrismaClient } from "@prisma/client";
 import {
@@ -75,6 +76,7 @@ export const activeCustomerUserWhere = {
   role: "user",
   status: "active",
   deletedAt: null,
+  NOT: reservedFixtureEmailWhere,
 } as const satisfies Prisma.UserWhereInput;
 
 // SPEC: 这个 userId 的点赞/浏览算不算真实客户互动。

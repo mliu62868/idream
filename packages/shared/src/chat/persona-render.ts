@@ -1,3 +1,6 @@
+// Lives here, not in persona.ts, so client bundles can read it without node:crypto.
+export const CHARACTER_SOUL_SCHEMA_VERSION = 3 as const;
+
 export interface CharacterSoulMarkdownInput {
   name: string;
   age: number;

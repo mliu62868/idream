@@ -1,6 +1,8 @@
 import {
   LlmAdapter,
   LlmError,
+  CONTEXT_WINDOW_EXCEEDED_CODE,
+  isContextWindowExceededError,
   attributionHeaders,
   type ContentBlock,
   type FinishReason,
@@ -10,30 +12,33 @@ import {
   type TokenUsage,
 } from "@deepseek-ai/dsh-llm";
 import { isOpenRouterBaseUrl } from "@idream/shared";
-import { parseImageAgentToolCall } from "@idream/shared/chat/image-action";
+import { EDIT_LAST_IMAGE_TOOL, GENERATE_IMAGE_ASYNC_TOOL } from "@idream/shared/chat/image-action";
 import { createHash } from "node:crypto";
-import { logger } from "../logger.js";
-import type { CompanionModelRequestEvidence, CompanionToolCall, PreparedTurnProfile } from "./contracts";
-import { dropOldestReplayExchange, estimateModelRequestInputTokens, formatModelRequestInput, type ModelInputMessage } from "./model-request-format";
+import type { CompanionModelRequestEvidence, PreparedTurnProfile } from "./contracts";
+import { estimateModelRequestInputTokens, formatModelRequestInput, type ModelInputMessage } from "./model-request-format";
 
 export interface OpenAiCompatibleAdapterOptions {
   profile: PreparedTurnProfile;
   apiKey: string;
   openRouterProviderOnly?: readonly string[];
-  requiredToolName?: CompanionToolCall["name"];
   maxInputTokens?: number;
-  /** Only Main-pinned history IDs may be dropped; new model/tool steps stay fixed. */
+  /** Distinguishes Main-pinned historical user messages from the current request. */
   replayMessageIds?: readonly string[];
+  /** Reproject immutable current Scene, preferences, recall and request after compaction. */
+  turnContextMessages?: readonly ModelInputMessage[];
   /** Factual turns use the profile's structured temperature without changing the configured roleplay default. */
   samplingTemperature?: number;
   responseFormat?: { type: "json_schema"; json_schema: { name: string; strict: true; schema: Record<string, unknown> } };
   observeRequest?: (evidence: CompanionModelRequestEvidence) => void;
+  /** Exactly one receipt per physical request, even when its output is rejected. */
+  observeUsage?: (usage: TokenUsage | undefined) => void;
   fetch?: typeof globalThis.fetch;
 }
 
 interface OpenAiStreamPayload {
   id?: string;
   provider?: string;
+  error?: unknown;
   choices?: Array<{
     delta?: {
       content?: string | null;
@@ -68,12 +73,33 @@ interface BlockState {
 const MAX_PROVIDER_STREAM_BYTES = 4_194_304;
 const MAX_PROVIDER_EVENT_BYTES = 1_048_576;
 const MAX_PROVIDER_OUTPUT_BYTES = 2_097_152;
-const REQUIRED_TOOL_OMITTED_MESSAGE = "provider omitted the required companion tool call";
 
 function chatCompletionsUrl(baseUrl: string): string {
   const url = new URL(baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`);
   url.pathname = `${url.pathname.replace(/\/$/, "")}/chat/completions`;
   return url.toString();
+}
+
+async function providerFailureCode(response: Response, signal: AbortSignal): Promise<string> {
+  const reader = response.body?.getReader?.();
+  if (!reader) return "PROVIDER_HTTP_ERROR";
+  let body = "";
+  let bytes = 0;
+  const decoder = new TextDecoder();
+  try {
+    while (true) {
+      const chunk = await readStreamChunk(reader, signal);
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > 8_192) break;
+      body += decoder.decode(chunk.value, { stream: true });
+    }
+    return isContextWindowExceededError(body) ? CONTEXT_WINDOW_EXCEEDED_CODE : "PROVIDER_HTTP_ERROR";
+  } finally {
+    // Releasing an error response must not wait for a provider's cleanup.
+    void reader.cancel().catch(() => undefined);
+    try { reader.releaseLock(); } catch { /* The cancelled read may still own its lock. */ }
+  }
 }
 
 function textOf(blocks: readonly ContentBlock[]): string {
@@ -83,7 +109,7 @@ function textOf(blocks: readonly ContentBlock[]): string {
     .join("\n");
 }
 
-function modelInputMessages(system: string | undefined, messages: readonly RequestMessage[]): ModelInputMessage[] {
+function modelInputMessages(system: string | undefined, messages: readonly RequestMessage[], replayIds: ReadonlySet<string>): ModelInputMessage[] {
   // Loop-built requests carry the system prompt as system-role messages; only
   // one-shot callers use `system`. Empty system nodes send no prompt.
   const prompt = [system, ...messages.map((message) => message.role === "system" ? textOf(message.content) : "")]
@@ -99,7 +125,9 @@ function modelInputMessages(system: string | undefined, messages: readonly Reque
       output.push({ id: `input:${index}`, sourceKind: "current_user", role: "user", content: textOf(message.content) });
       continue;
     }
-    const sourceKind = message.source.kind === "user" ? "current_user"
+    const sourceKind = replayIds.has(String(message.id)) ? "replay"
+      : message.source.kind === "user" ? "current_user"
+      : message.source.kind === "compact-checkpoint" || message.source.kind === "plugin:igrep" ? "plugin"
       : message.source.kind === "idream" && message.source.context !== "replay" ? "plugin" : "replay";
     if (message.role === "tool") {
       output.push({
@@ -131,59 +159,26 @@ function modelInputMessages(system: string | undefined, messages: readonly Reque
   return output;
 }
 
-function requiredToolArgumentsJson(
-  name: CompanionToolCall["name"],
-  content: string,
-): string | null {
-  try {
-    // SPEC: ADR-21 accepts only a complete arguments object. Stripping prose,
-    // Markdown or wrappers can turn an explicitly qualified answer into an act.
-    const toolCall = parseImageAgentToolCall(name, JSON.parse(content) as unknown);
-    return toolCall ? JSON.stringify(toolCall.arguments) : null;
-  } catch {
-    return null;
+function projectTurnContext(
+  messages: ModelInputMessage[],
+  context: readonly ModelInputMessage[],
+  checkpoints: ReadonlySet<string>,
+): ModelInputMessage[] {
+  if (context.length === 0) return messages;
+  const current = context.find(message => message.sourceKind === "current_user");
+  const fixed = context.filter(message => message.sourceKind === "plugin");
+  const fixedIds = new Set(fixed.map(message => message.id));
+  const projected = messages.filter(message => !fixedIds.has(message.id));
+  const currentIndex = projected.findIndex(message => message.id === current?.id);
+  if (currentIndex >= 0) {
+    projected.splice(currentIndex, 0, ...fixed);
+  } else {
+    // Overflow compaction may retain only a tool tail. The current request is
+    // still Main-pinned authority, independent of a clipped handoff summary.
+    const index = projected.findIndex(message => message.role !== "system" && !checkpoints.has(message.id));
+    projected.splice(index < 0 ? projected.length : index, 0, ...fixed, ...(current ? [current] : []));
   }
-}
-
-// The words the character says before any payload: hidden thinking and
-// everything from the first "{" (a valid or broken tool JSON) are not dialogue.
-export function spokenLineBeforePayload(content: string): string {
-  const withoutThinking = content.replace(/<think>[\s\S]*?(?:<\/think>|$)/giu, "");
-  const brace = withoutThinking.indexOf("{");
-  return (brace === -1 ? withoutThinking : withoutThinking.slice(0, brace)).trim();
-}
-
-/**
- * SPEC: 必需工具这一轮，只放行该工具的块，外加模型在同一步说的台词。
- *
- * INTENT: 台词曾经和其它块一起被滤掉，于是「今晚做什么？顺便发张照片」只会换来一句
- *   系统回执，角色在整段等待里不在场。它写在工具结果出现之前，不可能重新解释一个已被
- *   接受的动作；运行时再按确定性判据校验它（语言、流程泄露、交付声明），不过就丢弃。
- *   这条只作用于原生工具调用成功的路径；JSON 兼容路径整条消息就是载荷，不走这里。
- */
-function requiredToolOnlyChunks(
-  chunks: readonly StreamChunk[],
-  name: CompanionToolCall["name"],
-): StreamChunk[] {
-  const keptIndexes = new Set(chunks.flatMap((chunk) =>
-    chunk.type === "block-end"
-      && ((chunk.block.type === "tool-call" && chunk.block.name === name)
-        || chunk.block.type === "text")
-      ? [chunk.index]
-      : []));
-  return chunks.filter((chunk) => {
-    if (chunk.type === "usage" || chunk.type === "finish") return true;
-    return keptIndexes.has(chunk.index);
-  });
-}
-
-class RequiredToolOmission extends LlmError {
-  constructor(
-    readonly replayState: Extract<StreamChunk, { type: "finish" }>["replayState"],
-    readonly finishReason: FinishReason,
-  ) {
-    super(REQUIRED_TOOL_OMITTED_MESSAGE, "INVALID_RESPONSE");
-  }
+  return projected;
 }
 
 function finishReason(value: string | undefined): FinishReason {
@@ -261,7 +256,7 @@ async function* decodedResponseChunks(
   let completed = false;
   try {
     while (true) {
-      const { done, value } = await readDecodedChunk(reader, signal);
+      const { done, value } = await readStreamChunk(reader, signal);
       if (done) break;
       if (value) yield value;
     }
@@ -281,10 +276,10 @@ async function* decodedResponseChunks(
   }
 }
 
-function readDecodedChunk(
-  reader: ReadableStreamDefaultReader<string>,
+function readStreamChunk<T>(
+  reader: ReadableStreamDefaultReader<T>,
   signal: AbortSignal,
-): ReturnType<ReadableStreamDefaultReader<string>["read"]> {
+): ReturnType<ReadableStreamDefaultReader<T>["read"]> {
   if (signal.aborted) return Promise.reject(modelAbortReason(signal));
   return new Promise((resolve, reject) => {
     const onAbort = () => reject(modelAbortReason(signal));
@@ -307,13 +302,13 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
   private readonly providerOnly: readonly string[] | undefined;
   private readonly openRouter: boolean;
   private readonly request: typeof globalThis.fetch;
-  private readonly requiredToolName: CompanionToolCall["name"] | undefined;
-  private requiredToolCompleted: boolean;
   private readonly maxInputTokens: number | undefined;
   private readonly replayMessageIds: ReadonlySet<string>;
+  private readonly turnContextMessages: readonly ModelInputMessage[];
   private readonly samplingTemperature: number | undefined;
   private readonly responseFormat: OpenAiCompatibleAdapterOptions["responseFormat"];
   private readonly observeRequest: OpenAiCompatibleAdapterOptions["observeRequest"];
+  private readonly observeUsage: OpenAiCompatibleAdapterOptions["observeUsage"];
 
   constructor(options: OpenAiCompatibleAdapterOptions) {
     super();
@@ -322,13 +317,13 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
     this.providerOnly = options.openRouterProviderOnly?.map((value) => value.trim()).filter(Boolean);
     this.openRouter = isOpenRouterBaseUrl(this.profile.baseUrl);
     this.request = options.fetch ?? globalThis.fetch;
-    this.requiredToolName = options.requiredToolName;
+    this.turnContextMessages = options.turnContextMessages ?? [];
     this.maxInputTokens = options.maxInputTokens;
     this.replayMessageIds = new Set(options.replayMessageIds);
     this.samplingTemperature = options.samplingTemperature;
     this.responseFormat = options.responseFormat;
     this.observeRequest = options.observeRequest;
-    this.requiredToolCompleted = !options.requiredToolName;
+    this.observeUsage = options.observeUsage;
     if (!this.apiKey) throw new Error("OpenAI-compatible API key is required");
     if (this.openRouter && !this.providerOnly?.length) {
       throw new Error("OpenRouter requires an exact DSH_OPENROUTER_PROVIDER_ONLY pin");
@@ -339,147 +334,20 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
     if (provider !== this.profile.provider || model !== this.profile.model) {
       throw new Error("model route differs from the pinned invocation profile");
     }
-    return Promise.resolve({ provider, id: model, name: model });
+    return Promise.resolve({ provider, id: model, name: model,
+      // Host-admitted capacity lets DSH pressure policy share the wire budget.
+      ...(this.maxInputTokens === undefined ? {} : { context: { contextWindow: this.maxInputTokens + this.profile.maxOutputTokens } }),
+      defaultMaxTokens: this.profile.maxOutputTokens,
+    });
   }
 
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-    if (this.requiredToolCompleted || !this.requiredToolName) {
-      yield* this.streamOnce(options);
-      return;
-    }
-
-    let omission: RequiredToolOmission | undefined;
-    let totalUsage: TokenUsage | undefined;
-    let usageComplete = true;
-    let argumentsJson: string | null = null;
-    // SPEC: the prose of a first forced attempt that skipped the tool is kept and
-    // replayed as this step's line, beside whichever tool call finally arrives.
-    // INTENT: the local model often answers the forced request in character first
-    // and only calls the tool on the retry, which carries no text. Dropping that
-    // line left every such photo turn with the neutral acknowledgement. The engine
-    // still validates it (length, language, no delivery claim) before using it.
-    let omittedLine = "";
-    const lineChunks = function* (index: number): Generator<StreamChunk> {
-      yield { type: "block-start", index, blockType: "text" };
-      yield { type: "text-delta", index, text: omittedLine };
-      yield { type: "block-end", index, block: { type: "text", text: omittedLine } };
-    };
-    for (const jsonCompatibilityMode of [false, true]) {
-      const chunks: StreamChunk[] = [];
-      let attemptUsageKnown = false;
-      try {
-        for await (const chunk of this.streamOnce(options, jsonCompatibilityMode)) {
-          if (chunk.type === "usage") {
-            attemptUsageKnown = true;
-            totalUsage = {
-              inputTokens: (totalUsage?.inputTokens ?? 0) + (chunk.usage.inputTokens ?? 0),
-              outputTokens: (totalUsage?.outputTokens ?? 0) + (chunk.usage.outputTokens ?? 0),
-              cacheReadTokens: (totalUsage?.cacheReadTokens ?? 0) + (chunk.usage.cacheReadTokens ?? 0),
-              cacheWriteTokens: (totalUsage?.cacheWriteTokens ?? 0) + (chunk.usage.cacheWriteTokens ?? 0),
-              reasoningTokens: (totalUsage?.reasoningTokens ?? 0) + (chunk.usage.reasoningTokens ?? 0),
-            };
-          } else chunks.push(chunk);
-        }
-        usageComplete &&= attemptUsageKnown;
-        const kept = requiredToolOnlyChunks(chunks, this.requiredToolName);
-        const saidSomething = kept.some((chunk) => chunk.type === "text-delta" && chunk.text.trim());
-        const nextIndex = 1 + Math.max(-1, ...kept.flatMap((chunk) => "index" in chunk ? [chunk.index] : []));
-        for (const chunk of kept) {
-          if (chunk.type === "finish") {
-            if (omittedLine && !saidSomething) yield* lineChunks(nextIndex);
-            if (usageComplete && totalUsage) yield { type: "usage", usage: totalUsage };
-          }
-          yield chunk;
-        }
-        return;
-      } catch (error) {
-        // A later measured retry cannot turn an earlier unknown cost into zero.
-        usageComplete &&= attemptUsageKnown;
-        if (!(error instanceof RequiredToolOmission)) throw error;
-        omission = error;
-        const content = chunks
-          .filter((chunk): chunk is Extract<StreamChunk, { type: "text-delta" }> =>
-            chunk.type === "text-delta")
-          .map((chunk) => chunk.text)
-          .join("");
-        // Some compatible providers return the exact arguments as text even
-        // for a forced native tool. Validate that completed candidate before
-        // spending another request; length-limited or mixed tool output is not
-        // an alternative complete action, even if its text happens to parse.
-        argumentsJson = error.finishReason.kind === "stop"
-          && !chunks.some((chunk) => chunk.type === "tool-call-delta")
-          ? requiredToolArgumentsJson(this.requiredToolName, content)
-          : null;
-        if (!jsonCompatibilityMode && error.finishReason.kind === "stop") omittedLine = spokenLineBeforePayload(content);
-        if (argumentsJson) {
-          logger.info({
-            event: "companion_required_tool_json_compatibility",
-            requiredToolName: this.requiredToolName,
-          }, "converted validated provider JSON into a companion tool call");
-          break;
-        }
-      }
-    }
-    // An edit has a Main-owned source and can preserve the user's exact edit.
-    // A new image also needs a subject decision; guessing companion here would
-    // turn person-free scene requests into paid portraits when the model fails.
-    if (!argumentsJson && this.requiredToolName === "edit_last_image"
-      && (omission?.finishReason.kind === "stop" || omission?.finishReason.kind === "max-tokens")) {
-      const userText = textOf(options.messages.findLast((message) => message.role === "user" && (!message.source || message.source.kind === "user"))?.content ?? [])
-        .trim().slice(0, 1_000);
-      argumentsJson = userText
-        ? requiredToolArgumentsJson(this.requiredToolName, JSON.stringify({ instruction: userText }))
-        : null;
-      if (argumentsJson) {
-        logger.warn({
-          event: "companion_required_tool_user_text_fallback",
-          requiredToolName: this.requiredToolName,
-        }, "provider never produced the required tool; directing it from the user request");
-      }
-    }
-    if (!argumentsJson || !omission) throw omission;
-    const callId = `compat_${createHash("sha256")
-      .update(`${this.requiredToolName}\0${argumentsJson}`)
-      .digest("hex")
-      .slice(0, 24)}` as never;
-    this.requiredToolCompleted = true;
-    yield { type: "block-start", index: 0, blockType: "tool-call" };
-    yield {
-      type: "tool-call-delta",
-      index: 0,
-      id: callId,
-      name: this.requiredToolName,
-      argumentsDelta: argumentsJson,
-    };
-    yield {
-      type: "block-end",
-      index: 0,
-      block: {
-        type: "tool-call",
-        id: callId,
-        name: this.requiredToolName,
-        arguments: argumentsJson,
-      },
-    };
-    if (omittedLine) yield* lineChunks(1);
-    if (usageComplete && totalUsage) yield { type: "usage", usage: totalUsage };
-    yield { type: "finish", reason: { kind: "tool-calls" }, replayState: omission.replayState };
-  }
-
-  private async *streamOnce(
-    options: GenerateOptions,
-    jsonCompatibilityMode = false,
-  ): AsyncIterable<StreamChunk> {
     if (options.provider !== this.profile.provider || options.model !== this.profile.model) {
       throw new LlmError("model route differs from the pinned invocation profile", "INVALID_ROUTE");
     }
-    const forceRequiredTool = !this.requiredToolCompleted;
-    if (
-      forceRequiredTool &&
-      !options.tools?.some((tool) => tool.name === this.requiredToolName)
-    ) {
-      throw new LlmError("required image tool is absent from the model request", "INVALID_ROUTE");
-    }
+    const compacting = options.purpose === "compaction";
+    const imageToolsAvailable = options.tools?.some(tool =>
+      tool.name === GENERATE_IMAGE_ASYNC_TOOL || tool.name === EDIT_LAST_IMAGE_TOOL);
     const timeout = linkedSignal(options.signal);
     let firstToken = true;
     const firstTokenTimer = setTimeout(
@@ -489,20 +357,24 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
       )),
       this.profile.timeout.firstTokenMs,
     );
-    let inputMessages = modelInputMessages(options.system, options.messages);
-    const formatInput = () => formatModelRequestInput({
+    const surfaceMessages = modelInputMessages(options.system, options.messages, this.replayMessageIds);
+    const inputMessages = compacting ? surfaceMessages : projectTurnContext(
+      surfaceMessages,
+      this.turnContextMessages,
+      new Set(options.messages.filter(message => message.source?.kind === "compact-checkpoint").map(message => String(message.id))),
+    );
+    const modelInput = formatModelRequestInput({
       messages: inputMessages,
       tools: options.tools,
-      requiredTool: forceRequiredTool,
-      jsonCompatibilityMode,
     });
-    const modelInput = formatInput();
+    const currentUserIndex = inputMessages.findLastIndex(message => message.sourceKind === "current_user");
+    const imageToolAlreadyCalled = inputMessages.slice(currentUserIndex + 1).some(message =>
+      message.role === "assistant" && !this.replayMessageIds.has(message.id) && message.tool_calls?.some(call =>
+        call.function.name === GENERATE_IMAGE_ASYNC_TOOL || call.function.name === EDIT_LAST_IMAGE_TOOL));
     const body = {
       model: options.model,
-      // SPEC: the latest user request authorizes one image action. Preserve
-      // prepared Scene, dialogue and recall as quoted continuity evidence;
-      // earlier requests and tool protocol cannot become new actions. Chat
-      // confirms the request locally only after Main accepts the effect.
+      // Preserve native dialogue and tool results. The Agent interprets the
+      // current request; replay and recall provide continuity, not new actions.
       messages: modelInput.messages,
       stream: true,
       stream_options: { include_usage: true },
@@ -510,17 +382,19 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
       // exposes memory tools in normal mode, so a "structured" temperature
       // keyed on `tools.length` would flatten every companion reply to the
       // planner setting (0.2) — the voice must not depend on tool exposure.
-      temperature: jsonCompatibilityMode
+      temperature: compacting
         ? 0
         : this.samplingTemperature ?? this.profile.sampling.temperature,
       top_p: this.profile.sampling.topP,
       repetition_penalty: this.profile.sampling.repetitionPenalty,
-      // A response-length preference must not truncate native/JSON tool arguments.
-      // The required visual direction step retains its original model budget.
-      max_tokens: Math.min(
+      // A short-reply preference must not truncate a native image direction.
+      // Tool availability reserves that budget without deciding whether to call.
+      // The native API shares one limit for text and arguments, so first-step
+      // text also has this ceiling; the short preference is then prompt-only.
+      max_tokens: compacting ? options.maxTokens ?? this.profile.maxOutputTokens : Math.min(
         options.maxTokens ?? this.profile.maxOutputTokens,
         this.profile.maxOutputTokens,
-        forceRequiredTool ? this.profile.maxOutputTokens : this.profile.answerMaxOutputTokens ?? this.profile.maxOutputTokens,
+        imageToolsAvailable && !imageToolAlreadyCalled ? this.profile.maxOutputTokens : this.profile.answerMaxOutputTokens ?? this.profile.maxOutputTokens,
       ),
       // INVARIANT: Chat-owned PreparedTurn budgets the companion reply, not
       // hidden chain-of-thought inside the sole DSH execution path.
@@ -532,46 +406,27 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
         // SPEC: OpenAI-compatible servers must enter the native function-call
         // path when tools are present; never rely on a server-specific default
         // that may render a tool plan as ordinary assistant JSON.
-        tool_choice: forceRequiredTool
-          ? {
-              type: "function",
-              function: { name: this.requiredToolName },
-            }
-          : "auto",
+        tool_choice: compacting ? "none" : "auto",
       } : {}),
       ...(this.openRouter ? {
         provider: { only: [...(this.providerOnly ?? [])], allow_fallbacks: false },
       } : {}),
     };
-    if (forceRequiredTool) {
-      logger.info({
-        event: "companion_required_tool_forced",
-        requiredToolName: this.requiredToolName,
-        offeredToolNames: options.tools?.map((tool) => tool.name) ?? [],
-      }, "forcing required companion tool");
-    }
-
+    let requestStarted = false;
+    let usage: TokenUsage | undefined;
     try {
       // Apply the same character estimate as PreparedTurn, now
       // including DSH guidance, resident memory, tool results and wire schemas.
       // This is an input estimate, not a claim about a provider's tokenizer.
       const estimate = () => estimateModelRequestInputTokens(body)
         + (this.responseFormat ? Math.ceil(JSON.stringify(this.responseFormat).length / 4) : 0);
-      let estimatedInputTokens = estimate();
-      const droppedReplayMessageIds: string[] = [];
-      while (this.maxInputTokens !== undefined && estimatedInputTokens > this.maxInputTokens) {
-        // DSH adds memory guidance, profile, recall and tool results after
-        // PreparedTurn fitting. Refit the same oldest complete exchanges here;
-        // their pinned IDs distinguish history from this turn's model steps.
-        const retained = dropOldestReplayExchange(inputMessages, this.replayMessageIds);
-        if (!retained) {
-          throw new LlmError("assembled model request exceeds the prepared input budget", "INPUT_BUDGET_EXCEEDED");
-        }
-        const retainedIds = new Set(retained.map(message => message.id));
-        droppedReplayMessageIds.push(...inputMessages.filter(message => !retainedIds.has(message.id)).map(message => message.id));
-        inputMessages = retained;
-        body.messages = formatInput().messages;
-        estimatedInputTokens = estimate();
+      const estimatedInputTokens = estimate();
+      // Surface replacement must happen in DSH so originals remain recallable.
+      // Auxiliary summaries read the bounded authorized snapshot; only the
+      // resulting conversational request is charged to the admitted tier window.
+      if (!compacting && this.maxInputTokens !== undefined && estimatedInputTokens > this.maxInputTokens) {
+        throw new LlmError("assembled model request exceeds the prepared input budget",
+          this.responseFormat ? "INPUT_BUDGET_EXCEEDED" : CONTEXT_WINDOW_EXCEEDED_CODE);
       }
       const serializedBody = JSON.stringify(body);
       this.observeRequest?.({
@@ -584,9 +439,9 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
           .map(message => message.content)
           .join("\n")).digest("hex"),
         estimatedInputTokens,
-        ...(this.maxInputTokens === undefined ? {} : { maxInputTokens: this.maxInputTokens }),
-        ...(droppedReplayMessageIds.length === 0 ? {} : { droppedReplayMessageIds }),
+        ...(compacting ? { purpose: "compaction" as const } : this.maxInputTokens === undefined ? {} : { maxInputTokens: this.maxInputTokens }),
       });
+      requestStarted = true;
       const response = await this.request(chatCompletionsUrl(this.profile.baseUrl), {
         method: "POST",
         headers: {
@@ -609,10 +464,12 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
       if (!response.ok) {
         // Cleanup must not hold the HTTP failure behind a provider stream's
         // cancellation promise; aborting the request cannot settle that promise.
-        void response.body?.cancel().catch(() => undefined);
+        const code = response.status === 400 || response.status === 413 || response.status === 422
+          ? await providerFailureCode(response, timeout.signal) : "PROVIDER_HTTP_ERROR";
+        if (response.body && !response.body.locked) void response.body.cancel().catch(() => undefined);
         throw new LlmError(
           `OpenAI-compatible provider returned HTTP ${response.status}`,
-          "PROVIDER_HTTP_ERROR",
+          code,
           { status: response.status },
         );
       }
@@ -622,7 +479,6 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
       let nextIndex = 0;
       let buffer = "";
       let nativeFinish: string | undefined;
-      let usage: TokenUsage | undefined;
       let responseId: string | undefined;
       let actualProvider: string | undefined;
       let responseBytes = 0;
@@ -647,6 +503,11 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
         return [state, [{ type: "block-start", index: state.index, blockType: type } as StreamChunk]];
       };
       const processPayload = (payload: OpenAiStreamPayload): StreamChunk[] => {
+        if (payload.error !== undefined) {
+          throw new LlmError("provider rejected the streamed request",
+            isContextWindowExceededError(JSON.stringify(payload.error).slice(0, 8192))
+              ? CONTEXT_WINDOW_EXCEEDED_CODE : "PROVIDER_STREAM_ERROR");
+        }
         const chunks: StreamChunk[] = [];
         responseId ??= payload.id;
         actualProvider ??= payload.provider;
@@ -745,8 +606,8 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
         throw new LlmError("provider stream ended without a finish reason", "INVALID_RESPONSE");
       }
       const resolvedFinish = finishReason(nativeFinish);
-      // Attribution belongs to the actual provider response, including a JSON
-      // compatibility completion. Validate it before accepting either path.
+      // Attribution belongs to the actual provider response. Validate it before
+      // accepting native text or tool calls.
       if (this.openRouter) {
         if (!responseId || !actualProvider) {
           throw new LlmError("OpenRouter stream omitted request/provider attribution", "INVALID_RESPONSE");
@@ -765,36 +626,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
           ...(actualProvider ? { provider: actualProvider } : {}),
         },
       };
-      // A completed request spent tokens even if it omitted its required tool.
-      // The compatibility wrapper accounts for both requests before returning
-      // one validated DSH completion anchor.
       if (usage) yield { type: "usage", usage };
-      if (forceRequiredTool) {
-        const requiredToolObserved = [...blocks.values()].some(
-          (state) => state.type === "tool-call" && state.name === this.requiredToolName,
-        );
-        if (resolvedFinish.kind !== "tool-calls" || !requiredToolObserved) {
-          logger.warn({
-            event: "companion_required_tool_omitted",
-            requiredToolName: this.requiredToolName,
-            finishReason: resolvedFinish.kind,
-            observedToolNames: [...blocks.values()]
-              .filter((state) => state.type === "tool-call")
-              .map((state) => state.name)
-              .filter(Boolean),
-          }, "provider omitted required companion tool");
-          throw new RequiredToolOmission(replayState, resolvedFinish);
-        }
-        // INVARIANT: transport retries and abandoned streams must keep forcing
-        // the action. Only a validated native tool call advances the adapter to
-        // the post-tool conversational step.
-        this.requiredToolCompleted = true;
-        logger.info({
-          event: "companion_required_tool_observed",
-          requiredToolName: this.requiredToolName,
-          responseId,
-        }, "provider returned required companion tool");
-      }
 
       for (const state of [...blocks.values()].sort((left, right) => left.index - right.index)) {
         const block: ContentBlock = state.type === "text"
@@ -817,6 +649,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
     } finally {
       clearTimeout(firstTokenTimer);
       timeout.clear();
+      if (requestStarted) this.observeUsage?.(usage);
     }
   }
 }

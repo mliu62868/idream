@@ -16,6 +16,7 @@ import { useAdminFormat, text } from "@/components/admin/ui/format";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { emptyPageInfo, Pagination, type PageInfo } from "@/components/admin/ui/Pagination";
 import { useUrlFilters } from "@/components/admin/ui/useUrlFilters";
+import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { canonicalListEmptyTitle } from "@/features/compatibility-lists/empty-state";
 import {
@@ -117,6 +118,8 @@ export function AuditWorkspace() {
     load: (next) => { void load(next); },
   });
   const { apply, draft, query, reload, setDraft } = filters;
+
+  useWorkspaceRefresh(reload);
 
   // SPEC: 任何改变结果集的动作都回到第一页并清空勾选 —— 选中的行翻页后已经不在屏幕上了。
   function applyQuery(next: AuditQuery, trail: string[] = []) {

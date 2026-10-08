@@ -19,6 +19,7 @@ import { useAdminI18n } from "@/components/admin/i18n";
 import { requestErrorMessage } from "@/components/admin/section-kit";
 import { ReadonlyOpsView, type OpsColumn } from "@/components/admin/generation/ReadonlyOpsView";
 import { cn } from "@/lib/utils";
+import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 
 type StatusBuckets = { total: number; completed: number; failed: number; blocked: number };
 
@@ -244,6 +245,8 @@ export function GenerationMetricsView() {
       setLoadingByWindow((current) => ({ ...current, [days]: false }));
     }
   }, [t]);
+
+  useWorkspaceRefresh(() => load(windowDays));
 
   useEffect(() => {
     const timer = window.setTimeout(() => {

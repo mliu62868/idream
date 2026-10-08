@@ -96,7 +96,7 @@ const EnvSchema = z.object({
     .default("false")
     .transform((value) => value === "true"),
   PIPELINE_VOICE_CHUNK_CHARS: z.coerce.number().int().min(0).default(0),
-  PIPELINE_VOICE_MAX_INPUT_CHARS: z.coerce.number().int().min(0).default(900),
+  PIPELINE_VOICE_MAX_INPUT_CHARS: z.coerce.number().int().min(1).max(2_000).default(2_000),
   PIPELINE_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
   PIPELINE_VOICE_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
   // Voice clips arrive as WAV from both gateways; Main re-encodes to MP3 before

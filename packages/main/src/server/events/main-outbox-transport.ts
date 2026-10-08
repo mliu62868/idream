@@ -28,6 +28,10 @@ export const MAIN_OUTBOX_TRANSPORT_QUEUES = [
     eventTypes: ["generation.terminal_record.accepted.v1"],
   },
   {
+    queue: "generation_blob_cleanup",
+    eventTypes: ["generation.blob_cleanup.requested.v1"],
+  },
+  {
     queue: "generation_dispatch",
     eventTypes: MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES,
   },

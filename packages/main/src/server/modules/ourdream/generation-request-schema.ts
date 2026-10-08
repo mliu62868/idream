@@ -4,9 +4,9 @@ import { imageOrientations } from "@idream/shared/media/image-orientation";
 import { imageGeneratePayloadSchema } from "@idream/shared/contracts";
 import { generationQuoteAuthoritySchema } from "./generation-quote-contract";
 
-const generationOrientations = [...imageOrientations, "2:3"] as [
-  (typeof imageOrientations)[number] | "2:3",
-  ...Array<(typeof imageOrientations)[number] | "2:3">,
+const generationOrientations = [...imageOrientations, "2:3", "7:12"] as [
+  (typeof imageOrientations)[number] | "2:3" | "7:12",
+  ...Array<(typeof imageOrientations)[number] | "2:3" | "7:12">,
 ];
 
 const generationControlsSchema = z

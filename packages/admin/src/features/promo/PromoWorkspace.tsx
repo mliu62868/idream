@@ -63,12 +63,28 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
   const [codes, setCodes] = useState<AuthorityState>(emptyAuthority);
   const [referrals, setReferrals] = useState<AuthorityState>(emptyAuthority);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
+  const [confirmationPermission, setConfirmationPermission] = useState(canWrite);
+  const writeAuthority = useRef({ canWrite });
+  const confirmationIntent = useRef<ConfirmSpec | null>(null);
   // 游标轨迹保留上一页；只有从首页空游标起算时，轨迹长度才能证明页码。
   const [trails, setTrails] = useState<PromoTrails>(emptyTrails);
   const gates = useRef({
     codes: createLatestRequestGate(),
     referrals: createLatestRequestGate(),
   });
+
+  // A regrant permits a new intent, never an old filled destructive confirmation.
+  if (confirmationPermission !== canWrite) {
+    setConfirmationPermission(canWrite);
+    setConfirmation(null);
+  }
+  useEffect(() => {
+    writeAuthority.current = { canWrite };
+    return () => {
+      writeAuthority.current = { canWrite: false };
+      confirmationIntent.current = null;
+    };
+  }, [canWrite]);
 
   const loadScope = useCallback(async (next: PromoQuery, scope: PromoScope) => {
     const request = gates.current[scope].begin();
@@ -157,7 +173,9 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
 
   function confirmDisable(id: string) {
     if (!canWrite) return;
-    setConfirmation({
+    const authority = writeAuthority.current;
+    const queryIntent = promoWorkspaceUrl("", "", query);
+    const spec: ConfirmSpec = {
       title: t("Disable redeem code {id}", { id }),
       destructive: { expectedName: id, inputLabel: t("Confirmation") },
       // INTENT: 后台只有 disable，没有 re-enable —— 停掉的码只能再发一个新的。
@@ -168,15 +186,20 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
       reasonLabel: t("Reason"),
       submitLabel: t("Disable"),
       onSubmit: async (reason) => {
+        const isCurrent = () => writeAuthority.current.canWrite && writeAuthority.current === authority && confirmationIntent.current === spec && promoWorkspaceUrl("", "", currentQuery()) === queryIntent;
+        if (!isCurrent()) return;
         await apiWrite(
           `/api/v2/admin/promo/redeem-codes/${id}/disable`,
           "POST",
           { reason, confirmation: id },
         );
+        if (!isCurrent()) return;
         toast({ tone: "success", title: t("Redeem code {id} disabled", { id }) });
         navigate({ ...query, codeCursor: "" }, "replace");
       },
-    });
+    };
+    confirmationIntent.current = spec;
+    setConfirmation(spec);
   }
 
   const filtered = Boolean(
@@ -223,7 +246,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
           onChange={(referralStatus) =>
             setDraft((value) => ({ ...value, referralStatus }))
           }
-          options={["", "pending", "qualified", "rewarded", "rejected"]}
+          options={["", "pending", "completed"]}
           value={draft.referralStatus}
         />
         <div className="flex items-end gap-2">
@@ -297,9 +320,13 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
         state={referrals}
         trail={trails.referrals}
       />
-      {confirmation ? (
+      {canWrite && confirmation ? (
         <ConfirmDialog
-          onClose={() => setConfirmation(null)}
+          onClose={() => {
+            if (confirmationIntent.current !== confirmation) return;
+            confirmationIntent.current = null;
+            setConfirmation((current) => current === confirmation ? null : current);
+          }}
           spec={confirmation}
         />
       ) : null}

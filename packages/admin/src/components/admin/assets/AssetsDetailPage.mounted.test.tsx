@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ContentAsset } from "@idream/shared/admin";
 import { AssetsSection } from "./AssetsSection";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 vi.mock("next/link", () => ({
   default: ({ href, children }: { href: string; children: React.ReactNode }) => <a href={href}>{children}</a>,
@@ -73,6 +74,29 @@ describe("AssetsSection detail write authority", () => {
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
   }
+
+  it("reloads asset details through shell refresh while retaining its metadata and confirmation", async () => {
+    await render();
+    await waitFor(() => container.textContent?.includes("Operator description") === true);
+    const description = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(description, "Unfinished asset description");
+      description.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => button("Save", container).click());
+    await fill(dialog()!.querySelector<HTMLInputElement>('[aria-label="Reason (≥3)"]')!, "Retain this asset reason");
+    const confirmation = dialog();
+    let finish!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("Unfinished asset description");
+    expect(dialog()).toBe(confirmation);
+    expect(dialog()!.querySelector<HTMLInputElement>('[aria-label="Reason (≥3)"]')!.value).toBe("Retain this asset reason");
+    await act(async () => finish(Response.json({ ok: true, data: { asset: auditAsset } })));
+    expect(container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("Unfinished asset description");
+    expect(fetchMock.mock.calls.every(([, init]) => init?.method === "GET")).toBe(true);
+  });
 
   it.each(["Save", "Archive"])("discards the %s confirmation on review revocation and does not revive its reason after regrant", async (action) => {
     await render();

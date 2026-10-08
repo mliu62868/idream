@@ -36,7 +36,7 @@ export type GeneratedImageSanityEvidence = {
   readonly schemaVersion: "1";
   readonly evaluatorVersion: typeof GENERATED_IMAGE_SANITY_EVALUATOR_VERSION;
   readonly sanity: {
-    readonly status: "passed";
+    readonly status: "passed" | "unscored";
   };
   readonly composition: {
     readonly status: "passed" | "unscored";
@@ -88,6 +88,7 @@ export function assertGeneratedImageSanity(
     return generatedImageSanityEvidence(
       "unscored",
       "single_frame_evaluator_supports_png_only",
+      "unscored",
     );
   }
 
@@ -126,11 +127,12 @@ export function assertGeneratedImageSanity(
 function generatedImageSanityEvidence(
   compositionStatus: "passed" | "unscored",
   reason: string,
+  sanityStatus: "passed" | "unscored" = "passed",
 ): GeneratedImageSanityEvidence {
   return {
     schemaVersion: "1",
     evaluatorVersion: GENERATED_IMAGE_SANITY_EVALUATOR_VERSION,
-    sanity: { status: "passed" },
+    sanity: { status: sanityStatus },
     composition: { status: compositionStatus, reason },
   };
 }
@@ -192,12 +194,12 @@ function pixelRgbDifference(
   const first = (firstY * pixels.header.width + firstX) * pixels.channels;
   const second = (secondY * pixels.header.width + secondX) * pixels.channels;
   if (pixels.channels === 1 || pixels.channels === 2) {
-    return Math.abs((pixels.data[first] ?? 0) - (pixels.data[second] ?? 0));
+    return Math.abs(visibleChannel(pixels.data, first, 0, pixels.channels) - visibleChannel(pixels.data, second, 0, pixels.channels));
   }
   return (
-    Math.abs((pixels.data[first] ?? 0) - (pixels.data[second] ?? 0)) +
-    Math.abs((pixels.data[first + 1] ?? 0) - (pixels.data[second + 1] ?? 0)) +
-    Math.abs((pixels.data[first + 2] ?? 0) - (pixels.data[second + 2] ?? 0))
+    Math.abs(visibleChannel(pixels.data, first, 0, pixels.channels) - visibleChannel(pixels.data, second, 0, pixels.channels)) +
+    Math.abs(visibleChannel(pixels.data, first, 1, pixels.channels) - visibleChannel(pixels.data, second, 1, pixels.channels)) +
+    Math.abs(visibleChannel(pixels.data, first, 2, pixels.channels) - visibleChannel(pixels.data, second, 2, pixels.channels))
   ) / 3;
 }
 
@@ -210,6 +212,7 @@ function decodePngPixels(image: Buffer): PngPixels | null {
   let offset = pngSignature.length;
   let header: PngHeader | null = null;
   const idatChunks: Buffer[] = [];
+  let ended = false;
 
   while (offset + 12 <= image.length) {
     const length = image.readUInt32BE(offset);
@@ -237,6 +240,7 @@ function decodePngPixels(image: Buffer): PngPixels | null {
     } else if (type === "IDAT") {
       idatChunks.push(chunkData);
     } else if (type === "IEND") {
+      ended = true;
       break;
     }
 
@@ -245,18 +249,18 @@ function decodePngPixels(image: Buffer): PngPixels | null {
 
   if (!header) throw new Error("Generated PNG is missing IHDR");
   if (idatChunks.length === 0) throw new Error("Generated PNG is missing IDAT");
+  if (!ended) throw new GeneratedImageSanityError("Generated PNG is missing IEND");
+  if (header.width <= 0 || header.height <= 0 || header.width * header.height > 16_777_216) {
+    throw new GeneratedImageSanityError("Generated PNG has invalid or excessive dimensions");
+  }
   if (header.bitDepth !== 8 || header.interlaceMethod !== 0) return null;
 
   const channels = pngChannels(header.colorType);
   if (!channels) return null;
-  if (header.width <= 0 || header.height <= 0) {
-    throw new Error("Generated PNG has invalid dimensions");
-  }
-
-  const inflated = inflateSync(Buffer.concat(idatChunks));
   const rowBytes = header.width * channels;
   const expectedBytes = (rowBytes + 1) * header.height;
-  if (inflated.length < expectedBytes) throw new Error("Generated PNG pixel data is truncated");
+  const inflated = inflateSync(Buffer.concat(idatChunks), { maxOutputLength: expectedBytes });
+  if (inflated.length !== expectedBytes) throw new Error("Generated PNG pixel data does not match its dimensions");
 
   const pixels = Buffer.alloc(rowBytes * header.height);
   const previous = Buffer.alloc(rowBytes);
@@ -345,11 +349,19 @@ function rgbLuminanceStats(pixels: PngPixels) {
 }
 
 function pixelLuminance(data: Buffer, index: number, channels: number) {
-  if (channels === 1 || channels === 2) return data[index] ?? 0;
-  const red = data[index] ?? 0;
-  const green = data[index + 1] ?? 0;
-  const blue = data[index + 2] ?? 0;
+  if (channels === 1 || channels === 2) return visibleChannel(data, index, 0, channels);
+  const red = visibleChannel(data, index, 0, channels);
+  const green = visibleChannel(data, index, 1, channels);
+  const blue = visibleChannel(data, index, 2, channels);
   return Math.round(red * 0.2126 + green * 0.7152 + blue * 0.0722);
+}
+
+// Hidden RGB is not visible variation. Composite alpha onto the same white
+// background used by Gen's decoder before evaluating blankness or dividers.
+function visibleChannel(data: Buffer, index: number, channel: number, channels: number) {
+  const value = data[index + channel] ?? 0;
+  const alpha = channels === 2 || channels === 4 ? (data[index + channels - 1] ?? 0) / 255 : 1;
+  return Math.round(value * alpha + 255 * (1 - alpha));
 }
 
 const crcTable = new Uint32Array(256).map((_, value) => {

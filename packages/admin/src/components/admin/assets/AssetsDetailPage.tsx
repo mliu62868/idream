@@ -11,6 +11,7 @@ import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
+import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 import { InfoGrid, WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 import {
   ASSETS_LIST,
@@ -77,6 +78,8 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
       setLoading(false);
     }
   }, [id, t]);
+
+  useWorkspaceRefresh(reload);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -156,7 +159,7 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
     };
   }, [pending, id, draft, shortId, t, reload, reportSuccess, isCurrentWrite]);
 
-  if (loading) {
+  if (loading && !row) {
     return <LoadingWorkspace label="Loading…" />;
   }
 

@@ -448,15 +448,23 @@ test("every runtime receives the operator-approved source identity", () => {
   }
 });
 
+test("video topology rejects retired Gen providers in every PM2 mode", () => {
+  for (const mode of ["development", "production"]) {
+    for (const provider of ["pipeline", "mlx", "external"]) {
+      assert.throws(
+        () => loadConfig(mode, { GEN_VIDEO_PROVIDER: provider }),
+        /video worker topology requires GEN_VIDEO_PROVIDER=mock or backend/,
+      );
+    }
+  }
+});
+
 test("development omits the video process when the effective Gen provider is mock", () => {
   const mockConfig = loadConfig("development", {
     GEN_VIDEO_PROVIDER: "mock",
   });
   const backendConfig = loadConfig("development", {
     GEN_VIDEO_PROVIDER: "backend",
-  });
-  const pipelineConfig = loadConfig("development", {
-    GEN_VIDEO_PROVIDER: "pipeline",
   });
 
   assert.equal(
@@ -465,10 +473,6 @@ test("development omits the video process when the effective Gen provider is moc
   );
   assert.equal(
     backendConfig.apps.some((app) => app.name === "gen-video"),
-    true,
-  );
-  assert.equal(
-    pipelineConfig.apps.some((app) => app.name === "gen-video"),
     true,
   );
 

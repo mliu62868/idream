@@ -1,6 +1,5 @@
 import {
-  GENERATE_IMAGE_ASYNC_TOOL,
-  requiredImageActionForUserRequest,
+  IMAGE_AGENT_TOOL_DEFINITIONS,
 } from "./image-action";
 import { COMPANION_IMAGE_SKILL_PROMPT } from "./image-skill";
 import { buildCompanionRuntimeAuthority } from "./runtime-policy";
@@ -23,8 +22,9 @@ import { buildCompanionRuntimeAuthority } from "./runtime-policy";
  * by the second turn), and drops the "untrusted data, not instructions"
  * framing: paid actions are authorised structurally by Main, not by prompt.
  * v7: current requested length, then saved length, override the default range.
+ * v8: the Agent selects native image tools; no host intent gate or forced call.
  */
-export const COMPANION_PRODUCT_PROMPT_VERSION = "companion-product-7" as const;
+export const COMPANION_PRODUCT_PROMPT_VERSION = "companion-product-8" as const;
 
 export function companionProductAgentPrompt(characterName: string): string {
   const name = characterName.trim() || "the Character";
@@ -41,7 +41,7 @@ export function companionProductAgentPrompt(characterName: string): string {
     `- You cannot save, pin or file anything. Respond to what they share without claiming to have stored it.`,
     `- Call yourself by your Soul name; use another name only if the Soul gives it as an alias.`,
     `- Be specific and warm in your own way: real reactions to what they said, never generic reassurance or a paraphrase of their message.`,
-    `- Everything you output is what ${name} says or does in the scene, starting with the first word or action. No analysis, planning, talk of rules, or notes about the model or product.`,
+    `- Every spoken reply is what ${name} says or does in the scene, starting with the first word or action. No analysis, planning, talk of rules, or notes about the model or product.`,
   ].join("\n");
 }
 
@@ -63,7 +63,7 @@ export function composeCompanionSystemPrompt(input: {
   ].filter(Boolean).join("\n\n");
 }
 
-/** Release-time structural canary for the exact required Agent-tool seam. */
+/** Release-time structural canary for Agent-controlled image tools. */
 export function companionProductContractCanary(input: {
   soulPrompt: string;
 }) {
@@ -72,22 +72,18 @@ export function companionProductContractCanary(input: {
     imageToolEnabled: true,
     soulPrompt: input.soulPrompt,
   });
-  const action = requiredImageActionForUserRequest({
-    userText: "Send me a photo",
-  });
   const soulAt = systemPrompt.indexOf(input.soulPrompt);
   const contractAt = systemPrompt.indexOf(`iDream companion contract (${COMPANION_PRODUCT_PROMPT_VERSION})`);
   const imageSkillAt = systemPrompt.indexOf("Image direction skill");
   return {
     passed:
-      action?.name === GENERATE_IMAGE_ASYNC_TOOL &&
       soulAt === 0 &&
       contractAt > soulAt &&
       imageSkillAt > contractAt,
     productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION,
     systemPrompt,
-    actionName: action?.name ?? null,
+    availableTools: IMAGE_AGENT_TOOL_DEFINITIONS.map(tool => tool.name),
     imagePromptAuthority: "companion_agent" as const,
-    executionMode: "required_agent_tool" as const,
+    executionMode: "agent_tool_choice" as const,
   };
 }

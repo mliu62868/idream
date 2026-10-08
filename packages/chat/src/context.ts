@@ -18,7 +18,6 @@ export type ResolvedChatPersona = CharacterAuthority & {
 export interface BuiltContext {
   userLocale: string;
   hasRecentImageContext: boolean;
-  previousAssistantText?: string;
   contextDirectives?: ChatContextDirective[];
   experience?: ChatExperiencePreference;
   userPersona?: UserChatPersona | null;
@@ -35,6 +34,8 @@ export interface BuiltContext {
     unprompted?: true;
     speaker?: NonNullable<ChatExecutionSnapshot["group"]>["members"][number];
   }>;
+  /** Authorized snapshot history before prompt-window selection; attempt-local only. */
+  replayMessages?: BuiltContext["recentMessages"];
   scene: SceneState;
   sceneVersion: number;
   lastExchangeAt: Date | null;
@@ -109,10 +110,10 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
     role: "user",
     content: snapshot.userContent,
   });
-  const fitted = fitRecentTranscript(
-    transcript.slice(-policy.maxContextMessages),
-    policy.maxContextChars,
-  );
+  // Character/token fitting belongs to PreparedTurn. Never truncate the
+  // current user's words; retain omitted history for compaction and recall.
+  const selected = transcript.slice(-policy.maxContextMessages);
+  if (selected[0]?.role === "assistant" && !selected[0].opening && !selected[0].unprompted) selected.shift();
   const scene = snapshot.sceneVersion === 0
     ? emptySceneState()
     : parseSceneState(snapshot.scene);
@@ -122,21 +123,20 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
   return {
     userLocale: authority.user.locale,
     hasRecentImageContext: snapshot.hasRecentImageContext,
-    previousAssistantText: !snapshot.group || snapshot.recentTurns.at(-1)?.speaker?.characterId === snapshot.characterId
-      ? snapshot.recentTurns.at(-1)?.assistantContent : undefined,
     contextDirectives: snapshot.contextDirectives ?? [],
     experience: snapshot.experience,
     userPersona: snapshot.userPersona,
     group: snapshot.group,
     persona,
     policy,
-    recentMessages: fitted.messages,
+    recentMessages: selected,
+    replayMessages: transcript.filter(message => message.id !== snapshot.userMessageId),
     scene,
     sceneVersion: snapshot.sceneVersion,
     lastExchangeAt: snapshot.recentTurns.length > 0
       ? new Date(snapshot.recentTurns.at(-1)!.createdAt)
       : null,
-    dropped: fitted.dropped ? ["transcript"] : [],
+    dropped: selected.length < transcript.length ? ["transcript"] : [],
     contextRevision: BigInt(snapshot.contextRevision),
   };
 }
@@ -169,39 +169,6 @@ function personaFromImmutableContent(current: CharacterAuthority): ResolvedChatP
     soulFingerprint: loaded.snapshot.compiled.fingerprint,
     compilerVersion: loaded.snapshot.compiled.compilerVersion,
   };
-}
-
-export function fitRecentTranscript(
-  messages: BuiltContext["recentMessages"],
-  maxChars: number,
-): { messages: BuiltContext["recentMessages"]; dropped: boolean } {
-  const selected: BuiltContext["recentMessages"] = [];
-  let used = 0;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    const remaining = maxChars - used;
-    if (remaining <= 0) break;
-    if (message.content.length > remaining) {
-      if (selected.length === 0) {
-        selected.unshift({ ...message, content: `…${message.content.slice(-Math.max(1, remaining - 1))}` });
-      }
-      break;
-    }
-    selected.unshift(message);
-    used += message.content.length;
-  }
-  // An assistant reply whose user Turn fell out of the window reads as an
-  // unexplained instruction, so it goes. A pinned opening and a proactive
-  // check-in never had a user Turn to lose, so they stay.
-  if (
-    selected.length > 1 &&
-    selected[0]?.role === "assistant" &&
-    !selected[0].opening &&
-    !selected[0].unprompted
-  ) {
-    selected.shift();
-  }
-  return { messages: selected, dropped: selected.length < messages.length };
 }
 
 const IDENTITY_PROMPT_MAX = 400;

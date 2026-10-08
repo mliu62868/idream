@@ -3,18 +3,21 @@
 import { useCallback, useRef, useState } from "react";
 import { Check, ImageIcon, Loader2, Replace } from "lucide-react";
 import Image from "next/image";
+import Link from "next/link";
 import type {
   CharacterImageSourceAsset,
   CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
+import { RequestErrorDetails } from "@/components/admin/ui/RequestErrorDetails";
+import { operatorErrorCopy, type OperatorErrorCopy } from "@/components/admin/ui/request-error-copy";
 import { WorkspaceButton } from "@/features/operations/WorkspaceUi";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import type { RunCommittedCharacterMutation } from "./character-workspace-permissions";
 
 const placements = [
-  { purpose: "character_cover", label: "Cover", description: "Character cards and primary portrait", aspect: "aspect-square" },
+  { purpose: "character_cover", label: "Cover", description: "Character cards and primary portrait", aspect: "aspect-[4/5]" },
   { purpose: "character_hero", label: "Hero", description: "Character detail hero image", aspect: "aspect-[16/9]" },
   { purpose: "character_chat", label: "Chat", description: "Conversation scene image", aspect: "aspect-[4/5]" },
 ] as const;
@@ -39,7 +42,7 @@ export function CharacterPlacementEditor({
   const [choosing, setChoosing] = useState<PlacementPurpose | null>(null);
   const [busyAssetId, setBusyAssetId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<OperatorErrorCopy | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const loadAssets = useCallback(async (cursor: string | null = null) => {
@@ -65,8 +68,13 @@ export function CharacterPlacementEditor({
     }
   }, [canRead, data.character.id, t]);
 
+  // INVARIANT: same freeze the server enforces (candidate-release-guard); predicting it
+  // here keeps operators from picking an image only to be refused.
+  const candidatePending = data.journey.release.candidateReleaseId !== null ||
+    data.releases.some(({ release }) => release.status === "approved");
+
   function openChooser(purpose: PlacementPurpose) {
-    if (!canRead || !canWrite) return;
+    if (!canRead || !canWrite || candidatePending) return;
     setChoosing(purpose);
     setError(null);
     void loadAssets();
@@ -104,7 +112,7 @@ export function CharacterPlacementEditor({
         afterRefresh: () => setChoosing(null),
       });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("Image placement could not be saved"));
+      setError(operatorErrorCopy(cause));
     } finally {
       setBusyAssetId(null);
     }
@@ -124,6 +132,12 @@ export function CharacterPlacementEditor({
           {t("Each placement uses an image from this Character's library below.")}
         </p>
       </div>
+      {candidatePending ? (
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-md bg-[var(--ad-yellow-bg)] px-4 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">
+          <span>{t("A candidate release is waiting. Publish or discard it before changing images.")}</span>
+          <Link className="min-h-9 content-center font-semibold underline" href={`/admin/characters/${encodeURIComponent(data.character.id)}?tab=release`}>{t("Go to Release")}</Link>
+        </div>
+      ) : null}
       <div className="mt-5 grid gap-3 lg:grid-cols-3">
         {placements.map((placement) => {
           const slot = data.preview.draft.assetPack[placement.purpose];
@@ -153,7 +167,7 @@ export function CharacterPlacementEditor({
                     {t(slot.status === "available" ? "Selected" : "Missing")}
                   </span>
                 </div>
-                <WorkspaceButton className="mt-3 w-full justify-center" disabled={!canRead || !canWrite} onClick={() => openChooser(placement.purpose)}>
+                <WorkspaceButton className="mt-3 w-full justify-center" disabled={!canRead || !canWrite || candidatePending} onClick={() => openChooser(placement.purpose)}>
                   <Replace className="h-4 w-4" /> {t(slot.assetId ? "Replace image" : "Choose image")}
                 </WorkspaceButton>
               </div>
@@ -168,7 +182,13 @@ export function CharacterPlacementEditor({
             <h4 className="font-semibold">{t("Choose {placement} image", { placement: t(placements.find((item) => item.purpose === choosing)?.label ?? choosing) })}</h4>
             <button className="min-h-10 text-sm font-semibold text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]" onClick={() => setChoosing(null)} type="button">{t("Cancel")}</button>
           </div>
-          {error ? <p className="mt-3 rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{t(error)}</p> : null}
+          {error ? (
+            <div className="mt-3 rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">
+              <p className="font-semibold">{t(error.headline)}</p>
+              <p className="mt-1">{t(error.nextStep, error.nextStepValues)}</p>
+              <RequestErrorDetails technical={error.technical} />
+            </div>
+          ) : null}
           {loadError ? (
             <div className="mt-3 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">
               <p className="font-semibold">{t("Character images could not be loaded")}</p>

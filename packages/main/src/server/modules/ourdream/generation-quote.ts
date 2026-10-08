@@ -43,7 +43,8 @@ import {
 import { entitlementMap } from "./subscription-lifecycle";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import { hasProductionVideoOptions, productionVideoRecipeForProfile } from "@/server/modules/generation/production-video-profile";
-import { redgraftVideoEnvelope, REDGRAFT_VIDEO_OPTIONS } from "@idream/shared/contracts";
+import { redgraftLtx25VideoProductionRecipe } from "@idream/shared";
+import { redgraftVideoEnvelope, REDGRAFT_VIDEO_OPTIONS, REDGRAFT_VIDEO_DEFAULTS } from "@idream/shared/contracts";
 import type { GenerationQuoteAuthority } from "./generation-quote-contract";
 import { applyGenerationContext, generationContextToken, resolveGenerationContext } from "./generation-context";
 
@@ -265,10 +266,10 @@ export async function resolveGenerationPlan(
   if (videoRecipe && hasProductionVideoOptions(profile)) {
     try { videoEnvelope = redgraftVideoEnvelope({ seconds: body.controls.seconds ?? videoRecipe.durationSeconds,
         orientation: body.orientation ?? body.controls.orientation ?? videoRecipe.orientation,
-        quality: body.controls.videoQuality ?? "standard" }); }
+        quality: body.controls.videoQuality ?? REDGRAFT_VIDEO_DEFAULTS.quality }); }
     catch { throw Errors.badRequest("Choose a published video duration, aspect ratio, and resolution"); }
   }
-  if (body.controls.videoQuality && !videoEnvelope && body.controls.videoQuality !== "standard") {
+  if (body.controls.videoQuality && !videoEnvelope && body.controls.videoQuality !== (videoRecipe?.workflowKey === redgraftLtx25VideoProductionRecipe.workflowKey ? REDGRAFT_VIDEO_DEFAULTS.quality : "standard")) {
     throw Errors.conflict("This route has not published selectable video resolution");
   }
   if (

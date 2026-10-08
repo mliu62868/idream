@@ -17,7 +17,7 @@ vi.mock("./AgeGateBoundary", () => ({ useAgeGateAccess: () => ({ accepted: true 
 
 import { GeneratorWorkspace } from "./GeneratorWorkspace";
 import { readCurrentGenerationJob, saveCurrentGenerationJob } from "@/lib/generation-current-job";
-import { requestGenerationRetryWithExactAuthority } from "@/lib/generation-write-client";
+import { requestGenerationJobWithExactAuthority, requestGenerationRetryWithExactAuthority } from "@/lib/generation-write-client";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -269,6 +269,122 @@ describe("GeneratorWorkspace media journeys", () => {
     await click(button("Retry original feedback")); expect(writes).toEqual([{ feedbackType: "intent_mismatch", sourceSurface: "gallery", direction }, { feedbackType: "intent_mismatch", sourceSurface: "gallery", direction }]);
     expect(field.value).toBe("My later draft must not replace the original report."); expect(container.textContent).toContain(`Recorded: ${direction}`);
     expect(button("Close feedback").disabled).toBe(false); expect(container.textContent).toContain("100 coins");
+  });
+
+  it("hides and resumes unmatched feedback without losing the original report or edited draft", async () => {
+    const original = globalThis.fetch;
+    const writes: Array<{ body: Record<string, unknown>; scope: string | null }> = [];
+    const reads: string[] = [];
+    const direction = "Keep the original balcony and use a terracotta pot.";
+    const editedDraft = "My later draft asks for a blue cup and must stay separate.";
+    const target = { kind: "generation_job", generationJobId: "hidden-intent-job" };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.startsWith("/api/v1/media?")) return Response.json({ ok: true, data: { items: ["hidden-intent", "other-intent"].map(id => ({ ...mediaItem(id), intentFeedbackAvailable: true })), nextCursor: null } });
+      if (path === "/api/v1/media/hidden-intent/feedback") {
+        const scope = new Headers(init?.headers).get("x-idream-viewer-scope");
+        expect(scope).toBe("user:generator-viewer");
+        if (init?.method === "GET") {
+          reads.push(path);
+          return Response.json({ ok: true, data: { mediaAssetId: "hidden-intent", ownerScope: scope, target, feedback: null } });
+        }
+        writes.push({ body: JSON.parse(String(init?.body)), scope });
+        if (writes.length === 1) return Response.json({ ok: false }, { status: 503 });
+        return Response.json({ ok: true, data: { mediaAssetId: "hidden-intent", ownerScope: scope, target, feedback: { id: "hidden-intent-feedback", dimension: "intent", value: "mismatch", direction, revision: 1, sourceSurface: "gallery", actorId: "generator-viewer", mediaAssetId: "hidden-intent", target, createdAt: "2026-10-05T13:44:00.000Z" } } });
+      }
+      return original(input, init);
+    }));
+    await mount();
+    await click(container.querySelector('[data-media-id="hidden-intent"] button[aria-label="Report intent mismatch"]')!);
+    const field = container.querySelector<HTMLTextAreaElement>('[aria-label="Correction direction"]')!;
+    const type = async (text: string) => act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, text); field.dispatchEvent(new Event("input", { bubbles: true })); });
+    await type(direction);
+    await click(button("Save intent feedback"));
+    expect(button("Close feedback").disabled).toBe(true);
+    expect(container.textContent).not.toContain("Hide feedback editor");
+    await click(button("Check recorded feedback"));
+    expect(container.textContent).toContain("This result has no matching recorded feedback.");
+    await type(editedDraft);
+    const rating = container.querySelector<HTMLSelectElement>('[aria-label="Intent rating"]')!;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(rating, "match"); rating.dispatchEvent(new Event("change", { bubbles: true })); });
+    await click(button("Hide feedback editor"));
+    expect(container.querySelector('[aria-label="Intent feedback editor"]')).toBeNull();
+    expect(document.activeElement).toBe(button("Resume original feedback"));
+    expect(writes).toHaveLength(1);
+    expect(reads).toEqual(["/api/v1/media/hidden-intent/feedback"]);
+    await click(container.querySelector('[data-media-id="other-intent"] button[aria-label="Report intent match"]')!);
+    expect(container.textContent).toContain("Check the original feedback before starting another report.");
+    expect(container.querySelector('[aria-label="Intent feedback editor"]')).toBeNull();
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
+    await click(button("Resume original feedback"));
+    const editor = container.querySelector<HTMLElement>('[aria-label="Intent feedback editor"]')!;
+    const restoredField = editor.querySelector<HTMLTextAreaElement>('[aria-label="Correction direction"]')!;
+    const restoredRating = editor.querySelector<HTMLSelectElement>('[aria-label="Intent rating"]')!;
+    expect(restoredField.value).toBe(editedDraft);
+    expect(restoredRating.value).toBe("match");
+    expect(document.activeElement).toBe(restoredRating);
+    expect(scroll.mock.contexts.some(node => node instanceof Element && node.contains(editor))).toBe(true);
+    expect(editor.textContent).toContain(`Original report: mismatch · ${direction}`);
+    expect(writes).toHaveLength(1);
+    expect(reads).toHaveLength(1);
+    await click(button("Check recorded feedback"));
+    expect(reads).toEqual(["/api/v1/media/hidden-intent/feedback", "/api/v1/media/hidden-intent/feedback"]);
+    expect(writes).toHaveLength(1);
+    await click(button("Retry original feedback"));
+    const report = { body: { feedbackType: "intent_mismatch", sourceSurface: "gallery", direction }, scope: "user:generator-viewer" };
+    expect(writes).toEqual([report, report]);
+    expect(restoredField.value).toBe(editedDraft);
+    expect(button("Close feedback").disabled).toBe(false);
+    await click(button("Close feedback"));
+    expect(container.querySelector('[aria-label="Intent feedback editor"]')).toBeNull();
+    expect(container.textContent).not.toContain("Resume original feedback");
+  });
+
+  it("does not restore a hidden unconfirmed report after the viewer changes", async () => {
+    const original = globalThis.fetch;
+    const writes: Array<{ body: Record<string, unknown>; scope: string | null }> = [];
+    const reads: string[] = [];
+    let viewerChanged = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config" && viewerChanged) return Response.json({ ok: true, data: { ...config, viewer: { authenticated: true, scope: "user:new-feedback-viewer" } } });
+      if (path.startsWith("/api/v1/media?")) return Response.json({ ok: true, data: { items: [{ ...mediaItem(viewerChanged ? "new-viewer-result" : "old-hidden-result"), intentFeedbackAvailable: true }], nextCursor: null } });
+      if (path === "/api/v1/media/old-hidden-result/feedback") {
+        const scope = new Headers(init?.headers).get("x-idream-viewer-scope");
+        expect(scope).toBe("user:generator-viewer");
+        if (init?.method === "GET") {
+          reads.push(path);
+          return Response.json({ ok: true, data: { mediaAssetId: "old-hidden-result", ownerScope: scope, target: { kind: "generation_job", generationJobId: "old-hidden-job" }, feedback: null } });
+        }
+        writes.push({ body: JSON.parse(String(init?.body)), scope });
+        return Response.json({ ok: false }, { status: 503 });
+      }
+      return original(input, init);
+    }));
+    await mount();
+    await click(button("Report intent mismatch"));
+    const field = container.querySelector<HTMLTextAreaElement>('[aria-label="Correction direction"]')!;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, "Old viewer's private correction direction."); field.dispatchEvent(new Event("input", { bubbles: true })); });
+    await click(button("Save intent feedback"));
+    await click(button("Check recorded feedback"));
+    await click(button("Hide feedback editor"));
+    expect(button("Resume original feedback")).toBeDefined();
+    viewerChanged = true;
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    expect(container.querySelector('[aria-label="Unconfirmed intent feedback"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Intent feedback editor"]')).toBeNull();
+    expect(container.textContent).not.toContain("Resume original feedback");
+    expect(container.textContent).not.toContain("Old viewer's private correction direction.");
+    expect(container.querySelector('[data-media-id="old-hidden-result"]')).toBeNull();
+    expect(container.querySelector('[data-media-id="new-viewer-result"]')).not.toBeNull();
+    await click(button("Report intent match"));
+    expect(container.querySelector('[aria-label="Intent feedback editor"]')).not.toBeNull();
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Correction direction"]')?.value).toBe("");
+    expect(button("Close feedback").disabled).toBe(false);
+    expect(writes).toEqual([{ body: { feedbackType: "intent_mismatch", sourceSurface: "gallery", direction: "Old viewer's private correction direction." }, scope: "user:generator-viewer" }]);
+    expect(reads).toEqual(["/api/v1/media/old-hidden-result/feedback"]);
+    expect(requests).not.toContain("/api/v1/generation/jobs");
   });
 
   it("discards the previous actor's late intent receipt without projecting it into the new gallery", async () => {
@@ -1593,8 +1709,12 @@ describe("GeneratorWorkspace media journeys", () => {
     expect(container.textContent).not.toContain("Applied preset");
   });
 
-  it("restores the pending video's original character and pinned image instead of the catalog default", async () => {
+  it.each([false, true])("restores the pending video's original character and pinned image instead of the catalog default (first jobs read delayed: %s)", async delayedJobs => {
     const originalFetch = globalThis.fetch;
+    const firstJobs = deferredResponse();
+    let jobsReleased = false;
+    const jobs = { items: [{ id: "original-scene", mode: "video", status: "running", errorCode: null,
+      outputCount: 1, costDreamcoins: 100, createdAt: "2026-10-02T00:00:00.000Z" }] };
     const request = { characterId: "original-character", consistencyMode: "balanced", orientation: "2:3", quality: "preview", audio: "generated", scenes: [{ prompt: "A calm wave", seconds: 3 }] };
     localStorage.setItem("idream:video-sequence:user:generator-viewer", JSON.stringify({ key: "original-request-key", id: "original-sequence", request }));
     const sequence = { id: "original-sequence", status: "generating", errorCode: null, request,
@@ -1617,14 +1737,29 @@ describe("GeneratorWorkspace media journeys", () => {
       if (path.endsWith("/video-sequences/capabilities")) return Response.json({ ok: true, data: { capabilities: videoCapabilities } });
       if (path.endsWith("/video-sequences")) return Response.json({ ok: true, data: { sequences: [sequence] } });
       if (path.endsWith("/original-sequence")) return Response.json({ ok: true, data: { sequence } });
+      if (delayedJobs && path.startsWith("/api/v1/generation/jobs?")) {
+        return jobsReleased ? Response.json({ ok: true, data: jobs }) : firstJobs.promise;
+      }
       return originalFetch(input, init);
     }));
-    await mount(); await click(button("Video"));
+    await mount();
+    if (delayedJobs) {
+      expect(container.querySelector('[aria-label="Video sequence"]'), "config/reset's empty state is not a loaded jobs snapshot").toBeNull();
+      await act(async () => { jobsReleased = true; firstJobs.resolve(Response.json({ ok: true, data: jobs })); });
+      await settle();
+      expect(container.querySelector('[data-generation-job-id="original-scene"]'), "the first real jobs response has reached the workspace").not.toBeNull();
+      expect(container.querySelector('[aria-label="Video sequence"]'), "a reload restores the active sequence without a manual Video click").not.toBeNull();
+    } else await click(button("Video"));
     expect(container.querySelector<HTMLSelectElement>("#generator-character")?.value).toBe("original-character");
     expect(container.querySelector<HTMLSelectElement>("#generator-character")?.disabled).toBe(true);
     expect(container.querySelector<HTMLInputElement>("#generator-freeplay")?.disabled).toBe(true);
     expect(container.querySelector('[data-testid="generator-video-source"] img')?.getAttribute("src")).toBe("/api/v1/media/pinned-original-image/content");
     expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Scene 1 prompt"]')?.value).toBe("A calm wave");
+    if (delayedJobs) {
+      await click(button("Image"));
+      await click(button("Refresh jobs"));
+      expect(container.querySelector('[aria-label="Video sequence"]'), "a later jobs refresh must respect the user's tab choice").toBeNull();
+    }
     expect(writes).toHaveLength(0);
   });
 
@@ -1785,28 +1920,61 @@ describe("GeneratorWorkspace media journeys", () => {
   });
 
   it.each([
-    { jobStatus: "running", expected: "video" },
-    { jobStatus: "completed", expected: "image" },
-  ])("opens on the $expected tab when the latest video job is $jobStatus", async ({ jobStatus, expected }) => {
+    { jobStatus: "running", expected: "video", delayedJobs: false, priority: "none" },
+    { jobStatus: "completed", expected: "image", delayedJobs: false, priority: "none" },
+    { jobStatus: "running", expected: "image", delayedJobs: true, priority: "handoff" },
+    { jobStatus: "running", expected: "image", delayedJobs: true, priority: "unconfirmed-image" },
+  ])("opens on the $expected tab when the latest video job is $jobStatus ($priority; delayed jobs: $delayedJobs)", async ({ jobStatus, expected, delayedJobs, priority }) => {
+    if (priority === "handoff") window.history.replaceState(null, "", "/generate?characterId=character&chatSessionId=chat-session&chatTurnId=chat-turn&chatAttempt=1");
+    if (priority === "unconfirmed-image") {
+      window.history.replaceState(null, "", "/generate?characterId=character");
+      await expect(requestGenerationJobWithExactAuthority({
+        body: { mode: "image", characterId: "character", freeplay: false, consistencyMode: "balanced", outputCount: 1, controls: { orientation: "4:5" },
+          quoteAuthority: { profileId: "image-model", profileVersion: 1, routeFingerprint: "a".repeat(64), pricingFingerprint: "b".repeat(64), outputCount: 1, costDreamcoins: 5 } },
+        idempotencyKeys: new Map(), createIdempotencyKey: () => "retained-image-key", persistence: { ownerScope: config.viewer.scope },
+      }, async () => { throw new TypeError("Lost response"); })).rejects.toThrow("Lost response");
+    }
     const originalFetch = globalThis.fetch;
+    const firstJobs = deferredResponse();
+    let jobsReleased = false;
+    const jobs = { items: [{ id: "video-job", mode: "video", status: jobStatus, errorCode: null,
+      outputCount: 1, costDreamcoins: 100, createdAt: new Date().toISOString() }] };
+    const paidWrites: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
+      if (init?.method === "POST" && ["/api/v1/generation/jobs", "/api/v1/generation/video-sequences"].includes(path)) paidWrites.push(path);
       if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: {
         ...config, entitlements: { premium_controls: true, video_generation: true },
+        pricing: { ...config.pricing, image: { baseCost: 5, maxCount: 1 } },
+        image: { ...config.image, availability: { state: "available" }, orientations: ["4:5"],
+          models: [{ id: "image-model", label: "Image", maxCount: 1, costMultiplier: 1, entitlement: null }],
+          recipes: ["character", "freeplay"].map(useCase => ({ id: `image-${useCase}`, rowId: `image-${useCase}-v1`, label: "Image", mode: "image", useCase, version: 1 })) },
         video: { enabled: true, availability: { state: "available" }, requiredEntitlement: "video_generation",
           recipes: [{ id: "video-recipe", rowId: "video-recipe-v1", label: "Animate character", mode: "video", useCase: "character", version: 1 }],
           models: [{ id: "video-model", label: "Video", maxCount: 1, costMultiplier: 1, entitlement: null }] },
       } });
-      if (path.startsWith("/api/v1/generation/jobs")) return Response.json({ ok: true, data: { items: [{
-        id: "video-job", mode: "video", status: jobStatus, errorCode: null,
-        outputCount: 1, costDreamcoins: 100, createdAt: new Date().toISOString(),
-      }] } });
+      if (path.startsWith("/api/v1/characters?")) return Response.json({ ok: true, data: { items: [{
+        id: "character", title: "Mira", age: "28", description: "Photographer", likes: "0", chats: "0", creator: "iDream", image: "/user-content/portrait.png",
+      }], nextCursor: null } });
+      if (path.startsWith("/api/v1/generation/context?")) return Response.json({ ok: true, data: { context: chatHandoff } });
+      if (path.startsWith("/api/v1/generation/jobs?")) return delayedJobs && !jobsReleased ? firstJobs.promise : Response.json({ ok: true, data: jobs });
       if (path.endsWith("/video-sequences/capabilities")) return Response.json({ ok: true, data: { capabilities: videoCapabilities } });
       if (path.endsWith("/video-sequences")) return Response.json({ ok: true, data: { sequences: [] } });
       return originalFetch(input, init);
     }));
     await mount();
+    if (priority === "handoff") expect(container.querySelector('[data-testid="generator-context"]')).not.toBeNull();
+    if (priority === "unconfirmed-image") {
+      expect(container.querySelector('[data-pending-request-key="retained-image-key"]')).not.toBeNull();
+      expect(container.textContent).toContain("Check the existing request with its original settings and price.");
+    }
+    if (delayedJobs) {
+      await act(async () => { jobsReleased = true; firstJobs.resolve(Response.json({ ok: true, data: jobs })); });
+      await settle();
+      expect(container.querySelector('[data-generation-job-id="video-job"]')).not.toBeNull();
+    }
     expect(container.querySelector('[aria-label="Video sequence"]') !== null).toBe(expected === "video");
+    expect(paidWrites).toEqual([]);
   });
 
   it("keeps delivered videos accessible while video generation is disabled and after reconnect", async () => {

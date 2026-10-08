@@ -4,6 +4,7 @@ import type { EnqueueJobInput } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { checkExactGenerationDispatchAuthority } from "@/server/ai/generation-dispatch-evidence-authority";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
+import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import {
   dispatchGenerationAttemptOutbox,
   reserveInitialGenerationAttempt,
@@ -280,6 +281,33 @@ describe("GenerationAttemptAuthority", () => {
       },
     })).resolves.toEqual({ examined: 0, delivered: 0, failed: 0 });
     expect(enqueued).toBe(false);
+  });
+
+  it.each([0, 5])("rejects invalid generated wire count %s before Job/debit/Attempt/outbox can commit", async outputCount => {
+    const requestId = `${prefix}-invalid-wire-count-${outputCount}`;
+    const outboxId = `generation_initial_${requestId}`;
+    // A producer/schema mismatch is discovered only after constructing the
+    // actual reserved dispatch. The outer admission transaction must roll back
+    // every fact, including a debit written before that construction.
+    await expect(prisma.$transaction(async tx => {
+      const job = await tx.generationJob.create({ data: {
+        id: requestId, userId, mode: "image", controls: {}, presetIds: [],
+        outputCount, status: "queued", provider: "mock", costDreamcoins: 5,
+      } });
+      await postDreamcoinEntry(tx, {
+        kind: "signup_bonus", userId, amount: 20, sourceId: `${requestId}:credit`,
+        idempotencyKey: `${requestId}:credit`,
+      });
+      await postDreamcoinEntry(tx, {
+        kind: "generation_spend", userId, amount: 5, sourceId: requestId,
+        idempotencyKey: `${requestId}:spend`,
+      });
+      return reserveInitialGenerationAttempt(tx, reservationFor(job));
+    })).rejects.toThrow(/count/);
+    expect(await prisma.generationJob.count({ where: { id: requestId } })).toBe(0);
+    expect(await prisma.dreamcoinLedger.count({ where: { sourceId: requestId, reason: "generation_spend" } })).toBe(0);
+    expect(await prisma.generationAttempt.count({ where: { requestId } })).toBe(0);
+    expect(await prisma.mainOutboxEvent.count({ where: { id: outboxId } })).toBe(0);
   });
 
   it("preserves enqueue backoff across reservation replay and targeted dispatch", async () => {

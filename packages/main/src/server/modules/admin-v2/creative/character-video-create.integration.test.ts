@@ -41,7 +41,7 @@ describe("Character video Creative Run authority", () => {
         targetId: characterId,
         profileId: "profile_video_redgraft_ltx25_v1",
         referenceAssetIds: [sourceAssetId],
-        orientation: "2:3",
+        orientation: "7:12",
         count: 1,
         brief: "A subtle natural smile with direct eye contact and a steady camera.",
         consistencyMode: "balanced",
@@ -271,7 +271,7 @@ describe("Character video Creative Run authority", () => {
       profileId: "profile_video_redgraft_ltx25_v1",
       profileVersion: characterVideoProductionRecipe.recipeVersion,
       recipeId: "template_video_character_default",
-      orientation: "2:3",
+      orientation: "7:12",
       outputCount: 1,
       model: "redgraft-ltx25-i2v",
       provider: "comfyui",
@@ -279,8 +279,8 @@ describe("Character video Creative Run authority", () => {
     expect(item.job?.controls).toMatchObject({
       sourceImageAssetId: sourceAssetId,
       seconds: 5,
-      width: 768,
-      height: 1152,
+      width: 448,
+      height: 768,
     });
     expect(item.job?.referenceAssetIds).toEqual([sourceAssetId]);
     expect(item.job?.referenceManifest).toEqual([

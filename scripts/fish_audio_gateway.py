@@ -25,13 +25,17 @@ import wave
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 from uuid import uuid4
 
 import numpy as np
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
+try:
+    from scripts.voice_erasure import AccountErasureRequest, VoiceErasureRegistry
+except ModuleNotFoundError:
+    from voice_erasure import AccountErasureRequest, VoiceErasureRegistry
 
 
 MODEL_ID = os.getenv("FISH_AUDIO_MODEL", "breeze-tts-2-mlx-8bit").strip()
@@ -81,6 +85,7 @@ if not LANGUAGE:
 
 VOICE_DIR.mkdir(parents=True, exist_ok=True)
 IDEMPOTENCY_DIR.mkdir(parents=True, exist_ok=True)
+erasure_registry = VoiceErasureRegistry(IDEMPOTENCY_DIR, IDEMPOTENCY_CACHE_MAGIC)
 
 
 class DeliverySettings(BaseModel):
@@ -392,6 +397,7 @@ def render_idempotent_wav(
     idempotency_key: str,
     request_id: str,
     attempt_no: int,
+    owner_hash: str | None = None,
 ) -> tuple[bytes, bool]:
     if not request_id.strip() or attempt_no < 1:
         raise HTTPException(
@@ -401,11 +407,14 @@ def render_idempotent_wav(
     cache_path = idempotency_cache_path(idempotency_key)
     request_fingerprint = speech_request_fingerprint(request)
     with idempotency_lock:
+        erasure_registry.check(owner_hash, idempotency_key, request.voice)
+        erasure_registry.check_cache_owner(cache_path, owner_hash)
         replay = load_idempotent_audio(
             cache_path,
             request_fingerprint,
         )
         if replay is not None:
+            erasure_registry.check(owner_hash, idempotency_key, request.voice)
             return replay, True
         rendered = render_wav(request)
         manifest = {
@@ -413,6 +422,7 @@ def render_idempotent_wav(
             "request_fingerprint": request_fingerprint,
             "request_id": request_id.strip(),
             "attempt_no": attempt_no,
+            "owner_hash": owner_hash,
         }
         manifest_bytes = json.dumps(
             manifest,
@@ -421,7 +431,7 @@ def render_idempotent_wav(
         ).encode("utf-8")
         # INVARIANT: metadata and bytes become visible in one atomic rename, so
         # a process crash can never leave a key that is allowed to re-render.
-        atomic_write(
+        erasure_registry.commit(owner_hash, idempotency_key, request.voice, lambda: atomic_write(
             cache_path,
             b"".join(
                 (
@@ -431,7 +441,7 @@ def render_idempotent_wav(
                     rendered,
                 )
             ),
-        )
+        ))
         return rendered, False
 
 
@@ -553,7 +563,9 @@ async def synthesize(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     request_id: str | None = Header(default=None, alias="X-Idream-Request-Id"),
     attempt_no: int | None = Header(default=None, alias="X-Idream-Attempt-No"),
+    owner_hash: Annotated[str | None, Header(alias="X-Idream-Owner-Hash")] = None,
 ) -> Response:
+    erasure_registry.check(owner_hash, idempotency_key, request.voice)
     if request.response_format != "wav":
         raise HTTPException(status_code=400, detail="Only WAV output is supported")
     if request.model != MODEL_ID:
@@ -578,6 +590,7 @@ async def synthesize(
             idempotency_key,
             request_id,
             attempt_no,
+            owner_hash,
         )
     return Response(
         content=rendered,
@@ -595,8 +608,10 @@ def clone_voice(
     language: str = Form(default=LANGUAGE),
     ref_text: str = Form(...),
     audio: UploadFile = File(...),
+    owner_hash: Annotated[str | None, Header(alias="X-Idream-Owner-Hash")] = None,
 ) -> dict[str, str]:
     normalized_id = safe_voice_id(voice_id)
+    erasure_registry.check(owner_hash, voice=normalized_id)
     if normalized_id in BUILTIN_VOICES:
         raise HTTPException(
             status_code=409,
@@ -628,17 +643,13 @@ def clone_voice(
         "ref_text": normalized_text,
         "source_filename": Path(audio.filename or "reference.audio").name,
         "source_content_type": audio.content_type or "application/octet-stream",
+        "owner_hash": owner_hash,
     }
     with registry_lock:
-        atomic_write(voice_audio_path(normalized_id), normalized_audio)
-        atomic_write(
-            voice_manifest_path(normalized_id),
-            json.dumps(
-                manifest,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ).encode("utf-8"),
-        )
+        def persist():
+            atomic_write(voice_audio_path(normalized_id), normalized_audio)
+            atomic_write(voice_manifest_path(normalized_id), json.dumps(manifest, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        erasure_registry.commit(owner_hash, None, normalized_id, persist)
     return {"voice_id": normalized_id, "model": MODEL_ID, "language": language}
 
 
@@ -654,3 +665,30 @@ def delete_voice(voice_id: str) -> dict[str, bool]:
         voice_audio_path(normalized_id).unlink(missing_ok=True)
         voice_manifest_path(normalized_id).unlink(missing_ok=True)
     return {"deleted": True}
+
+
+@app.post("/v1/account-erasure", dependencies=[Depends(authorize)])
+def erase_account(request: AccountErasureRequest) -> dict[str, bool]:
+    voice_ids = [safe_voice_id(value) for value in request.voice_ids]
+    if any(value in BUILTIN_VOICES for value in voice_ids):
+        raise HTTPException(status_code=409, detail="System voices cannot be erased")
+    with erasure_registry.lock:
+        for key in request.request_keys:
+            erasure_registry.check_cache_owner(idempotency_cache_path(key), request.subject_hash)
+        for voice_id in voice_ids:
+            path = voice_manifest_path(voice_id)
+            manifest = json.loads(path.read_text()) if path.exists() else {}
+            if manifest.get("owner_hash") not in (None, request.subject_hash):
+                raise HTTPException(status_code=409, detail="Voice alias belongs to another owner")
+        erasure_registry.mark_erased(request)
+    with idempotency_lock, registry_lock:
+        erasure_registry.delete_cache(request)
+        for path in VOICE_DIR.glob("*.json"):
+            manifest = json.loads(path.read_text())
+            if manifest.get("owner_hash") == request.subject_hash and path.stem not in BUILTIN_VOICES:
+                voice_ids.append(path.stem)
+        for voice_id in set(voice_ids):
+            erasure_registry.mark_erased(AccountErasureRequest(subject_hash=request.subject_hash, voice_ids=[voice_id]))
+            delete_voice(voice_id)
+        erasure_registry.sync_directory(VOICE_DIR)
+    return {"erased": True}

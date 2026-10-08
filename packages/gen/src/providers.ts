@@ -13,7 +13,7 @@ import { promisify } from "node:util";
 import { deflateSync } from "node:zlib";
 import type { ImageGeneratePayload } from "@idream/shared/contracts";
 import type { VideoGeneratePayload } from "@idream/shared/contracts";
-import { REDGRAFT_VIDEO_OPTIONS, redgraftVideoEnvelope } from "@idream/shared/contracts";
+import { REDGRAFT_VIDEO_OPTIONS, REDGRAFT_VIDEO_DEFAULTS, redgraftVideoEnvelope } from "@idream/shared/contracts";
 import {
   characterVideoProductionRecipeForWorkflow,
   S3CompatibleBlobStore,
@@ -22,7 +22,7 @@ import {
 import { BackendImageModel } from "./backend/backend-image-model";
 import { BackendVideoModel } from "./backend/backend-video-model";
 import { createVideoMediaProbe } from "./backend/video-media-probe";
-import { prepareComfyUiRunnerMemory } from "./backend/comfyui-memory-transition";
+import { prepareComfyUiRunnerMemory, waitForComfyUiAcceleratorIdle } from "./backend/comfyui-memory-transition";
 import { buildBackendRegistry, type BackendRegistry } from "./backend/registry";
 import { withGenerationAcceleratorLease } from "./backend/generation-accelerator-lease";
 import { env } from "./env";
@@ -61,6 +61,7 @@ const retryablePipelineCategories = new Set(["rate_limited", "overloaded", "time
 export type GenerationInvocationBoundary = {
   onResourceWait: () => Promise<void>;
   beforeProviderInvocation: () => Promise<void>;
+  beforeNextProviderInvocation: () => Promise<void>;
 };
 
 export interface ImageModel {
@@ -154,15 +155,17 @@ class MockImageModel implements ImageModel {
   async generate(input: Parameters<ImageModel["generate"]>[0]) {
     const count = Math.max(1, Math.min(input.count, 4));
     const seed = input.seed ?? "mock";
+    const width = typeof input.controls?.width === "number" ? input.controls.width : 16;
+    const height = typeof input.controls?.height === "number" ? input.controls.height : 16;
     return {
       ok: true as const,
       data: {
         assets: Array.from({ length: count }, (_, index) => ({
           key: `mock/images/${seed}-${index + 1}.png`,
-          width: 1024,
-          height: 1024,
+          width,
+          height,
           contentType: "image/png",
-          body: mockImagePngBytes(16, 16),
+          body: mockImagePngBytes(width, height),
         })),
       },
     };
@@ -170,13 +173,17 @@ class MockImageModel implements ImageModel {
 }
 
 function mockImagePngBytes(width: number, height: number) {
+  // Keep structure at thumbnail scale: pixel-level modulo noise was averaged
+  // into flat grey and triggered the preview's blank-image scan.
   const rows = Array.from({ length: height }, (_, y) => {
     const row = Buffer.alloc(1 + width * 3);
     for (let x = 0; x < width; x += 1) {
       const offset = 1 + x * 3;
-      row[offset] = (x * 67 + y * 19) % 256;
-      row[offset + 1] = (x * 29 + y * 83) % 256;
-      row[offset + 2] = (x * 11 + y * 47) % 256;
+      const horizontal = x / Math.max(1, width - 1);
+      const vertical = y / Math.max(1, height - 1);
+      row[offset] = 32 + Math.round(horizontal * 160);
+      row[offset + 1] = 48 + Math.round(vertical * 128);
+      row[offset + 2] = 64 + Math.round((horizontal + vertical) * 48);
     }
     return row;
   });
@@ -265,7 +272,7 @@ class MockVideoModel implements VideoModel {
         if (recipe?.workflowKey !== "redgraft-ltx25-i2v" || input.controls.videoOptionsVersion !== REDGRAFT_VIDEO_OPTIONS.version) {
           throw new Error("Mock video options require the published RedGraft envelope");
         }
-        const envelope = redgraftVideoEnvelope({ seconds: input.seconds, orientation: String(input.controls.orientation), quality: String(input.controls.videoQuality ?? "standard") });
+        const envelope = redgraftVideoEnvelope({ seconds: input.seconds, orientation: String(input.controls.orientation), quality: String(input.controls.videoQuality ?? REDGRAFT_VIDEO_DEFAULTS.quality) });
         if (envelope.width !== width || envelope.height !== height) throw new Error("Mock video options do not match their requested dimensions");
         frameCount = envelope.frameCount;
       }
@@ -438,9 +445,16 @@ function getBackendRegistry(): Promise<BackendRegistry> {
 function buildBackendImageModel(): ImageModel {
   return new BackendImageModel(
     getBackendRegistry(),
-    (run, options) => withGenerationAcceleratorLease("image", run, options),
+    (run, options) => withBackendAcceleratorLease("image", run, options),
     prepareComfyUiRunnerMemory,
   );
+}
+
+function withBackendAcceleratorLease<T>(kind: "image" | "video", run: () => Promise<T>, options?: { onWait?: () => Promise<void> }) {
+  return withGenerationAcceleratorLease(kind, async () => {
+    await waitForComfyUiAcceleratorIdle({ onWait: options?.onWait });
+    return run();
+  }, options);
 }
 
 function buildImageModel(): ImageModel {
@@ -461,7 +475,7 @@ function buildVideoModel(): VideoModel {
     case "backend":
       return new BackendVideoModel(
         getBackendRegistry(),
-        (run, options) => withGenerationAcceleratorLease("video", run, options),
+        (run, options) => withBackendAcceleratorLease("video", run, options),
         prepareComfyUiRunnerMemory,
       );
   }
@@ -656,9 +670,6 @@ export function stableNumericSeed(seed: string | undefined) {
   }
   return hash >>> 0;
 }
-
-
-
 
 
 

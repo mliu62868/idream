@@ -5,6 +5,7 @@ import {
   imageGeneratePayloadSchema,
   videoGeneratePayloadSchema,
 } from "./payloads";
+import { characterReferenceSetPublishRequestSchema } from "../admin/contracts/characters-visual-workspace";
 
 it.each([
   { promptTokens: null, completionTokens: null },
@@ -95,6 +96,44 @@ describe("video generation reference authority", () => {
         role: "source_image",
       }),
     ]);
+  });
+});
+
+describe("published reference weight wire contract", () => {
+  const common = {
+    version: 1, requestId: "request-reference", generationJobId: "job-reference",
+    attemptId: "attempt-reference", attemptNo: 1, provider: "comfyui", userId: "user-reference",
+    characterId: "character-reference", prompt: "portrait", negativePrompt: null, controls: {},
+    seed: "seed-reference", model: "model-reference", outputPrefix: "gen/job-reference/",
+  };
+  const variants = [
+    { schema: imageGeneratePayloadSchema, payload: { ...common, kind: "image", presetIds: [], orientation: "4:5", count: 1 } },
+    { schema: videoGeneratePayloadSchema, payload: { ...common, kind: "video", seconds: 4 } },
+  ];
+  it.each([0.25, 1, 2, 3, 10])("preserves published weight %s across image and video dispatch", weight => {
+    // The actual publication schema, rather than an independently copied range,
+    // is the input authority consumed by the Main reference manifest.
+    const published = characterReferenceSetPublishRequestSchema.shape.references.element.parse({
+      mediaAssetId: "published-anchor", role: "primary_face", weight,
+    });
+    const reference = { assetId: published.mediaAssetId, role: "identity_anchor", weight: published.weight };
+    for (const { schema, payload } of variants) {
+      expect(schema.parse({ ...payload, referenceImages: [reference] }).referenceImages).toEqual([reference]);
+    }
+  });
+  it.each([-1, 10.01, NaN, Infinity])("rejects out-of-contract wire weight %s", weight => {
+    for (const { schema, payload } of variants) {
+      expect(schema.safeParse({ ...payload, referenceImages: [{ assetId: "published-anchor", role: "identity_anchor", weight }] }).success).toBe(false);
+    }
+  });
+  it("preserves omitted and zero wire weights supported by historical callers", () => {
+    for (const { schema, payload } of variants) {
+      const references = [
+        { assetId: "anchor-with-default", role: "identity_anchor" },
+        { assetId: "anchor-with-zero", role: "identity_anchor", weight: 0 },
+      ];
+      expect(schema.parse({ ...payload, referenceImages: references }).referenceImages).toEqual(references);
+    }
   });
 });
 

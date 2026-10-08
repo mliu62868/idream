@@ -13,6 +13,10 @@ from fastapi.testclient import TestClient
 
 
 class FishAudioGatewayTests(unittest.TestCase):
+    def test_account_erasure_deletes_owned_and_legacy_cache_without_erasing_shared_voice(self):
+        from scripts.voice_erasure_test_cases import assert_speech_account_erasure
+        assert_speech_account_erasure(self, "fish-female-default")
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.previous = {

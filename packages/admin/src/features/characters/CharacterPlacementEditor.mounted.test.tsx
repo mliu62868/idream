@@ -118,6 +118,19 @@ describe("Character placement qualification", () => {
     expect(runCommittedMutation).not.toHaveBeenCalled();
   });
 
+  it("locks every placement and points to Release while a candidate release is pending", async () => {
+    const runCommittedMutation = vi.fn();
+    await act(async () => root.render(<CharacterPlacementEditor
+      canRead canWrite runCommittedMutation={runCommittedMutation}
+      data={characterWorkspaceDetail({ journey: { release: { candidateReleaseId: "candidate-1" } } })}
+    />));
+    expect(container.textContent).toContain("A candidate release is waiting.");
+    expect(container.querySelector('a[href$="?tab=release"]')).not.toBeNull();
+    const choices = [...container.querySelectorAll<HTMLButtonElement>("article button")];
+    expect(choices.every((button) => button.disabled)).toBe(true);
+    expect(adminV2Operation).not.toHaveBeenCalled();
+  });
+
   it("reuses the placement request after its committed response is lost", async () => {
     const available = reviewedUpload("available-cover", "review-cover");
     let writes = 0;

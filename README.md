@@ -162,10 +162,23 @@ bun run dsh-companion:check
 Main's committed Turns own memory. Chat projects them through official igrep
 ingest/maintain, reads wake once before the first model request, and uses fast
 recall plus the read-only `memory_search` tool. Plugin auto-ingest, auto-wake,
-maintenance timers, and session archives are disabled. Private execution exposes
-neither memory nor session recall. Bootstrap compares the shipped and installed
-JavaScript because the plugin package version can stay `0.1.0` across CLI releases.
-For igrep `0.1.150`, projection verifies both searchable `[timestamp, content]`
+and maintenance timers are disabled: Main remains the sole durable writer.
+Agents also use `igrep_search` over an isolated authorized snapshot and
+`session_recall` over verbatim messages and tool results evicted from the current
+attempt. Official igrep compaction handles context pressure and provider overflow;
+its quoted summary keeps user provenance, while current Scene, preferences and
+the current request are reprojected from the immutable Turn. Recalled group
+dialogue keeps speaker metadata bound to its original events. Every physical
+model request contributes to terminal usage, including rejected summaries and
+compatibility retries; a missing receipt keeps the total unknown. Private execution retains these attempt-local
+capabilities and exposes no cross-session memory tools. All attempt data and
+session archives are discarded on teardown. Before serving requests, startup
+also removes official recall archives whose local owner process has exited.
+`igrep_web_search` is available when igrep's public web provider is configured
+(for SearXNG: `IGREP_WEB_SEARCH_PROVIDER=searxng` and `IGREP_SEARXNG_URL`).
+Bootstrap uses content-addressed official bundles and compares shipped and
+installed JavaScript because the package version can stay `0.1.0` across CLI
+releases. For igrep `0.1.151`, projection verifies both searchable `[timestamp, content]`
 dialogue tuples and the separate role-bearing session sources against Main.
 The dialogue v3 transport is decoded strictly; only structured date insertions
 may accompany the unchanged source text. Canonical session text, roles and
@@ -175,11 +188,14 @@ Each normal attempt runs official zero-model `mem reproject` on its owned copy
 before wake/recall, restoring source-file witnesses changed by copying. Incomplete
 recall warnings fail the attempt; they cannot masquerade as an empty memory.
 Full runtime certification exercises both empty and populated rebuilds.
+It also runs the actual plugin/CLI through compaction, exact archived recall,
+local retrieval, private tool isolation and workspace cleanup with a controlled
+model response; real provider warmup and memory maintenance are separate checks.
 Apply a running-process update through the controlled PM2 wrapper described above.
 
 ## Chat Voice Input
 
-Single and group chats support dictation into an editable draft. Click the
+Single and group chats support English dictation into an editable draft. Click the
 microphone, record for up to 60 seconds, select Done, review the text, then Send.
 Transcription does not create a Turn or consume messages, Dreamcoins, or TTS
 minutes. Existing drafts are appended; changed drafts or group recipients require
@@ -216,9 +232,10 @@ Cancellation suppresses delivery immediately but retains the inference slot unti
 native execution returns. Temporary decoded files are removed after native
 execution; results are memory-only and fetched candidates are deleted.
 
-Supported language codes: `bg hr cs da nl en et fi fr de el hu it lv lt mt pl pt
-ro ru sk sl es sv uk`. This list does not imply every European language or equal
-accuracy across languages. A supported recording browser and HTTPS (or localhost)
+ASR for voice input and calls supports English only (`en`). TTS language support
+remains provider-specific. The resident ASR model's broader language capability
+does not expand the product's supported languages.
+A supported recording browser and HTTPS (or localhost)
 are required. Unsupported providers leave the microphone entry hidden; configured
 but unavailable models show a disabled entry with a retry availability action.
 

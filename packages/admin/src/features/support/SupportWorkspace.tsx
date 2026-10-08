@@ -540,7 +540,7 @@ export function SupportWorkspace({
       {data && rows.length > 0 ? (
         <Pagination
           hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
-          hasPrevious={cursorTrail.length > 0}
+          hasPrevious={Boolean(query.cursor)}
           loading={loading || error !== null}
           onNext={() => {
             if (!pageInfo.endCursor) return;
@@ -549,7 +549,8 @@ export function SupportWorkspace({
           onPrevious={() =>
             navigate({ ...query, cursor: cursorTrail.at(-1) ?? "" }, "push", cursorTrail.slice(0, -1))
           }
-          page={cursorTrail.length + 1}
+          previousLabel={query.cursor && cursorTrail.length === 0 ? t("Back to first page") : undefined}
+          page={!query.cursor ? 1 : cursorTrail[0] === "" ? cursorTrail.length + 1 : null}
           pageSize={SUPPORT_PAGE_SIZE}
           rowCount={rows.length}
         />

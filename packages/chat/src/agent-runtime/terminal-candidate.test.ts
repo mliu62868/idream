@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CompanionTerminalCandidate } from "./contracts";
 import {
-  acceptableRequiredImageLeadIn,
   evaluateTerminalCandidate,
   type TerminalCandidateFacts,
   type TerminalValidationCode,
@@ -29,7 +28,6 @@ function facts(overrides: Partial<TerminalCandidateFacts> = {}): TerminalCandida
     assistantContent: "I missed you today.",
     finishReasonKind: "stop",
     currentUserText: "How was your day?",
-    requiredAction: null,
     tools: [],
     toolCalls: 0,
     reservations: [],
@@ -46,7 +44,6 @@ function imageActionFacts(overrides: Partial<TerminalCandidateFacts> = {}): Term
   return facts({
     assistantContent: "Here you go, love.",
     currentUserText: "send me a selfie",
-    requiredAction: { name: IMAGE_TOOL },
     tools: [{ name: IMAGE_TOOL }],
     toolCalls: 1,
     reservations: [reservation(IMAGE_TOOL)],
@@ -60,8 +57,7 @@ describe("evaluateTerminalCandidate", () => {
       accepted: true, candidate: { content: "I missed you today.", usage: null },
     });
   });
-  // SPEC: 五个 validationCode 各有一条触发用例，且必须与 requiredAction 的有无对齐 ——
-  // 四条图片规则只在有 requiredAction 时成立，误伤普通轮次就是把正常回复判死。
+  // Validate execution output only after an actual image call.
   const rejections: {
     name: string;
     code: TerminalValidationCode;
@@ -80,32 +76,14 @@ describe("evaluateTerminalCandidate", () => {
       }),
     },
     {
-      name: "required image reply written in the wrong writing system",
-      code: "required_image_reply_language_mismatch",
+      name: "image reply written in the wrong writing system",
+      code: "image_reply_language_mismatch",
       input: imageActionFacts({ currentUserText: "给我拍一张自拍", assistantContent: "Here you go." }),
     },
     {
-      name: "required image reply that narrates the generation process",
-      code: "required_image_reply_exposed_process",
+      name: "image reply that narrates the generation process",
+      code: "image_reply_exposed_process",
       input: imageActionFacts({ assistantContent: "Let me refine the prompt for you." }),
-    },
-    {
-      name: "required image action that never called its tool",
-      code: "required_image_tool_missing",
-      input: imageActionFacts({ toolCalls: 0, reservations: [] }),
-    },
-    {
-      name: "required image action that called the tool twice",
-      code: "required_image_tool_mismatch",
-      input: imageActionFacts({
-        toolCalls: 2,
-        reservations: [reservation(IMAGE_TOOL), reservation(IMAGE_TOOL)],
-      }),
-    },
-    {
-      name: "required image action that called a different tool",
-      code: "required_image_tool_mismatch",
-      input: imageActionFacts({ reservations: [reservation("edit_last_image")] }),
     },
   ];
 
@@ -115,8 +93,8 @@ describe("evaluateTerminalCandidate", () => {
     expect(decision.accepted === false && decision.code).toBe(code);
   });
 
-  // INVARIANT: 没有 requiredAction 时，同样的正文不带任何图片 validationCode。
-  const withoutRequiredAction: { name: string; input: TerminalCandidateFacts }[] = [
+  // INVARIANT: ordinary replies carry no image-specific validation.
+  const withoutImageAction: { name: string; input: TerminalCandidateFacts }[] = [
     {
       name: "a reply in another writing system",
       input: facts({ currentUserText: "给我讲讲今天", assistantContent: "It was quiet and warm." }),
@@ -129,17 +107,24 @@ describe("evaluateTerminalCandidate", () => {
       name: "a reply with no tool call at all",
       input: facts({ toolCalls: 0, reservations: [] }),
     },
-    {
-      name: "a reply after two tool calls",
-      input: facts({
-        toolCalls: 2,
-        reservations: [reservation(IMAGE_TOOL), reservation("edit_last_image")],
-      }),
-    },
   ];
 
-  it.each(withoutRequiredAction)("accepts $name when no image action is required", ({ input }) => {
+  it.each(withoutImageAction)("accepts $name when no image action was executed", ({ input }) => {
     expect(evaluateTerminalCandidate(input).accepted).toBe(true);
+  });
+
+  it.each([
+    '{"image":"https://example.test/item.png"}',
+    '```json\n{"image":"https://example.test/item.png"}\n```',
+  ])("preserves ordinary image data with image tools available: %s", assistantContent => {
+    expect(evaluateTerminalCandidate(facts({
+      currentUserText: "Return this product image URL as JSON.",
+      assistantContent,
+      tools: [{ name: IMAGE_TOOL }, { name: "edit_last_image" }],
+    }))).toMatchObject({
+      accepted: true,
+      candidate: { content: assistantContent, execution: { toolCalls: 0 }, tools: [] },
+    });
   });
 
   it("keeps an image tool payload legal as prose when the turn exposes no image tool", () => {
@@ -189,7 +174,6 @@ describe("evaluateTerminalCandidate", () => {
         systemPromptDigest: "c".repeat(64),
         estimatedInputTokens: 120,
       }],
-      acknowledgement: { version: "image-action-ack-1", locale: "en" },
       attribution: { requestId: "req-1" },
     }));
     expect(decision).toEqual({
@@ -209,7 +193,6 @@ describe("evaluateTerminalCandidate", () => {
           systemPromptDigest: "c".repeat(64),
           estimatedInputTokens: 120,
         }],
-        acknowledgement: { version: "image-action-ack-1", locale: "en" },
         attribution: { requestId: "req-1" },
       },
     });
@@ -225,62 +208,5 @@ describe("evaluateTerminalCandidate", () => {
     expect(decision.accepted === true && decision.candidate).not.toHaveProperty("modelRequests");
     expect(decision.accepted === true && decision.candidate).not.toHaveProperty("acknowledgement");
     expect(decision.accepted === true && decision.candidate).not.toHaveProperty("attribution");
-  });
-});
-
-// SPEC: 工具那一步的台词能不能留给用户看。放行条件全是确定性判据，
-// 任何一条不过就返回 null，调用方回落到确定性回执（改动前的行为）。
-describe("required image lead-in", () => {
-  const tools = [{ name: "generate_image_async" }];
-
-  it("keeps a short in-Character line that leaves completion to the attachment", () => {
-    expect(acceptableRequiredImageLeadIn(
-      "  Elbow-deep in clay tonight — give me a second.  ",
-      "What are you making tonight? Send a photo.",
-      tools,
-    )).toBe("Elbow-deep in clay tonight — give me a second.");
-  });
-
-  it("keeps a line that promises one photo when several were asked for", () => {
-    expect(acceptableRequiredImageLeadIn("A bunch, huh? Bold. I'll send one from the trail — the rest you can ask for.", "Show me a bunch of pictures", tools))
-      .toBe("A bunch, huh? Bold. I'll send one from the trail — the rest you can ask for.");
-  });
-
-  it("drops a line that carries a tool payload or hidden thinking", () => {
-    expect(acceptableRequiredImageLeadIn('Mm, one sec.\n\n{"name":"edit_last_image","args":{"instruction":"red"}}', "Make it red", tools)).toBeNull();
-    expect(acceptableRequiredImageLeadIn("<think>\nok\n</think>\nSure babe, one sec.", "Send a photo", tools)).toBeNull();
-  });
-
-  it("keeps the user's own writing system", () => {
-    expect(acceptableRequiredImageLeadIn("等我把手上的泥洗掉。", "今晚在做什么？发张照片", tools))
-      .toBe("等我把手上的泥洗掉。");
-  });
-
-  it.each([
-    ["announces arrival in English", "Here's your selfie, hope you like it.", "Send a photo."],
-    ["announces arrival in Chinese", "喏，给你了。", "发张照片"],
-    ["claims it was sent", "I just sent it over.", "Send a photo."],
-    ["claims it is ready", "It's ready for you.", "Send a photo."],
-    ["exposes the process", "Writing the prompt for the image generation process now.", "Send a photo."],
-    ["answers in another language", "Je te la prépare tout de suite.", "今晚在做什么？发张照片"],
-    ["is empty", "   ", "Send a photo."],
-    ["runs long", "a".repeat(401), "Send a photo."],
-    // Real 35B lead-ins for multi-photo requests; chat delivers one image.
-    ["promises three shots", "I'll grab three different shots of me by the water before the sun drops.", "Send me three pics"],
-    ["promises a few", "I'll grab a few shots of me getting ready for tonight — different angles.", "Send a few photos"],
-    ["promises both angles", "The couch has that perfect slouch — let me give you both angles.", "Send 2 selfies"],
-    ["promises four looks", "I'll put on four different looks for you.", "I want 4 photos"],
-    ["promises three ways", "I'll give you three ways of me taking it in.", "Send three pics"],
-    ["promises several in Chinese", "等我换身衣服，给你拍三张。", "发三张照片"],
-  ])("drops a line that %s", (_case, leadIn, userText) => {
-    expect(acceptableRequiredImageLeadIn(leadIn, userText, tools)).toBeNull();
-  });
-
-  it("drops a raw tool payload the model printed instead of calling", () => {
-    expect(acceptableRequiredImageLeadIn(
-      '{"name":"generate_image_async","arguments":{"prompt":"a selfie"}}',
-      "Send a photo.",
-      tools,
-    )).toBeNull();
   });
 });

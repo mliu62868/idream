@@ -566,6 +566,95 @@ describe("ProfileWorkspace media pagination", () => {
     expect(container.querySelector('a[href="/packs?scope=mine"]')).not.toBeNull();
   });
 
+  it.each([
+    { type: "image", contentType: "image/png" },
+    { type: "video", contentType: "video/mp4" },
+    { type: "voice", contentType: "audio/wav" },
+    { type: "audio", contentType: "audio/wav" },
+  ])("restores existing private collections for media in Recent after a fresh profile load ($type)", async ({ type, contentType }) => {
+    override = (path) => {
+      if (path === "/api/v1/library/recent") return Promise.resolve(Response.json({ ok: true, data: { items: [{ ...mediaItem("recent-image"), type, contentType }] } }));
+      if (path === "/api/v1/media/collections") return Promise.resolve(Response.json({ ok: true, data: {
+        collections: [{ id: "saved-private-collection", name: "Saved private work", visibility: "private", itemCount: 1 }],
+      } }));
+      return undefined;
+    };
+    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/profile" })));
+    await settle();
+    expect(button("Recent").getAttribute("aria-pressed")).toBe("true");
+    const card = container.querySelector('[data-media-id="recent-image"]')!;
+    expect(card).not.toBeNull();
+    await click(card.querySelector("[aria-expanded]")!);
+    const select = card.querySelector<HTMLSelectElement>('[aria-label="Existing collection"]');
+    expect(select, "a freshly loaded Recent media card restores the saved private collection").not.toBeNull();
+    expect(select!.value).toBe("saved-private-collection");
+    expect(select!.textContent).toContain("Saved private work");
+    const collectionRead = vi.mocked(fetch).mock.calls.find(([input]) => String(input) === "/api/v1/media/collections");
+    expect(new Headers(collectionRead?.[1]?.headers).get("x-idream-viewer-scope")).toBe("user:viewer-a");
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("shows Recent collection loading and retries a failed read without creating a collection", async () => {
+    const pendingCollections = deferredResponse();
+    let collectionReads = 0;
+    override = (path) => {
+      if (path === "/api/v1/library/recent") return Promise.resolve(Response.json({ ok: true, data: { items: [mediaItem("recent-image")] } }));
+      if (path === "/api/v1/media/collections") {
+        collectionReads += 1;
+        return collectionReads === 1 ? pendingCollections.promise : Promise.resolve(Response.json({ ok: true, data: {
+          collections: [{ id: "saved-private-collection", name: "Saved private work", visibility: "private", itemCount: 1 }],
+        } }));
+      }
+      return undefined;
+    };
+    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/profile" })));
+    await settle();
+    const card = container.querySelector('[data-media-id="recent-image"]')!;
+    expect(card).not.toBeNull();
+    await click(card.querySelector("[aria-expanded]")!);
+    expect(container.textContent).toContain("Loading media collections…");
+    await act(async () => pendingCollections.resolve(Response.json({ ok: false, error: { message: "Collections temporarily unavailable." } }, { status: 503 })));
+    await settle();
+    const notice = [...container.querySelectorAll('[role="alert"]')].find(item => item.textContent?.includes("Collections temporarily unavailable."));
+    expect(notice, "Recent must expose a failed collection read rather than silently looking empty").toBeDefined();
+    await click(notice!.querySelector("button")!);
+    expect(card.querySelector<HTMLSelectElement>('[aria-label="Existing collection"]')?.value).toBe("saved-private-collection");
+    expect(container.textContent).not.toContain("Collections temporarily unavailable.");
+    expect(collectionReads).toBe(2);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("discards a delayed Recent collection read after switching owners", async () => {
+    const oldOwnerCollections = deferredResponse();
+    override = (path) => {
+      if (path === "/api/v1/library/recent") return Promise.resolve(Response.json({ ok: true, data: { items: [mediaItem(`${viewer}-recent-image`)] } }));
+      if (path === "/api/v1/media/collections") return viewer === "viewer-a" ? oldOwnerCollections.promise : Promise.resolve(Response.json({ ok: true, data: {
+        collections: [{ id: "viewer-b-collection", name: "B private work", visibility: "private", itemCount: 1 }],
+      } }));
+      return undefined;
+    };
+    await act(async () => root.render(createElement(ProfileWorkspace, { routePath: "/profile" })));
+    await settle();
+    expect(container.querySelector('[data-media-id="viewer-a-recent-image"]')).not.toBeNull();
+    expect(requests).toContain("/api/v1/media/collections");
+    viewer = "viewer-b";
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    await act(async () => oldOwnerCollections.resolve(Response.json({ ok: true, data: {
+      collections: [{ id: "viewer-a-private-collection", name: "A private work", visibility: "private", itemCount: 1 }],
+    } })));
+    await settle();
+    expect(container.querySelector('[data-media-id="viewer-a-recent-image"]')).toBeNull();
+    const card = container.querySelector('[data-media-id="viewer-b-recent-image"]')!;
+    expect(card).not.toBeNull();
+    await click(card.querySelector("[aria-expanded]")!);
+    expect(card.querySelector<HTMLSelectElement>('[aria-label="Existing collection"]')?.value).toBe("viewer-b-collection");
+    expect(container.textContent).not.toContain("A private work");
+    const collectionReads = vi.mocked(fetch).mock.calls.filter(([input]) => String(input) === "/api/v1/media/collections");
+    expect(collectionReads.map(([, init]) => new Headers(init?.headers).get("x-idream-viewer-scope"))).toEqual(["user:viewer-a", "user:viewer-b"]);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
   it("keeps a new collection private unless the owner opts in", async () => {
     await mountMedia();
     await click(container.querySelector('[data-media-id="image-1"]')!.querySelector("[aria-expanded]")!);

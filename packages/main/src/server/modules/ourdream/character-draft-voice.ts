@@ -100,7 +100,7 @@ async function preparePresetCharacterVoice(input: {
   const sampleText = input.sampleText;
   try {
     const created = await voice.createPresetVoice({
-      voiceId, presetVoiceId: input.voiceId, language: input.language,
+      ownerId: input.userId, voiceId, presetVoiceId: input.voiceId, language: input.language,
     });
     if (!created.ok) throw Errors.unavailable("Could not save the selected catalog voice", created.error);
     if (created.data.voiceId !== voiceId || created.data.presetVoiceId !== input.voiceId) {

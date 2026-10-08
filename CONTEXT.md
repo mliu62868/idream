@@ -59,7 +59,7 @@ _Avoid_: Chat Agent、产品 Turn、聊天记录
 _Avoid_: 产品 Turn、AgentRun 状态机、陪伴记忆
 
 **工具效果**：
-Agent 工具请求产生的产品动作，例如创建图片或视频生成请求；普通模型工具效果由 Turn attempt 与 tool call 确定，明确用户意图形成的必需产品动作由 Turn、动作与参数确定，regenerate 只重绑选中 attempt，不重复扣费。
+Agent 工具请求产生的产品动作，例如创建图片或视频生成请求。Agent 判断图片动作，Main 以 Turn 与固定用户消息识别同一图片动作，发图与编辑共用该身份；Main 校验权限、来源、参数与计费，regenerate 只重绑选中 attempt，不重复扣费。
 _Avoid_: 通用 hook、模型输出、生成结算
 
 **陪伴记忆**：

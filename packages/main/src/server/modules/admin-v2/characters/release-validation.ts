@@ -710,12 +710,9 @@ export async function evaluateCharacterReleaseSnapshot(
         soulPrompt: soulResult.snapshot.compiled.systemPrompt,
       })
     : null;
-  const storedSoulSchemaVersion =
-    content?.personaSnapshot &&
-    typeof content.personaSnapshot === "object" &&
-    !Array.isArray(content.personaSnapshot)
-      ? (content.personaSnapshot as Record<string, unknown>).schemaVersion
-      : null;
+  const storedSoulSchemaVersion = content
+    ? storedSoulSchemaVersionOf(content.personaSnapshot)
+    : null;
   // Historical Soul snapshots remain readable for pinned sessions. A current
   // v3 Soul cannot label itself legacy to bypass behavior or live-model proof.
   const historicalSoulReadOnly =
@@ -812,7 +809,7 @@ export async function evaluateCharacterReleaseSnapshot(
         canaryPromptDigest: companionCanary
           ? canonicalSha256(companionCanary.systemPrompt)
           : null,
-        actionName: companionCanary?.actionName ?? null,
+        availableTools: companionCanary?.availableTools ?? [],
         imagePromptAuthority: companionCanary?.imagePromptAuthority ?? null,
         executionMode: companionCanary?.executionMode ?? null,
       },
@@ -982,4 +979,32 @@ export async function validateCharacterReleaseSnapshot(
     })),
   });
   return { run, ...evaluation };
+}
+
+function storedSoulSchemaVersionOf(personaSnapshot: unknown) {
+  return personaSnapshot && typeof personaSnapshot === "object" && !Array.isArray(personaSnapshot)
+    ? (personaSnapshot as Record<string, unknown>).schemaVersion
+    : null;
+}
+
+/**
+ * SPEC: the first Soul/opening gate a newly governed Release would fail on this draft
+ * content, or null. Same rules as soul_snapshot_valid / soul_release_policy /
+ * opening_complete above, without the legacy exemption (Admin never creates legacy
+ * Releases) and without text moderation (checked at write time).
+ * INTENT: the production journey reads this so the list card and workspace header stop
+ * saying "Ready to preview" while Release is blocked on the Soul.
+ */
+export function characterDraftSoulBlocker(
+  content: { personaSnapshot: unknown; openingSnapshot: unknown } | null,
+) {
+  const soul = content ? loadCharacterSoulSnapshot(content.personaSnapshot) : null;
+  if (!content || !soul?.ok) return "soul_snapshot_valid" as const;
+  if (storedSoulSchemaVersionOf(content.personaSnapshot) !== 3 || soul.diagnostics.length > 0) {
+    return "soul_release_policy" as const;
+  }
+  if (releaseString(releaseRecord(content.openingSnapshot).firstMessage) === null) {
+    return "opening_complete" as const;
+  }
+  return null;
 }

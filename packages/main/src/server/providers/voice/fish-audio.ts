@@ -1,9 +1,10 @@
 import {
-  voiceSceneInstructions,
   type ProviderResult,
   type VoiceClipPort,
   type VoiceIdentityPort,
 } from "../types";
+import { pcmWavDurationMs } from "./wav";
+import { requestVoiceProvider, voiceOwnerHeaders } from "./http";
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -56,7 +57,7 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     this.language = config.language;
     this.defaultVoiceId =
       config.defaultVoiceId?.trim() || "fish-female-default";
-    this.maxInputChars = Math.max(1, config.maxInputChars ?? 900);
+    this.maxInputChars = Math.min(2_000, Math.max(1, config.maxInputChars ?? 2_000));
     this.timeoutMs = Math.max(250, config.timeoutMs ?? 180_000);
     this.fetchImpl = config.fetchImpl ?? fetch;
   }
@@ -70,8 +71,9 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
         body: rendered.data.body,
         contentType: rendered.data.contentType,
         durationMs: rendered.data.durationMs,
-        sceneApplied: true,
-        sceneAdapter: "fish-audio-scene-1",
+        // The resident gateway applies delivery, but has no Scene/tone input.
+        sceneApplied: false,
+        sceneAdapter: "fish-audio-delivery-1",
       },
     };
   }
@@ -96,7 +98,7 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     );
     const response = await this.request(this.voicesEndpoint, {
       method: "POST",
-      headers: this.authHeaders(),
+      headers: { ...this.authHeaders(), ...voiceOwnerHeaders(input.ownerId) },
       body: form,
     });
     if (!response.ok) return response;
@@ -139,6 +141,17 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     return { ok: true as const, data: { deleted: true as const } };
   }
 
+  async eraseAccount(input: Parameters<NonNullable<VoiceClipPort["eraseAccount"]>>[0]) {
+    const response = await this.request(new URL("account-erasure", this.voicesEndpoint), {
+      method: "POST", headers: this.jsonHeaders(),
+      body: JSON.stringify({ subject_hash: input.subjectHash, request_keys: input.requestKeys, voice_ids: input.voiceIds }),
+    });
+    if (!response.ok) return response;
+    const receipt = await response.data.json().catch(() => null);
+    if (receipt?.erased !== true) return fishFailure("invalid_voice_erasure_receipt", "Fish Audio did not confirm account erasure", true);
+    return { ok: true as const, data: { erased: true as const } };
+  }
+
   async inspectCapabilities() {
     const response = await this.request(
       this.healthEndpoint,
@@ -177,6 +190,7 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
   }
 
   private async renderVoice(input: {
+    ownerId?: string;
     text: string;
     voiceId?: string;
     tone?: string;
@@ -186,10 +200,14 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     attemptNo?: number;
     idempotencyKey?: string;
   }) {
+    const text = input.text.trim();
+    if (!text) return fishFailure("voice_input_empty", "Voice input is empty", false);
+    if (text.length > this.maxInputChars) return fishFailure("voice_input_too_long", `Voice input exceeds ${this.maxInputChars} characters; no text was truncated`, false);
     const response = await this.request(this.speechEndpoint, {
       method: "POST",
       headers: {
         ...this.jsonHeaders(),
+        ...voiceOwnerHeaders(input.ownerId),
         ...(input.idempotencyKey
           ? { "idempotency-key": input.idempotencyKey }
           : {}),
@@ -202,41 +220,31 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
       },
       body: JSON.stringify({
         model: this.model,
-        input: limitText(input.text, this.maxInputChars),
+        input: text,
         voice: input.voiceId?.trim() || this.defaultVoiceId,
         response_format: "wav",
         ...(input.delivery ? { delivery: input.delivery } : {}),
-        ...(input.tone ? { tone: input.tone } : {}),
-        ...(input.scene ? {
-          scene: input.scene,
-          scene_instructions: voiceSceneInstructions(input.scene),
-        } : {}),
       }),
     });
     if (!response.ok) return response;
 
-    const contentType = response.data.headers.get("content-type") ?? "audio/wav";
-    if (!contentType.includes("audio/")) {
+    const contentType = response.data.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
+    if (contentType !== "audio/wav" && contentType !== "audio/x-wav") {
       return fishFailure(
         "invalid_voice_response",
-        "Fish Audio returned a non-audio response",
+        "Fish Audio returned a non-WAV response",
         true,
       );
     }
     const body = new Uint8Array(await response.data.arrayBuffer());
-    if (body.byteLength === 0) {
-      return fishFailure(
-        "invalid_voice_response",
-        "Fish Audio returned empty audio",
-        true,
-      );
-    }
+    const durationMs = pcmWavDurationMs(body);
+    if (durationMs === null) return fishFailure("invalid_voice_response", "Fish Audio returned invalid PCM WAV audio", true);
     return {
       ok: true as const,
       data: {
         body,
         contentType: "audio/wav" as const,
-        durationMs: wavDurationMs(body) ?? estimateDurationMs(input.text),
+        durationMs,
       },
     };
   }
@@ -256,82 +264,14 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     init: RequestInit,
     timeoutMs = this.timeoutMs,
   ): Promise<ProviderResult<Response>> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await this.fetchImpl(endpoint, {
-        ...init,
-        signal: controller.signal,
-      });
-      if (response.ok) return { ok: true, data: response };
-      const details = await response.text().catch(() => "");
-      return fishFailure(
-        response.status === 404 ? "voice_not_found" : "fish_audio_failed",
-        details.trim() || `Fish Audio returned HTTP ${response.status}`,
-        response.status >= 500 || response.status === 429,
-      );
-    } catch (error) {
-      return fishFailure(
-        error instanceof Error && error.name === "AbortError"
-          ? "voice_timeout"
-          : "voice_request_failed",
-        error instanceof Error ? error.message : "Fish Audio request failed",
-        true,
-      );
-    } finally {
-      clearTimeout(timeout);
-    }
+    return requestVoiceProvider({ endpoint, init, timeoutMs, fetchImpl: this.fetchImpl,
+      providerName: "Fish Audio", failureCode: "fish_audio_failed" });
   }
 }
 
 function fishEndpoint(baseUrl: string, suffix: string) {
   const normalized = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
   return new URL(suffix.replace(/^\//, ""), normalized);
-}
-
-function limitText(text: string, max: number) {
-  const clean = text.trim();
-  if (clean.length <= max) return clean;
-  const clipped = clean.slice(0, max);
-  const sentence = clipped.match(/^[\s\S]*[.!?](?:\s|$)/)?.[0]?.trim();
-  return sentence || clipped.trimEnd();
-}
-
-function wavDurationMs(body: Uint8Array) {
-  if (
-    body.byteLength < 44 ||
-    ascii(body, 0, 4) !== "RIFF" ||
-    ascii(body, 8, 4) !== "WAVE"
-  ) {
-    return null;
-  }
-  const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
-  let offset = 12;
-  let byteRate: number | null = null;
-  let dataSize: number | null = null;
-  while (offset + 8 <= body.byteLength) {
-    const chunk = ascii(body, offset, 4);
-    const size = view.getUint32(offset + 4, true);
-    if (chunk === "fmt " && size >= 12 && offset + 20 <= body.byteLength) {
-      byteRate = view.getUint32(offset + 16, true);
-    }
-    if (chunk === "data") {
-      dataSize = Math.min(size, Math.max(0, body.byteLength - offset - 8));
-      break;
-    }
-    offset += 8 + size + (size % 2);
-  }
-  return byteRate && dataSize !== null
-    ? Math.round((dataSize / byteRate) * 1_000)
-    : null;
-}
-
-function ascii(body: Uint8Array, offset: number, length: number) {
-  return String.fromCharCode(...body.subarray(offset, offset + length));
-}
-
-function estimateDurationMs(text: string) {
-  return Math.max(500, Math.round(text.trim().length * 55));
 }
 
 function fishFailure(

@@ -281,6 +281,15 @@ export function UpgradeWorkspace() {
 
   return (
     <section className="px-4 pb-14 md:px-[60px]">
+      {/* INTENT: 多数人是被聊天或生图的额度提示带到这里的；不买也要能一键回到原处，
+          不能只剩浏览器后退。 */}
+      {returnTargetReady ? (
+        <p className="mx-auto mb-4 max-w-5xl text-sm">
+          <Link className="font-bold underline underline-offset-4" data-testid="upgrade-return-link" href={returnTarget}>
+            {returnTargetBackLabel(returnTarget)}
+          </Link>
+        </p>
+      ) : null}
       <p className="mx-auto mb-4 max-w-5xl text-[13px] font-semibold text-[rgb(170,170,170)]">
         {FREE_CHAT_SUMMARY}
       </p>
@@ -383,6 +392,12 @@ export function UpgradeWorkspace() {
             <p className="mt-2 text-[44px] font-black leading-none">
               ${(plan.priceCents / 100).toFixed(2)}
             </p>
+            {/* 年付只给总价时无法和月付比较；折算成每月价让两档可以直接对比。 */}
+            {plan.billingPeriod === "yearly" ? (
+              <p className="mt-2 text-[13px] font-bold text-white/80" data-testid="upgrade-plan-monthly-equivalent">
+                ${(Math.round(plan.priceCents / 12) / 100).toFixed(2)} per month, paid once for the year
+              </p>
+            ) : null}
             <p className="mt-3 text-[14px] leading-6 text-[rgb(170,170,170)]">
               One-time payment for one{" "}
               {plan.billingPeriod === "monthly" ? "month" : "year"} of access.
@@ -497,6 +512,12 @@ function formatBillingDate(value: string | null) {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return null;
   return new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(date);
+}
+
+function returnTargetBackLabel(returnTarget: string) {
+  if (returnTarget.startsWith("/chat/")) return "Back to your chat";
+  if (returnTarget.startsWith("/generate")) return "Back to generating";
+  return "Back to where you were";
 }
 
 function returnTargetActionLabel(returnTarget: string) {

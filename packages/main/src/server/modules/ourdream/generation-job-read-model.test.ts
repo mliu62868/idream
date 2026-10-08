@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
+import { refundGenerationRequest } from "@/server/ai/generation-refund";
+import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import {
   api,
   createUser,
@@ -24,6 +26,45 @@ afterAll(async () => {
 });
 
 describe("customer generation job read model", () => {
+  it("reads actual settlement without treating quotes or refund events as ledger facts", async () => {
+    const userId = `${P}settlement-user`;
+    const chargedId = `${P}settlement-charged`;
+    const unchargedId = `${P}settlement-uncharged`;
+    await createUser({ id: userId });
+    await prisma.generationJob.createMany({ data: [chargedId, unchargedId].map(id => ({
+      id, userId, mode: "image", controls: {}, presetIds: [], status: "failed", costDreamcoins: 40,
+    })) });
+    await prisma.$transaction(async tx => {
+      await postDreamcoinEntry(tx, { kind: "signup_bonus", userId, amount: 100, sourceId: userId, idempotencyKey: `${userId}:bonus` });
+      await postDreamcoinEntry(tx, { kind: "generation_spend", userId, amount: 40, sourceId: chargedId, idempotencyKey: `${chargedId}:spend` });
+      await refundGenerationRequest(tx, { requestId: chargedId, userId, cause: { kind: "partial" }, requested: 10 });
+    });
+    // Incident refunds use the same settlement writer without a Job event.
+    // Historical or duplicate timeline events are not financial authority.
+    await prisma.generationJobEvent.create({ data: { jobId: chargedId, type: "refunded", message: "Historical timeline", metadata: { amount: 999 } } });
+    const partial = await api("GET", `generation/jobs/${chargedId}`, { userId, ageGate: true });
+    expectOk(partial);
+    expect(partial.data.job.costDreamcoins).toBe(40);
+    expect.soft(partial.data.cost).toMatchObject({ charged: 40, refunded: 10, finalCharge: 30 });
+    expect.soft(partial.data.job.cost).toEqual(partial.data.cost);
+
+    await prisma.$transaction(tx => refundGenerationRequest(tx, { requestId: chargedId, userId, cause: { kind: "incident_action", commandId: `${P}incident` } }));
+    const linksBefore = await prisma.generationSettlementLink.count({ where: { requestId: chargedId } });
+    const ledgerBefore = await prisma.dreamcoinLedger.count({ where: { userId } });
+    for (let index = 0; index < 2; index += 1) {
+      const list = await api("GET", "generation/jobs", { userId, ageGate: true, query: { limit: "20" } });
+      expectOk(list);
+      const items = list.data.items as Array<{ id: string; cost: { charged: number; refunded: number; finalCharge: number } }>;
+      expect.soft(items.find(job => job.id === chargedId)?.cost).toMatchObject({ charged: 40, refunded: 40, finalCharge: 0 });
+      expect.soft(items.find(job => job.id === unchargedId)?.cost).toMatchObject({ charged: 0, refunded: 0, finalCharge: 0 });
+      const detail = await api("GET", `generation/jobs/${chargedId}`, { userId, ageGate: true });
+      expectOk(detail);
+      expect.soft(detail.data.cost).toMatchObject({ charged: 40, refunded: 40, finalCharge: 0 });
+    }
+    expect(await prisma.generationSettlementLink.count({ where: { requestId: chargedId } })).toBe(linksBefore);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId } })).toBe(ledgerBefore);
+  });
+
   it("projects the latest running Attempt while preserving queued and terminal Job states", async () => {
     const userId = `${P}user`;
     const createdAt = new Date("2026-08-11T16:06:30.000Z");

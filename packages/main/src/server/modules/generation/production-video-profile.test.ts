@@ -108,14 +108,14 @@ describe("production video profile catalog", () => {
       explicitSelectionOnly: false,
     });
   });
-  it("requires the v7 options publication on the current MPSGraph workflow", () => {
+  it("requires the v9 options publication on the current MPSGraph workflow", () => {
     const options = { ...PRODUCTION_REDGRAFT_LTX25_VIDEO_OPTIONS_PROFILE, mode: "video", convertedModelPath: null, enabled: true, status: "active" };
     expect(hasProductionVideoOptions(options)).toBe(true);
     expect(isProductionVideoProfile(options)).toBe(true);
-    // The v7 options publication is the same default Character route: admin
+    // The v9 options publication is the same default Character route: admin
     // runs, plan feature projection, and Generate must agree on it.
     expect(isDefaultProductionVideoProfile(options)).toBe(true);
-    expect(productionVideoRecipeForProfile(options)?.workflowVersion).toBe(4);
+    expect(productionVideoRecipeForProfile(options)?.workflowVersion).toBe(5);
     expect(hasProductionVideoOptions(exactRedGraftProfile())).toBe(false);
     expect(hasProductionVideoOptions({ ...options, version: 2 })).toBe(false);
     expect(hasProductionVideoOptions({ ...options, version: 3 })).toBe(false);

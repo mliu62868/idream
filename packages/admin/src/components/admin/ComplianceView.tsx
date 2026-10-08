@@ -21,6 +21,7 @@ import {
   createAuthorityState,
 } from "@/lib/authority-state";
 import { createLatestRequestGate } from "@/lib/latest-request";
+import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 
 // INVARIANT: outline-none 必须配一个 focus-visible 补偿，否则键盘用户不知道焦点在哪；
 // 只换边框颜色在高对比度模式下会被系统主题覆盖掉。
@@ -352,6 +353,8 @@ function ErasureQueueSection() {
     }
   }, []);
 
+  useWorkspaceRefresh(() => load(scope));
+
   useEffect(() => {
     const gate = requestGate.current;
     const timer = window.setTimeout(() => void load(initialScope.current), 0);
@@ -506,6 +509,8 @@ function AgeVerificationSection({ canWrite }: { canWrite: boolean }) {
       ));
     }
   }, []);
+
+  useWorkspaceRefresh(() => load(status));
 
   useEffect(() => {
     const gate = requestGate.current;

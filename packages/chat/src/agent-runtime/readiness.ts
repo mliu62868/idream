@@ -31,6 +31,7 @@ import {
 } from "./igrep";
 import { probeCompanionBridges } from "./engine";
 import { OpenAiCompatibleAdapter } from "./openai-adapter";
+import { probeCompanionRetrieval } from "./retrieval-probe";
 import {
   COMPANION_CORE_PACKAGES,
   companionCompositionDigest,
@@ -238,7 +239,7 @@ function bridgeInvocation(
     expectedProfileDigest,
     deadlineAt: new Date(Date.now() + 60_000).toISOString(),
     preparedTurn: {
-      version: 5,
+      version: 6,
       model: profile.model,
       characterName: "Readiness",
       messages: [{
@@ -260,7 +261,6 @@ function bridgeInvocation(
         sceneVersion: 0,
         contextRevision: "0",
       },
-      requiredAction: null,
     },
   };
 }
@@ -282,6 +282,7 @@ export interface ReadinessOptions {
   ) => Promise<void>;
   memoryLifecycleProbe?: (command: string) => Promise<IgrepLifecycleProbeEvidence>;
   bridgeProbe?: (invocation: CompanionInvocation) => Promise<void>;
+  retrievalProbe?: typeof probeCompanionRetrieval;
   workspaceRebuildProbe(): Promise<void>;
 }
 
@@ -342,6 +343,15 @@ export async function probeWorkspaceRebuild(
   }
 }
 
+// Provider and CLI failures are content-free but otherwise indistinguishable.
+// Identify the qualification phase without adding transcript or command output.
+async function runtimeProof<T>(phase: string, run: () => Promise<T>): Promise<T> {
+  try { return await run(); }
+  catch (error) {
+    throw new Error(`companion ${phase} proof failed: ${error instanceof Error ? error.message : "unknown failure"}`, { cause: error });
+  }
+}
+
 export function createReadinessProbe(
   options: ReadinessOptions,
 ): (force?: boolean) => Promise<CompanionReadiness> {
@@ -383,23 +393,24 @@ export function createReadinessProbe(
     }
     const profile = readinessProfile(options.config.modelProfile);
     const state = await (options.readBootstrapState ?? bootstrapState)(options.config.bootstrapStatePath);
-    await (options.bootstrapRuntimeProof ?? verifyBootstrapRuntime)({
+    await runtimeProof("bootstrap", () => (options.bootstrapRuntimeProof ?? verifyBootstrapRuntime)({
       statePath: options.config.bootstrapStatePath,
       state,
       plugin,
-    });
-    await (options.providerWarmup ?? warmProvider)(options.config, profile);
-    const verification = await (options.memoryLifecycleProbe ?? probeIgrepLifecycle)(
+    }));
+    await runtimeProof("provider", () => (options.providerWarmup ?? warmProvider)(options.config, profile));
+    const verification = await runtimeProof("memory", () => (options.memoryLifecycleProbe ?? probeIgrepLifecycle)(
       options.config.igrepCommand,
-    );
-    await (options.bridgeProbe ?? probeCompanionBridges)(bridgeInvocation(
+    ));
+    await runtimeProof("bridge", () => (options.bridgeProbe ?? probeCompanionBridges)(bridgeInvocation(
       profile,
       companionCompositionDigest("private", privateProfile, {
         maxSteps: options.config.maxSteps,
         igrepLlm: options.config.igrepLlm,
       }),
-    ));
-    await options.workspaceRebuildProbe();
+    )));
+    await runtimeProof("retrieval", () => (options.retrievalProbe ?? probeCompanionRetrieval)(options.config, plugin.module, profile));
+    await runtimeProof("workspace-rebuild", () => options.workspaceRebuildProbe());
 
     return companionReadinessSchema.parse({
       protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,

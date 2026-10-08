@@ -22,8 +22,8 @@ import type {
 const MUTABLE_CLOTHING_TRAIT = /(?:\b(?:jacket|hoodie|coat|shirt|t-?shirt|tank top|crop(?:ped)? top|off-shoulder top|sweater|robe|dress|skirt|shorts|jeans|pants|trousers|blouse|lingerie|bra|panties|underwear|swimsuit|bikini)\b|(?:外套|上衣|衬衫|毛衣|长袍|睡袍|裙|短裤|牛仔裤|内衣|泳装))/i;
 
 /**
- * SPEC: Chat Agent supplies new-image scene directions; Main freezes explicit
- * user edits from the authorized Turn text. Neither owns Character identity.
+ * SPEC: Chat Agent supplies both new-image and edit directions; Main freezes
+ * them under the Turn action identity. Neither owns Character identity.
  * Main removes accidental age / hair-colour / eye-colour / skin-tone claims
  * before the direction enters prompt compilation; the pinned Visual Profile
  * and reference set remain the only identity authority.
@@ -154,14 +154,13 @@ export function buildGenerationPrompt(input: {
   sourceImageAssetId?: string;
 }) {
   const chat = isChatContinuitySource(input.sourceType);
-  const look = requirePromptBudget(cleanPromptText(input.lookFragment, Infinity), 500);
-  const userPrompt = chat || look
+  const look = cleanPromptText(input.lookFragment, Infinity);
+  // The public request schema accepts 2000-character directions. Only Chat has
+  // a published 900/2000 execution budget; Look does not change that authority.
+  const userPrompt = chat
     ? requirePromptBudget(input.userPrompt?.trim() ?? "", 900)
-    : cleanPromptText(input.userPrompt, 900);
-  const preset = look
-    ? requirePromptBudget(cleanPromptText(input.presetFragment, Infinity), 500)
-    : cleanPromptText(input.presetFragment, 500);
-  const portraitLook = input.mode === "image" && input.character && !input.sourceImageAssetId ? look : "";
+    : cleanPromptText(input.userPrompt, Infinity);
+  const preset = cleanPromptText(input.presetFragment, Infinity);
   const base =
     input.mode === "image"
       ? buildImageGenerationPrompt({
@@ -171,15 +170,22 @@ export function buildGenerationPrompt(input: {
           userPrompt,
           sourceType: input.sourceType,
           sourceImageAssetId: input.sourceImageAssetId,
-          lookFragment: portraitLook,
-          presetFragment: portraitLook ? preset : "",
+          lookFragment: look,
+          presetFragment: preset,
         })
       : buildVideoGenerationPrompt(input.character, userPrompt);
-  const compiled = [base, look && !portraitLook ? `Active look: ${look}` : null, preset && !portraitLook ? `Scene details: ${preset}` : null]
+  const compiled = [base, input.mode === "video" && look ? `Active look: ${look}` : null, input.mode === "video" && preset ? `Scene details: ${preset}` : null]
     .filter(Boolean).join(". ");
   if (chat && compiled.length > 2_000) throw new RangeError("The complete Chat image facts and pinned identity exceed the 2000-character generation budget");
-  if (look && compiled.length > 2_000) throw new RangeError("The complete image facts, active Look and pinned identity exceed the 2000-character generation budget");
-  return chat ? compiled : clampPrompt(compiled, 2_000);
+  return compiled;
+}
+
+function withOptionalImagePolish(mandatory: string, polish: string) {
+  // 2000 is a packing target for optional polish, not a provider limit. Ordinary
+  // Generator facts survive beyond it; Chat's explicit budget is checked above.
+  return mandatory.length + polish.length + 2 <= 2_000
+    ? `${mandatory}. ${polish}`
+    : mandatory;
 }
 
 function buildImageGenerationPrompt(input: {
@@ -209,18 +215,21 @@ function buildImageGenerationPrompt(input: {
         "Preserve the source subject's face, age, hair and body proportions",
       ] : ["Preserve the source image's subjects, objects and visual details; do not add a person or other subject unless explicitly requested"]),
       `Apply only this requested edit: ${request}`,
-    ].join(". ");
+      input.lookFragment ? `Active look: ${input.lookFragment}` : null,
+      input.presetFragment ? `Scene details: ${input.presetFragment}` : null,
+    ].filter(Boolean).join(". ");
   }
 
   if (!input.character) {
     // Freeplay can depict objects or scenery; a portrait finish invents a human subject.
-    return clampPrompt(
+    return withOptionalImagePolish(
       [
         "High quality original image",
         `Requested scene: ${request}`,
-        "coherent scene, properly exposed, sharp focus, detailed textures, clean composition",
-      ].join(". "),
-      2_000,
+        input.lookFragment ? `Active look: ${input.lookFragment}` : null,
+        input.presetFragment ? `Scene details: ${input.presetFragment}` : null,
+      ].filter(Boolean).join(". "),
+      "coherent scene, properly exposed, sharp focus, detailed textures, clean composition",
     );
   }
 
@@ -243,9 +252,11 @@ function buildImageGenerationPrompt(input: {
   // 版本化的，确实"锁定"；没 pin 时只是从角色内容现推的描述，叫 locked 就是撒谎。
   const direction = lookIdentity
     ? { anchor: CHARACTER_CANONICAL_PORTRAIT_IDENTITY_PROMPT, stableTraits: [] }
-    : visualDirectionOf(character);
+    : visualProfile && identityReplacesAppearanceText(visualProfile)
+      ? { anchor: "", stableTraits: [] }
+      : visualDirectionOf(character);
   const identityPrompt = lookIdentity?.identityPrompt ?? (visualProfile
-    ? cleanPromptText(visualProfile.identityPrompt, 900)
+    ? cleanPromptText(visualProfile.identityPrompt, Infinity)
     : assembleIdentityPrompt(visualDirectionOf(character).traits).identityPrompt);
   const identityLabel = visualProfile ? "Locked identity" : "Character identity";
 
@@ -277,16 +288,21 @@ function buildImageGenerationPrompt(input: {
       .filter(Boolean)
       .join(". ");
   const finish = "single coherent subject, face and body matching the character, expressive eyes, natural pose, well-lit visible face, properly exposed, sharp focus, detailed skin and hair, clean photographic composition";
-  if (isChatContinuitySource(input.sourceType) || input.lookFragment) {
-    if (mandatory.length > 2_000) throw new RangeError(isChatContinuitySource(input.sourceType)
-      ? "The complete Chat image facts and pinned identity exceed the 2000-character generation budget"
-      : "The complete image facts, active Look and pinned identity exceed the 2000-character generation budget");
-    // Photographic polish may be omitted, never a required visual fact.
-    return mandatory.length + finish.length + 2 <= 2_000
-      ? `${mandatory}. ${finish}`
-      : mandatory;
-  }
-  return clampPrompt(`${mandatory}. ${finish}`, 2_000);
+  return withOptionalImagePolish(mandatory, finish);
+}
+
+/**
+ * SPEC: true when an operator wrote this identity (Visual identity "change look" or the
+ * identity form). Its text then replaces the creation-time appearance text, which is
+ * frozen once an identity exists and may still describe the previous look.
+ * INTENT: derived identities (first portrait bootstrap, editorial, create preview) only
+ * say "match the portrait"; for them the frozen appearance text is the only written
+ * description, so it must stay in the prompt.
+ */
+function identityReplacesAppearanceText(profile: GenerationVisualProfile) {
+  const source = profile.createdFrom;
+  return typeof source === "string" &&
+    (source === "admin_passport_edit" || source.startsWith("identity_calibration:"));
 }
 
 /**
@@ -325,8 +341,8 @@ function sealedLookIdentity(profile: GenerationVisualProfile, characterId: strin
       ![face, traits.hair, traits.body].every(group => Object.values(group).some(value => value.trim()))) return null;
 
   // Keep every unknown non-premise trait, including full hair/body descriptions.
-  // The outer compiler rejects overflow rather than the v1 assembler's line and
-  // value caps silently dropping a distinguishing mark or required stable tail.
+  // Preserve complete stable facts: Chat rejects assembled overflow while the
+  // ordinary Generator keeps them instead of applying the v1 cache's caps.
   const details = [
     ["Appearance face", face], ["Appearance hair", traits.hair],
     ["Appearance body", traits.body], ["Character detail signature", signature],
@@ -368,16 +384,15 @@ function visualDirectionOf(character: GenerationPromptCharacter): {
   return {
     anchor: cleanPromptText(
       typeof appearance.identityAnchor === "string" ? appearance.identityAnchor : "",
-      400,
+      Infinity,
     ),
     // INTENT: stableTraits 的历史官方数据混进了卡面服装。服装是 Moment/Look，
     // 不是身份；继续把它当 identity 会直接与换装、裸体等用户意图冲突。
     stableTraits: (Array.isArray(appearance.stableTraits) ? appearance.stableTraits : [])
       .filter((trait): trait is string => typeof trait === "string")
-      .map((trait) => cleanPromptText(trait, 120))
+      .map((trait) => cleanPromptText(trait, Infinity))
       .filter(Boolean)
-      .filter((trait) => !MUTABLE_CLOTHING_TRAIT.test(trait))
-      .slice(0, 12),
+      .filter((trait) => !MUTABLE_CLOTHING_TRAIT.test(trait)),
     traits: {
       face: toTraitRecord(group("faceTraits") ?? visualGroup(character.appearance, "face")),
       hair: toTraitRecord(group("hairTraits") ?? visualGroup(character.appearance, "hair")),
@@ -431,8 +446,8 @@ export function imageNegativePrompt(
   base: string | null,
   visualProfile: Pick<GenerationVisualProfile, "negativeIdentityPrompt"> | null,
 ) {
-  const cleanBase = cleanPromptText(base, 900);
-  const identityNegative = cleanPromptText(visualProfile?.negativeIdentityPrompt, 400);
+  const cleanBase = cleanPromptText(base, Infinity);
+  const identityNegative = cleanPromptText(visualProfile?.negativeIdentityPrompt, Infinity);
   const seen = new Set<string>();
   return [cleanBase, identityNegative].filter(Boolean).join(", ").split(",").map(term => term.trim()).filter(term => {
     const key = term.toLowerCase();
@@ -483,12 +498,12 @@ function buildVideoGenerationPrompt(
   userPrompt: string,
 ) {
   const subject = character?.name ? cleanPromptText(character.name, 120) : "an original companion";
-  return clampPrompt(userPrompt || `Video generation for ${subject}`, 2_000);
+  return userPrompt || `Video generation for ${subject}`;
 }
 
 export function defaultImageNegativePrompt(templateNegative: string | null, sourceType?: string) {
   const base =
-    cleanPromptText(templateNegative, 700) ||
+    cleanPromptText(templateNegative, Infinity) ||
     "low quality, distorted anatomy, extra fingers, watermark, text";
   const uiBlockers =
     "logo, user interface, app screen, phone screenshot, chat bubbles, buttons, icons, blurry, underexposed, silhouette, overly dark";

@@ -447,8 +447,10 @@ describe("Main-owned Chat façade", () => {
         const assetIds = placements.map(placement => placement.assetId);
         await tx.user.createMany({
           data: [
-            { id: userId, email: `${suffix}@chat.test`, emailVerified: true, dataClass: "customer" },
-            { id: creatorId, email: `creator-${suffix}@chat.test`, emailVerified: true, dataClass: "customer" },
+            // Public Release reads require customer provenance; reserved .test
+            // domains are fixtures even when their stored class says customer.
+            { id: userId, email: `${suffix}@chat.invalid`, emailVerified: true, dataClass: "customer" },
+            { id: creatorId, email: `creator-${suffix}@chat.invalid`, emailVerified: true, dataClass: "customer" },
           ],
         });
         await tx.character.create({

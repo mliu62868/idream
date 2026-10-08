@@ -358,6 +358,30 @@ describe("Character release history empty state", () => {
     }));
     expect(container.textContent).toContain("历史版本");
     expect(container.textContent).toContain("重新发布会走完整检查");
+    expect(container.querySelector('[data-testid="legacy-upgrade-guide"]')?.textContent).toContain("升级为经过检查的发布版本");
+  });
+
+  // SPEC: leaving a legacy Release means republishing the same content as a checked one,
+  // so identical live/draft content must still offer Publish and say what is missing.
+  it("offers a path off a legacy Release even when the draft equals live", async () => {
+    const stamp = "2026-09-05T00:00:00.000Z";
+    const base = characterWorkspaceDetail();
+    await render(characterWorkspaceDetail({
+      serving: { characterId: "character-fixture", state: "live", currentReleaseId: "legacy-release", version: 5, updatedAt: stamp },
+      preview: { live: base.preview.draft, changedFields: [] },
+      project: { draftAssetRouteAuthority: { releaseReady: false, status: "current", releaseBlockers: [] } },
+      releases: [{ release: {
+        id: "legacy-release", projectId: "project-fixture", revisionId: "revision-fixture", characterContentVersionId: "content-fixture",
+        visualProfileId: null, visualProfileVersion: null, referenceSetRevisionId: null, generationProvenance: {}, releasePlacementManifest: {},
+        snapshotHash: "snapshot", readiness: "ready", status: "published", legacy: true, publishedAt: stamp,
+        supersedesId: null, rollbackOfReleaseId: null, version: 1, createdAt: stamp, updatedAt: stamp,
+      }, checks: [], monitors: [] }],
+    }));
+    const guide = container.querySelector('[data-testid="legacy-upgrade-guide"]');
+    expect(guide?.textContent).toContain("补齐");
+    expect(guide?.querySelector('a[href$="?tab=assets"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("线上版本与草稿一致");
+    expect(publishButton()).not.toBeNull();
   });
 
   it("keeps the publish action disabled without release permission", async () => {

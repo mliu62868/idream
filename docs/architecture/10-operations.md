@@ -45,6 +45,8 @@ source revision 的 production immutable topology 才能签发运行态证明。
 
 `voice_request_requires_recovery` 对账项显式报告过期租约及 unknown（包括编码在 `errorCode` 中的历史行）。未知 provider 结果禁止直接回收；不能通过清空错误、换幂等键或另起请求绕过隔离。`voice_succeeded_delivery_mismatch`、`voice_usage_authority_mismatch`、`voice_usage_debit_mismatch` 检查交付归属与扣费证据，允许正常媒体删除及历史交付重放。
 
+账号擦除会保留在途 Main 语音写入和视频合成的所有者证据，包括过期或已被接班的旧调用；产品终态与租约过期都不代表它已停止 I/O。删除失败的文件保持可枚举，历史 TTS provider 未确认擦除也不会硬删账号。进程崩溃后残留的执行者不能仅按时间自动清空：先通过官方 wrapper 停止相关进程，核对未决 provider/Blob 请求与已登记文件，再按受控运维流程收敛证据并重跑擦除。发布新增字段前先执行对应 Prisma migration；官方声音归属修复 SQL 在 migration 后执行，开发测试证据不代替生产迁移和进程切换。
+
 ## 2. 数据权威与运行目录
 
 | 数据 | 位置 | 说明 |
@@ -94,6 +96,17 @@ Chat 没有独立 moderation provider。输入/输出产品策略属于 Main。
   由 `comfyui-endpoint-authority.test.ts` 守住"字面量只有一处"。把某个模态显式设为空字符串表示"该模态没有端点"，不会回退。
 - provider/model/workflow exact pins
 - Blob 与 Main terminal ingest credentials
+
+同一 host 的图片、视频和媒体基准必须使用相同的 `GEN_ACCELERATOR_LOCK_PATH`。
+Gen 通过 Bun FFI 持有永久 inode 的 OS `flock`，覆盖完整 submit/poll；关闭 FD 或进程崩溃由内核释放。
+文件内 PID/token 仅供诊断，不能据此删除或替换仍有 worker/基准使用的 inode。
+此锁与旧 existence/PID/mtime 协议不能混跑，旧 stale-owner 回收会 unlink 新 worker 正持有的 inode。
+升级时先运行 `bun run pm2:stop`，经 wrapper
+排空并停止全部 `gen-image`、`gen-video`，再以相应 `pm2:start` 或 `pm2:start:production`
+wrapper 启动新 source；不能单 worker rolling/reload。旧文件可原位保留，无需手动 unlink。
+它与上面的 `PM2_HOME/idream-transition.lock` 是两个不同协议，不能套用 transition lock 的删除恢复步骤。
+native 加载失败时拒绝进入 provider，无不安全回退。Darwin 使用 libSystem；Linux 当前实现绑定 glibc 的
+`libc.so.6` / `__errno_location` ABI。macOS 已通过 native 多进程与崩溃恢复回归，实际 Linux 部署目标仍需运行同一回归后资格确认。
 
 每个服务加载自己的 env 文件。`check:launch` 通过显式 `--launch-env-file`、`--admin-env-file`、`--chat-env-file`、`--gen-env-file` 合成只读检查视图，禁止靠 ambient fallback 混淆 authority。
 

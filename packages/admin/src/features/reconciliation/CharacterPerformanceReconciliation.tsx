@@ -7,6 +7,7 @@ import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestErr
 import { WorkspaceButton } from "@/features/operations/WorkspaceUi";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { useAuthorityResource } from "@/lib/authority-resource";
+import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 
 const COUNTS = [
   ["scannedFunnelRows", "Funnel rows checked"],
@@ -31,6 +32,7 @@ export function CharacterPerformanceReconciliation() {
       "GET /api/v2/admin/characters/performance/reconciliation", {},
     ), []),
   });
+  useWorkspaceRefresh(report.refresh, expanded);
   return (
     <section className="rounded-lg border border-[var(--ad-border)] p-4">
       <WorkspaceButton aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>

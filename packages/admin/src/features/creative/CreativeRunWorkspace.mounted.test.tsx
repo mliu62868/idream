@@ -50,6 +50,7 @@ vi.mock("@/features/collaboration/CollaborationPanel", () => ({
 }));
 
 import { CreativeRunWorkspace } from "./CreativeRunWorkspace";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 const runId = "creative-run-retry-mounted";
 const itemId = "creative-item-failed";
@@ -239,6 +240,24 @@ describe("Creative Run asynchronous retry command", () => {
     window.localStorage.clear();
     container.remove();
     vi.restoreAllMocks();
+  });
+
+  it.each(["list", "detail"] as const)("reloads the Creative Run %s once through shell refresh without changing its location", async (kind) => {
+    window.history.replaceState(null, "", kind === "list" ? "/admin/creative/runs?executionOutcome=failed" : `/admin/creative/runs/${runId}`);
+    adminV2Request.mockImplementation(async () => kind === "list"
+      ? { items: [runDetail()], pageInfo: { endCursor: null, hasNextPage: false }, asOf: "2026-07-17T12:00:00.000Z", freshness: "fresh" }
+      : runDetail());
+    await act(async () => root.render(<CreativeRunWorkspace permissions={permissions} view={kind === "list" ? { kind } : { kind, id: runId }} />));
+    await advance();
+    const before = adminV2Request.mock.calls.length;
+    expect(before).toBeGreaterThan(0);
+    const applied = adminV2Request.mock.calls.at(-1)![0];
+    const href = window.location.href;
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    expect(adminV2Request.mock.calls).toHaveLength(before + 1);
+    expect(adminV2Request.mock.calls.at(-1)![0]).toBe(applied);
+    expect(window.location.href).toBe(href);
+    expect(adminV2Request.mock.calls.every(([, options]) => !options?.method || options.method === "GET")).toBe(true);
   });
 
   it("shows unknown generation consistently and opens the exact recovery request without submitting a retry", async () => {

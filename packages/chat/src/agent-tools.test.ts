@@ -4,8 +4,6 @@ import {
   EDIT_LAST_IMAGE_TOOL,
   findAgentTool,
   GENERATE_IMAGE_ASYNC_TOOL,
-  imageIntentForUserRequest,
-  requiredImageActionForUserRequest,
   registryChatTools,
 } from "./agent-tools.js";
 
@@ -65,98 +63,9 @@ describe("DSH image tool registry", () => {
     expect(findAgentTool("unknown_tool")).toBeUndefined();
   });
 
-  it.each([
-    "给我一个你的裸照",
-    "我要你的裸照",
-    "send me a nude photo",
-    "show me your naked body",
-  ])("turns explicit adult nudity into an unambiguous positive image instruction: %s", (userText) => {
-    expect(requiredImageActionForUserRequest({
-      userText,
-    })).toEqual({
-      name: GENERATE_IMAGE_ASYNC_TOOL,
-      requestedNudity: "full",
-    });
-  });
-
-  it.each([
-      "给我一张你的照片",
-      "给我一张你在屋顶花园里的 4:5 随手照",
-      "发张你的自拍",
-      "发个自拍",
-      "拍给我看看",
-      "你发一张自拍吧",
-      "别光聊天，给张照片",
-      "不要聊天，给我一张照片",
-      "别废话了，发张自拍",
-      "Show me a selfie by the window",
-      "send a selfie",
-      "send your photo",
-      "Don't talk, send me a photo",
-      "Do not stall; give me a selfie",
-  ])("turns an explicit new-image request into a required Chat tool call: %s", (userText) => {
-    expect(requiredImageActionForUserRequest({
-      userText,
-    })).toEqual({
-      name: GENERATE_IMAGE_ASYNC_TOOL,
-      requestedNudity: "unspecified",
-    });
-  });
-
-  it("turns an explicit last-image change into the edit tool", () => {
-    expect(requiredImageActionForUserRequest({
-      userText: "把上一张照片换成红裙子",
-    })).toEqual({
-      name: EDIT_LAST_IMAGE_TOOL,
-      requestedNudity: "unspecified",
-    });
-  });
-
-  it.each([
-    "让我看看你现在穿什么",
-    "能看看你现在的样子吗",
-    "穿睡衣给我看看",
-    "来点福利",
-    "send me something spicy",
-  ])("treats a high-confidence show-me paraphrase as a required image: %s", (userText) => {
-    expect(imageIntentForUserRequest({ userText }))
-      .toMatchObject({ kind: "generate" });
-  });
-
-  it.each([
-    "换个姿势",
-    "改一下背景",
-    "try a different outfit",
-  ])("treats a contextual visual change as an edit intent: %s", (userText) => {
-    expect(imageIntentForUserRequest({
-      userText,
-      hasRecentImageContext: true,
-    }))
-      .toMatchObject({ kind: "edit", reason: "contextual_image_edit" });
-  });
-
-  it.each([
-    "换个姿势",
-    "改一下背景",
-    "try a different outfit",
-  ])("does not invent an edit without a recent image: %s", (userText) => {
-    expect(imageIntentForUserRequest({
-      userText,
-      hasRecentImageContext: false,
-    })).toEqual({ kind: "none", reason: "discussion_or_ambiguous" });
-  });
-
-  it.each([
-    "不要发照片",
-    "你喜欢拍照吗？",
-    "我们聊聊你上一张照片",
-    "Can you generate images?",
-    "你觉得什么姿势更好看？",
-    "不要给我看你现在穿什么",
-    "do not send your photo",
-  ])("does not force a tool for negation or image discussion: %s", (userText) => {
-    expect(requiredImageActionForUserRequest({
-      userText,
-    })).toBeNull();
+  it("preserves Agent-authored wardrobe intent and validates its enum", () => {
+    const args = { prompt: "A fully clothed portrait in a red robe", subject: "companion", requestedNudity: "none" };
+    expect(findAgentTool(GENERATE_IMAGE_ASYNC_TOOL)?.parseCall(args)?.arguments).toMatchObject({ requestedNudity: "none" });
+    expect(findAgentTool(GENERATE_IMAGE_ASYNC_TOOL)?.parseCall({ ...args, requestedNudity: "unknown" })).toBeNull();
   });
 });

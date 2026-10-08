@@ -14,6 +14,7 @@ import { AssetImage } from "@/components/admin/ui/AssetImage";
 import { INPUT_CLASS } from "@/components/admin/ui/FormPage";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
+import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 import { InfoGrid, WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 import {
   PATCH_ACTIONS,
@@ -62,6 +63,8 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
       setLoading(false);
     }
   }, [id, t]);
+
+  useWorkspaceRefresh(reload);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -158,7 +161,7 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
     };
   }, [canPublish, pending, row, id, t, value, reload, reportSuccess, copy]);
 
-  if (loading) {
+  if (loading && !row) {
     return <>{guard}<LoadingWorkspace label="Loading…" /></>;
   }
 

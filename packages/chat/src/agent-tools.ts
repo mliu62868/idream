@@ -4,15 +4,12 @@ import {
   GENERATE_IMAGE_ASYNC_TOOL,
   generateImageAsyncArgsSchema,
   IMAGE_AGENT_TOOL_DEFINITIONS,
-  imageIntentForUserRequest,
   parseImageAgentToolCall,
-  requiredImageActionForUserRequest,
   type EditLastImageArgs,
   type EditLastImageToolCall,
   type GenerateImageAsyncArgs,
   type GenerateImageAsyncToolCall,
   type ImageAgentToolCall,
-  type ImageIntentDecision,
 } from "@idream/shared/chat/image-action";
 import type { ChatToolDefinition } from "@idream/shared";
 
@@ -21,8 +18,6 @@ export {
   editLastImageArgsSchema,
   GENERATE_IMAGE_ASYNC_TOOL,
   generateImageAsyncArgsSchema,
-  imageIntentForUserRequest,
-  requiredImageActionForUserRequest,
 };
 export type {
   EditLastImageArgs,
@@ -30,11 +25,10 @@ export type {
   GenerateImageAsyncArgs,
   GenerateImageAsyncToolCall,
   ImageAgentToolCall,
-  ImageIntentDecision,
 };
 
 // Chat keeps only the execution adapter. Names, schemas, descriptions and
-// deterministic action routing are cross-service product contracts in shared.
+// argument validation are cross-service product contracts in shared.
 export type AgentTool = {
   name: string;
   description: string;

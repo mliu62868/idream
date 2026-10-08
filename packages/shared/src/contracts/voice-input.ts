@@ -1,13 +1,14 @@
 import { z } from "zod";
 
-export const VOICE_INPUT_LANGUAGES = ["bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv", "lt", "mt", "pl", "pt", "ro", "ru", "sk", "sl", "es", "sv", "uk"] as const;
+// Product support, independent of the ASR model's multilingual vocabulary.
+export const VOICE_INPUT_LANGUAGES = ["en"] as const;
 export const VOICE_INPUT_MAX_DURATION_MS = 60_000;
 export const VOICE_INPUT_MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 export const VOICE_INPUT_RESULT_TTL_MS = 120_000;
 export const voiceInputCapabilitySchema = z.object({
   supported: z.boolean(), available: z.boolean(),
   reason: z.enum(["not_configured", "unavailable"]).optional(),
-  ownerScope: z.string().min(1), languages: z.array(z.string()),
+  ownerScope: z.string().min(1), languages: z.array(z.enum(VOICE_INPUT_LANGUAGES)).length(1),
   maxDurationMs: z.literal(VOICE_INPUT_MAX_DURATION_MS),
   maxUploadBytes: z.literal(VOICE_INPUT_MAX_UPLOAD_BYTES),
   resultTtlMs: z.literal(VOICE_INPUT_RESULT_TTL_MS),

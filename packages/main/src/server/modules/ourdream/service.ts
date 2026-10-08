@@ -119,6 +119,7 @@ import {
   isSyntheticMediaAsset,
   resolveMediaAssetBlobLocator,
 } from "@/server/lib/media-asset-authority";
+import { mediaByteResponse } from "@/server/lib/media-byte-response";
 import { mediaAssetAuthorityDependencies } from "@/server/modules/admin-v2/shared/media-asset-authority-dependencies";
 import { canonicalJsonEqual, canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency";
 import {
@@ -260,8 +261,7 @@ import {
 import {
   effectiveGenerationJobStatus,
   generationExecutionErrorCode,
-  generationJobDTO,
-  generationJobCost,
+  readGenerationJobs,
   generationJobInclude,
   latestGenerationAttemptStatuses,
   type GenerationJobWithRelations,
@@ -2586,7 +2586,7 @@ async function createGenerationJob(request: Request) {
     where: { id: job.id },
     include: generationJobInclude(),
   });
-  return ok(generationJobResponse(queued), { status: 202 });
+  return ok(await generationJobResponse(queued), { status: 202 });
 }
 
 // The expected viewer binds private reads and retained forms to their account. It is
@@ -2799,13 +2799,8 @@ async function listGenerationJobs(request: Request) {
     take: limit + 1,
   });
   const page = jobs.slice(0, limit);
-  const latestAttemptStatuses = await latestGenerationAttemptStatuses(
-    page.map((job) => job.id),
-  );
   return ok({
-    items: page.map((job) =>
-      generationJobDTO(job, latestAttemptStatuses.get(job.id) ?? null),
-    ),
+    items: await readGenerationJobs(page),
     nextCursor: jobs.length > limit ? encodeCursor(offset + limit) : null,
   });
 }
@@ -2820,12 +2815,7 @@ async function getGenerationJob(request: Request, id: string) {
     include: generationJobInclude(),
   });
   if (!job) throw Errors.notFound("Generation job not found");
-  const latestAttempt = await prisma.generationAttempt.findFirst({
-    where: { requestId: job.id },
-    select: { status: true },
-    orderBy: { attemptNo: "desc" },
-  });
-  return ok(generationJobResponse(job, latestAttempt?.status ?? null));
+  return ok(await generationJobResponse(job));
 }
 
 function requireGenerationRetryIdempotencyKey(request: Request) {
@@ -2867,7 +2857,7 @@ async function retryGenerationJob(request: Request, id: string) {
     idempotencyKey: retryIdempotencyKey,
   });
   if (target.kind === "replay") {
-    return ok(generationJobResponse(target.job), { status: 202 });
+    return ok(await generationJobResponse(target.job), { status: 202 });
   }
   const body = z
     .object({
@@ -2881,7 +2871,7 @@ async function retryGenerationJob(request: Request, id: string) {
     idempotencyKey: retryIdempotencyKey,
     quoteAuthority: body.quoteAuthority,
   });
-  return ok(generationJobResponse(queued), { status: 202 });
+  return ok(await generationJobResponse(queued), { status: 202 });
 }
 
 async function listPresets(request: Request) {
@@ -3848,7 +3838,7 @@ async function mediaEnhancement(request: Request, id: string, quoteOnly: boolean
   const body = mediaEnhancementBodySchema.parse(raw);
   const job = await createMediaEnhancement(user.id, id, body, requireGenerationWriteIdempotencyKey(request));
   const persisted = await prisma.generationJob.findUniqueOrThrow({ where: { id: job.id }, include: generationJobInclude() });
-  return ok(generationJobResponse(persisted), { status: 202 });
+  return ok(await generationJobResponse(persisted), { status: 202 });
 }
 
 async function mediaVariationQuote(request: Request, id: string) {
@@ -3954,7 +3944,7 @@ async function createMediaVariation(request: Request, id: string) {
     where: { id: job.id },
     include: generationJobInclude(),
   });
-  return ok(generationJobResponse(queued), { status: 202 });
+  return ok(await generationJobResponse(queued), { status: 202 });
 }
 
 async function bulkMedia(request: Request) {
@@ -4163,29 +4153,7 @@ function localMediaResponse(
   },
   body: Buffer,
 ) {
-  const headers = localMediaHeaders(request, asset);
-  headers.set("accept-ranges", "bytes");
-  const range = parseByteRange(request.headers.get("range"), body.byteLength);
-  if (range === "invalid") {
-    headers.set("content-range", `bytes */${body.byteLength}`);
-    return new Response(null, { status: 416, headers });
-  }
-
-  if (range) {
-    const chunk = body.subarray(range.start, range.end + 1);
-    headers.set("content-length", String(chunk.byteLength));
-    headers.set("content-range", `bytes ${range.start}-${range.end}/${body.byteLength}`);
-    return new Response(arrayBufferBody(chunk), { status: 206, headers });
-  }
-
-  headers.set("content-length", String(body.byteLength));
-  return new Response(arrayBufferBody(body), { headers });
-}
-
-function arrayBufferBody(bytes: Uint8Array) {
-  const buffer = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(buffer).set(bytes);
-  return buffer;
+  return mediaByteResponse(request, body, localMediaHeaders(request, asset));
 }
 
 function localMediaHeaders(
@@ -4209,37 +4177,6 @@ function localMediaHeaders(
     headers.set("content-disposition", `attachment; filename="${mediaDownloadFilename(asset)}"`);
   }
   return headers;
-}
-
-function parseByteRange(header: string | null, size: number) {
-  if (!header) return null;
-  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
-  if (!match || size <= 0) return "invalid";
-  const [, rawStart, rawEnd] = match;
-
-  if (!rawStart && !rawEnd) return "invalid";
-  if (!rawStart) {
-    const suffixLength = Number(rawEnd);
-    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) return "invalid";
-    return {
-      start: Math.max(0, size - suffixLength),
-      end: size - 1,
-    };
-  }
-
-  const start = Number(rawStart);
-  const end = rawEnd ? Number(rawEnd) : size - 1;
-  if (
-    !Number.isSafeInteger(start) ||
-    !Number.isSafeInteger(end) ||
-    start < 0 ||
-    end < start ||
-    start >= size
-  ) {
-    return "invalid";
-  }
-
-  return { start, end: Math.min(end, size - 1) };
 }
 
 function localBlobPath(key: string) {
@@ -5130,17 +5067,15 @@ function mediaProvenanceDTO(sourceJob?: {
   };
 }
 
-function generationJobResponse(
-  job: GenerationJobWithRelations,
-  latestAttemptStatus: string | null = null,
-) {
+async function generationJobResponse(job: GenerationJobWithRelations) {
+  const [projected] = await readGenerationJobs([job]);
   const sourceJob = {
     sourceType: job.sourceType,
     sourceId: job.sourceId,
     sourceMeta: job.sourceMeta,
   };
   return {
-    job: generationJobDTO(job, latestAttemptStatus),
+    job: projected!,
     assets: job.assets.map((asset) => mediaDTO({ ...asset, sourceJob }, { intentFeedbackOwnerId: job.userId })),
     events: job.events.map((event) => ({
       id: event.id,
@@ -5149,7 +5084,7 @@ function generationJobResponse(
       metadata: event.metadata,
       createdAt: event.createdAt,
     })),
-    cost: generationJobCost(job),
+    cost: projected!.cost,
   };
 }
 

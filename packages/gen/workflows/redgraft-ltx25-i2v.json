@@ -6,7 +6,7 @@
     "id": "7b4d10fa-cce3-4d8b-a2d7-64b132a5c25d",
     "name": "iDream RedGraft LTX 2.5 I2V"
   },
-  "version": 4,
+  "version": 5,
   "negativePromptMode": "positive_instruction",
   "capabilities": [
     "video",
@@ -385,7 +385,7 @@
     },
     "320:299": {
       "inputs": {
-        "value": 1152
+        "value": 768
       },
       "class_type": "PrimitiveInt",
       "_meta": {
@@ -532,7 +532,7 @@
     },
     "320:312": {
       "inputs": {
-        "value": 768
+        "value": 448
       },
       "class_type": "PrimitiveInt",
       "_meta": {
@@ -809,7 +809,7 @@
     {
       "key": "width",
       "type": "int",
-      "default": 768,
+      "default": 448,
       "target": {
         "nodeId": "320:312",
         "field": "value"
@@ -818,7 +818,7 @@
     {
       "key": "height",
       "type": "int",
-      "default": 1152,
+      "default": 768,
       "target": {
         "nodeId": "320:299",
         "field": "value"

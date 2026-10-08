@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import Image from "next/image";
 import Link from "next/link";
 import { UNKNOWN_SETTLEMENT_GRACE_MINUTES } from "@/lib/generation-failure-copy";
-import { videoSequenceRequestSchema, videoSequenceCapabilitiesSchema, videoSequenceQuoteSchema, videoSequenceDtoSchema,
+import { REDGRAFT_VIDEO_DEFAULTS, redgraftVideoEnvelope, videoSequenceRequestSchema, videoSequenceCapabilitiesSchema, videoSequenceQuoteSchema, videoSequenceDtoSchema,
   type VideoSequenceRequest, type VideoSequenceQuote, type VideoSequenceDto } from "@idream/shared/contracts";
 
 export type VideoSequenceRecovery = { request: VideoSequenceRequest; sourceImageAssetId: string | null };
@@ -18,8 +18,8 @@ export function VideoSequenceControls(props: Props) {
   const [scenes, setScenes] = useState<VideoSequenceRequest["scenes"]>([{ prompt: "", seconds: 5 }]);
   const directionSeen = useRef<string | null>(null);
   const [directionBlocked, setDirectionBlocked] = useState(false);
-  const [orientation, setOrientation] = useState<VideoSequenceRequest["orientation"]>("2:3");
-  const [quality, setQuality] = useState<VideoSequenceRequest["quality"]>("standard");
+  const [orientation, setOrientation] = useState<VideoSequenceRequest["orientation"]>(REDGRAFT_VIDEO_DEFAULTS.orientation);
+  const [quality, setQuality] = useState<VideoSequenceRequest["quality"]>(REDGRAFT_VIDEO_DEFAULTS.quality);
   const [audio, setAudio] = useState<VideoSequenceRequest["audio"]>("generated");
   const [capabilities, setCapabilities] = useState<ReturnType<typeof videoSequenceCapabilitiesSchema.parse> | null>(null);
   const [quoted, setQuote] = useState<{ value: VideoSequenceQuote; draftKey: string } | null>(null);
@@ -201,7 +201,7 @@ export function VideoSequenceControls(props: Props) {
     {props.directionDraft ? <p role="status" className="text-sm text-white/70">{directionBlocked ? `Your existing script or original request was kept. Suggested correction: ${props.directionDraft.prompt}` : "Correction direction is in a new scene draft. Review its price before generating."}</p> : null}
     {capabilities ? <div className="grid grid-cols-3 gap-3 text-sm">
       <label>Aspect ratio<select className={inputClass} aria-label="Video aspect ratio" disabled={locked} value={orientation} onChange={event => setOrientation(event.target.value as VideoSequenceRequest["orientation"])}>{capabilities.options.orientations.map(value => <option key={value}>{value}</option>)}</select></label>
-      <label>Resolution<select className={inputClass} aria-label="Video resolution" disabled={locked} value={quality} onChange={event => setQuality(event.target.value as VideoSequenceRequest["quality"])}>{capabilities.options.qualities.map(value => <option value={value} key={value}>{value === "preview" ? "Preview · 512px wide" : "Standard · 768px wide"}</option>)}</select></label>
+      <label>Resolution<select className={inputClass} aria-label="Video resolution" disabled={locked} value={quality} onChange={event => setQuality(event.target.value as VideoSequenceRequest["quality"])}>{capabilities.options.qualities.map(value => <option value={value} key={value}>{`${value === "preview" ? "Preview" : "Standard"} · ${redgraftVideoEnvelope({ seconds: 5, orientation, quality: value }).width}×${redgraftVideoEnvelope({ seconds: 5, orientation, quality: value }).height}`}</option>)}</select></label>
       <label>Sound<select className={inputClass} aria-label="Video sound" disabled={locked} value={audio} onChange={event => setAudio(event.target.value as VideoSequenceRequest["audio"])}>{capabilities.audio.map(value => <option key={value} value={value}>{value === "narration" ? "English narration" : value === "silent" ? "Silent" : "Generated sound"}</option>)}</select></label>
     </div> : <p className="text-sm text-white/65">{props.disabled ? "Select an available character image to review video settings." : "Video settings are loading."} <button type="button" className="underline" onClick={() => void refresh()}>Reload settings</button></p>}
     {scenes.map((scene, ordinal) => <fieldset key={ordinal} className="rounded-xl border border-white/10 p-3" disabled={locked}>

@@ -621,7 +621,6 @@ function terminalEvidence(
     completedAt: candidate.completedAt,
     execution: candidate.execution,
     tools: candidate.tools,
-    ...(candidate.acknowledgement ? { acknowledgement: candidate.acknowledgement } : {}),
     attribution: candidate.attribution ?? null,
     profileDigest,
     prompt: {
@@ -689,7 +688,7 @@ type IgrepMetric = {
   evidenceMatches: number;
 };
 
-type IgrepObservations = Record<"wake" | "search" | "memory", IgrepMetric>;
+type IgrepObservations = Record<"wake" | "search" | "memory" | "web" | "session" | "compaction", IgrepMetric>;
 
 function emptyIgrepObservations(): IgrepObservations {
   const metric = (): IgrepMetric => ({
@@ -698,7 +697,7 @@ function emptyIgrepObservations(): IgrepObservations {
     failures: 0,
     evidenceMatches: 0,
   });
-  return { wake: metric(), search: metric(), memory: metric() };
+  return { wake: metric(), search: metric(), memory: metric(), web: metric(), session: metric(), compaction: metric() };
 }
 
 function rejectedCommit(attemptId: string, message: string): CompanionCommitAck {

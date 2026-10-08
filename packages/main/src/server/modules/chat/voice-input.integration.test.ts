@@ -41,7 +41,7 @@ describe("Main voice input authority", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ ready: true, model: "moondream/parakeet-redux", modelRevision: "2bf128600aac4b16946f7ed8372e56117fe5e23b", runtimeVersion: "2.6.1" })));
     const response = await run(request("GET", `sessions/${sessionId}/voice-input`));
     expect(response.status).toBe(200);
-    expect((await response.json()).data).toMatchObject({ supported: true, available: true, ownerScope: `user:${userId}` });
+    expect((await response.json()).data).toMatchObject({ supported: true, available: true, ownerScope: `user:${userId}`, languages: ["en"] });
     expect(response.headers.get("cache-control")).toContain("no-store");
   });
   it("handles multipart before JSON and creates no Turn or charges", async () => {

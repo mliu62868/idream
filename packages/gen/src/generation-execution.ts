@@ -104,6 +104,7 @@ export class GenerationArtifactError extends Error {
     readonly code: string,
     message: string,
     readonly retryBeforeFinalAttempt: boolean,
+    readonly cleanupKeys?: readonly string[],
   ) {
     super(message);
     this.name = "GenerationArtifactError";
@@ -117,6 +118,7 @@ export class GenerationArtifactError extends Error {
 // between the image path and the video path.
 class GenerationExecution {
   readonly #identity;
+  #runningTransportEvent?: GenerationTransportExecutionEvent;
 
   constructor(private readonly options: GenerationExecutionOptions) {
     const attemptId = options.payload.attemptId;
@@ -155,12 +157,15 @@ class GenerationExecution {
     terminal: {
       outcome?: "failed" | "unknown";
       retryability?: TerminalRetryability;
+      cleanupKeys?: readonly string[];
     } = {},
     evidence: TerminalEvidence = {},
   ): Promise<void> {
+    const outcome = terminal.outcome ?? "failed";
     await this.persistAndAcknowledge({
       ...this.terminalRecordBase(evidence),
-      outcome: terminal.outcome ?? "failed",
+      outcome,
+      ...(outcome === "failed" && terminal.cleanupKeys?.length ? { cleanupKeys: [...terminal.cleanupKeys] } : {}),
       error: {
         code,
         message,
@@ -248,6 +253,14 @@ class GenerationExecution {
     };
     const executionBoundary: GenerationInvocationBoundary = {
       beforeProviderInvocation,
+      beforeNextProviderInvocation: async () => {
+        try {
+          await this.recordTransport("running");
+        } catch (error) {
+          boundaryError = error;
+          throw error;
+        }
+      },
       onResourceWait: async () => {
         try {
           await this.recordTransport("waiting");
@@ -306,6 +319,7 @@ class GenerationExecution {
       // an expensive non-idempotent generation on the next BullMQ attempt.
       if (
         artifactError.retryBeforeFinalAttempt &&
+        !artifactError.cleanupKeys?.length &&
         providerReplayIsSafe &&
         !this.isFinalAttempt()
       ) {
@@ -315,6 +329,7 @@ class GenerationExecution {
         artifactError.code,
         artifactError.message,
         {
+          cleanupKeys: artifactError.cleanupKeys,
           retryability:
             artifactError.retryBeforeFinalAttempt && !providerReplayIsSafe
               ? "not_retryable"
@@ -503,8 +518,14 @@ class GenerationExecution {
     accounting?: ReturnType<typeof invocationAccounting>,
     providerRequestId: string | null = null,
   ): Promise<void> {
+    if (status === "running" && this.#runningTransportEvent) {
+      // Main rechecks current Request/Attempt/dispatch authority before accepting
+      // an exact replay. Keep the original immutable fact, including occurredAt.
+      await this.options.recordTransportExecution(this.#runningTransportEvent);
+      return;
+    }
     const payload = this.options.payload;
-    await this.options.recordTransportExecution({
+    const event: GenerationTransportExecutionEvent = {
       version: 1,
       ...this.#identity,
       generationJobId: payload.generationJobId,
@@ -515,7 +536,9 @@ class GenerationExecution {
       occurredAt: new Date().toISOString(),
       error,
       ...(accounting ? { accounting } : {}),
-    });
+    };
+    if (status === "running") this.#runningTransportEvent = event;
+    await this.options.recordTransportExecution(event);
   }
 }
 

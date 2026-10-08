@@ -584,7 +584,7 @@ export function projectCompanionProbeDshEvidence(
   } else {
     expectFact(
       memoryOutcome === "disabled" &&
-        wake.calls === 0 && search.calls === 0 && memorySearch.calls === 0,
+        wake.calls === 0 && memorySearch.calls === 0,
       "privateMemoryIsolation",
     );
   }

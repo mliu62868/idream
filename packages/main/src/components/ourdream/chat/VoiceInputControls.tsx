@@ -4,16 +4,14 @@ import { Loader2, Mic } from "lucide-react";
 import type { VoiceInputController } from "@/hooks/useVoiceInput";
 
 const ACTION = "min-h-11 rounded-full px-3 text-[13px] font-semibold text-white hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#ff7ac8]";
-const languageNames = new Intl.DisplayNames(["en"], { type: "language" });
 const TRANSCRIPT_NOTE = "Transcripts can contain mistakes. Review your editable draft before sending.";
 
 export function VoiceInputStatus({ voice }: Readonly<{ voice: VoiceInputController }>) {
   if (!voice.notice && !voice.capability?.supported) return null;
   const isRecording = voice.phase === "recording";
-  // INTENT: 这块在 sticky 输入区里。没在用麦克风时只留一行可展开的说明（语种 + 转写提醒仍在 DOM 里，
+  // INTENT: 这块在 sticky 输入区里。没在用麦克风时只留一行可展开的说明（英语范围 + 转写提醒仍在 DOM 里，
   //   录音前可查）；开始用麦克风后再把转写提醒摊开，避免常驻两行挤占对话区（审计 P1-1）。
   const engaged = voice.phase !== "idle" || Boolean(voice.candidate) || voice.canUndo;
-  const languages = voice.capability?.languages.map(language => languageNames.of(language) ?? language).join(", ");
   return (
     <div className="pb-2 text-[13px] text-white/90" data-testid="voice-input-status">
       {voice.notice || (voice.capability?.supported && !voice.capability.available) ? <div className="flex min-h-11 flex-wrap items-center gap-x-2 gap-y-1">
@@ -42,9 +40,8 @@ export function VoiceInputStatus({ voice }: Readonly<{ voice: VoiceInputControll
         {voice.canUndo ? <button type="button" className={ACTION} onClick={voice.undo}>Undo voice text</button> : null}
         {voice.capability?.supported && !voice.capability.available ? <button type="button" className={ACTION} onClick={voice.refreshCapability}>Check availability</button> : null}
       </div> : null}
-      {voice.capability?.supported && languages ? <details className="max-w-prose pb-1 text-[12px] leading-5 text-white/70">
-        <summary className="cursor-pointer">Voice input languages ({voice.capability.languages.length})</summary>
-        <p>{languages}</p>
+      {voice.capability?.supported ? <details className="max-w-prose pb-1 text-[12px] leading-5 text-white/70">
+        <summary className="cursor-pointer">Voice input · English only</summary>
         {engaged ? null : <p>{TRANSCRIPT_NOTE}</p>}
       </details> : null}
       {voice.capability?.supported && engaged ? <p className="max-w-prose pb-1 text-[12px] leading-5 text-white/70">{TRANSCRIPT_NOTE}</p> : null}
@@ -63,12 +60,11 @@ export function VoiceInputStatus({ voice }: Readonly<{ voice: VoiceInputControll
 export function VoiceInputButton({ voice, disabled }: Readonly<{ voice: VoiceInputController; disabled: boolean }>) {
   if (!voice.capability?.supported) return null;
   const recording = voice.phase === "recording";
-  const languages = voice.capability.languages.map(language => languageNames.of(language) ?? language).join(", ");
   return <button
     type="button"
     aria-label={recording ? "Finish recording" : "Voice input"}
     aria-pressed={recording}
-    title={recording ? "Finish recording" : `Speak your message. Languages: ${languages}. Review your editable draft before sending.`}
+    title={recording ? "Finish recording" : "Speak your message in English. Review your editable draft before sending."}
     disabled={disabled || !voice.capability.available || (voice.blocksSend && !recording)}
     onClick={() => recording ? voice.finish() : void voice.start()}
     className={`inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#ff7ac8] disabled:opacity-50 ${recording ? "bg-[#ff7ac8]/20 text-[#ff7ac8]" : "bg-[rgb(36,36,36)] text-white/90 hover:bg-white/15"}`}

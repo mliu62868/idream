@@ -91,6 +91,7 @@ model AccountDeletion {
   chatCompletedAt       DateTime?
   blobExpectedCount     Int                          @default(0)
   blobDeletedCount      Int                          @default(0)
+  voiceErasure          Json? // per pinned provider: owned replay keys/aliases and terminal erasure receipt
   mainPurgedAt          DateTime?
   completedAt           DateTime?
   lastError             Json?
@@ -333,6 +334,7 @@ model VoiceClipRequest {
   attemptNo          Int              @default(1)
   leaseOwner         String?
   leaseExpiresAt     DateTime?
+  activeArtifactOwners String[]       @default([]) // PUT/settlement owners survive lease takeover until their I/O exits
   mediaAssetId       String?
   provider           String?
   providerRequestId  String?
@@ -1124,6 +1126,10 @@ model VideoSequence {
   errorCode          String?
   compositionOwner   String?
   compositionLeaseAt DateTime?
+  // Expiry/stop/takeover does not prove an older invocation stopped its I/O.
+  activeCompositionOwners String[] @default([])
+  // Register before PUT; retain unpublished keys until DELETE is acknowledged.
+  artifactKeys       String[] @default([])
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
   completedAt        DateTime?

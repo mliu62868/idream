@@ -6,7 +6,11 @@ import {
   type MainOutboxEvent,
   type PrismaClient,
 } from "@prisma/client";
-import { idempotencyKeys } from "@idream/shared/contracts";
+import {
+  idempotencyKeys,
+  imageGeneratePayloadSchema,
+  videoGeneratePayloadSchema,
+} from "@idream/shared/contracts";
 import { recordGenerationAttemptQueuedEvent } from "@/server/ai/generation-attempt-events";
 import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
 import {
@@ -331,6 +335,14 @@ async function persistGenerationAttemptDispatchReservation(
     },
     { dedupeKey: exactDedupeKey, db: tx },
   );
+  // INVARIANT: validate the actual worker wire inside the admission transaction
+  // so contract drift rolls back Request/debit/Attempt, before any dispatch.
+  // Discard the parsed result: the raw envelope remains immutable authority.
+  if (queueInput.queue === "ai.image.generate") {
+    imageGeneratePayloadSchema.parse(queueInput.payload);
+  } else {
+    videoGeneratePayloadSchema.parse(queueInput.payload);
+  }
   const payload = dispatchPayload(attempt, input.dispatch, queueInput);
   const outbox = await tx.mainOutboxEvent.upsert({
     where: { id: input.dispatch.outboxId },

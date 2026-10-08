@@ -8,7 +8,10 @@ import {
   type VisualIdentityPanelData,
 } from "./VisualIdentityPanel";
 
+import { characterWorkspaceDetail } from "./character-workspace-fixture";
+
 const data = {
+  journey: characterWorkspaceDetail().journey,
   character: {
     id: "character-1",
     name: "Mira",

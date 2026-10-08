@@ -43,6 +43,83 @@ describe("CMS operating permissions and article fields", () => {
     expect(apiWrite).not.toHaveBeenCalled();
   });
 
+  it("retries the failed article read instead of refreshing the successful page list", async () => {
+    let detailReads = 0;
+    apiGet.mockImplementation(async (path: string) => {
+      if (!path.includes("cms/page?")) return { items: [page], pageInfo };
+      detailReads += 1;
+      if (detailReads === 1) throw new AdminV2RequestError("Article read unavailable", 503, "unavailable");
+      return { page: { ...page, body: article } };
+    });
+    await act(async () => root.render(<CmsView canWrite={false} />)); await settle();
+    await act(async () => button("View page").click());
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    await act(async () => button("Retry").click());
+    expect(apiGet.mock.calls.map(([path]) => path)).toEqual([
+      "/api/v2/admin/cms/pages?limit=25",
+      "/api/v2/admin/cms/page?path=%2Fguides%2Fexample",
+      "/api/v2/admin/cms/page?path=%2Fguides%2Fexample",
+    ]);
+    expect(field("Article heading").value).toBe("Original heading");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(apiWrite).not.toHaveBeenCalled();
+  });
+
+  it("abandons a failed replacement article read when the visible article is closed", async () => {
+    await act(async () => root.render(<CmsView canWrite={false} />)); await settle();
+    await act(async () => button("View page").click());
+    apiGet.mockRejectedValueOnce(new AdminV2RequestError("Article refresh unavailable", 503, "unavailable"));
+    await act(async () => button("View page").click());
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    await act(async () => button("Close").click());
+    expect(button("Close")).toBeUndefined();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(button("Retry")).toBeUndefined();
+    expect(apiWrite).not.toHaveBeenCalled();
+  });
+
+  it("keeps the last selected page when an older page view finishes later", async () => {
+    const otherPage = { ...page, path: "/guides/another", title: "Another guide" };
+    let resolveOld!: (value: unknown) => void;
+    apiGet.mockImplementation(async (path: string) => {
+      if (!path.includes("cms/page?")) return { items: [page, otherPage], pageInfo };
+      if (new URL(path, window.location.origin).searchParams.get("path") === page.path) {
+        return new Promise((resolve) => { resolveOld = resolve; });
+      }
+      return { page: { ...otherPage, body: { ...article, heading: "Latest selected article" } } };
+    });
+    await act(async () => root.render(<CmsView canWrite={false} />)); await settle();
+    const viewButtons = [...container.querySelectorAll("button")].filter((node) => node.textContent === "View page");
+    await act(async () => viewButtons[0]!.click());
+    await act(async () => viewButtons[1]!.click());
+    expect(field("Article heading").value).toBe("Latest selected article");
+    await act(async () => resolveOld({ page: { ...page, body: article } }));
+    expect(field("Article heading").value).toBe("Latest selected article");
+    expect(apiWrite).not.toHaveBeenCalled();
+  });
+
+  it.each(["success", "failure"] as const)("keeps a closed page view closed after a pending read returns %s", async (outcome) => {
+    let resolvePending!: (value: unknown) => void;
+    let rejectPending!: (reason: unknown) => void;
+    await act(async () => root.render(<CmsView canWrite={false} />)); await settle();
+    await act(async () => button("View page").click());
+    expect(field("Article heading").value).toBe("Original heading");
+    apiGet.mockImplementationOnce(() => new Promise((resolve, reject) => {
+      resolvePending = resolve;
+      rejectPending = reject;
+    }));
+    await act(async () => button("View page").click());
+    await act(async () => button("Close").click());
+    expect(button("Close")).toBeUndefined();
+    await act(async () => {
+      if (outcome === "success") resolvePending({ page: { ...page, body: article } });
+      else rejectPending(new Error("Closed view read failed"));
+    });
+    expect(button("Close")).toBeUndefined();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(apiWrite).not.toHaveBeenCalled();
+  });
+
   it("gives a reader an honest empty state without creation instructions", async () => {
     apiGet.mockResolvedValueOnce({ items: [], pageInfo });
     await act(async () => root.render(<CmsView canWrite={false} />)); await settle();

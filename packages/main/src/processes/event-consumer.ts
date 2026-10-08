@@ -25,6 +25,7 @@ import {
   reclaimStalledChatAgentRuns,
 } from "@/server/modules/chat/agent-run-admission";
 import { dispatchDueProactiveTurns } from "@/server/modules/chat/proactive-messages";
+import { dispatchPendingGenerationBlobCleanup } from "@/server/ai/generation-blob-cleanup";
 
 interface InboundEvent {
   eventId: string;
@@ -338,6 +339,7 @@ export function startEventConsumer(): { close(): Promise<void> } {
     { name: "chat_reclaim", run: () => reclaimStalledChatAgentRuns(50, stopping.signal) },
     { name: "proactive_messages", run: () => dispatchDueProactiveTurns(20, stopping.signal).then(() => undefined) },
     { name: "account_blob_deletion", run: () => dispatchPendingAccountDeletionBlobDeletes({ signal: stopping.signal }) },
+    { name: "generation_blob_cleanup", run: () => dispatchPendingGenerationBlobCleanup({ signal: stopping.signal }) },
     { name: "unrouted_outbox", run: () => recordUnroutedMainOutboxEvents().then(() => undefined) },
   ].map((lane) => ({ ...lane, inFlight: null as Promise<void> | null }));
   const reconcile = () => {

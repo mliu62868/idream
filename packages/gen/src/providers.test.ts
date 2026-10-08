@@ -3,6 +3,8 @@ import { Buffer } from "node:buffer";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import sharp from "sharp";
+import { assertGeneratedImageSanity } from "@idream/shared/media/generated-image-sanity";
 import {
   assertProductionBlobReady,
   assertProductionModerationReady,
@@ -24,8 +26,35 @@ afterEach(() => {
 
 describe("generation provider assembly", () => {
   it.each([
+    { width: 16, height: 16 },
+    { width: 512, height: 640 },
+    { width: 832, height: 1024 },
+  ])("mock image remains nonblank after decoding and preview downsampling at $width × $height", async (controls) => {
+    const result = await createMockGenProviders().image.generate({
+      prompt: "Controlled preview transport fixture", count: 1, controls,
+    });
+    if (!result.ok) throw new Error(result.error.message);
+    const asset = result.data.assets[0];
+    if (!asset?.body) throw new Error("Missing image transport fixture");
+    const bytes = Buffer.from(asset.body);
+    expect(await sharp(bytes).metadata()).toMatchObject({ format: "png", ...controls });
+    expect(assertGeneratedImageSanity(bytes, "mock original").sanity.status).toBe("passed");
+    const preview = sharp(bytes).resize(16, 16, { fit: "fill" });
+    const pixels = await preview.clone().removeAlpha().raw().toBuffer();
+    const luminance = Array.from({ length: 16 * 16 }, (_, index) => {
+      const offset = index * 3;
+      return Math.round(pixels[offset]! * 0.2126 + pixels[offset + 1]! * 0.7152 + pixels[offset + 2]! * 0.0722);
+    });
+    // Real decoding and averaging must retain visible structure. High-frequency
+    // modulo noise previously became nearly uniform grey in the UI's 16×16 scan.
+    expect(Math.max(...luminance) - Math.min(...luminance)).toBeGreaterThan(32);
+    const thumbnail = await preview.png().toBuffer();
+    expect(assertGeneratedImageSanity(thumbnail, "mock preview").sanity.status).toBe("passed");
+  });
+
+  it.each([
     { seconds: 5, controls: { width: 768, height: 1152, workflowKey: "redgraft-ltx25-i2v" }, frames: 121, duration: 5.041667 },
-    { seconds: 3, controls: { width: 512, height: 512, workflowKey: "redgraft-ltx25-i2v", videoOptionsVersion: "redgraft-video-options-v1", orientation: "1:1", videoQuality: "preview" }, frames: 73, duration: 3.041667 },
+    { seconds: 3, controls: { width: 512, height: 512, workflowKey: "redgraft-ltx25-i2v", videoOptionsVersion: "redgraft-video-options-v2", orientation: "1:1", videoQuality: "preview" }, frames: 73, duration: 3.041667 },
     { seconds: 2, controls: { width: 64, height: 96 }, frames: 48, duration: 2 },
   ])("mock video delivers a decodable $seconds-second request envelope with native sound", async ({ seconds, controls, frames, duration }) => {
     const result = await createMockGenProviders().video.generate({ prompt: "Controlled local transport fixture", seconds, controls });

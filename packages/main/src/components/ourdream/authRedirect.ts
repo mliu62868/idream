@@ -22,6 +22,7 @@ const allowedAuthRedirectPrefixes = [
   "/generate",
   "/guides",
   "/helpdesk",
+  "/packs",
   "/profile",
   "/resources-hub",
   "/romantasy",

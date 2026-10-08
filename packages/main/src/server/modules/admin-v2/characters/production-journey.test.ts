@@ -67,6 +67,7 @@ describe("Character Production Journey", () => {
         controlPlaneCommand: { findMany: findMany([]) },
         characterRelease: { findMany: findMany([]) },
         characterRevision: { findMany: findMany([]) },
+        characterContentVersion: { findMany: findMany([]) },
       } as unknown as PrismaClient;
       const result = await projectCharacterProductionJourneys(
         db,
@@ -75,8 +76,8 @@ describe("Character Production Journey", () => {
       );
       return { queries, size: result.size };
     };
-    await expect(run(1)).resolves.toEqual({ queries: 7, size: 1 });
-    await expect(run(25)).resolves.toEqual({ queries: 7, size: 25 });
+    await expect(run(1)).resolves.toEqual({ queries: 8, size: 1 });
+    await expect(run(25)).resolves.toEqual({ queries: 8, size: 25 });
   });
 
   // SPEC: 已上线角色的项目里出现比线上 Release 更新的 Revision（创作者改了已发布角色），
@@ -102,6 +103,7 @@ describe("Character Production Journey", () => {
           ...release, projectId: "project-1", releasePlacementManifest: {}, createdAt: new Date("2026-09-10T00:00:00.000Z"),
         }))] },
         characterRevision: { findMany: async () => input.revisions.map((revision) => ({ ...revision, projectId: "project-1" })) },
+        characterContentVersion: { findMany: async () => [] },
       } as unknown as PrismaClient;
       return (await projectCharacterProductionJourneys(db, ["character-1"], new Date("2026-09-23T00:00:00.000Z")))
         .get("character-1")!.release.pendingRevision;
@@ -316,6 +318,20 @@ describe("Character Production Journey", () => {
       primaryAction: { code: "preview_character", deepLink: "/admin/characters/character-1?tab=preview" },
       blockers: [],
     });
+  });
+
+  // SPEC: Release refuses a draft whose Soul is unreadable, in an old format, or has no
+  // opening; the card and header must say so instead of "Ready to preview".
+  it("sends a complete pack with a blocked Soul to the persona editor, not Preview", () => {
+    expect(journey({ draftPurposes: allPurposes, soulBlocker: "soul_release_policy" })).toMatchObject({
+      stage: "preview",
+      status: "blocked",
+      primaryAction: { code: "repair_character_soul", deepLink: "/admin/characters/character-1?tab=soul" },
+      blockers: [{ code: "soul_release_policy", deepLink: "/admin/characters/character-1?tab=soul" }],
+    });
+    // Image work still comes first; a live unchanged Character keeps monitoring.
+    expect(journey({ draftPurposes: ["character_cover"], soulBlocker: "opening_complete" }).primaryAction.code)
+      .toBe("continue_asset_pack");
   });
 
   it("keeps an active image run ahead of reviewing the previous selected pack", () => {

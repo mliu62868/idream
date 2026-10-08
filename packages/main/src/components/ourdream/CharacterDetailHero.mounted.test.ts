@@ -5,8 +5,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next/image", () => ({
-  default: ({ alt, src }: ComponentProps<"img">) =>
-    createElement("img", { alt, src: typeof src === "string" ? src : "" }),
+  default: ({ alt, src, className, "data-hero-fit": fit }: ComponentProps<"img"> & { "data-hero-fit"?: string }) =>
+    createElement("img", { alt, className, "data-hero-fit": fit, src: typeof src === "string" ? src : "" }),
 }));
 
 import { CharacterDetailHero } from "./CharacterDetailHero";
@@ -80,6 +80,20 @@ describe("CharacterDetailHero", () => {
     // With an auto width, min-h-[440px] transfers through aspect-video into a 782px
     // min-width and the face of a portrait image is cropped off on phones and tablets.
     expect(frame?.className.split(" ")).toEqual(expect.arrayContaining(["aspect-video", "min-h-[440px]", "w-full"]));
+  });
+
+  it("shows a cover-only character's whole portrait on desktop instead of zoom-cropping it to 16:9", () => {
+    act(() => root.render(createElement(CharacterDetailHero, { character: { ...baseCharacter, heroImage: "/character.png" } })));
+    const hero = container.querySelector<HTMLElement>('img[alt="Avery character hero"]');
+    expect(hero?.dataset.heroFit).toBe("portrait");
+    expect(hero?.className.split(" ")).toEqual(expect.arrayContaining(["lg:object-contain", "lg:object-right"]));
+    expect(container.querySelectorAll("img")).toHaveLength(2);
+
+    act(() => root.render(createElement(CharacterDetailHero, { character: { ...baseCharacter, heroImage: "/hero.png" } })));
+    const wide = container.querySelector<HTMLElement>('img[alt="Avery character hero"]');
+    expect(wide?.dataset.heroFit).toBe("hero");
+    expect(wide?.className).not.toContain("object-contain");
+    expect(container.querySelectorAll("img")).toHaveLength(1);
   });
 
   it("omits counts a character has not earned instead of showing zeros", () => {

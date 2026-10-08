@@ -3,6 +3,8 @@
 // SPEC: Character Asset Studio 的纯展示层 —— 只吃 props，不发请求、不持有写状态。
 // INTENT: 从 CharacterAssetStudio.tsx 原样移出，纯机械搬运，没有任何行为改动。
 import { ImageIcon, Loader2, Pin, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { formatDuration } from "@/components/admin/ui/format";
 import { WorkspaceButton } from "@/features/operations/WorkspaceUi";
 import { cn } from "@/lib/utils";
 import { useAdminI18n } from "@/components/admin/i18n";
@@ -159,6 +161,7 @@ export function CandidateBatchGrid({
   items,
   onActivate,
   onCompare,
+  runCreatedAt = null,
   runId,
   selectedPackAssetId,
   subjectName,
@@ -171,6 +174,7 @@ export function CandidateBatchGrid({
   items: CreativeRunDetail["items"];
   onActivate: (index: number) => void;
   onCompare: (itemId: string) => void;
+  runCreatedAt?: string | null;
   runId: string | null;
   selectedPackAssetId: string | null | undefined;
   subjectName: string;
@@ -275,6 +279,10 @@ export function CandidateBatchGrid({
           <p>
             <strong>{t("Candidate {number}", { number: activeItem.ordinal + 1 })}</strong>
             <span className="ml-2 text-[var(--ad-text-muted)]">{t(candidateState(activeItem, Boolean(activeUnconfirmed)))}</span>
+            {runCreatedAt && !activeItem.asset && !activeUnconfirmed &&
+            activeItem.executionState !== "failed" && activeItem.executionState !== "unknown" ? (
+              <GenerationElapsed since={runCreatedAt} />
+            ) : null}
           </p>
           <p className="text-[var(--ad-text-muted)]">
             {activeIsDraft ? t("Selected in draft") : t(purposeConfig[activePurpose].label)}
@@ -392,5 +400,32 @@ export function CandidateComparisonStage({
         </figure>
       </div>
     </section>
+  );
+}
+
+// INTENT: an image takes roughly a minute or two on the current backend; without a clock
+// the status line reads the same at 5s and at 5min, and operators cannot tell a slow run
+// from a stuck one. The Run is server-side, so leaving the page loses nothing.
+function GenerationElapsed({ since }: { since: string }) {
+  const { t } = useAdminI18n();
+  const [nowMs, setNowMs] = useState(0);
+  // Starts at 0 so server and first client render agree; the clock begins after mount.
+  useEffect(() => {
+    const tick = () => setNowMs(Date.now());
+    const first = window.setTimeout(tick, 0);
+    const timer = window.setInterval(tick, 1000);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(timer);
+    };
+  }, []);
+  const startedMs = new Date(since).getTime();
+  if (nowMs === 0 || !Number.isFinite(startedMs)) return null;
+  return (
+    <span className="ml-2 text-[var(--ad-text-muted)]" role="status">
+      {t("Elapsed {duration} · usually 1–2 minutes · you can leave this page and come back", {
+        duration: formatDuration(Math.max(0, nowMs - startedMs)),
+      })}
+    </span>
   );
 }

@@ -30,6 +30,10 @@ import numpy as np
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
+try:
+    from scripts.voice_erasure import AccountErasureRequest, VoiceErasureRegistry
+except ModuleNotFoundError:
+    from voice_erasure import AccountErasureRequest, VoiceErasureRegistry
 
 MODEL_ID = os.getenv("POCKET_TTS_MODEL", "pocket-tts").strip()
 LANGUAGE = os.getenv("POCKET_TTS_LANGUAGE", "english").strip()
@@ -109,6 +113,7 @@ if DEFAULT_VOICE not in ENGLISH_CATALOG_VOICE_SET:
 
 VOICE_DIR.mkdir(parents=True, exist_ok=True)
 IDEMPOTENCY_DIR.mkdir(parents=True, exist_ok=True)
+erasure_registry = VoiceErasureRegistry(IDEMPOTENCY_DIR, IDEMPOTENCY_CACHE_MAGIC)
 
 
 class SpeechRequest(BaseModel):
@@ -591,18 +596,23 @@ def render_idempotent_wav(
     idempotency_key: str,
     request_id: str,
     attempt_no: int,
+    owner_hash: str | None = None,
 ) -> tuple[bytes, bool]:
     if not request_id.strip() or attempt_no < 1:
         raise HTTPException(
             status_code=400,
             detail="Idempotent speech requires request id and positive attempt number",
         )
+    erasure_registry.check(owner_hash, idempotency_key, request.voice)
     resolved_voice = resolve_voice(request.voice)
     request_fingerprint = speech_request_fingerprint(request, resolved_voice[0])
     cache_path = idempotency_cache_path(idempotency_key)
     with idempotency_lock:
+        erasure_registry.check(owner_hash, idempotency_key, request.voice)
+        erasure_registry.check_cache_owner(cache_path, owner_hash)
         replay = load_idempotent_audio(cache_path, request_fingerprint)
         if replay is not None:
+            erasure_registry.check(owner_hash, idempotency_key, request.voice)
             return replay, True
         rendered = render_wav(request, resolved_voice)
         manifest = {
@@ -610,6 +620,7 @@ def render_idempotent_wav(
             "request_fingerprint": request_fingerprint,
             "request_id": request_id.strip(),
             "attempt_no": attempt_no,
+            "owner_hash": owner_hash,
         }
         manifest_bytes = json.dumps(
             manifest,
@@ -618,7 +629,7 @@ def render_idempotent_wav(
         ).encode("utf-8")
         # INVARIANT: metadata and audio become visible in one atomic rename, so
         # a crash cannot leave a key that is allowed to render twice.
-        atomic_write(
+        erasure_registry.commit(owner_hash, idempotency_key, request.voice, lambda: atomic_write(
             cache_path,
             b"".join(
                 (
@@ -628,7 +639,7 @@ def render_idempotent_wav(
                     rendered,
                 )
             ),
-        )
+        ))
         return rendered, False
 
 
@@ -691,7 +702,9 @@ async def synthesize(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     request_id: str | None = Header(default=None, alias="X-Idream-Request-Id"),
     attempt_no: int | None = Header(default=None, alias="X-Idream-Attempt-No"),
+    owner_hash: Annotated[str | None, Header(alias="X-Idream-Owner-Hash")] = None,
 ) -> Response:
+    erasure_registry.check(owner_hash, idempotency_key, request.voice)
     if request.response_format != "wav":
         raise HTTPException(status_code=400, detail="Only WAV output is supported")
     if request.model != MODEL_ID:
@@ -717,6 +730,7 @@ async def synthesize(
             idempotency_key,
             request_id,
             attempt_no,
+            owner_hash,
         )
     elapsed_ms = round((time.monotonic() - started) * 1_000)
     return Response(
@@ -736,8 +750,10 @@ def clone_voice(
     ref_text: Annotated[str, Form()],
     audio: Annotated[UploadFile, File()],
     language: Annotated[str, Form()] = LANGUAGE,
+    owner_hash: Annotated[str | None, Header(alias="X-Idream-Owner-Hash")] = None,
 ) -> dict[str, str]:
     normalized_id = safe_voice_id(voice_id)
+    erasure_registry.check(owner_hash, voice=normalized_id)
     if normalized_id in ENGLISH_CATALOG_VOICE_SET:
         raise HTTPException(status_code=409, detail="Catalog voice ids are reserved")
     if language != LANGUAGE:
@@ -788,13 +804,15 @@ def clone_voice(
             source_content_type=audio.content_type or "application/octet-stream",
         )
         manifest["reference_text"] = normalized_text
-        export_state_to_bundle(normalized_id, state, manifest)
+        manifest["owner_hash"] = owner_hash
+        erasure_registry.commit(owner_hash, None, normalized_id, lambda: export_state_to_bundle(normalized_id, state, manifest))
     return {"voice_id": normalized_id, "model": MODEL_ID, "language": LANGUAGE}
 
 
 @app.post("/v1/voices/presets", dependencies=[Depends(authorize)])
-def create_preset_voice(request: PresetVoiceRequest) -> dict[str, str]:
+def create_preset_voice(request: PresetVoiceRequest, owner_hash: Annotated[str | None, Header(alias="X-Idream-Owner-Hash")] = None) -> dict[str, str]:
     normalized_id = safe_voice_id(request.voice_id)
+    erasure_registry.check(owner_hash, voice=normalized_id)
     preset_voice_id = safe_voice_id(request.preset_voice_id)
     if normalized_id in ENGLISH_CATALOG_VOICE_SET:
         raise HTTPException(status_code=409, detail="Catalog voice ids are reserved")
@@ -819,7 +837,8 @@ def create_preset_voice(request: PresetVoiceRequest) -> dict[str, str]:
             source_content_type=None,
             source_voice_id=preset_voice_id,
         )
-        export_state_to_bundle(normalized_id, state, manifest)
+        manifest["owner_hash"] = owner_hash
+        erasure_registry.commit(owner_hash, None, normalized_id, lambda: export_state_to_bundle(normalized_id, state, manifest))
     return {
         "voice_id": normalized_id,
         "preset_voice_id": preset_voice_id,
@@ -839,3 +858,39 @@ def delete_voice(voice_id: str) -> dict[str, bool]:
             if key.startswith(f"{normalized_id}:"):
                 del voice_state_cache[key]
     return {"deleted": True}
+
+
+@app.post("/v1/account-erasure", dependencies=[Depends(authorize)])
+def erase_account(request: AccountErasureRequest) -> dict[str, bool]:
+    voice_ids = [safe_voice_id(value) for value in request.voice_ids]
+    if any(value in ENGLISH_CATALOG_VOICE_SET for value in voice_ids):
+        raise HTTPException(status_code=409, detail="Catalog voices cannot be erased")
+    # Check explicit ownership and install markers under the same lock used by
+    # synthesis/clone commits. A rejected foreign key must remain playable.
+    with erasure_registry.lock:
+        for key in request.request_keys:
+            erasure_registry.check_cache_owner(idempotency_cache_path(key), request.subject_hash)
+        for voice_id in voice_ids:
+            path = voice_manifest_path(voice_id)
+            manifest = json.loads(path.read_text()) if path.exists() else {}
+            if manifest.get("owner_hash") not in (None, request.subject_hash):
+                raise HTTPException(status_code=409, detail="Voice alias belongs to another owner")
+        erasure_registry.mark_erased(request)
+    with idempotency_lock, registry_lock:
+        erasure_registry.delete_cache(request)
+        for path in VOICE_DIR.glob("*/manifest.json"):
+            manifest = json.loads(path.read_text())
+            if manifest.get("owner_hash") == request.subject_hash and path.parent.name not in ENGLISH_CATALOG_VOICE_SET:
+                voice_ids.append(path.parent.name)
+        for voice_id in set(voice_ids):
+            # Explicit aliases come from Main's unique profile ownership. A
+            # character owner may differ from the operator who uploaded it.
+            erasure_registry.mark_erased(AccountErasureRequest(subject_hash=request.subject_hash, voice_ids=[voice_id]))
+            path = voice_bundle_path(voice_id)
+            if path.exists():
+                shutil.rmtree(path)
+            for key in list(voice_state_cache):
+                if key.startswith(f"{voice_id}:"):
+                    del voice_state_cache[key]
+        erasure_registry.sync_directory(VOICE_DIR)
+    return {"erased": True}

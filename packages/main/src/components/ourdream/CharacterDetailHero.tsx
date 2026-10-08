@@ -19,6 +19,10 @@ export function CharacterDetailHero({
   actions?: ReactNode;
 }>) {
   const heroImage = character.heroImage ?? character.image;
+  // INTENT: 没有专门 hero 的角色（legacy 发布、未上线）会把竖版封面传进来。
+  // 把竖图 object-cover 进 16:9 等于放大到只剩胸口；这时整张竖图贴右放，
+  // 两侧用同一张图的虚化铺底，不裁人物。
+  const portraitOnly = heroImage === character.image;
   const hasLikes = typeof character.likesCount === "number" && character.likesCount > 0;
   const hasChats = typeof character.chatsCount === "number" && character.chatsCount > 0;
   return (
@@ -31,9 +35,21 @@ export function CharacterDetailHero({
           竖图角色的脸落在卡片外。宽度定死后 min-h 只作用于高度：窄屏是 440px 高的竖框，
           桌面仍是 16:9。 */}
       <div className="relative aspect-video min-h-[440px] w-full bg-[rgb(36,36,36)]" data-testid="character-detail-hero-frame">
+        {portraitOnly ? (
+          <Image
+            alt=""
+            aria-hidden
+            className="scale-110 object-cover object-top opacity-60 blur-2xl"
+            fill
+            sizes="(min-width: 1280px) 1152px, 100vw"
+            src={heroImage}
+            unoptimized={shouldBypassNextImageOptimizer(heroImage)}
+          />
+        ) : null}
         <Image
           alt={`${character.title} character hero`}
-          className="object-cover object-top"
+          className={portraitOnly ? "object-cover object-top lg:object-contain lg:object-right" : "object-cover object-top"}
+          data-hero-fit={portraitOnly ? "portrait" : "hero"}
           data-asset-id={character.heroImageAssetId ?? character.imageAssetId ?? undefined}
           data-testid="character-detail-hero-image"
           fill

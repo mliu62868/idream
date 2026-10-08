@@ -1006,8 +1006,8 @@ describe("local AI service pipeline", () => {
           model: redgraftLtx25VideoProductionRecipe.workflowKey,
           controls: expect.objectContaining({
             profileId: redgraftLtx25VideoProductionRecipe.profileKey,
-            width: 768,
-            height: 1152,
+            width: 448,
+            height: 768,
             sourceImageAssetId: expect.any(String),
             workflowKey: redgraftLtx25VideoProductionRecipe.workflowKey,
             workflowVersion: redgraftLtx25VideoProductionRecipe.workflowVersion,

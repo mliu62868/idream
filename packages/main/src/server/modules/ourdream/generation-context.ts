@@ -104,6 +104,10 @@ async function loadChatContext(userId: string, selector: z.infer<typeof chatSele
     snapshot.characterVisualProfileVersion !== turn.characterVisualProfileVersion) {
     throw Errors.conflict("The original chat identity no longer matches its frozen execution.");
   }
+  // A Group Turn executes in a member session; its source page is the frozen Group.
+  const returnHref = snapshot.group
+    ? `/chat/groups/${encodeURIComponent(snapshot.group.id)}`
+    : `/chat/${encodeURIComponent(selector.sessionId)}`;
   const liveCharacter = await db.character.findFirst({
     where: { id: snapshot.characterId, deletedAt: null, age: { gte: 18 }, status: "approved", OR: [{ creatorId: userId }, directCharacterAudienceWhere] },
   });
@@ -165,7 +169,7 @@ async function loadChatContext(userId: string, selector: z.infer<typeof chatSele
       return { ...selector, source: { kind: "chat" as const, ...selector }, identityMode: "source_only" as const,
         digest, pins: null, character: null, characterId: null, characterName: null, chatCharacterId: character.id,
         scene, prompt, sourceMedia: { id: asset.id, url, thumbnailUrl: url }, sourceGenerationJobId: job.id, legacyRelease: false,
-        authorityMediaAssetIds: [asset.id], returnHref: `/chat/${encodeURIComponent(selector.sessionId)}`, sourceLabel: "your chat" };
+        authorityMediaAssetIds: [asset.id], returnHref, sourceLabel: "your chat" };
     }
   }
   let visualProfileId = snapshot.characterVisualProfileId;
@@ -236,7 +240,7 @@ async function loadChatContext(userId: string, selector: z.infer<typeof chatSele
     digest, pins, character, characterId: character.id, characterName: character.name, chatCharacterId: character.id,
     scene, prompt, sourceMedia, sourceGenerationJobId, legacyRelease: release?.legacy ?? false,
     authorityMediaAssetIds: sourceMedia ? [sourceMedia.id] : [],
-    returnHref: `/chat/${encodeURIComponent(selector.sessionId)}`, sourceLabel: "your chat" };
+    returnHref, sourceLabel: "your chat" };
 }
 
 async function loadComicIdentity(asset: { characterId: string | null; sourceJobId: string | null; ownerId: string | null }, db: ContextDatabase) {

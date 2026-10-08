@@ -5,7 +5,7 @@ import { prisma } from "@/server/lib/db";
 import { jobQueue } from "@/server/jobs/queue";
 import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import { dispatchGenerationAttemptOutbox, reserveInitialGenerationAttempt } from "@/server/modules/generation/generation-attempt-authority";
-import { generationJobDTO, generationJobInclude } from "@/server/modules/ourdream/generation-job-read-model";
+import { readGenerationJobs, generationJobInclude } from "@/server/modules/ourdream/generation-job-read-model";
 import { dispatchPendingGenerationTerminalRecords, ingestGenerationTerminalRecord } from "./generation-terminal-record-ingest";
 import { drainLocalAiPipeline, reconcileStaleGenerationJobs } from "./local-pipeline";
 
@@ -97,7 +97,7 @@ describe("generation preparation failure recovery", () => {
       await expect(reconcileStaleGenerationJobs({ generationJobIds: [job.id], now: new Date(now.getTime() + 60_000), timeoutMs: 1, videoTimeoutMs: 1 })).resolves.toMatchObject({ enqueued: 0, quarantined: 0 });
       expect(await prisma.generationAttempt.findUniqueOrThrow({ where: { id: attempt.id } })).toMatchObject({ status: "unknown", retryability: "operator_retry" });
       const current = await prisma.generationJob.findUniqueOrThrow({ where: { id: job.id }, include: generationJobInclude() });
-      expect(generationJobDTO(current, "unknown")).toMatchObject({ status: "queued", errorCode: "provider_outcome_unknown" });
+      expect((await readGenerationJobs([current]))[0]).toMatchObject({ status: "queued", errorCode: "provider_outcome_unknown", cost: { charged: 5, refunded: 0, finalCharge: 5 } });
       expect(await jobQueue.getByDedupeKey("ai.image.generate", idempotencyKeys.generationAttempt(job.id, 1))).toMatchObject({ state: "failed", attemptsMade: 3 });
       expect(await prisma.generationJobEvent.count({ where: { jobId: job.id, type: "provider_outcome_unknown" } })).toBe(1);
       expect(await prisma.mainOutboxEvent.count({ where: { aggregateId: attempt.id, eventType: "generation.incident.correlate.v2" } })).toBe(1);

@@ -255,9 +255,8 @@ export async function reconcileUnknownGenerationRequest(input: {
           requested: request.costDreamcoins,
         });
         refundAmount = refundedAmount;
-        // The reader's cost projection (generationJobCost) counts `refunded`
-        // events, like every other refund path; without one a settled sequence
-        // kept showing the refunded scene as charged.
+        // Preserve the human-readable refund timeline. Financial read models
+        // derive amounts from the linked ledger, never from this event.
         if (refundedAmount > 0) {
           await tx.generationJobEvent.create({
             data: { jobId: request.id, type: "refunded", message: "Dreamcoins refunded", metadata: toInputJson({ amount: refundedAmount }) },

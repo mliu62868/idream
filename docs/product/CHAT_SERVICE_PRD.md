@@ -36,7 +36,7 @@ Main 的权限、预算与交付事实限定能做什么；在此范围内，共
 - Main PostgreSQL 持有 Session、Turn/attempt、Character/Release、Scene、附件、交付、额度和账务。刷新、跨设备与运行恢复都读取 Main。
 - Chat 无数据库，在同一进程内嵌 DSH/official igrep，使用自托管 OpenAI-compatible 模型。本地 AgentRun 只保留执行和未决接纳证据，不形成第二套产品状态机。
 - 回复完成以 Main 持久接纳为准；流式文本和 Agent 轨迹不是已保存历史，也不是记忆来源。每个终态能追溯到适用的 Contract、Soul 与实际模型请求。
-- Scene、附件与角色版本固定到精确 attempt；同一意图的必需动作跨重生成复用原请求与计费效果，编辑改变意图则使旧动作身份失效。
+- Scene、附件与角色版本固定到精确 attempt；同一用户原文的图片动作跨重生成复用原请求与计费效果，编辑改变原文则使旧动作身份失效。
 - 套餐与 conversation profile 可以控制额度、速度和高成本能力，不能换掉角色人格或基础连续性。产品不建立 Relationship 等级/分数。
 - 既定审核保持 `MODERATION_PROVIDER=mock` 的 `underage/minor/csam` 拦截与角色年龄 ≥18；聊天保留举报、账号与隐私边界。
 
@@ -78,7 +78,7 @@ Group Chat 支持 2–12 个角色和选择/`@` 应答。每个 Turn 固定应�
 | Voice Clip | 对已完成回复明确 Play | 接受价格上限后合成，固定 selected reply/声音与账务，已交付声音可重播 |
 | Mic / Voice Call | 草稿输入或双向通话 | 分别按 CH-15/14 接纳、恢复和计量，不能用单条 Clip 代替通话 |
 
-图片的身份、编辑、反馈与质量见 [角色图片契约](CHARACTER_IMAGE_GENERATION_SYSTEM.md)；Clip、输入与 Call 见 [语音契约](VOICE_RELEASE_CHECKLIST.md)。明确且有权执行的图片意图直接形成动作，角色语气不能否认已接受动作或虚报完成。
+图片的身份、编辑、反馈与质量见 [角色图片契约](CHARACTER_IMAGE_GENERATION_SYSTEM.md)；Clip、输入与 Call 见 [语音契约](VOICE_RELEASE_CHECKLIST.md)。Agent 根据当前请求与对话上下文自主选择发图、编辑或文字回复，宿主不按词表或额外分类器指定动作。明确且有权执行的图片请求应直接调用工具，Agent 自行选择未指定的场景细节；Main 校验权限、来源、参数与计费，不重判用户措辞。角色语气不能否认已接受动作或虚报完成。
 
 角色应能在后续对话中延续自己已交付的图片，保持正确来源、状态与已知描述。生成 brief 只说明想生成什么，不能据此声称看见或验证了实际像素细节。
 

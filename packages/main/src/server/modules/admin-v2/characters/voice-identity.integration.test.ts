@@ -13,6 +13,7 @@ const providerState = vi.hoisted(() => ({
   failSynthesizeCall: null as number | null,
   deletedVoiceIds: [] as string[],
   referenceTexts: [] as string[],
+  createdOwners: [] as Array<string | undefined>,
   storedKeys: [] as string[],
   deletedKeys: [] as string[],
   inspectOk: true,
@@ -49,11 +50,13 @@ vi.mock("@/server/providers", () => ({
           return providerState.identityProviderKey ?? providerState.providerKey;
         },
         async cloneVoice(input: {
+          ownerId?: string;
           voiceId: string;
           language: string;
           referenceText: string;
         }) {
           providerState.cloneCalls += 1;
+          providerState.createdOwners.push(input.ownerId);
           providerState.referenceTexts.push(input.referenceText);
           return {
             ok: true as const,
@@ -65,11 +68,13 @@ vi.mock("@/server/providers", () => ({
           };
         },
         async createPresetVoice(input: {
+          ownerId?: string;
           voiceId: string;
           presetVoiceId: string;
           language: string;
         }) {
           providerState.presetCalls += 1;
+          providerState.createdOwners.push(input.ownerId);
           return {
             ok: true as const,
             data: {
@@ -365,6 +370,8 @@ describe("Character voice identity authority", () => {
         },
       });
       expect(providerState.presetCalls).toBe(1);
+      expect.soft(providerState.createdOwners.at(-1)).not.toBe(actorId);
+      expect.soft((await prisma.mediaAsset.findUniqueOrThrow({ where: { id: candidate.profile.reference.assetId } })).ownerId).not.toBe(actorId);
       expect(candidate).toMatchObject({
         replayed: false,
         profile: {
@@ -529,6 +536,8 @@ describe("Character voice identity authority", () => {
     expect(first.replayed).toBe(false);
     expect(replay).toEqual({ ...first, replayed: true });
     expect(providerState.cloneCalls).toBe(1);
+    expect.soft(providerState.createdOwners.at(-1)).not.toBe(actorId);
+    expect.soft((await prisma.mediaAsset.findUniqueOrThrow({ where: { id: first.profile.reference.assetId } })).ownerId).not.toBe(actorId);
     expect(providerState.synthesizeCalls).toBe(1);
     expect(providerState.referenceTexts).toEqual([
       "The reference speaker reads this exact transcript.",

@@ -113,10 +113,6 @@ export default defineConfig({
         "../shared/src/chat/image-action.ts",
         import.meta.url,
       ).pathname,
-      "@idream/shared/chat/image-intent": new URL(
-        "../shared/src/chat/image-intent.ts",
-        import.meta.url,
-      ).pathname,
       "@idream/shared/chat/persona-render": new URL(
         "../shared/src/chat/persona-render.ts",
         import.meta.url,

@@ -11,6 +11,7 @@ import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
+import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 import { InfoGrid, WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 import {
   SCOPES,
@@ -73,6 +74,8 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
       setLoading(false);
     }
   }, [id, t]);
+
+  useWorkspaceRefresh(reload);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -150,7 +153,7 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
     };
   }, [pending, draft, row, id, t, reload, reportSuccess]);
 
-  if (loading) {
+  if (loading && !row) {
     return <LoadingWorkspace label="Loading…" />;
   }
 

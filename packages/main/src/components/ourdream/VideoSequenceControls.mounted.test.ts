@@ -8,7 +8,7 @@ import { VideoSequenceControls } from "./VideoSequenceControls";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const scope = "user:sequence-viewer", storageKey = `idream:video-sequence:${scope}`;
-const cap = { options: { seconds: [3, 5], orientations: ["2:3", "1:1"], qualities: ["preview", "standard"] }, audio: ["generated", "silent", "narration"] };
+const cap = { options: { seconds: [3, 5], orientations: ["7:12", "2:3", "1:1"], qualities: ["preview", "standard"] }, audio: ["generated", "silent", "narration"] };
 const price = { fingerprint: "a".repeat(64), costDreamcoins: 200, balance: 500, audio: "narration", narrationExtendsLastFrame: true, narrationExtraCostDreamcoins: 0,
   costs: [{ ordinal: 0, costDreamcoins: 100 }, { ordinal: 1, costDreamcoins: 100 }], scenes: [{ ordinal: 0, video: { durationSeconds: 3.0417, width: 512, height: 512, audio: "generated" } }, { ordinal: 1, video: { durationSeconds: 5.0417, width: 512, height: 512, audio: "generated" } }] };
 function sequence(status = "generating") { return { id: "sequence-original", status, errorCode: null, request: { characterId: "character-one", consistencyMode: "balanced", orientation: "2:3", quality: "standard", audio: "generated", scenes: [{ prompt: "A calm wave", seconds: 5 }] }, scenes: [{ ordinal: 0, narrationState: "pending", job: { id: "native-original", status: "queued", controls: { sourceImageAssetId: "original-reference" }, cost: { charged: 100, refunded: 0, finalCharge: 100 } }, assets: [] }], cost: { charged: 100, refunded: 0, finalCharge: 100 }, asset: null, createdAt: "2026-10-02T00:00:00.000Z", completedAt: null }; }
@@ -50,7 +50,10 @@ describe("Video sequence exact acceptance and recoverable delivery UI", () => {
     expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Scene 1 prompt"]')?.value).toBe("Keep the camera still.");
     expect(calls.filter(call => call.init?.method === "POST")).toHaveLength(0);
     await click("Review video price");
-    expect(JSON.parse(String(calls.find(call => call.path.endsWith("/quote"))?.init?.body)).scenes[0].prompt).toBe("Keep the camera still.");
+    const request = JSON.parse(String(calls.find(call => call.path.endsWith("/quote"))?.init?.body));
+    expect(request).toMatchObject({ orientation: "7:12", quality: "preview" });
+    expect(request.scenes[0].prompt).toBe("Keep the camera still.");
+    expect(container.textContent).toContain("448×768");
     expect(calls.filter(call => call.init?.method === "POST" && !call.path.endsWith("/quote"))).toHaveLength(0);
   });
 

@@ -22,7 +22,7 @@ import {
   draftAssetRouteEntries,
   evaluateDraftAssetRouteAuthority,
 } from "./draft-asset-route-authority";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-validation";
+import { CHARACTER_RELEASE_POLICY_VERSION, characterDraftSoulBlocker } from "./release-validation";
 import { findOperationalGenerationRoute } from "./visual-authority";
 
 export const characterProductionPurposes = [
@@ -184,8 +184,8 @@ function actionIndex(
     ].includes(code)
   )
     return 0;
-  if (["continue_image_run", "continue_asset_pack", "review_asset_pack"].includes(code)) return 1;
-  if (code === "preview_character") return 2;
+  if (["continue_image_run", "continue_asset_pack"].includes(code)) return 1;
+  if (code === "preview_character" || code === "repair_character_soul") return 2;
   if (code === "publish_character") return 3;
   return 4;
 }
@@ -212,6 +212,8 @@ export function projectCharacterProductionJourneySnapshot(input: {
   currentReleaseId: string | null;
   candidateReleaseId: string | null;
   pendingRevision: { id: string; revision: number; createdAt: Date } | null;
+  /** First Soul/opening release gate the draft fails (characterDraftSoulBlocker). */
+  soulBlocker?: ReturnType<typeof characterDraftSoulBlocker>;
   activeCommand: NonNullable<
     CharacterProductionJourney["primaryAction"]["command"]
   > | null;
@@ -329,6 +331,20 @@ export function projectCharacterProductionJourneySnapshot(input: {
       };
       stage = "live_operations";
       status = "live";
+    } else if (input.soulBlocker) {
+      // INTENT: the images are done, but Release would refuse this draft; sending the
+      // operator to Preview first only defers the same dead end by two screens.
+      const deepLink = tabLink("soul");
+      blockers.push({
+        code: input.soulBlocker,
+        message: input.soulBlocker === "opening_complete"
+          ? "The draft has no opening message."
+          : "The draft persona must be saved in the current format before publishing.",
+        deepLink,
+      });
+      primaryAction = { code: "repair_character_soul", deepLink, command: null };
+      stage = "preview";
+      status = "blocked";
     } else {
       primaryAction = {
         code: "preview_character",
@@ -397,7 +413,7 @@ export async function projectCharacterProductionJourneys(
   const ids = [...new Set(characterIds)];
   if (ids.length === 0) return new Map();
   const coordinationKeys = ids.map(characterCommandCoordinationKey);
-  const [projects, servings, profiles, activeRuns, commands] =
+  const [projects, servings, profiles, activeRuns, commands, contents] =
     await Promise.all([
       db.characterProject.findMany({
         where: { characterId: { in: ids } },
@@ -448,7 +464,14 @@ export async function projectCharacterProductionJourneys(
           needsReconciliation: true,
         },
       }),
+      db.characterContentVersion.findMany({
+        where: { characterId: { in: ids } },
+        orderBy: [{ characterId: "asc" }, { version: "desc" }, { id: "desc" }],
+        distinct: ["characterId"],
+        select: { characterId: true, personaSnapshot: true, openingSnapshot: true },
+      }),
     ]);
+  const contentByCharacter = new Map(contents.map((content) => [content.characterId, content]));
   const projectByCharacter = new Map<string, CharacterProject>();
   for (const project of projects) {
     if (!projectByCharacter.has(project.characterId)) {
@@ -679,6 +702,7 @@ export async function projectCharacterProductionJourneys(
         currentReleaseId: serving?.currentReleaseId ?? null,
         candidateReleaseId: candidate?.id ?? null,
         pendingRevision: pendingRevisionByCharacter.get(characterId) ?? null,
+        soulBlocker: characterDraftSoulBlocker(contentByCharacter.get(characterId) ?? null),
         activeCommand: command
           ? {
               id: command.id,

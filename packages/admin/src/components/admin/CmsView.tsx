@@ -113,7 +113,7 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
   const [list, setList] = useState(() => createAuthorityState<CmsPageListResponse>());
   // INVARIANT: 存异常对象而不只是它的 message —— AuthorityRequestError 要靠 cause 才能按错误码
   // 出人话；只有 message 时运营读到的仍是 authority 的英文原文。
-  const [error, setError] = useState<{ message: string; cause: unknown } | null>(null);
+  const [error, setError] = useState<{ message: string; cause: unknown; viewTarget?: PageRow } | null>(null);
   const [publishDraft, setPublishDraft] = useState<PublishDraft | null>(null);
   const [publishBusy, setPublishBusy] = useState(false);
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
@@ -122,6 +122,8 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
   const [editBusy, setEditBusy] = useState(false);
   const { feedback, reportSuccess, reportFailure, clearFeedback } = useWriteFeedback();
   const requestGate = useRef(createLatestRequestGate());
+  // INTENT: 阅读目标与列表刷新独立；新选择、关闭和卸载都使旧阅读回执失效。
+  const viewRequestGate = useRef(createLatestRequestGate());
   const { confirmDiscard, guard } = useUnsavedChanges(Boolean(
     (editDraft && JSON.stringify(editDraft) !== JSON.stringify(editBaseline)) ||
     (publishDraft && (publishDraft.reason || publishDraft.confirmation)),
@@ -167,7 +169,8 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
 
   useEffect(() => {
     const gate = requestGate.current;
-    return () => gate.invalidate();
+    const viewGate = viewRequestGate.current;
+    return () => { gate.invalidate(); viewGate.invalidate(); };
   }, []);
 
   const pages = list.data?.items ?? [];
@@ -253,12 +256,23 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
   }
 
   async function view(page: PageRow) {
+    const request = viewRequestGate.current.begin();
     setError(null);
     try {
       const data = await apiGet<{ page: unknown }>(`/api/v2/admin/cms/page?path=${encodeURIComponent(page.path)}`);
+      if (!request.isCurrent()) return;
       if (!isPageDetail(data.page)) throw new Error(t("The CMS page response was incomplete."));
       setViewPage(data.page);
-    } catch (cause) { setError({ message: requestErrorMessage(cause, t), cause }); }
+    } catch (cause) {
+      if (!request.isCurrent()) return;
+      setError({ message: requestErrorMessage(cause, t), cause, viewTarget: page });
+    }
+  }
+
+  function closeView() {
+    viewRequestGate.current.invalidate();
+    setViewPage(null);
+    setError((current) => current?.viewTarget ? null : current);
   }
 
   function startEdit(page: PageRow) {
@@ -432,7 +446,7 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
       <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
       {list.error ? <AuthorityRequestError cause={list.cause} message={list.error} requestKind="read" snapshotAt={list.refreshedAt} onRetry={() => void load()} /> : null}
       {error ? (
-        <AuthorityRequestError cause={error.cause} message={error.message} onRetry={() => void load()} />
+        <AuthorityRequestError cause={error.cause} message={error.message} requestKind={error.viewTarget ? "read" : "write"} onRetry={() => error.viewTarget ? void view(error.viewTarget) : void load()} />
       ) : null}
 
       <FilterBar
@@ -456,7 +470,7 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
       {!canWrite ? <p className="text-sm text-[var(--ad-text-muted)]">{t("You can browse CMS pages. Creating, editing and publishing requires CMS write access.")}</p> : null}
 
       {viewPage ? <section className="space-y-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-        <div className="flex items-start justify-between gap-3"><div><h3 className="font-semibold">{viewPage.title}</h3><p className="mt-1 text-sm text-[var(--ad-text-muted)]">{viewPage.path} · {valueLabel(viewPage.contentStatus)}</p></div><button className="min-h-9 px-3 text-sm" type="button" onClick={() => setViewPage(null)}>{t("Close")}</button></div>
+        <div className="flex items-start justify-between gap-3"><div><h3 className="font-semibold">{viewPage.title}</h3><p className="mt-1 text-sm text-[var(--ad-text-muted)]">{viewPage.path} · {valueLabel(viewPage.contentStatus)}</p></div><button className="min-h-9 px-3 text-sm" type="button" onClick={closeView}>{t("Close")}</button></div>
         <p className="text-sm">{viewPage.description}</p>
         <CmsArticleEditor bodyJson={JSON.stringify(viewPage.body, null, 2)} onChange={() => undefined} readOnly />
       </section> : null}

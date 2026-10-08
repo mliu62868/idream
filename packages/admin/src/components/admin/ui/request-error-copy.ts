@@ -134,6 +134,17 @@ const CONFLICT_VERSION_RACE: Copy = {
   nextStep: "Refresh to load the current version, then decide again.",
 };
 
+// INTENT: 候选 Release 冻结草稿是刻意的不变式；运营要知道的只有「去 Release 发布或放弃它」。
+const CANDIDATE_RELEASE_PENDING: Copy = {
+  headline: "A candidate release is waiting, so this character's draft is locked.",
+  nextStep: "Open Release, publish or discard the candidate, then repeat this change. Nothing was written.",
+};
+
+const VISUAL_IDENTITY_LOCKED: Copy = {
+  headline: "The look is locked to the current portrait.",
+  nextStep: "Change the look from Visual identity instead of editing the appearance text. Nothing was written.",
+};
+
 const SUPPORT_CASE_SUPERSEDED: Copy = {
   headline: "This request has a newer support case.",
   nextStep: "Open case {caseId} and reopen it there. This historical case was not changed.",
@@ -157,9 +168,12 @@ export function operatorErrorCopy(cause: unknown): OperatorErrorCopy {
     const precondition = code === "conflict" &&
       cause.details !== null && typeof cause.details === "object" &&
       "blocker" in cause.details && typeof cause.details.blocker === "string";
-    const versionRace = precondition && (cause.details as { blocker: string }).blocker === "version_mismatch";
+    const blocker = precondition ? (cause.details as { blocker: string }).blocker : null;
+    const versionRace = blocker === "version_mismatch";
+    const candidatePending = blocker === "candidate_release_pending";
+    const identityLocked = blocker === "visual_identity_locked";
     return {
-      ...(currentCaseId ? SUPPORT_CASE_SUPERSEDED : terminalAssignment ? CASE_ASSIGNMENT_BLOCKED : versionRace ? CONFLICT_VERSION_RACE : precondition ? CONFLICT_PRECONDITION : fields.length > 0 ? FIELD_REJECTED : (COPY_BY_CODE[code ?? ""] ?? UNMAPPED)),
+      ...(currentCaseId ? SUPPORT_CASE_SUPERSEDED : terminalAssignment ? CASE_ASSIGNMENT_BLOCKED : versionRace ? CONFLICT_VERSION_RACE : candidatePending ? CANDIDATE_RELEASE_PENDING : identityLocked ? VISUAL_IDENTITY_LOCKED : precondition ? CONFLICT_PRECONDITION : fields.length > 0 ? FIELD_REJECTED : (COPY_BY_CODE[code ?? ""] ?? UNMAPPED)),
       ...(fields.length > 0 ? { nextStepValues: { fields: fields.join("、") } } : {}),
       ...(currentCaseId ? { nextStepValues: { caseId: currentCaseId } } : {}),
       technical: {
