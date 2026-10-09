@@ -1634,7 +1634,7 @@ test("help desk signup redirect applies anonymous roadmap vote intent", async ({
   await prisma.user.create({
     data: {
       id: ownerId,
-      email: `${ownerId}@test.local`,
+      email: `${ownerId}@customer.invalid`,
       emailVerified: true,
       displayName: "E2E Feedback Owner",
     },
@@ -1912,7 +1912,7 @@ async function seedCommunityDreamer() {
   await prisma.user.create({
     data: {
       id,
-      email: `${id}@test.local`,
+      email: `${id}@customer.invalid`,
       emailVerified: true,
       displayName,
     },
@@ -1952,7 +1952,7 @@ async function seedFeedCollection() {
   await prisma.user.create({
     data: {
       id: ownerId,
-      email: `${ownerId}@test.local`,
+      email: `${ownerId}@customer.invalid`,
       emailVerified: true,
       displayName: "Feed Collection Creator",
     },
@@ -1988,7 +1988,7 @@ async function seedExploreCharacters(token: string) {
   await prisma.user.create({
     data: {
       id: creatorId,
-      email: `${creatorId}@test.local`,
+      email: `${creatorId}@customer.invalid`,
       emailVerified: true,
       displayName: "Explore Creator",
     },
@@ -1996,7 +1996,7 @@ async function seedExploreCharacters(token: string) {
   await prisma.user.create({
     data: {
       id: otherCreatorId,
-      email: `${otherCreatorId}@test.local`,
+      email: `${otherCreatorId}@customer.invalid`,
       emailVerified: true,
       displayName: "Explore Other Creator",
     },
@@ -2973,6 +2973,9 @@ test("global search rejects malformed 200 responses instead of showing a false e
   await expect(page.getByTestId("app-search-status")).toHaveText(
     "Search suggestions unavailable",
   );
+  await expect(page.getByRole("listbox", { name: "Search suggestions" }).getByRole("button", {
+    name: "Retry search suggestions",
+  })).toBeVisible();
   await expect(page.getByTestId("app-search-status")).not.toHaveText(
     "No suggestions found",
   );
@@ -3000,6 +3003,9 @@ test("global search distinguishes dependency failure from an intentional empty r
   await expect(page.getByTestId("app-search-status")).toHaveText(
     "Search suggestions unavailable",
   );
+  await expect(page.getByRole("listbox", { name: "Search suggestions" }).getByRole("button", {
+    name: "Retry search suggestions",
+  })).toBeVisible();
 });
 
 test("global header signup redirect returns anonymous generator intent", async ({
@@ -3745,12 +3751,20 @@ test("chat UI opens Generate with character context and renders chat image attac
   await testInfo.attach("chat-image-first-terminal-accounting", {
     body: JSON.stringify(firstTerminal, null, 2), contentType: "application/json",
   });
+  // The fixture answers in one model step. Main's prepared image request is
+  // then reserved by the runtime's host fallback, with no second model call.
   expect(firstTerminal).toMatchObject({
     attempt: 1,
     assistantStatus: "sent",
     terminalEvidence: {
       replyUsage: { promptTokens: 12, completionTokens: 8, reasoningTokens: 0 },
-      execution: { steps: 2, toolCalls: 1 },
+      execution: { steps: 1, toolCalls: 1 },
+      tools: [{
+        name: "generate_image_async",
+        callId: expect.stringMatching(/^host-image-request:.+:1$/),
+        effectScope: "turn_action",
+        intent: { requestedNudity: "unspecified" },
+      }],
     },
   });
   expect(firstTerminal.terminalEvidence).toHaveProperty("modelRequests.length", 1);
@@ -3802,7 +3816,13 @@ test("chat UI opens Generate with character context and renders chat image attac
     assistantStatus: "sent",
     terminalEvidence: {
       replyUsage: { promptTokens: 12, completionTokens: 8, reasoningTokens: 0 },
-      execution: { steps: 2, toolCalls: 1 },
+      execution: { steps: 1, toolCalls: 1 },
+      tools: [{
+        name: "generate_image_async",
+        callId: expect.stringMatching(/^host-image-request:.+:2$/),
+        effectScope: "turn_action",
+        intent: { requestedNudity: "unspecified" },
+      }],
     },
   });
   expect(regeneratedTerminal.terminalEvidence).toHaveProperty("modelRequests.length", 1);
@@ -4969,6 +4989,18 @@ test("generator UI quotes one video scene and delivers its completed sequence an
     expect(packagedResponse.ok()).toBeTruthy();
     expect(packagedResponse.headers()["content-type"]).toContain("video/mp4");
     expectMp4Bytes(await packagedResponse.body(), sequenceAsset.url);
+    const sceneDownload = sequenceStatus.getByRole("link", { name: "Download scene 1", exact: true });
+    expect(completed.scenes[0]!.assets).toHaveLength(1);
+    await expect(sceneDownload).toHaveAttribute("href", completed.scenes[0]!.assets[0]!.downloadUrl);
+    const downloadedScene = page.waitForEvent("download");
+    await sceneDownload.click();
+    const sceneFile = await downloadedScene;
+    expect(await sceneFile.failure()).toBeNull();
+    const sceneFilePath = await sceneFile.path();
+    expect(sceneFilePath).not.toBeNull();
+    const sceneResponse = await page.request.get(sceneAsset.url);
+    expect(sceneResponse.ok()).toBeTruthy();
+    expect(await readFile(sceneFilePath!)).toEqual(await sceneResponse.body());
     const debits = await prisma.dreamcoinLedger.findMany({ where: { userId: owner.id, sourceId: job.id } });
     expect(debits).toHaveLength(1);
     expect(debits[0]).toMatchObject({ delta: -100, reason: "generation_spend", idempotencyKey: `generation:${job.id}:reserve`, balanceAfter: price.balance - 100 });
@@ -4992,10 +5024,21 @@ test("generator UI quotes one video scene and delivers its completed sequence an
       const video = page.locator(`[data-media-id="${assetId}"]`).getByTestId("gallery-media-video");
       await expect(video).toHaveCount(1);
       await expect(video).toBeVisible();
-      await expect(video.locator("source")).toHaveAttribute("src", /\/user-content\/.+\/content\.mp4#t=0\.001$/);
+      await expect(video.locator("source")).toHaveAttribute("src", `/user-content/${Buffer.from(assetId).toString("base64url")}/content.mp4#t=0.001`);
       await video.evaluate(async (element: HTMLVideoElement) => { element.muted = true; await element.play(); });
       await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime)).toBeGreaterThan(0.1);
       await video.evaluate((element: HTMLVideoElement) => element.pause());
+    }
+    const scenePage = await page.context().newPage();
+    try {
+      await scenePage.goto(sceneAsset.url, { waitUntil: "domcontentloaded" });
+      const nativeVideo = scenePage.locator("video");
+      await expect(nativeVideo).toHaveCount(1);
+      await nativeVideo.evaluate(async (element: HTMLVideoElement) => { element.muted = true; await element.play(); });
+      await expect.poll(() => nativeVideo.evaluate((element: HTMLVideoElement) => element.currentTime)).toBeGreaterThan(0.1);
+      await nativeVideo.evaluate((element: HTMLVideoElement) => element.pause());
+    } finally {
+      await scenePage.close();
     }
     // Stopping new video generation must not hide videos already delivered.
     await prisma.featureFlag.update({ where: { key: "video_gen" }, data: { enabled: false } });
@@ -5003,9 +5046,14 @@ test("generator UI quotes one video scene and delivers its completed sequence an
     await expect(page.getByRole("button", { name: "Video", exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Videos", exact: true }).click();
     await expect(page.getByTestId("gallery-media-video")).toHaveCount(1);
+    await expect(page.locator(`[data-media-id="${sceneAsset.id}"]`)).toHaveCount(0);
     for (const assetId of [sequenceAsset.id]) {
       await expect(page.locator(`[data-media-id="${assetId}"]`).getByTestId("gallery-media-video")).toBeVisible();
     }
+    const retainedScene = await page.request.get(completed.scenes[0]!.assets[0]!.downloadUrl);
+    expect(retainedScene.ok()).toBeTruthy();
+    expect(retainedScene.headers()["content-disposition"]).toMatch(/^attachment;/);
+    expect(await retainedScene.body()).toEqual(await sceneResponse.body());
   } finally {
     await restoreVideoGenerationRuntime(previousRuntime);
   }

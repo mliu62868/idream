@@ -83,6 +83,11 @@ describe("managed Playwright environment", () => {
       PW_BASE_URL: "http://127.0.0.1:3110",
       PW_ADMIN_BASE_URL: "http://127.0.0.1:3111",
       CHAT_SERVICE_URL: "http://127.0.0.1:3100",
+      MAIN_WEB_URL: "https://live-main.invalid",
+      ADMIN_WEB_URL: "https://live-admin.invalid",
+      COMFYUI_IMAGE_API_URL: "https://live-image.invalid",
+      COMFYUI_VIDEO_API_URL: "https://live-video.invalid",
+      COMFYUI_H3_API_URL: "https://live-h3.invalid",
       BLOB_ROOT: path.resolve(import.meta.dirname, "../../../..", "data/blob"),
       PW_RUN_ID: "a1b2c3d4",
     });
@@ -105,6 +110,15 @@ describe("managed Playwright environment", () => {
     expect(first.chatBaseURL).not.toBe("http://127.0.0.1:3100");
     expect(servers).toHaveLength(8);
     expect(servers.every((server) => server.reuseExistingServer === false)).toBe(true);
+    for (const server of servers) {
+      expect(server.env).toMatchObject({
+        MAIN_WEB_URL: first.mainBaseURL,
+        ADMIN_WEB_URL: first.adminBaseURL,
+        COMFYUI_IMAGE_API_URL: first.pipelineBaseURL,
+        COMFYUI_VIDEO_API_URL: first.pipelineBaseURL,
+        COMFYUI_H3_API_URL: first.pipelineBaseURL,
+      });
+    }
     expect(servers.map((server) => server.url)).toEqual([
       `${first.pipelineBaseURL}/health`,
       `${first.chatBaseURL}/readyz`,

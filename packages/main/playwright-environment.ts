@@ -181,10 +181,16 @@ export function resolvePlaywrightEnvironment(
     CHAT_BFF_SIGNING_SECRET: bffSecret,
     INTERNAL_TOKEN: internalToken,
     MAIN_WEB_URL: mainBaseURL,
+    ADMIN_WEB_URL: adminBaseURL,
     // Main's view of the image adapter (launch readiness). The Gen workers
     // override it; see playwrightGenWorker.
     GEN_IMAGE_PROVIDER: input.PW_IMAGE_PROVIDER ?? "mock",
     PIPELINE_API_URL: pipelineBaseURL,
+    // Main probes the pinned workflow's modality-specific backend before
+    // creating a Run. Those probes must use this run's fixture too.
+    COMFYUI_IMAGE_API_URL: pipelineBaseURL,
+    COMFYUI_VIDEO_API_URL: pipelineBaseURL,
+    COMFYUI_H3_API_URL: pipelineBaseURL,
     GEN_VIDEO_PROVIDER: input.PW_VIDEO_PROVIDER ?? "mock",
     VOICE_PROVIDER: input.PW_VOICE_PROVIDER ?? "mock",
     MODERATION_PROVIDER: input.PW_MODERATION_PROVIDER ?? "mock",

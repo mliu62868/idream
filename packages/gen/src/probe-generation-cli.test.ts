@@ -67,9 +67,12 @@ describe("generation launch probe CLIs", () => {
     try {
       const [chunk] = await once(server.stdout!, "data");
       const port = Number(String(chunk).trim());
+      const endpoint = `http://127.0.0.1:${port}`;
       const result = runProbe("preflight.ts", [], {
         GEN_VIDEO_PROVIDER: "backend",
-        COMFYUI_API_URL: `http://127.0.0.1:${port}`,
+        COMFYUI_IMAGE_API_URL: endpoint,
+        COMFYUI_VIDEO_API_URL: endpoint,
+        COMFYUI_H3_API_URL: endpoint,
         COMFYUI_MODEL_ROOT: path.join(directory, "models"),
         GEN_WORKFLOW_DIR: directory,
         GEN_FFPROBE_BIN: "/usr/bin/true",
