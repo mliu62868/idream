@@ -1,5 +1,6 @@
 import { once } from "node:events";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { generationBackendHealth } from "@/server/modules/admin-v2/generation/diagnostics";
 import { server } from "./pipeline-image-fixture-server";
 
 let base: string;
@@ -17,6 +18,15 @@ async function completion(body: Record<string, unknown>) {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
   });
 }
+
+it("serves Main's ComfyUI bootstrap readiness probe through the owned fixture", async () => {
+  vi.stubEnv("COMFYUI_IMAGE_API_URL", base);
+  try {
+    expect(await generationBackendHealth("comfyui", "image")).toMatchObject({ ok: true });
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
 
 it("returns real OpenAI SSE and a single required native image call before a conversational reply", async () => {
   const tools = [{ type: "function", function: { name: "generate_image_async" } }];

@@ -21,9 +21,8 @@ describe("Playwright resource lifecycle", () => {
     const runId = randomBytes(4).toString("hex");
     const environment = resolvePlaywrightEnvironment({
       PW_BASE_URL: "http://127.0.0.1:3510",
-      PW_DATABASE_URL:
-        "postgresql://postgres:postgres@localhost:5433/idream_test_playwright_manual",
-      PW_REDIS_URL: "redis://127.0.0.1:6379/15",
+      PW_DATABASE_URL: process.env.DATABASE_URL,
+      PW_REDIS_URL: process.env.REDIS_URL,
       PW_RUN_ID: runId,
     });
     const plan = createPlaywrightCleanupPlan(environment);
@@ -101,9 +100,8 @@ describe("Playwright resource lifecycle", () => {
     const runId = randomBytes(4).toString("hex");
     const environment = resolvePlaywrightEnvironment({
       PW_BASE_URL: "http://127.0.0.1:3520",
-      PW_DATABASE_URL:
-        "postgresql://postgres:postgres@localhost:5433/idream_test_playwright_manual",
-      PW_REDIS_URL: "redis://127.0.0.1:6379/15",
+      PW_DATABASE_URL: process.env.DATABASE_URL,
+      PW_REDIS_URL: process.env.REDIS_URL,
       PW_RUN_ID: runId,
     });
     const plan = createPlaywrightCleanupPlan(environment);
@@ -128,9 +126,8 @@ describe("Playwright resource lifecycle", () => {
     const runId = randomBytes(4).toString("hex");
     const environment = resolvePlaywrightEnvironment({
       PW_BASE_URL: "http://127.0.0.1:3530",
-      PW_DATABASE_URL:
-        "postgresql://postgres:postgres@localhost:5433/idream_test_playwright_manual",
-      PW_REDIS_URL: "redis://127.0.0.1:6379/15",
+      PW_DATABASE_URL: process.env.DATABASE_URL,
+      PW_REDIS_URL: process.env.REDIS_URL,
       PW_RUN_ID: runId,
     });
     const plan = createPlaywrightCleanupPlan(environment);

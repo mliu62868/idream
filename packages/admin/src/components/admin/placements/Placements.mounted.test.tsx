@@ -23,6 +23,7 @@ describe("operational artwork publication", () => {
   let root: Root;
   let container: HTMLDivElement;
   beforeEach(() => {
+    vi.useFakeTimers();
     apiGet.mockReset();
     operation.mockReset();
     container = document.createElement("div");
@@ -32,12 +33,20 @@ describe("operational artwork publication", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    vi.useRealTimers();
   });
 
   it("collects customer campaign copy and validates both halves of the optional CTA", async () => {
     apiGet.mockResolvedValue({ items: [{ id: "artwork", purpose: "campaign", targetId: null, customerPublishable: true, publishabilityReasons: [] }], pageInfo: { hasNextPage: false, endCursor: null } });
     await act(async () => root.render(<PlacementsNewPage />));
-    await waitFor(() => container.querySelector('select')?.disabled === false);
+    const assetSelector = container.querySelector<HTMLSelectElement>('[aria-label="Asset"]')!;
+    expect(assetSelector.disabled).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(199); });
+    expect(apiGet).not.toHaveBeenCalled();
+    expect(assetSelector.disabled).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(apiGet).toHaveBeenCalledTimes(1);
+    expect(assetSelector.disabled).toBe(false);
     const title = container.querySelector<HTMLInputElement>('[aria-label="Campaign title"]');
     expect(title).not.toBeNull();
     await change(title!, "Autumn collection");
@@ -61,7 +70,8 @@ describe("operational artwork publication", () => {
     apiGet.mockResolvedValueOnce({ items: [{ id: "artwork", purpose: "campaign", targetId: null, customerPublishable: true, publishabilityReasons: [] }], pageInfo: { hasNextPage: true, endCursor: "page-two" } })
       .mockImplementation(() => new Promise((_resolve, reject) => { rejectPage = reject; }));
     await act(async () => root.render(<PlacementsNewPage />));
-    await waitFor(() => container.querySelector('select')?.disabled === false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="Asset"]')!.disabled).toBe(false);
     await change(container.querySelector<HTMLInputElement>('[aria-label="Campaign title"]')!, "Autumn collection");
     await change(container.querySelector<HTMLInputElement>('[aria-label="Campaign eyebrow"]')!, "Featured");
     await change(container.querySelector<HTMLInputElement>('[aria-label="Campaign destination key"]')!, "autumn");
@@ -72,7 +82,8 @@ describe("operational artwork publication", () => {
     expect(button(container, "Create placement")!.disabled).toBe(true);
     expect(container.querySelector('[data-testid="admin-pagination"]')?.textContent).toContain("Page 2");
     expect(container.querySelector('select')!.disabled).toBe(true);
-    await waitFor(() => apiGet.mock.calls.length === 2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    expect(apiGet).toHaveBeenCalledTimes(2);
     await act(async () => rejectPage(new Error("Image library unavailable")));
     expect(container.querySelector('select')!.options.length).toBe(0);
     expect(button(container, "Create placement")!.disabled).toBe(true);
@@ -146,7 +157,7 @@ async function change(input: HTMLInputElement, value: string) {
 async function waitFor(predicate: () => boolean) {
   for (let i = 0; i < 40; i++) {
     if (predicate()) return;
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(5); });
   }
   throw new Error("Condition did not become true");
 }

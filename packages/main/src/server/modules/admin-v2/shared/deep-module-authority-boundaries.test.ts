@@ -161,7 +161,9 @@ describe("deep module authority boundaries", () => {
     // INVARIANT: Prisma transaction adapters own one pg client. Promise.all
     // multiplexes queries onto it, which pg 8 deprecates and pg 9 rejects.
     expect(offenders).toEqual([]);
-  });
+    // This parses every production Main/Chat source file; allow the complete
+    // scan to finish on CI while retaining the exact offender assertion.
+  }, 30_000);
 
   it("recognizes aliased, destructured, and inferred transaction adapters", () => {
     const syntax = ts.createSourceFile(

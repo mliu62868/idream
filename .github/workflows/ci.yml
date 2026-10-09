@@ -70,6 +70,13 @@ jobs:
       - name: Install Playwright Chromium
         run: bunx playwright install --with-deps chromium
 
+      - name: Install media tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y ffmpeg
+          ffmpeg -version
+          ffprobe -version
+
       - name: Check packages
         run: bun run check
 
@@ -96,6 +103,41 @@ jobs:
           bun run --filter @idream/main db:migrate:deploy
           bun run --filter @idream/main check:migration-authority
           bun run --filter @idream/main admin:readiness:migrations
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Bootstrap Chat E2E runtime
+        env:
+          DSH_HOME: ${{ runner.temp }}/idream-dsh
+          # Bootstrap creates manifests and lockfiles for these disposable profiles.
+          npm_config_frozen_lockfile: "false"
+        run: |
+          python -m pip install igrep2==0.1.150
+          npm install --prefix "$RUNNER_TEMP/idream-ci-tools" --no-audit --no-fund pnpm@10.33.0
+          export PATH="$RUNNER_TEMP/idream-ci-tools/node_modules/.bin:$PATH"
+          printf '%s\n' "$RUNNER_TEMP/idream-ci-tools/node_modules/.bin" >> "$GITHUB_PATH"
+          node scripts/setup-dsh-companion.mjs --json > "$RUNNER_TEMP/dsh-bootstrap.json"
+          node scripts/setup-dsh-companion.mjs --check --json
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from "node:fs";
+          import { execFileSync } from "node:child_process";
+          import { join } from "node:path";
+          import { pathToFileURL } from "node:url";
+
+          const report = JSON.parse(readFileSync(join(process.env.RUNNER_TEMP, "dsh-bootstrap.json"), "utf8"));
+          const normal = report.profiles.find(profile => profile.memoryMode === "normal");
+          if (!report.ok || !normal?.installedPluginPath) throw new Error("Missing installed normal companion profile");
+          const environment = {
+            DSH_HOME: report.dshHome,
+            DSH_BOOTSTRAP_STATE_PATH: report.statePath,
+            DSH_IGREP_PLUGIN_URL: pathToFileURL(join(normal.installedPluginPath, "index.mjs")).href,
+            DSH_IGREP_COMMAND: execFileSync("which", ["igrep"], { encoding: "utf8" }).trim(),
+          };
+          appendFileSync(process.env.GITHUB_ENV, Object.entries(environment).map(([key, value]) => `${key}=${value}\n`).join(""));
+          NODE
 
       - name: Run E2E
         env:
