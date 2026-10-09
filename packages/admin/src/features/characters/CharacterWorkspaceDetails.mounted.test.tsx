@@ -89,6 +89,7 @@ describe("Character workspace details", () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    vi.useRealTimers();
   });
 
   it("refreshes Character facts from the shell refresh action", async () => {
@@ -524,12 +525,6 @@ describe("Character workspace details", () => {
     expect(body).not.toHaveProperty("reason");
   });
 
-  /**
-   * SPEC: 服务端说还有命令在跑时，语音页签上的系统默认写入必须是禁用态。
-   * INTENT: 这条能被运营真实走到 —— 深链 `?tab=voice` 打开一个服务端仍有 activeCommand 的
-   *         角色，页签不会被拨回 release。此前 canManageDefaults 读的是未过写入锁的那份权限，
-   *         按钮亮着，点下去只会拿到 journal 抛出的错误。
-   */
   // SPEC: choosing where an image appears lives with the images; launch preview only previews.
   it("keeps image placements with the image library, not in launch preview", async () => {
     window.history.replaceState(null, "", "/admin/characters/character-detail?tab=assets");
@@ -554,14 +549,19 @@ describe("Character workspace details", () => {
     expect(container.textContent).not.toContain("Choose where existing images appear");
   });
 
+  /**
+   * SPEC: An authoritative running command locks system voice defaults before
+   * the journal adopts it and redirects the workspace to Release.
+   * INTENT: Control these ticks so the Voice assertion cannot miss that frame.
+   */
   it("disables the system voice defaults write while an authoritative command is running", async () => {
+    vi.useFakeTimers();
     window.history.replaceState(
       null,
       "",
       "/admin/characters/character-detail?tab=voice",
     );
-    adminV2Request.mockResolvedValue(
-      characterWorkspaceDetail({
+    const lockedWorkspace = characterWorkspaceDetail({
         character: { id: "character-detail", name: "Mira" },
         activeCommand: {
           commandId: "command-1",
@@ -573,8 +573,13 @@ describe("Character workspace details", () => {
           createdAt: "2026-08-02T04:00:00.000Z",
           updatedAt: "2026-08-02T04:00:01.000Z",
         },
-      }),
-    );
+    });
+    const original = adminV2Request.getMockImplementation()!;
+    adminV2Request.mockImplementation(async (path: string, ...args: unknown[]) => {
+      if (path === "/api/v2/admin/characters/character-detail") return lockedWorkspace;
+      if (path === "/api/v2/admin/commands/command-1") return lockedWorkspace.activeCommand;
+      return original(path, ...args);
+    });
 
     await act(async () => {
       root.render(
@@ -587,10 +592,24 @@ describe("Character workspace details", () => {
         </AdminI18nProvider>,
       );
     });
-    await waitUntil(
-      () => container.textContent?.includes(VOICE_DEFAULTS_READ_ONLY) === true,
-      "the locked system voice defaults notice",
+    // Observe the locked Voice panel before the next tick adopts the command
+    // and redirects to Release; wall-clock polling can miss this state.
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(container.textContent).toContain(VOICE_DEFAULTS_READ_ONLY);
+    const defaults = container.querySelector('[data-testid="system-voice-defaults"]')!;
+    expect(defaults).not.toBeNull();
+    const fields = [...defaults.querySelectorAll<HTMLSelectElement>("select")];
+    expect(fields).toHaveLength(4);
+    expect(fields.every((field) => field.disabled)).toBe(true);
+    const save = [...defaults.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.includes("Save system defaults"),
     );
+    expect(save?.disabled).toBe(true);
+    await act(async () => { save!.click(); });
+    expect(adminV2Request.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(window.location.search).toBe("?tab=release");
+    expect(container.querySelector('[id="character-tab-release"]')?.getAttribute("aria-selected")).toBe("true");
   });
 
   it("keeps the system voice defaults write available when no command is running", async () => {
