@@ -445,7 +445,9 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
     expect(await prisma.voiceUsageFact.count({ where: { userId } })).toBe(0);
     expect(await prisma.chatTurn.count({ where: { session: { userId } } })).toBe(0);
     expect(await dreamcoinBalance(userId)).toBe(700);
-  });
+    // Three real narration fixtures plus scene packaging/retries exceed the
+    // default 5s under CI coverage; retain every media and debit assertion.
+  }, 30_000);
 
   it("fences a late composer after the owner stops the sequence", async () => {
     await mockedNativeSuccess(); const { sequence } = await create(body(1)); await runQueuedGenerationJobs(10);
