@@ -1,9 +1,9 @@
-import { adminRouteMetadata, renderAdminRoute, type AdminSearchParams } from "../../_server/render-admin-route";
+import { adminRouteLabel, adminRouteMetadata, renderAdminRoute, type AdminSearchParams } from "../../_server/render-admin-route";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-export function generateMetadata() {
-  return adminRouteMetadata("Taxonomy");
+export async function generateMetadata({ searchParams }: { searchParams: AdminSearchParams }) {
+  return adminRouteMetadata(adminRouteLabel(["characters", "taxonomy"], await searchParams));
 }
 
 export default function CharacterTaxonomyPage({ searchParams }: { searchParams: AdminSearchParams }) {

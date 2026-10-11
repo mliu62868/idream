@@ -62,6 +62,14 @@ describe("linked Support and Case lifecycle", () => {
     }), 201);
     await resolveRequest(request.ticketId);
     const firstResolution = await prisma.caseEvidence.findFirstOrThrow({ where: { caseId, sourceType: "support_resolution" } });
+    const manuallyResolved = await prisma.adminCase.findUniqueOrThrow({ where: { id: caseId } });
+    expect(manuallyResolved).toMatchObject({
+      verificationState: "overridden",
+      resolution: { verification: {
+        state: "overridden", method: "manual_attestation",
+        overrideReason: "The image download works again.",
+      } },
+    });
     expectOk(await caseCommand(caseId, "close"), 202);
     await expect(prisma.supportRequest.findUniqueOrThrow({ where: { id: request.id } })).resolves.toMatchObject({ status: "closed" });
     const reopenKey = crypto.randomUUID();

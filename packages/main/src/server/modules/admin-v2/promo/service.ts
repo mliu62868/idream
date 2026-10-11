@@ -1,3 +1,4 @@
+import { adminMutationResultValidator } from "@/server/modules/admin-v2/shared/route-handler";
 import type { Prisma } from "@prisma/client";
 import type {
   AdminRedeemCodeCreateRequest,
@@ -95,6 +96,7 @@ export async function createRedeemCode(
   const codeHash = redeemCodeHash(body.code);
   const requestId = adminRequestId(request);
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey,
@@ -172,6 +174,7 @@ export async function disableRedeemCode(
   }
   const requestId = adminRequestId(request);
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey,

@@ -14,7 +14,7 @@ import {
 } from "@/server/account-deletion-authority";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import { writeAudit } from "@/server/modules/admin/shared/legacy-primitives";
+import { adminAuditData, writeAudit } from "@/server/modules/admin/shared/legacy-primitives";
 import {
   actorWithPermission,
   jsonBody,
@@ -126,22 +126,23 @@ export async function eraseUser(request: Request, userId: string): Promise<Erase
   if (body.confirmation !== userId) {
     throw Errors.badRequest("Confirmation did not match erase target");
   }
-  const user = await prisma.user.findUnique({ where: { id: userId } });
-  if (!user) throw Errors.notFound("User not found");
-  const deletion = await prisma.$transaction((tx) =>
-    requestAccountDeletion(tx, { userId }),
-  );
-  await writeAudit(request, actor, {
-    action: "compliance.erase",
-    targetType: "user",
-    targetId: userId,
-    reason: body.reason,
-    before: { status: user.status },
-    after: {
-      status: "deleted",
-      deletionId: deletion.id,
-      graceEndsAt: deletion.graceEndsAt.toISOString(),
-    },
+  const deletion = await prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: userId } });
+    if (!user) throw Errors.notFound("User not found");
+    const deletion = await requestAccountDeletion(tx, { userId });
+    await tx.adminAuditLog.create({ data: adminAuditData(request, actor, {
+      action: "compliance.erase",
+      targetType: "user",
+      targetId: userId,
+      reason: body.reason,
+      before: { status: user.status },
+      after: {
+        status: "deleted",
+        deletionId: deletion.id,
+        graceEndsAt: deletion.graceEndsAt.toISOString(),
+      },
+    }) });
+    return deletion;
   });
   return {
     erased: true,

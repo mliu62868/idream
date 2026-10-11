@@ -6,18 +6,21 @@ import {
   type AdminV2ApiOperation,
   type AdminV2DeclaredOperation,
   type AdminV2DeclaredOperationId,
-  type AdminV2DeclaredRequestRef,
+  type AdminV2DeclaredRequestRefFor,
   type ExecutableAdminV2Contract,
 } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { executeAtomicIdempotentMutation } from "./atomic-mutation";
+import { adminMutationResultValidator } from "./route-handler";
 import {
   authenticatedAdminActor,
   jsonBody,
   requireActorPermission,
+  parseAdminIfMatch,
   type AdminActor,
+  type AdminV2RequestBody,
 } from "./authority";
 
 export type AdminMutationOperationDefinition = {
@@ -80,23 +83,23 @@ export type AdminMutationContext<Body> = {
 // INTENT: `requireAdminMutationOperation` already fails closed at runtime, but a caller that
 // mistypes an id should never reach runtime — the union makes the typo a compile error, and
 // the same key already selects the request contract, so nothing else has to agree.
-export async function executeAdminMutation<Body, Prepared = undefined>(
-  operationId: AdminV2DeclaredOperationId,
+export async function executeAdminMutation<const Id extends AdminV2DeclaredOperationId, Prepared = undefined>(
+  operationId: Id,
   request: Request,
   options: {
     readonly params: Readonly<Record<string, string>>;
     readonly permission?: Parameters<typeof requireActorPermission>[2];
     readonly resource?: { readonly characterId?: string };
     readonly target: (
-      context: AdminMutationContext<Body>,
+      context: AdminMutationContext<AdminV2RequestBody<AdminV2DeclaredRequestRefFor<Id>>>,
     ) => { readonly type: string; readonly id: string };
-    readonly expectedVersion?: (body: Body) => number;
+    readonly expectedVersion?: (body: AdminV2RequestBody<AdminV2DeclaredRequestRefFor<Id>>) => number;
     readonly prepare?: (
-      context: AdminMutationContext<Body>,
+      context: AdminMutationContext<AdminV2RequestBody<AdminV2DeclaredRequestRefFor<Id>>>,
     ) => Promise<Prepared>;
     readonly mutate: (
       tx: Prisma.TransactionClient,
-      context: AdminMutationContext<Body>,
+      context: AdminMutationContext<AdminV2RequestBody<AdminV2DeclaredRequestRefFor<Id>>>,
       prepared: Prepared,
     ) => Promise<unknown>;
     readonly decorateResult?: (result: unknown, replayed: boolean) => unknown;
@@ -116,14 +119,14 @@ export async function executeAdminMutation<Body, Prepared = undefined>(
   const permission = options.permission ?? staticPermission(definition.operation);
   await requireActorPermission(request, actor, permission, options.resource);
 
-  const body = definition.request.schema.parse(
-    await mutationBody(request, definition.operation.contract.request),
-  ) as Body;
+  // jsonBody already applies the manifest schema. Parsing its output again can
+  // repeat transforms and makes the inferred body disagree with the input contract.
+  const body = await jsonBody(request, operationId);
   const idempotencyKey = definition.request.requirements.includes("idempotency-key")
     ? requiredIdempotencyKey(request)
     : undefined;
   const headerVersion = definition.request.requirements.includes("if-match")
-    ? requiredIfMatch(request)
+    ? parseAdminIfMatch(request)
     : undefined;
   const bodyVersion = options.expectedVersion?.(body);
   if (headerVersion !== undefined && bodyVersion !== undefined && headerVersion !== bodyVersion) {
@@ -131,7 +134,7 @@ export async function executeAdminMutation<Body, Prepared = undefined>(
   }
   const expectedVersion = bodyVersion ?? headerVersion;
   const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
-  const context: AdminMutationContext<Body> = {
+  const context: AdminMutationContext<AdminV2RequestBody<AdminV2DeclaredRequestRefFor<Id>>> = {
     actor,
     body,
     params: options.params,
@@ -147,7 +150,7 @@ export async function executeAdminMutation<Body, Prepared = undefined>(
   // `.strict()` 且列名与 Prisma 行不同，service 直接 return Prisma 行时：写已提交 → 这里抛
   // → 500；用户重试 → 同一个幂等键取回那条未经校验的 result → 再 500，永远好不了。把校验
   // 交给事务内的 `validateResult`，「写已提交但响应不可表达」这个状态就不存在。
-  const validateResult = (value: unknown) => definition.response.schema.parse(value);
+  const validateResult = adminMutationResultValidator(request);
 
   if (idempotencyKey) {
     return await executeAtomicIdempotentMutation({
@@ -197,24 +200,8 @@ function staticPermission(operation: AdminV2ApiOperation) {
   });
 }
 
-async function mutationBody(request: Request, contract: AdminV2DeclaredRequestRef) {
-  return request.method === "DELETE" && request.body === null ? {} : jsonBody(request, contract);
-}
-
 function requiredIdempotencyKey(request: Request) {
   const value = request.headers.get("idempotency-key")?.trim();
   if (!value) throw Errors.badRequest("Idempotency-Key header is required");
   return value;
-}
-
-function requiredIfMatch(request: Request) {
-  const value = request.headers
-    .get("if-match")
-    ?.trim()
-    .replace(/^W\//, "")
-    .replace(/^"|"$/g, "");
-  if (!value || !/^\d+$/.test(value)) {
-    throw Errors.badRequest("If-Match must contain an authority version");
-  }
-  return Number(value);
 }

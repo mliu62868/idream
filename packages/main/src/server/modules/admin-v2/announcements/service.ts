@@ -17,7 +17,6 @@ import {
   actorWithPermission,
   queryParams,
   type AdminActor,
-  type AdminV2RequestBody,
 } from "@/server/modules/admin-v2/shared/authority";
 import { executeAdminMutation } from "@/server/modules/admin-v2/shared/admin-mutation";
 import {
@@ -140,7 +139,7 @@ function announcementCursorId(value: unknown) {
 }
 
 export async function createAnnouncement(request: Request) {
-  return executeAdminMutation<AdminV2RequestBody<"announcementCreateRequestSchema+idempotency-key">>(
+  return executeAdminMutation(
     "POST /api/v2/admin/announcements", request, {
       params: {},
       target: () => ({ type: "app_setting", id: ANNOUNCEMENTS_KEY }),
@@ -166,7 +165,7 @@ export async function createAnnouncement(request: Request) {
 }
 
 export async function patchAnnouncement(request: Request, id: string) {
-  return executeAdminMutation<AdminV2RequestBody<"announcementPatchRequestSchema+idempotency-key">>(
+  return executeAdminMutation(
     "PATCH /api/v2/admin/announcements/:id", request, {
       params: { id }, target: () => ({ type: "announcement", id }), expectedVersion: body => body.entityVersion,
       mutate: async (tx, { actor, body }) => {
@@ -203,7 +202,7 @@ export async function patchAnnouncement(request: Request, id: string) {
 }
 
 export async function deleteAnnouncement(request: Request, id: string) {
-  return executeAdminMutation<AdminV2RequestBody<"announcementDeleteRequestSchema+idempotency-key">>(
+  return executeAdminMutation(
     "DELETE /api/v2/admin/announcements/:id", request, {
       params: { id }, target: () => ({ type: "announcement", id }), expectedVersion: body => body.entityVersion,
       mutate: async (tx, { actor, body }) => {

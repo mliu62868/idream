@@ -497,12 +497,10 @@ function HistoricalDecision({ run, itemIndex }: { run: CreativeRunDetail; itemIn
   return <details className="mt-4 rounded-xl border border-[var(--ad-border)] p-4"><summary className="cursor-pointer text-sm font-semibold">{t("Historical decision")}</summary><p className="mt-3 text-sm">{t(decision.decision)} · {t(decision.identityConsistency)}{decision.score !== null ? ` · ${decision.score}/100` : ""}</p><p className="mt-2 text-sm text-[var(--ad-text-muted)]">{decision.reason}</p></details>;
 }
 
-function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeRunDetail; itemIndex: number; permissions: Permissions; reload: () => Promise<void> }) {
+function PlacementForm({ run, itemIndex, permissions, reload, handoffReadback }: { run: CreativeRunDetail; itemIndex: number; permissions: Permissions; reload: () => Promise<void>; handoffReadback: () => Promise<void> }) {
   const { t } = useAdminI18n();
   const item = run.items[itemIndex];
-  const slot = "campaign";
   const placementSupported = run.purpose === "campaign";
-  const [targetType] = useState(run.target.type === "none" ? "campaign" : run.target.type);
   const [targetId, setTargetId] = useState(run.target.type === "none" ? "" : run.target.id);
   const [eyebrow, setEyebrow] = useState("");
   const [campaignTitle, setCampaignTitle] = useState("");
@@ -515,7 +513,7 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
   const [warning, setWarning] = useState<CommittedProjectionWarning | null>(null);
   const hasPartialCampaignCta = Boolean(ctaLabel.trim()) !==
     Boolean(campaignHref.trim());
-  if (!item) return <div className="mt-4"><CollaborationPanel canWrite={permissions.write} targetId={run.id} targetType="creative_run" targetVersion={run.version} /></div>;
+  if (!item) return <div className="mt-4"><CollaborationPanel canWrite={permissions.write} onAuthorityChange={handoffReadback} targetId={run.id} targetType="creative_run" targetVersion={run.version} /></div>;
   if (item.executionState === "unknown") return null;
   if (!placementSupported) {
     if (run.purpose === "model_eval") return null;
@@ -532,8 +530,8 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
       entityVersion: run.version,
       itemId: item.id,
       assetId: item.asset.id,
-      slot,
-      targetType,
+      slot: "campaign" as const,
+      targetType: "campaign" as const,
       targetId,
       ...authoredCampaignPlacementCopy({
         eyebrow,
@@ -718,7 +716,7 @@ function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeR
         {!permissions.place ? <p className="mt-3 text-xs text-[var(--ad-text-muted)]">{t("A Creative publisher permission is required for activation.")}</p> : null}
       </section>
       <div className="mt-4">
-        <CollaborationPanel canWrite={permissions.write} targetId={run.id} targetType="creative_run" targetVersion={run.version} />
+        <CollaborationPanel canWrite={permissions.write} onAuthorityChange={handoffReadback} targetId={run.id} targetType="creative_run" targetVersion={run.version} />
       </div>
     </>
   );
@@ -761,13 +759,17 @@ function IncidentAttachment({ run, permissions, reload }: { run: CreativeRunDeta
 function RunDetail({
   id,
   actorId,
-  permissions,
+  permissions: allowedPermissions,
 }: {
   id: string;
   actorId: string;
   permissions: Permissions;
 }) {
   const { t } = useAdminI18n();
+  const [projectionLocked, setProjectionLocked] = useState(false);
+  const permissions = projectionLocked
+    ? { ...allowedPermissions, write: false, review: false, place: false, manageIncident: false }
+    : allowedPermissions;
   const fetchRun = useCallback(
     () =>
       adminV2Request(`/api/v2/admin/creative/runs/${id}`, {
@@ -825,10 +827,15 @@ function RunDetail({
   // SPEC: 提交成功后回读投影；读失败必须抛给调用方，由调用方决定挂什么警告。
   // INTENT: 不能走 refresh()——那是前台取数，会把整屏换成 loading，而且它把失败吞成
   //         error 状态而不是抛出，调用方就写不出"命令已提交但投影没跟上"的那句话了。
-  const { setData: setRunProjection } = runResource;
+  const { readback } = runResource;
   const reloadAfterCommit = useCallback(async () => {
-    setRunProjection(await fetchRun());
-  }, [fetchRun, setRunProjection]);
+    await readback();
+  }, [readback]);
+  const handoffReadback = useCallback(async () => {
+    setProjectionLocked(true);
+    await readback();
+    setProjectionLocked(false);
+  }, [readback]);
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const restored = readCreativeRetryCommand(id, actorId);
@@ -1160,7 +1167,7 @@ function RunDetail({
       </div>
     </div>
   ) : null;
-  return <section aria-labelledby="creative-run-title"><Link className="inline-flex min-h-11 items-center gap-2 text-sm text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]" href="/admin/creative/runs"><ArrowLeft className="h-4 w-4" />  {t("Creative Runs")}</Link><div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between"><div><p className="text-xs uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">{t("Creative Run ·")} {run.id}</p><h2 className="mt-1 text-2xl font-semibold" id="creative-run-title">{run.title}</h2><div className="mt-2 flex flex-wrap gap-2"><span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Execution")}</span><StatusBadge value={unknownCount > 0 ? "Needs confirmation" : run.executionOutcome} tone={unknownCount > 0 ? "warn" : undefined} /></span>{run.purpose === "model_eval" ? <span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Model evaluation")}</span><StatusBadge value={run.reviewState} /></span> : null}<span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Deployment")}</span><StatusBadge value={run.deploymentState} /></span><span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Verification")}</span><StatusBadge value={run.verificationState} /></span></div></div><div className="flex flex-wrap gap-2"><WorkspaceButton disabled={loading} onClick={() => void runResource.refresh()}><RefreshCcw className={cn("h-4 w-4", loading && "animate-spin")} /> {loading ? t("Refreshing…") : t("Refresh")}</WorkspaceButton><WorkspaceButton aria-busy={retryBusy} disabled={!permissions.write || ((retryCount === 0 || unknownCount > 0) && !retrySubmissionUnknown) || retrying} onClick={() => void retryFailed()}><RotateCcw className={cn("h-4 w-4", retryBusy && "animate-spin")} /> {retryLabel}</WorkspaceButton></div></div>{retryCommandStatus}{unknownCount > 0 ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{t("{count} item(s) need confirmation. These are not confirmed failures; retry is unavailable until recovery is complete.", { count: unknownCount })}</p> : null}<IncidentAttachment permissions={permissions} reload={reloadAfterCommit} run={run} /><div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-5">{(run.purpose === "model_eval" ? ["generated", "failed", "reviewed", "approved"] as const : ["generated", "failed", "placed"] as const).map((key) => <div className="rounded-lg bg-[var(--ad-surface)] p-3" key={key}><p className="text-xs capitalize text-[var(--ad-text-muted)]">{t(key)}</p><p className="mt-1 text-xl font-semibold tabular-nums">{run.counts[key]}<span className="text-xs font-normal text-[var(--ad-text-muted)]"> / {run.counts.total}</span></p></div>)}</div>{shownError ? <p className="mt-4 text-sm text-[var(--ad-red-text)]" role="alert">{shownError}</p> : null}{backgroundRefreshWarning ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{backgroundRefreshWarning}</p> : null}{warning ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{t(warning.key, warning.values)}</p> : null}<ReviewContext itemIndex={selected} run={run} /><div className="mt-5 flex gap-2 overflow-x-auto pb-2" aria-label={t("Creative items")}>{run.items.map((item, index) => <button aria-pressed={selected === index} className={cn("min-h-11 min-w-28 rounded-md border px-3 text-left text-xs focus-visible:outline focus-visible:outline-2", selected === index ? "border-[var(--ad-ink)] bg-black/[0.04]" : "border-[var(--ad-border)]")} key={item.id} onClick={() => setSelected(index)} type="button">{t("Item")} {item.ordinal + 1}<br /><span className="text-[var(--ad-text-muted)]">{t(item.executionState === "unknown" ? "Needs confirmation" : item.executionState.replaceAll("_", " "))}</span></button>)}</div><AssetViewer onSelect={setSelected} run={run} selected={selected} /><HistoricalDecision itemIndex={selected} run={run} />{run.purpose === "model_eval" ? <ModelEvaluationForm itemIndex={selected} key={`evaluation-${selectedItemId}`} onAdvance={setSelected} permissions={permissions} reload={reloadAfterCommit} run={run} /> : null}<PlacementForm itemIndex={selected} key={`placement-${selectedItemId}`} permissions={permissions} reload={reloadAfterCommit} run={run} /></section>;
+  return <section aria-labelledby="creative-run-title"><Link className="inline-flex min-h-11 items-center gap-2 text-sm text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]" href="/admin/creative/runs"><ArrowLeft className="h-4 w-4" />  {t("Creative Runs")}</Link><div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between"><div><p className="text-xs uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">{t("Creative Run ·")} {run.id}</p><h2 className="mt-1 text-2xl font-semibold" id="creative-run-title">{run.title}</h2><div className="mt-2 flex flex-wrap gap-2"><span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Execution")}</span><StatusBadge value={unknownCount > 0 ? "Needs confirmation" : run.executionOutcome} tone={unknownCount > 0 ? "warn" : undefined} /></span>{run.purpose === "model_eval" ? <span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Model evaluation")}</span><StatusBadge value={run.reviewState} /></span> : null}<span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Deployment")}</span><StatusBadge value={run.deploymentState} /></span><span className="inline-flex items-center gap-1 text-xs"><span className="text-[var(--ad-text-muted)]">{t("Verification")}</span><StatusBadge value={run.verificationState} /></span></div></div><div className="flex flex-wrap gap-2"><WorkspaceButton disabled={loading} onClick={() => void runResource.refresh()}><RefreshCcw className={cn("h-4 w-4", loading && "animate-spin")} /> {loading ? t("Refreshing…") : t("Refresh")}</WorkspaceButton><WorkspaceButton aria-busy={retryBusy} disabled={!permissions.write || ((retryCount === 0 || unknownCount > 0) && !retrySubmissionUnknown) || retrying} onClick={() => void retryFailed()}><RotateCcw className={cn("h-4 w-4", retryBusy && "animate-spin")} /> {retryLabel}</WorkspaceButton></div></div>{retryCommandStatus}{unknownCount > 0 ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{t("{count} item(s) need confirmation. These are not confirmed failures; retry is unavailable until recovery is complete.", { count: unknownCount })}</p> : null}<IncidentAttachment permissions={permissions} reload={reloadAfterCommit} run={run} /><div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-5">{(run.purpose === "model_eval" ? ["generated", "failed", "reviewed", "approved"] as const : ["generated", "failed", "placed"] as const).map((key) => <div className="rounded-lg bg-[var(--ad-surface)] p-3" key={key}><p className="text-xs capitalize text-[var(--ad-text-muted)]">{t(key)}</p><p className="mt-1 text-xl font-semibold tabular-nums">{run.counts[key]}<span className="text-xs font-normal text-[var(--ad-text-muted)]"> / {run.counts.total}</span></p></div>)}</div>{shownError ? <p className="mt-4 text-sm text-[var(--ad-red-text)]" role="alert">{shownError}</p> : null}{backgroundRefreshWarning ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{backgroundRefreshWarning}</p> : null}{warning ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{t(warning.key, warning.values)}</p> : null}<ReviewContext itemIndex={selected} run={run} /><div className="mt-5 flex gap-2 overflow-x-auto pb-2" aria-label={t("Creative items")}>{run.items.map((item, index) => <button aria-pressed={selected === index} className={cn("min-h-11 min-w-28 rounded-md border px-3 text-left text-xs focus-visible:outline focus-visible:outline-2", selected === index ? "border-[var(--ad-ink)] bg-black/[0.04]" : "border-[var(--ad-border)]")} key={item.id} onClick={() => setSelected(index)} type="button">{t("Item")} {item.ordinal + 1}<br /><span className="text-[var(--ad-text-muted)]">{t(item.executionState === "unknown" ? "Needs confirmation" : item.executionState.replaceAll("_", " "))}</span></button>)}</div><AssetViewer onSelect={setSelected} run={run} selected={selected} /><HistoricalDecision itemIndex={selected} run={run} />{run.purpose === "model_eval" ? <ModelEvaluationForm itemIndex={selected} key={`evaluation-${selectedItemId}`} onAdvance={setSelected} permissions={permissions} reload={reloadAfterCommit} run={run} /> : null}<PlacementForm handoffReadback={handoffReadback} itemIndex={selected} key={`placement-${selectedItemId}`} permissions={permissions} reload={reloadAfterCommit} run={run} /></section>;
 }
 
 export function CreativeRunWorkspace({

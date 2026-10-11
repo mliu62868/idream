@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { POST as postCreativeRun } from "@/app/api/v2/admin/creative/runs/route";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
+import { resolveMediaAssetAuthorityMap } from "@/server/lib/media-asset-authority-query";
 import { createCreativeRun } from "@/server/modules/admin-v2/creative/run-create";
 import { createUser } from "@/server/test/helpers";
 import { getCreativeRunDetail } from "./run-read";
@@ -203,37 +204,18 @@ describe("Creative Run v2 brief and launch", () => {
       { id: actorId, role: "admin" },
       creativeRunCreateRequestSchema.parse(body),
     );
-    expect(replay.status).toBe(200);
-    const replayPayload = await replay.json();
+    expect(replay).toEqual({ batch: { id: batchId }, replayed: true });
     await prisma.generationModelProfile.update({
       where: { id: `${profileKey}-v1` },
       data: { enabled: true, status: "active", archivedAt: null },
     });
-    expect(replayPayload).toMatchObject({
-      data: {
-        replayed: true,
-        batch: {
-          id: batchId,
-          items: expect.arrayContaining([
-            expect.objectContaining({
-              jobId: replayAuthorityJobId,
-              asset: expect.objectContaining({
-                id: replayAuthorityAssetId,
-                customerPublishable: false,
-                publishabilityReasons: expect.arrayContaining([
-                  "job_provider_mock",
-                  "latest_attempt_provider_mock",
-                ]),
-              }),
-            }),
-          ]),
-        },
-      },
-    });
-    const replayedAuthorityItem = replayPayload.data.batch.items.find(
-      (item: { jobId: string | null }) => item.jobId === replayAuthorityJobId,
-    );
-    expect(replayedAuthorityItem.asset.publishabilityReasons).not.toContain(
+    // Creation returns only a receipt; publishability remains a read-authority fact.
+    const asset = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: replayAuthorityAssetId } });
+    const authority = (await resolveMediaAssetAuthorityMap(prisma, [asset])).get(asset.id)!;
+    expect(authority).toMatchObject({ publishable: false, reasons: expect.arrayContaining([
+      "job_provider_mock", "latest_attempt_provider_mock",
+    ]) });
+    expect(authority.reasons).not.toContain(
       "latest_successful_attempt_provider_missing",
     );
     expect(await prisma.contentProductionBatch.count({ where: { id: batchId } })).toBe(1);

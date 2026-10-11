@@ -8,7 +8,7 @@ import { effectivePermissions } from "@/server/admin/effective-permissions";
 import { isPermissionKey } from "@/server/admin/permissions";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import { writeAudit } from "@/server/modules/admin/shared/legacy-primitives";
+import { adminAuditData } from "@/server/modules/admin/shared/legacy-primitives";
 import {
   actorWithPermission,
   jsonBody,
@@ -23,19 +23,13 @@ import {
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { DUAL_APPROVAL_FLAG } from "./enforcement";
+import { assertBoundApprovalIntent, bindApprovalIntent } from "./intent";
 
 /**
  * SPEC: 双人审批 —— 高风险动作先落一条请求，再由**另一个**同样持有该权限的人批准。
  * INTENT: 三条门槛都在服务端：请求方必须自己就持有要申请的那把钥匙（否则等于绕过授权），
  *         审批方不能是请求方，已裁决的请求不可再裁决。凭据一次性，消费在 enforcement.ts。
  */
-
-// SPEC: 这些动作的批准只对 payload 里这组值有效（enforcement.ts approvalCoversPayload）。
-const PAYLOAD_BOUND_APPROVALS: Record<string, readonly string[]> = {
-  "billing.ledger.adjust": ["delta"],
-  "config.pricing.publish": ["baseCost", "multiplier", "version"],
-  "promo.redeem_code.create": ["dreamcoins", "maxRedemptions"],
-};
 
 type ApprovalListResponse = z.infer<typeof approvalListResponseSchema>;
 type ApprovalMutationResponse = z.infer<typeof approvalMutationResponseSchema>;
@@ -126,49 +120,39 @@ export async function createApproval(request: Request): Promise<ApprovalMutation
   if (!isPermissionKey(body.permissionKey)) {
     throw Errors.badRequest("Unknown permission key");
   }
-  // 按参数绑定的审批（enforceApproval 比对 payload），创建时就拒绝匹配不上的请求。
-  const boundFields = PAYLOAD_BOUND_APPROVALS[body.action];
-  if (boundFields) {
-    const payload = (body.payload ?? {}) as Record<string, unknown>;
-    const missing = boundFields.filter((field) => {
-      const value = payload[field];
-      // 唯一允许的字符串是兑换码的 "unlimited"；"1000" 这类字符串数字永远比不上 number，只会造出一张批了也用不了的单。
-      return !(typeof value === "number" && Number.isFinite(value)) && value !== "unlimited";
-    });
-    if (missing.length > 0) {
-      throw Errors.badRequest("Approval payload must name the exact values it approves", { action: body.action, missing });
-    }
-  }
   const permissions = await effectivePermissions(actor.id, actor.role);
   if (!permissions.has(body.permissionKey)) {
     throw Errors.forbidden("Cannot request an action you lack permission for", {
       permission: body.permissionKey,
     });
   }
-  const created = await prisma.adminActionRequest.create({
-    data: {
-      requestedById: actor.id,
-      permissionKey: body.permissionKey,
-      action: body.action,
+  return prisma.$transaction(async (tx) => {
+    const boundPayload = await bindApprovalIntent(tx, body);
+    const created = await tx.adminActionRequest.create({
+      data: {
+        requestedById: actor.id,
+        permissionKey: body.permissionKey,
+        action: body.action,
+        targetType: body.targetType,
+        targetId: body.targetId,
+        payload: toInputJson(boundPayload),
+        status: "pending",
+        reason: body.reason,
+      },
+    });
+    await tx.adminAuditLog.create({ data: adminAuditData(request, actor, {
+      action: "admin.approval.request",
       targetType: body.targetType,
       targetId: body.targetId,
-      payload: toInputJson(body.payload),
-      status: "pending",
       reason: body.reason,
-    },
+      after: {
+        requestId: created.id,
+        permissionKey: body.permissionKey,
+        action: body.action,
+      },
+    }) });
+    return { request: serializeApproval(created) };
   });
-  await writeAudit(request, actor, {
-    action: "admin.approval.request",
-    targetType: body.targetType,
-    targetId: body.targetId,
-    reason: body.reason,
-    after: {
-      requestId: created.id,
-      permissionKey: body.permissionKey,
-      action: body.action,
-    },
-  });
-  return { request: serializeApproval(created) };
 }
 
 export async function approveApproval(
@@ -177,39 +161,42 @@ export async function approveApproval(
 ): Promise<ApprovalMutationResponse> {
   const actor = await actorWithPermission(request, "admin.approval.review");
   const body = await jsonBody(request, "approvalDecisionRequestSchema") as ApprovalDecisionBody;
-  const approval = await prisma.adminActionRequest.findUnique({ where: { id } });
-  if (!approval) throw Errors.notFound("Approval request not found");
-  assertConfirmation(body.confirmation, approval.id);
-  if (approval.status !== "pending") {
-    throw Errors.badRequest("Approval request is not pending");
-  }
-  if (approval.requestedById === actor.id) {
-    throw Errors.badRequest("Approver must differ from requester");
-  }
-  if (!isPermissionKey(approval.permissionKey)) {
-    throw Errors.badRequest("Request has an unknown permission key");
-  }
-  const permissions = await effectivePermissions(actor.id, actor.role);
-  if (!permissions.has(approval.permissionKey)) {
-    throw Errors.forbidden(
-      "Approver lacks the permission required by this request",
-      { permission: approval.permissionKey },
-    );
-  }
-  const updated = await decidePending(id, { status: "approved", approvedById: actor.id });
-  await writeAudit(request, actor, {
-    action: "admin.approval.approve",
-    targetType: approval.targetType,
-    targetId: approval.targetId,
-    reason: body.reason,
-    before: { status: "pending" },
-    after: {
-      status: "approved",
-      requestId: updated.id,
-      permissionKey: approval.permissionKey,
-    },
+  return prisma.$transaction(async (tx) => {
+    const approval = await tx.adminActionRequest.findUnique({ where: { id } });
+    if (!approval) throw Errors.notFound("Approval request not found");
+    assertConfirmation(body.confirmation, approval.id);
+    if (approval.status !== "pending") {
+      throw Errors.badRequest("Approval request is not pending");
+    }
+    if (approval.requestedById === actor.id) {
+      throw Errors.badRequest("Approver must differ from requester");
+    }
+    if (!isPermissionKey(approval.permissionKey)) {
+      throw Errors.badRequest("Request has an unknown permission key");
+    }
+    assertBoundApprovalIntent(approval);
+    const permissions = await effectivePermissions(actor.id, actor.role);
+    if (!permissions.has(approval.permissionKey)) {
+      throw Errors.forbidden(
+        "Approver lacks the permission required by this request",
+        { permission: approval.permissionKey },
+      );
+    }
+    const updated = await decidePending(tx, id, { status: "approved", approvedById: actor.id });
+    await tx.adminAuditLog.create({ data: adminAuditData(request, actor, {
+      action: "admin.approval.approve",
+      targetType: approval.targetType,
+      targetId: approval.targetId,
+      reason: body.reason,
+      before: { status: "pending" },
+      after: {
+        status: "approved",
+        requestId: updated.id,
+        permissionKey: approval.permissionKey,
+      },
+    }) });
+    return { request: serializeApproval(updated) };
   });
-  return { request: serializeApproval(updated) };
 }
 
 export async function rejectApproval(
@@ -218,33 +205,35 @@ export async function rejectApproval(
 ): Promise<ApprovalMutationResponse> {
   const actor = await actorWithPermission(request, "admin.approval.review");
   const body = await jsonBody(request, "approvalDecisionRequestSchema") as ApprovalDecisionBody;
-  const approval = await prisma.adminActionRequest.findUnique({ where: { id } });
-  if (!approval) throw Errors.notFound("Approval request not found");
-  assertConfirmation(body.confirmation, approval.id);
-  if (approval.status !== "pending") {
-    throw Errors.badRequest("Approval request is not pending");
-  }
-  const updated = await decidePending(id, { status: "rejected", approvedById: actor.id });
-  await writeAudit(request, actor, {
-    action: "admin.approval.reject",
-    targetType: approval.targetType,
-    targetId: approval.targetId,
-    reason: body.reason,
-    before: { status: "pending" },
-    after: { status: "rejected", requestId: updated.id },
+  return prisma.$transaction(async (tx) => {
+    const approval = await tx.adminActionRequest.findUnique({ where: { id } });
+    if (!approval) throw Errors.notFound("Approval request not found");
+    assertConfirmation(body.confirmation, approval.id);
+    if (approval.status !== "pending") {
+      throw Errors.badRequest("Approval request is not pending");
+    }
+    const updated = await decidePending(tx, id, { status: "rejected", approvedById: actor.id });
+    await tx.adminAuditLog.create({ data: adminAuditData(request, actor, {
+      action: "admin.approval.reject",
+      targetType: approval.targetType,
+      targetId: approval.targetId,
+      reason: body.reason,
+      before: { status: "pending" },
+      after: { status: "rejected", requestId: updated.id },
+    }) });
+    return { request: serializeApproval(updated) };
   });
-  return { request: serializeApproval(updated) };
 }
 
 // INVARIANT: 裁决是 CAS —— 只有仍是 pending 的请求能被裁决；两位审批人并发点击时，
 // 后到的那个拿 409，而不是把 approved 覆盖成 rejected（或反之）。
-async function decidePending(id: string, data: { status: "approved" | "rejected"; approvedById: string }) {
-  const decided = await prisma.adminActionRequest.updateMany({
+async function decidePending(tx: Prisma.TransactionClient, id: string, data: { status: "approved" | "rejected"; approvedById: string }) {
+  const decided = await tx.adminActionRequest.updateMany({
     where: { id, status: "pending" },
     data: { ...data, decidedAt: new Date() },
   });
   if (decided.count !== 1) throw Errors.conflict("Approval request was already decided");
-  return prisma.adminActionRequest.findUniqueOrThrow({ where: { id } });
+  return tx.adminActionRequest.findUniqueOrThrow({ where: { id } });
 }
 
 function assertConfirmation(value: string, target: string) {

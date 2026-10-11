@@ -3,6 +3,9 @@
 // INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhSystem: Record<string, string> = {
+  "This approval must be requested again.": "此审批需要重新申请。",
+  "Return to the original action, check its current values, and request a new approval. The old approval remains in the history.": "返回原操作，核对当前数据后重新申请审批。旧审批仍保留在历史记录中。",
+  "Open action to request approval": "返回原操作申请审批",
   "Command evidence": "命令证据",
   // 权限覆盖面板：提交前把「这个人现在有什么、改完变成什么」讲清楚。
   "An existing {effect} override is already recorded for this capability; applying a new one replaces it.":

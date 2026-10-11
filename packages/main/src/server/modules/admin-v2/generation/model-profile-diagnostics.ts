@@ -1,3 +1,4 @@
+import { adminMutationResultValidator } from "@/server/modules/admin-v2/shared/route-handler";
 // SPEC: the evidence an operator gathers before publishing a Generation model profile —
 //       observed health over a window, a provider-free configuration check, and a real
 //       profile-test image.
@@ -108,6 +109,7 @@ export async function runGenerationProfileDryRun(request: Request, profileId: st
   }
   const requestId = adminRequestId(request);
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey: requireIdempotencyKey(request),
@@ -188,108 +190,107 @@ export async function createGenerationProfileTestJob(request: Request, profileId
   const actor = await actorWithPermission(request, "generation.config.write");
   const body = await jsonBody(request, "generationProfileTestJobRequestSchema+idempotency-key");
   const requestId = adminRequestId(request);
-  const result = generationProfileTestJobResponseSchema.parse(
-    await executeAtomicIdempotentMutation({
-      environment: env.APP_ENV,
-      actor,
-      idempotencyKey: requireIdempotencyKey(request),
-      requestId,
-      commandType: "generation.profile.test_job",
-      target: { type: "generation_model_profile", id: profileId },
-      payload: body,
-      mutate: async (tx) => {
-        const profile = await tx.generationModelProfile.findUnique({ where: { id: profileId } });
-        if (!profile) throw Errors.notFound("Model profile not found");
-        assertTargetConfirmation(body.confirmation, profile.id);
-        if (profile.status === "archived") {
-          throw Errors.badRequest("Archived profiles cannot create test jobs");
-        }
-        if (profile.mode !== "image") {
-          throw Errors.badRequest("Admin test image currently supports image profiles only");
-        }
-        const allowedOrientations = jsonStrings(profile.allowedOrientations);
-        const orientation = body.orientation ?? allowedOrientations[0] ?? "1:1";
-        if (allowedOrientations.length > 0 && !allowedOrientations.includes(orientation)) {
-          throw Errors.badRequest("Orientation is not allowed for this profile", {
-            orientation,
-            allowedOrientations,
-          });
-        }
-        const outputCount = Math.min(body.outputCount, profile.maxCount, 4);
-        const dimensions = dimensionsForImageOrientation({
+  const result = await executeAtomicIdempotentMutation({
+    validateResult: (value) => generationProfileTestJobResponseSchema.parse(value),
+    environment: env.APP_ENV,
+    actor,
+    idempotencyKey: requireIdempotencyKey(request),
+    requestId,
+    commandType: "generation.profile.test_job",
+    target: { type: "generation_model_profile", id: profileId },
+    payload: body,
+    mutate: async (tx) => {
+      const profile = await tx.generationModelProfile.findUnique({ where: { id: profileId } });
+      if (!profile) throw Errors.notFound("Model profile not found");
+      assertTargetConfirmation(body.confirmation, profile.id);
+      if (profile.status === "archived") {
+        throw Errors.badRequest("Archived profiles cannot create test jobs");
+      }
+      if (profile.mode !== "image") {
+        throw Errors.badRequest("Admin test image currently supports image profiles only");
+      }
+      const allowedOrientations = jsonStrings(profile.allowedOrientations);
+      const orientation = body.orientation ?? allowedOrientations[0] ?? "1:1";
+      if (allowedOrientations.length > 0 && !allowedOrientations.includes(orientation)) {
+        throw Errors.badRequest("Orientation is not allowed for this profile", {
           orientation,
-          defaultWidth: profile.defaultWidth,
-          defaultHeight: profile.defaultHeight,
+          allowedOrientations,
         });
-        const created = await tx.generationJob.create({
-          data: {
-            userId: actor.id,
-            mode: "image",
-            prompt: body.prompt?.trim() || `Admin test image for ${profile.label}`,
-            negativePrompt: body.negativePrompt?.trim() || null,
-            controls: toInputJson({
-              orientation,
-              model: profile.profileKey,
-              profileId: profile.profileKey,
-              width: dimensions.width,
-              height: dimensions.height,
-              adminTest: true,
-            }),
-            presetIds: [],
-            model: profile.pipelineModel,
-            profileId: profile.profileKey,
-            profileVersion: profile.version,
+      }
+      const outputCount = Math.min(body.outputCount, profile.maxCount, 4);
+      const dimensions = dimensionsForImageOrientation({
+        orientation,
+        defaultWidth: profile.defaultWidth,
+        defaultHeight: profile.defaultHeight,
+      });
+      const created = await tx.generationJob.create({
+        data: {
+          userId: actor.id,
+          mode: "image",
+          prompt: body.prompt?.trim() || `Admin test image for ${profile.label}`,
+          negativePrompt: body.negativePrompt?.trim() || null,
+          controls: toInputJson({
             orientation,
-            outputCount,
-            status: "queued",
-            costDreamcoins: 0,
-            provider: profile.runner,
-            sourceType: "admin_profile_test",
-            sourceId: `${profile.id}:${randomUUID()}`,
-            sourceMeta: toInputJson({ profileRecordId: profile.id }),
-          },
-        });
-        await appendTestJobEvent(tx, created.id, "created", "Admin profile test job accepted", {
+            model: profile.profileKey,
+            profileId: profile.profileKey,
+            width: dimensions.width,
+            height: dimensions.height,
+            adminTest: true,
+          }),
+          presetIds: [],
+          model: profile.pipelineModel,
           profileId: profile.profileKey,
           profileVersion: profile.version,
-          source: "admin_generation_config",
-        });
-        await appendTestJobEvent(tx, created.id, "queued", "Admin profile test job queued", {});
-        await reserveInitialGenerationAttempt(tx, {
-          requestId: created.id,
-          dispatch: {
-            outboxId: `generation_initial_${created.id}`,
-            eventType: "generation.retry.dispatch.v2",
-            payload: { source: "admin_profile_test" },
-          },
-        });
-        await writeProfileAudit(tx, actor, requestId, {
-          action: "generation.profile.test_job",
-          targetId: profile.id,
-          reason: body.reason,
-          after: {
-            jobId: created.id,
-            profileKey: profile.profileKey,
-            profileVersion: profile.version,
-            orientation,
-            outputCount,
-          },
-        });
-        return {
-          job: {
-            id: created.id,
-            status: created.status,
-            mode: created.mode,
-            profileId: created.profileId,
-            profileVersion: created.profileVersion,
-            orientation: created.orientation,
-            outputCount: created.outputCount,
-            createdAt: created.createdAt.toISOString(),
-          },
-        };
-      },
-    }),
-  );
+          orientation,
+          outputCount,
+          status: "queued",
+          costDreamcoins: 0,
+          provider: profile.runner,
+          sourceType: "admin_profile_test",
+          sourceId: `${profile.id}:${randomUUID()}`,
+          sourceMeta: toInputJson({ profileRecordId: profile.id }),
+        },
+      });
+      await appendTestJobEvent(tx, created.id, "created", "Admin profile test job accepted", {
+        profileId: profile.profileKey,
+        profileVersion: profile.version,
+        source: "admin_generation_config",
+      });
+      await appendTestJobEvent(tx, created.id, "queued", "Admin profile test job queued", {});
+      await reserveInitialGenerationAttempt(tx, {
+        requestId: created.id,
+        dispatch: {
+          outboxId: `generation_initial_${created.id}`,
+          eventType: "generation.retry.dispatch.v2",
+          payload: { source: "admin_profile_test" },
+        },
+      });
+      await writeProfileAudit(tx, actor, requestId, {
+        action: "generation.profile.test_job",
+        targetId: profile.id,
+        reason: body.reason,
+        after: {
+          jobId: created.id,
+          profileKey: profile.profileKey,
+          profileVersion: profile.version,
+          orientation,
+          outputCount,
+        },
+      });
+      return {
+        job: {
+          id: created.id,
+          status: created.status,
+          mode: created.mode,
+          profileId: created.profileId,
+          profileVersion: created.profileVersion,
+          orientation: created.orientation,
+          outputCount: created.outputCount,
+          createdAt: created.createdAt.toISOString(),
+        },
+      };
+    },
+  });
   // INVARIANT: dispatch happens after the reservation commits. Replaying the same idempotency
   // key re-runs this and finds nothing pending, which is the intended no-op.
   await dispatchGenerationAttemptOutbox(prisma, {

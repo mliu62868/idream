@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { adminV2 } from "@/server/test/admin-v2-http";
 import { createUser, expectError, expectOk, purgeTestData } from "@/server/test/helpers";
-import { DUAL_APPROVAL_FLAG } from "./enforcement";
+import { DUAL_APPROVAL_FLAG, enforceApproval } from "./enforcement";
 
 const P = `zt-dual-approval-${randomUUID().slice(0, 8)}-`;
 const requester = `${P}requester`;
@@ -47,6 +47,68 @@ afterAll(async () => {
 });
 
 describe("dual approval", () => {
+  it("rejects weak permissions, legacy and expired approvals before consuming authority", async () => {
+    const targetId = `${P}intent-target`;
+    const intent = {
+      permissionKey: "billing.ledger.adjust", action: "billing.ledger.adjust",
+      targetType: "user", targetId, payload: { delta: 5000 },
+    };
+    const weak = await adminV2("POST", "approvals", {
+      userId: requester, role: "admin",
+      body: { ...intent, permissionKey: "billing.read", reason: "weaker permission cannot approve an adjustment", confirmation: `${targetId}:${intent.action}` },
+    });
+    expectError(weak, 400);
+    const legacy = await prisma.adminActionRequest.create({ data: {
+      ...intent, requestedById: requester, approvedById: approver,
+      status: "approved", decidedAt: new Date(),
+    } });
+    const consume = (delta = 5000) => prisma.$transaction((tx) =>
+      enforceApproval("billing.ledger.adjust", targetId, tx, { delta }));
+    await expect(consume()).rejects.toMatchObject({ status: 403 });
+    const expiredId = await requestAndApprove(intent);
+    const expired = await prisma.adminActionRequest.findUniqueOrThrow({ where: { id: expiredId } });
+    const payload = expired.payload as { delta: number; approvalBinding: Record<string, string | number | null> };
+    await prisma.adminActionRequest.update({ where: { id: expiredId }, data: {
+      payload: { ...payload, approvalBinding: { ...payload.approvalBinding, expiresAt: "2000-01-01T00:00:00.000Z" } },
+    } });
+    await expect(consume()).rejects.toMatchObject({ status: 403 });
+    const validId = await requestAndApprove(intent);
+    await expect(consume(9999)).rejects.toMatchObject({ status: 403 });
+    await expect(consume()).resolves.toBeUndefined();
+    await expect(prisma.adminActionRequest.findUniqueOrThrow({ where: { id: validId } })).resolves.toMatchObject({ status: "consumed" });
+    await expect(prisma.adminActionRequest.findUniqueOrThrow({ where: { id: legacy.id } })).resolves.toMatchObject({ status: "approved" });
+    await expect(prisma.adminActionRequest.findUniqueOrThrow({ where: { id: expiredId } })).resolves.toMatchObject({ status: "approved" });
+    await expect(consume()).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("rolls back approval creation when its Audit cannot be recorded", async () => {
+    const targetId = `${P}audit-failure`;
+    await prisma.$executeRawUnsafe(`
+      CREATE FUNCTION fail_bound_approval_audit() RETURNS trigger AS $$ BEGIN
+        IF NEW."action" = 'admin.approval.request' AND NEW."actorId" = '${requester}' THEN
+          RAISE EXCEPTION 'injected approval audit failure';
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER fail_bound_approval_audit_trigger BEFORE INSERT ON "admin_audit_logs"
+        FOR EACH ROW EXECUTE FUNCTION fail_bound_approval_audit();
+    `);
+    try {
+      const response = await adminV2("POST", "approvals", {
+        userId: requester, role: "admin",
+        body: {
+          permissionKey: "billing.ledger.adjust", action: "billing.ledger.adjust",
+          targetType: "user", targetId, payload: { delta: 5000 },
+          reason: "must be audited", confirmation: `${targetId}:billing.ledger.adjust`,
+        },
+      });
+      expect(response.status).toBe(500);
+      expect(await prisma.adminActionRequest.count({ where: { targetId } })).toBe(0);
+    } finally {
+      await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS fail_bound_approval_audit_trigger ON "admin_audit_logs"; DROP FUNCTION IF EXISTS fail_bound_approval_audit();');
+    }
+  });
+
   // INVARIANT: 裁决是 CAS；两个审批人并发时恰好一个成功，另一个 409，结果不会被覆盖。
   it("lets exactly one concurrent decision win", async () => {
     const created = await adminV2("POST", "approvals", {

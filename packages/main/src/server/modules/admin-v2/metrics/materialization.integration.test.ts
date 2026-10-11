@@ -112,8 +112,48 @@ describe("metric snapshot materialization", () => {
       value: null, publicationStatus: "official", decisionUse: "blocked",
       qualityEvidence: expect.arrayContaining(["definition_validation_failed"]),
     });
+    // Reading an earlier report must never borrow the newer materialized value.
+    const historicalResponse = await getMetricDashboard(new Request(`http://localhost/api/v2/admin/metrics?asOf=${asOf.toISOString()}`, {
+      headers: { "x-idream-user-id": analystId, "x-idream-role": "analyst" },
+    }));
+    expect(historicalResponse.status).toBe(200);
+    const historical = metricDashboardResponseSchema.parse((await historicalResponse.json()).data);
+    expect(historical.cards.find((card) => card.key === definition.key)).toMatchObject({
+      value: 0, numeratorValue: 0, decisionUse: "directional_only",
+    });
     expect(await prisma.metricSnapshot.findMany({
       where: { metricKey: definition.key }, orderBy: { asOf: "asc" }, select: { value: true },
     })).toEqual([{ value: 0 }, { value: 1 }]);
+  });
+
+  it("keeps batch snapshot selection and hydration within the current definition version", async () => {
+    const snapshotAt = new Date(asOf.getTime() + 120_000);
+    const readAt = new Date(snapshotAt.getTime() + 60_000);
+    await validateMetricDefinitions(prisma, snapshotAt);
+    const materialized = await materializeMetricSnapshots(prisma, snapshotAt);
+    const expected = materialized.cards.find((card) => card.key === definition.key)!;
+    expect(expected.decisionUse).toBe("directional_only");
+    const current = await prisma.metricSnapshot.findFirstOrThrow({ where: {
+      metricKey: definition.key, definitionVersion: definition.version, asOf: snapshotAt,
+    } });
+    // Same-time wrong-version rows exercise hydration; the newer one also exercises
+    // the grouped max(asOf) selection. Both deliberately carry otherwise valid evidence.
+    await prisma.metricSnapshot.createMany({ data: [
+      { ...current, id: `zz-${prefix}-same-time-other-version`, definitionVersion: definition.version + 1,
+        numeratorValue: 17, value: 17, sampleSize: 17, matureSampleSize: 17,
+        qualityEvidence: toInputJson(current.qualityEvidence) },
+      { ...current, id: `zz-${prefix}-newer-other-version`, definitionVersion: definition.version + 1,
+        asOf: new Date(snapshotAt.getTime() + 30_000), numeratorValue: 18, value: 18, sampleSize: 18, matureSampleSize: 18,
+        qualityEvidence: toInputJson(current.qualityEvidence) },
+    ] });
+    const response = await getMetricDashboard(new Request(`http://localhost/api/v2/admin/metrics?asOf=${readAt.toISOString()}`, {
+      headers: { "x-idream-user-id": analystId, "x-idream-role": "analyst" },
+    }));
+    expect(response.status).toBe(200);
+    const dashboard = metricDashboardResponseSchema.parse((await response.json()).data);
+    expect(dashboard.cards.find((card) => card.key === definition.key)).toMatchObject({
+      definitionVersion: definition.version, value: expected.value, numeratorValue: expected.numeratorValue,
+      sampleSize: expected.sampleSize, decisionUse: "directional_only",
+    });
   });
 });

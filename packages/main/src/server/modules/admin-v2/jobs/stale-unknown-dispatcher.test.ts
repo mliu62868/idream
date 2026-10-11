@@ -18,25 +18,15 @@ describe("dispatchStaleUnknownGenerationRequests", () => {
   });
 
   it("settles only still-open unknown requests after the grace period", async () => {
-    const generationAttempt = {
-      findMany: vi.fn().mockResolvedValue([
+    const queryRaw = vi.fn().mockResolvedValue([
         {
           id: "attempt-open",
           requestId: "request-open",
           errorCode: "provider_timeout",
           terminalRecordRef: "terminal:open",
+          version: 4,
         },
-        {
-          id: "attempt-terminal",
-          requestId: "request-terminal",
-          errorCode: null,
-          terminalRecordRef: null,
-        },
-      ]),
-    };
-    const generationJob = {
-      findMany: vi.fn().mockResolvedValue([{ id: "request-open", version: 4 }]),
-    };
+      ]);
     reconcileUnknownGenerationRequest.mockResolvedValue({
       resolution: "confirm_failed",
       refundAmount: 12,
@@ -44,16 +34,11 @@ describe("dispatchStaleUnknownGenerationRequests", () => {
 
     const now = new Date("2026-08-25T12:00:00.000Z");
     const result = await dispatchStaleUnknownGenerationRequests(
-      { generationAttempt, generationJob } as unknown as PrismaClient,
+      { $queryRaw: queryRaw } as unknown as PrismaClient,
       { now, graceMs: 30 * 60_000 },
     );
 
-    expect(generationAttempt.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: {
-        status: "unknown",
-        finishedAt: { lte: new Date("2026-08-25T11:30:00.000Z") },
-      },
-    }));
+    expect(queryRaw).toHaveBeenCalledWith(expect.any(Array), new Date("2026-08-25T11:30:00.000Z"), 50);
     expect(reconcileUnknownGenerationRequest).toHaveBeenCalledTimes(1);
     expect(reconcileUnknownGenerationRequest).toHaveBeenCalledWith(expect.objectContaining({
       requestId: "request-open",

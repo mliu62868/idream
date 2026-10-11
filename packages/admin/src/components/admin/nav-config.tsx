@@ -120,7 +120,6 @@ export type NavItem = {
   id: AdminSectionId;
   label: string;
   href: string;
-  legacyHref: string | null;
   icon: LucideIcon;
   group: AdminWorkspace;
   read: { allOf: readonly AdminPermissionKey[] };
@@ -139,7 +138,7 @@ export type NavItem = {
   render: (context: SectionContext) => ReactNode;
 };
 
-type ItemInput = Omit<NavItem, "legacyHref" | "chrome" | "navigation"> & {
+type ItemInput = Omit<NavItem, "chrome" | "navigation"> & {
   chrome?: NavItem["chrome"];
   navigation?: NavItem["navigation"];
 };
@@ -157,16 +156,6 @@ function item(input: ItemInput): NavItem {
   return {
     ...input,
     chrome: input.chrome ?? "default",
-    legacyHref: input.id === "dashboard" ? "/admin" : `/admin/${input.id}`,
-    navigation: input.navigation ?? "workspace",
-  };
-}
-
-function targetItem(input: ItemInput): NavItem {
-  return {
-    ...input,
-    chrome: input.chrome ?? "default",
-    legacyHref: null,
     navigation: input.navigation ?? "workspace",
   };
 }
@@ -175,7 +164,7 @@ function targetItem(input: ItemInput): NavItem {
 // shipped capability stays reachable; `href` is the canonical decision-workspace URL.
 // Permissions are existing effective keys, not client-side role guesses.
 export const navItems: NavItem[] = [
-  item({ id: "dashboard", label: "Today", href: "/admin/today", icon: Gauge, group: "Today", read: readForOperations("GET /api/v2/admin/dashboard", "GET /api/v2/admin/today"), navigation: "primary",
+  item({ id: "dashboard", label: "Today", href: "/admin/today", icon: Gauge, group: "Today", read: readForOperations("GET /api/v2/admin/today"), navigation: "primary",
     render: (ctx) => <TodayWorkspace workMode={ctx.workMode} /> }),
 
   item({ id: "content/official", label: "Characters", href: "/admin/characters", icon: UserRound, group: "Characters", read: readForOperations("GET /api/v2/admin/characters/:id", "GET /api/v2/admin/characters/portfolio"), chrome: "compact",
@@ -207,6 +196,9 @@ export const navItems: NavItem[] = [
       actorId={ctx.actorId}
       canAssign={ctx.permissions.has("case.assign")}
       canDecide={ctx.permissions.has("case.decide")}
+      canReadSupport={ctx.permissions.has("support.request.read")}
+      canReplySupport={ctx.permissions.has("support.request.write")}
+      canViewPlaintext={ctx.permissions.has("support.plaintext.view")}
       initialCaseId={detailId(ctx.view)}
       key={detailId(ctx.view) ?? "case-list"}
     /> }),
@@ -226,7 +218,7 @@ export const navItems: NavItem[] = [
       canReadCanonical={ctx.canRead}
       canReadLegacy={ctx.permissions.has("analytics.export")}
     /> }),
-  targetItem({ id: "growth/characters", label: "Character Performance", href: "/admin/growth/characters", icon: Activity, group: "Analytics", read: readForOperations("GET /api/v2/admin/characters/portfolio"),
+  item({ id: "growth/characters", label: "Character Performance", href: "/admin/growth/characters", icon: Activity, group: "Analytics", read: readForOperations("GET /api/v2/admin/characters/portfolio"),
     render: (ctx) => <CharacterPerformanceWorkspace permissions={ctx.permissions} /> }),
   item({ id: "experiments", label: "Experiments", href: "/admin/growth/experiments", icon: Flag, group: "Analytics", read: readForOperations("GET /api/v2/admin/experiments"),
     render: () => <ExperimentsView /> }),
@@ -238,7 +230,7 @@ export const navItems: NavItem[] = [
     render: (ctx) => <CmsView canWrite={ctx.permissions.has("content.cms.write")} /> }),
   item({ id: "pricing", label: "Pricing", href: "/admin/growth/offers?view=pricing", icon: Coins, group: "Revenue & Marketing", read: readForOperations("GET /api/v2/admin/pricing/rules"),
     render: (ctx) => <PricingWorkspace canWrite={ctx.permissions.has("config.pricing.write")} /> }),
-  targetItem({ id: "growth/affiliates", label: "Affiliate Applications", href: "/admin/growth/affiliates", icon: Users, group: "Revenue & Marketing", read: readForOperations("GET /api/v2/admin/affiliate/applications"),
+  item({ id: "growth/affiliates", label: "Affiliate Applications", href: "/admin/growth/affiliates", icon: Users, group: "Revenue & Marketing", read: readForOperations("GET /api/v2/admin/affiliate/applications"),
     render: (ctx) => <AffiliateApplicationsView canWrite={adminV2OperationAllowed("POST /api/v2/admin/affiliate/applications/:id/decision", ctx.permissions)} /> }),
   item({ id: "promo", label: "Promotions", href: "/admin/growth/offers?view=promo", icon: Ticket, group: "Revenue & Marketing", read: readForOperations("GET /api/v2/admin/promo/redeem-codes", "GET /api/v2/admin/promo/referrals"),
     render: (ctx) => <PromoWorkspace canWrite={ctx.permissions.has("growth.promo.write")} /> }),
@@ -262,10 +254,10 @@ export const navItems: NavItem[] = [
       key={detailId(ctx.view) ?? "incident-list"}
     /> }),
   // SPEC: 跨表一致性是运维的一等公民 —— 它和事故并列，因为它回答的正是「有没有事故还没被
-  //       任何人发现」。targetItem：id 与 href 同形，不需要再造一条同名的 legacy 别名。
+  //       任何人发现」。id 与 href 同形；历史别名仍由路由解析器维护。
   // INTENT: 权威早就在算这 31 条检查（reconciliation/invariants，实测 17 条违规、
   //         decisionUse=blocked），此前整个控制台零引用 —— 结论算出来却没有任何一页显示它。
-  targetItem({ id: "ops/invariants", label: "Data Integrity", href: "/admin/ops/invariants", icon: ListChecks, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/reconciliation/invariants"),
+  item({ id: "ops/invariants", label: "Data Integrity", href: "/admin/ops/invariants", icon: ListChecks, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/reconciliation/invariants"),
     render: (ctx) => <InvariantsWorkspace canRead={ctx.canRead} /> }),
   item({ id: "generation/jobs", label: "Generation Jobs", href: "/admin/ops/jobs", icon: Activity, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/jobs"),
     render: (ctx) => <GenerationJobsWorkspace permissions={{

@@ -433,6 +433,7 @@ describe("BillingWorkspace ledger pagination", () => {
 
   it("walks forward on the authority cursor and back again to the same page", async () => {
     await mount();
+    expect(apiGet.mock.calls.every(([path]) => path.startsWith("/api/v2/admin/billing/ledger"))).toBe(true);
 
     await act(async () => pagerButton("Next page")?.click());
     await waitUntil(() => container.textContent?.includes("ledger-page-2") ?? false);
@@ -446,6 +447,7 @@ describe("BillingWorkspace ledger pagination", () => {
     await waitUntil(() => container.textContent?.includes("ledger-page-1") ?? false);
     expect(pagerButton("Previous page")?.disabled).toBe(true);
     expect(container.textContent).toContain("Page 1");
+    expect(apiGet.mock.calls.every(([path]) => path.startsWith("/api/v2/admin/billing/ledger"))).toBe(true);
   });
 
   // SPEC: 账本那两列是钱：delta 带正负号，余额带千分位。裸 String(x) 会把 -1500 和 2400 排成一样。
@@ -454,5 +456,122 @@ describe("BillingWorkspace ledger pagination", () => {
     const text = container.textContent ?? "";
     expect(text).toContain("-1,500");
     expect(text).toContain("2,400");
+  });
+});
+
+describe("billing query authority", () => {
+  let container: HTMLDivElement;
+  let root: Root | null;
+  const ledger = { id: "ledger-a", userId: "user-a", userEmail: "a@example.test", delta: 10, balanceAfter: 100, reason: "admin_adjust", createdAt: "2026-08-01T00:00:00.000Z" };
+  const subscription = {
+    id: "subscription-a", userId: "user-a", userEmail: "a@example.test", plan: "premium", billingPeriod: "monthly",
+    includedDreamcoins: 1500, provider: "btcpay", status: "active", currentPeriodEnd: "2026-09-01T00:00:00.000Z",
+    cancelAtPeriodEnd: false, providerSubscriptionId: null, checkoutId: "checkout-a", amountCents: 1999, currency: "usd",
+    refund: null, canRefund: true, createdAt: "2026-08-01T00:00:00.000Z",
+  };
+  beforeEach(() => {
+    apiGet.mockReset();
+    apiWrite.mockReset();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = null;
+  });
+  afterEach(async () => {
+    await act(async () => root?.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+  async function mount(view: string) {
+    window.history.replaceState(null, "", `/admin/customer-ops/billing?billingView=${view}`);
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<BillingWorkspace canAdjust canReconcile canRefund />);
+    });
+    await waitUntil(() => container.textContent?.includes("a@example.test") ?? false);
+  }
+  async function navigate(query: string) {
+    await act(async () => {
+      window.history.pushState(null, "", `/admin/customer-ops/billing?${query}`);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+  }
+  const setValue = (input: HTMLInputElement, value: string) => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  it.each([
+    ["ledger", "billingSearch=other"], ["ledger", "ledgerCursor=next"],
+    ["subscriptions", "billingSearch=other"], ["subscriptions", "subscriptionCursor=next"],
+  ])("hides old %s rows and actions during %s and after its failure", async (view, query) => {
+    let reject!: (error: Error) => void;
+    const pending = new Promise<unknown>((_, fail) => { reject = fail; });
+    apiGet.mockImplementation(async path => path.includes("search=other") || path.includes("cursor=next") ? pending : {
+      dataScope, items: [view === "ledger" ? ledger : subscription], pageInfo: { endCursor: null, hasNextPage: false },
+    });
+    await mount(view);
+    if (view === "subscriptions") expect(container.textContent).toContain("Full refund");
+    await navigate(`billingView=${view}&${query}`);
+    expect(container.textContent).not.toContain("a@example.test");
+    expect(container.textContent).not.toContain("Full refund");
+    expect([...container.querySelectorAll("button")].some(node => node.textContent === "Adjust Ledger")).toBe(false);
+    await act(async () => reject(new Error("new billing scope failed")));
+    expect(container.textContent).toContain("new billing scope failed");
+    expect(container.textContent).not.toContain("a@example.test");
+    expect(container.textContent).not.toContain("Full refund");
+  });
+
+  it("hides cached subscriptions when returning from a different query in another tab", async () => {
+    const pending = new Promise<unknown>(() => {});
+    apiGet.mockImplementation(async path => {
+      if (path.includes("search=other")) return pending;
+      return { dataScope, items: [subscription], pageInfo: { endCursor: null, hasNextPage: false } };
+    });
+    await mount("subscriptions");
+    await navigate("billingView=ledger&billingSearch=other");
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("nav button")].find(node => node.textContent === "Subscriptions")!.click());
+    expect(container.textContent).not.toContain("a@example.test");
+    expect(container.textContent).not.toContain("Full refund");
+  });
+
+  it.each(["ledger", "subscriptions"])("retains same-query %s last-good data after refresh failure", async view => {
+    let fail = false;
+    apiGet.mockImplementation(async () => {
+      if (fail) throw new Error("same billing scope failed");
+      return { dataScope, items: [view === "ledger" ? ledger : subscription], pageInfo: { endCursor: null, hasNextPage: false } };
+    });
+    await mount(view);
+    fail = true;
+    await act(async () => window.dispatchEvent(new PopStateEvent("popstate")));
+    expect(container.textContent).toContain("same billing scope failed");
+    expect(container.textContent).toContain("a@example.test");
+  });
+
+  it("prevents a late adjustment from restoring the old query or closing a new confirmation", async () => {
+    let finish!: (value: unknown) => void;
+    apiWrite.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    apiGet.mockImplementation(async path => ({ dataScope, items: [{ ...ledger, userEmail: path.includes("search=b") ? "b@example.test" : "a@example.test" }], pageInfo: { endCursor: null, hasNextPage: false } }));
+    await mount("ledger");
+    async function openAdjustment(userId: string) {
+      const panel = container.querySelector('[aria-labelledby="billing-adjustment-title"]')!;
+      const [user, delta] = panel.querySelectorAll<HTMLInputElement>("input");
+      await act(async () => { setValue(user, userId); setValue(delta, "10"); });
+      await act(async () => [...panel.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent === "Adjust")!.click());
+    }
+    await openAdjustment("user-a");
+    await act(async () => {
+      setValue(document.querySelector<HTMLInputElement>('input[aria-label="Reason"]')!, "reviewed credit");
+      setValue(document.querySelector<HTMLInputElement>('input[aria-label="Confirmation"]')!, "user-a:10");
+    });
+    await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(node => node.textContent === "Confirm")!.click());
+    expect(apiWrite).toHaveBeenCalledTimes(1);
+    await navigate("billingView=ledger&billingSearch=b");
+    await waitUntil(() => container.textContent?.includes("b@example.test") ?? false);
+    await openAdjustment("user-b");
+    const gets = apiGet.mock.calls.length;
+    await act(async () => finish({}));
+    expect(window.location.search).toBe("?billingView=ledger&billingSearch=b");
+    expect(container.textContent).toContain("b@example.test");
+    expect(apiGet).toHaveBeenCalledTimes(gets);
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Adjust ledger for user-b");
   });
 });

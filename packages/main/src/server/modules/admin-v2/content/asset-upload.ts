@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import {
   type ContentAssetUploadRequest,
 } from "@idream/shared/admin";
@@ -19,6 +20,9 @@ export type ParsedContentAssetUpload = {
   fields: ContentAssetUploadRequest;
   image: ParsedAdminImageUpload;
 };
+
+// Persist only the immutable identity; the current asset projection is read after commit.
+const uploadReceiptSchema = z.object({ assetId: z.string().min(1), replayed: z.boolean() });
 
 export async function parseContentAssetUpload(
   form: FormData,
@@ -48,6 +52,7 @@ export async function createContentAssetUpload(input: {
 
   try {
     const mutation = await executeAtomicIdempotentMutation({
+      validateResult: (value) => uploadReceiptSchema.parse(value),
       environment: env.APP_ENV,
       actor: input.actor,
       idempotencyKey: input.idempotencyKey,
@@ -138,13 +143,10 @@ export async function createContentAssetUpload(input: {
         ...(value as Record<string, unknown>),
         replayed,
       }),
-    }) as { assetId?: unknown; replayed?: unknown };
+    });
     mutationCompleted = true;
     if (mutation.replayed === true && preparedStored) {
       await deletePreparedBlob(storageKey);
-    }
-    if (typeof mutation.assetId !== "string") {
-      throw Errors.internal("Platform asset upload did not return an asset ID");
     }
     return getContentAsset(mutation.assetId);
   } catch (cause) {

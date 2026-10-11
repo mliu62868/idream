@@ -59,6 +59,7 @@ type ChatResponse = {
   pageInfo?: PageInfo;
 };
 type AuthorityState = {
+  queryKey: string | null;
   data: ChatResponse | null;
   loading: boolean;
   /** 原始异常，不是它的 message —— 错误文案由 ui/request-error-copy.ts 按错误码映射。 */
@@ -186,6 +187,7 @@ function initialStates(): Record<ChatOpsAuthority, AuthorityState> {
     authorities.map((authority) => [
       authority,
       {
+        queryKey: null,
         data: null,
         loading: true,
         error: null,
@@ -211,8 +213,15 @@ export function ChatOpsWorkspace({
   const { t } = useAdminI18n();
   const [query, setQuery] = useState<ChatOpsQuery>(defaultChatOpsQuery);
   const [draft, setDraft] = useState<ChatOpsQuery>(defaultChatOpsQuery);
-  const [states, setStates] =
+  const [loadedStates, setStates] =
     useState<Record<ChatOpsAuthority, AuthorityState>>(initialStates);
+  // Keep same-query last-good snapshots, but never give a new scope old action targets.
+  const states = { ...loadedStates };
+  for (const authority of authorities) {
+    if (states[authority].queryKey !== chatOpsPath(query, authority)) {
+      states[authority] = { queryKey: null, data: null, loading: true, error: null, refreshedAt: null };
+    }
+  }
   const gates = useRef(
     Object.fromEntries(
       authorities.map((authority) => [authority, createLatestRequestGate()]),
@@ -222,18 +231,23 @@ export function ChatOpsWorkspace({
   const loadAuthority = useCallback(
     async (next: ChatOpsQuery, authority: ChatOpsAuthority) => {
       const request = gates.current[authority].begin();
+      const queryKey = chatOpsPath(next, authority);
       setStates((current) => ({
         ...current,
-        [authority]: { ...current[authority], loading: true, error: null },
+        [authority]: {
+          ...current[authority], queryKey, loading: true, error: null,
+          ...(current[authority].queryKey === queryKey ? {} : { data: null, refreshedAt: null }),
+        },
       }));
       try {
         const response = await apiGet<ChatResponse>(
-          chatOpsPath(next, authority),
+          queryKey,
         );
         if (!request.isCurrent()) return;
         setStates((current) => ({
           ...current,
           [authority]: {
+            queryKey,
             data: response,
             loading: false,
             error: null,
@@ -507,6 +521,7 @@ export function ChatOpsWorkspace({
           />
           <DiagnosticsNotice data={states.sessions.data} />
           <SessionPinMigration
+            key={chatOpsPath(query, "sessions")}
             canMigrate={canMigrateSessionRelease}
             onDone={() => void loadAuthority(query, "sessions")}
             rows={states.sessions.data?.items ?? []}

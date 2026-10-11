@@ -8,6 +8,7 @@ import {
   type AdminV2DeclaredRequestRefFor,
   type AdminV2DeclaredResponseRefFor,
   type AdminV2DeclaredRouteFor,
+  type AdminV2RequestInput,
 } from "@idream/shared/admin";
 import { AdminV2RequestError, adminV2Request } from "./admin-v2-api";
 import {
@@ -75,12 +76,26 @@ type TransportArgument<Ref extends string> =
 export type AdminV2OperationOptions<Id extends AdminV2DeclaredOperationId> =
   & PathArgument<AdminV2DeclaredRouteFor<Id>>
   & TransportArgument<AdminV2DeclaredRequestRefFor<Id>>
+  & BodyArgument<Id>
   & {
-    readonly body?: unknown;
-    readonly form?: FormData;
     readonly query?: string | URLSearchParams;
     readonly signal?: AbortSignal;
   };
+
+type MultipartOperation =
+  | "POST /api/v2/admin/assets"
+  | "POST /api/v2/admin/characters/:id/image-sources"
+  | "POST /api/v2/admin/characters/:id/video-sources"
+  | "POST /api/v2/admin/characters/:id/voice-clones";
+
+type BodyArgument<Id extends AdminV2DeclaredOperationId> =
+  Id extends `GET ${string}` ? { readonly body?: never; readonly form?: never }
+    : Id extends MultipartOperation ? { readonly form: FormData; readonly body?: never } & (
+        { readonly intent: string } | { readonly replayIdempotencyKey: string }
+      )
+    : [AdminV2RequestInput<AdminV2DeclaredRequestRefFor<Id>>] extends [never]
+      ? { readonly body?: never; readonly form?: never }
+      : { readonly body: AdminV2RequestInput<AdminV2DeclaredRequestRefFor<Id>>; readonly form?: never };
 
 /**
  * INTENT: 结构化地从 schema 的 `parse` 反推出响应类型，而不是 `z.output<>` —— admin 包没有
@@ -160,7 +175,7 @@ export function adminV2OperationPath(
  */
 export async function adminV2Operation<Id extends AdminV2DeclaredOperationId>(
   id: Id,
-  options: AdminV2OperationOptions<Id>,
+  options: AdminV2OperationOptions<NoInfer<Id>>,
 ): Promise<AdminV2OperationResponse<Id>> {
   const operation: AdminV2ApiOperation = ADMIN_V2_API_OPERATIONS_BY_ID[id];
   const query = options.query
@@ -170,18 +185,16 @@ export async function adminV2Operation<Id extends AdminV2DeclaredOperationId>(
   const transport = options as {
     readonly intent?: string;
     readonly replayIdempotencyKey?: string;
-    readonly idempotencyKey?: string;
   };
   const ledgered = needsIdempotencyKey(operation) &&
-    !transport.replayIdempotencyKey &&
-    !transport.idempotencyKey;
+    !transport.replayIdempotencyKey;
   // SPEC: 账本按「写哪个目标」分格，按「这次写什么」决定换不换键。
   // INTENT: scope 用解析后的路径而不是路由模板 —— 同一个按钮打在两个 incident 上是两次
   //         互不相干的写入，共一格会让第二行拿到第一行的键，被服务端当重复请求丢掉。
   const scope = `${operation.method} ${path}`;
   const key = ledgered
     ? adminIdempotencyKeyLedger.claim(scope, operationIntentSignature(options, transport.intent))
-    : transport.replayIdempotencyKey ?? transport.idempotencyKey;
+    : transport.replayIdempotencyKey;
   try {
     const response = await adminV2Request(
       `${path}${query}`,

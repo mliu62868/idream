@@ -1,6 +1,5 @@
 import {
   mainToChatOutboxReplayResultSchema,
-  type MainToChatOutboxReplayRequest,
 } from "@idream/shared/admin";
 import { replayFailedMainToChatOutboxEvents } from "@/server/modules/admin-v2/chat/main-outbox-events";
 import { prepareMainToChatReplayAuthority } from "@/server/modules/admin-v2/chat/main-outbox-events";
@@ -13,10 +12,7 @@ export const runtime = "nodejs";
 
 export function POST(request: Request) {
   return adminV2Route(request, () =>
-    executeAdminMutation<
-      MainToChatOutboxReplayRequest,
-      Awaited<ReturnType<typeof prepareMainToChatReplayAuthority>>
-    >(
+    executeAdminMutation(
       "POST /api/v2/admin/chat/main-outbox-events/commands/replay",
       request,
       {

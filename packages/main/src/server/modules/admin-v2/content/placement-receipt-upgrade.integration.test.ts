@@ -114,7 +114,9 @@ describe("Placement persisted receipt upgrade", () => {
         return result;
       });
       const failed = await adminV2("POST", "content/placements", { userId: actorId, role: "admin", body, idempotencyKey: key });
-      expect(failed.status).toBe(400);
+      // A malformed server result is an internal contract failure, not invalid operator input.
+      expect(failed.status).toBe(500);
+      expect(failed.error?.code).toBe("internal");
       expect(await prisma.mediaAssetPlacement.count({ where: { targetId: body.targetId } })).toBe(0);
       expect(await prisma.adminAuditLog.count({ where: { targetId: placementIds.at(-1), action: "content.placement.create" } })).toBe(0);
     } else {
@@ -129,7 +131,8 @@ describe("Placement persisted receipt upgrade", () => {
         userId: actorId, role: "admin", idempotencyKey: key, ifMatch: placement.version,
         body: { status: "paused", reason: "Reject a malformed fresh response", confirmation: placement.id },
       });
-      expect(failed.status).toBe(400);
+      expect(failed.status).toBe(500);
+      expect(failed.error?.code).toBe("internal");
       expect(await prisma.mediaAssetPlacement.findUniqueOrThrow({ where: { id: placement.id } })).toMatchObject({ status: "draft", version: placement.version });
       expect(await prisma.adminAuditLog.count({ where: { targetId: placement.id, action: "content.placement.paused" } })).toBe(0);
     }

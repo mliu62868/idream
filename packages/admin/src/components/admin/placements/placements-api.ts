@@ -149,6 +149,6 @@ export function placementPatchPayload(
   id: string,
   status: (typeof PATCH_ACTIONS)[number],
   reason: string,
-): Record<string, unknown> {
+) {
   return { status, reason, confirmation: id };
 }

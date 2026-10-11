@@ -30,13 +30,13 @@ import {
 
 type RecordRow = Record<string, unknown>;
 type ListResponse = { items: RecordRow[]; pageInfo?: PageInfo; authoringEnabled?: boolean; selectedProfile?: RecordRow | null };
-type AuthorityState<T> = { data: T | null; error: string | null; cause: unknown; loading: boolean; refreshedAt: string | null };
+type AuthorityState<T> = { queryKey: string | null; data: T | null; error: string | null; cause: unknown; loading: boolean; refreshedAt: string | null };
 type Permissions = { manageProfiles: boolean; manageFlags: boolean };
 type ReviewDraft = { sampleCount: string; passCount: string; reviewUrl: string };
 // SPEC: 一次测试出一张。同一个值既发给后端，也印在确认框的成本说明里。
 const TEST_IMAGE_OUTPUT_COUNT = 1;
-const emptyAuthorityState = <T,>(): AuthorityState<T> => ({ data: null, error: null, cause: undefined, loading: true, refreshedAt: null });
-/** 两张表各自翻页，但一次 navigate 会把两边都重新拉一遍，所以轨迹要一起带着走。 */
+const emptyAuthorityState = <T,>(): AuthorityState<T> => ({ queryKey: null, data: null, error: null, cause: undefined, loading: true, refreshedAt: null });
+/** 两张表各自保留游标轨迹，切换页签不改变另一张表的位置。 */
 type ConfigTrails = { profiles: string[]; flags: string[] };
 const emptyTrails: ConfigTrails = { profiles: [], flags: [] };
 type ConfigCommand = {
@@ -59,10 +59,18 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
   // 两边分叉就是 hydration mismatch（浏览器里一次渲染报 56 条）。地址栏在挂载 effect 里读。
   const [query, setQuery] = useState<GenerationConfigQuery>(defaultGenerationConfigQuery);
   const [draft, setDraft] = useState<GenerationConfigQuery>(defaultGenerationConfigQuery);
-  const [profiles, setProfiles] = useState<AuthorityState<ListResponse>>(emptyAuthorityState);
-  const [flags, setFlags] = useState<AuthorityState<ListResponse>>(emptyAuthorityState);
-  const [recentJobs, setRecentJobs] = useState<AuthorityState<ListResponse>>(emptyAuthorityState);
+  const [loadedProfiles, setProfiles] = useState<AuthorityState<ListResponse>>(emptyAuthorityState);
+  const [loadedFlags, setFlags] = useState<AuthorityState<ListResponse>>(emptyAuthorityState);
+  const [loadedJobs, setRecentJobs] = useState<AuthorityState<ListResponse>>(emptyAuthorityState);
   const [selectedProfileId, setSelectedProfileId] = useState("");
+  const [trackedJobId, setTrackedJobId] = useState("");
+  const profilesKey = generationProfilesPath(query);
+  const flagsKey = featureFlagsPath(query);
+  // Last-good authority is usable only for the exact request represented by the controls.
+  const profiles = loadedProfiles.queryKey === profilesKey ? loadedProfiles : emptyAuthorityState<ListResponse>();
+  const flags = loadedFlags.queryKey === flagsKey ? loadedFlags : emptyAuthorityState<ListResponse>();
+  // A → B → A is still a new visit; URL equality cannot authorize a late command.
+  const navigation = useRef(0);
   const [testPrompt, setTestPrompt] = useState("cinematic portrait, natural skin texture, soft studio lighting");
   const [reviews, setReviews] = useState<Record<string, ReviewDraft>>({});
   const profileRows = useMemo(() => profiles.data?.items ?? [], [profiles.data]);
@@ -70,91 +78,108 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
   const selectedId = text(selectedProfile?.id);
   // Evidence belongs to one immutable profile version, including automatic selection after filtering.
   const reviewKey = JSON.stringify([selectedId, selectedProfile?.version, selectedProfile?.updatedAt]);
+  const scopeKey = query.tab === "profiles" ? JSON.stringify([profilesKey, reviewKey]) : flagsKey;
+  const jobsKey = profileJobsKey(selectedProfile, trackedJobId);
+  const recentJobs = loadedJobs.queryKey === jobsKey ? loadedJobs : emptyAuthorityState<ListResponse>();
   const review = reviews[reviewKey] ?? { sampleCount: "", passCount: "", reviewUrl: "" };
   const setReview = (next: ReviewDraft) => setReviews(current => ({ ...current, [reviewKey]: next }));
   const selectionRef = useRef(selectedProfile);
   selectionRef.current = selectedProfile;
-  const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
+  const [confirmation, setConfirmation] = useState<(ConfirmSpec & { scopeKey: string }) | null>(null);
   // A refreshed version invalidates an already-open publication confirmation too.
-  useEffect(() => { setConfirmation(null); }, [reviewKey]);
+  useEffect(() => { setConfirmation(null); }, [scopeKey]);
   const [testBusy, setTestBusy] = useState(false);
-  const [editor, setEditor] = useState<{ source: RecordRow | null; editing: boolean } | null>(null);
+  const [editor, setEditor] = useState<{ source: RecordRow | null; editing: boolean; scopeKey: string; origin: number } | null>(null);
   // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
   const [trails, setTrails] = useState<ConfigTrails>(emptyTrails);
   const requestGates = useRef({ profiles: createLatestRequestGate(), flags: createLatestRequestGate(), jobs: createLatestRequestGate() });
 
   const loadProfiles = useCallback(async (next: GenerationConfigQuery) => {
+    const queryKey = generationProfilesPath(next);
+    if (queryKey !== generationProfilesPath(currentQuery())) return;
     const request = requestGates.current.profiles.begin();
-    setProfiles((current) => ({ ...current, error: null, loading: true }));
+    const isCurrent = () => request.isCurrent() && queryKey === generationProfilesPath(currentQuery());
+    setProfiles((current) => ({ ...(current.queryKey === queryKey ? current : emptyAuthorityState<ListResponse>()), queryKey, error: null, loading: true }));
     try {
       const selected = new URLSearchParams(window.location.search).get("profile");
-      const data = await apiGet<ListResponse>(generationProfilesPath(next));
+      const data = await apiGet<ListResponse>(queryKey);
+      if (!isCurrent()) return;
       if (selected && !data.items.some(row => text(row.id) === selected)) {
         const matching = await apiGet<ListResponse>(generationProfilesPath({ ...defaultGenerationConfigQuery, search: selected }));
         data.selectedProfile = matching.items.find(row => text(row.id) === selected) ?? null;
       }
-      if (request.isCurrent()) setProfiles({ data, error: null, cause: undefined, loading: false, refreshedAt: new Date().toISOString() });
+      if (isCurrent()) setProfiles({ queryKey, data, error: null, cause: undefined, loading: false, refreshedAt: new Date().toISOString() });
     } catch (cause) {
-      if (request.isCurrent()) setProfiles((current) => ({ ...current, error: errorMessage(cause, "Profile authority request failed"), cause, loading: false }));
+      if (isCurrent()) setProfiles((current) => ({ ...current, error: errorMessage(cause, "Profile authority request failed"), cause, loading: false }));
     }
   }, []);
 
   const loadFlags = useCallback(async (next: GenerationConfigQuery) => {
+    const queryKey = featureFlagsPath(next);
+    if (queryKey !== featureFlagsPath(currentQuery())) return;
     const request = requestGates.current.flags.begin();
-    setFlags((current) => ({ ...current, error: null, loading: true }));
+    const isCurrent = () => request.isCurrent() && queryKey === featureFlagsPath(currentQuery());
+    setFlags((current) => ({ ...(current.queryKey === queryKey ? current : emptyAuthorityState<ListResponse>()), queryKey, error: null, loading: true }));
     try {
-      const data = await apiGet<ListResponse>(featureFlagsPath(next));
-      if (request.isCurrent()) setFlags({ data, error: null, cause: undefined, loading: false, refreshedAt: new Date().toISOString() });
+      const data = await apiGet<ListResponse>(queryKey);
+      if (isCurrent()) setFlags({ queryKey, data, error: null, cause: undefined, loading: false, refreshedAt: new Date().toISOString() });
     } catch (cause) {
-      if (request.isCurrent()) setFlags((current) => ({ ...current, error: errorMessage(cause, "Feature-flag authority request failed"), cause, loading: false }));
+      if (isCurrent()) setFlags((current) => ({ ...current, error: errorMessage(cause, "Feature-flag authority request failed"), cause, loading: false }));
     }
   }, []);
 
   const loadJobs = useCallback(async () => {
+    const profile = selectionRef.current;
+    const trackedId = new URLSearchParams(window.location.search).get("testJob") ?? "";
+    const queryKey = profileJobsKey(profile, trackedId);
     const request = requestGates.current.jobs.begin();
-    setRecentJobs((current) => ({ ...current, error: null, loading: true }));
+    const isCurrent = () => request.isCurrent() && queryKey === profileJobsKey(selectionRef.current, new URLSearchParams(window.location.search).get("testJob") ?? "");
+    setRecentJobs((current) => ({ ...(current.queryKey === queryKey ? current : emptyAuthorityState<ListResponse>()), queryKey, error: null, loading: true }));
     try {
-      const profile = selectionRef.current;
       if (!profile) {
-        if (request.isCurrent()) setRecentJobs({ data: { items: [] }, error: null, cause: undefined, loading: false, refreshedAt: null });
+        if (isCurrent()) setRecentJobs({ queryKey, data: { items: [] }, error: null, cause: undefined, loading: false, refreshedAt: null });
         return;
       }
       const params = new URLSearchParams({ mode: "image", sourceType: "admin_profile_test", search: text(profile.profileKey) || text(profile.id), limit: "25" });
-      const trackedId = new URLSearchParams(window.location.search).get("testJob");
       const data = await apiGet<ListResponse>(`/api/v2/admin/jobs?${params}`);
+      if (!isCurrent()) return;
       if (trackedId && !data.items.some(job => text(job.id) === trackedId)) {
         try {
           const detail = await apiGet<{ request: RecordRow }>(`/api/v2/admin/jobs/${encodeURIComponent(trackedId)}`);
           data.items = [detail.request, ...data.items];
         } catch (cause) {
           // A missing pinned job must not hide the successfully loaded recent tests.
-          if (request.isCurrent()) setRecentJobs({ data, error: errorMessage(cause, "Recent-job authority request failed"), cause, loading: false, refreshedAt: new Date().toISOString() });
+          if (isCurrent()) setRecentJobs({ queryKey, data, error: errorMessage(cause, "Recent-job authority request failed"), cause, loading: false, refreshedAt: new Date().toISOString() });
           return;
         }
       }
-      if (request.isCurrent()) setRecentJobs({ data, error: null, cause: undefined, loading: false, refreshedAt: new Date().toISOString() });
+      if (isCurrent()) setRecentJobs({ queryKey, data, error: null, cause: undefined, loading: false, refreshedAt: new Date().toISOString() });
     } catch (cause) {
-      if (request.isCurrent()) setRecentJobs((current) => ({ ...current, error: errorMessage(cause, "Recent-job authority request failed"), cause, loading: false }));
+      if (isCurrent()) setRecentJobs((current) => ({ ...current, error: errorMessage(cause, "Recent-job authority request failed"), cause, loading: false }));
     }
   }, []);
 
   const load = useCallback((next: GenerationConfigQuery) => {
-    void loadProfiles(next);
-    void loadFlags(next);
-    void loadJobs();
-  }, [loadFlags, loadJobs, loadProfiles]);
+    if (next.tab === "settings") void loadFlags(next);
+    else void loadProfiles(next);
+  }, [loadFlags, loadProfiles]);
 
   useEffect(() => {
     const gates = requestGates.current;
     // 水合完成后才读地址栏，把 SSR 用的默认查询换成真正生效的筛选条件。
     const fromUrl = currentQuery();
     setSelectedProfileId(new URLSearchParams(window.location.search).get("profile") ?? "");
+    setTrackedJobId(new URLSearchParams(window.location.search).get("testJob") ?? "");
     setQuery(fromUrl);
     setDraft(fromUrl);
     load(fromUrl);
     const restore = () => {
+      navigation.current += 1;
+      setConfirmation(null);
+      setEditor(null);
       const restored = currentQuery();
       setSelectedProfileId(new URLSearchParams(window.location.search).get("profile") ?? "");
+      setTrackedJobId(new URLSearchParams(window.location.search).get("testJob") ?? "");
       setQuery(restored);
       setDraft(restored);
       // 回退到的那一页是哪一页，历史条目里没记；不知道就说不知道，把「上一页」置灰。
@@ -162,23 +187,34 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
       load(restored);
     };
     window.addEventListener("popstate", restore);
-    window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, restore);
+    const refresh = () => {
+      const current = currentQuery();
+      void loadProfiles(current);
+      void loadFlags(current);
+      if (current.tab === "profiles") void loadJobs();
+    };
+    window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
     return () => {
+      navigation.current += 1;
       gates.profiles.invalidate();
       gates.flags.invalidate();
       gates.jobs.invalidate();
       window.removeEventListener("popstate", restore);
-      window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, restore);
+      window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
     };
-  }, [load]);
+  }, [load, loadFlags, loadJobs, loadProfiles]);
 
   // SPEC: 任何改变结果集的动作都回到第一页 —— 所以 trails 默认清空，只有翻页自己传轨迹。
   function navigate(next: GenerationConfigQuery, mode: "push" | "replace" = "push", nextTrails: ConfigTrails = emptyTrails) {
+    navigation.current += 1;
+    setConfirmation(null);
+    setEditor(null);
     const params = new URLSearchParams(window.location.search);
     if (next.search !== query.search || next.profileMode !== query.profileMode || next.profileStatus !== query.profileStatus || next.profileCursor !== query.profileCursor) {
       params.delete("profile");
       params.delete("testJob");
       setSelectedProfileId("");
+      setTrackedJobId("");
     }
     const url = generationConfigWorkspaceUrl(window.location.pathname, params.toString(), next);
     window.history[mode === "push" ? "pushState" : "replaceState"](null, "", url);
@@ -194,9 +230,13 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
   }
 
   const flagRows = flags.data?.items ?? [];
-  useEffect(() => { void loadJobs(); }, [loadJobs, selectedId, selectedProfile?.version]);
+  useEffect(() => { if (query.tab === "profiles") void loadJobs(); }, [loadJobs, query.tab, jobsKey]);
 
   function selectProfile(id: string) {
+    navigation.current += 1;
+    setConfirmation(null);
+    setEditor(null);
+    setTrackedJobId("");
     const url = new URL(window.location.href);
     url.searchParams.set("profile", id);
     url.searchParams.delete("testJob");
@@ -205,7 +245,9 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
   }
 
   function confirmWrite(input: ConfigCommand) {
+    const origin = navigation.current;
     setConfirmation({
+      scopeKey,
       title: input.title,
       summary: input.summary,
       destructive: { expectedName: input.expected, inputLabel: "Confirmation" },
@@ -213,7 +255,9 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
       reasonLabel: "Reason",
       submitLabel: "Confirm",
       onSubmit: async (reason) => {
+        if (navigation.current !== origin) return;
         await apiWrite(input.endpoint, input.method, { ...input.payload(reason), confirmation: input.expected });
+        if (navigation.current !== origin) return;
         toast({ tone: "success", title: input.completed });
         load(query);
       },
@@ -228,7 +272,9 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
   function confirmTestImage() {
     if (!permissions.manageProfiles || !selectedId) return;
     const profileId = selectedId;
+    const origin = navigation.current;
     setConfirmation({
+      scopeKey,
       title: t("Generate test image on {id}", { id: profileId }),
       consequence: {
         effect: t("This runs a real generation: {count} image on {runner}, queued behind customer work. It debits no Dreamcoins, and the queued job cannot be recalled once dispatched.", {
@@ -241,6 +287,7 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
       reasonLabel: "Reason",
       submitLabel: t("Queue test image"),
       onSubmit: async (reason) => {
+        if (navigation.current !== origin) return;
         setTestBusy(true);
         try {
           const response = await apiWrite<{ job: RecordRow }>(`/api/v2/admin/generation/model-profiles/${profileId}/commands/test-job`, "POST", {
@@ -250,6 +297,7 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
             reason,
             confirmation: profileId,
           });
+          if (navigation.current !== origin) return;
           // INTENT: 排队成功是 info 不是 success —— 图还没出来，运营要等下面的 recent jobs。
           toast({ tone: "info", title: t("Test image queued as {id}", { id: text(response.job.id) || t("an unnamed job") }) });
           const jobId = text(response.job.id);
@@ -259,8 +307,9 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
             url.searchParams.set("testJob", jobId);
             window.history.replaceState(null, "", `${url.pathname}${url.search}`);
             setSelectedProfileId(profileId);
+            setTrackedJobId(jobId);
           }
-          await loadJobs();
+          if (!jobId || jobId === trackedJobId) await loadJobs();
         } finally {
           setTestBusy(false);
         }
@@ -269,14 +318,12 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
   }
 
   const filtered = isGenerationConfigQueryFiltered(query);
-  const initiallyLoading = !profiles.data && !flags.data && !recentJobs.data && (profiles.loading || flags.loading || recentJobs.loading);
+  const initiallyLoading = query.tab === "profiles" ? !profiles.data && profiles.loading : !flags.data && flags.loading;
   return (
     <section aria-labelledby="generation-config-title" className="space-y-5">
       <div id="generation-config-title"><PageHeader purpose={t("Test generation profiles, publish proven versions, and roll feature flags through audited control-plane commands.")} title={t("Profiles & Rollout")} /></div>
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--ad-text-muted)]" role="status">
-        <Freshness label="Profiles" state={profiles} />
-        <Freshness label="Feature flags" state={flags} />
-        <Freshness label="Recent jobs" state={recentJobs} />
+        {query.tab === "profiles" ? <><Freshness label="Profiles" state={profiles} /><Freshness label="Recent jobs" state={recentJobs} /></> : <Freshness label="Feature flags" state={flags} />}
       </div>
 
       <div className="grid gap-px overflow-hidden rounded-lg border border-[var(--ad-border)] bg-black/5 md:grid-cols-2">
@@ -286,20 +333,18 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
 
       <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:grid-cols-2 xl:grid-cols-4" onSubmit={apply}>
         <Field label="Search" onChange={(search) => setDraft((current) => ({ ...current, search }))} search value={draft.search} />
-        <Select label="Profile mode" onChange={(profileMode) => setDraft((current) => ({ ...current, profileMode }))} options={["", "image", "video"]} value={draft.profileMode} />
-        <Select label="Profile status" onChange={(profileStatus) => setDraft((current) => ({ ...current, profileStatus }))} options={["", "draft", "active", "archived"]} value={draft.profileStatus} />
-        <Select booleanOptions label="Flag state" onChange={(flagEnabled) => setDraft((current) => ({ ...current, flagEnabled }))} options={["", "true", "false"]} value={draft.flagEnabled} />
+        {query.tab === "profiles" ? <><Select label="Profile mode" onChange={(profileMode) => setDraft((current) => ({ ...current, profileMode }))} options={["", "image", "video"]} value={draft.profileMode} />
+        <Select label="Profile status" onChange={(profileStatus) => setDraft((current) => ({ ...current, profileStatus }))} options={["", "draft", "active", "archived"]} value={draft.profileStatus} /></> : <Select booleanOptions label="Flag state" onChange={(flagEnabled) => setDraft((current) => ({ ...current, flagEnabled }))} options={["", "true", "false"]} value={draft.flagEnabled} />}
         <div className="flex items-end gap-2"><button className="min-h-11 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white" type="submit">{t("Apply")}</button>{filtered ? <button aria-label={t("Clear generation config filters")} className="grid min-h-11 min-w-11 place-items-center rounded-md border border-[var(--ad-border)]" onClick={() => navigate({ ...defaultGenerationConfigQuery, tab: query.tab })} type="button"><X className="h-4 w-4" /></button> : null}</div>
       </form>
 
-      <AuthorityError onRetry={() => void loadProfiles(query)} state={profiles} />
-      <AuthorityError onRetry={() => void loadFlags(query)} state={flags} />
-      <AuthorityError onRetry={() => void loadJobs()} state={recentJobs} />
+      {query.tab === "profiles" ? <><AuthorityError onRetry={() => void loadProfiles(query)} state={profiles} />
+      <AuthorityError onRetry={() => void loadJobs()} state={recentJobs} /></> : <AuthorityError onRetry={() => void loadFlags(query)} state={flags} />}
       {initiallyLoading ? <Loading /> : query.tab === "profiles" ? (
         <>
           {!permissions.manageProfiles ? <p className="text-xs"><PermissionNotice permission="generation.config.write" /></p> : null}
-          {permissions.manageProfiles && profiles.data ? profiles.data.authoringEnabled ? <div className="flex gap-2"><Action icon={<UploadCloud className="h-4 w-4" />} label="Create profile draft" onClick={() => setEditor({ source: null, editing: false })} />{selectedProfile ? <Action icon={<UploadCloud className="h-4 w-4" />} label="Create replacement draft" onClick={() => setEditor({ source: selectedProfile, editing: false })} /> : null}{selectedProfile?.status === "draft" ? <Action icon={<Activity className="h-4 w-4" />} label="Edit profile draft" onClick={() => setEditor({ source: selectedProfile, editing: true })} /> : null}</div> : <p role="status" className="text-sm text-[var(--ad-text-muted)]">{t("Profile authoring is disabled in this environment. Ask engineering to enable model diagnostics before creating or editing drafts.")}</p> : null}
-          {editor && permissions.manageProfiles && profiles.data?.authoringEnabled ? <GenerationProfileEditor key={`${String(editor.source?.id ?? "new")}:${editor.editing}`} source={editor.source} editing={editor.editing} onCancel={() => setEditor(null)} onSaved={id => { setEditor(null); setReviews({}); navigate({ ...defaultGenerationConfigQuery, search: id }); selectProfile(id); toast({ tone: "success", title: t("Profile draft saved") }); }} /> : null}
+          {permissions.manageProfiles && profiles.data ? profiles.data.authoringEnabled ? <div className="flex gap-2"><Action icon={<UploadCloud className="h-4 w-4" />} label="Create profile draft" onClick={() => setEditor({ source: null, editing: false, scopeKey, origin: navigation.current })} />{selectedProfile ? <Action icon={<UploadCloud className="h-4 w-4" />} label="Create replacement draft" onClick={() => setEditor({ source: selectedProfile, editing: false, scopeKey, origin: navigation.current })} /> : null}{selectedProfile?.status === "draft" ? <Action icon={<Activity className="h-4 w-4" />} label="Edit profile draft" onClick={() => setEditor({ source: selectedProfile, editing: true, scopeKey, origin: navigation.current })} /> : null}</div> : <p role="status" className="text-sm text-[var(--ad-text-muted)]">{t("Profile authoring is disabled in this environment. Ask engineering to enable model diagnostics before creating or editing drafts.")}</p> : null}
+          {editor?.scopeKey === scopeKey && permissions.manageProfiles && profiles.data?.authoringEnabled ? <GenerationProfileEditor key={`${String(editor.source?.id ?? "new")}:${editor.editing}`} source={editor.source} editing={editor.editing} onCancel={() => setEditor(null)} onSaved={id => { if (editor.origin !== navigation.current) return; setEditor(null); setReviews({}); navigate({ ...defaultGenerationConfigQuery, search: id }); selectProfile(id); toast({ tone: "success", title: t("Profile draft saved") }); }} /> : null}
           {profiles.data ? profileRows.length === 0 && !selectedProfile ? <EmptyState hint={filtered ? "The complete profile authority query returned no matches." : "No built-in generation profiles are seeded yet."} title={filtered ? "No generation profiles match these filters." : "No built-in generation profiles are seeded yet."} /> : (
             <div className="grid gap-4 lg:grid-cols-[minmax(260px,0.8fr)_minmax(0,1.6fr)]">
               <div className="space-y-2 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3">{profileRows.map((profile) => {
@@ -318,9 +363,13 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
           {flags.data ? <ListPagination cursor={query.flagCursor} loading={flags.loading} onNavigate={(flagCursor, trail) => navigate({ ...query, flagCursor }, "push", { ...trails, flags: trail })} pageInfo={flags.data.pageInfo ?? emptyPageInfo} rowCount={flagRows.length} trail={trails.flags} /> : null}
         </>
       )}
-      {confirmation ? <ConfirmDialog onClose={() => setConfirmation(null)} spec={confirmation} /> : null}
+      {confirmation?.scopeKey === scopeKey ? <ConfirmDialog onClose={() => setConfirmation(current => current === confirmation ? null : current)} spec={confirmation} /> : null}
     </section>
   );
+}
+
+function profileJobsKey(profile: RecordRow | null, trackedId: string) {
+  return JSON.stringify([profile?.id, profile?.profileKey, profile?.version, trackedId]);
 }
 
 function ProfileDetail({ canWrite, jobs, jobsLoading, jobsError, onRefresh, onConfirm, onTest, profile, review, setReview, setTestPrompt, testBusy, testPrompt }: {

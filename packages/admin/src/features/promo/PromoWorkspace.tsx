@@ -149,6 +149,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
     next: PromoQuery,
     mode: "push" | "replace" = "push",
     nextTrails: PromoTrails = emptyTrails,
+    scope?: PromoScope,
   ) {
     const url = promoWorkspaceUrl(
       window.location.pathname,
@@ -163,7 +164,8 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
     setQuery(next);
     setDraft(next);
     setTrails(nextTrails);
-    load(next);
+    if (scope) void loadScope(next, scope);
+    else load(next);
   }
 
   function apply(event: FormEvent<HTMLFormElement>) {
@@ -195,7 +197,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
         );
         if (!isCurrent()) return;
         toast({ tone: "success", title: t("Redeem code {id} disabled", { id }) });
-        navigate({ ...query, codeCursor: "" }, "replace");
+        navigate({ ...query, codeCursor: "" }, "replace", { ...trails, codes: [] }, "codes");
       },
     };
     confirmationIntent.current = spec;
@@ -271,7 +273,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
       </form>
       {canWrite ? (
         <RedeemCodeForm
-          onCreated={() => navigate({ ...query, codeCursor: "" }, "replace")}
+          onCreated={() => navigate({ ...query, codeCursor: "" }, "replace", { ...trails, codes: [] }, "codes")}
         />
       ) : null}
       <AuthorityError
@@ -292,7 +294,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
       <Pager
         cursor={query.codeCursor}
         onNavigate={(codeCursor, trail) =>
-          navigate({ ...query, codeCursor }, "push", { ...trails, codes: trail })
+          navigate({ ...query, codeCursor }, "push", { ...trails, codes: trail }, "codes")
         }
         state={codes}
         trail={trails.codes}
@@ -315,7 +317,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
       <Pager
         cursor={query.referralCursor}
         onNavigate={(referralCursor, trail) =>
-          navigate({ ...query, referralCursor }, "push", { ...trails, referrals: trail })
+          navigate({ ...query, referralCursor }, "push", { ...trails, referrals: trail }, "referrals")
         }
         state={referrals}
         trail={trails.referrals}

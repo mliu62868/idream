@@ -84,6 +84,7 @@ export async function executeAdminBackfillHttpMutation(input: {
         body: input.body,
       };
   return executeAtomicIdempotentMutation({
+    validateResult: (value) => adminBackfillResultSchema.parse(value),
     environment: env.APP_ENV,
     actor: input.actor,
     idempotencyKey,
@@ -92,7 +93,11 @@ export async function executeAdminBackfillHttpMutation(input: {
     target: { type: "admin_backfill_run", id: identity.runId },
     payload: input.body,
     mutate: async (tx) => {
-      const result = adminBackfillResultSchema.parse(await input.execute(identity));
+      const parsed = adminBackfillResultSchema.safeParse(await input.execute(identity));
+      if (!parsed.success) throw Errors.internal("Backfill returned an invalid result", {
+        issues: parsed.error.issues.map(({ code, path }) => ({ code, path })),
+      });
+      const result = parsed.data;
       if (result.runId !== identity.runId || result.domain !== input.domain) {
         throw Errors.conflict("Backfill result does not match the requested Run authority", {
           requestedRunId: identity.runId,

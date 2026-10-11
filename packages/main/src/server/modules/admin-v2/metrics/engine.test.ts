@@ -36,6 +36,30 @@ function dataset(overrides: Partial<CanonicalMetricDataset> = {}): CanonicalMetr
 }
 
 describe("canonical metric engine", () => {
+  it("keeps cohort results invariant under interleaved users, input order and duplicate exchanges", () => {
+    const facts = dataset({
+      signups: ["a", "b", "c"].map((userId) => ({ userId, occurredAt: new Date("2026-07-01T00:00:00Z"), eligible: true })),
+      chatExchanges: ["a", "b", "c"].flatMap((userId, index) => [
+        ...exchanges({ userId, characterId: "same-character", sessionId: `${userId}-first`, at: "2026-07-01T08:00:00Z", count: 5 }),
+        ...exchanges({ userId, characterId: index === 2 ? "another-character" : "same-character", sessionId: `${userId}-next`, at: "2026-07-02T08:00:00Z", count: 5 }),
+      ]),
+      generationDeliveries: [{ requestId: "g-a", userId: "a", occurredAt: new Date("2026-07-02T00:00:00Z"), eligible: true }],
+      subscriptions: [{ subscriptionId: "s-b", userId: "b", activeAt: new Date("2026-07-04T00:00:00Z"), endedAt: null, eligible: true }],
+    });
+    const asOf = new Date("2026-08-03T00:00:00Z");
+    const expected = evaluateCanonicalMetrics(facts, asOf);
+    const shuffled = evaluateCanonicalMetrics({
+      ...facts,
+      signups: [...facts.signups].reverse(),
+      chatExchanges: [...facts.chatExchanges, ...facts.chatExchanges].reverse(),
+    }, asOf);
+    expect(expected.metrics["retention.same_character_d1"]).toMatchObject({ numerator: 2, denominator: 4 });
+    expect(expected.metrics["activation.generation_7d"].numerator).toBe(1);
+    expect(expected.metrics["conversion.paid_d7"].numerator).toBe(1);
+    expect(shuffled.metrics).toEqual(expected.metrics);
+    expect(shuffled.depthMilestones).toEqual(expected.depthMilestones);
+  });
+
   it("counts QCE v1 only after five distinct eligible exchanges in one UTC day and engagement session", () => {
     const result = evaluateCanonicalMetrics(dataset({
       chatExchanges: [

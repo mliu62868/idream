@@ -3,6 +3,7 @@
 // INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhCommon: Record<string, string> = {
+  "Load more": "加载更多",
   "Discard unsaved changes?": "放弃未保存的修改？",
   "Changes were saved, but the latest details could not be loaded. Retry before making another change.": "修改已保存，但最新详情读取失败。重试读取后才能继续修改。",
   "Latest details loaded.": "已读取最新详情。",

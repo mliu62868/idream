@@ -8,6 +8,17 @@ import {
 } from "./request-error-copy";
 
 describe("operatorErrorCopy", () => {
+  it("honors approval renewal recovery before the generic forbidden explanation", () => {
+    const details = { recovery: "request_new_approval", action: "billing.ledger.adjust", targetId: "user-1" };
+    const error = new AdminV2RequestError("Approval is unbound, expired, or invalid; request a new approval", 403, "forbidden", details, "approval-recovery");
+    const copy = operatorErrorCopy(error);
+    expect(copy.headline).toBe("This approval must be requested again.");
+    expect(copy.nextStep).toContain("check its current values");
+    expect(copy.technical.details).toEqual(details);
+    expect(copy.technical.requestId).toBe("approval-recovery");
+    expect(operatorErrorCopy(new AdminV2RequestError("Missing permission", 403, "forbidden")).headline).toBe("Your account does not hold the permission this action needs.");
+  });
+
   it("does not infer a version race from a versioned request rejected by a business rule", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
       ok: false, error: { code: "conflict", message: "Only a saved draft can be published" },

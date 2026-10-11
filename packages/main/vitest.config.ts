@@ -99,6 +99,9 @@ export default defineConfig({
         "../shared/src/admin/permissions.ts",
         import.meta.url,
       ).pathname,
+      "@idream/shared/admin/testing/contract-fixtures": new URL(
+        "../shared/src/admin/testing/contract-fixtures.ts", import.meta.url,
+      ).pathname,
       "@idream/shared/admin": new URL("../shared/src/admin/index.ts", import.meta.url).pathname,
       "@idream/shared/bff": new URL("../shared/src/bff/signing.ts", import.meta.url).pathname,
       "@idream/shared/chat/limits": new URL(

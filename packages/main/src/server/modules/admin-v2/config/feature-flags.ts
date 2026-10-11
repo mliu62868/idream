@@ -1,3 +1,4 @@
+import { adminMutationResultValidator } from "@/server/modules/admin-v2/shared/route-handler";
 import { DUAL_APPROVAL_FLAG, enforceApproval } from "@/server/modules/admin-v2/approvals/enforcement";
 import { randomUUID } from "node:crypto";
 import { prisma } from "@/server/lib/db";
@@ -87,6 +88,7 @@ export async function patchFeatureFlag(request: Request, key: string) {
   }
   const requestId = request.headers.get("x-request-id")?.trim() || randomUUID();
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey: requireIdempotencyKey(request),
@@ -100,7 +102,7 @@ export async function patchFeatureFlag(request: Request, key: string) {
       // INVARIANT: 双人复核开着时，关掉它本身也要第二个人批准 —— 否则一个人先关开关再单人发布，
       //   整套复核形同虚设。打开它不需要批准（只会更严）。
       if (key === DUAL_APPROVAL_FLAG && before?.enabled && body.enabled === false) {
-        await enforceApproval("config.feature_flag.write", key, tx);
+        await enforceApproval("config.feature_flag.write", key, tx, { enabled: false }, before.version);
       }
       // INVARIANT: 运行时只认 enabled && rolloutPercent === 100；只翻 enabled 时跟着把灰度
       // 设成全量 / 0，否则「启用」一条 rollout=0 的开关在线上毫无效果。

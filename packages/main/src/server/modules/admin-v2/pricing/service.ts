@@ -1,3 +1,4 @@
+import { adminMutationResultValidator } from "@/server/modules/admin-v2/shared/route-handler";
 import type { Prisma, PricingRule } from "@prisma/client";
 import type {
   AdminPricingRuleCreateRequest,
@@ -80,6 +81,7 @@ export async function createPricingRule(
   if (body.confirmation !== body.ruleKey) throw Errors.badRequest("Confirmation did not match pricing rule key");
   const requestId = adminRequestId(request);
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey,
@@ -129,6 +131,7 @@ export async function patchPricingRule(
 ) {
   const requestId = adminRequestId(request);
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey,
@@ -179,6 +182,7 @@ export async function publishPricingRule(
 ) {
   const requestId = adminRequestId(request);
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey,
@@ -196,7 +200,7 @@ export async function publishPricingRule(
         baseCost: rule.baseCost,
         multiplier: rule.multiplier,
         version: rule.version,
-      });
+      }, rule.version);
       const previous = await tx.pricingRule.findFirst({ where: { mode: rule.mode, status: "active" } });
       const effectiveFrom = body.effectiveFrom ? new Date(body.effectiveFrom) : (rule.effectiveFrom ?? new Date());
       if (effectiveFrom.getTime() > Date.now()) {
@@ -243,6 +247,7 @@ export async function rollbackPricingRule(
 ) {
   const requestId = adminRequestId(request);
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey,

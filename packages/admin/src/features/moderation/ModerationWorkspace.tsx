@@ -181,6 +181,7 @@ export function ModerationWorkspace({ canDecide, canReadComics = false, canRevie
     next: ModerationQuery,
     mode: "push" | "replace" = "push",
     nextTrails: Record<ModerationScope, string[]> = emptyTrails(),
+    scope?: ModerationScope,
   ) {
     window.history[mode === "push" ? "pushState" : "replaceState"](
       null,
@@ -194,7 +195,8 @@ export function ModerationWorkspace({ canDecide, canReadComics = false, canRevie
     setQuery(next);
     setDraft(next);
     setTrails(nextTrails);
-    load(next);
+    if (scope) void loadScope(next, scope);
+    else load(next);
   }
 
   // SPEC: 翻某一块队列时另外两块原地不动 —— 三块共用一个 URL，但各自独立分页。
@@ -202,7 +204,7 @@ export function ModerationWorkspace({ canDecide, canReadComics = false, canRevie
     navigate({ ...query, [cursorKey]: cursor }, "push", {
       ...trails,
       [scope]: [...trails[scope], query[cursorKey]],
-    });
+    }, scope);
   }
 
   function goBack(scope: ModerationScope, cursorKey: CursorKey) {
@@ -210,7 +212,7 @@ export function ModerationWorkspace({ canDecide, canReadComics = false, canRevie
     navigate({ ...query, [cursorKey]: trail.at(-1) ?? "" }, "push", {
       ...trails,
       [scope]: trail.slice(0, -1),
-    });
+    }, scope);
   }
   function apply(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

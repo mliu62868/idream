@@ -309,7 +309,7 @@ export function GenerationMetricsView() {
               { key: "count", label: "Count" },
             ]}
             empty={t("No generation records in window.")}
-            rows={metrics.placements as unknown as Record<string, unknown>[]}
+            rows={metrics.placements}
             title={t("Placements")}
           />
           <PlacementEngagementTable engagement={metrics.placementEngagement} />
@@ -521,16 +521,16 @@ function bucketsSummary(rows: readonly (StatusBuckets & { costDreamcoins: number
 
 function ProfilesTable({ profiles, period }: { profiles: ProfileMetric[]; period?: MetricsPeriod }) {
   const { t } = useAdminI18n();
-  const columns: OpsColumn[] = [
-    { key: "label", label: "Label", render: (row) => (row.label as string | null) ?? "–" },
+  const columns: OpsColumn<ProfileMetric>[] = [
+    { key: "label", label: "Label", render: (row) => (row.label) ?? "–" },
     {
       key: "profileId",
       label: "Profile",
       render: (row) => (
-        <span className="font-mono">{row.profileId as string}@{(row.profileVersion as number | null) ?? 0}</span>
+        <span className="font-mono">{row.profileId}@{(row.profileVersion) ?? 0}</span>
       ),
     },
-    { key: "workflowKey", label: "Workflow", render: (row) => <span className="font-mono">{(row.workflowKey as string | null) ?? "–"}</span> },
+    { key: "workflowKey", label: "Workflow", render: (row) => <span className="font-mono">{(row.workflowKey) ?? "–"}</span> },
     { key: "total", label: "Total" },
     { key: "completed", label: "Completed" },
     {
@@ -538,21 +538,21 @@ function ProfilesTable({ profiles, period }: { profiles: ProfileMetric[]; period
       label: "Failed",
       render: (row) => (
         <FailedCell
-          buckets={row as unknown as StatusBuckets}
-          jobsQuery={failedJobsQuery(period, { profileId: row.profileId as string, profileVersion: row.profileVersion as number | null })}
+          buckets={row}
+          jobsQuery={failedJobsQuery(period, { profileId: row.profileId, profileVersion: row.profileVersion })}
         />
       ),
     },
-    { key: "failureRate", label: "Failure rate", render: (row) => rateCell(row as unknown as StatusBuckets) },
+    { key: "failureRate", label: "Failure rate", render: (row) => rateCell(row) },
     { key: "blocked", label: "Blocked" },
     { key: "costDreamcoins", label: "Cost" },
-    { key: "avgDurationMs", label: "Avg Duration", render: (row) => formatDuration(row.avgDurationMs as number | null) },
+    { key: "avgDurationMs", label: "Avg Duration", render: (row) => formatDuration(row.avgDurationMs) },
   ];
   return (
     <ReadonlyOpsView
       columns={columns}
       empty={t("No generation records in window.")}
-      rows={byFailureImpact(profiles) as unknown as Record<string, unknown>[]}
+      rows={byFailureImpact(profiles)}
       summary={profiles.length > 0 ? bucketsSummary(profiles, t) : null}
       title={t("Profiles")}
     />
@@ -561,8 +561,8 @@ function ProfilesTable({ profiles, period }: { profiles: ProfileMetric[]; period
 
 function RecipesTable({ recipes, period }: { recipes: RecipeMetric[]; period?: MetricsPeriod }) {
   const { t } = useAdminI18n();
-  const columns: OpsColumn[] = [
-    { key: "recipeId", label: "Recipe", render: (row) => <span className="font-mono">{row.recipeId as string}</span> },
+  const columns: OpsColumn<RecipeMetric>[] = [
+    { key: "recipeId", label: "Recipe", render: (row) => <span className="font-mono">{row.recipeId}</span> },
     { key: "total", label: "Total" },
     { key: "completed", label: "Completed" },
     {
@@ -570,12 +570,12 @@ function RecipesTable({ recipes, period }: { recipes: RecipeMetric[]; period?: M
       label: "Failed",
       render: (row) => (
         <FailedCell
-          buckets={row as unknown as StatusBuckets}
-          jobsQuery={failedJobsQuery(period, { recipeId: row.recipeId as string })}
+          buckets={row}
+          jobsQuery={failedJobsQuery(period, { recipeId: row.recipeId })}
         />
       ),
     },
-    { key: "failureRate", label: "Failure rate", render: (row) => rateCell(row as unknown as StatusBuckets) },
+    { key: "failureRate", label: "Failure rate", render: (row) => rateCell(row) },
     { key: "blocked", label: "Blocked" },
     { key: "costDreamcoins", label: "Cost" },
   ];
@@ -583,7 +583,7 @@ function RecipesTable({ recipes, period }: { recipes: RecipeMetric[]; period?: M
     <ReadonlyOpsView
       columns={columns}
       empty={t("No generation records in window.")}
-      rows={byFailureImpact(recipes) as unknown as Record<string, unknown>[]}
+      rows={byFailureImpact(recipes)}
       summary={recipes.length > 0 ? bucketsSummary(recipes, t) : null}
       title={t("Recipes")}
     />
@@ -592,7 +592,7 @@ function RecipesTable({ recipes, period }: { recipes: RecipeMetric[]; period?: M
 
 function SourcesTable({ sources, period }: { sources: SourceMetric[]; period?: MetricsPeriod }) {
   const { t, value } = useAdminI18n();
-  const columns: OpsColumn[] = [
+  const columns: OpsColumn<SourceMetric>[] = [
     { key: "sourceType", label: "Source", render: (row) => value(String(row.sourceType)) },
     { key: "total", label: "Total" },
     { key: "completed", label: "Completed" },
@@ -601,12 +601,12 @@ function SourcesTable({ sources, period }: { sources: SourceMetric[]; period?: M
       label: "Failed",
       render: (row) => (
         <FailedCell
-          buckets={row as unknown as StatusBuckets}
-          jobsQuery={failedJobsQuery(period, { sourceType: row.sourceType as string })}
+          buckets={row}
+          jobsQuery={failedJobsQuery(period, { sourceType: row.sourceType })}
         />
       ),
     },
-    { key: "failureRate", label: "Failure rate", render: (row) => rateCell(row as unknown as StatusBuckets) },
+    { key: "failureRate", label: "Failure rate", render: (row) => rateCell(row) },
     { key: "blocked", label: "Blocked" },
     { key: "costDreamcoins", label: "Cost" },
   ];
@@ -614,7 +614,7 @@ function SourcesTable({ sources, period }: { sources: SourceMetric[]; period?: M
     <ReadonlyOpsView
       columns={columns}
       empty={t("No generation records in window.")}
-      rows={byFailureImpact(sources) as unknown as Record<string, unknown>[]}
+      rows={byFailureImpact(sources)}
       summary={sources.length > 0 ? bucketsSummary(sources, t) : null}
       title={t("Sources")}
     />
@@ -631,9 +631,9 @@ function PlacementEngagementTable({ engagement }: { engagement: PlacementEngagem
   const rows = [...engagement].sort(
     (a, b) => (ratio(b.clicks, b.impressions) ?? -1) - (ratio(a.clicks, a.impressions) ?? -1),
   );
-  const columns: OpsColumn[] = [
+  const columns: OpsColumn<PlacementEngagementMetric>[] = [
     { key: "slot", label: "Slot", render: (row) => value(String(row.slot)) },
-    { key: "placementId", label: "Placement", render: (row) => <span className="font-mono">{(row.placementId as string | null) ?? "–"}</span> },
+    { key: "placementId", label: "Placement", render: (row) => <span className="font-mono">{(row.placementId) ?? "–"}</span> },
     { key: "impressions", label: "Impressions" },
     { key: "clicks", label: "Clicks" },
     {
@@ -641,7 +641,7 @@ function PlacementEngagementTable({ engagement }: { engagement: PlacementEngagem
       label: "CTR",
       render: (row) => (
         <span className="tabular-nums">
-          {formatPercent(ratio(row.clicks as number, row.impressions as number))}
+          {formatPercent(ratio(row.clicks, row.impressions))}
         </span>
       ),
     },
@@ -650,7 +650,7 @@ function PlacementEngagementTable({ engagement }: { engagement: PlacementEngagem
     <ReadonlyOpsView
       columns={columns}
       empty={t("No generation records in window.")}
-      rows={rows as unknown as Record<string, unknown>[]}
+      rows={rows}
       summary={engagement.length > 0
         ? t("{impressions} impressions · {clicks} clicks · {ctr} CTR", {
             impressions: totals.impressions,

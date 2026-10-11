@@ -1,4 +1,5 @@
-import { prisma } from "@/server/lib/db";
+import type { PrismaClient } from "@prisma/client";
+import { executeCharacterReleaseCommand } from "../characters/release-executor";
 import { Errors } from "@/server/lib/errors";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { transitionControlPlaneCommandAttempt } from "../shared/control-plane-command-attempt";
@@ -13,18 +14,25 @@ import {
   isIncidentTransitionAllowed,
 } from "../shared/state-transition-authority";
 
-const WORKER_ID = "admin-v2-inline-executor";
+export interface AdminCommandExecutionContext {
+  readonly db: PrismaClient;
+  readonly workerId: string;
+  readonly now?: Date;
+  readonly leaseMs?: number;
+  readonly afterClaim?: (commandId: string) => Promise<void>;
+}
 
-async function failCommand(commandId: string, attemptNo: number, error: unknown) {
+async function failCommand(commandId: string, attemptNo: number, error: unknown, context: AdminCommandExecutionContext) {
+  const { db, workerId } = context;
   const payload = {
     code: "domain_invariant_failed",
     message: error instanceof Error ? error.message : "Command execution failed",
   };
-  await prisma.$transaction(async (tx) => {
+  await db.$transaction(async (tx) => {
     await transitionControlPlaneCommand(tx, {
       commandId,
       to: "failed",
-      expected: { from: ["running", "verifying"], leaseOwner: WORKER_ID },
+      expected: { from: ["running", "verifying"], leaseOwner: workerId, attemptCount: attemptNo },
       data: {
         error: toInputJson(payload),
         leaseOwner: null,
@@ -42,15 +50,17 @@ async function failCommand(commandId: string, attemptNo: number, error: unknown)
   });
 }
 
-async function executeResolveIncident(commandId: string) {
-  const claimed = await claimControlPlaneCommand(prisma, {
+async function executeResolveIncident(commandId: string, context: AdminCommandExecutionContext) {
+  const { db, workerId } = context;
+  const claimed = await claimControlPlaneCommand(db, {
     commandId,
-    workerId: WORKER_ID,
-    leaseMs: 30_000,
+    workerId: workerId,
+    leaseMs: context.leaseMs ?? 30_000,
+    now: context.now,
   });
-  if (!claimed) return prisma.controlPlaneCommand.findUniqueOrThrow({ where: { id: commandId } });
+  if (!claimed) return db.controlPlaneCommand.findUniqueOrThrow({ where: { id: commandId } });
   try {
-    return await prisma.$transaction(async (tx) => {
+    return await db.$transaction(async (tx) => {
       const incident = await tx.opsIncident.findUnique({ where: { id: claimed.targetId } });
       if (!incident) throw Errors.notFound("Incident not found during command execution");
       if (incident.version !== claimed.expectedVersion) throw Errors.conflict("Incident changed before resolve execution");
@@ -90,7 +100,7 @@ async function executeResolveIncident(commandId: string) {
       const command = await transitionControlPlaneCommand(tx, {
         commandId: claimed.id,
         to: "succeeded",
-        expected: { from: "running", leaseOwner: WORKER_ID, attemptCount: claimed.attemptCount },
+        expected: { from: "running", leaseOwner: workerId, attemptCount: claimed.attemptCount },
         data: {
           result: toInputJson(result),
           leaseOwner: null,
@@ -108,20 +118,22 @@ async function executeResolveIncident(commandId: string) {
       return command;
     });
   } catch (error) {
-    await failCommand(claimed.id, claimed.attemptCount, error);
+    await failCommand(claimed.id, claimed.attemptCount, error, context);
     throw error;
   }
 }
 
-async function executeCloseCase(commandId: string) {
-  const claimed = await claimControlPlaneCommand(prisma, {
+async function executeCloseCase(commandId: string, context: AdminCommandExecutionContext) {
+  const { db, workerId } = context;
+  const claimed = await claimControlPlaneCommand(db, {
     commandId,
-    workerId: WORKER_ID,
-    leaseMs: 30_000,
+    workerId: workerId,
+    leaseMs: context.leaseMs ?? 30_000,
+    now: context.now,
   });
-  if (!claimed) return prisma.controlPlaneCommand.findUniqueOrThrow({ where: { id: commandId } });
+  if (!claimed) return db.controlPlaneCommand.findUniqueOrThrow({ where: { id: commandId } });
   try {
-    return await prisma.$transaction(async (tx) => {
+    return await db.$transaction(async (tx) => {
       const adminCase = await tx.adminCase.findUnique({ where: { id: claimed.targetId } });
       if (!adminCase) throw Errors.notFound("Case not found during command execution");
       if (adminCase.version !== claimed.expectedVersion) throw Errors.conflict("Case changed before close execution");
@@ -178,7 +190,7 @@ async function executeCloseCase(commandId: string) {
       const command = await transitionControlPlaneCommand(tx, {
         commandId: claimed.id,
         to: "succeeded",
-        expected: { from: "running", leaseOwner: WORKER_ID, attemptCount: claimed.attemptCount },
+        expected: { from: "running", leaseOwner: workerId, attemptCount: claimed.attemptCount },
         data: {
           result: toInputJson(result),
           leaseOwner: null,
@@ -196,7 +208,7 @@ async function executeCloseCase(commandId: string) {
       return command;
     });
   } catch (error) {
-    await failCommand(claimed.id, claimed.attemptCount, error);
+    await failCommand(claimed.id, claimed.attemptCount, error, context);
     throw error;
   }
 }
@@ -224,15 +236,17 @@ function nullableString(payload: Record<string, unknown>, key: string): string |
   return value;
 }
 
-async function executeMigrateSessionRelease(commandId: string) {
-  const claimed = await claimControlPlaneCommand(prisma, {
+async function executeMigrateSessionRelease(commandId: string, context: AdminCommandExecutionContext) {
+  const { db, workerId } = context;
+  const claimed = await claimControlPlaneCommand(db, {
     commandId,
-    workerId: WORKER_ID,
-    leaseMs: 30_000,
+    workerId: workerId,
+    leaseMs: context.leaseMs ?? 30_000,
+    now: context.now,
   });
-  if (!claimed) return prisma.controlPlaneCommand.findUniqueOrThrow({ where: { id: commandId } });
+  if (!claimed) return db.controlPlaneCommand.findUniqueOrThrow({ where: { id: commandId } });
   try {
-    return await prisma.$transaction(async (tx) => {
+    return await db.$transaction(async (tx) => {
       const payload = jsonObject(claimed.requestPayload);
       const characterId = requiredString(payload, "characterId");
       const toCharacterContentVersionId = requiredString(payload, "toCharacterContentVersionId");
@@ -284,7 +298,7 @@ async function executeMigrateSessionRelease(commandId: string) {
       const transitioned = await transitionControlPlaneCommand(tx, {
         commandId: claimed.id,
         to: "succeeded",
-        expected: { from: "running", leaseOwner: WORKER_ID, attemptCount: claimed.attemptCount },
+        expected: { from: "running", leaseOwner: workerId, attemptCount: claimed.attemptCount },
         data: {
           result: toInputJson({
             sessionId: claimed.targetId,
@@ -313,28 +327,41 @@ async function executeMigrateSessionRelease(commandId: string) {
       return transitioned;
     });
   } catch (error) {
-    await failCommand(claimed.id, claimed.attemptCount, error);
+    await failCommand(claimed.id, claimed.attemptCount, error, context);
     throw error;
   }
 }
 
-export async function executeAcceptedAdminCommand(commandId: string) {
-  const command = await prisma.controlPlaneCommand.findUnique({ where: { id: commandId } });
+const characterExecutor = (commandId: string, context: AdminCommandExecutionContext) =>
+  executeCharacterReleaseCommand(context.db, { ...context, commandId });
+
+// One routing definition serves HTTP inline execution and the background worker.
+const commandExecutors = {
+  "character.release.publish": characterExecutor,
+  "character.release.withdraw": characterExecutor,
+  "character.release.rollback": characterExecutor,
+  "character.serving.pause": characterExecutor,
+  "character.serving.resume": characterExecutor,
+  "character.serving.retire": characterExecutor,
+  "character.serving.restore": characterExecutor,
+  "creative.run.retry_failed": (commandId: string, context: AdminCommandExecutionContext) =>
+    executeCreativeRetryCommand(context.db, { commandId, workerId: context.workerId }),
+  "incident.action_plan.execute": (commandId: string, context: AdminCommandExecutionContext) =>
+    executeIncidentActionPlanCommand(context.db, { commandId, workerId: context.workerId }),
+  "incident.resolve": executeResolveIncident,
+  "case.close": executeCloseCase,
+  "chat.session_release.migrate": executeMigrateSessionRelease,
+};
+
+export const ADMIN_COMMAND_TYPES = Object.keys(commandExecutors);
+
+export async function executeAcceptedAdminCommand(commandId: string, context: AdminCommandExecutionContext) {
+  const command = await context.db.controlPlaneCommand.findUnique({ where: { id: commandId } });
   if (!command) throw Errors.notFound("Control-plane command not found");
   if (["succeeded", "failed", "cancelled"].includes(command.status)) return command;
-  if (command.commandType === "creative.run.retry_failed") {
-    return executeCreativeRetryCommand(prisma, { commandId: command.id, workerId: WORKER_ID });
+  if (!Object.hasOwn(commandExecutors, command.commandType)) {
+    throw Errors.badRequest("No executor is registered for command", { commandType: command.commandType });
   }
-  if (command.commandType === "incident.action_plan.execute") {
-    return executeIncidentActionPlanCommand(prisma, {
-      commandId: command.id,
-      workerId: WORKER_ID,
-    });
-  }
-  if (command.commandType === "incident.resolve") return executeResolveIncident(command.id);
-  if (command.commandType === "case.close") return executeCloseCase(command.id);
-  if (command.commandType === "chat.session_release.migrate") {
-    return executeMigrateSessionRelease(command.id);
-  }
-  throw Errors.badRequest("No executor is registered for command", { commandType: command.commandType });
+  const executor = commandExecutors[command.commandType as keyof typeof commandExecutors];
+  return executor(command.id, context);
 }

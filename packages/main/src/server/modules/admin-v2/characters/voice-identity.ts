@@ -288,6 +288,7 @@ export async function createCharacterVoiceClone(input: {
 
   try {
     const result = await executeAtomicIdempotentMutation({
+      validateResult: (value) => characterVoiceCloneCreateResponseSchema.parse(value),
       environment: env.APP_ENV,
       actor: input.actor,
       idempotencyKey: input.idempotencyKey,
@@ -509,7 +510,7 @@ export async function createCharacterVoiceClone(input: {
       }),
     });
     mutationCompleted = true;
-    const parsed = characterVoiceCloneCreateResponseSchema.parse(result);
+    const parsed = result;
     if (parsed.replayed && preparedArtifacts.previewKey) {
       await cleanupPreparedArtifacts({
         voice,
@@ -564,6 +565,7 @@ export async function createCharacterVoicePreset(input: {
 
   try {
     const result = await executeAtomicIdempotentMutation({
+      validateResult: (value) => characterVoicePresetCreateResponseSchema.parse(value),
       environment: env.APP_ENV,
       actor: input.actor,
       idempotencyKey: input.idempotencyKey,
@@ -794,7 +796,7 @@ export async function createCharacterVoicePreset(input: {
       }),
     });
     mutationCompleted = true;
-    const parsed = characterVoicePresetCreateResponseSchema.parse(result);
+    const parsed = result;
     if (parsed.replayed && preparedArtifacts.previewKey) {
       await cleanupPreparedArtifacts({
         voice,
@@ -836,6 +838,7 @@ export async function activateCharacterVoiceProfile(input: {
 }) {
   const request = input.request;
   const result = await executeAtomicIdempotentMutation({
+    validateResult: (value) => characterVoiceActivationResponseSchema.parse(value),
     environment: env.APP_ENV,
     actor: input.actor,
     idempotencyKey: input.idempotencyKey,
@@ -1007,7 +1010,7 @@ export async function activateCharacterVoiceProfile(input: {
       replayed,
     }),
   });
-  return characterVoiceActivationResponseSchema.parse(result);
+  return result;
 }
 
 export async function resetCharacterVoiceToSystemDefault(input: {
@@ -1019,6 +1022,7 @@ export async function resetCharacterVoiceToSystemDefault(input: {
 }) {
   const request = input.request;
   const result = await executeAtomicIdempotentMutation({
+    validateResult: (value) => characterVoiceSystemDefaultResetResponseSchema.parse(value),
     environment: env.APP_ENV,
     actor: input.actor,
     idempotencyKey: input.idempotencyKey,
@@ -1117,7 +1121,7 @@ export async function resetCharacterVoiceToSystemDefault(input: {
       replayed,
     }),
   });
-  return characterVoiceSystemDefaultResetResponseSchema.parse(result);
+  return result;
 }
 
 export function characterVoiceProfileDto(profile: VoiceProfileWithAssets): CharacterVoiceProfile {

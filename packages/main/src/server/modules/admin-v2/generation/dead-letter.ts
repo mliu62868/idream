@@ -1,3 +1,4 @@
+import { adminMutationResultValidator } from "@/server/modules/admin-v2/shared/route-handler";
 // SPEC: the dead-letter authority — the failed/blocked Generation Requests an operator triages,
 //       and the two dispositions available to them: requeue a retryable failure, or discard it
 //       and settle whatever the customer was charged.
@@ -116,6 +117,7 @@ export async function requeueGenerationDeadLetterBatch(request: Request) {
   }
   const requestId = adminRequestId(request);
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey: requireIdempotencyKey(request),
@@ -165,6 +167,7 @@ export async function discardGenerationDeadLetterBatch(request: Request) {
   }
   const requestId = adminRequestId(request);
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey: requireIdempotencyKey(request),
@@ -215,6 +218,7 @@ export async function requeueGenerationDeadLetterJob(request: Request, jobId: st
   }
   const requestId = adminRequestId(request);
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey: requireIdempotencyKey(request),
@@ -257,6 +261,7 @@ export async function discardGenerationDeadLetterJob(request: Request, jobId: st
   }
   const requestId = adminRequestId(request);
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey: requireIdempotencyKey(request),

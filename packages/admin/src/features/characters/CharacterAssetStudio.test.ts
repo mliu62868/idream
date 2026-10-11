@@ -17,7 +17,6 @@ import {
   characterSourceVariationAvailabilityMessage,
   characterAssetReadinessSummary,
   characterAssetRunReceiptMessage,
-  emptyReviewDraft,
   isCharacterAssetApprovalActionable,
   isCharacterIdentityAuthorityReady,
   nextIncompleteCharacterAssetPurpose,
@@ -187,7 +186,6 @@ describe("Character Asset Studio flow", () => {
     expect(characterAssetReviewDefinesIdentity({
       identityReviewMode: "preserves_identity",
     })).toBe(false);
-    expect(emptyReviewDraft(true).identity).toBe("unscored");
     expect(isCharacterAssetApprovalActionable({
       bootstrapIdentity: true,
       decision: "approved",
@@ -660,14 +658,14 @@ describe("Character Asset Studio flow", () => {
       createCommitIndex,
     );
     const createListReloadIndex = createFlow.indexOf(
-      "preserveSelectedRunId: result.batch.id",
+      "await loadRuns()",
       createSelectionIndex,
     );
     const reviewReloadIndex = reviewFlow.indexOf(
       "const detail = await loadRun(snapshot.runId)",
     );
     const reviewListReloadIndex = reviewFlow.indexOf(
-      "await loadRuns({",
+      "await loadRuns()",
       reviewReloadIndex,
     );
     const reviewKeyReleaseIndex = reviewFlow.indexOf(

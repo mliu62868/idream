@@ -3,50 +3,24 @@ import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { logger } from "@/server/lib/logger";
-import { executeCharacterReleaseCommand } from "@/server/modules/admin-v2/characters/release-executor";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-validation";
 import {
   dispatchDueReleaseMonitors,
   dispatchStaleReleaseRoutes,
 } from "@/server/modules/admin-v2/characters/release-monitor";
 import { dispatchStaleUnknownGenerationRequests } from "@/server/modules/admin-v2/jobs/stale-unknown-dispatcher";
-import { executeAcceptedAdminCommand } from "@/server/modules/admin-v2/commands/executor";
+import { ADMIN_COMMAND_TYPES, executeAcceptedAdminCommand } from "@/server/modules/admin-v2/commands/executor";
 import { reconcileExpiredCommandLeases } from "@/server/modules/admin-v2/shared/control-plane-command";
 import {
-  executeCreativeRetryCommand,
   verifyCreativeRetryCommands,
 } from "@/server/modules/admin-v2/creative/retry-executor";
 import { dispatchGenerationAttemptOutbox } from "@/server/modules/generation/generation-attempt-authority";
 import {
-  executeIncidentActionPlanCommand,
   verifyIncidentActionPlanCommands,
 } from "@/server/modules/admin-v2/incidents/action-executor";
 import { dispatchGenerationIncidentCorrelation } from "@/server/modules/admin-v2/incidents/service";
 import { isProcessEntrypoint } from "./process-entrypoint";
 
-const COMMAND_TYPES = [
-  "character.release.publish",
-  "character.release.withdraw",
-  "character.release.rollback",
-  "character.serving.pause",
-  "character.serving.resume",
-  "character.serving.retire",
-  "character.serving.restore",
-  "incident.resolve",
-  "incident.action_plan.execute",
-  "case.close",
-  "chat.session_release.migrate",
-  "creative.run.retry_failed",
-] as const;
-const CHARACTER_COMMAND_TYPES = new Set<string>([
-  "character.release.publish",
-  "character.release.withdraw",
-  "character.release.rollback",
-  "character.serving.pause",
-  "character.serving.resume",
-  "character.serving.retire",
-  "character.serving.restore",
-]);
 const IDLE_DELAY_MS = 1_000;
 const BUSY_DELAY_MS = 50;
 const RECONCILE_INTERVAL_MS = 60_000;
@@ -118,19 +92,7 @@ async function executeAdminCommand(
     readonly afterClaim?: (commandId: string) => Promise<void>;
   },
 ) {
-  return command.commandType === "creative.run.retry_failed"
-    ? executeCreativeRetryCommand(db, { commandId: command.id, workerId: input.workerId })
-    : command.commandType === "incident.action_plan.execute"
-    ? executeIncidentActionPlanCommand(db, { commandId: command.id, workerId: input.workerId })
-    : CHARACTER_COMMAND_TYPES.has(command.commandType)
-    ? executeCharacterReleaseCommand(db, {
-        commandId: command.id,
-        workerId: input.workerId,
-        now: input.now,
-        leaseMs: input.leaseMs,
-        afterClaim: input.afterClaim,
-      })
-    : executeAcceptedAdminCommand(command.id);
+  return executeAcceptedAdminCommand(command.id, { db, ...input });
 }
 
 export async function drainAdminCommands(
@@ -169,7 +131,7 @@ export async function drainAdminCommands(
   const commands = await db.controlPlaneCommand.findMany({
     where: {
       status: "accepted",
-      commandType: { in: [...COMMAND_TYPES] },
+      commandType: { in: ADMIN_COMMAND_TYPES },
     },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     take: Math.min(100, Math.max(1, input.limit ?? 25)),
@@ -217,7 +179,7 @@ export async function drainTargetAdminCommand(
     where: {
       id: input.commandId,
       status: "accepted",
-      commandType: { in: [...COMMAND_TYPES] },
+      commandType: { in: ADMIN_COMMAND_TYPES },
     },
     select: { id: true, commandType: true },
   });

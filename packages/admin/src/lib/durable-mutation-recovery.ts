@@ -1,4 +1,4 @@
-import type { AdminRecoverableMutationCommandType } from "@idream/shared/admin";
+import { adminMutationRecoveryRequestSchema, type AdminRecoverableMutationCommandType } from "@idream/shared/admin";
 import { adminV2Operation } from "./admin-v2-operation";
 import type { DurableMutationIntent } from "./durable-mutation-intent";
 
@@ -6,11 +6,8 @@ type CharacterScopedRecoveryCommandType =
   | "character.identity.bootstrap"
   | "character.project.draft_image.select";
 
-type CharacterAssetPurpose =
-  | "character_cover"
-  | "character_hero"
-  | "character_chat"
-  | "character_video";
+type RecoveryRequest = ReturnType<typeof adminMutationRecoveryRequestSchema.parse>;
+type CharacterAssetPurpose = Extract<RecoveryRequest, { commandType: "creative.run.create" }>["expectedPurpose"];
 
 type DurableMutationRecoveryInput =
   | {

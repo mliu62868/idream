@@ -45,10 +45,8 @@ describe("admin navigation information architecture", () => {
   it("publishes canonical workspace URLs while retaining each legacy URL", () => {
     for (const item of navItems) {
       expect(item.href).toMatch(/^\/admin\/(today|characters|creative|cases|customers|customer-ops|growth|ops|system)/);
-      if (TARGET_ONLY_NAV_IDS.includes(item.id)) expect(item.legacyHref).toBeNull();
-      else expect(item.legacyHref).toBe(item.id === "dashboard" ? "/admin" : `/admin/${item.id}`);
+      expect(at(item.id)?.sectionId).toBe(item.id);
     }
-    expect(navItems.filter((item) => item.legacyHref !== null)).toHaveLength(33);
   });
 
   it("presents Character as the primary admin object", () => {

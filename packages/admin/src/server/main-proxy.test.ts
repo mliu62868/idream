@@ -5,10 +5,10 @@ import {
   ADMIN_V2_API_OPERATIONS,
   findAdminV2ApiOperation,
   renderPrometheusMetrics,
-  requireExecutableAdminV2Contract,
   resetMetricsForTests,
 } from "@idream/shared";
 import { BFF_HEADER, BFF_USER_HEADER, verifyBffContext, type BffContext } from "@idream/shared/bff";
+import { adminV2ContractFixtures } from "@idream/shared/admin/testing/contract-fixtures";
 import { proxyToMain } from "./main-proxy";
 
 const SIGNING_SECRET = "admin-bff-test-secret-at-least-32-characters";
@@ -18,7 +18,7 @@ function validV2Response(method: string, pathname: string) {
   if (!operation) throw new Error(`Missing manifest operation for ${method} ${pathname}`);
   return Response.json({
     ok: true,
-    data: requireExecutableAdminV2Contract(operation.contract.response).fixtures.valid,
+    data: adminV2ContractFixtures(operation.contract.response).valid,
   });
 }
 

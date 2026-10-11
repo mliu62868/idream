@@ -1,3 +1,4 @@
+import { adminMutationResultValidator } from "@/server/modules/admin-v2/shared/route-handler";
 import { randomUUID } from "node:crypto";
 import type {
   moderationAppealDecisionResponseSchema,
@@ -86,6 +87,7 @@ export async function mediaReviewDecision(
   const requestId = requestIdOf(request);
 
   return await executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey: requireIdempotencyKey(request),
@@ -217,6 +219,7 @@ export async function moderationDecision(
   }
   const requestId = requestIdOf(request);
   return await executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey: requireIdempotencyKey(request),
@@ -300,6 +303,7 @@ export async function appealDecision(
   }
   const requestId = requestIdOf(request);
   return await executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey: requireIdempotencyKey(request),

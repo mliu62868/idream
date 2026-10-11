@@ -150,11 +150,18 @@ const SUPPORT_CASE_SUPERSEDED: Copy = {
   nextStep: "Open case {caseId} and reopen it there. This historical case was not changed.",
 };
 
+const APPROVAL_RENEWAL_REQUIRED: Copy = {
+  headline: "This approval must be requested again.",
+  nextStep: "Return to the original action, check its current values, and request a new approval. The old approval remains in the history.",
+};
+
 export function operatorErrorCopy(cause: unknown): OperatorErrorCopy {
   const message = errorText(cause);
   if (cause instanceof AdminV2RequestError) {
     const code = cause.code ?? CODE_BY_STATUS[cause.status] ?? null;
     const fields = code === "bad_request" ? apiErrorFieldNames(cause.details) : [];
+    const approvalRenewal = code === "forbidden" && cause.details !== null && typeof cause.details === "object" &&
+      "recovery" in cause.details && cause.details.recovery === "request_new_approval";
     const terminalAssignment = code === "conflict" &&
       message === "Case cannot be assigned from its present state" &&
       cause.details !== null && typeof cause.details === "object" &&
@@ -173,7 +180,7 @@ export function operatorErrorCopy(cause: unknown): OperatorErrorCopy {
     const candidatePending = blocker === "candidate_release_pending";
     const identityLocked = blocker === "visual_identity_locked";
     return {
-      ...(currentCaseId ? SUPPORT_CASE_SUPERSEDED : terminalAssignment ? CASE_ASSIGNMENT_BLOCKED : versionRace ? CONFLICT_VERSION_RACE : candidatePending ? CANDIDATE_RELEASE_PENDING : identityLocked ? VISUAL_IDENTITY_LOCKED : precondition ? CONFLICT_PRECONDITION : fields.length > 0 ? FIELD_REJECTED : (COPY_BY_CODE[code ?? ""] ?? UNMAPPED)),
+      ...(approvalRenewal ? APPROVAL_RENEWAL_REQUIRED : currentCaseId ? SUPPORT_CASE_SUPERSEDED : terminalAssignment ? CASE_ASSIGNMENT_BLOCKED : versionRace ? CONFLICT_VERSION_RACE : candidatePending ? CANDIDATE_RELEASE_PENDING : identityLocked ? VISUAL_IDENTITY_LOCKED : precondition ? CONFLICT_PRECONDITION : fields.length > 0 ? FIELD_REJECTED : (COPY_BY_CODE[code ?? ""] ?? UNMAPPED)),
       ...(fields.length > 0 ? { nextStepValues: { fields: fields.join("、") } } : {}),
       ...(currentCaseId ? { nextStepValues: { caseId: currentCaseId } } : {}),
       technical: {
@@ -213,6 +220,7 @@ export const OPERATOR_ERROR_COPY_KEYS: readonly string[] = [
   FIELD_REJECTED,
   CASE_ASSIGNMENT_BLOCKED,
   SUPPORT_CASE_SUPERSEDED,
+  APPROVAL_RENEWAL_REQUIRED,
   CONFLICT_PRECONDITION,
   CONFLICT_VERSION_RACE,
 ].flatMap((copy) => [copy.headline, copy.nextStep]);

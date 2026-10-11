@@ -441,7 +441,7 @@ describe("SupportWorkspace pending command permission changes", () => {
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
     expect(dialog).not.toBeNull();
     if (action === "Resolve") await change(dialog.querySelector('textarea[aria-label="Message to customer"]')!, "Your account question is resolved.");
-    await change(dialog.querySelector('input[aria-label="Reason"]')!, "Operator checked the account guidance.");
+    await change(dialog.querySelector('input[aria-label="Manual verification and resolution summary"]')!, "Operator checked the account guidance.");
     await change(dialog.querySelector('input[aria-label="Confirmation"]')!, baseTicket.ticketId);
     expect([...dialog.querySelectorAll("button")].find((node) => node.textContent?.trim() === "Confirm")?.disabled).toBe(false);
   }

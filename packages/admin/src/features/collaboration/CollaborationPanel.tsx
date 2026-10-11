@@ -2,7 +2,6 @@
 
 import { useAdminI18n } from "@/components/admin/i18n";
 import {
-  collaborationActivityListResponseSchema,
   collaborationActivitySchema,
   type CollaborationActivityListResponse,
   type CollaborationTargetType,
@@ -12,7 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { useAdminFormat } from "@/components/admin/ui/format";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
-import { AdminV2RequestError, adminV2Request } from "@/lib/admin-v2-api";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { WorkspaceButton, fieldClass, textAreaClass } from "@/features/operations/WorkspaceUi";
 
@@ -50,7 +49,7 @@ export function CollaborationPanel({
   // SPEC: handoff 会在服务端改掉这条记录的 ownerId 并 +1 version（collaboration/service.ts）。
   // INTENT: 交接完父级必须重新拉记录，否则详情页还挂着旧负责人，而且后续写操作会拿陈旧的
   // entityVersion 去撞 409 —— 交接看着成功了，接手的人却什么都改不动。
-  onAuthorityChange?: () => void;
+  onAuthorityChange: () => Promise<void>;
 }) {
   const { t } = useAdminI18n();
   const format = useAdminFormat();
@@ -86,9 +85,20 @@ export function CollaborationPanel({
   const [attachmentIds, setAttachmentIds] = useState("");
   const [handoffActorId, setHandoffActorId] = useState("");
   const [checklist, setChecklist] = useState("");
-  const [authorityReceipt, setAuthorityReceipt] = useState({ targetId, sourceVersion: targetVersion, version: targetVersion });
+  const [handoffReadback, setHandoffReadback] = useState<{ targetId: string; version: number; cause: unknown } | null>(null);
   const bodyRef = useRef<HTMLTextAreaElement | null>(null);
   const requestId = useRef(0);
+  const currentAuthority = useMemo(() => ({ canWrite, targetType, targetId, targetVersion }), [canWrite, targetType, targetId, targetVersion]);
+  const writeAuthority = useRef(currentAuthority);
+  useEffect(() => {
+    writeAuthority.current = currentAuthority;
+    return () => { if (writeAuthority.current === currentAuthority) writeAuthority.current = { ...currentAuthority, canWrite: false }; };
+  }, [currentAuthority]);
+
+  function canSubmitCurrentTarget() {
+    // A retained form callback cannot reuse authority from before a lock or version change.
+    return writeAuthority.current === currentAuthority && currentAuthority.canWrite;
+  }
 
   const load = useCallback(async (cursor?: string) => {
     const currentRequest = ++requestId.current;
@@ -98,10 +108,7 @@ export function CollaborationPanel({
     try {
       const query = new URLSearchParams({ limit: "25" });
       if (cursor) query.set("cursor", cursor);
-      const response = await adminV2Request<ActivityList>(
-        `/api/v2/admin/collaboration/${targetType}/${encodeURIComponent(targetId)}/activity?${query}`,
-        { schema: collaborationActivityListResponseSchema },
-      );
+      const response = await adminV2Operation("GET /api/v2/admin/collaboration/:targetType/:targetId/activity", { path: { targetType, targetId }, query });
       if (currentRequest !== requestId.current) return;
       setItems((current) => cursor ? [...current, ...response.items] : [...response.items]);
       setActorNames((current) => ({
@@ -133,11 +140,21 @@ export function CollaborationPanel({
     return () => window.clearTimeout(timer);
   }, [load]);
 
-  const authorityVersion = authorityReceipt.targetId === targetId && authorityReceipt.sourceVersion === targetVersion
-    ? authorityReceipt.version
-    : targetVersion;
+  const pendingHandoff = handoffReadback?.targetId === targetId ? handoffReadback : null;
+
+  async function refreshAfterHandoff(version: number) {
+    setHandoffReadback({ targetId, version, cause: null });
+    try {
+      await onAuthorityChange();
+      setHandoffReadback(null);
+    } catch (cause) {
+      // The transfer is committed. Retry only its projection, never the activity write.
+      setHandoffReadback({ targetId, version, cause });
+    }
+  }
 
   const toggleWatch = async () => {
+    if (submitting) return;
     const next = !watching;
     setSubmitting(true);
     try {
@@ -163,7 +180,7 @@ export function CollaborationPanel({
 
   const submit = async () => {
     const normalizedBody = body.trim();
-    if (!normalizedBody) return;
+    if (!canSubmitCurrentTarget() || !normalizedBody || submitting || pendingHandoff) return;
     setSubmitting(true);
     try {
       const checklistItems = parseChecklist(checklist);
@@ -173,7 +190,7 @@ export function CollaborationPanel({
           path: { targetType, targetId },
           body: {
             kind,
-            ...(kind === "handoff" ? { expectedVersion: authorityVersion } : {}),
+            ...(kind === "handoff" ? { expectedVersion: targetVersion } : {}),
             body: normalizedBody,
             mentionedIds: parseMentionIds(mentions),
             metadata: {
@@ -184,9 +201,6 @@ export function CollaborationPanel({
           },
         },
       );
-      if (response.authority) {
-        setAuthorityReceipt({ targetId, sourceVersion: targetVersion, version: response.authority.version });
-      }
       setBody("");
       setMentions("");
       setAttachmentIds("");
@@ -198,8 +212,8 @@ export function CollaborationPanel({
           ? t("Ownership transferred and recorded in the activity timeline.")
           : t(kindNotices[kind]),
       });
+      if (kind === "handoff") await refreshAfterHandoff(response.authority?.version ?? targetVersion);
       await load();
-      if (kind === "handoff") onAuthorityChange?.();
       bodyRef.current?.focus();
     } catch (cause) {
       failureToast(cause);
@@ -243,6 +257,11 @@ export function CollaborationPanel({
         </div>
       ) : null}
 
+      {pendingHandoff ? <div className="mt-3" role="status">
+        <p>{t("Ownership transferred and recorded in the activity timeline.")}</p>
+        {pendingHandoff.cause ? <AuthorityRequestError requestKind="read" cause={pendingHandoff.cause} message={t("The latest data could not be loaded.")} onRetry={() => void refreshAfterHandoff(pendingHandoff.version)} /> : <p>{t("Loading")}</p>}
+      </div> : null}
+
       {canWrite ? (
         <form className="mt-3 grid gap-3 rounded-lg bg-[var(--ad-surface-subtle)] p-3" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
           <datalist id="collaboration-actor-ids">
@@ -256,7 +275,7 @@ export function CollaborationPanel({
           {kind === "checklist" ? <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Checklist items, one per line")}<textarea className={textAreaClass} onChange={(event) => setChecklist(event.target.value)} placeholder={t("[x] Provider disabled [ ] Verify recovery")} required value={checklist} /></label> : null}
           <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Attachment evidence IDs")}<input className={fieldClass} onChange={(event) => setAttachmentIds(event.target.value)} placeholder={t("asset-id-1, asset-id-2")} value={attachmentIds} /></label>
           <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t(kindLabels[kind])}<textarea className={textAreaClass} maxLength={4_000} onChange={(event) => setBody(event.target.value)} ref={bodyRef} required value={body} /></label>
-          <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-[var(--ad-text-muted)]">{body.length}/4000</span><WorkspaceButton disabled={submitting || body.trim().length === 0} tone="primary" type="submit"><Send className="h-4 w-4" />{t("Add activity")}</WorkspaceButton></div>
+          <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-[var(--ad-text-muted)]">{body.length}/4000</span><WorkspaceButton disabled={submitting || Boolean(pendingHandoff) || body.trim().length === 0} tone="primary" type="submit"><Send className="h-4 w-4" />{t("Add activity")}</WorkspaceButton></div>
         </form>
       ) : <p className="mt-3 rounded-md bg-[var(--ad-surface-subtle)] p-3 text-sm text-[var(--ad-text-muted)]">{t("Read access only. Activity creation requires the target's write permission.")}</p>}
 

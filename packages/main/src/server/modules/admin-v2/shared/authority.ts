@@ -306,7 +306,7 @@ async function parseManifestBody(
     "entityVersion" in parsed &&
     typeof (parsed as { entityVersion?: unknown }).entityVersion === "number"
   ) {
-    const ifMatch = parseIfMatch(request);
+    const ifMatch = parseAdminIfMatch(request);
     if (ifMatch !== (parsed as { entityVersion: number }).entityVersion) {
       throw Errors.badRequest("If-Match and request body identify different authority versions");
     }
@@ -322,10 +322,10 @@ function assertMutationTransportHeaders(
     const key = request.headers.get("idempotency-key")?.trim();
     if (!key) throw Errors.badRequest("Idempotency-Key header is required");
   }
-  if (transport.includes("if_match")) parseIfMatch(request);
+  if (transport.includes("if_match")) parseAdminIfMatch(request);
 }
 
-function parseIfMatch(request: Request) {
+export function parseAdminIfMatch(request: Request) {
   const value = request.headers
     .get("if-match")
     ?.trim()

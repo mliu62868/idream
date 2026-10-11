@@ -26,7 +26,7 @@ export async function POST(request: Request, context: Context) {
       status: "accepted" as const,
       requestId: command.requestId,
       commandId: command.id,
-      verificationDeepLink: `/admin/commands/${command.id}`,
+      verificationDeepLink: `/admin/system/audit?commandId=${encodeURIComponent(command.id)}`,
     };
   });
 }

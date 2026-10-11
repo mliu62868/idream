@@ -14,6 +14,7 @@ import { env } from "@/server/lib/env";
 import {
   actorWithPermission,
   jsonBody,
+  parseAdminIfMatch,
   type AdminV2RequestBody,
 } from "@/server/modules/admin-v2/shared/authority";
 import type { PermissionKey } from "@/server/admin/permissions";
@@ -69,12 +70,6 @@ function commandPayload(body: AdminCommandRequest): JsonObject {
   };
 }
 
-function parseIfMatch(value: string): number | null {
-  const normalized = value.trim().replace(/^W\//, "").replace(/^"|"$/g, "");
-  if (!/^\d+$/.test(normalized)) return null;
-  return Number(normalized);
-}
-
 /**
  * SPEC: the ten durable command operations this module owns.
  * INTENT: the operation id is the only key `parseCommand` takes — the body type is derived
@@ -114,8 +109,8 @@ async function parseCommand<const Id extends AdminCommandOperationId>(
   });
   const body = await jsonBody(request, operationId) as CommandBody<Id>;
   if (headers.ifMatch) {
-    const matchedVersion = parseIfMatch(headers.ifMatch);
-    if (matchedVersion === null || matchedVersion !== body.entityVersion) {
+    const matchedVersion = parseAdminIfMatch(request);
+    if (matchedVersion !== body.entityVersion) {
       throw Errors.badRequest("If-Match must equal body entityVersion", {
         ifMatch: headers.ifMatch,
         entityVersion: body.entityVersion,
@@ -171,7 +166,10 @@ async function acceptCommand(input: {
         })
       ).requestId
     : input.parsed.requestId;
-  if (input.executeInline) await executeAcceptedAdminCommand(accepted.commandId);
+  if (input.executeInline) await executeAcceptedAdminCommand(accepted.commandId, {
+    db: prisma,
+    workerId: `admin-inline-${randomUUID()}`,
+  });
   const envelope = adminCommandAcceptedSchema.parse({
     status: "accepted",
     requestId: authoritativeRequestId,

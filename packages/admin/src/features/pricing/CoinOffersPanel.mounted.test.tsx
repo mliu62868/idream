@@ -137,7 +137,7 @@ describe("coin offer operator actions", () => {
     await act(async () => button("Request approval", container).click());
     expect(writes.at(-1)).toEqual(expect.objectContaining({ path: "/api/v2/admin/approvals", method: "POST", body: {
       permissionKey: "config.pricing.write", action: "config.coin_offer.publish", targetType: "coin_offer",
-      targetId: offer.id, payload: {}, reason: "Launch weekend pack", confirmation: `${offer.id}:config.coin_offer.publish`,
+      targetId: offer.id, payload: { version: offer.version, fingerprint: offer.fingerprint }, reason: "Launch weekend pack", confirmation: `${offer.id}:config.coin_offer.publish`,
     } }));
     expect(container.querySelector('[data-testid="coin-offer-publish-approval-required"]')).toBeNull();
   });

@@ -2,7 +2,6 @@ import {
   collaborationTargetTypeSchema,
   savedViewDeleteSchema,
   savedViewScopeSchema,
-  savedViewUpdateSchema,
   type AdminPermissionKey,
   type CollaborationTargetType,
   type SavedViewScope,
@@ -452,15 +451,7 @@ export async function createSavedViewV2(request: Request) {
 }
 
 export async function updateSavedViewV2(request: Request, id: string) {
-  // SPEC: the only Admin v2 write still parsing its own body instead of naming its
-  // operation id.
-  // INTENT: the manifest declares `savedViewUpdateSchema+if-match`, so `jsonBody` would
-  // start demanding an If-Match header — and the shipped console (SavedViewsControl
-  // `updateSelected`) sends the version in `expectedVersion` only. Wiring this one would
-  // 400 every Saved View rename in production. Stale writes are already rejected: the
-  // `updateMany` below is version-scoped. Retire this branch by having the console pass
-  // `ifMatch: current.version`, then key it like the rest.
-  const input = savedViewUpdateSchema.parse(await jsonBody(request));
+  const input = await jsonBody(request, "PATCH /api/v2/admin/saved-views/:id");
   const current = await prisma.adminSavedView.findUnique({ where: { id } });
   if (!current) throw Errors.notFound("Saved view not found");
   const scope = savedViewScopeSchema.parse(current.scope);

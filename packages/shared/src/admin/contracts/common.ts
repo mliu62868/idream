@@ -241,6 +241,8 @@ export const adminMutationRecoveryRequestSchema =
         "character_cover",
         "character_hero",
         "character_chat",
+        "character_video",
+        "identity_calibration",
       ]).optional(),
     }).strict().superRefine((value, ctx) => {
       if (value.expectedPurpose && !value.expectedCharacterId) {

@@ -417,6 +417,7 @@ export function VisualIdentityPanel({
         <button className="min-h-9 underline" disabled={busy !== null} onClick={() => setDiscardOpen(true)} type="button">{t("Discard draft")}</button>
       </div> : null}
       <VisualIdentityExperimentWorkbench
+        actorId={actorId}
         canActivate={permissions.writeVisual}
         canCreate={permissions.createAssets ?? false}
         canUploadSource={

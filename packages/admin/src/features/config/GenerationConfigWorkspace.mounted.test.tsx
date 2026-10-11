@@ -420,14 +420,16 @@ describe("Chinese locale: workspace chrome", () => {
 
   it("translates the filter labels instead of printing the raw prop", async () => {
     await mountZh();
-    const text = container.textContent ?? "";
-
-    expect(text).toContain("配置档案模式");
-    expect(text).toContain("配置档案状态");
-    expect(text).toContain("开关状态");
-    expect(text).not.toContain("Profile mode");
-    expect(text).not.toContain("Profile status");
-    expect(text).not.toContain("Flag state");
+    expect(container.textContent).toContain("开关状态");
+    expect(container.textContent).not.toContain("配置档案模式");
+    const profilesTab = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("测试和发布"));
+    await act(async () => profilesTab?.click());
+    expect(container.textContent).toContain("配置档案模式");
+    expect(container.textContent).toContain("配置档案状态");
+    expect(container.textContent).not.toContain("开关状态");
+    expect(container.textContent).not.toContain("Profile mode");
+    expect(container.textContent).not.toContain("Profile status");
+    expect(container.textContent).not.toContain("Flag state");
   });
 
   it("translates the tab label and its subtitle", async () => {
@@ -461,5 +463,132 @@ describe("Chinese locale: workspace chrome", () => {
     expect(options).toContain("已关闭");
     expect(options).not.toContain("true");
     expect(options).not.toContain("false");
+  });
+});
+
+describe("configuration query authority", () => {
+  let container: HTMLDivElement;
+  let root: Root | null;
+
+  beforeEach(() => {
+    apiGet.mockReset();
+    apiWrite.mockReset();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = null;
+  });
+
+  afterEach(async () => {
+    await act(async () => root?.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  const profile = (id: string) => ({ id, label: id, mode: "image", status: "active", version: 1, enabled: true });
+  const flag = (key: string) => ({ key, enabled: true, rolloutPercent: 100, version: 1, hardPolicy: false });
+  async function mount(url: string) {
+    window.history.replaceState(null, "", url);
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<GenerationConfigWorkspace permissions={{ manageProfiles: true, manageFlags: true }} />);
+    });
+  }
+  async function navigate(url: string) {
+    await act(async () => {
+      window.history.pushState(null, "", url);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+  }
+  const button = (label: string) => [...container.querySelectorAll("button")].find(node => node.textContent === label)!;
+  const setValue = (input: HTMLInputElement, value: string) => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+
+  it.each([
+    ["profiles", "configSearch=other"], ["profiles", "profileCursor=next"],
+    ["settings", "configSearch=other"], ["settings", "flagCursor=next"],
+  ])("hides %s authority and write controls while %s is pending and after failure", async (tab, query) => {
+    let reject!: (error: Error) => void;
+    const pending = new Promise<unknown>((_, fail) => { reject = fail; });
+    apiGet.mockImplementation(async path => {
+      if (path.includes("/jobs")) return { items: [] };
+      if (path.includes("search=other") || path.includes("cursor=next")) return pending;
+      return { items: [tab === "profiles" ? profile("authority-a") : flag("authority-a")] };
+    });
+    await mount(`/admin/system/config?tab=${tab}`);
+    await waitUntil(() => Boolean(button("Disable")));
+    await act(async () => button("Disable").click());
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    await navigate(`/admin/system/config?tab=${tab}&${query}`);
+    expect(container.textContent).not.toContain("authority-a");
+    expect(button("Disable")).toBeUndefined();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    await act(async () => reject(new Error("new scope failed")));
+    expect(container.textContent).toContain("new scope failed");
+    expect(container.textContent).not.toContain("authority-a");
+    expect(button("Disable")).toBeUndefined();
+  });
+
+  it.each(["profiles", "settings"])("keeps last-good %s only when refreshing the same resource", async tab => {
+    let fail = false;
+    apiGet.mockImplementation(async path => {
+      if (path.includes("/jobs")) return { items: [] };
+      if (fail) throw new Error("same scope failed");
+      return { items: [tab === "profiles" ? profile("authority-a") : flag("authority-a")] };
+    });
+    await mount(`/admin/system/config?tab=${tab}`);
+    await waitUntil(() => Boolean(button("Disable")));
+    fail = true;
+    await act(async () => window.dispatchEvent(new PopStateEvent("popstate")));
+    expect(container.textContent).toContain("same scope failed");
+    expect(container.textContent).toContain("authority-a");
+  });
+
+  it("reads back a newly queued test once and preserves its exact job in the URL", async () => {
+    apiWrite.mockResolvedValue({ job: { id: "new-job" } });
+    apiGet.mockImplementation(async path => {
+      if (path === "/api/v2/admin/jobs/new-job") return { request: { id: "new-job", sourceType: "admin_profile_test", profileId: "profile-a", profileVersion: 1 } };
+      return { items: path.includes("/jobs") ? [] : [profile("profile-a")] };
+    });
+    await mount("/admin/system/config");
+    await waitUntil(() => Boolean(button("Generate test image")));
+    const before = apiGet.mock.calls.length;
+    await act(async () => button("Generate test image").click());
+    await act(async () => {
+      setValue(document.querySelector<HTMLInputElement>('input[aria-label="Reason"]')!, "reviewed config");
+      setValue(document.querySelector<HTMLInputElement>('input[aria-label="Confirmation"]')!, "profile-a");
+    });
+    await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(node => node.textContent === "Queue test image")!.click());
+    await waitUntil(() => container.querySelector('a[href*="job=new-job"]') !== null);
+    expect(new URLSearchParams(window.location.search).get("testJob")).toBe("new-job");
+    expect(apiGet.mock.calls.slice(before).filter(([path]) => path.startsWith("/api/v2/admin/jobs?"))).toHaveLength(1);
+    expect(apiGet.mock.calls.slice(before).filter(([path]) => path === "/api/v2/admin/jobs/new-job")).toHaveLength(1);
+    expect(apiWrite).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["Generate test image", "Disable"])("ignores late %s completion after navigation and preserves the new confirmation", async action => {
+    let finish!: (value: unknown) => void;
+    apiWrite.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    apiGet.mockImplementation(async path => ({ items: path.includes("/jobs") ? [] : [profile(path.includes("search=b") ? "profile-b" : "profile-a")] }));
+    await mount("/admin/system/config");
+    await waitUntil(() => Boolean(button(action)));
+    await act(async () => button(action).click());
+    await act(async () => {
+      setValue(document.querySelector<HTMLInputElement>('input[aria-label="Reason"]')!, "reviewed config");
+      setValue(document.querySelector<HTMLInputElement>('input[aria-label="Confirmation"]')!, "profile-a");
+    });
+    await act(async () => [...document.querySelectorAll('[role="dialog"] button')].find(node => node.textContent === (action === "Disable" ? "Confirm" : "Queue test image"))!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(apiWrite).toHaveBeenCalledTimes(1);
+    await navigate("/admin/system/config?configSearch=b");
+    await waitUntil(() => [...container.querySelectorAll("h2")].some(node => node.textContent === "profile-b"));
+    await act(async () => button("Disable").click());
+    const gets = apiGet.mock.calls.length;
+    await act(async () => finish({ job: { id: "old-job" } }));
+    expect(window.location.search).toBe("?configSearch=b");
+    expect([...container.querySelectorAll("h2")].some(node => node.textContent === "profile-b")).toBe(true);
+    expect(apiGet).toHaveBeenCalledTimes(gets);
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Disable profile profile-b");
+    expect(apiWrite).toHaveBeenCalledTimes(1);
   });
 });

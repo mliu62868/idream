@@ -10,7 +10,7 @@ const initialItem = { id: "affiliate-1", userId: "customer-1", status: "pending"
 describe("affiliate review workflow", () => {
   let container: HTMLDivElement;
   let root: Root;
-  beforeEach(() => { container = document.createElement("div"); document.body.append(container); root = createRoot(container); });
+  beforeEach(() => { window.history.replaceState(null, "", "/admin/growth/affiliate"); container = document.createElement("div"); document.body.append(container); root = createRoot(container); });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
   async function waitFor(predicate: () => boolean) {
     const deadline = Date.now() + 2_000;
@@ -75,6 +75,50 @@ describe("affiliate review workflow", () => {
     expect(button("Approve").disabled).toBe(true);
     expect(button("Reject").disabled).toBe(true);
     expect(container.textContent).toContain("growth.promo.write");
+  });
+
+  it("keeps the new query and confirmation when an earlier decision completes after navigation", async () => {
+    const nextItem = { ...initialItem, id: "affiliate-2", userId: "customer-2" };
+    let finish!: (value: Response) => void;
+    const reads: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") return new Promise<Response>(resolve => { finish = resolve; });
+      const path = String(input); reads.push(path);
+      return list(path.includes("search=next") ? nextItem : initialItem);
+    }));
+    await open();
+    await act(async () => button("Approve").click());
+    const inputs = [...document.querySelectorAll<HTMLInputElement>('[role="dialog"] input')];
+    await type(inputs[0]!, "Promotion channel verified");
+    await type(inputs[1]!, initialItem.id);
+    await act(async () => button("Approve", true).click());
+    await act(async () => {
+      window.history.pushState(null, "", "/admin/growth/affiliate?affiliateSearch=next");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await waitFor(() => container.textContent?.includes(nextItem.id) === true);
+    await act(async () => button("Approve").click());
+    const nextDialog = document.querySelector('[role="dialog"]');
+    await act(async () => finish(Response.json({ ok: true, data: { item: { ...initialItem, status: "approved" }, replayed: false } })));
+    expect(reads).toHaveLength(2);
+    expect(container.textContent).toContain(nextItem.id);
+    expect(window.location.search).toBe("?affiliateSearch=next");
+    expect(document.querySelector('[role="dialog"]')).toBe(nextDialog);
+  });
+
+  it("restores list filters and cursor from a shared URL and supports history restoration", async () => {
+    window.history.replaceState(null, "", "/admin/growth/affiliate?affiliateStatus=approved&affiliateSearch=creator&affiliateCursor=shared-page");
+    const fetcher = vi.fn<(input: RequestInfo | URL) => Promise<Response>>(async () => list()); vi.stubGlobal("fetch", fetcher);
+    await open(false);
+    expect(Object.fromEntries(new URL(String(fetcher.mock.calls[0]![0]), "http://localhost").searchParams)).toEqual({ status: "approved", limit: "25", search: "creator", cursor: "shared-page" });
+    expect(container.textContent).not.toContain("Page 1");
+    await act(async () => button("Back to first page").click());
+    await waitFor(() => container.textContent?.includes("Page 1") === true);
+    expect(new URLSearchParams(window.location.search).get("affiliateSearch")).toBe("creator");
+    window.history.replaceState(null, "", "/admin/growth/affiliate?affiliateStatus=rejected&affiliateSearch=restored");
+    await act(async () => window.dispatchEvent(new PopStateEvent("popstate")));
+    await waitFor(() => fetcher.mock.calls.some(([path]) => String(path).includes("search=restored")));
+    expect(container.querySelector<HTMLInputElement>('input[placeholder="Search application or user ID"]')?.value).toBe("restored");
   });
 
   it("lets a read-only operator open canonical attribution evidence without enabling decisions", async () => {

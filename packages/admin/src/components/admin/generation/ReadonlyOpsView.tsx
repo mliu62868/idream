@@ -6,13 +6,11 @@
 import { type ReactNode, useId } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
 
-export type OpsColumn = {
-  key: string;
-  label: string;
-  render?: (row: Record<string, unknown>) => ReactNode;
-};
+export type OpsColumn<Row> =
+  | { key: Extract<keyof Row, string>; label: string; render?: undefined }
+  | { key: string; label: string; render: (row: Row) => ReactNode };
 
-export function ReadonlyOpsView({
+export function ReadonlyOpsView<Row>({
   title,
   columns,
   rows,
@@ -20,8 +18,8 @@ export function ReadonlyOpsView({
   summary,
 }: {
   title: string;
-  columns: OpsColumn[];
-  rows: Record<string, unknown>[];
+  columns: readonly OpsColumn<Row>[];
+  rows: readonly Row[];
   empty?: ReactNode;
   /** 标题下的一行汇总（合计 / 比率）——逐行数字读不出结论时给运营的总账。 */
   summary?: ReactNode;

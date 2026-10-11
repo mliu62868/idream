@@ -70,10 +70,10 @@ const db = vi.hoisted(() => {
 const actor = { id: "adm_response_contract", role: "admin" as const };
 
 vi.mock("@/server/lib/db", () => ({ prisma: db.prisma }));
-vi.mock("./authority", () => ({
+vi.mock("./authority", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./authority")>(),
   authenticatedAdminActor: async () => actor,
   requireActorPermission: async () => actor,
-  jsonBody: async (request: Request) => request.json(),
 }));
 
 const { executeAdminMutation, requireAdminMutationOperation } = await import("./admin-mutation");
@@ -103,7 +103,7 @@ function recordDecision(
   request: Request,
   mutate: (tx: Prisma.TransactionClient) => Promise<unknown>,
 ) {
-  return executeAdminMutation<typeof decisionBody>(
+  return executeAdminMutation(
     "POST /api/v2/admin/cases/:id/decisions",
     request,
     {
@@ -143,14 +143,14 @@ describe("Admin manifest-backed mutation execution", () => {
       commandType: "character.project.draft_image.select",
       executionMode: "atomic",
     });
-    expect(definition.request.fixtureKey).toBe(
+    expect(definition.request.ref).toBe(
       "characterDraftImageSelectionRequestSchema",
     );
     expect(definition.request.requirements).toEqual([
       "idempotency-key",
       "if-match",
     ]);
-    expect(definition.response.fixtureKey).toBe(
+    expect(definition.response.ref).toBe(
       "characterDraftImageSelectionResultSchema",
     );
   });
@@ -217,13 +217,41 @@ describe("Admin mutation response contract timing", () => {
     expect(db.committedCommands.size).toBe(1);
   });
 
+  it("parses the manifest-owned request once before executing the mutation", async () => {
+    const definition = requireAdminMutationOperation("POST /api/v2/admin/cases/:id/decisions");
+    const parse = vi.spyOn(definition.request.schema, "parse");
+    try {
+      await recordDecision(decisionRequest("single-parse"), async () => contractResult);
+      expect(parse).toHaveBeenCalledTimes(1);
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
+  it("reports invalid prepared output as a server error and rolls back", async () => {
+    const { z } = await import("zod");
+    const prepare = vi.fn(async () => "prepared-resource");
+    await expect(executeAtomicIdempotentMutation({
+      environment: "test", actor, idempotencyKey: "invalid-prepared", requestId: "invalid-prepared",
+      commandType: "test.prepare", target: { type: "test", id: "test" }, payload: {}, prepare,
+      validateResult: value => z.object({ receiptId: z.string() }).strict().parse(value),
+      mutate: async tx => {
+        await tx.adminCase.update({ where: { id: CASE_ID }, data: { status: "resolved" } });
+        return { wrongField: true };
+      },
+    })).rejects.toMatchObject({ code: "internal" });
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(db.committedCommands.size).toBe(0);
+    expect(db.committedCaseWrites).toEqual([]);
+  });
+
   it("preserves the JSON body of a DELETE command requiring confirmation and a version", async () => {
     const body = { entityVersion: 7, confirmation: "announcement-1", reason: "Retire the announcement" };
     const request = new Request("http://admin.test/api/v2/admin/announcements/announcement-1", {
       method: "DELETE", headers: { "idempotency-key": "delete-announcement", "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-    const result = await executeAdminMutation<typeof body>("DELETE /api/v2/admin/announcements/:id", request, {
+    const result = await executeAdminMutation("DELETE /api/v2/admin/announcements/:id", request, {
       params: { id: body.confirmation }, target: () => ({ type: "announcement", id: body.confirmation }),
       expectedVersion: value => value.entityVersion,
       mutate: async (_tx, context) => {

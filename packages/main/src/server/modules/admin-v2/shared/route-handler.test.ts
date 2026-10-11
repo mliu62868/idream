@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { requireExecutableAdminV2Contract } from "@idream/shared/admin";
+import { adminV2ContractFixtures } from "@idream/shared/admin/testing/contract-fixtures";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { logger } from "@/server/lib/logger";
@@ -13,7 +13,7 @@ function get(url: string) {
 
 /** A payload the operation's declared contract actually admits. */
 function validSavedViewList() {
-  return requireExecutableAdminV2Contract("savedViewListResponseSchema").fixtures.valid;
+  return adminV2ContractFixtures("savedViewListResponseSchema").valid;
 }
 
 describe("Admin v2 route seam", () => {

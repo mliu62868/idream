@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ADMIN_V2_API_OPERATIONS_BY_ID } from "@idream/shared/admin";
+import { adminV2ContractFixtures } from "@idream/shared/admin/testing/contract-fixtures";
 import { apiWrite } from "@/components/admin/api";
 import { AdminV2RequestError } from "./admin-v2-api";
 import { adminV2Operation } from "./admin-v2-operation";
@@ -36,7 +38,7 @@ describe("admin v2 operation adapter", () => {
         path: { id: "character 1" },
         body: {
           entityVersion: 3,
-          reason: "pause",
+          reason: { code: "other", summary: "pause" },
           confirmation: "PAUSE character 1",
         },
       },
@@ -54,23 +56,14 @@ describe("admin v2 operation adapter", () => {
     await expect(
       adminV2Operation("POST /api/v2/admin/characters/:id/commands/resume", {
         path: { id: "character-1" },
-        body: {},
+        body: { entityVersion: 3, reason: { code: "other", summary: "resume" }, confirmation: "RESUME" },
       }),
     ).rejects.toThrow();
   });
 
   it("attaches an idempotency key and the If-Match the manifest declares, without the caller naming either", async () => {
-    const fetchMock = stubFetch({
-      ok: true,
-      data: {
-        runId: "qa-run-1",
-        characterId: "character-1",
-        status: "passed",
-        checks: [],
-        createdAt: "2026-01-01T00:00:00.000Z",
-        actorId: "operator-1",
-      },
-    });
+    const contract = ADMIN_V2_API_OPERATIONS_BY_ID["POST /api/v2/admin/characters/:id/releases"].contract.response;
+    const fetchMock = stubFetch({ ok: true, data: adminV2ContractFixtures(contract).valid });
 
     await adminV2Operation("POST /api/v2/admin/characters/:id/releases", {
       path: { id: "character-1" },
@@ -80,7 +73,7 @@ describe("admin v2 operation adapter", () => {
         reason: "Publish current draft",
         confirmation: "character-1:propose-release",
       },
-    }).catch(() => undefined);
+    });
 
     const [, init] = fetchMock.mock.calls[0] ?? [];
     const headers = new Headers(init?.headers);
@@ -88,18 +81,14 @@ describe("admin v2 operation adapter", () => {
     expect(headers.get("if-match")).toBe('"7"');
   });
 
-  /**
-   * SPEC: 同一个目标、同一份请求体重试，键不变；请求体变了，键换。
-   * INVARIANT: 这是运营「点一次写两次」不可表达的那半条保证在传输层的落点 ——
-   *            状态机本身在 idempotency-key-lifecycle.test.ts 里单独测。
-   */
-  it("reuses one key while the request body stays the same and mints a new one when it changes", async () => {
+  // Acknowledged success ends an intent; identical later actions receive new keys.
+  it("mints a new key after an acknowledged success, including identical later bodies", async () => {
     const fetchMock = stubFetch({ ok: true, data: ACCEPTED_COMMAND });
     const pause = (reason: string) =>
       adminV2Operation("POST /api/v2/admin/characters/:id/commands/pause", {
         path: { id: "character-key-reuse" },
-        body: { entityVersion: 3, reason, confirmation: "PAUSE" },
-      }).catch(() => undefined);
+        body: { entityVersion: 3, reason: { code: "other", summary: reason }, confirmation: "PAUSE" },
+      });
 
     await pause("network flake");
     await pause("network flake");
@@ -124,11 +113,11 @@ describe("admin v2 operation adapter", () => {
     const withdraw = () =>
       adminV2Operation("POST /api/v2/admin/characters/:id/commands/retire", {
         path: { id: "character-lost-response" },
-        body: { entityVersion: 2, reason: "retire", confirmation: "RETIRE" },
-      }).catch(() => undefined);
+        body: { entityVersion: 2, reason: { code: "other", summary: "retire" }, confirmation: "RETIRE" },
+      });
 
-    await withdraw();
-    await withdraw();
+    await expect(withdraw()).rejects.toThrow("Failed to fetch");
+    await expect(withdraw()).rejects.toThrow("Failed to fetch");
 
     const keys = fetchMock.mock.calls.map(
       ([, init]) => new Headers(init?.headers).get("idempotency-key"),
@@ -137,14 +126,12 @@ describe("admin v2 operation adapter", () => {
   });
 
   it("appends a query string to the declared route", async () => {
-    const fetchMock = stubFetch({
-      ok: true,
-      data: { items: [], pageInfo: { hasNextPage: false, endCursor: null } },
-    });
+    const contract = ADMIN_V2_API_OPERATIONS_BY_ID["GET /api/v2/admin/creative/runs"].contract.response;
+    const fetchMock = stubFetch({ ok: true, data: adminV2ContractFixtures(contract).valid });
 
     await adminV2Operation("GET /api/v2/admin/creative/runs", {
       query: "targetType=character&limit=30",
-    }).catch(() => undefined);
+    });
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
       "/api/v2/admin/creative/runs?targetType=character&limit=30",
@@ -160,7 +147,16 @@ describe("admin v2 operation adapter", () => {
     const missingPathParameter = () =>
       // @ts-expect-error - 路由模板声明了 :id
       adminV2Operation("GET /api/v2/admin/characters/:id", {});
-    expect([undeclared, missingPathParameter]).toHaveLength(2);
+    const missingBody = () =>
+      // @ts-expect-error - mutation body is required
+      adminV2Operation("POST /api/v2/admin/characters/:id/commands/pause", { path: { id: "c" } });
+    const invalidBody = () =>
+      // @ts-expect-error - reason is structured, not a string
+      adminV2Operation("POST /api/v2/admin/characters/:id/commands/pause", { path: { id: "c" }, body: { entityVersion: 1, reason: "pause", confirmation: "PAUSE" } });
+    const bothBodyAndForm = () =>
+      // @ts-expect-error - multipart and JSON are mutually exclusive
+      adminV2Operation("POST /api/v2/admin/assets", { intent: "upload", form: new FormData(), body: {} });
+    expect([undeclared, missingPathParameter, missingBody, invalidBody, bothBodyAndForm]).toHaveLength(5);
   });
 
   it("fails an operation and a v1 write with the same error class", async () => {
@@ -174,7 +170,7 @@ describe("admin v2 operation adapter", () => {
 
     const operationError = await adminV2Operation(
       "POST /api/v2/admin/characters/:id/commands/retire",
-      { path: { id: "character-1" }, body: {} },
+      { path: { id: "character-1" }, body: { entityVersion: 2, reason: { code: "other", summary: "retire" }, confirmation: "RETIRE" } },
     ).catch((cause: unknown) => cause);
     const legacyError = await apiWrite(
       "/api/v2/admin/content/featured",

@@ -4,10 +4,11 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { adminV2Request, AdminV2RequestError, setWorkspaceUrl } = vi.hoisted(() => ({
+const { adminV2Request, AdminV2RequestError, setWorkspaceUrl, collaborationPanel } = vi.hoisted(() => ({
   adminV2Request: vi.fn(),
   AdminV2RequestError: class extends Error {},
   setWorkspaceUrl: vi.fn(),
+  collaborationPanel: vi.fn<(props: { canWrite: boolean; targetId: string; targetVersion: number; onAuthorityChange: () => Promise<void> }) => null>(() => null),
 }));
 
 vi.mock("@/lib/admin-v2-api", () => ({
@@ -16,7 +17,7 @@ vi.mock("@/lib/admin-v2-api", () => ({
   AdminV2RequestError,
 }));
 vi.mock("@/features/collaboration/CollaborationPanel", () => ({
-  CollaborationPanel: () => null,
+  CollaborationPanel: collaborationPanel,
 }));
 vi.mock("@/features/collaboration/SavedViewsControl", () => ({
   SavedViewsControl: () => null,
@@ -202,6 +203,99 @@ describe("IncidentWorkspace mitigation safety", () => {
     await act(async () => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+  });
+
+  it("keeps the selected Incident and its own write lock when another Incident's preview finishes late", async () => {
+    let completeFirst!: (value: unknown) => void, completeSecond!: (value: unknown) => void;
+    let secondSaved = false;
+    const second = { ...incident, id: "incident-2", suspectedCause: "Second Incident" };
+    setWorkspaceUrl.mockImplementation((params: URLSearchParams, options: { pathname: string; mode: "push" | "replace" }) => {
+      window.history[options.mode === "push" ? "pushState" : "replaceState"](null, "", `${options.pathname}?${params}`);
+    });
+    adminV2Request.mockImplementation(async (path: string) => {
+      if (path.endsWith("incident-1/action-plans/preview")) return new Promise(resolve => { completeFirst = resolve; });
+      if (path.endsWith("incident-2/action-plans/preview")) return new Promise(resolve => { completeSecond = resolve; });
+      if (path.startsWith("/api/v2/admin/incidents?")) return { ...list, items: [incident, second] };
+      if (path.endsWith("/incident-2")) return { ...detail, incident: { ...second, version: secondSaved ? 8 : 7 }, actionPlans: [] };
+      return detail;
+    });
+    await act(async () => root.render(<IncidentWorkspace canManage initialIncidentId={incident.id} />));
+    await waitUntil(() => findButton("Preview eligible scope", container) !== null);
+    await click(findButton("Preview eligible scope", container));
+    await waitUntil(() => Boolean(completeFirst));
+    expect(collaborationPanel.mock.calls.at(-1)![0].canWrite).toBe(false);
+    await click([...container.querySelectorAll<HTMLButtonElement>('[aria-label="Incident results"] button')].find(button => button.textContent?.includes("Second Incident"))!);
+    await waitUntil(() => container.querySelector("#incident-detail-title")?.textContent === "Second Incident");
+    expect(collaborationPanel.mock.calls.at(-1)![0].canWrite).toBe(true);
+    await click(findButton("Preview eligible scope", container));
+    await waitUntil(() => Boolean(completeSecond));
+    const urlWrites = setWorkspaceUrl.mock.calls.length;
+    const firstReads = adminV2Request.mock.calls.filter(([path]) => path === "/api/v2/admin/incidents/incident-1").length;
+    await act(async () => completeFirst({ plan }));
+    expect(window.location.pathname).toBe("/admin/ops/incidents/incident-2");
+    expect(container.querySelector("#incident-detail-title")?.textContent).toBe("Second Incident");
+    expect(setWorkspaceUrl).toHaveBeenCalledTimes(urlWrites);
+    expect(adminV2Request.mock.calls.filter(([path]) => path === "/api/v2/admin/incidents/incident-1")).toHaveLength(firstReads);
+    expect(findButton("Preview eligible scope", container)!.disabled).toBe(true);
+    expect(collaborationPanel.mock.calls.at(-1)![0].canWrite).toBe(false);
+    secondSaved = true;
+    await act(async () => completeSecond({ plan }));
+    await waitUntil(() => !findButton("Preview eligible scope", container)!.disabled);
+    expect(collaborationPanel.mock.calls.at(-1)![0]).toMatchObject({ canWrite: true, targetId: "incident-2", targetVersion: 8 });
+  });
+
+  it("blocks collaboration while authoritative detail is stale even when its list refreshed successfully", async () => {
+    let saved = false, failReadback = true;
+    adminV2Request.mockImplementation(async (path: string) => {
+      if (path.endsWith("/action-plans/preview")) { saved = true; return { plan }; }
+      if (path.startsWith("/api/v2/admin/incidents?")) return list;
+      if (saved && failReadback) throw new Error("Incident detail unavailable");
+      return { ...detail, incident: { ...incident, version: saved ? 8 : 7 } };
+    });
+    await act(async () => root.render(<IncidentWorkspace canManage initialIncidentId={incident.id} />));
+    await waitUntil(() => findButton("Preview eligible scope", container) !== null);
+    await click(findButton("Preview eligible scope", container));
+    await waitUntil(() => container.querySelector('[role="alert"]') !== null);
+    expect(collaborationPanel.mock.calls.at(-1)![0]).toMatchObject({ canWrite: false, targetVersion: 7 });
+    failReadback = false;
+    await click(findButton("Retry", container));
+    await waitUntil(() => collaborationPanel.mock.calls.at(-1)![0].canWrite);
+    expect(collaborationPanel.mock.calls.at(-1)![0].targetVersion).toBe(8);
+    expect(adminV2Request.mock.calls.filter(([path]) => path.endsWith("/action-plans/preview"))).toHaveLength(1);
+  });
+
+  it("keeps the new Incident confirmation open when the previous Incident's command finishes late", async () => {
+    let completeFirst!: (value: unknown) => void;
+    const second = { ...incident, id: "incident-2", suspectedCause: "Second Incident" };
+    setWorkspaceUrl.mockImplementation((params: URLSearchParams, options: { pathname: string; mode: "push" | "replace" }) => {
+      window.history[options.mode === "push" ? "pushState" : "replaceState"](null, "", `${options.pathname}?${params}`);
+    });
+    adminV2Request.mockImplementation(async (path: string) => {
+      if (path.endsWith("/execute")) return new Promise(resolve => { completeFirst = resolve; });
+      if (path.startsWith("/api/v2/admin/incidents?")) return { ...list, items: [incident, second] };
+      if (path.endsWith("/incident-2")) return { ...detail, incident: second, actionPlans: [{ ...plan, id: "plan-2", incidentId: second.id }] };
+      return detail;
+    });
+    await act(async () => root.render(<IncidentWorkspace canManage initialIncidentId={incident.id} />));
+    await waitUntil(() => findButton("Execute frozen plan", container) !== null);
+    await click(findButton("Execute frozen plan", container));
+    const firstDialog = await waitForDialog();
+    await enter(firstDialog.querySelector<HTMLInputElement>('input[aria-label="Execution confirmation"]'), "incident-1:plan-1:refund");
+    await click(findButton("Execute frozen plan", firstDialog));
+    await waitUntil(() => Boolean(completeFirst));
+    await act(async () => {
+      window.history.pushState(null, "", "/admin/ops/incidents/incident-2?incident=incident-2");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await waitUntil(() => container.querySelector("#incident-detail-title")?.textContent === "Second Incident");
+    await click(findButton("Execute frozen plan", container));
+    const secondDialog = await waitForDialog();
+    await act(async () => completeFirst({ commandId: "command-a", state: "accepted" }));
+    expect(document.querySelector('[role="dialog"]')).toBe(secondDialog);
+    expect(secondDialog.textContent).toContain("incident-2:plan-2:refund");
+    expect(window.location.pathname).toBe("/admin/ops/incidents/incident-2");
+    expect(new URLSearchParams(window.location.search).has("commandId")).toBe(false);
+    expect(adminV2Request.mock.calls.filter(([path]) => path.endsWith("/execute"))).toHaveLength(1);
   });
 
   it("shows the frozen plan's own money impact and blocks execution behind a modal confirmation", async () => {

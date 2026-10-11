@@ -86,6 +86,11 @@ function ProfileHealthSection({ canWrite }: { canWrite: boolean }) {
   const { t, value } = useAdminI18n();
   const [profiles, setProfiles] = useState<ProfileOption[] | null>(null);
   const [profilesError, setProfilesError] = useState<unknown>(null);
+  const [profileSearch, setProfileSearch] = useState("");
+  const [profileQuery, setProfileQuery] = useState("");
+  const [nextProfileCursor, setNextProfileCursor] = useState<string | null>(null);
+  const [profilesLoading, setProfilesLoading] = useState(false);
+  const [selectedProfile, setSelectedProfile] = useState<ProfileOption | null>(null);
   const [profileId, setProfileId] = useState("");
   const [health, setHealth] = useState<Health | null>(null);
   const [busy, setBusy] = useState<"health" | null>(null);
@@ -93,24 +98,35 @@ function ProfileHealthSection({ canWrite }: { canWrite: boolean }) {
   const [dryRunTarget, setDryRunTarget] = useState<{ profile: ProfileOption; request: LatestRequestToken } | null>(null);
   const [configurationResult, setConfigurationResult] = useState<ConfigurationResult | null>(null);
   const requestGate = useRef(createLatestRequestGate());
+  const requestedProfileCursor = useRef<string | undefined>(undefined);
   const diagnosticGate = useRef(createLatestRequestGate());
 
   // SPEC: 运营不该手敲 UUID —— 没有选择器时，一个打错的字符和一个不存在的 profile 长得一样。
-  const loadProfiles = useCallback(async () => {
+  const loadProfiles = useCallback(async (cursor?: string) => {
     const request = requestGate.current.begin();
+    requestedProfileCursor.current = cursor;
+    if (!cursor) setNextProfileCursor(null);
     setProfilesError(null);
+    setProfilesLoading(true);
     try {
-      const data = await apiGet<{ items: ProfileOption[] }>(
-        "/api/v2/admin/generation/model-profiles?limit=100",
+      const params = new URLSearchParams({ limit: "100" });
+      if (profileQuery) params.set("search", profileQuery);
+      if (cursor) params.set("cursor", cursor);
+      const data = await apiGet<{ items: ProfileOption[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } }>(
+        `/api/v2/admin/generation/model-profiles?${params}`,
       );
       if (!request.isCurrent()) return;
-      setProfiles(data.items);
+      setProfiles(previous => cursor ? [...new Map([...(previous ?? []), ...data.items].map(profile => [profile.id, profile])).values()] : data.items);
+      setNextProfileCursor(data.pageInfo?.hasNextPage ? data.pageInfo.endCursor : null);
+      setSelectedProfile(previous => data.items.find(profile => profile.id === previous?.id) ?? previous);
     } catch (error) {
       if (!request.isCurrent()) return;
-      setProfiles([]);
+      if (!cursor) setProfiles([]);
       setProfilesError(error);
+    } finally {
+      if (request.isCurrent()) setProfilesLoading(false);
     }
-  }, []);
+  }, [profileQuery]);
 
   useEffect(() => {
     const gate = requestGate.current;
@@ -124,8 +140,8 @@ function ProfileHealthSection({ canWrite }: { canWrite: boolean }) {
   }, [loadProfiles]);
 
   const selected = useMemo(
-    () => profiles?.find((profile) => profile.id === profileId) ?? null,
-    [profiles, profileId],
+    () => profiles?.find((profile) => profile.id === profileId) ?? (selectedProfile?.id === profileId ? selectedProfile : null),
+    [profiles, profileId, selectedProfile],
   );
 
   async function loadHealth() {
@@ -181,16 +197,21 @@ function ProfileHealthSection({ canWrite }: { canWrite: boolean }) {
           "The configuration check validates deterministic profile and runtime fields only; it does not call a provider or generate media.",
         )}
       </p>
+      <form className="mt-3 flex gap-2" onSubmit={event => { event.preventDefault(); if (profileQuery === profileSearch.trim()) void loadProfiles(); else setProfileQuery(profileSearch.trim()); }}>
+        <input aria-label={t("Search model profiles")} className={inputClass} value={profileSearch} onChange={event => setProfileSearch(event.target.value)} />
+        <button className="shrink-0 rounded-md border border-[var(--ad-border)] px-3 text-sm" type="submit">{t("Search")}</button>
+      </form>
       <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto_auto]">
         <label className="grid gap-1">
           <span className="sr-only">{t("Model profile")}</span>
           <select
             aria-label={t("Model profile")}
             className={`${inputClass} appearance-none`}
-            disabled={profiles === null || profiles.length === 0}
+            disabled={profiles === null || (profiles.length === 0 && !selected)}
             onChange={(event) => {
               diagnosticGate.current.invalidate();
               setProfileId(event.target.value);
+              setSelectedProfile(profiles?.find(profile => profile.id === event.target.value) ?? null);
               setHealth(null);
               setErr(null);
               setBusy(null);
@@ -206,6 +227,7 @@ function ProfileHealthSection({ canWrite }: { canWrite: boolean }) {
                   ? t("No model profiles available.")
                   : t("Select a model profile…")}
             </option>
+            {selected && !profiles?.some(profile => profile.id === selected.id) ? <option value={selected.id}>{selected.label} · {selected.profileKey} v{selected.version}</option> : null}
             {(profiles ?? []).map((profile) => (
               <option key={profile.id} value={profile.id}>
                 {profile.label} · {profile.profileKey} v{profile.version} · {value(profile.status)}
@@ -233,10 +255,11 @@ function ProfileHealthSection({ canWrite }: { canWrite: boolean }) {
           {t("Configuration check")}
         </button>
       </div>
+      {nextProfileCursor ? <button className="mt-2 rounded-md border border-[var(--ad-border)] px-3 py-2 text-sm disabled:opacity-50" disabled={profilesLoading} onClick={() => void loadProfiles(nextProfileCursor)} type="button">{t("Load more")}</button> : null}
       {!canWrite ? <p className="mt-2 text-sm"><PermissionNotice permission="generation.config.write" /></p> : null}
       {profilesError ? (
         <div className="mt-2">
-          <AuthorityRequestError cause={profilesError} message={requestErrorMessage(profilesError, t)} onRetry={() => void loadProfiles()} requestKind="read" />
+          <AuthorityRequestError cause={profilesError} message={requestErrorMessage(profilesError, t)} onRetry={() => void loadProfiles(requestedProfileCursor.current)} requestKind="read" />
         </div>
       ) : null}
       {configurationResult ? <ConfigurationCheckResult result={configurationResult} /> : null}

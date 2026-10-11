@@ -78,14 +78,14 @@ const db = vi.hoisted(() => {
 
 vi.mock("@/server/lib/db", () => ({ prisma: db.prisma }));
 vi.mock("@/server/moderation/text-authority", () => ({ moderateText: async () => ({ status: "approved" }) }));
-vi.mock("../shared/authority", async () => {
-  const { requireExecutableAdminV2Contract } = await import("@idream/shared/admin");
+vi.mock("../shared/authority", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../shared/authority")>();
   const actor = (request: Request) => ({ id: request.headers.get("x-test-actor") ?? "starter-reliability-admin", role: "admin" });
   return {
+    ...actual,
     actorWithPermission: async (request: Request) => actor(request),
     authenticatedAdminActor: async (request: Request) => actor(request),
     requireActorPermission: async (request: Request) => actor(request),
-    jsonBody: async (request: Request, contract: string) => requireExecutableAdminV2Contract(contract).schema.parse(await request.json()),
   };
 });
 vi.mock("@/server/lib/logger", () => ({ logger: { error: vi.fn(), warn: vi.fn() } }));

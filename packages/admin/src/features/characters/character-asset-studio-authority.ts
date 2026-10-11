@@ -159,12 +159,6 @@ export const reviewQualityChecks = [
 ] as const;
 
 export type ReviewQuality = Record<(typeof reviewQualityChecks)[number][0], boolean>;
-export type ReviewDraft = {
-  reason: string;
-  score: string;
-  identity: "passed" | "failed" | "unscored";
-  quality: ReviewQuality;
-};
 
 export function characterAssetReviewDefinesIdentity(
   item: Pick<CreativeRunDetail["items"][number], "identityReviewMode"> | null,
@@ -203,19 +197,6 @@ export function resolveCharacterAssetReviewEvidence(input: {
   };
 }
 
-export function emptyReviewDraft(definesIdentity: boolean): ReviewDraft {
-  return {
-    reason: "",
-    score: "",
-    identity: definesIdentity ? "unscored" : "passed",
-    quality: {
-      artifactFree: false,
-      singleSubject: false,
-      intentMatch: false,
-      noVisibleText: false,
-    },
-  };
-}
 
 export function resolveCharacterAssetSubject(input: {
   draftName?: string | null;

@@ -212,7 +212,7 @@ describe("explicit Chat Session Release migration command", () => {
     });
     try {
       await prisma.characterRelease.update({ where: { id: releaseId }, data: { status: "withdrawn" } });
-      await expect(executeAcceptedAdminCommand(accepted.commandId)).rejects.toMatchObject({ code: "conflict" });
+      await expect(executeAcceptedAdminCommand(accepted.commandId, { db: prisma, workerId: "test-migration" })).rejects.toMatchObject({ code: "conflict" });
       expect(await prisma.controlPlaneCommand.findUniqueOrThrow({ where: { id: accepted.commandId } })).toMatchObject({ status: "failed" });
       expect(await prisma.recentChat.findUniqueOrThrow({ where: { sessionId } })).toMatchObject({ characterReleaseId: `old-release-${suffix}`, contextRevision: 4 });
     } finally {

@@ -28,35 +28,25 @@ export async function adminRouteMetadata(label: string): Promise<Metadata> {
   };
 }
 
-// SPEC: 浏览器标签页用的名字，就是这条路径在侧栏里的名字。
-// INTENT: 这里过去把 URL 段首字母大写拼起来，于是标签页写着「Ops · Providers」「System · Access」，
-//         侧栏却写着「Providers」「Team Access」。运营同时开七八个后台标签页时，标签页上的名字
-//         才是他找回某一页的唯一线索——它必须和点进去时看到的名字是同一个。
-// INVARIANT: 名字只来自 nav-config；认不出的路径由 renderAdminRoute 走 notFound()。
-// INVARIANT: query 必须一起传 —— 七个目的地靠 `?view=` 区分（ops/recipes?view=workflows
-//            是「Workflow Diagnostics」，不是「Prompt Recipes」），只看路径会认成同一页。
+// Resolve titles from the same route/view authority used by the renderer. Explicit
+// pages and the catch-all must agree, including aliases caught by a dynamic segment.
 export function adminRouteLabel(
   section: readonly string[],
   query: Readonly<Record<string, string | string[] | undefined>> = {},
 ) {
-  return parseAdminPath(withSearchParams(section.join("/"), query))?.item.label ?? "Admin";
-}
-
-/**
- * SPEC: 动态段路由的标题跟着**解析出来的视图**走，不跟着文件路径走。
- * INTENT: nav-routes 的 CANONICAL_LIST_SECTIONS 把 `characters/releases` 与 `characters/calendar`
- *         解析成角色**列表**，但 Next 的匹配优先级让它们落进 `characters/[id]` 目录，于是页面
- *         渲染的是列表、标签页却写着「角色详情」。为这两条各建一个目录只挡得住今天这两条；
- *         判 view.kind 能挡住往后新增的每一条列表别名。
- * INVARIANT: 名字仍然只来自 nav-config —— 只有真正的详情视图才换成更具体的 detailLabel。
- */
-export function adminDynamicRouteLabel(
-  section: readonly string[],
-  detailLabel: string,
-) {
-  const match = parseAdminPath(section.join("/"));
-  if (!match) return detailLabel;
-  return match.view.kind === "detail" ? detailLabel : match.item.label;
+  const match = parseAdminPath(withSearchParams(section.join("/"), query));
+  if (!match) return "Admin";
+  if (match.view.kind === "new" && match.item.id === "content/official") return "New Character";
+  if (match.view.kind === "detail") {
+    const details: Partial<Record<typeof match.item.id, string>> = {
+      "content/official": "Character Detail",
+      "content/production": "Creative Run Detail",
+      "cases": "Case Detail",
+      "ops/incidents": "Incident Detail",
+    };
+    return details[match.item.id] ?? match.item.label;
+  }
+  return match.item.label;
 }
 
 export async function renderAdminRoute(

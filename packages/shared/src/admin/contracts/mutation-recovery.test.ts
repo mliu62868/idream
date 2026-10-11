@@ -50,6 +50,15 @@ describe("Admin mutation recovery contracts", () => {
     }).success).toBe(false);
   });
 
+  it.each(["character_video", "identity_calibration"])("recovers %s only within its Character identity", (expectedPurpose) => {
+    expect(adminMutationRecoveryRequestSchema.parse({
+      commandType: "creative.run.create", expectedCharacterId: "character-1", expectedPurpose,
+    })).toMatchObject({ expectedCharacterId: "character-1", expectedPurpose });
+    expect(adminMutationRecoveryRequestSchema.safeParse({
+      commandType: "creative.run.create", expectedPurpose,
+    }).success).toBe(false);
+  });
+
   it("exposes typed Character projection evidence from committed receipts", () => {
     expect(adminMutationRecoveryResultSchema.parse({
       state: "committed",

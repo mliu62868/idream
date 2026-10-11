@@ -1,3 +1,4 @@
+import { adminMutationResultValidator } from "@/server/modules/admin-v2/shared/route-handler";
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
@@ -238,6 +239,7 @@ async function runSupportCommand(input: {
 }) {
   const requestId = input.request.headers.get("x-request-id")?.trim() || randomUUID();
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(input.request),
     environment: env.APP_ENV,
     actor: input.actor,
     idempotencyKey: requireIdempotencyKey(input.request),
@@ -298,7 +300,7 @@ export async function patchSupportRequest(request: Request, ticketId: string) {
         include: supportRequestIncludes,
       });
       if (body.status !== undefined || body.priority !== undefined || body.assignedToId !== undefined) {
-        await synchronizeSupportCaseFromRequest(tx, updated, { statusChanged: updated.status !== before.status, priorityChanged: updated.priority !== before.priority });
+        await synchronizeSupportCaseFromRequest(tx, updated, { statusChanged: updated.status !== before.status, priorityChanged: updated.priority !== before.priority, reason: body.reason });
       }
       if (body.customerMessage) {
         await appendSupportMessage(tx, updated, { messageId: requireIdempotencyKey(request), body: body.customerMessage, author: "support", authorId: actor.id, actorRole: actor.role });
@@ -379,7 +381,7 @@ export async function escalateSupportRequest(request: Request, ticketId: string)
         },
         include: supportRequestIncludes,
       });
-      const currentCase = await synchronizeSupportCaseFromRequest(tx, updated, { statusChanged: updated.status !== before.status, priorityChanged: updated.priority !== before.priority });
+      const currentCase = await synchronizeSupportCaseFromRequest(tx, updated, { statusChanged: updated.status !== before.status, priorityChanged: updated.priority !== before.priority, reason: body.reason });
       await tx.adminAuditLog.create({ data: {
         actorId: actor.id,
         actorRole: actor.role,
@@ -488,74 +490,77 @@ export async function grantSupportConsent(request: Request, ticketId: string) {
     request,
     "POST /api/v2/admin/support/requests/:id/consent-grants",
   );
-  const ticket = await prisma.supportRequest.findUnique({ where: { ticketId } });
-  if (!ticket) throw Errors.notFound("Support request not found");
-  // 边界②：用户没同意就没有这条路。让客服去请用户同意，而不是给他一个更宽的开关。
-  if (!ticket.diagnosticConsent) {
-    throw Errors.forbidden(
-      "This requester has not consented to diagnostics; ask them to allow it on the ticket before viewing plaintext",
-      { ticketId, reason: "diagnostic_consent_missing" },
-    );
-  }
-  const target = await plaintextTarget(body.targetType, body.targetId);
-  if (!target) throw Errors.notFound("Plaintext target not found");
-  // 边界①：一张工单只能解锁**这个提交者自己**的内容。否则任何一张工单都会变成
-  //   看任意用户私密内容的万能钥匙。
-  if (target.ownerId !== ticket.userId) {
-    throw Errors.forbidden(
-      "The target belongs to a different account than the ticket requester",
-      { ticketId, reason: "target_owner_mismatch" },
-    );
-  }
-  // 边界③：只授权这次真正要看的字段，且 24 小时后自动失效。
-  const fields = [...new Set(body.fields)].filter((field) => field in target.plaintext);
-  if (fields.length === 0) {
-    throw Errors.badRequest("None of the requested fields exist on this target", {
-      available: Object.keys(target.plaintext),
+  return prisma.$transaction(async (tx) => {
+    const ticket = await tx.supportRequest.findUnique({ where: { ticketId } });
+    if (!ticket) throw Errors.notFound("Support request not found");
+    // 边界②：用户没同意就没有这条路。让客服去请用户同意，而不是给他一个更宽的开关。
+    if (!ticket.diagnosticConsent) {
+      throw Errors.forbidden(
+        "This requester has not consented to diagnostics; ask them to allow it on the ticket before viewing plaintext",
+        { ticketId, reason: "diagnostic_consent_missing" },
+      );
+    }
+    const target = await plaintextTarget(body.targetType, body.targetId, tx);
+    if (!target) throw Errors.notFound("Plaintext target not found");
+    // 边界①：一张工单只能解锁**这个提交者自己**的内容。否则任何一张工单都会变成
+    //   看任意用户私密内容的万能钥匙。
+    if (target.ownerId !== ticket.userId) {
+      throw Errors.forbidden(
+        "The target belongs to a different account than the ticket requester",
+        { ticketId, reason: "target_owner_mismatch" },
+      );
+    }
+    // 边界③：只授权这次真正要看的字段，且 24 小时后自动失效。
+    const fields = [...new Set(body.fields)].filter((field) => field in target.plaintext);
+    if (fields.length === 0) {
+      throw Errors.badRequest("None of the requested fields exist on this target", {
+        available: Object.keys(target.plaintext),
+      });
+    }
+    const expiresAt = new Date(Date.now() + SUPPORT_CONSENT_GRANT_TTL_MS);
+    const grant = await tx.supportConsentGrant.create({
+      data: {
+        userId: ticket.userId,
+        ticketId,
+        targetType: body.targetType,
+        targetId: body.targetId,
+        scope: toInputJson({ fields }),
+        expiresAt,
+        createdById: actor.id,
+      },
     });
-  }
-  const expiresAt = new Date(Date.now() + SUPPORT_CONSENT_GRANT_TTL_MS);
-  const grant = await prisma.supportConsentGrant.create({
-    data: {
-      userId: ticket.userId,
-      ticketId,
+    await tx.adminAuditLog.create({ data: {
+      actorId: actor.id,
+      actorRole: actor.role,
+      action: "support.consent.grant",
       targetType: body.targetType,
       targetId: body.targetId,
-      scope: toInputJson({ fields }),
-      expiresAt,
-      createdById: actor.id,
-    },
+      reason: body.reason,
+      after: toInputJson({ ticketId, fields, expiresAt: expiresAt.toISOString() }),
+      requestId: request.headers.get("x-request-id")?.trim() || randomUUID(),
+    } });
+    return {
+      grant: {
+        id: grant.id,
+        ticketId: grant.ticketId,
+        userId: grant.userId,
+        targetType: body.targetType,
+        targetId: grant.targetId,
+        fields,
+        expiresAt: expiresAt.toISOString(),
+        createdAt: grant.createdAt.toISOString(),
+      },
+    };
   });
-  await prisma.adminAuditLog.create({ data: {
-    actorId: actor.id,
-    actorRole: actor.role,
-    action: "support.consent.grant",
-    targetType: body.targetType,
-    targetId: body.targetId,
-    reason: body.reason,
-    after: toInputJson({ ticketId, fields, expiresAt: expiresAt.toISOString() }),
-    requestId: request.headers.get("x-request-id")?.trim() || randomUUID(),
-  } });
-  return {
-    grant: {
-      id: grant.id,
-      ticketId: grant.ticketId,
-      userId: grant.userId,
-      targetType: body.targetType,
-      targetId: grant.targetId,
-      fields,
-      expiresAt: expiresAt.toISOString(),
-      createdAt: grant.createdAt.toISOString(),
-    },
-  };
 }
 
 async function plaintextTarget(
   targetType: "generation_job" | "media",
   targetId: string,
+  db: Pick<Prisma.TransactionClient, "generationJob" | "mediaAsset"> = prisma,
 ): Promise<{ ownerId: string; plaintext: PlaintextFields } | null> {
   if (targetType === "generation_job") {
-    const job = await prisma.generationJob.findUnique({ where: { id: targetId } });
+    const job = await db.generationJob.findUnique({ where: { id: targetId } });
     return job
       ? {
           ownerId: job.userId,
@@ -563,7 +568,7 @@ async function plaintextTarget(
         }
       : null;
   }
-  const media = await prisma.mediaAsset.findUnique({ where: { id: targetId } });
+  const media = await db.mediaAsset.findUnique({ where: { id: targetId } });
   return media ? { ownerId: media.ownerId, plaintext: { prompt: media.prompt } } : null;
 }
 

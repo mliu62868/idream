@@ -93,8 +93,8 @@ export function CoinOffersPanel({ canWrite }: { canWrite: boolean }) {
         } catch (cause) {
           if (!isCurrent()) return;
           if (action !== "publish" || !isDualApprovalRequired(cause)) throw cause;
-          // 商品草稿不可改，批准绑定 offer id 即可（服务端 enforceApproval 不带 payload）。
-          setBlockedPublish({ name: offer.name, approval: { permissionKey: "config.pricing.write", action: "config.coin_offer.publish", targetType: "coin_offer", targetId: offer.id, payload: {}, reason } });
+          // Bind approval to the exact version and published commercial terms.
+          setBlockedPublish({ name: offer.name, approval: { permissionKey: "config.pricing.write", action: "config.coin_offer.publish", targetType: "coin_offer", targetId: offer.id, payload: { version: offer.version, fingerprint: offer.fingerprint }, reason } });
           return;
         }
         if (!isCurrent()) return;

@@ -1,3 +1,4 @@
+import { adminMutationResultValidator } from "@/server/modules/admin-v2/shared/route-handler";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import {
@@ -88,6 +89,7 @@ async function runUserCommand(input: {
 }) {
   const requestId = input.request.headers.get("x-request-id")?.trim() || randomUUID();
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(input.request),
     environment: env.APP_ENV,
     actor: input.actor,
     idempotencyKey: requireIdempotencyKey(input.request),

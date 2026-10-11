@@ -30,6 +30,7 @@ export function PlacementsNewPage() {
   const [assets, setAssets] = useState<ApprovedAsset[]>([]);
   const [blockedAssets, setBlockedAssets] = useState<ApprovedAsset[]>([]);
   const [draft, setDraft] = useState<PlacementDraft>(defaultPlacementDraft);
+  const [selectedAsset, setSelectedAsset] = useState<ApprovedAsset | null>(null);
   const [loadingAssets, setLoadingAssets] = useState(true);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -52,18 +53,11 @@ export function PlacementsNewPage() {
       setBlockedAssets(
         data.items.filter((asset) => !asset.customerPublishable),
       );
-      setDraft((current) => ({
-        ...current,
-        mediaAssetId:
-          eligible.some((asset) => asset.id === current.mediaAssetId)
-            ? current.mediaAssetId
-            : eligible[0]?.id ?? "",
-        targetId:
-          current.targetId ||
-          eligible.find((asset) => asset.id === current.mediaAssetId)?.targetId ||
-          eligible[0]?.targetId ||
-          "",
-      }));
+      // A page of search results is not the selected Campaign artwork. Update known
+      // eligibility if the selected asset is present; absence says nothing about it.
+      setSelectedAsset((current) => current
+        ? data.items.find((asset) => asset.id === current.id) ?? current
+        : null);
     } catch (loadError) {
       if (!request.isCurrent()) return;
       setError(requestErrorMessage(loadError, t));
@@ -86,6 +80,8 @@ export function PlacementsNewPage() {
 
   function selectAsset(assetId: string) {
     const asset = assets.find((item) => item.id === assetId);
+    if (!asset) return;
+    setSelectedAsset(asset);
     patch({ mediaAssetId: assetId, targetId: asset?.targetId ?? draft.targetId });
   }
 
@@ -99,8 +95,8 @@ export function PlacementsNewPage() {
 
   const canSubmit =
     !creating &&
-    !loadingAssets &&
-    assets.some((asset) => asset.id === draft.mediaAssetId) &&
+    selectedAsset?.id === draft.mediaAssetId &&
+    selectedAsset.customerPublishable &&
     draft.targetId.trim().length > 0 &&
     validCampaignDraft(draft) &&
     draft.reason.trim().length >= 3;
@@ -134,10 +130,14 @@ export function PlacementsNewPage() {
           <select
             aria-label={t("Asset")}
             className={INPUT_CLASS}
-            disabled={loadingAssets || assets.length === 0}
+            disabled={loadingAssets || (assets.length === 0 && !selectedAsset)}
             onChange={(event) => selectAsset(event.target.value)}
             value={draft.mediaAssetId}
           >
+            {!selectedAsset ? <option value="">{t("Asset")}</option> : null}
+            {selectedAsset && !assets.some((asset) => asset.id === selectedAsset.id) ? (
+              <option value={selectedAsset.id}>{selectedAsset.description || selectedAsset.id}</option>
+            ) : null}
             {assets.map((asset) => (
               <option key={asset.id} value={asset.id}>
                 {asset.description || asset.id} · {asset.purpose ? value(asset.purpose) : t("Asset")}
@@ -153,9 +153,9 @@ export function PlacementsNewPage() {
               invalidateAssets();
               setAssetCursors(current => current.at(-1) === nextCursor ? current : [...current, nextCursor]);
             }} />
-          {assets.find(asset => asset.id === draft.mediaAssetId)?.url ? <AssetImage asset={{
-            url: assets.find(asset => asset.id === draft.mediaAssetId)!.url!,
-            thumbnailUrl: assets.find(asset => asset.id === draft.mediaAssetId)!.thumbnailUrl ?? "",
+          {selectedAsset?.url ? <AssetImage asset={{
+            url: selectedAsset.url,
+            thumbnailUrl: selectedAsset.thumbnailUrl ?? "",
           }} preview /> : null}
           {blockedAssets.length > 0 ? (
             <p className="mt-2 text-xs text-[var(--ad-yellow-text)]" role="status">

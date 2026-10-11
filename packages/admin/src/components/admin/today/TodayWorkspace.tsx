@@ -2,13 +2,12 @@
 
 import { Loader2 } from "lucide-react";
 import { useCallback, useEffect } from "react";
-import type { TodayProjection } from "@idream/shared/admin";
-import { apiGet } from "@/components/admin/api";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { useAdminI18n } from "@/components/admin/i18n";
 import type { WorkMode } from "@/components/admin/nav-config";
 import { useAuthorityResource } from "@/lib/authority-resource";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
-import { TodayView, type TodayData, type TodayLegacyData } from "./TodayView";
+import { TodayView } from "./TodayView";
 
 export function TodayRecoveryNotice({
   error,
@@ -71,24 +70,17 @@ export function TodayRecoveryNotice({
 
 /**
  * SPEC: Today 的取数外壳 —— 自取数、自报加载/错误，与其余 37 个工作台一致。
- * INTENT: 这两个请求原先住在 AdminConsoleClient 的 fetchSection 里，是整个 shell 里
- *         唯一真正预取数据的 section。为它保留的 data/loading/error 状态机让另外 37 个
- *         section 也要先走一遍"假取数"才肯渲染。取数下沉到这里之后，shell 不再有任何
- *         与具体 section 相关的代码。
+ * INTENT: 主任务队列独立加载；折叠的背景统计不能决定今天的工作是否可用。
  * INVARIANT: workMode 进 key —— 切换工作模式等于换一份投影，迟到的旧响应不得覆盖新的。
  */
 export function TodayWorkspace({ workMode }: { workMode: WorkMode }) {
   const { t } = useAdminI18n();
 
-  const load = useCallback(async (): Promise<TodayData> => {
-    const [legacy, projection] = await Promise.all([
-      apiGet<TodayLegacyData>("/api/v2/admin/dashboard"),
-      apiGet<TodayProjection>(`/api/v2/admin/today?workMode=${encodeURIComponent(workMode)}`),
-    ]);
-    return { legacy, projection };
-  }, [workMode]);
+  const load = useCallback(() =>
+    adminV2Operation("GET /api/v2/admin/today", { query: new URLSearchParams({ workMode }) }),
+  [workMode]);
 
-  const resource = useAuthorityResource<TodayData>({ key: `today:${workMode}`, load });
+  const resource = useAuthorityResource({ key: `today:${workMode}`, load });
   const { refresh } = resource;
 
   useEffect(() => {
@@ -121,7 +113,7 @@ export function TodayWorkspace({ workMode }: { workMode: WorkMode }) {
       {resource.loading || resource.error ? (
         <div className="mb-4">{recoveryNotice}</div>
       ) : null}
-      <TodayView data={resource.data} onPreferenceChanged={refresh} workMode={workMode} />
+      <TodayView data={{ projection: resource.data }} onPreferenceChanged={refresh} workMode={workMode} />
     </>
   );
 }

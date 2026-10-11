@@ -5,8 +5,6 @@ import type { FormEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, ArrowRight, CheckCircle2, RefreshCcw, X } from "lucide-react";
 import {
-  incidentDetailSchema,
-  incidentListResponseSchema,
   type AdminListResponse,
   type IncidentActionPlan,
   type IncidentDetail,
@@ -16,8 +14,9 @@ import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestErr
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { useWorkspaceRefresh } from "@/features/workspace-refresh";
-import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
+import { setWorkspaceUrl } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
+import { useAuthorityResource } from "@/lib/authority-resource";
 import { createWorkspaceHistoryController, observeWorkspacePopState, workspaceDetailId } from "@/lib/workspace-history";
 import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
 import { SavedViewsControl } from "@/features/collaboration/SavedViewsControl";
@@ -82,19 +81,34 @@ export function IncidentWorkspace({
   const [busy, setBusy] = useState(false);
   // 只装读取失败：写操作的失败走 useFailureToast()（错误码映射 + 复制给工程）。
   const [error, setError] = useState<unknown>(null);
+  const [detailError, setDetailError] = useState<unknown>(null);
   const history = useRef(createWorkspaceHistoryController(initialUrlState));
   const listRequestId = useRef(0);
   const detailRequestId = useRef(0);
+  const mounted = useRef(false);
+  const activeOperations = useRef(new Set<symbol>());
+
+  useEffect(() => {
+    const operations = activeOperations.current;
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      operations.clear();
+      listRequestId.current += 1;
+      detailRequestId.current += 1;
+    };
+  }, []);
+
+  function releaseOperation(operation: symbol) {
+    if (activeOperations.current.delete(operation) && mounted.current) setBusy(activeOperations.current.size > 0);
+  }
 
   const loadList = useCallback(async (next: IncidentQueryDraft) => {
     const requestId = ++listRequestId.current;
     setLoading(true);
     setError(null);
     try {
-      const response = await adminV2Request<IncidentList>(
-        `/api/v2/admin/incidents?${buildIncidentQuery(next)}`,
-        { schema: incidentListResponseSchema },
-      );
+      const response = await adminV2Operation("GET /api/v2/admin/incidents", { query: buildIncidentQuery(next) });
       if (requestId !== listRequestId.current) return;
       setList(response);
     } catch (loadError) {
@@ -107,15 +121,15 @@ export function IncidentWorkspace({
   const loadDetail = useCallback(async (incidentId: string) => {
     const requestId = ++detailRequestId.current;
     setDetailLoading(true);
-    setError(null);
+    setDetailError(null);
     try {
-      const response = await adminV2Request<IncidentDetail>(
-        `/api/v2/admin/incidents/${encodeURIComponent(incidentId)}`,
-        { schema: incidentDetailSchema },
-      );
-      if (requestId === detailRequestId.current) setDetail(response);
+      const response = await adminV2Operation("GET /api/v2/admin/incidents/:id", { path: { id: incidentId } });
+      if (requestId !== detailRequestId.current) return false;
+      setDetail(response);
+      return true;
     } catch (loadError) {
-      if (requestId === detailRequestId.current) setError(loadError);
+      if (requestId === detailRequestId.current) setDetailError(loadError);
+      return false;
     } finally {
       if (requestId === detailRequestId.current) setDetailLoading(false);
     }
@@ -124,6 +138,8 @@ export function IncidentWorkspace({
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const restored = stateFromLocation(initialIncidentId);
+      activeOperations.current.clear();
+      setBusy(false);
       history.current.restore(restored);
       setQuery(restored.query);
       setSelectedSavedViewId(restored.savedViewId);
@@ -138,6 +154,8 @@ export function IncidentWorkspace({
 
   useEffect(() => {
     return observeWorkspacePopState(window, () => stateFromLocation(null), (restored) => {
+      activeOperations.current.clear();
+      setBusy(false);
       listRequestId.current += 1;
       detailRequestId.current += 1;
       setQuery(restored.query);
@@ -178,6 +196,8 @@ export function IncidentWorkspace({
   }
 
   function selectIncident(id: string | null) {
+    activeOperations.current.clear();
+    setBusy(false);
     detailRequestId.current += 1;
     setSelectedId(id);
     setDetail(null);
@@ -200,17 +220,26 @@ export function IncidentWorkspace({
   // SPEC: command 让失败抛出去——ConfirmDialog 要靠它就地显示错误并保持模态不关。
   // mutate 是给页面内联按钮用的包装：同样的刷新，但把错误交给失败 toast。
   async function command(label: string, execute: () => Promise<unknown>) {
+    if (!mounted.current || history.current.current().selectedId !== selectedId || activeOperations.current.size > 0 || detailLoading || detailError !== null) return;
+    const operation = Symbol("incident-command");
+    activeOperations.current.add(operation);
+    const pathname = window.location.pathname;
+    const isCurrent = () => mounted.current && activeOperations.current.has(operation) && history.current.current().selectedId === selectedId && window.location.pathname === pathname;
     setBusy(true);
     setError(null);
     try {
       await execute();
+      if (!isCurrent()) return;
       toast({ tone: "success", title: t(label) });
-      const next = { ...history.current.current().query, cursor: undefined };
+      const current = history.current.current();
+      const next = { ...current.query, cursor: undefined };
       setQuery(next);
-      history.current.replace({ query: next, selectedId, savedViewId: selectedSavedViewId }, writeIncidentUrl);
+      history.current.replace({ ...current, query: next }, writeIncidentUrl);
       await Promise.all([loadList(next), selectedId ? loadDetail(selectedId) : Promise.resolve()]);
+    } catch (cause) {
+      if (isCurrent()) throw cause;
     } finally {
-      setBusy(false);
+      releaseOperation(operation);
     }
   }
 
@@ -226,6 +255,20 @@ export function IncidentWorkspace({
     const next = history.current.current().query;
     void loadList(next);
     if (selectedId) void loadDetail(selectedId);
+  }
+
+  async function refreshAuthority() {
+    if (!selectedId || !mounted.current || history.current.current().selectedId !== selectedId) throw new Error(t("The latest data could not be loaded."));
+    const operation = Symbol("incident-readback");
+    activeOperations.current.add(operation);
+    const pathname = window.location.pathname;
+    setBusy(true);
+    try {
+      const refreshed = await loadDetail(selectedId);
+      if (!mounted.current || !activeOperations.current.has(operation) || history.current.current().selectedId !== selectedId || window.location.pathname !== pathname) throw new Error(t("The latest data could not be loaded."));
+      void loadList(history.current.current().query);
+      if (!refreshed) throw new Error(t("The latest data could not be loaded."));
+    } finally { releaseOperation(operation); }
   }
 
   const filtered = Boolean(query.search || query.status || query.severity || query.ownerId);
@@ -275,6 +318,7 @@ export function IncidentWorkspace({
       {error !== null ? (
         <AuthorityRequestError cause={error} message={message(error)} onRetry={reload} snapshotAt={list ? list.asOf : null} />
       ) : null}
+      {detailError !== null ? <AuthorityRequestError cause={detailError} message={message(detailError)} onRetry={() => selectedId && void loadDetail(selectedId)} snapshotAt={detail?.incident.updatedAt ?? null} /> : null}
 
       {loading && !list ? <LoadingWorkspace label="Loading correlated incidents" /> : list && list.items.length === 0 ? (
         <EmptyWorkspace filtered={filtered} onClear={clearFilters} />
@@ -282,7 +326,7 @@ export function IncidentWorkspace({
         <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,0.92fr)_minmax(440px,1.08fr)]">
           {selectedId ? (
             detailLoading && !detail ? <LoadingWorkspace label="Loading incident detail" /> : detail ? (
-              <IncidentInspector asOf={list?.asOf ?? detail.incident.updatedAt} busy={busy} canManage={canManage} detail={detail} key={detail.incident.id} onClose={() => selectIncident(null)} onCommand={command} onMutate={mutate} />
+              <IncidentInspector asOf={list?.asOf ?? detail.incident.updatedAt} busy={busy || detailLoading || detailError !== null} canManage={canManage} detail={detail} key={detail.incident.id} onClose={() => selectIncident(null)} onCommand={command} onMutate={mutate} onAuthorityChange={refreshAuthority} />
             ) : null
           ) : (
             <aside className="hidden rounded-xl bg-[var(--ad-surface-subtle)] p-8 text-sm text-[var(--ad-text-muted)] lg:block">{t("Select an incident to inspect occurrences, mitigation scope, and recovery evidence.")}</aside>
@@ -327,7 +371,7 @@ export function IncidentWorkspace({
   );
 }
 
-function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, onMutate }: {
+function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, onMutate, onAuthorityChange }: {
   /** 服务端在这次拉取时的时钟——渲染期不许读 Date.now()，冻结计划的过期判断也得有个可信参照。 */
   asOf: string;
   busy: boolean;
@@ -336,9 +380,19 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
   onClose: () => void;
   onCommand: (label: string, execute: () => Promise<unknown>) => Promise<void>;
   onMutate: (label: string, execute: () => Promise<unknown>) => Promise<void>;
+  onAuthorityChange: () => Promise<void>;
 }) {
   const { locale, t } = useAdminI18n();
+  const [trackedCommandId, setTrackedCommandId] = useState<string | null>(null);
+  useEffect(() => {
+    const restore = () => setTrackedCommandId(new URLSearchParams(window.location.search).get("commandId"));
+    restore();
+    window.addEventListener("popstate", restore);
+    return () => window.removeEventListener("popstate", restore);
+  }, []);
   const incident = detail.incident;
+  const mounted = useRef(false);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const [ownerId, setOwnerId] = useState(incident.ownerId ?? "");
   const [severity, setSeverity] = useState(incident.severity);
   const [cause, setCause] = useState(incident.suspectedCause ?? "");
@@ -386,13 +440,22 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
       // 契约 incidentActionPlanExecuteRequestSchema 只收 entityVersion + confirmation，没有 reason 字段。
       requireReason: false,
       submitLabel: t("Execute frozen plan"),
-      onSubmit: () => onCommand("Mitigation plan executed", () => adminV2Operation(
-        "POST /api/v2/admin/incidents/:id/action-plans/:planId/execute",
-        {
-          path: { id: incident.id, planId: plan.id },
-          body: { entityVersion: incident.version, confirmation: expected },
-        },
-      )),
+      onSubmit: async () => {
+        await onCommand("Mitigation plan accepted", async () => {
+          const pathname = window.location.pathname;
+          const receipt = await adminV2Operation("POST /api/v2/admin/incidents/:id/action-plans/:planId/execute", {
+            path: { id: incident.id, planId: plan.id },
+            body: { entityVersion: incident.version, confirmation: expected },
+          });
+          // The accepted command belongs to this inspector, even if navigation completed while submitting.
+          if (!mounted.current || window.location.pathname !== pathname) return receipt;
+          setTrackedCommandId(receipt.commandId);
+          const url = new URL(window.location.href);
+          url.searchParams.set("commandId", receipt.commandId);
+          window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}`);
+          return receipt;
+        });
+      },
     });
   }
 
@@ -747,9 +810,10 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
           </details>
         ) : null}
 
-        <CollaborationPanel canWrite={canManage} targetId={incident.id} targetType="incident" targetVersion={incident.version} />
+        {trackedCommandId ? <IncidentPlanCommand commandId={trackedCommandId} planIds={detail.actionPlans.map(plan => plan.id)} onSettled={onAuthorityChange} /> : null}
+        <CollaborationPanel canWrite={canManage && !busy} onAuthorityChange={onAuthorityChange} targetId={incident.id} targetType="incident" targetVersion={incident.version} />
       </div>
-      {confirm ? <ConfirmDialog onClose={() => setConfirm(null)} spec={confirm} /> : null}
+      {confirm ? <ConfirmDialog onClose={() => setConfirm(current => current === confirm ? null : current)} spec={confirm} /> : null}
     </aside>
   );
 }
@@ -777,6 +841,38 @@ function PlanFacts({ asOf, plan }: { asOf: string; plan: IncidentActionPlan }) {
   );
 }
 
+export function IncidentPlanCommand({ commandId, planIds, onSettled }: { commandId: string; planIds: readonly string[]; onSettled: () => Promise<void> }) {
+  const { t } = useAdminI18n();
+  const planKey = planIds.join("\n");
+  const load = useCallback(async () => {
+    const command = await adminV2Operation("GET /api/v2/admin/commands/:commandId", { path: { commandId } });
+    if (command.commandId !== commandId || command.commandType !== "incident.action_plan.execute" || command.target.type !== "incident_action_plan" || !planKey.split("\n").includes(command.target.id)) {
+      throw new Error("Command receipt does not belong to this Incident action plan");
+    }
+    return command;
+  }, [commandId, planKey]);
+  const resource = useAuthorityResource({ key: `incident-plan:${commandId}`, load }, {
+    pollWhile: ({ data, attempt, consecutiveFailures }) =>
+      (data && ["succeeded", "failed", "cancelled"].includes(data.status)) || attempt >= 30 || consecutiveFailures >= 3 ? null : 2_000,
+  });
+  const settled = Boolean(resource.data && ["succeeded", "failed", "cancelled"].includes(resource.data.status));
+  const notifiedCommand = useRef<string | null>(null);
+  const [readbackError, setReadbackError] = useState<unknown>(null);
+  useEffect(() => {
+    if (!settled || notifiedCommand.current === commandId) return;
+    notifiedCommand.current = commandId;
+    void onSettled().catch(setReadbackError);
+  }, [commandId, onSettled, settled]);
+  return <section className="space-y-2 rounded-md border border-[var(--ad-border)] p-3" aria-label={t("Mitigation command")}>
+    <p>{t("Mitigation plan accepted")}</p>
+    {resource.data ? <StatusBadge value={resource.data.status} /> : null}
+    <a className="block break-all text-sm underline" href={`/admin/system/audit?commandId=${encodeURIComponent(commandId)}`}>{t("Command context")} · {commandId}</a>
+    {resource.error || resource.refreshError ? <AuthorityRequestError requestKind="read" cause={resource.cause} message={resource.error ?? resource.refreshError!} onRetry={() => void resource.refresh()} /> : null}
+    {readbackError ? <AuthorityRequestError requestKind="read" cause={readbackError} message={t("The latest data could not be loaded.")} onRetry={() => void onSettled().then(() => setReadbackError(null)).catch(setReadbackError)} /> : null}
+    <WorkspaceButton disabled={resource.loading} onClick={() => void resource.refresh()}>{t("Refresh")}</WorkspaceButton>
+  </section>;
+}
+
 // 退款 / 回滚说"动的是客户的钱"，其余只说"冻结范围就此定死"——两句都进不可撤销的红色横幅。
 function planExecutionEffect(
   t: (key: string, values?: Record<string, string | number>) => string,
@@ -802,7 +898,13 @@ function Stat({ label, value }: { label: string; value: React.ReactNode }) {
 function initialIncidentWorkspaceState(initialIncidentId: string | null): IncidentWorkspaceUrlState { return { query: defaultIncidentQuery, selectedId: initialIncidentId, savedViewId: null }; }
 function stateFromLocation(initialIncidentId: string | null) { const parsed = parseIncidentWorkspaceParams(new URLSearchParams(window.location.search)); return { ...parsed, selectedId: initialIncidentId ?? parsed.selectedId ?? workspaceDetailId(window.location.pathname, "/admin/ops/incidents") }; }
 
-function writeIncidentUrl(state: IncidentWorkspaceUrlState, mode: "push" | "replace") { setWorkspaceUrl(buildIncidentWorkspaceParams(state), { mode, pathname: incidentWorkspacePath(state.selectedId) }); }
+function writeIncidentUrl(state: IncidentWorkspaceUrlState, mode: "push" | "replace") {
+  const params = buildIncidentWorkspaceParams(state);
+  const current = stateFromLocation(null);
+  const commandId = new URLSearchParams(window.location.search).get("commandId");
+  if (current.selectedId === state.selectedId && commandId) params.set("commandId", commandId);
+  setWorkspaceUrl(params, { mode, pathname: incidentWorkspacePath(state.selectedId) });
+}
 
 // 跟随 JobsView 的既有写法：micros 不换算成任何货币，带 μ 后缀原样呈现。
 function micros(locale: "en" | "zh", value: number) {

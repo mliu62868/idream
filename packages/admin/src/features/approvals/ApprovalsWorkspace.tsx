@@ -184,7 +184,7 @@ export function ApprovalsWorkspace({ canReview, canToggleEnforcement = false }: 
       title: t("{action} request {id}", { action: t(label), id }),
       // INTENT: 审批人点「批准」那一刻必须看到自己在放行什么。以前弹窗里只有一个 ID，
       //         要核对参数得先回列表、再横向翻十列——于是没人核对。现在证据跟着决定走。
-      summary: <ApprovalImpact entry={entry} />,
+      summary: <><ApprovalImpact entry={entry} /><ApprovalActionLink entry={entry} onClick={() => setConfirmation(null)} /></>,
       destructive: { expectedName: id, inputLabel: t("Confirmation") },
       // INTENT: 审批是终局裁决——后台没有「撤回审批」这条命令，请求方只能重新发起一条。
       consequence: {
@@ -331,7 +331,7 @@ export function ApprovalsWorkspace({ canReview, canToggleEnforcement = false }: 
         </p>
       ) : null}
       {data && canToggleEnforcement ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3 text-sm" id="approval-enforcement">
           <span>{data.enforcementEnabled ? t("Dual approval is on.") : null}</span>
           <GhostButton onClick={() => confirmEnforcement(data.enforcementEnabled === true)}>
             {data.enforcementEnabled ? t("Turn off dual approval") : t("Turn on dual approval")}
@@ -436,7 +436,7 @@ function approvalRows(
         ) : (
           // approvalRows 不是组件，取不到 hook；AdminText 是既有的 t() 包装。
           <AdminText key="read-only" text="Read only" />
-        )}</div>,
+        )}<ApprovalActionLink entry={entry} /></div>,
       ],
     };
   });
@@ -450,6 +450,22 @@ function actionLabel(action: string) {
     case "config.coin_offer.publish": return "Publish coin offer";
     default: return action || "—";
   }
+}
+
+// Re-enter the authoritative form. Never reconstruct a new approval from a historical payload.
+function approvalActionHref(entry: ApprovalCase): string | null {
+  if (entry.action === "billing.ledger.adjust" && entry.targetType === "user") return `/admin/customer-ops/billing?billingView=ledger&billingSearch=${encodeURIComponent(entry.targetId)}#billing-adjustment-title`;
+  if (entry.action === "config.pricing.publish" && entry.targetType === "pricing_rule") return `/admin/growth/offers?view=pricing&pricingSearch=${encodeURIComponent(entry.targetId)}`;
+  if (entry.action === "config.coin_offer.publish" && entry.targetType === "coin_offer") return "/admin/growth/offers?view=pricing#coin-offers";
+  if (entry.action === "promo.redeem_code.create" && entry.targetType === "redeem_code") return "/admin/growth/offers?view=promo";
+  if (entry.action === "config.feature_flag.write" && entry.targetType === "feature_flag" && entry.targetId === DUAL_APPROVAL_FLAG) return "/admin/system/approvals#approval-enforcement";
+  return null;
+}
+
+function ApprovalActionLink({ entry, onClick }: { entry: ApprovalCase; onClick?: () => void }) {
+  const { t } = useAdminI18n();
+  const href = approvalActionHref(entry);
+  return href ? <Link className="mt-2 block text-xs underline underline-offset-4" href={href} onClick={onClick}>{t("Open action to request approval")}</Link> : null;
 }
 
 function RequestCell({ entry }: { entry: ApprovalCase }) {

@@ -2008,7 +2008,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
     });
   });
 
-  it("blocks duplicate creation while a same-purpose Run is active, including when viewing completed history", async () => {
+  it("finds active work outside the first history page, paginates history, and blocks duplicate creation", async () => {
     vi.useFakeTimers();
     const runningRun = {
       id: "running-run",
@@ -2023,10 +2023,21 @@ describe("Character Asset Studio bootstrap route projection", () => {
     let finished = false;
     adminV2Request.mockImplementation(async (path, options) => {
       if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") return { batch: { id: "new-run" }, replayed: false };
-      if (path.includes("/api/v2/admin/creative/runs?")) return {
-        items: [finished ? { ...runningRun, executionOutcome: "succeeded" } : runningRun, historical],
-        pageInfo: { endCursor: null, hasNextPage: false },
-      };
+      if (path.includes("/api/v2/admin/creative/runs?")) {
+        const query = new URL(path, "http://admin.test").searchParams;
+        expect(query.get("purpose")).toBe("character_cover");
+        if (query.has("executionOutcome")) return {
+          items: query.get("executionOutcome") === "running" && !finished ? [runningRun] : [],
+          pageInfo: { endCursor: null, hasNextPage: false },
+        };
+        return query.has("cursor") ? {
+          items: [{ ...historical, id: "older-history-page" }],
+          pageInfo: { endCursor: null, hasNextPage: false },
+        } : {
+          items: Array.from({ length: 20 }, (_, index) => ({ ...historical, id: index === 0 ? historical.id : `history-${index}` })),
+          pageInfo: { endCursor: "history-next", hasNextPage: true },
+        };
+      }
       if (path.endsWith("/historical-run")) return historical;
       if (path.endsWith("/running-run")) return finished ? { ...runningDetail, executionOutcome: "succeeded" } : runningDetail;
       if (path.endsWith("/new-run")) return { ...runningDetail, id: "new-run", target: { type: "character", id: "character-ready" } };
@@ -2155,10 +2166,14 @@ describe("Character Asset Studio bootstrap route projection", () => {
     const history = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("historical-run"));
     await act(async () => { history?.click(); await vi.advanceTimersByTimeAsync(0); });
     expect(pending()?.disabled).toBe(true);
+    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent === "Load more")?.click());
+    expect(container.textContent).toContain("older-history-page");
+    expect(adminV2Request.mock.calls.some(([path]) => path.includes("cursor=history-next"))).toBe(true);
     await act(async () => pending()?.click());
     expect(adminV2Request.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
     finished = true;
     await act(async () => { await vi.advanceTimersByTimeAsync(4_000); });
+    expect(container.textContent).toContain("older-history-page");
     const generate = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Generate 1 portrait"));
     expect(generate?.disabled).toBe(false);
     await act(async () => { generate?.click(); await vi.advanceTimersByTimeAsync(0); });

@@ -1,6 +1,5 @@
 import {
   mainToChatOutboxTargetMissingDispositionResultSchema,
-  type MainToChatOutboxTargetMissingDispositionRequest,
 } from "@idream/shared/admin";
 import { discardTargetMissingMainToChatOutboxEvents } from "@/server/modules/admin-v2/chat/main-outbox-events";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
@@ -12,7 +11,7 @@ export const runtime = "nodejs";
 
 export function POST(request: Request) {
   return adminV2Route(request, () =>
-    executeAdminMutation<MainToChatOutboxTargetMissingDispositionRequest>(
+    executeAdminMutation(
       "POST /api/v2/admin/chat/main-outbox-events/commands/discard-target-missing",
       request,
       {

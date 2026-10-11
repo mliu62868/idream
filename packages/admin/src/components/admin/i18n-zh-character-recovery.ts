@@ -1,4 +1,7 @@
 export const adminZhCharacterRecovery: Record<string, string> = {
+  "Resume saved experiment": "继续已保存的实验请求",
+  "The experiment was committed. Resume to verify its saved Run before generating again.": "实验请求已提交。请继续核验已保存的生成记录，再发起新的实验。",
+  "Another tab has an unfinished experiment. Resume its saved request first.": "另一个标签页有未完成的实验请求，请先继续处理该请求。",
   "The latest Attempt is marked retryable.": "最近一次尝试可重试。",
   "The latest Attempt requires an operator retry.": "需要手动重试。",
   "The latest Attempt is marked not retryable.": "最近一次尝试不可重试。",

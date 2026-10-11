@@ -11,11 +11,14 @@ import {
   APPEAL_CASE_DECISIONS,
   BILLING_CASE_ACTIONS,
   caseActionHasAuthorityVerifier,
+  caseCloseCommandRequestSchema,
+  caseReopenRequestSchema,
+  caseWaitRequestSchema,
   CONTENT_EFFECT_REVIEW_DECISIONS,
   CONTENT_REPORT_CASE_DECISIONS,
   operationsCaseDetailSchema,
-  operationsCaseListResponseSchema,
   SUPPORT_CASE_ACTIONS,
+  REVIEW_CASE_DECISIONS,
   type AdminListResponse,
   type OperationsCase,
 } from "@idream/shared/admin";
@@ -24,10 +27,11 @@ import { useAdminFormat } from "@/components/admin/ui/format";
 import { Pagination } from "@/components/admin/ui/Pagination";
 import { FilterBar, type FilterChip } from "@/components/admin/ui/FilterBar";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
-import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
+import { setWorkspaceUrl } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { createWorkspaceHistoryController, observeWorkspacePopState, workspaceDetailId } from "@/lib/workspace-history";
 import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
+import { SupportConversationPanel } from "@/features/support/SupportWorkspace";
 import { SavedViewsControl } from "@/features/collaboration/SavedViewsControl";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
@@ -63,7 +67,7 @@ type CaseMobileStep = "summary" | "evidence" | "decision";
 // 就已经不存在了；服务端本来就是用同一个 schema parse 后才返回的。
 type CaseDetail = ReturnType<typeof operationsCaseDetailSchema.parse>;
 
-export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCaseId = null }: { actorId?: string | null; canAssign: boolean; canDecide: boolean; initialCaseId?: string | null }) {
+export function CaseWorkspace({ actorId = null, canAssign, canDecide, canReadSupport = false, canReplySupport = false, canViewPlaintext = false, initialCaseId = null }: { actorId?: string | null; canAssign: boolean; canDecide: boolean; canReadSupport?: boolean; canReplySupport?: boolean; canViewPlaintext?: boolean; initialCaseId?: string | null }) {
   const { t, value } = useAdminI18n();
   const format = useAdminFormat();
   const { toast } = useToast();
@@ -90,24 +94,29 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCas
   const listRequestId = useRef(0);
   const detailRequestId = useRef(0);
   const mounted = useRef(false);
+  const activeOperations = useRef(new Set<symbol>());
 
   useEffect(() => {
+    const operations = activeOperations.current;
     mounted.current = true;
     return () => {
       mounted.current = false;
+      operations.clear();
       listRequestId.current += 1;
       detailRequestId.current += 1;
     };
   }, []);
+
+  function releaseOperation(operation: symbol) {
+    if (activeOperations.current.delete(operation) && mounted.current) setBusy(activeOperations.current.size > 0);
+  }
 
   const loadList = useCallback(async (next: CaseQueryDraft) => {
     const requestId = ++listRequestId.current;
     setLoading(true);
     setListError(null);
     try {
-      const response = await adminV2Request<CaseList>(`/api/v2/admin/cases?${buildCaseQuery(next)}`, {
-        schema: operationsCaseListResponseSchema,
-      });
+      const response = await adminV2Operation("GET /api/v2/admin/cases", { query: buildCaseQuery(next) });
       if (requestId !== listRequestId.current) return false;
       setList(response);
       setAppliedQuery(next);
@@ -125,9 +134,7 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCas
     setDetailLoading(true);
     setDetailError(null);
     try {
-      const response = await adminV2Request<CaseDetail>(`/api/v2/admin/cases/${encodeURIComponent(caseId)}`, {
-        schema: operationsCaseDetailSchema,
-      });
+      const response = await adminV2Operation("GET /api/v2/admin/cases/:id", { path: { id: caseId } });
       if (requestId !== detailRequestId.current) return false;
       setDetail(response);
       setDetailSnapshotAt(new Date().toISOString());
@@ -143,6 +150,8 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCas
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const restored = stateFromLocation(initialCaseId);
+      activeOperations.current.clear();
+      setBusy(false);
       history.current.restore(restored);
       setQuery(restored.query);
       setSelectedSavedViewId(restored.savedViewId);
@@ -158,6 +167,8 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCas
 
   useEffect(() => {
     return observeWorkspacePopState(window, () => stateFromLocation(null), (restored) => {
+      activeOperations.current.clear();
+      setBusy(false);
       listRequestId.current += 1;
       detailRequestId.current += 1;
       if (buildCaseQuery(history.current.current().query) !== buildCaseQuery(restored.query)) setCursorTrail([]);
@@ -225,6 +236,8 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCas
   }
 
   function selectCase(id: string | null) {
+    activeOperations.current.clear();
+    setBusy(false);
     detailRequestId.current += 1;
     setSelectedId(id);
     setInspectorExpanded(true);
@@ -250,32 +263,56 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCas
   // INTENT: 此前是"先弹已完成、再去拉列表"，重拉那几秒运营盯着的是旧队列配一句成功——
   // 尤其关闭工单后那条工单还在原地，很容易被再点一次。
   function workspaceIsCurrent() {
-    return mounted.current && window.location.pathname === caseWorkspacePath(selectedId);
+    return mounted.current && history.current.current().selectedId === selectedId && window.location.pathname === caseWorkspacePath(selectedId);
   }
 
-  async function refreshAfterMutation(label: string) {
+  async function refreshAfterMutation(label: string, isCurrent: () => boolean = workspaceIsCurrent) {
     // A command may finish after Reply/navigation; its old workspace cannot navigate back.
-    if (!workspaceIsCurrent()) return;
+    if (!isCurrent()) return;
     // Next still exposes this pathname while a destination is loading. Rewriting
     // history here would cancel that navigation; refresh the current queue in place.
     const next = history.current.current().query;
     const refreshed = await Promise.all([loadList(next), selectedId ? loadDetail(selectedId) : Promise.resolve(true)]);
     // INVARIANT: label 是词典 key，翻译收在这一处 —— 调用点散在十来个按钮上，
     // 让它们各自 t() 就是让其中几个忘记（旧的 notice 出口正是这样露出英文的）。
-    if (workspaceIsCurrent()) toast(refreshed.every(Boolean)
+    if (isCurrent()) toast(refreshed.every(Boolean)
       ? { tone: "success", title: t(label) }
       : { tone: "info", title: t(label), description: t("The latest data could not be loaded.") });
   }
 
-  async function mutate(label: string, execute: () => Promise<unknown>) {
+  async function command(label: string, execute: () => Promise<unknown>) {
+    if (!workspaceIsCurrent() || activeOperations.current.size > 0 || detailLoading || detailError !== null) return;
+    const operation = Symbol("case-mutation");
+    activeOperations.current.add(operation);
+    const isCurrent = () => workspaceIsCurrent() && activeOperations.current.has(operation);
     setBusy(true);
     try {
       await execute();
-      await refreshAfterMutation(label);
+      await refreshAfterMutation(label, isCurrent);
     } catch (mutationError) {
-      if (workspaceIsCurrent()) failureToast(mutationError);
+      if (isCurrent()) throw mutationError;
     } finally {
-      if (mounted.current) setBusy(false);
+      releaseOperation(operation);
+    }
+  }
+
+  async function mutate(label: string, execute: () => Promise<unknown>) {
+    try { await command(label, execute); }
+    catch (mutationError) { failureToast(mutationError); }
+  }
+
+  async function refreshAfterHandoff() {
+    if (!selectedId || !workspaceIsCurrent()) throw new Error(t("The latest data could not be loaded."));
+    const operation = Symbol("case-readback");
+    activeOperations.current.add(operation);
+    setBusy(true);
+    try {
+      const refreshed = await loadDetail(selectedId);
+      if (!workspaceIsCurrent() || !activeOperations.current.has(operation)) throw new Error(t("The latest data could not be loaded."));
+      void loadList(history.current.current().query);
+      if (!refreshed) throw new Error(t("The latest data could not be loaded."));
+    } finally {
+      releaseOperation(operation);
     }
   }
 
@@ -308,7 +345,7 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, initialCas
       <div className="grid min-w-0 grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,0.92fr)_minmax(460px,1.08fr)]">
         {selectedId ? <div className={`min-w-0 space-y-3 ${inspectorExpanded ? "" : "md:hidden lg:block"}`}>
           {detailError ? <AuthorityRequestError cause={detailError} message={t("The latest data could not be loaded.")} onRetry={() => void loadDetail(selectedId)} requestKind="read" snapshotAt={detail ? detailSnapshotAt : null} /> : null}
-          {detailLoading && !detail ? <LoadingWorkspace label="Loading case detail" /> : detail ? <CaseInspector actorId={actorId} busy={busy || detailLoading || detailError !== null} canAssign={canAssign} canDecide={canDecide} detail={detail} key={detail.case.id} onClose={() => selectCase(null)} onConfirmed={refreshAfterMutation} onMutate={mutate} referenceTime={list?.asOf ?? detail.case.updatedAt} /> : null}
+          {detailLoading && !detail ? <LoadingWorkspace label="Loading case detail" /> : detail ? <CaseInspector actorId={actorId} busy={busy || detailLoading || detailError !== null} canAssign={canAssign} canDecide={canDecide} canReadSupport={canReadSupport} canReplySupport={canReplySupport} canViewPlaintext={canViewPlaintext} detail={detail} key={detail.case.id} onClose={() => selectCase(null)} onCommand={command} onConfirmed={refreshAfterMutation} onAuthorityChange={refreshAfterHandoff} onMutate={mutate} referenceTime={list?.asOf ?? detail.case.updatedAt} /> : null}
         </div> : <aside className="hidden rounded-xl bg-[var(--ad-surface-subtle)] p-8 text-sm text-[var(--ad-text-muted)] lg:block">{t("Select a case to inspect evidence and complete the decision loop.")}</aside>}
         <div className="min-w-0 space-y-3 lg:order-first" aria-label={t("Case results")}>
           <CaseFilters appliedQuery={appliedQuery} busy={loading} onApply={applyFilters} onChange={updateDraft} onReset={clearFilters} query={query} />
@@ -388,19 +425,6 @@ function CaseFilters({ appliedQuery, busy, onApply, onChange, onReset, query }: 
 //         筛选造成的空仍旧走原来的清除筛选出口，两种空不能混为一谈。
 const BROADER_VIEW: Record<string, string> = { mine: "unassigned" };
 
-/**
- * SPEC: 三个生命周期命令各是 manifest 里独立的一条 operation。
- * INTENT: 以前按 `commands/${command}` 拼路由，路由拼得出来、键却要自己记得发 —— wait / reopen
- *         就是这么漏掉的，后端一律 400「Idempotency-Key header is required」，这两个按钮
- *         从来没成功过一次。改成查表拿 operation id 之后，键由 adminV2Operation 附带，
- *         漏发在这里写不出来。
- */
-const caseCommandOperationId = {
-  wait: "POST /api/v2/admin/cases/:id/commands/wait",
-  reopen: "POST /api/v2/admin/cases/:id/commands/reopen",
-  close: "POST /api/v2/admin/cases/:id/commands/close",
-} as const;
-
 function CaseQueueEmpty({
   filtered,
   onClear,
@@ -469,7 +493,7 @@ function withoutContentEffect(decision: string) {
   );
 }
 
-function CaseInspector({ actorId, busy, canAssign, canDecide, detail, onClose, onConfirmed, onMutate, referenceTime }: { actorId: string | null; busy: boolean; canAssign: boolean; canDecide: boolean; detail: CaseDetail; onClose: () => void; onConfirmed: (label: string) => Promise<void>; onMutate: (label: string, execute: () => Promise<unknown>) => Promise<void>; referenceTime: string }) {
+function CaseInspector({ actorId, busy, canAssign, canDecide, canReadSupport, canReplySupport, canViewPlaintext, detail, onClose, onCommand, onConfirmed, onAuthorityChange, onMutate, referenceTime }: { actorId: string | null; busy: boolean; canAssign: boolean; canDecide: boolean; canReadSupport: boolean; canReplySupport: boolean; canViewPlaintext: boolean; detail: CaseDetail; onClose: () => void; onConfirmed: (label: string) => Promise<void>; onCommand: (label: string, execute: () => Promise<unknown>) => Promise<void>; onAuthorityChange: () => Promise<void>; onMutate: (label: string, execute: () => Promise<unknown>) => Promise<void>; referenceTime: string }) {
   const { t, value } = useAdminI18n();
   const format = useAdminFormat();
   const adminCase = detail.case;
@@ -567,11 +591,12 @@ function CaseInspector({ actorId, busy, canAssign, canDecide, detail, onClose, o
       destructive: { expectedName, inputLabel: t("Type confirmation") },
       submitLabel: input.submitLabel,
       onSubmit: async (confirmationReason) => {
-        await adminV2Operation(caseCommandOperationId[input.command], {
-          path: { id: adminCase.id },
-          body: { entityVersion: adminCase.version, confirmation: expectedName, ...input.body(confirmationReason) },
+        await onCommand(input.notice, async () => {
+          const body = { entityVersion: adminCase.version, confirmation: expectedName, ...input.body(confirmationReason) };
+          if (input.command === "close") return adminV2Operation("POST /api/v2/admin/cases/:id/commands/close", { path: { id: adminCase.id }, body: caseCloseCommandRequestSchema.parse(body) });
+          if (input.command === "wait") return adminV2Operation("POST /api/v2/admin/cases/:id/commands/wait", { path: { id: adminCase.id }, body: caseWaitRequestSchema.parse(body) });
+          return adminV2Operation("POST /api/v2/admin/cases/:id/commands/reopen", { path: { id: adminCase.id }, body: caseReopenRequestSchema.parse(body) });
         });
-        await onConfirmed(input.notice);
       },
     });
   }
@@ -582,22 +607,27 @@ function CaseInspector({ actorId, busy, canAssign, canDecide, detail, onClose, o
 
   function recordDecision() {
     if (decisionBlocked) return Promise.reject(new Error(t("Reopen this case")));
-    return customerCase
-      ? adminV2Operation("POST /api/v2/admin/cases/:id/actions", {
+    if (customerCase) {
+      const action = [...SUPPORT_CASE_ACTIONS, ...BILLING_CASE_ACTIONS].find(option => option === decision);
+      if (!action) return Promise.reject(new Error("Invalid customer action"));
+      return adminV2Operation("POST /api/v2/admin/cases/:id/actions", {
           path: { id: adminCase.id },
           body: {
             entityVersion: adminCase.version,
-            action: decision,
+            action,
             summary: summary.trim(),
             evidenceRefs: refs,
             outcomeRef: needsOutcomeRef ? outcomeRef.trim() : undefined,
           },
-        })
-      : adminV2Operation("POST /api/v2/admin/cases/:id/decisions", {
+        });
+    }
+    const reviewDecision = REVIEW_CASE_DECISIONS.find(option => option === decision);
+    if (!reviewDecision) return Promise.reject(new Error("Invalid review decision"));
+    return adminV2Operation("POST /api/v2/admin/cases/:id/decisions", {
           path: { id: adminCase.id },
           body: {
             entityVersion: adminCase.version,
-            decision,
+            decision: reviewDecision,
             summary: summary.trim(),
             evidenceRefs: refs,
           },
@@ -652,12 +682,13 @@ function CaseInspector({ actorId, busy, canAssign, canDecide, detail, onClose, o
       <section aria-labelledby="case-audit-title" className="border-t border-[var(--ad-border)] pt-5"><h4 className="text-sm font-semibold" id="case-audit-title">{t("Audit trail")}</h4>{detail.activity.length === 0 ? <p className="mt-3 text-sm text-[var(--ad-text-muted)]">{t("No operator actions recorded on this case yet.")}</p> : <ol className="mt-3 space-y-2">{detail.activity.slice(0, 20).map((item) => <li className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-l-2 border-[var(--ad-border)] pl-3 text-xs" key={item.id}><span className="min-w-0"><code className="break-all font-semibold">{item.action}</code><span className="mt-0.5 block text-[var(--ad-text-muted)]">{item.actorId} · {value(item.actorRole)}</span>{item.reason ? <span className="mt-0.5 block break-words leading-5">{item.reason}</span> : null}</span><span className="shrink-0 text-[var(--ad-text-muted)]"><RelativeTime referenceTime={referenceTime} value={item.createdAt} /></span></li>)}</ol>}</section>
       </div>
 
-      <div className={mobileStepClass("decision")} data-case-step="decision"><CollaborationPanel canWrite={canAssign} onAuthorityChange={() => void onConfirmed("Ownership transferred; the case was reloaded from authority.")} targetId={adminCase.id} targetType="case" targetVersion={adminCase.version} /></div>
+      {canReadSupport && caseTicketId(adminCase) ? <SupportConversationPanel ticketId={caseTicketId(adminCase)!} key={caseTicketId(adminCase)} canWrite={canReplySupport && !busy} canViewPlaintext={canViewPlaintext} refreshRevision={adminCase.version} onUpdated={() => void onConfirmed("The case was reloaded from authority.")} /> : null}
+      <div className={mobileStepClass("decision")} data-case-step="decision"><CollaborationPanel canWrite={canAssign && !busy} onAuthorityChange={onAuthorityChange} targetId={adminCase.id} targetType="case" targetVersion={adminCase.version} /></div>
       <div className="fixed inset-x-0 bottom-0 z-20 flex gap-2 border-t border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 md:hidden" data-case-mobile-actions>
         {mobileStep !== "summary" ? <WorkspaceButton className="flex-1" onClick={() => setMobileStep(mobileStep === "decision" ? "evidence" : "summary")}>{t("Back")}</WorkspaceButton> : null}
         {mobileStep !== "decision" ? <WorkspaceButton className="flex-1" onClick={() => setMobileStep(mobileStep === "summary" ? "evidence" : "decision")} tone="primary">{t("Next")}</WorkspaceButton> : canDecide ? <WorkspaceButton className="flex-1" disabled={!canRecordDecision} onClick={() => void onMutate(customerCase ? "Customer Case action recorded" : "Case decision recorded", recordDecision)} tone="primary"><ClipboardCheck className="h-4 w-4" />{customerCase ? t("Record action") : t("Record decision")}</WorkspaceButton> : null}
       </div>
-      {confirmSpec ? <ConfirmDialog onClose={() => setConfirmSpec(null)} spec={confirmSpec} /> : null}
+      {confirmSpec ? <ConfirmDialog onClose={() => setConfirmSpec(current => current === confirmSpec ? null : current)} spec={confirmSpec} /> : null}
     </div></aside>;
 }
 

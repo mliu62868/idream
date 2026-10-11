@@ -16,6 +16,7 @@
     "./coins": "./src/coins.ts",
     "./env": "./src/contracts/env.ts",
     "./admin": "./src/admin/index.ts",
+    "./admin/testing/contract-fixtures": "./src/admin/testing/contract-fixtures.ts",
     "./admin/contracts": "./src/admin/contracts/index.ts",
     "./admin/permissions": "./src/admin/permissions.ts",
     "./admin/api-manifest": "./src/admin/api-manifest.ts",

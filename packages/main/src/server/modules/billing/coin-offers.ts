@@ -11,6 +11,7 @@ import { ok } from "@/server/lib/http";
 import { toInputJson } from "@/server/lib/request-json";
 import { enforceApproval } from "@/server/modules/admin-v2/approvals/enforcement";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
+import { adminMutationResultValidator } from "@/server/modules/admin-v2/shared/route-handler";
 import { adminRequestId } from "@/server/modules/admin-v2/shared/audit-request";
 import { actorWithPermission, type AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { createClassifiedAnalyticsEvent } from "@/server/modules/admin-v2/metrics/classified-event-writer";
@@ -95,6 +96,7 @@ export async function listAdminCoinOffers(request: Request) {
 export async function createCoinOffer(request: Request, actor: AdminActor,
   body: z.infer<typeof adminCoinOfferCreateRequestSchema>, idempotencyKey: string) {
   return executeAtomicIdempotentMutation({ environment: env.APP_ENV, actor, idempotencyKey, requestId: adminRequestId(request),
+    validateResult: adminMutationResultValidator(request),
     commandType: "config.coin_offer.create", target: { type: "coin_offer", id: body.offerKey }, payload: body,
     mutate: async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`coin-offer:${body.offerKey}`}))`;
@@ -110,6 +112,7 @@ export async function changeCoinOfferState(request: Request, actor: AdminActor, 
   body: z.infer<typeof adminCoinOfferStateRequestSchema>, idempotencyKey: string) {
   if (body.confirmation !== `${id}:${body.action}`) throw Errors.badRequest("Confirmation must identify the offer and action");
   return executeAtomicIdempotentMutation({ environment: env.APP_ENV, actor, idempotencyKey, requestId: adminRequestId(request),
+    validateResult: adminMutationResultValidator(request),
     commandType: "config.coin_offer.state", target: { type: "coin_offer", id }, expectedVersion: body.version, payload: body,
     mutate: async (tx) => {
       const identity = await tx.coinOffer.findUnique({ where: { id }, select: { offerKey: true } });
@@ -120,7 +123,7 @@ export async function changeCoinOfferState(request: Request, actor: AdminActor, 
         throw Errors.conflict("Coin offer changed. Reload the catalog before continuing.");
       }
       if (body.action === "publish") {
-        await enforceApproval("config.coin_offer.publish", id, tx);
+        await enforceApproval("config.coin_offer.publish", id, tx, { version: current.version, fingerprint: coinOfferFingerprint(current) }, current.version);
         await tx.coinOffer.updateMany({ where: { offerKey: current.offerKey, status: "published" }, data: { status: "retired" } });
       }
       const offer = await tx.coinOffer.update({ where: { id }, data: body.action === "publish"

@@ -1,6 +1,4 @@
-import {
-  characterImageReadinessRepairResponseSchema,
-} from "@idream/shared/admin";
+import { adminMutationResultValidator } from "@/server/modules/admin-v2/shared/route-handler";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import {
@@ -54,7 +52,7 @@ export async function POST(
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId =
       request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
-    const result = await executeAtomicIdempotentMutation({
+    const result = await executeAtomicIdempotentMutation({ validateResult: adminMutationResultValidator(request),
       environment: env.APP_ENV,
       actor,
       idempotencyKey,
@@ -77,6 +75,6 @@ export async function POST(
         replayed,
       }),
     });
-    return characterImageReadinessRepairResponseSchema.parse(result);
+    return result;
   });
 }

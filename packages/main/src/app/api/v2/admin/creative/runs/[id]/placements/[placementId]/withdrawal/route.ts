@@ -6,7 +6,7 @@ import { withdrawCreativePlacement } from "@/server/modules/admin-v2/creative/pl
 import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
-import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
+import { adminMutationResultValidator, adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -20,7 +20,7 @@ export async function POST(request: Request, context: Context) {
     const body = await jsonBody(request, "creativePlacementWithdrawalRequestSchema+idempotency-key");
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
-    return executeAtomicIdempotentMutation({
+    return executeAtomicIdempotentMutation({ validateResult: adminMutationResultValidator(request),
       environment: env.APP_ENV,
       actor,
       idempotencyKey,

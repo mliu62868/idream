@@ -16,6 +16,7 @@ import { providers } from "@/server/providers";
 import { moderateText } from "@/server/moderation/text-authority";
 import { lockCharacterMediaAssetAuthorities } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
+import { adminMutationResultValidator } from "@/server/modules/admin-v2/shared/route-handler";
 import { actorWithPermission, jsonBody as adminJsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { comicInclude as include, comicPageUsable as usableMedia, comicPublishable as publishable, comicPublicAuthor as publicAuthor, comicContentUrl as contentUrl, loadReadableComic as readableComic, type ComicRow } from "./comic-authority";
 import { collectionMediaViewUrl } from "./public-read-model";
@@ -205,6 +206,7 @@ export async function decideAdminComic(request: Request, id: string) {
   const body = adminComicDecisionRequestSchema.parse(await adminJsonBody(request, "adminComicDecisionRequestSchema+idempotency-key"));
   if (body.confirmation !== id) throw Errors.badRequest("Confirmation did not match the Comic");
   const result = await executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV, actor, idempotencyKey: requireIdempotencyKey(request),
     requestId: request.headers.get("x-request-id") || crypto.randomUUID(),
     commandType: "comic.review", target: { type: "comic", id }, expectedVersion: body.version, payload: body,

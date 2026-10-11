@@ -104,6 +104,30 @@ function result(label = "Configuration check") {
 }
 
 describe("Profile Diagnostics configuration receipt", () => {
+  it("loads candidates beyond the first page and retains the selected profile while searching", async () => {
+    const later = { ...profileB, id: "profile-page-two" };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const params = new URL(String(input), "http://localhost").searchParams;
+      return Response.json({ ok: true, data: { items: params.has("search") ? [] : params.has("cursor") ? [later] : [profiles[0]!], pageInfo: { hasNextPage: !params.has("cursor") && !params.has("search"), endCursor: "candidate-page-2" } } });
+    }));
+    await mount();
+    await act(async () => button("Load more", container).click());
+    const selector = container.querySelector<HTMLSelectElement>('[aria-label="Model profile"]')!;
+    expect([...selector.options].map(option => option.value)).toContain(later.id);
+    await act(async () => { selector.value = later.id; selector.dispatchEvent(new Event("change", { bubbles: true })); });
+    const search = container.querySelector<HTMLInputElement>('[aria-label="Search model profiles"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "unrelated");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => button("Search", container).click());
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(selector.value).toBe(later.id);
+    expect(selector.disabled).toBe(false);
+    expect(vi.mocked(fetch).mock.calls.map(([path]) => String(path))).toContain("/api/v2/admin/generation/model-profiles?limit=100&cursor=candidate-page-2");
+    expect(writes).toHaveLength(0);
+  });
+
   it("reloads profiles and the displayed health through shell refresh while retaining the selected profile", async () => {
     await mount();
     await select(0);

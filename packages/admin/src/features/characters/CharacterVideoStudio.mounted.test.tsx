@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { act } from "react";
+import { adminMutationRecoveryRequestSchema } from "@idream/shared/admin";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
@@ -32,7 +33,7 @@ import {
   characterVideoSourceOptions,
   videoPlaybackIssueMessage,
 } from "./CharacterVideoStudio";
-import { readActiveDurableMutationIntent } from "@/lib/durable-mutation-intent";
+import { readActiveDurableMutationIntent, updateDurableMutationIntent } from "@/lib/durable-mutation-intent";
 
 async function waitUntil(predicate: () => boolean) {
   const deadline = Date.now() + 2_000;
@@ -255,14 +256,18 @@ describe("Character Video Studio", () => {
       configurable: true,
       value: createMemoryStorage(),
     });
+    let createdBody: Record<string, unknown> | undefined;
     adminV2Request.mockImplementation(async (path: string, options?: {
       method?: string;
+      body?: Record<string, unknown>;
     }) => {
       if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+        createdBody = options.body;
         return { batch: { id: "video-run-1" }, replayed: false };
       }
       if (path === "/api/v2/admin/creative/runs/video-run-1") {
-        return pendingRun;
+        return createdBody ? { ...pendingRun, title: createdBody.title,
+          reviewContext: { ...pendingRun.reviewContext, brief: createdBody.brief, orientation: createdBody.orientation } } : pendingRun;
       }
       return {
         items: [],
@@ -275,6 +280,66 @@ describe("Character Video Studio", () => {
     await act(async () => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+  });
+
+  it("uses the verified Run as display authority without a second GET that can lose the active lock", async () => {
+    let body: Record<string, unknown> = {};
+    let detailReads = 0;
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+        body = options.body;
+        return { batch: { id: "video-run-1" }, replayed: false };
+      }
+      if (path.endsWith("/video-run-1")) {
+        detailReads += 1;
+        if (detailReads > 1) throw new Error("display projection unavailable");
+        return { ...pendingRun, title: body.title,
+          reviewContext: { ...pendingRun.reviewContext, brief: body.brief, orientation: body.orientation } };
+      }
+      return { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
+    });
+    await act(async () => root.render(<CharacterVideoStudio actorId="actor-1" data={data} onCreateImage={vi.fn()}
+      permissions={{ create: true, read: true }} runCommittedMutation={runCommittedMutation} />));
+    const button = (label: string) => [...container.querySelectorAll("button")].find(item => item.textContent?.trim() === label);
+    await waitUntil(() => button("Create video")?.disabled === false);
+    await act(async () => button("Create video")?.click());
+    await waitUntil(() => readActiveDurableMutationIntent({ scope: "character-video:create:actor-1:character-video-1" }) === null);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+    expect(detailReads).toBe(1);
+    expect(button("Video request in progress")?.disabled).toBe(true);
+    expect(button("Create video")).toBeUndefined();
+    expect(adminV2Request.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(1);
+  });
+
+  it.each(["id", "brief"])("keeps the receipt locked until the displayed Run matches the committed %s", async (mismatch) => {
+    let body: Record<string, unknown> = {};
+    let wrongProjection = true;
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+        body = options.body;
+        return { batch: { id: "video-run-1" }, replayed: false };
+      }
+      if (path.endsWith("/video-run-1")) return { ...pendingRun,
+        id: wrongProjection && mismatch === "id" ? "another-run" : pendingRun.id,
+        title: body.title, reviewContext: { ...pendingRun.reviewContext,
+          brief: wrongProjection && mismatch === "brief" ? "Another request" : body.brief,
+          orientation: body.orientation } };
+      return { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
+    });
+    await act(async () => root.render(<CharacterVideoStudio actorId="actor-1" data={data} onCreateImage={vi.fn()}
+      permissions={{ create: true, read: true }} runCommittedMutation={runCommittedMutation} />));
+    const button = (label: string) => [...container.querySelectorAll("button")].find(item => item.textContent?.trim() === label);
+    await waitUntil(() => button("Create video")?.disabled === false);
+    await act(async () => button("Create video")?.click());
+    await waitUntil(() => container.querySelector('[role="alert"]') !== null);
+    expect(readActiveDurableMutationIntent({ scope: "character-video:create:actor-1:character-video-1" })?.status).toBe("committed_projection_pending");
+    expect(button("Create video")).toBeUndefined();
+    expect(container.textContent).not.toContain("Video generation started.");
+    wrongProjection = false;
+    await act(async () => button("Verify created video")?.click());
+    await waitUntil(() => button("Video request in progress")?.disabled === true);
+    expect(readActiveDurableMutationIntent({ scope: "character-video:create:actor-1:character-video-1" })).toBeNull();
+    expect(adminV2Request.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(1);
   });
 
   it("reloads the Character video list and selected Run once through shell refresh without replacing playback", async () => {
@@ -616,8 +681,9 @@ describe("Character Video Studio", () => {
     );
   });
 
-  it("recovers a lost create response after remount with the exact same request key", async () => {
+  it.each([false, true])("recovers a lost create response after remount (server reconciliation: %s)", async (reconcile) => {
     let createAttempts = 0;
+    let submittedBody: unknown;
     adminV2Request.mockImplementation(async (path: string, options?: {
       method?: string;
       idempotencyKey?: string;
@@ -625,8 +691,14 @@ describe("Character Video Studio", () => {
     }) => {
       if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
         createAttempts += 1;
+        submittedBody = options.body;
         if (createAttempts === 1) throw new Error("connection closed after submit");
         return { batch: { id: "video-run-1" }, replayed: true };
+      }
+      if (path.endsWith("/mutation-receipts/reconcile")) {
+        expect(adminMutationRecoveryRequestSchema.parse(options?.body)).toMatchObject({ expectedPurpose: "character_video", expectedCharacterId: "character-video-1" });
+        return { state: "committed", commandType: "creative.run.create", commandId: "recovered-command", status: "succeeded", committedTargetId: "video-run-1",
+          verification: { kind: "creative_run", runId: "video-run-1", requestSnapshot: submittedBody } };
       }
       if (path === "/api/v2/admin/creative/runs/video-run-1") {
         return {
@@ -675,22 +747,27 @@ describe("Character Video Studio", () => {
       scope: "character-video:create:actor-1:character-video-1",
     })?.status).toBe("outcome_unknown");
 
+    if (reconcile) {
+      const saved = readActiveDurableMutationIntent({ scope: "character-video:create:actor-1:character-video-1" })!;
+      updateDurableMutationIntent(saved, { status: "reconciliation_required" });
+    }
     await act(async () => root.unmount());
     root = createRoot(container);
     await renderStudio();
-    await waitUntil(() => container.textContent?.includes("Resume video creation") === true);
+    const resumeLabel = reconcile ? "Reconcile saved video request" : "Resume video creation";
+    await waitUntil(() => container.textContent?.includes(resumeLabel) === true);
     const resume = [...container.querySelectorAll("button")]
-      .find((button) => button.textContent?.includes("Resume video creation"));
+      .find((button) => button.textContent?.includes(resumeLabel));
     await waitUntil(() => resume?.disabled === false);
     await act(async () => resume?.click());
-    await waitUntil(() => createAttempts === 2);
+    await waitUntil(() => readActiveDurableMutationIntent({ scope: "character-video:create:actor-1:character-video-1" }) === null);
     expect(container.textContent).toContain("Video request in progress");
 
     const createCalls = adminV2Request.mock.calls.filter(
       ([path, options]) => path === "/api/v2/admin/creative/runs" && options?.method === "POST",
     );
-    expect(createCalls).toHaveLength(2);
-    expect(createCalls[1]?.[1]).toMatchObject({
+    expect(createCalls).toHaveLength(reconcile ? 1 : 2);
+    expect(createCalls[reconcile ? 0 : 1]?.[1]).toMatchObject({
       idempotencyKey: firstKey,
       body: expect.objectContaining({
         brief: "Locked motion brief for response recovery",
@@ -699,7 +776,7 @@ describe("Character Video Studio", () => {
     expect(readActiveDurableMutationIntent({
       scope: "character-video:create:actor-1:character-video-1",
     })).toBeNull();
-    expect(runCommittedMutationSpy).toHaveBeenCalledTimes(2);
+    expect(runCommittedMutationSpy).toHaveBeenCalledTimes(reconcile ? 1 : 2);
   });
 
   it("delivers playable video without a manual review step", async () => {

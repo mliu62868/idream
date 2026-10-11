@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { affiliateAttributionAdminHistorySchema } from "@idream/shared/admin";
 import { affiliateAttributionReasonDescriptions, affiliateAttributionStateLabels } from "@idream/shared/contracts";
-import { adminV2Request } from "@/lib/admin-v2-api";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { useAdminI18n } from "./i18n";
 import { GhostButton } from "./ui/buttons";
 import { AuthorityRequestError } from "./ui/AuthorityRequestError";
@@ -17,22 +17,53 @@ export function AffiliateAttributionHistory({ applicationId, onClose }: { applic
   const [dates, setDates] = useState<{ from?: string; to?: string }>({});
   const [from, setFrom] = useState(""), [to, setTo] = useState("");
   const [trail, setTrail] = useState<string[]>([]), [attempt, setAttempt] = useState(0);
-  const active = useRef<AbortController | null>(null), cursor = trail.at(-1);
+  const [cursor, setCursor] = useState("");
+  const [ready, setReady] = useState(false);
+  const active = useRef<AbortController | null>(null);
   useEffect(() => {
+    const restore = () => {
+      active.current?.abort();
+      const params = new URLSearchParams(window.location.search);
+      const restoredFrom = params.get("attributionFrom") ?? "", restoredTo = params.get("attributionTo") ?? "";
+      const restoredCursor = params.get("attributionCursor") ?? "";
+      setFrom(restoredFrom); setTo(restoredTo);
+      setDates({ ...(restoredFrom ? { from: restoredFrom } : {}), ...(restoredTo ? { to: restoredTo } : {}) });
+      setCursor(restoredCursor); setError(null); setData(null); setDateError(null);
+      const savedTrail: unknown = window.history.state?.attributionTrail;
+      setTrail(window.history.state?.attributionApplication === applicationId && window.history.state?.attributionCursor === restoredCursor && Array.isArray(savedTrail) && savedTrail.every(item => typeof item === "string") ? savedTrail : []);
+      setReady(true);
+    };
+    restore();
+    window.addEventListener("popstate", restore);
+    return () => window.removeEventListener("popstate", restore);
+  }, [applicationId]);
+
+  function navigate(nextDates: { from?: string; to?: string }, nextCursor: string, nextTrail: string[]) {
+    active.current?.abort();
+    const url = new URL(window.location.href);
+    url.searchParams.set("affiliateApplication", applicationId);
+    for (const [key, value] of Object.entries({ attributionFrom: nextDates.from, attributionTo: nextDates.to, attributionCursor: nextCursor })) {
+      if (value) url.searchParams.set(key, value); else url.searchParams.delete(key);
+    }
+    window.history.pushState({ ...window.history.state, attributionApplication: applicationId, attributionCursor: nextCursor, attributionTrail: nextTrail }, "", `${url.pathname}${url.search}${url.hash}`);
+    setDates(nextDates); setCursor(nextCursor); setTrail(nextTrail); setData(null); setError(null); setDateError(null);
+  }
+  useEffect(() => {
+    if (!ready) return;
     const controller = new AbortController(); active.current = controller;
     const query = new URLSearchParams({ limit: "20", ...dates, ...(cursor ? { cursor } : {}) });
-    void adminV2Request(`/api/v2/admin/affiliate/applications/${encodeURIComponent(applicationId)}/attribution?${query}`, { schema: affiliateAttributionAdminHistorySchema, signal: controller.signal })
+    void adminV2Operation("GET /api/v2/admin/affiliate/applications/:id/attribution", { path: { id: applicationId }, query, signal: controller.signal })
       .then(value => { if (!controller.signal.aborted) setData(value); })
       .catch(cause => { if (!controller.signal.aborted) setError(cause); });
     return () => { controller.abort(); };
-  }, [applicationId, dates, cursor, attempt]);
+  }, [applicationId, dates, cursor, attempt, ready]);
   return <section className="space-y-3 rounded-xl border border-[var(--ad-border)] p-4" aria-label={t("Affiliate attribution evidence")}>
     <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold">{t("Affiliate attribution evidence")} · <span className="font-mono text-xs">{applicationId}</span></h3><GhostButton onClick={onClose}>{t("Close")}</GhostButton></div>
     <p className="text-sm text-[var(--ad-text-muted)]">{t("Observed signups and current account checks are distinct. These states do not authorize commission or payment.")}</p>
     <form className="flex flex-wrap items-end gap-3 text-sm" onSubmit={event => {
       event.preventDefault();
       if (from && to && from > to) { setDateError(t("Start date must not follow end date")); return; }
-      active.current?.abort(); setDates({ ...(from ? { from } : {}), ...(to ? { to } : {}) }); setTrail([]); setData(null); setError(null); setDateError(null);
+      navigate({ ...(from ? { from } : {}), ...(to ? { to } : {}) }, "", []);
     }}>
       <label>{t("Visits from (UTC)")}<input className="mt-1 block rounded border border-[var(--ad-border)] bg-transparent px-2 py-1" type="date" value={from} onChange={event => setFrom(event.target.value)} /></label>
       <label>{t("Through (UTC)")}<input className="mt-1 block rounded border border-[var(--ad-border)] bg-transparent px-2 py-1" type="date" value={to} onChange={event => setTo(event.target.value)} /></label>
@@ -49,9 +80,10 @@ export function AffiliateAttributionHistory({ applicationId, onClose }: { applic
         <p className="text-xs">{t("Rule")}: {item.attributionVersion ?? t("Historical version not recorded")} · {item.attributionWindowDays} {t("days")} · {t("Window ends")}: {item.expiresAt}</p>
         <p className="text-xs">{t("Terms version")}: {item.termsVersion ?? t("Historical version not recorded")}</p>
       </li>)}</ul>}
-      <Pagination page={trail.length + 1} pageSize={20} rowCount={data.items.length} hasPrevious={trail.length > 0} hasNext={data.pageInfo.hasNextPage}
-        onPrevious={() => { active.current?.abort(); setTrail(value => value.slice(0, -1)); setData(null); setError(null); }}
-        onNext={() => { if (data.pageInfo.endCursor) { active.current?.abort(); setTrail(value => [...value, data.pageInfo.endCursor!]); setData(null); setError(null); } }} />
+      <Pagination page={!cursor ? 1 : trail[0] === "" ? trail.length + 1 : null} pageSize={20} rowCount={data.items.length} hasPrevious={Boolean(cursor)} hasNext={data.pageInfo.hasNextPage}
+        previousLabel={cursor && !trail.length ? t("Back to first page") : undefined}
+        onPrevious={() => navigate(dates, trail.at(-1) ?? "", trail.slice(0, -1))}
+        onNext={() => { if (data.pageInfo.endCursor) navigate(dates, data.pageInfo.endCursor, [...trail, cursor]); }} />
       <p className="text-xs text-[var(--ad-text-muted)]">{t("Visit snapshot")}: {data.asOf}</p>
     </>}
   </section>;

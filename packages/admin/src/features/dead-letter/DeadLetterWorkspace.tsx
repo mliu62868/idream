@@ -4,7 +4,7 @@ import { useAdminI18n } from "@/components/admin/i18n";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, RefreshCcw, Trash2, X } from "lucide-react";
-import { apiGet, apiWrite } from "@/components/admin/api";
+import { adminV2Operation, type AdminV2OperationResponse } from "@/lib/admin-v2-operation";
 import { FailureReason } from "@/components/admin/generation/FailureReason";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
@@ -26,10 +26,15 @@ import {
   type DeadLetterQuery,
 } from "./query";
 
-type DeadLetterRecord = Record<string, unknown>;
-type PageInfo = { endCursor: string | null; hasNextPage: boolean };
-type ListResponse = { items: DeadLetterRecord[]; pageInfo?: PageInfo };
-type RetryVerdict = { eligible: boolean; reason: string };
+type ListResponse = AdminV2OperationResponse<"GET /api/v2/admin/generation/dead-letter">;
+type DeadLetterRecord = ListResponse["items"][number];
+type RetryVerdict = DeadLetterRecord["retryEligibility"];
+type ActionOutcome = AdminV2OperationResponse<
+  | "POST /api/v2/admin/generation/dead-letter/:id/commands/requeue"
+  | "POST /api/v2/admin/generation/dead-letter/:id/commands/discard"
+  | "POST /api/v2/admin/generation/dead-letter/commands/requeue"
+  | "POST /api/v2/admin/generation/dead-letter/commands/discard"
+>;
 type Skipped = { id: string; reason: string };
 type Translate = (key: string, values?: Record<string, string | number>) => string;
 
@@ -75,22 +80,31 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
   const { toast } = useToast();
   const [query, setQuery] = useState<DeadLetterQuery>(defaultDeadLetterQuery);
   const [draft, setDraft] = useState<DeadLetterQuery>(defaultDeadLetterQuery);
-  const [data, setData] = useState<ListResponse | null>(null);
+  const [snapshot, setSnapshot] = useState<{ key: string; data: ListResponse } | null>(null);
+  const data = snapshot?.key === deadLetterListPath(query) ? snapshot.data : null;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const requestGate = useRef(createLatestRequestGate());
+  const queryScope = useRef({ key: "" });
 
   const load = useCallback(async (next: DeadLetterQuery) => {
+    const key = deadLetterListPath(next);
+    if (queryScope.current.key !== key) {
+      queryScope.current = { key };
+      setSelected([]);
+      setConfirmation(null);
+      setRefreshedAt(null);
+    }
     const request = requestGate.current.begin();
     setLoading(true);
     setError(null);
     try {
-      const response = await apiGet<ListResponse>(deadLetterListPath(next));
+      const response = await adminV2Operation("GET /api/v2/admin/generation/dead-letter", { query: key.split("?")[1] });
       if (!request.isCurrent()) return;
-      setData(response);
+      setSnapshot({ key, data: response });
       setSelected([]);
       setRefreshedAt(new Date().toISOString());
     } catch (cause) {
@@ -109,6 +123,7 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
     window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
     return () => {
       gate.invalidate();
+      queryScope.current = { key: "" };
       window.removeEventListener("popstate", restore);
       window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
     };
@@ -139,13 +154,14 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
     title: string;
     /** ConfirmDialog 的红色后果横幅原文——不可撤销动作在敲确认串之前就要读到它。 */
     effect: string;
-    endpoint: string;
+    batch?: boolean;
     ids: string[];
     kind: "requeue" | "discard";
     reasonRequired: boolean;
     allowed: boolean;
   }) {
     if (!input.allowed || input.ids.length === 0) return;
+    const scope = queryScope.current;
     const expected = deadLetterConfirmation(input.ids);
     setConfirmation({
       title: input.title,
@@ -155,13 +171,20 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
       reasonLabel: t("Reason (≥3)"),
       submitLabel: t("Confirm"),
       onSubmit: async (reason) => {
-        const isBatch = input.endpoint.includes("/dead-letter/commands/");
-        const result = await apiWrite<unknown>(input.endpoint, "POST", isBatch
-          ? { jobIds: input.ids, reason, confirmation: expected }
-          : { ...(reason ? { reason } : {}), confirmation: expected });
+        if (queryScope.current !== scope) return;
+        const result = input.batch
+          ? input.kind === "requeue"
+            ? await adminV2Operation("POST /api/v2/admin/generation/dead-letter/commands/requeue", { body: { jobIds: input.ids, reason, confirmation: expected } })
+            : await adminV2Operation("POST /api/v2/admin/generation/dead-letter/commands/discard", { body: { jobIds: input.ids, reason, confirmation: expected } })
+          : input.kind === "requeue"
+            ? await adminV2Operation("POST /api/v2/admin/generation/dead-letter/:id/commands/requeue", { path: { id: input.ids[0]! }, body: { reason, confirmation: expected } })
+            : await adminV2Operation("POST /api/v2/admin/generation/dead-letter/:id/commands/discard", { path: { id: input.ids[0]! }, body: { reason, confirmation: expected } });
         toast(describeOutcome(t, input.kind, input.ids, result));
+        // An accepted action still has an outcome after navigation, but its old
+        // query must not replace the new list or clear the new selection.
+        if (queryScope.current !== scope) return;
         setSelected([]);
-        await load({ ...query, cursor: "" });
+        await load(query);
       },
     });
   }
@@ -178,7 +201,7 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
           allowed: permissions.requeue,
           title: t("Requeue {id}", { id }),
           effect: requeueEffect(t, 1, 0),
-          endpoint: `/api/v2/admin/generation/dead-letter/${id}/commands/requeue`,
+
           ids: [id],
           kind: "requeue",
           reasonRequired: false,
@@ -187,7 +210,7 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
           allowed: permissions.discard,
           title: t("Discard {id}", { id }),
           effect: discardEffect(t, 1, 0),
-          endpoint: `/api/v2/admin/generation/dead-letter/${id}/commands/discard`,
+
           ids: [id],
           kind: "discard",
           reasonRequired: true,
@@ -221,7 +244,7 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
         row.errorCode
           ? <FailureReason code={text(row.errorCode)} key="failure" />
           : <span className="text-[var(--ad-text-muted)]" key="failure">—</span>,
-        <RetryAuthority key="retry" verdict={retryVerdict(row.retryEligibility)} />,
+        <RetryAuthority key="retry" verdict={row.retryEligibility} />,
         <span className="whitespace-nowrap" key="ledger">{enumOr(row.ledgerState)}</span>,
         format.display(row.costDreamcoins),
         format.dateTime(row.updatedAt),
@@ -295,7 +318,7 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
                     {row.errorCode ? <FailureReason code={text(row.errorCode)} /> : <span className="text-[var(--ad-text-muted)]">—</span>}
                   </MobileFact>
                   <MobileFact className="col-span-2" label={t("Replay authority")}>
-                    <RetryAuthority verdict={retryVerdict(row.retryEligibility)} />
+                    <RetryAuthority verdict={row.retryEligibility} />
                   </MobileFact>
                   <MobileFact label={t("Ledger")}>{enumOr(row.ledgerState)}</MobileFact>
                   <MobileFact label={t("Cost")}>{format.display(row.costDreamcoins)}</MobileFact>
@@ -328,7 +351,7 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
                     allowed: permissions.requeue,
                     title: t("Requeue {count} requests", { count: selectedRequeueIds.length }),
                     effect: requeueEffect(t, selectedRequeueIds.length, selected.length - selectedRequeueIds.length),
-                    endpoint: "/api/v2/admin/generation/dead-letter/commands/requeue",
+                    batch: true,
                     ids: selectedRequeueIds,
                     kind: "requeue",
                     reasonRequired: true,
@@ -342,7 +365,7 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
                     allowed: permissions.discard,
                     title: t("Discard {count} requests", { count: selectedDiscardIds.length }),
                     effect: discardEffect(t, selectedDiscardIds.length, selected.length - selectedDiscardIds.length),
-                    endpoint: "/api/v2/admin/generation/dead-letter/commands/discard",
+                    batch: true,
                     ids: selectedDiscardIds,
                     kind: "discard",
                     reasonRequired: true,
@@ -360,7 +383,7 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
       </div>
 
       {data?.pageInfo?.hasNextPage && data.pageInfo.endCursor ? <button className="inline-flex min-h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" disabled={loading} onClick={() => navigate({ ...query, cursor: data.pageInfo?.endCursor ?? "" })} type="button"><RefreshCcw className="h-4 w-4" />{t("Next dead-letter page")}</button> : null}
-      {confirmation ? <ConfirmDialog onClose={() => setConfirmation(null)} spec={confirmation} /> : null}
+      {confirmation ? <ConfirmDialog onClose={() => setConfirmation((current) => current === confirmation ? null : current)} spec={confirmation} /> : null}
     </section>
   );
 }
@@ -403,22 +426,13 @@ function MobileFact({ children, className = "", label }: { children: ReactNode; 
   );
 }
 
-// SPEC: 只有后端说 eligible 才亮 Requeue。后端没报这个字段时退回旧口径（status === "failed"），
-// 免得契约漂移直接把按钮全关掉。
+// The shared contract requires the authority verdict; no status-based fallback.
 function requeueAllowed(row: DeadLetterRecord) {
-  const verdict = retryVerdict(row.retryEligibility);
-  return verdict ? verdict.eligible : text(row.status) === "failed";
+  return row.retryEligibility.eligible;
 }
 
 function discardAllowed(row: DeadLetterRecord) {
-  return ["failed", "blocked", "refunded"].includes(text(row.status));
-}
-
-function retryVerdict(value: unknown): RetryVerdict | null {
-  if (typeof value !== "object" || value === null) return null;
-  const record = value as { eligible?: unknown; reason?: unknown };
-  if (typeof record.eligible !== "boolean") return null;
-  return { eligible: record.eligible, reason: typeof record.reason === "string" ? record.reason : "" };
+  return ["failed", "blocked", "refunded"].includes(row.status);
 }
 
 // SPEC: 命令结果直接来自后端的 requeued/discarded/refunded/skipped，不做任何乐观汇总。
@@ -429,17 +443,16 @@ function describeOutcome(
   t: Translate,
   kind: "requeue" | "discard",
   requested: readonly string[],
-  result: unknown,
+  result: ActionOutcome,
 ): ToastInput {
-  const record = typeof result === "object" && result !== null ? result as Record<string, unknown> : {};
-  const skipped = readSkipped(record.skipped);
+  const skipped = "skipped" in result ? result.skipped : [];
   const tone = skipped.length > 0 ? "error" as const : "success" as const;
   const description = skipped.length > 0
     ? t("Skipped · {details}", { details: skipped.map((entry) => skippedLine(t, entry)).join("；") })
     : undefined;
   if (kind === "requeue") {
-    const done = readIds(record.requeued) ?? (record.queued === true ? [...requested] : []);
-    const attemptNo = typeof record.attemptNo === "number" ? record.attemptNo : null;
+    const done = "requeued" in result ? result.requeued : "queued" in result ? requested : [];
+    const attemptNo = "attemptNo" in result ? result.attemptNo : null;
     return {
       tone,
       title: attemptNo !== null
@@ -448,8 +461,8 @@ function describeOutcome(
       description,
     };
   }
-  const done = readIds(record.discarded) ?? (record.discarded === true ? [...requested] : []);
-  const refunded = readIds(record.refunded) ?? (record.refunded === true ? [...requested] : []);
+  const done = "discarded" in result ? result.discarded === true ? requested : result.discarded : [];
+  const refunded = "refunded" in result ? typeof result.refunded === "boolean" ? result.refunded ? requested : [] : result.refunded : [];
   return {
     tone,
     title: t("Discarded {done} of {total} requests · {refunded} refunded.", {
@@ -464,21 +477,6 @@ function describeOutcome(
 function skippedLine(t: Translate, entry: Skipped) {
   const label = SKIP_LABELS[entry.reason];
   return `${entry.id} · ${label ? t(label) : `${t("Reason not recognised")} (${entry.reason})`}`;
-}
-
-function readIds(value: unknown): string[] | null {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : null;
-}
-
-function readSkipped(value: unknown): Skipped[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => {
-    if (typeof entry !== "object" || entry === null) return [];
-    const record = entry as { id?: unknown; reason?: unknown };
-    return typeof record.id === "string"
-      ? [{ id: record.id, reason: typeof record.reason === "string" ? record.reason : "" }]
-      : [];
-  });
 }
 
 function restoreFromUrl(load: (query: DeadLetterQuery) => Promise<void>, setQuery: (query: DeadLetterQuery) => void, setDraft: (query: DeadLetterQuery) => void) {

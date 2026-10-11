@@ -15,7 +15,7 @@ import {
   WandSparkles,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import {
   StatusBadge,
   WorkspaceButton,
@@ -66,7 +66,6 @@ import {
   resolveCharacterAssetSubject,
   type CharacterAssetProjectMutation,
   type CharacterAssetPurpose,
-  type ReviewDraft,
 } from "./character-asset-studio-authority";
 import {
   AssetImage,
@@ -83,7 +82,6 @@ export function CharacterAssetStudio({
   onContinue,
   onProjectReload,
   commitProjectMutation,
-  productionOnly = false,
 }: {
   actorId?: string;
   data: CharacterWorkspaceDetail;
@@ -96,7 +94,6 @@ export function CharacterAssetStudio({
   onContinue: (tab: "visual" | "preview") => void;
   onProjectReload: () => Promise<void>;
   commitProjectMutation: CharacterAssetProjectMutation;
-  productionOnly?: boolean;
 }) {
   const { locale, t, value } = useAdminI18n();
   const subject = resolveCharacterAssetSubject({
@@ -105,7 +102,13 @@ export function CharacterAssetStudio({
     liveName: data.character.name,
     liveDescription: data.character.description,
   });
-  const [runs, setRuns] = useState<CreativeRun[]>([]);
+  const [runPages, setRunPages] = useState<{
+    purpose: CharacterAssetPurpose | null;
+    history: CreativeRun[];
+    active: CreativeRun[];
+    cursor: string | null;
+  }>({ purpose: null, history: [], active: [], cursor: null });
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const selectedRunIdRef = useRef<string | null>(null);
   const [selectedRun, setSelectedRun] = useState<CreativeRunDetail | null>(
@@ -118,7 +121,7 @@ export function CharacterAssetStudio({
   const [comparisonItemId, setComparisonItemId] = useState<string | null>(null);
   const [workspaceMode, setWorkspaceMode] = useState<"library" | "review">(
     () =>
-      productionOnly || !data.visual.identityBootstrap.allowed
+      !data.visual.identityBootstrap.allowed
         ? "library"
         : "review",
   );
@@ -128,6 +131,11 @@ export function CharacterAssetStudio({
       nextIncompleteCharacterAssetPurpose(data.journey) ??
       "character_chat",
   );
+  const runs = useMemo(() => runPages.purpose === activePurpose
+    ? [...new Map([...runPages.history, ...runPages.active, ...(selectedRun?.purpose === activePurpose ? [selectedRun] : [])].map((run) => [run.id, run])).values()]
+    : [], [activePurpose, runPages, selectedRun]);
+  const activeRuns = runPages.purpose === activePurpose ? runPages.active : [];
+  const historyCursor = runPages.purpose === activePurpose ? runPages.cursor : null;
   // SPEC: a brief is generation input, not UI copy — it stays English in every
   //   locale (like the Run title below) and names a concrete framing.
   // INTENT: the qualified identity route edits the locked reference image. A
@@ -157,9 +165,6 @@ export function CharacterAssetStudio({
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | { readonly runId: string } | null>(null);
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
-  const [, setReviewDrafts] = useState<Record<string, ReviewDraft>>(
-    {},
-  );
   const [runCreationIntent, setRunCreationIntent] =
     useState<DurableMutationIntent | null>(() =>
       readActiveDurableMutationIntent({
@@ -169,11 +174,9 @@ export function CharacterAssetStudio({
   const runCreationIntentRef = useRef(runCreationIntent);
   const [reviewMutationIntent, setReviewMutationIntent] =
     useState<DurableMutationIntent | null>(() =>
-      productionOnly
-        ? null
-        : readActiveDurableMutationIntent({
-            scope: `character-asset:review:${actorId}:${data.character.id}`,
-          }),
+      readActiveDurableMutationIntent({
+        scope: `character-asset:review:${actorId}:${data.character.id}`,
+      }),
     );
   const [selectionMutationIntent, setSelectionMutationIntent] =
     useState<DurableMutationIntent | null>(() =>
@@ -291,40 +294,58 @@ export function CharacterAssetStudio({
     async (
       options: {
         readonly signal?: AbortSignal;
-        readonly preserveSelectedRunId?: string;
+        readonly cursor?: string;
+        readonly activeOnly?: boolean;
       } = {},
     ) => {
       const request = runListRequestGate.current.begin();
-      const query = new URLSearchParams({
+      const baseQuery = {
         limit: "20",
         targetType: "character",
         targetId: data.character.id,
+        purpose: activePurpose,
         sort: "updated_desc",
-      });
-      const response = await adminV2Operation(
+      };
+      const readPage = (extra: Record<string, string>) => adminV2Operation(
         "GET /api/v2/admin/creative/runs",
-        {
-          query,
-          ...(options.signal ? { signal: options.signal } : {}),
-        },
+        { query: new URLSearchParams({ ...baseQuery, ...extra }),
+          ...(options.signal ? { signal: options.signal } : {}) },
       );
-      const scoped = [...response.items].filter((run) =>
-        isCharacterAssetPurpose(run.purpose),
-      );
+      // History membership is never evidence that no request is running. Keep
+      // the two execution states independently discoverable even behind pages
+      // of completed work; the server owns both purpose and outcome filtering.
+      const [history, pending, running] = await Promise.all([
+        options.activeOnly ? Promise.resolve(null) : readPage(options.cursor ? { cursor: options.cursor } : {}),
+        readPage({ executionOutcome: "pending" }),
+        readPage({ executionOutcome: "running" }),
+      ]);
       if (!request.isCurrent()) throw new SupersededProjectionError();
-      setRuns(scoped);
+      const active = [...pending.items, ...running.items].filter((run) => run.purpose === activePurpose);
+      const historyItems = history?.items.filter((run) => run.purpose === activePurpose) ?? [];
+      const scoped = [...new Map([...historyItems, ...active].map((run) => [run.id, run])).values()];
+      setRunPages((current) => {
+        const samePurpose = current.purpose === activePurpose;
+        const previousHistory = samePurpose ? current.history : [];
+        if (!history) return {
+          purpose: activePurpose, active, history: previousHistory,
+          cursor: samePurpose ? current.cursor : null,
+        };
+        return {
+          purpose: activePurpose,
+          active,
+          history: options.cursor
+            ? [...new Map([...previousHistory, ...historyItems].map((run) => [run.id, run])).values()]
+            : historyItems,
+          cursor: history.pageInfo.hasNextPage ? history.pageInfo.endCursor : null,
+        };
+      });
       const current = selectedRunIdRef.current;
       const committedTargetId = committedProjectionTargetId(
         runCreationIntentRef.current,
       );
-      const preserveCurrent = Boolean(
-        current &&
-        (scoped.some((run) => run.id === current) ||
-          current === options.preserveSelectedRunId ||
-          current === committedTargetId),
-      );
+      const preserveCurrent = current !== null;
       if (!preserveCurrent) {
-        const desiredPurpose = nextIncompletePurpose ?? "character_chat";
+        const desiredPurpose = activePurpose;
         const selectedRunForPurpose =
           data.project.draftAssetSelections?.[desiredPurpose]?.runId;
         selectRunId(
@@ -340,7 +361,7 @@ export function CharacterAssetStudio({
       return scoped;
     },
     [
-      nextIncompletePurpose,
+      activePurpose,
       data.character.id,
       data.project.draftAssetSelections,
       selectRunId,
@@ -371,15 +392,7 @@ export function CharacterAssetStudio({
     },
     commit: (detail, verdict) => {
       setSelectedRun(detail);
-      // SPEC: 被草稿钉住的 Run 即使掉出最近 20 条也要留在列表里，否则运营台会看不到自己
-      //       正在评审的那一条。
-      if (pinnedRunIds.has(detail.id)) {
-        setRuns((current) =>
-          current.some((run) => run.id === detail.id)
-            ? current
-            : [detail, ...current],
-        );
-      }
+      // The selected exact Run remains visible independently of the current history page.
       setSelectedIndex((current) => {
         if (isCharacterAssetPurpose(detail.purpose)) {
           const selectedItemId =
@@ -477,17 +490,23 @@ export function CharacterAssetStudio({
     };
   }, [loadRun, runLoader, selectedRun?.id, selectedRunId, t]);
 
+  const selectHistoryRun = (event: MouseEvent<HTMLButtonElement>) => {
+    runLoader.invalidate();
+    setSelectedRun(null);
+    selectRunId(event.currentTarget.value);
+  };
+
   const pollingRunId = selectedRun?.id ?? null;
   const shouldPollSelectedRun =
     selectedRun !== null &&
     (["pending", "running"].includes(selectedRun.executionOutcome) ||
-      runs.some((run) => ["pending", "running"].includes(run.executionOutcome)));
+      activeRuns.some((run) => ["pending", "running"].includes(run.executionOutcome)));
   // SPEC: 生成中的 Run 每 4s 刷新一次，失败退避到 8s。
   const pollAssetRun = useCallback<PollingTask>(
     async (context) => {
       if (!pollingRunId) return null;
       try {
-        await Promise.all([loadRun(pollingRunId), loadRuns()]);
+        await Promise.all([loadRun(pollingRunId), loadRuns({ activeOnly: true })]);
         if (!context.cancelled) setRefreshWarning(null);
         return 4_000;
       } catch (cause) {
@@ -535,15 +554,15 @@ export function CharacterAssetStudio({
       setComparisonItemId(selectedItem?.id ?? null);
     }
     setSelectedIndex(index);
-    setWorkspaceMode(productionOnly ? "library" : "review");
+    setWorkspaceMode("review");
   };
   const toggleCandidateComparison = (itemId: string) => {
     if (mutationContextLocked || itemId === selectedItem?.id) return;
     setComparisonItemId((current) => (current === itemId ? null : itemId));
-    setWorkspaceMode(productionOnly ? "library" : "review");
+    setWorkspaceMode("review");
   };
   const activeConfig = purposeConfig[activePurpose];
-  const imageRequestInProgress = runs.some((run) => run.purpose === activePurpose && ["pending", "running"].includes(
+  const imageRequestInProgress = activeRuns.some((run) => run.purpose === activePurpose && ["pending", "running"].includes(
     selectedRun?.id === run.id ? selectedRun.executionOutcome : run.executionOutcome,
   )) || (selectedRun?.purpose === activePurpose && ["pending", "running"].includes(selectedRun.executionOutcome));
   const mutationContextLocked = Boolean(
@@ -552,6 +571,7 @@ export function CharacterAssetStudio({
   );
   const canGenerate =
     permissions.create &&
+    runPages.purpose === activePurpose &&
     !imageRequestInProgress &&
     unconfirmedOperations.length === 0 &&
     (bootstrapMode
@@ -673,8 +693,9 @@ export function CharacterAssetStudio({
     referenceAssetIds: string[] = [],
   ) => {
     if (unconfirmedOperations.length > 0) return;
+    if (!runCreationIntent && runPages.purpose !== purpose) return;
     if (!runCreationIntent && (
-      runs.some((run) => run.purpose === purpose && ["pending", "running"].includes(
+      activeRuns.some((run) => run.purpose === purpose && ["pending", "running"].includes(
         selectedRun?.id === run.id ? selectedRun.executionOutcome : run.executionOutcome,
       )) || (selectedRun?.purpose === purpose && ["pending", "running"].includes(selectedRun.executionOutcome))
     )) return;
@@ -690,9 +711,7 @@ export function CharacterAssetStudio({
         selectRunId(committedTargetId);
         setSelectedRun(null);
         await Promise.all([
-          loadRuns({
-            preserveSelectedRunId: committedTargetId,
-          }),
+          loadRuns(),
           loadRun(committedTargetId),
         ]);
       } catch (cause) {
@@ -768,9 +787,7 @@ export function CharacterAssetStudio({
           selectRunId(receipt.committedTargetId);
           setSelectedRun(null);
           await Promise.all([
-            loadRuns({
-              preserveSelectedRunId: receipt.committedTargetId,
-            }),
+            loadRuns(),
             loadRun(receipt.committedTargetId),
           ]);
           setMessage(
@@ -972,9 +989,7 @@ export function CharacterAssetStudio({
       runLoader.invalidate();
       selectRunId(result.batch.id);
       setSelectedRun(null);
-      await loadRuns({
-        preserveSelectedRunId: result.batch.id,
-      });
+      await loadRuns();
     } catch (refreshCause) {
       if (!isProjectionRequestCancellation(refreshCause)) {
         setRefreshWarning(
@@ -1036,9 +1051,7 @@ export function CharacterAssetStudio({
     runLoader.invalidate();
     selectRunId(snapshot.runId);
     const detail = await loadRun(snapshot.runId);
-    await loadRuns({
-      preserveSelectedRunId: snapshot.runId,
-    });
+    await loadRuns();
     const projected = detail.items.some(
       (item) =>
         item.id === snapshot.itemId &&
@@ -1054,11 +1067,6 @@ export function CharacterAssetStudio({
     clearDurableMutationIntent(intent);
     setReviewMutationIntent(null);
     setRefreshWarning(null);
-    setReviewDrafts((current) => {
-      const drafts = { ...current };
-      delete drafts[snapshot.itemId];
-      return drafts;
-    });
     return detail;
   };
 
@@ -1849,8 +1857,7 @@ export function CharacterAssetStudio({
                 </p>
               ) : null}
             </div>
-          ) : !productionOnly &&
-            data.project.draftAssetRouteAuthority?.status === "stale" ? (
+          ) : data.project.draftAssetRouteAuthority?.status === "stale" ? (
             <div className="mx-4 mb-4 flex flex-col gap-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)] sm:mx-5 sm:flex-row sm:items-center sm:justify-between">
               <span>
                 {t(
@@ -1885,8 +1892,7 @@ export function CharacterAssetStudio({
         </section>
       ) : null}
 
-      {!productionOnly &&
-      recurringProductionReady &&
+      {recurringProductionReady &&
       data.project.draftAssetRouteAuthority?.status === "stale" ? (
         <div className="flex flex-col gap-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)] sm:flex-row sm:items-center sm:justify-between">
           <span>
@@ -1919,7 +1925,7 @@ export function CharacterAssetStudio({
           )}
         </p>
       ) : null}
-      {!productionOnly && reviewMutationIntent ? (
+      {reviewMutationIntent ? (
         <div
           className="flex flex-col gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
           role="status"
@@ -2151,13 +2157,12 @@ export function CharacterAssetStudio({
         </section>
 
         {recurringProductionReady &&
-        (productionOnly || workspaceMode === "library") ? (
+        workspaceMode === "library" ? (
           <aside
             className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 xl:sticky xl:top-24"
             aria-labelledby="new-image-title"
           >
-            {!productionOnly ? (
-              <div
+            <div
                 className="flex border-b border-[var(--ad-border)]"
                 role="tablist"
                 aria-label={t("Image inspector mode")}
@@ -2181,7 +2186,6 @@ export function CharacterAssetStudio({
                   {t("New image")}
                 </button>
               </div>
-            ) : null}
             <h3 className="sr-only" id="new-image-title">
               {t("New image")}
             </h3>
@@ -2241,7 +2245,7 @@ export function CharacterAssetStudio({
             >
               <WandSparkles className="h-4 w-4" /> {generationActionText}
             </WorkspaceButton>
-            {!productionOnly && selectedItem?.asset ? (
+            {selectedItem?.asset ? (
               <button
                 className="mt-3 min-h-10 w-full text-center text-xs font-semibold text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]"
                 onClick={() => setWorkspaceMode("review")}
@@ -2250,36 +2254,6 @@ export function CharacterAssetStudio({
                 {t("Cancel")}
               </button>
             ) : null}
-          </aside>
-        ) : productionOnly &&
-          bootstrapMode &&
-          !productionBlocked &&
-          selectedItem?.asset ? (
-          <aside className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 xl:sticky xl:top-24">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">
-              {t("First identity portrait")}
-            </p>
-            <h4 className="mt-1 font-semibold">
-              {t("Use this image as the Character identity?")}
-            </h4>
-            <p className="mt-2 text-xs leading-5 text-[var(--ad-text-muted)]">
-              {t(
-                "This choice defines the face used for future image creation. You can create more candidates before choosing.",
-              )}
-            </p>
-            <WorkspaceButton
-              className="mt-4 w-full justify-center"
-              disabled={!canUseDecisionAction || busy !== null}
-              onClick={() => void approveAndContinue()}
-              tone="primary"
-            >
-              {busy === "select" ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Check className="h-4 w-4" />
-              )}
-              {t("Set as identity")}
-            </WorkspaceButton>
           </aside>
         ) : !productionBlocked && selectedItem?.asset ? (
           <aside
@@ -2319,8 +2293,7 @@ export function CharacterAssetStudio({
         ) : null}
       </div>
 
-      {!productionOnly &&
-      selectedItem &&
+      {selectedItem &&
       !productionBlocked &&
       (!recurringProductionReady || workspaceMode === "review") ? (
         <section
@@ -2410,8 +2383,8 @@ export function CharacterAssetStudio({
           {t("Recent runs and technical lineage")}
         </summary>
         <div className="mt-3 space-y-2">
-          {runs.length ? (
-            runs.map((run) => (
+          {runs.some((run) => run.purpose === activePurpose) ? (
+            runs.filter((run) => run.purpose === activePurpose).map((run) => (
               <button
                 className={cn(
                   "w-full rounded-lg border p-3 text-left text-xs",
@@ -2421,14 +2394,9 @@ export function CharacterAssetStudio({
                 )}
                 disabled={mutationContextLocked}
                 key={run.id}
-                onClick={() => {
-                  runLoader.invalidate();
-                  setSelectedRun(null);
-                  selectRunId(run.id);
-                  if (isCharacterAssetPurpose(run.purpose))
-                    setActivePurpose(run.purpose);
-                }}
+                onClick={selectHistoryRun}
                 type="button"
+                value={run.id}
               >
                 <span className="flex items-center justify-between gap-3">
                   <strong>
@@ -2457,6 +2425,12 @@ export function CharacterAssetStudio({
             </p>
           )}
         </div>
+        {historyCursor ? <WorkspaceButton disabled={loadingHistory || mutationContextLocked} onClick={() => {
+          setLoadingHistory(true);
+          void loadRuns({ cursor: historyCursor }).catch((cause: unknown) => {
+            if (!isProjectionRequestCancellation(cause)) setError(cause instanceof Error ? cause.message : "Character assets could not be loaded");
+          }).finally(() => setLoadingHistory(false));
+        }}>{t("Load more")}</WorkspaceButton> : null}
         {selectedItem ? (
           <dl className="mt-4 grid gap-2 border-t border-[var(--ad-border)] pt-4 text-xs sm:grid-cols-2">
             <div>

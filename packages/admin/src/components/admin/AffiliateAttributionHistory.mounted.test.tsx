@@ -13,7 +13,7 @@ function deferredResponse() { let resolve!: (value: Response) => void; const pro
 
 describe("AffiliateAttributionHistory authoritative read", () => {
   let container: HTMLDivElement, root: Root;
-  beforeEach(() => { container = document.createElement("div"); document.body.append(container); root = createRoot(container); });
+  beforeEach(() => { window.history.replaceState(null, "", "/admin/growth/affiliate"); container = document.createElement("div"); document.body.append(container); root = createRoot(container); });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
   async function settle() { for (let i = 0; i < 4; i++) await act(async () => new Promise(resolve => setTimeout(resolve, 0))); }
   async function mount(id = "application-observed") { await act(async () => root.render(<AffiliateAttributionHistory key={id} applicationId={id} onClose={() => {}} />)); await settle(); }
@@ -31,6 +31,20 @@ describe("AffiliateAttributionHistory authoritative read", () => {
     expect(new URL(calls.at(-1)!.path, "http://localhost").searchParams.get("cursor")).toBe("cursor-observed");
     const dates = container.querySelectorAll<HTMLInputElement>('input[type="date"]'); await type(dates[0]!, "2026-10-01"); await type(dates[1]!, "2026-10-01"); await click("Apply dates");
     expect(Object.fromEntries(new URL(calls.at(-1)!.path, "http://localhost").searchParams)).toEqual({ limit: "20", from: "2026-10-01", to: "2026-10-01" }); expect(container.textContent).toContain("Page 1"); expect(calls.every(call => call.method === "GET")).toBe(true);
+  });
+
+  it("restores an attribution deep link and keeps the unknown cursor position honest", async () => {
+    window.history.replaceState(null, "", "/admin/growth/affiliate?affiliateApplication=application-observed&attributionFrom=2026-10-01&attributionTo=2026-10-02&attributionCursor=shared-cursor");
+    const fetcher = vi.fn<(input: RequestInfo | URL) => Promise<Response>>(async () => response()); vi.stubGlobal("fetch", fetcher);
+    await mount();
+    const params = new URL(String(fetcher.mock.calls[0]![0]), "http://localhost").searchParams;
+    expect(Object.fromEntries(params)).toEqual({ limit: "20", from: "2026-10-01", to: "2026-10-02", cursor: "shared-cursor" });
+    expect(container.textContent).not.toContain("Page 1");
+    expect(container.querySelector<HTMLInputElement>('input[type="date"]')!.value).toBe("2026-10-01");
+    await click("Back to first page");
+    expect(new URLSearchParams(window.location.search).has("attributionCursor")).toBe(false);
+    expect(new URLSearchParams(window.location.search).get("attributionFrom")).toBe("2026-10-01");
+    expect(container.textContent).toContain("Page 1");
   });
 
   it("keeps a permission failure distinct from empty evidence and allows a real read retry", async () => {

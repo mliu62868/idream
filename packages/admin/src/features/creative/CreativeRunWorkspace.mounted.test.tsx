@@ -21,7 +21,7 @@ type AdminRequestOptions = {
   readonly body?: unknown;
 };
 
-const { adminV2Request, translate, displayValue } = vi.hoisted(() => ({
+const { adminV2Request, translate, displayValue, collaboration } = vi.hoisted(() => ({
   adminV2Request: vi.fn<
     (path: string, options?: AdminRequestOptions) => Promise<unknown>
   >(),
@@ -29,6 +29,7 @@ const { adminV2Request, translate, displayValue } = vi.hoisted(() => ({
     value.replace(/\{(\w+)\}/g, (token, key: string) =>
       params?.[key] === undefined ? token : String(params[key])),
   displayValue: (value: string) => value.replaceAll("_", " "),
+  collaboration: vi.fn<(props: { canWrite: boolean; onAuthorityChange: () => Promise<void> }) => void>(),
 }));
 
 vi.mock("@/lib/admin-v2-api", async (importOriginal) => {
@@ -46,7 +47,10 @@ vi.mock("@/components/admin/i18n", () => ({
 }));
 
 vi.mock("@/features/collaboration/CollaborationPanel", () => ({
-  CollaborationPanel: () => <div data-testid="collaboration-panel" />,
+  CollaborationPanel: (props: { canWrite: boolean; onAuthorityChange: () => Promise<void> }) => {
+    collaboration(props);
+    return <div data-testid="collaboration-panel" />;
+  },
 }));
 
 import { CreativeRunWorkspace } from "./CreativeRunWorkspace";
@@ -876,6 +880,26 @@ describe("Creative Run review and placement authority", () => {
     ));
     await advance();
   }
+
+  it("locks writes after a committed handoff until its exact Run readback succeeds", async () => {
+    const detail = campaignRun();
+    let failRead = false;
+    adminV2Request.mockImplementation(async () => {
+      if (failRead) throw new Error("Handoff readback unavailable");
+      return detail;
+    });
+    await mountRun();
+    expect(collaboration.mock.calls.at(-1)?.[0].canWrite).toBe(true);
+    failRead = true;
+    await act(async () => {
+      await expect(collaboration.mock.calls.at(-1)![0].onAuthorityChange()).rejects.toThrow("Handoff readback unavailable");
+    });
+    expect(collaboration.mock.calls.at(-1)?.[0].canWrite).toBe(false);
+    failRead = false;
+    await act(async () => { await collaboration.mock.calls.at(-1)![0].onAuthorityChange(); });
+    expect(collaboration.mock.calls.at(-1)?.[0].canWrite).toBe(true);
+    expect(adminV2Request.mock.calls.every(([, options]) => !options?.method || options.method === "GET")).toBe(true);
+  });
 
   it("shows the frozen recipe alongside the other review evidence", async () => {
     const detail = campaignRun();

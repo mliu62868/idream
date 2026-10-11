@@ -3,7 +3,7 @@ import {
   adminGrantBundleMutationSchema,
 } from "@idream/shared/admin";
 import { revokeUserBundle } from "@/server/modules/admin-v2/permissions/grant-bundles";
-import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
+import { adminMutationResultValidator, adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
@@ -21,7 +21,7 @@ export async function DELETE(request: Request, context: Context) {
     const body = await jsonBody(request, "adminGrantBundleRevokeSchema+idempotency-key");
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
-    return executeAtomicIdempotentMutation({
+    return executeAtomicIdempotentMutation({ validateResult: adminMutationResultValidator(request),
       environment: env.APP_ENV,
       actor,
       idempotencyKey,

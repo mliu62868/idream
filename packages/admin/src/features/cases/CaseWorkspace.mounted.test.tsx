@@ -163,6 +163,27 @@ describe("CaseWorkspace browser URL interactions", () => {
     vi.restoreAllMocks();
   });
 
+  it("brings the customer conversation into its Case under separate read and reply grants", async () => {
+    const fallback = adminV2Request.getMockImplementation()!;
+    adminV2Request.mockImplementation(async (path, init) => {
+      if (path === "/api/v2/admin/cases/case-1") return { case: { ...adminCase, caseKey: "ticket:SUP-CASE-1" }, evidence: [], decisions: [], activity: [] };
+      if (path === "/api/v2/admin/support/requests/SUP-CASE-1") return { request: { ticketId: "SUP-CASE-1", subject: "Customer issue", description: "Customer intake", status: "open", canReply: true, createdAt: adminCase.createdAt, updatedAt: adminCase.updatedAt, messages: [{ id: "message-1", author: "customer", body: "My image failed", createdAt: adminCase.createdAt }] } };
+      return fallback(path, init);
+    });
+    root = createRoot(container);
+    await act(async () => root!.render(<CaseWorkspace canAssign canDecide initialCaseId="case-1" />));
+    await waitUntil(() => container.textContent?.includes("SUP-CASE-1") === true);
+    expect(adminV2Request.mock.calls.some(([path]) => path.includes("/support/requests/"))).toBe(false);
+    expect(container.querySelector('a[href="/admin/support?ticket=SUP-CASE-1"]')).not.toBeNull();
+    await act(async () => root!.render(<CaseWorkspace canAssign canDecide canReadSupport initialCaseId="case-1" />));
+    await waitUntil(() => container.textContent?.includes("My image failed") === true);
+    expect(container.querySelector('[aria-label="Message to customer"]')).toBeNull();
+    expect(container.textContent).not.toContain("Plaintext access");
+    await act(async () => root!.render(<CaseWorkspace canAssign canDecide canReadSupport canReplySupport initialCaseId="case-1" />));
+    expect(container.querySelector('[aria-label="Message to customer"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Plaintext access");
+  });
+
   it("returns to the actual preceding cursor after paging past an unapplied filter draft", async () => {
     adminV2Request.mockImplementation(async (path) => {
       if (!path.startsWith("/api/v2/admin/cases?")) return { items: [] };
@@ -669,6 +690,8 @@ describe("CaseWorkspace decision loop", () => {
       return read(path, options);
     });
     await mount({ canAssign: true, canDecide: false, actorId: "operator-7" });
+    const collaboration = () => container.querySelector('[aria-labelledby="collaboration-case-case-1"]')!;
+    expect(collaboration().querySelector("form")).not.toBeNull();
     const assign = [...container.querySelectorAll("button")].find((button) => button.textContent === "Assign to me")!;
     await act(async () => assign.click());
     await waitUntil(() => [...document.querySelectorAll('[data-testid="admin-action-status"]')].some((node) => node.textContent?.includes("Case assigned to you")));
@@ -679,12 +702,14 @@ describe("CaseWorkspace decision loop", () => {
     const error = container.querySelector('[role="alert"]');
     expect(error).not.toBeNull();
     expect(assign.disabled).toBe(true);
+    expect(collaboration().querySelector("form")).toBeNull();
     failing = false;
     await act(async () => [...error!.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Retry")!.click());
     await waitUntil(() => container.querySelector('[role="alert"]') === null);
     expect(container.querySelector("#case-summary-title")?.parentElement?.textContent).toContain("You");
     expect([...container.querySelectorAll("button")].some((button) => button.textContent === "Assign to me")).toBe(false);
     expect(adminV2Request.mock.calls.filter(([path]) => path.endsWith("/assignment"))).toHaveLength(1);
+    expect(collaboration().querySelector("form")).not.toBeNull();
   });
 
   it.each([false, true])("keeps Support navigation when a Case assignment finishes late (unmounted: %s)", async (unmountBeforeCompletion) => {
@@ -828,6 +853,7 @@ describe("CaseWorkspace decision loop", () => {
     await act(async () => save().click());
     await waitUntil(() => Boolean(releaseAssignment));
     expect(save().disabled).toBe(true);
+    expect(container.querySelector('[aria-labelledby="collaboration-case-case-1"] form')).toBeNull();
     adminV2Request.mockClear();
     version = 5;
     await act(async () => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)));
@@ -890,6 +916,11 @@ describe("CaseWorkspace decision loop", () => {
   // 回归：wait / reopen 端点要求 Idempotency-Key，此前客户端一个都没发，后端一律 400
   // 「Idempotency-Key header is required」——这两个按钮从上线起就没成功过一次。
   it("sends an idempotency key with every lifecycle command", async () => {
+    const read = adminV2Request.getMockImplementation()!;
+    let releaseCommand!: (value: unknown) => void;
+    adminV2Request.mockImplementation(async (path, options) => path.endsWith("/commands/reopen")
+      ? new Promise(resolve => { releaseCommand = resolve; })
+      : read(path, options));
     await mount({ canAssign: true, canDecide: true });
     const wait = [...container.querySelectorAll("button")].find((button) => button.textContent === "Reopen / create recurrence");
     await act(async () => wait?.click());
@@ -905,6 +936,10 @@ describe("CaseWorkspace decision loop", () => {
 
     const command = adminV2Request.mock.calls.find(([path]) => path.endsWith("/commands/reopen"));
     expect(command?.[1]).toMatchObject({ method: "POST", idempotencyKey: expect.any(String) });
+    expect(container.querySelector('[aria-labelledby="collaboration-case-case-1"] form')).toBeNull();
+    await act(async () => releaseCommand({ caseId: "case-1", version: 5 }));
+    await waitUntil(() => document.querySelector('[role="dialog"]') === null);
+    expect(container.querySelector('[aria-labelledby="collaboration-case-case-1"] form')).not.toBeNull();
   });
 
   it.each([

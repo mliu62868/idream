@@ -35,34 +35,24 @@ export async function dispatchStaleUnknownGenerationRequests(
   const graceMs = Math.max(0, input.graceMs ?? UNKNOWN_SETTLEMENT_GRACE_MS);
   const settleBefore = new Date(now.getTime() - graceMs);
 
-  // GenerationAttempt carries requestId but no Prisma relation to the Request,
-  // so the still-open filter is a second read rather than a join.
-  const stale = await db.generationAttempt.findMany({
-    where: { status: "unknown", finishedAt: { lte: settleBefore } },
-    orderBy: [{ finishedAt: "asc" }, { id: "asc" }],
-    take: limit,
-    select: {
-      id: true,
-      requestId: true,
-      errorCode: true,
-      terminalRecordRef: true,
-    },
-  });
-  const openRequests = new Map(
-    (
-      await db.generationJob.findMany({
-        where: {
-          id: { in: stale.map((attempt) => attempt.requestId) },
-          status: { in: ["queued", "moderating_input", "running", "moderating_output"] },
-        },
-        select: { id: true, version: true },
-      })
-    ).map((request) => [request.id, request.version]),
-  );
-  const candidates = stale.flatMap((attempt) => {
-    const version = openRequests.get(attempt.requestId);
-    return version === undefined ? [] : [{ ...attempt, version }];
-  });
+  // Filter before LIMIT: immutable unknown attempts from settled requests must
+  // not permanently fill the oldest page. Only the latest attempt can be reconciled.
+  const candidates = await db.$queryRaw<Array<{
+    id: string; requestId: string; errorCode: string | null;
+    terminalRecordRef: string | null; version: number;
+  }>>`
+    SELECT a.id, a."requestId", a."errorCode", a."terminalRecordRef", j.version
+    FROM generation_attempts a
+    JOIN generation_jobs j ON j.id = a."requestId"
+    WHERE a.status = 'unknown' AND a."finishedAt" <= ${settleBefore}
+      AND j.status IN ('queued', 'moderating_input', 'running', 'moderating_output')
+      AND NOT EXISTS (
+        SELECT 1 FROM generation_attempts newer
+        WHERE newer."requestId" = a."requestId" AND newer."attemptNo" > a."attemptNo"
+      )
+    ORDER BY a."finishedAt" ASC, a.id ASC
+    LIMIT ${limit}
+  `;
 
   let settled = 0;
   let refunded = 0;

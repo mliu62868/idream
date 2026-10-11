@@ -189,6 +189,7 @@ export async function createCharacterImageSource(input: {
 
   try {
     const result = await executeAtomicIdempotentMutation({
+      validateResult: (value) => characterImageSourceUploadResponseSchema.parse(value),
       environment: env.APP_ENV,
       actor: input.actor,
       idempotencyKey: input.idempotencyKey,
@@ -306,7 +307,7 @@ export async function createCharacterImageSource(input: {
       }),
     });
     mutationCompleted = true;
-    const parsed = characterImageSourceUploadResponseSchema.parse(result);
+    const parsed = result;
     if (parsed.replayed && preparedStored) {
       await deletePreparedBlob(storageKey);
     }

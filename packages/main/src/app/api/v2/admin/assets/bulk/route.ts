@@ -1,4 +1,3 @@
-import type { AdminV2RequestBody } from "@/server/modules/admin-v2/shared/authority";
 import { bulkPatchContentAssets } from "@/server/modules/admin-v2/content/assets";
 import { executeAdminMutation } from "@/server/modules/admin-v2/shared/admin-mutation";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
@@ -6,13 +5,10 @@ import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-type AssetBulkPatch = AdminV2RequestBody<
-  "contentAssetBulkRequestSchema+idempotency-key"
->;
 
 export function POST(request: Request) {
   return adminV2Route(request, () =>
-    executeAdminMutation<AssetBulkPatch>(
+    executeAdminMutation(
       "POST /api/v2/admin/assets/bulk",
       request,
       {

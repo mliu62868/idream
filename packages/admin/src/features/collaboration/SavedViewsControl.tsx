@@ -2,7 +2,6 @@
 
 import { useAdminI18n } from "@/components/admin/i18n";
 import {
-  type CollaborationTargetType,
   type SavedViewQueryState,
 } from "@idream/shared/admin";
 import { Bookmark, RefreshCcw, Save, Trash2 } from "lucide-react";
@@ -11,11 +10,10 @@ import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestErr
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { WorkspaceButton, fieldClass } from "@/features/operations/WorkspaceUi";
-import { AdminV2RequestError, adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
+import { AdminV2RequestError, setWorkspaceUrl } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import {
   applySavedView,
-  savedViewListSchema,
   type SavedViewRecord,
   withoutSavedViewParam,
 } from "./saved-views";
@@ -27,7 +25,7 @@ export function SavedViewsControl({
   onApply,
   onSelectedChange,
 }: {
-  scope: Extract<CollaborationTargetType, "case" | "incident">;
+  scope: SavedViewRecord["scope"];
   currentState: SavedViewQueryState;
   selectedId: string | null;
   onApply: (view: SavedViewRecord) => void;
@@ -68,7 +66,7 @@ export function SavedViewsControl({
     setLoading(true);
     setLoadError(null);
     try {
-      const response = await adminV2Request(`/api/v2/admin/saved-views?scope=${scope}`, { schema: savedViewListSchema });
+      const response = await adminV2Operation("GET /api/v2/admin/saved-views", { query: new URLSearchParams({ scope }) });
       if (!isCurrent()) return;
       setViews([...response.items]);
       const selected = response.items.find((view) => view.id === selectedId);

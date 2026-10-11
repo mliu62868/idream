@@ -2,7 +2,7 @@ import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { reopenOrRecurCase } from "@/server/modules/admin-v2/cases/service";
-import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
+import { adminMutationResultValidator, adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 
@@ -17,7 +17,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (body.confirmation !== `${id}:reopen`) throw Errors.badRequest("Confirmation did not match Case reopen target");
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
-    return executeAtomicIdempotentMutation({
+    return executeAtomicIdempotentMutation({ validateResult: adminMutationResultValidator(request),
       environment: env.APP_ENV,
       actor,
       idempotencyKey,

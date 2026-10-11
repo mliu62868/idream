@@ -3,11 +3,27 @@ import {
   findAdminV2ApiOperation,
   narrowAdminV2ResponseData,
   narrowAdminV2ResponseEnvelope,
+  requireExecutableAdminV2Contract,
   type AdminV2ResponseViolation,
 } from "@idream/shared/admin";
 import { AppError, Errors } from "@/server/lib/errors";
 import { fail } from "@/server/lib/http";
 import { logger } from "@/server/lib/logger";
+
+/** Resolve once, then validate the complete decorated receipt inside its transaction. */
+export function adminMutationResultValidator(request: Request) {
+  const operation = findAdminV2ApiOperation(request.method, new URL(request.url).pathname);
+  if (!operation) throw Errors.internal("Admin mutation route is not declared by the manifest");
+  const { schema } = requireExecutableAdminV2Contract(operation.contract.response);
+  return (value: unknown) => {
+    const parsed = schema.safeParse(value);
+    if (!parsed.success) throw Errors.internal("Admin mutation produced a response outside its declared contract", {
+      operationId: operation.id,
+      issues: parsed.error.issues.map(({ code, path }) => ({ code, path })),
+    });
+    return parsed.data;
+  };
+}
 
 /**
  * SPEC: the single door every Admin v2 Route Handler leaves through, and the only place a

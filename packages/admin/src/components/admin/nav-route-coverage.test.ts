@@ -2,7 +2,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { navItems } from "./nav-config";
-import { adminDynamicRouteLabel } from "@/app/admin/_server/render-admin-route";
+import { adminRouteLabel } from "@/app/admin/_server/render-admin-route";
 
 // SPEC: 导航里的每个目的地都必须落到它自己的路由，不能被同级的动态段吃掉。
 //
@@ -53,12 +53,12 @@ function swallowedByDynamicSegment(href: string) {
 describe("dynamic-segment route titles", () => {
   it("keeps the list name for list aliases the [id] directory catches", () => {
     for (const alias of ["releases", "calendar"]) {
-      expect(adminDynamicRouteLabel(["characters", alias], "Character Detail")).toBe("Characters");
+      expect(adminRouteLabel(["characters", alias])).toBe("Characters");
     }
   });
 
   it("still names a real detail route by its detail label", () => {
-    expect(adminDynamicRouteLabel(["characters", "cmsozhlsn0023i2l7m71veczu"], "Character Detail"))
+    expect(adminRouteLabel(["characters", "cmsozhlsn0023i2l7m71veczu"]))
       .toBe("Character Detail");
   });
 });

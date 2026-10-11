@@ -1,6 +1,5 @@
 import {
   characterProjectDraftResumeSchema,
-  customerCharacterPublicationPrepResponseSchema,
 } from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
@@ -16,7 +15,7 @@ import { prepareApprovedCustomerCharacterPublication } from "@/server/modules/ad
 import { requireMatchingProjectVersion } from "@/server/modules/admin-v2/characters/project-version";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
-import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
+import { adminMutationResultValidator, adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -67,7 +66,7 @@ export async function POST(
     }
     const requestId =
       request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
-    const result = await executeAtomicIdempotentMutation({
+    const result = await executeAtomicIdempotentMutation({ validateResult: adminMutationResultValidator(request),
       environment: env.APP_ENV,
       actor,
       idempotencyKey: requireIdempotencyKey(request),
@@ -87,7 +86,7 @@ export async function POST(
         replayed,
       }),
     });
-    return customerCharacterPublicationPrepResponseSchema.parse(result);
+    return result;
   });
 }
 

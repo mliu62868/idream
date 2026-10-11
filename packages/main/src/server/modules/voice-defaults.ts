@@ -133,6 +133,7 @@ export async function updateVoiceDefaultSettings(input: {
 }) {
   const request = voiceDefaultSettingsUpdateRequestSchema.parse(input.request);
   const result = await executeAtomicIdempotentMutation({
+    validateResult: (value) => voiceDefaultSettingsUpdateResponseSchema.parse(value),
     environment: env.APP_ENV,
     actor: input.actor,
     idempotencyKey: input.idempotencyKey,
@@ -233,7 +234,7 @@ export async function updateVoiceDefaultSettings(input: {
       replayed,
     }),
   });
-  return voiceDefaultSettingsUpdateResponseSchema.parse(result);
+  return result;
 }
 
 export async function previewVoiceDefault(input: unknown) {

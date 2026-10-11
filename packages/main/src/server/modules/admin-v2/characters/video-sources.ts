@@ -75,6 +75,7 @@ export async function createCharacterVideoSource(input: {
 
   try {
     const result = await executeAtomicIdempotentMutation({
+      validateResult: (value) => characterVideoSourceUploadResponseSchema.parse(value),
       environment: env.APP_ENV,
       actor: input.actor,
       idempotencyKey: input.idempotencyKey,
@@ -157,7 +158,7 @@ export async function createCharacterVideoSource(input: {
       }),
     });
     mutationCompleted = true;
-    const parsed = characterVideoSourceUploadResponseSchema.parse(result);
+    const parsed = result;
     if (parsed.replayed && preparedStored) await deletePreparedBlob(storageKey);
     return parsed;
   } catch (cause) {

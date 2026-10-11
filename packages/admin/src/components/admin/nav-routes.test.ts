@@ -16,10 +16,7 @@ describe("admin route layer", () => {
     for (const item of ALL_SECTION_ITEMS) {
       const href = item.href.replace(/^\/admin\/?/, "");
       expect(matchAdminRoute(href)?.sectionId, item.href).toBe(item.id);
-      if (item.legacyHref && item.legacyHref !== "/admin") {
-        const legacy = item.legacyHref.replace(/^\/admin\/?/, "");
-        expect(matchAdminRoute(legacy)?.sectionId, item.legacyHref).toBe(item.id);
-      }
+      expect(matchAdminRoute(item.id)?.sectionId, item.id).toBe(item.id);
     }
   });
 

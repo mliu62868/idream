@@ -231,16 +231,31 @@ async function buildCards(input: {
   const definitionSnapshotByKey = new Map(definitionSnapshots.map((row) => [`${row.key}@${row.version}`, row]));
   const latestMetricSnapshot = new Map<string, MetricSnapshot>();
   if (input.requireMetricSnapshot !== false) {
-    for (const key of metricKeys) {
-      const snapshot = await input.db.metricSnapshot.findFirst({
-        where: {
-          metricKey: key,
-          definitionVersion: DEFINITION_BY_KEY.get(key)?.version ?? 1,
-          asOf: { lte: input.asOf },
-        },
-        orderBy: { asOf: "desc" },
+    // Batch the latest timestamp per metric/version, then fetch those exact rows.
+    // Keep both reads in the caller's repeatable-read transaction so history cannot
+    // move between selection and hydration. No full-history client deduplication.
+    const latest = await input.db.metricSnapshot.groupBy({
+      by: ["metricKey", "definitionVersion"],
+      where: {
+        OR: metricKeys.map((metricKey) => ({
+          metricKey, definitionVersion: DEFINITION_BY_KEY.get(metricKey)?.version ?? 1,
+        })),
+        asOf: { lte: input.asOf },
+      },
+      _max: { asOf: true },
+    });
+    const identities = latest.flatMap((row) => row._max.asOf ? [{
+      metricKey: row.metricKey, definitionVersion: row.definitionVersion, asOf: row._max.asOf,
+    }] : []);
+    if (identities.length > 0) {
+      const snapshots = await input.db.metricSnapshot.findMany({
+        where: { OR: identities },
+        orderBy: [{ windowEnd: "desc" }, { windowStart: "desc" }, { id: "desc" }],
       });
-      if (snapshot) latestMetricSnapshot.set(`${key}@${snapshot.definitionVersion}`, snapshot);
+      for (const snapshot of snapshots) {
+        const identity = `${snapshot.metricKey}@${snapshot.definitionVersion}`;
+        if (!latestMetricSnapshot.has(identity)) latestMetricSnapshot.set(identity, snapshot);
+      }
     }
   }
   const sources = sourceFactEvidence(input.dataset, input.asOf);
@@ -328,7 +343,17 @@ async function buildCards(input: {
   });
 }
 
-async function buildMetricDashboardData(db: MetricDb, asOf: Date) {
+async function buildMetricDashboardData(db: MetricDb, asOf: Date, scope: "all" | "technical_metrics") {
+  if (scope === "technical_metrics") {
+    // A technical grant exposes source-quality evidence, like /metrics/quality.
+    // Hidden business-card certification must neither trigger its reads nor
+    // override the quality of the evidence this operator is allowed to inspect.
+    const quality = await qualityReport(db, asOf);
+    return metricDashboardResponseSchema.parse({
+      definitions: [], cards: [], quality, asOf: asOf.toISOString(),
+      freshness: quality.qualityState === "invalid" ? "degraded" : "fresh",
+    });
+  }
   const rawDataset = await loadCanonicalMetricDataset(db);
   const dataset = filterDatasetFrom(rawDataset, factsValidFrom());
   const liveQuality = await qualityReport(db, asOf);
@@ -542,8 +567,8 @@ export async function materializeMetricSnapshots(db: PrismaClient, asOf = new Da
   });
 }
 
-export async function readMetricDashboard(db: PrismaClient, asOf = new Date()) {
-  return db.$transaction((tx) => buildMetricDashboardData(tx, asOf), {
+export async function readMetricDashboard(db: PrismaClient, asOf = new Date(), scope: "all" | "technical_metrics" = "all") {
+  return db.$transaction((tx) => buildMetricDashboardData(tx, asOf, scope), {
     isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
     timeout: 60_000,
   });
@@ -650,11 +675,12 @@ async function materializeMetricSnapshotsInTransaction(db: Prisma.TransactionCli
 export async function getMetricDashboard(request: Request) {
   try {
     const actor = await actorWithPermission(request, "analytics.metric.read");
-    const data = await readMetricDashboard(prisma, parseAsOf(request, "GET /api/v2/admin/metrics"));
     const scope = await effectivePermissionScope(actor.id, actor.role, "analytics.metric.read");
-    return ok(scope === "technical_metrics"
-      ? { ...data, definitions: [], cards: [] }
-      : data, { headers: { "Cache-Control": "no-store" } });
+    const data = await readMetricDashboard(
+      prisma, parseAsOf(request, "GET /api/v2/admin/metrics"),
+      scope === "technical_metrics" ? "technical_metrics" : "all",
+    );
+    return ok(data, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     if (error instanceof AppError) return fail(error);
     throw error;

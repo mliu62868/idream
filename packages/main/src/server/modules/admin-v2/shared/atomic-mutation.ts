@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { ZodError } from "zod";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { canonicalRequestHash } from "./control-plane-command";
@@ -10,6 +11,7 @@ import { toInputJson } from "./prisma-json";
 
 export async function executeAtomicIdempotentMutation<
   Prepared = undefined,
+  Result = unknown,
 >(input: {
   readonly environment: string;
   readonly actor: { readonly id: string; readonly role: string };
@@ -29,14 +31,24 @@ export async function executeAtomicIdempotentMutation<
   // INTENT: 校验必须发生在事务内、写 controlPlaneCommand 之前。放在提交之后时，不满足响应契约
   // 的 result 已经落库：调用方拿到 500，重试用同一个幂等键取回那条未经校验的 result，再 500，
   // 永远好不了，而且每次重试都多堆一行垃圾。校验在事务里失败则整笔回滚，这个状态就不存在。
-  readonly validateResult?: (result: unknown, replayed: boolean) => unknown;
+  readonly validateResult?: (result: unknown, replayed: boolean) => Result;
 }) {
   const scope = `${input.environment}:${input.actor.id}`;
   const respond = (result: unknown, replayed: boolean) => {
-    const decorated = input.decorateResult
-      ? input.decorateResult(result, replayed)
-      : result;
-    return input.validateResult ? input.validateResult(decorated, replayed) : decorated;
+    try {
+      const decorated = input.decorateResult
+        ? input.decorateResult(result, replayed)
+        : result;
+      return input.validateResult ? input.validateResult(decorated, replayed) : decorated as Result;
+    } catch (error) {
+      if (error instanceof ZodError) {
+        throw Errors.internal("Admin mutation produced a response outside its declared contract", {
+          commandType: input.commandType,
+          issues: error.issues.map(({ code, path }) => ({ code, path })),
+        });
+      }
+      throw error;
+    }
   };
   const requestHash = canonicalRequestHash({
     commandType: input.commandType,

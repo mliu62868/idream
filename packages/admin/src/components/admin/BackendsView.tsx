@@ -8,88 +8,38 @@
 // INVARIANTS: 健康探测由后端每次请求时实时探测（无客户端缓存/轮询）；只有手动点击
 //             Refresh 才会重新拉取。
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback } from "react";
 import { CircleCheck, CircleX, Loader2, RefreshCcw } from "lucide-react";
-import { apiGet } from "@/components/admin/api";
+import { adminV2Operation, type AdminV2OperationResponse } from "@/lib/admin-v2-operation";
+import { useAuthorityResource } from "@/lib/authority-resource";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import { FailureReason } from "@/components/admin/generation/FailureReason";
 import { ReadonlyOpsView, type OpsColumn } from "@/components/admin/generation/ReadonlyOpsView";
 import { useAdminI18n } from "@/components/admin/i18n";
-import { requestErrorMessage } from "@/components/admin/section-kit";
-import {
-  authorityRequestFailed,
-  authorityRequestStarted,
-  authorityRequestSucceeded,
-  createAuthorityState,
-} from "@/lib/authority-state";
-import { createLatestRequestGate } from "@/lib/latest-request";
 import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 import { cn } from "@/lib/utils";
 
 type BackendHealth = { ok: boolean; detail?: string; latencyMs?: number };
 
-type BackendItem = {
-  id: string;
-  kind: string;
-  endpoint?: string;
-  cliPath?: string;
-  modelsDir?: string;
-  health: BackendHealth;
-};
-
-// Rows handed to ReadonlyOpsView are always this component's own `backends` state (cast at the
-// call site below, since Record<string, unknown>[] has no structural relation to BackendItem[]).
-// Narrow back to BackendItem here for typed access inside cell renders.
-function asBackend(row: Record<string, unknown>): BackendItem {
-  return row as unknown as BackendItem;
-}
+type BackendItem = AdminV2OperationResponse<"GET /api/v2/admin/generation/backends">["items"][number];
 
 export function BackendsView() {
   const { t } = useAdminI18n();
-  const [authority, setAuthority] = useState(() => createAuthorityState<BackendItem[]>());
-  const requestGate = useRef(createLatestRequestGate());
-
-  const load = useCallback(async () => {
-    const queryKey = "/api/v2/admin/generation/backends";
-    const request = requestGate.current.begin();
-    setAuthority((current) => authorityRequestStarted(current, queryKey));
-    try {
-      const data = await apiGet<{ items: BackendItem[] }>("/api/v2/admin/generation/backends");
-      if (!request.isCurrent()) return;
-      setAuthority(authorityRequestSucceeded(queryKey, data.items));
-    } catch (err) {
-      if (!request.isCurrent()) return;
-      setAuthority((current) => authorityRequestFailed(
-        current,
-        queryKey,
-        requestErrorMessage(err, t),
-        err,
-      ));
-    }
-  }, [t]);
-
+  const loadBackends = useCallback(async () =>
+    (await adminV2Operation("GET /api/v2/admin/generation/backends", {})).items, []);
+  const authority = useAuthorityResource({ key: "generation/backends", load: loadBackends });
+  const load = authority.refresh;
   useWorkspaceRefresh(load);
-
-  useEffect(() => {
-    const gate = requestGate.current;
-    const timer = window.setTimeout(() => {
-      void load();
-    }, 0);
-    return () => {
-      gate.invalidate();
-      window.clearTimeout(timer);
-    };
-  }, [load]);
 
   const backends = authority.data ?? [];
 
-  const columns: OpsColumn[] = [
+  const columns: OpsColumn<BackendItem>[] = [
     {
       key: "id",
       label: "Backend",
       render: (row) => {
-        const backend = asBackend(row);
+        const backend = row;
         const hasConfig = Boolean(backend.endpoint || backend.cliPath || backend.modelsDir);
         return (
           <div className="space-y-1.5">
@@ -124,7 +74,7 @@ export function BackendsView() {
       key: "health",
       label: "Health",
       render: (row) => {
-        const backend = asBackend(row);
+        const backend = row;
         return (
           <div className="flex items-center gap-2">
             <HealthBadge health={backend.health} />
@@ -139,7 +89,7 @@ export function BackendsView() {
       key: "failure",
       label: "Failure reason",
       render: (row) => {
-        const backend = asBackend(row);
+        const backend = row;
         return !backend.health.ok ? (
           <FailureReason code="backend_unreachable" detail={backend.health.detail} />
         ) : (
@@ -171,7 +121,7 @@ export function BackendsView() {
       {authority.data ? <ReadonlyOpsView
         columns={columns}
         empty={t("No backends.")}
-        rows={backends as unknown as Record<string, unknown>[]}
+        rows={backends}
         title={t("Backends")}
       /> : null}
     </div>

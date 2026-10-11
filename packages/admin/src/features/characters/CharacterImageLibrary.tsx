@@ -264,7 +264,6 @@ export function CharacterImageLibrary({
               review: canReview,
               selectDraft: canCreate,
             }}
-            productionOnly={false}
           />
         </section>
       ) : null}

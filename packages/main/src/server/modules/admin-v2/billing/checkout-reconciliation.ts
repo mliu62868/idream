@@ -1,3 +1,4 @@
+import { adminMutationResultValidator } from "@/server/modules/admin-v2/shared/route-handler";
 import type { AdminBillingCheckoutReconcileRequest } from "@idream/shared/admin";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
@@ -30,6 +31,7 @@ export async function resolveCheckoutReconciliation(
   }
   const requestId = adminRequestId(request);
   const result = await executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey,

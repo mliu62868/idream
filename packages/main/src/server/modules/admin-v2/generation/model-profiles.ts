@@ -1,3 +1,4 @@
+import { adminMutationResultValidator } from "@/server/modules/admin-v2/shared/route-handler";
 // SPEC: the Generation model-profile authority — the catalogue an operator reads, and the
 //       draft → active → archived lifecycle they drive (create, edit, publish, roll back).
 // INTENT: migrated from the v1 `generation/model-profiles` dispatcher branch. The publish
@@ -828,6 +829,7 @@ export async function createGenerationModelProfile(request: Request) {
   const body = await jsonBody(request, "generationModelProfileCreateRequestSchema+idempotency-key");
   const requestId = adminRequestId(request);
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey: requireIdempotencyKey(request),
@@ -846,6 +848,7 @@ export async function patchGenerationModelProfile(request: Request, profileId: s
   if (!isOperationalModelProfileDisablePatch(body)) assertModelDiagnosticsEnabled();
   const requestId = adminRequestId(request);
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey: requireIdempotencyKey(request),
@@ -862,6 +865,7 @@ export async function publishGenerationModelProfile(request: Request, profileId:
   const body = await jsonBody(request, "generationPublishCommandRequestSchema+idempotency-key");
   const requestId = adminRequestId(request);
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey: requireIdempotencyKey(request),
@@ -878,6 +882,7 @@ export async function rollbackGenerationModelProfile(request: Request, profileId
   const body = await jsonBody(request, "generationConfigCommandRequestSchema+idempotency-key");
   const requestId = adminRequestId(request);
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey: requireIdempotencyKey(request),

@@ -1,11 +1,10 @@
-import { adminDynamicRouteLabel, adminRouteMetadata, renderAdminRoute, type AdminSearchParams } from "../../_server/render-admin-route";
+import { adminRouteLabel, adminRouteMetadata, renderAdminRoute, type AdminSearchParams } from "../../_server/render-admin-route";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
+export async function generateMetadata({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: AdminSearchParams }) {
   const { id } = await params;
-  // 这个目录同时接住真实详情与 characters/releases、characters/calendar 两条列表别名。
-  return adminRouteMetadata(adminDynamicRouteLabel(["characters", id], "Character Detail"));
+  return adminRouteMetadata(adminRouteLabel(["characters", id], await searchParams));
 }
 
 export default async function CharacterDetailPage({ params, searchParams }: {

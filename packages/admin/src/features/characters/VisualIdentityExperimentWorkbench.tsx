@@ -29,6 +29,16 @@ import {
 } from "@/components/admin/i18n";
 import { ImagePackResetNotice } from "./ImagePackResetNotice";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
+import {
+  claimDurableMutationIntent,
+  clearDurableMutationIntent,
+  readActiveDurableMutationIntent,
+  updateDurableMutationIntent,
+  type DurableMutationIntent,
+} from "@/lib/durable-mutation-intent";
+import { reconcileDurableMutationIntent } from "@/lib/durable-mutation-recovery";
+import { useCommittedProjectionLoader } from "@/lib/committed-projection";
 import {
   useAuthorityResource,
   usePollingTask,
@@ -114,6 +124,29 @@ function runSettled(run: CreativeRunDetail) {
   );
 }
 
+type ExperimentRequest = ReturnType<typeof creativeRunCreateRequestSchema.parse>;
+
+function savedExperimentRequest(intent: DurableMutationIntent, characterId: string) {
+  const parsed = creativeRunCreateRequestSchema.safeParse(intent.requestSnapshot);
+  return parsed.success && parsed.data.purpose === "identity_calibration" &&
+      parsed.data.targetType === "character" && parsed.data.targetId === characterId
+    ? parsed.data : null;
+}
+
+function experimentProjectionMatches(detail: CreativeRunDetail, request: ExperimentRequest) {
+  const experiment = detail.reviewContext.experiment;
+  const expected = request.identityExperiment;
+  return detail.purpose === "identity_calibration" && detail.target.type === "character" &&
+    detail.target.id === request.targetId && detail.title === request.title &&
+    detail.reviewContext.profile.key === request.profileId &&
+    detail.reviewContext.orientation === request.orientation && detail.items.length === request.count &&
+    Boolean(experiment && expected && experiment.mode === expected.mode &&
+      experiment.positivePrompt === request.brief && experiment.negativePrompt === expected.negativePrompt &&
+      experiment.seedStrategy === expected.seedStrategy &&
+      experiment.sourceAssetId === (expected.sourceAssetId ?? null) && experiment.strength === expected.strength &&
+      (expected.seedStrategy === "random" || experiment.baseSeed === (expected.baseSeed ?? null)));
+}
+
 function itemImage(item: CreativeRunDetail["items"][number] | undefined) {
   return item?.asset?.thumbnailUrl ?? item?.asset?.url ?? null;
 }
@@ -184,6 +217,7 @@ function experimentNoticeText(
 }
 
 export function VisualIdentityExperimentWorkbench({
+  actorId = "current-operator",
   data,
   canCreate,
   canUploadSource,
@@ -192,6 +226,7 @@ export function VisualIdentityExperimentWorkbench({
   onActivateCandidate,
   selectedImageCount = 0,
 }: {
+  actorId?: string;
   data: VisualIdentityExperimentData;
   canCreate: boolean;
   canUploadSource: boolean;
@@ -204,6 +239,16 @@ export function VisualIdentityExperimentWorkbench({
   ) => Promise<void>;
 }) {
   const { locale, t } = useAdminI18n();
+  const createIntentScope = `identity-experiment:create:${actorId}:${data.character.id}`;
+  const [createIntent, setCreateIntent] = useState<DurableMutationIntent | null>(
+    () => readActiveDurableMutationIntent({ scope: createIntentScope }),
+  );
+  const createIntentRef = useRef(createIntent);
+  const generationLock = useRef(false);
+  const rememberIntent = (intent: DurableMutationIntent | null) => {
+    createIntentRef.current = intent;
+    setCreateIntent(intent);
+  };
   const identity = data.visual.activeIdentity;
   const calibration = data.visual.identityCalibration ?? {
     profiles: [],
@@ -256,14 +301,14 @@ export function VisualIdentityExperimentWorkbench({
     filename: string;
     url: string | null;
   } | null>(null);
+  const [uploadedSourceReceipt, setUploadedSourceReceipt] = useState<SourceOption | null>(null);
   const [runs, setRuns] = useState<CreativeRun[]>([]);
   const [runDetails, setRunDetails] = useState<
     Record<string, CreativeRunDetail>
   >({});
   const [historyLoading, setHistoryLoading] = useState(true);
-  const [selectedRun, setSelectedRun] = useState<CreativeRunDetail | null>(
-    null,
-  );
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const selectedRun = selectedRunId ? runDetails[selectedRunId] ?? null : null;
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [resultOpen, setResultOpen] = useState(false);
   const [busy, setBusy] = useState<"generate" | "review" | "activate" | null>(
@@ -271,8 +316,7 @@ export function VisualIdentityExperimentWorkbench({
   );
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<ExperimentNotice | null>(null);
-  const [candidateQualityConfirmed, setCandidateQualityConfirmed] =
-    useState(false);
+  const [confirmedCandidateKey, setConfirmedCandidateKey] = useState<string | null>(null);
   const [activationOpen, setActivationOpen] = useState(false);
   const [activationPrompt, setActivationPrompt] = useState(
     `${data.character.name}. ${CHARACTER_CANONICAL_PORTRAIT_IDENTITY_PROMPT}.`,
@@ -293,23 +337,35 @@ export function VisualIdentityExperimentWorkbench({
 
   const loadRun = useCallback(
     async (runId: string) => {
-      setCandidateQualityConfirmed(false);
       const detail = await adminV2Operation("GET /api/v2/admin/creative/runs/:id", {
         path: { id: runId },
       });
-      setRunDetails((current) => ({ ...current, [detail.id]: detail }));
-      setSelectedRun(detail);
-      setSelectedItemId((current) =>
-        detail.items.some((item) => item.id === current)
-          ? current
-          : (detail.items.find((item) => item.asset)?.id ??
-            detail.items[0]?.id ??
-            null),
-      );
+      setRunDetails((current) => current[detail.id]?.version > detail.version
+        ? current : { ...current, [detail.id]: detail });
       return detail;
     },
-    [setCandidateQualityConfirmed, setSelectedItemId],
+    [],
   );
+
+  const createdRunLoader = useCommittedProjectionLoader<CreativeRunDetail>({
+    fetch: (runId, signal) => adminV2Operation("GET /api/v2/admin/creative/runs/:id", {
+      path: { id: runId }, signal,
+    }),
+    isCurrentTarget: (runId) => createIntentRef.current?.committedTargetId === runId,
+    committed: {
+      current: () => createIntentRef.current,
+      reflects: (intent, detail) => {
+        const request = savedExperimentRequest(intent, data.character.id);
+        return intent.committedTargetId === detail.id && request !== null && experimentProjectionMatches(detail, request);
+      },
+      mismatchMessage: "The saved experiment does not match its exact Character Run.",
+      onReleased: () => rememberIntent(null),
+    },
+    commit: (detail) => {
+      setRunDetails((current) => ({ ...current, [detail.id]: detail }));
+      setRuns((current) => [detail, ...current.filter((run) => run.id !== detail.id)]);
+    },
+  });
 
   const loadRuns = useCallback(async () => {
     const response = await adminV2Operation("GET /api/v2/admin/creative/runs", {
@@ -339,35 +395,22 @@ export function VisualIdentityExperimentWorkbench({
           }
           const results = await Promise.allSettled(
             experiments.map((run) =>
-              adminV2Operation("GET /api/v2/admin/creative/runs/:id", {
-                path: { id: run.id },
-              }),
+              loadRun(run.id),
             ),
           );
           if (!active) return;
           const details = results.flatMap((result) =>
             result.status === "fulfilled" ? [result.value] : [],
           );
-          setRunDetails(
-            Object.fromEntries(details.map((detail) => [detail.id, detail])),
-          );
           const latest = details[0] ?? null;
-          setSelectedRun(latest);
-          setSelectedItemId(
-            latest?.items.find((item) => item.asset)?.id ??
-              latest?.items[0]?.id ??
-              null,
-          );
+          setSelectedRunId((current) => current ?? latest?.id ?? null);
         })
         .catch((cause) => {
           if (active) {
             setError(
               cause instanceof Error
                 ? cause.message
-                : translateAdmin(
-                    locale,
-                    "Visual experiment history could not be loaded",
-                  ),
+                : "Visual experiment history could not be loaded",
             );
           }
         })
@@ -379,7 +422,7 @@ export function VisualIdentityExperimentWorkbench({
       active = false;
       window.clearTimeout(timer);
     };
-  }, [loadRuns, locale]);
+  }, [loadRun, loadRuns]);
 
   // SPEC: 最近上传的本地参考图是一份独立资源，取数生命周期整个交给 useAuthorityResource。
   const uploadedSourcesResource = useAuthorityResource<SourceOption[]>({
@@ -400,7 +443,9 @@ export function VisualIdentityExperimentWorkbench({
       return sources;
     }, [data.character.id]),
   });
-  const uploadedSources = uploadedSourcesResource.data ?? EMPTY_SOURCE_OPTIONS;
+  const listedSources = uploadedSourcesResource.data ?? EMPTY_SOURCE_OPTIONS;
+  const uploadedSources = useMemo(() => uploadedSourceReceipt && !listedSources.some((source) => source.id === uploadedSourceReceipt.id)
+    ? [uploadedSourceReceipt, ...listedSources] : listedSources, [listedSources, uploadedSourceReceipt]);
 
   useWorkspaceRefresh(async () => {
     void uploadedSourcesResource.refresh();
@@ -420,12 +465,13 @@ export function VisualIdentityExperimentWorkbench({
   const pollingRunId = selectedRun && !runSettled(selectedRun)
     ? selectedRun.id
     : null;
-  const pollExperimentRun = useCallback<PollingTask>(async () => {
+  const pollExperimentRun = useCallback<PollingTask>(async (context) => {
     if (!pollingRunId) return null;
     try {
       await loadRun(pollingRunId);
       return 3_000;
     } catch (cause) {
+      if (context.cancelled) return null;
       setError(
         cause instanceof Error
           ? cause.message
@@ -439,6 +485,13 @@ export function VisualIdentityExperimentWorkbench({
   const selectedItem =
     selectedRun?.items.find((item) => item.id === selectedItemId) ??
     selectedRun?.items[0];
+  const candidateKey = selectedRun && selectedItem
+    ? `${selectedRun.id}:${selectedItem.id}:${selectedItem.asset?.id ?? ""}:${selectedItem.review?.id ?? ""}`
+    : null;
+  const candidateQualityConfirmed = candidateKey !== null && confirmedCandidateKey === candidateKey;
+  function setCandidateQualityConfirmed(confirmed: boolean) {
+    setConfirmedCandidateKey(confirmed ? candidateKey : null);
+  }
   const automaticComposition =
     selectedItem?.asset?.automaticComposition ?? null;
   const systemSingleFramePassed =
@@ -559,10 +612,7 @@ export function VisualIdentityExperimentWorkbench({
         },
       );
       const uploaded = uploadedSourceOption(result.asset);
-      uploadedSourcesResource.setData((current) => [
-        uploaded,
-        ...(current ?? []).filter((source) => source.id !== uploaded.id),
-      ]);
+      setUploadedSourceReceipt(uploaded);
       setSourceAssetId(uploaded.id);
       if (seedStrategy === "reuse_source") setSeedStrategy("random");
       setNotice(result.replayed ? "source_restored" : "source_uploaded");
@@ -580,13 +630,15 @@ export function VisualIdentityExperimentWorkbench({
   };
 
   const generate = async () => {
-    if (!selectedProfile) return;
+    if (!canCreate || generationLock.current) return;
+    let intent = createIntentRef.current ?? readActiveDurableMutationIntent({ scope: createIntentScope });
+    if (!selectedProfile && !intent) return;
     const payload = {
       title: `${data.character.id} · visual identity calibration`,
       purpose: "identity_calibration" as const,
       targetType: "character" as const,
       targetId: data.character.id,
-      profileId: selectedProfile.profileKey,
+      profileId: selectedProfile?.profileKey ?? "",
       presetIds: [],
       referenceAssetIds: [],
       bootstrapIdentity: false,
@@ -597,11 +649,8 @@ export function VisualIdentityExperimentWorkbench({
         mode,
         negativePrompt: negativePrompt.trim(),
         seedStrategy: resolvedSeedStrategy,
-        baseSeed: baseSeed.trim() || undefined,
-        sourceAssetId:
-          mode === "image_to_image"
-            ? (resolvedSourceAssetId ?? undefined)
-            : undefined,
+        ...(baseSeed.trim() ? { baseSeed: baseSeed.trim() } : {}),
+        ...(mode === "image_to_image" && resolvedSourceAssetId ? { sourceAssetId: resolvedSourceAssetId } : {}),
         strength,
       },
       consistencyMode,
@@ -609,36 +658,95 @@ export function VisualIdentityExperimentWorkbench({
       reason: "Create a reversible visual identity calibration experiment",
     };
     const parsed = creativeRunCreateRequestSchema.safeParse(payload);
-    if (!parsed.success) {
+    if (!intent && !parsed.success) {
       setError(
         parsed.error.issues[0]?.message ??
           t("Experiment parameters are incomplete"),
       );
       return;
     }
+    generationLock.current = true;
+    let submitted = false;
     setBusy("generate");
     setError(null);
     setNotice(null);
     try {
-      const result = await adminV2Operation("POST /api/v2/admin/creative/runs", {
-        body: parsed.data,
-      });
-      const detail = await loadRun(result.batch.id);
-      await loadRuns();
+      let request = intent ? savedExperimentRequest(intent, data.character.id) : parsed.success ? parsed.data : null;
+      if (intent && (intent.status === "reconciliation_required" || !request)) {
+        const receipt = await reconcileDurableMutationIntent({
+          intent, commandType: "creative.run.create", expectedCharacterId: data.character.id,
+          expectedPurpose: "identity_calibration",
+        });
+        if (receipt.state === "cancelled") {
+          clearDurableMutationIntent(intent);
+          rememberIntent(null);
+          return;
+        }
+        if (receipt.state !== "committed" || !receipt.committedTargetId ||
+          receipt.verification?.kind !== "creative_run" || receipt.verification.runId !== receipt.committedTargetId) {
+          throw new Error("The saved experiment still requires reconciliation.");
+        }
+        const recovered = { ...intent, requestSnapshot: receipt.verification.requestSnapshot };
+        request = savedExperimentRequest(recovered, data.character.id);
+        if (!request) throw new Error("The experiment receipt belongs to another request.");
+        intent = updateDurableMutationIntent(intent, {
+          status: "committed_projection_pending", committedTargetId: receipt.committedTargetId,
+          requestSnapshot: request,
+        });
+        rememberIntent(intent);
+      }
+      if (!request) throw new Error("The saved experiment requires reconciliation.");
+      if (!intent) {
+        const signature = JSON.stringify(request);
+        const claim = await claimDurableMutationIntent({ scope: createIntentScope, signature, requestSnapshot: request });
+        intent = claim.intent;
+        rememberIntent(intent);
+        if (intent.signature !== signature || intent.status === "reconciliation_required") {
+          throw new Error(t("Another tab has an unfinished experiment. Resume its saved request first."));
+        }
+      }
+      let replayed = true;
+      if (intent.status !== "committed_projection_pending" || !intent.committedTargetId) {
+        submitted = true;
+        const result = await adminV2Operation("POST /api/v2/admin/creative/runs", {
+          replayIdempotencyKey: intent.idempotencyKey, body: request,
+        });
+        replayed = result.replayed;
+        intent = updateDurableMutationIntent(intent, {
+          status: "committed_projection_pending", committedTargetId: result.batch.id,
+        });
+        rememberIntent(intent);
+      }
+      const targetId = intent.committedTargetId;
+      if (!targetId) throw new Error("The experiment receipt has no committed Run.");
+      setSelectedRunId(targetId);
+      setSelectedItemId(null);
+      const detail = await createdRunLoader.load(targetId);
       setResultOpen(true);
       setNotice("generation_started");
-      if (resolvedSeedStrategy === "random" && !result.replayed) {
+      if (request.identityExperiment?.seedStrategy === "random" && !replayed) {
         setBaseSeed(randomSeed(baseSeed));
       }
       return detail;
     } catch (cause) {
-      setError(
+      if (intent?.status === "committed_projection_pending") {
+        setError(t("The experiment was committed. Resume to verify its saved Run before generating again."));
+      } else {
+        if (submitted && intent && cause instanceof AdminV2RequestError && [400, 401, 403, 404, 409, 422].includes(cause.status)) {
+          clearDurableMutationIntent(intent);
+          rememberIntent(null);
+        } else if (submitted && intent && intent.status !== "reconciliation_required") {
+          rememberIntent(updateDurableMutationIntent(intent, { status: "outcome_unknown" }));
+        }
+        setError(
         cause instanceof Error
           ? cause.message
           : t("Visual identity experiment could not be created"),
       );
+      }
       return null;
     } finally {
+      generationLock.current = false;
       setBusy(null);
     }
   };
@@ -789,8 +897,7 @@ export function VisualIdentityExperimentWorkbench({
     }
   };
 
-  const canGenerate =
-    canCreate &&
+  const composerReady =
     !sourceUploadBusy &&
     selectedProfile !== null &&
     positivePrompt.trim().length > 0 &&
@@ -798,6 +905,7 @@ export function VisualIdentityExperimentWorkbench({
       (resolvedSourceAssetId !== null &&
         (resolvedSeedStrategy !== "reuse_source" ||
           selectedSource?.seed !== null)));
+  const canGenerate = canCreate && (createIntent !== null || composerReady);
   const selectedApproved =
     selectedItem?.review?.decision === "approved" &&
     selectedItem.review.identityConsistency === "unscored" &&
@@ -914,13 +1022,13 @@ export function VisualIdentityExperimentWorkbench({
               {sourceUploadBusy ? t("Adding…") : t("Add reference image")}
             </button>
             <button
-              aria-label={t("Generate 1 candidate image")}
+              aria-label={t(createIntent ? "Resume saved experiment" : "Generate 1 candidate image")}
               className="min-h-14 w-full rounded-md bg-[var(--ad-ink)] px-5 text-base font-semibold text-white transition hover:bg-[#333] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
               disabled={!canGenerate || busy !== null}
               onClick={() => void generate()}
               type="button"
             >
-              {busy === "generate" ? t("Generating…") : t("Generate")}
+              {busy === "generate" ? t("Generating…") : t(createIntent ? "Resume saved experiment" : "Generate")}
             </button>
           </div>
 
@@ -1547,7 +1655,7 @@ export function VisualIdentityExperimentWorkbench({
                         onClick={() => {
                           setCandidateQualityConfirmed(false);
                           setActivationOpen(false);
-                          setSelectedRun(runDetail);
+                          setSelectedRunId(runDetail.id);
                           setSelectedItemId(item.id);
                           setResultOpen(true);
                         }}
@@ -1602,7 +1710,7 @@ export function VisualIdentityExperimentWorkbench({
                       className="rounded-md border border-[var(--ad-border)] px-3 py-2 text-left text-xs text-[var(--ad-text-muted)] hover:border-[var(--ad-text-muted)]"
                       key={run.id}
                       onClick={() => {
-                        setSelectedRun(runDetail);
+                        setSelectedRunId(runDetail.id);
                         setSelectedItemId(runDetail.items[0]?.id ?? null);
                         setResultOpen(true);
                       }}

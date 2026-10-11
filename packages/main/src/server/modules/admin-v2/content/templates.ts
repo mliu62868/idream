@@ -1,9 +1,6 @@
 import type { CharacterTemplate } from "@prisma/client";
 import type {
-  ContentTemplateActiveRequest,
-  ContentTemplateCreateRequest,
   ContentTemplateQuery,
-  ContentTemplateUpdateRequest,
 } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
@@ -111,7 +108,7 @@ export async function getTemplate(id: string) {
 }
 
 export async function createTemplate(request: Request) {
-  return executeAdminMutation<ContentTemplateCreateRequest, void>(
+  return executeAdminMutation(
     "POST /api/v2/admin/content/templates", request, {
       params: {},
       target: () => ({ type: TARGET_TYPE, id: "library" }),
@@ -147,7 +144,7 @@ export async function createTemplate(request: Request) {
 }
 
 export async function updateTemplate(request: Request, id: string) {
-  return executeAdminMutation<ContentTemplateUpdateRequest, void>(
+  return executeAdminMutation(
     "PATCH /api/v2/admin/content/templates/:id", request, {
       params: { id },
       target: () => ({ type: TARGET_TYPE, id }),
@@ -206,7 +203,7 @@ export async function updateTemplate(request: Request, id: string) {
 }
 
 export async function setTemplateActive(request: Request, id: string) {
-  return executeAdminMutation<ContentTemplateActiveRequest>(
+  return executeAdminMutation(
     "POST /api/v2/admin/content/templates/:id/active", request, {
       params: { id },
       target: () => ({ type: TARGET_TYPE, id }),

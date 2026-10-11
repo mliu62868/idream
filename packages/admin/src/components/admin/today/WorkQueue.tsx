@@ -63,7 +63,7 @@ function writePreference(item: TodayWorkItem, patch: PreferencePatch, expectedVe
 }
 
 function claimWorkItem(item: TodayWorkItem) {
-  if (!item.claim) throw new Error("Work item is not claimable");
+  if (!item.claim || (item.sourceType !== "admin_case" && item.sourceType !== "ops_incident" && item.sourceType !== "creative_run")) throw new Error("Work item is not claimable");
   return adminV2Operation("POST /api/v2/admin/today/claim", {
     body: { sourceType: item.sourceType, sourceId: item.sourceId, entityVersion: item.claim.entityVersion },
   });

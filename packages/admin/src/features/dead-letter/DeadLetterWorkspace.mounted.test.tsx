@@ -9,7 +9,21 @@ const { apiGet, apiWrite } = vi.hoisted(() => ({
   apiWrite: vi.fn(),
 }));
 
-vi.mock("@/components/admin/api", () => ({ apiGet, apiWrite }));
+vi.mock("@/lib/admin-v2-api", async (importOriginal) => {
+  const { adminV2ContractFixtures } = await import("@idream/shared/admin/testing/contract-fixtures");
+  const list = adminV2ContractFixtures("generationDeadLetterListResponseSchema").valid as object;
+  return {
+    ...await importOriginal<typeof import("@/lib/admin-v2-api")>(),
+    adminV2Request: vi.fn(async (path: string, options: { method?: string; body?: unknown; schema?: { parse(value: unknown): unknown } } = {}) => {
+      const result = !options.method || options.method === "GET"
+        ? { ...list, ...await apiGet(path) }
+        : await apiWrite(path, options.method, options.body);
+      return options.schema ? options.schema.parse(result) : result;
+    }),
+  };
+});
+
+import { adminV2Request } from "@/lib/admin-v2-api";
 
 import { ToastProvider } from "@/components/admin/ui/Toast";
 import { DeadLetterWorkspace } from "./DeadLetterWorkspace";
@@ -46,6 +60,7 @@ describe("DeadLetterWorkspace retry authority", () => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
+    vi.mocked(adminV2Request).mockClear();
     apiGet.mockReset();
     apiWrite.mockReset();
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(idempotencyKey);
@@ -68,6 +83,61 @@ describe("DeadLetterWorkspace retry authority", () => {
     expect(rowActions(container, alreadyRefunded.id)).not.toContain("Requeue");
     expect(container.textContent).toContain("The charge was already refunded");
     expect(container.textContent).toContain("Safe to requeue");
+  });
+
+  it("rejects a list without an authoritative retry verdict instead of inferring from failed status", async () => {
+    apiGet.mockResolvedValue({ items: [{ ...retryable, retryEligibility: undefined }] });
+    await render({ discard: true, requeue: true });
+    await waitUntil(() => container.textContent?.includes("unavailable") ?? false);
+    expect(container.textContent).not.toContain("Safe to requeue");
+    expect(container.querySelector(`a[href*="job=${retryable.id}"]`)).toBeNull();
+  });
+
+  it("hides old write targets while a different query is pending or fails", async () => {
+    let reject!: (error: Error) => void;
+    apiGet.mockResolvedValueOnce({ items: [retryable] })
+      .mockImplementationOnce(() => new Promise((_, fail) => { reject = fail; }));
+    await render({ discard: true, requeue: true });
+    await waitUntil(() => container.textContent?.includes(retryable.id) ?? false);
+    await act(async () => {
+      window.history.pushState(null, "", "/admin/ops/jobs?view=dead-letter&deadSearch=other");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(container.querySelector(`a[href*="job=${retryable.id}"]`)).toBeNull();
+    await act(async () => reject(new Error("New query unavailable")));
+    await waitUntil(() => container.textContent?.includes("New query unavailable") ?? false);
+    expect(container.querySelector(`a[href*="job=${retryable.id}"]`)).toBeNull();
+    expect(apiWrite).not.toHaveBeenCalled();
+  });
+
+  it("does not refresh the old query or clear the new selection after a late command completes", async () => {
+    const next = { ...retryable, id: "job-next" };
+    let resolve!: (value: unknown) => void;
+    apiGet.mockImplementation((path: string) => Promise.resolve({ items: [path.includes("search=other") ? next : retryable] }));
+    apiWrite.mockImplementation(() => new Promise((done) => { resolve = done; }));
+    await render({ discard: false, requeue: true });
+    await waitUntil(() => container.textContent?.includes(retryable.id) ?? false);
+    await click(rowCheckbox(container, retryable.id));
+    await click(findButton("Requeue selected", container));
+    const dialog = await waitForDialog();
+    await enter(dialog.querySelector<HTMLInputElement>('input[aria-label="Reason (≥3)"]'), "Provider recovered");
+    await enter(dialog.querySelector<HTMLInputElement>('input[aria-label="Confirmation"]'), retryable.id);
+    await click(findButton("Confirm", dialog));
+    await waitUntil(() => apiWrite.mock.calls.length === 1);
+    await act(async () => {
+      window.history.pushState(null, "", "/admin/ops/jobs?view=dead-letter&deadSearch=other");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await waitUntil(() => container.textContent?.includes(next.id) ?? false);
+    await click(rowCheckbox(container, next.id));
+    await click(findButton("Requeue selected", container));
+    const nextDialog = await waitForDialog();
+    await act(async () => resolve({ requeued: [retryable.id], skipped: [] }));
+    expect(apiGet).toHaveBeenCalledTimes(2);
+    expect(rowCheckbox(container, next.id)?.checked).toBe(true);
+    expect(window.location.search).toContain("deadSearch=other");
+    expect(document.querySelector('[role="dialog"]')).toBe(nextDialog);
+    expect(container.querySelector(`a[href*="job=${retryable.id}"]`)).toBeNull();
   });
 
   // SPEC: 手机端的危险动作前必须先显示本次判断所需的上下文，不能只留下 Job 与按钮。
@@ -141,10 +211,8 @@ describe("DeadLetterWorkspace retry authority", () => {
     expect(container.textContent).not.toContain("2 selected");
     expect(rowCheckbox(container, retryable.id)?.checked).toBe(false);
   });
-  it("mints no idempotency key of its own when the operator retries a failed command in place", async () => {
-    // 确认框向运营承诺「就地重试不会重复执行」——那这条就必须是真的：
-    // 幂等键在打开对话框时生成一次，失败后的重试走的是同一个闭包。
-    // 让 randomUUID 每次都吐不同的值，否则这条断言会因为公共 mock 恒等而空过。
+  it("reuses the operation ledger key when retrying an unacknowledged command", async () => {
+    // Let every mint differ, then prove that a lost acknowledgement reuses one key.
     let issued = 0;
     vi.spyOn(globalThis.crypto, "randomUUID").mockImplementation(
       () => `00000000-0000-4000-8000-00000000000${issued++}` as `${string}-${string}-${string}-${string}-${string}`,
@@ -169,9 +237,11 @@ describe("DeadLetterWorkspace retry authority", () => {
     await click(findButton("Confirm", dialog));
     await waitUntil(() => apiWrite.mock.calls.length === 2);
 
-    // INVARIANT: 这一屏一把键都不造 —— 键的生成与复用归 idempotency-key-lifecycle 一家管。
-    // 回到「每次点击 crypto.randomUUID()」的那种写法，这一行立刻返红。
-    expect(issued).toBe(0);
+    expect(issued).toBe(1);
+    const writes = vi.mocked(adminV2Request).mock.calls.filter(([, options]) => options?.method === "POST");
+    expect(writes).toHaveLength(2);
+    expect(writes[0]?.[1]?.idempotencyKey).toBeTruthy();
+    expect(writes[1]?.[1]?.idempotencyKey).toBe(writes[0]?.[1]?.idempotencyKey);
     await waitUntil(() => document.body.textContent?.includes("Requeued 1 of 1 requests.") ?? false);
   });
 

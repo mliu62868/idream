@@ -1,6 +1,5 @@
 import {
   incidentCorrelationOutboxAttemptMissingDiscardResultSchema,
-  type IncidentCorrelationOutboxAttemptMissingDiscardRequest,
 } from "@idream/shared/admin";
 import { discardAttemptMissingIncidentCorrelationOutboxEvent } from "@/server/modules/admin-v2/incidents/correlation-outbox";
 import { executeAdminMutation } from "@/server/modules/admin-v2/shared/admin-mutation";
@@ -11,7 +10,7 @@ export const runtime = "nodejs";
 
 export function POST(request: Request) {
   return adminV2Route(request, () =>
-    executeAdminMutation<IncidentCorrelationOutboxAttemptMissingDiscardRequest>(
+    executeAdminMutation(
       "POST /api/v2/admin/incidents/correlation-outbox/commands/discard-attempt-missing",
       request,
       {

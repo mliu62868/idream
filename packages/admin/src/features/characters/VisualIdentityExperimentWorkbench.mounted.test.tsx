@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { act } from "react";
+import { creativeRunCreateRequestSchema } from "@idream/shared/admin";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -8,10 +9,12 @@ const { adminV2Request } = vi.hoisted(() => ({
   adminV2Request: vi.fn(),
 }));
 
-vi.mock("@/lib/admin-v2-api", () => ({
+vi.mock("@/lib/admin-v2-api", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/admin-v2-api")>(),
   adminV2Request,
 }));
 
+import { readActiveDurableMutationIntent } from "@/lib/durable-mutation-intent";
 import { AdminI18nProvider } from "@/components/admin/i18n";
 import { VisualIdentityExperimentWorkbench } from "./VisualIdentityExperimentWorkbench";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
@@ -135,6 +138,28 @@ const runDetail = {
   ],
 };
 
+function createdDetail(body: unknown) {
+  const request = creativeRunCreateRequestSchema.parse(body);
+  if (!request.identityExperiment) throw new Error("Missing experiment");
+  return {
+    ...runDetail,
+    id: "identity-run-2",
+    title: request.title,
+    target: { type: request.targetType, id: request.targetId },
+    reviewContext: {
+      ...runDetail.reviewContext,
+      orientation: request.orientation,
+      profile: { key: request.profileId },
+      experiment: {
+        ...request.identityExperiment,
+        positivePrompt: request.brief,
+        sourceAssetId: request.identityExperiment.sourceAssetId ?? null,
+        baseSeed: request.identityExperiment.baseSeed ?? null,
+      },
+    },
+  };
+}
+
 const data = characterWorkspaceDetail({
   character: {
     id: "character-1",
@@ -232,6 +257,7 @@ describe("Visual Identity experiment activation", () => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
+    window.localStorage.clear();
     adminV2Request.mockReset();
     adminV2Request.mockImplementation(async (path: string) => {
       if (new URL(path, "http://admin.test").pathname.endsWith("/image-sources")) return { items: [] };
@@ -288,6 +314,45 @@ describe("Visual Identity experiment activation", () => {
     await waitUntil(() => listCall() !== undefined);
     const query = new URL(String(listCall()![0]), "http://admin.test").searchParams;
     expect(query.get("purpose")).toBe("identity_calibration");
+  });
+
+  it("keeps a committed receipt across remount and verifies the exact run without another POST", async () => {
+    let body: unknown;
+    let readbackMode: "failed" | "wrong-target" | "correct" = "failed";
+    adminV2Request.mockImplementation(async (path: string, options?: { method?: string; body?: unknown }) => {
+      if (path.endsWith("/image-sources")) return { items: [] };
+      if (path.includes("/creative/runs?")) return { items: [], pageInfo: { hasNextPage: false, endCursor: null } };
+      if (options?.method === "POST" && path === "/api/v2/admin/creative/runs") {
+        body = options.body;
+        return { batch: { id: "identity-run-2" }, replayed: false };
+      }
+      if (path.endsWith("/identity-run-2")) {
+        if (readbackMode === "failed") throw new Error("Read temporarily unavailable");
+        const detail = createdDetail(body);
+        return readbackMode === "correct" ? detail : { ...detail, target: { type: "character", id: "another-character" } };
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const render = () => root.render(<VisualIdentityExperimentWorkbench actorId="operator-1" canActivate canCreate canReview canUploadSource data={data} />);
+    await act(async () => render());
+    await act(async () => setTextAreaValue(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe the look you want"]')!, "Original experiment portrait"));
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Generate 1 candidate image"]')!.click());
+    await waitUntil(() => container.textContent?.includes("The experiment was committed.") === true);
+    const scope = "identity-experiment:create:operator-1:character-1";
+    expect(readActiveDurableMutationIntent({ scope })).toMatchObject({ status: "committed_projection_pending", committedTargetId: "identity-run-2" });
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await act(async () => render());
+    readbackMode = "wrong-target";
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Resume saved experiment"]')!.click());
+    expect(readActiveDurableMutationIntent({ scope })?.committedTargetId).toBe("identity-run-2");
+    readbackMode = "correct";
+    await act(async () => setTextAreaValue(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe the look you want"]')!, "A changed draft must not change the committed request"));
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Resume saved experiment"]')!.click());
+    await waitUntil(() => readActiveDurableMutationIntent({ scope }) === null);
+    expect(adminV2Request.mock.calls.filter(([path, options]) => path === "/api/v2/admin/creative/runs" && options?.method === "POST")).toHaveLength(1);
+    expect(body).toMatchObject({ brief: "Original experiment portrait" });
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Generate 1 candidate image"]')).not.toBeNull();
   });
 
   it("gives every generation selector an explicit accessible name", async () => {
@@ -456,6 +521,8 @@ describe("Visual Identity experiment activation", () => {
         },
       ],
     };
+    let lateRefresh: ((value: unknown) => void) | null = null;
+    let delayRefresh = false;
     adminV2Request.mockImplementation(async (path: string) => {
       if (path.endsWith("/image-sources")) return { items: [] };
       if (path.includes("/api/v2/admin/creative/runs?")) {
@@ -464,7 +531,10 @@ describe("Visual Identity experiment activation", () => {
           pageInfo: { endCursor: null, hasNextPage: false },
         };
       }
-      if (path === `/api/v2/admin/creative/runs/${run.id}`) return runDetail;
+      if (path === `/api/v2/admin/creative/runs/${run.id}`) {
+        if (delayRefresh) return new Promise((resolve) => { lateRefresh = resolve; });
+        return runDetail;
+      }
       if (path === `/api/v2/admin/creative/runs/${olderRun.id}`) {
         return olderDetail;
       }
@@ -490,10 +560,14 @@ describe("Visual Identity experiment activation", () => {
         ).length === 2,
     );
 
+    delayRefresh = true;
+    await act(async () => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)));
+    await waitUntil(() => lateRefresh !== null);
     const older = container.querySelector<HTMLButtonElement>(
       'button[aria-label="View candidate 1 from run 1"]',
     );
     await act(async () => older?.click());
+    await act(async () => lateRefresh?.({ ...runDetail, version: 3 }));
 
     expect(
       container
@@ -575,7 +649,7 @@ describe("Visual Identity experiment activation", () => {
 
   it("lets operators choose an image-to-image source by visible reference card", async () => {
     adminV2Request.mockImplementation(
-      async (path: string, options?: { method?: string }) => {
+      async (path: string, options?: { method?: string; body?: unknown }) => {
         if (
           path === "/api/v2/admin/creative/runs" &&
           options?.method === "POST"
@@ -591,7 +665,8 @@ describe("Visual Identity experiment activation", () => {
         }
         if (path === `/api/v2/admin/creative/runs/${run.id}`) return runDetail;
         if (path === "/api/v2/admin/creative/runs/identity-run-2") {
-          return { ...runDetail, id: "identity-run-2" };
+          const post = adminV2Request.mock.calls.find(([url, options]) => url === "/api/v2/admin/creative/runs" && options?.method === "POST");
+          return createdDetail(post?.[1].body);
         }
         throw new Error(`Unexpected request: ${path}`);
       },
@@ -689,7 +764,7 @@ describe("Visual Identity experiment activation", () => {
       createdAt: "2026-07-24T13:00:00.000Z",
     };
     adminV2Request.mockImplementation(
-      async (path: string, options?: { method?: string }) => {
+      async (path: string, options?: { method?: string; body?: unknown }) => {
         if (path.endsWith("/image-sources")) {
           return options?.method === "POST"
             ? { asset: uploadedAsset, replayed: false }
@@ -709,7 +784,8 @@ describe("Visual Identity experiment activation", () => {
         }
         if (path === `/api/v2/admin/creative/runs/${run.id}`) return runDetail;
         if (path === "/api/v2/admin/creative/runs/identity-run-2") {
-          return { ...runDetail, id: "identity-run-2" };
+          const post = adminV2Request.mock.calls.find(([url, options]) => url === "/api/v2/admin/creative/runs" && options?.method === "POST");
+          return createdDetail(post?.[1].body);
         }
         throw new Error(`Unexpected request: ${path}`);
       },
@@ -896,7 +972,7 @@ describe("Visual Identity experiment activation", () => {
   it("requires a compact single-frame confirmation before adopting an identity image", async () => {
     let reviewPosted = false;
     adminV2Request.mockImplementation(
-      async (path: string, options?: { method?: string }) => {
+      async (path: string, options?: { method?: string; body?: unknown }) => {
         if (options?.method === "POST") {
           reviewPosted = true;
           return {};

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { ADMIN_V2_API_OPERATIONS } from "./api-manifest";
 import {
-  ADMIN_V2_PENDING_CONTRACTS,
   requireExecutableAdminV2Contract,
   resolveAdminV2Contract,
 } from "./contract-registry";
+import { adminV2ContractFixtures } from "./testing/contract-fixtures";
 
 function manifestRefs() {
   return [...new Set(ADMIN_V2_API_OPERATIONS.flatMap((operation) => [
@@ -28,22 +28,20 @@ describe("Admin v2 executable contract registry", () => {
     const executed = new Set<string>();
     for (const ref of manifestRefs()) {
       const binding = resolveAdminV2Contract(ref);
-      if (!binding || binding.kind === "pending" || executed.has(binding.fixtureKey)) continue;
-      executed.add(binding.fixtureKey);
+      if (!binding || executed.has(binding.ref)) continue;
+      executed.add(binding.ref);
 
-      expect(binding.schema.safeParse(binding.fixtures.valid).success, `${ref} positive`).toBe(true);
-      expect(binding.schema.safeParse(binding.fixtures.invalid).success, `${ref} negative`).toBe(false);
+      expect(binding.schema.safeParse(adminV2ContractFixtures(ref).valid).success, `${ref} positive`).toBe(true);
+      expect(binding.schema.safeParse(adminV2ContractFixtures(ref).invalid).success, `${ref} negative`).toBe(false);
     }
     expect(executed.size).toBe(manifestBaseRefs().size);
   });
 
-  it("hard-gates the manifest at zero pending contracts", () => {
-    const referenced = manifestBaseRefs();
-    const pending = Object.entries(ADMIN_V2_PENDING_CONTRACTS);
-    expect(pending).toHaveLength(0);
-
-    expect([...manifestBaseRefs()].filter((ref) => resolveAdminV2Contract(ref)?.kind === "pending").sort())
-      .toEqual(Object.keys(ADMIN_V2_PENDING_CONTRACTS).sort());
-    expect([...referenced].filter((ref) => requireExecutableAdminV2Contract(ref))).toHaveLength(referenced.size);
+  it("rejects unknown refs without a pending escape hatch", () => {
+    expect(resolveAdminV2Contract("missingContract")).toBeNull();
+    expect(() => requireExecutableAdminV2Contract("missingContract")).toThrow();
+    for (const ref of manifestRefs()) {
+      expect(requireExecutableAdminV2Contract(ref).schema).toBeDefined();
+    }
   });
 });

@@ -1,3 +1,4 @@
+import { adminMutationResultValidator } from "@/server/modules/admin-v2/shared/route-handler";
 import { randomUUID } from "node:crypto";
 import type { Prisma, ProductFeedbackItem } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
@@ -49,6 +50,7 @@ export async function updateProductFeedback(request: Request, id: string) {
   const body = await jsonBody(request, "PATCH /api/v2/admin/support/feedback/:id");
   const requestId = request.headers.get("x-request-id")?.trim() || randomUUID();
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV, actor, requestId,
     idempotencyKey: requireIdempotencyKey(request),
     commandType: "support.feedback.update", target: { type: "product_feedback", id }, payload: body,

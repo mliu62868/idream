@@ -1,3 +1,4 @@
+import { adminMutationResultValidator } from "@/server/modules/admin-v2/shared/route-handler";
 // SPEC: the Generation catalogue authority — prompt recipes (versioned, publishable) and the
 //       built-in preset library the customer-facing generation UI offers.
 // INTENT: migrated from v1 `generation/catalog-admin.ts`. Recipes keep their draft → active →
@@ -111,6 +112,7 @@ export async function createGenerationRecipe(request: Request) {
   const body = await jsonBody(request, "generationRecipeCreateRequestSchema+idempotency-key");
   const requestId = adminRequestId(request);
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey: requireIdempotencyKey(request),
@@ -156,6 +158,7 @@ export async function patchGenerationRecipe(request: Request, recipeId: string) 
   const body = await jsonBody(request, "generationRecipePatchRequestSchema+idempotency-key");
   const requestId = adminRequestId(request);
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey: requireIdempotencyKey(request),
@@ -207,6 +210,7 @@ export async function publishGenerationRecipe(request: Request, recipeId: string
   const body = await jsonBody(request, "generationPublishCommandRequestSchema+idempotency-key");
   const requestId = adminRequestId(request);
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey: requireIdempotencyKey(request),
@@ -274,7 +278,8 @@ export async function testGenerationRecipeMatrix(request: Request, recipeId: str
   const actor = await actorWithPermission(request, "generation.config.write");
   const body = await jsonBody(request, "generationRecipeTestMatrixRequestSchema+idempotency-key");
   const requestId = adminRequestId(request);
-  const result = generationRecipeTestMatrixResponseSchema.parse(await executeAtomicIdempotentMutation({
+  const result = await executeAtomicIdempotentMutation({
+    validateResult: (value) => generationRecipeTestMatrixResponseSchema.parse(value),
     environment: env.APP_ENV, actor, idempotencyKey: requireIdempotencyKey(request), requestId,
     commandType: "generation.prompt_template.test_matrix", target: { type: "generation_prompt_template", id: recipeId }, payload: body,
     mutate: async (tx) => {
@@ -316,7 +321,7 @@ export async function testGenerationRecipeMatrix(request: Request, recipeId: str
       await writeCatalogAudit(tx, actor, requestId, { action: "generation.prompt_template.test_matrix", targetType: "generation_prompt_template", targetId: recipeId, reason: body.reason, after: { fingerprint: matrix.fingerprint, jobIds: jobs.map(job => job.id) } });
       return { fingerprint: matrix.fingerprint, jobs };
     },
-  }));
+  });
   await dispatchGenerationAttemptOutbox(prisma, { outboxIds: result.jobs.map(job => `generation_initial_${job.id}`) });
   return ok(result, { status: 202 });
 }
@@ -326,6 +331,7 @@ export async function verifyGenerationRecipe(request: Request, recipeId: string)
   const body = await jsonBody(request, "generationRecipeVerifyRequestSchema+idempotency-key");
   const requestId = adminRequestId(request);
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV, actor, idempotencyKey: requireIdempotencyKey(request), requestId,
     commandType: "generation.prompt_template.verify", target: { type: "generation_prompt_template", id: recipeId }, payload: body,
     mutate: async (tx) => {
@@ -351,6 +357,7 @@ export async function rollbackGenerationRecipe(request: Request, recipeId: strin
   const body = await jsonBody(request, "generationConfigCommandRequestSchema+idempotency-key");
   const requestId = adminRequestId(request);
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey: requireIdempotencyKey(request),
@@ -504,6 +511,7 @@ export async function createGenerationPreset(request: Request) {
   const body = await jsonBody(request, "generationPresetCreateRequestSchema+idempotency-key");
   const requestId = adminRequestId(request);
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey: requireIdempotencyKey(request),
@@ -539,6 +547,7 @@ export async function patchGenerationPreset(request: Request, presetId: string) 
   const body = await jsonBody(request, "generationPresetPatchRequestSchema+idempotency-key");
   const requestId = adminRequestId(request);
   return executeAtomicIdempotentMutation({
+    validateResult: adminMutationResultValidator(request),
     environment: env.APP_ENV,
     actor,
     idempotencyKey: requireIdempotencyKey(request),

@@ -5,7 +5,7 @@ import { env } from "@/server/lib/env";
 import { actorWithPermission, jsonBody } from "@/server/modules/admin-v2/shared/authority";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
-import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
+import { adminMutationResultValidator, adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { publishCharacterReferenceSet } from "@/server/modules/admin-v2/characters/reference-set";
 
 export const dynamic = "force-dynamic";
@@ -18,7 +18,7 @@ export function POST(request: Request, context: { params: Promise<{ id: string }
     const body = await jsonBody(request, "characterReferenceSetPublishRequestSchema+idempotency-key");
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
-    const result = await executeAtomicIdempotentMutation({
+    const result = await executeAtomicIdempotentMutation({ validateResult: adminMutationResultValidator(request),
       environment: env.APP_ENV,
       actor,
       idempotencyKey,

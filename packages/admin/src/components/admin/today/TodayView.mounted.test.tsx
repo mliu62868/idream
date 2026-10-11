@@ -26,18 +26,8 @@ vi.mock("@/components/admin/i18n", () => {
 
 import { ToastProvider } from "@/components/admin/ui/Toast";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
-import { TodayView, type TodayData, type TodayLegacyData } from "./TodayView";
-
-const legacy: TodayLegacyData = {
-  metrics: {
-    users: { active: 9, suspended: 1 },
-    generation: { queued: 2, failed: 3, blocked: 1, successRate: 75 },
-    moderation: { openReports: 5 },
-    billing: { activeSubscriptions: 4 },
-  },
-  featureFlags: [],
-  featureFlagCount: 0,
-};
+import { TodayView, type TodayData } from "./TodayView";
+import { TodayWorkspace } from "./TodayWorkspace";
 
 const claimable = (sourceId: string) => ({
   sourceType: "admin_case" as const,
@@ -65,7 +55,6 @@ const claimable = (sourceId: string) => ({
 function data(items: ReturnType<typeof claimable>[]): TodayData {
   const empty = { totalCount: 0, items: [] };
   return {
-    legacy,
     projection: {
       myShift: empty,
       nextBestActions: { totalCount: 18, items },
@@ -131,6 +120,31 @@ afterEach(async () => {
 });
 
 describe("Today operator actions", () => {
+  it("loads the queue independently and lazily retries background totals without counting the preview rows", async () => {
+    let backgroundUnavailable = true;
+    adminV2Request.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/v2/admin/today?")) return data([claimable("case-core-queue")]).projection;
+      if (path.startsWith("/api/v2/admin/today/all-work?")) return { items: [], pageInfo: { hasNextPage: false, endCursor: null }, asOf: "2026-08-11T00:00:00.000Z", freshness: "fresh", totalCount: 0 };
+      if (backgroundUnavailable) throw new Error("Background metrics unavailable");
+      return { metrics: { users: { active: 9 }, generation: { queued: 2 }, billing: { activeSubscriptions: 4 } }, featureFlags: Array.from({ length: 8 }, (_, index) => ({ key: `flag-${index}` })), featureFlagCount: 23 };
+    });
+    await act(async () => root.render(createElement(ToastProvider, null, createElement(TodayWorkspace, { workMode: "support" }))));
+    await settle();
+    expect(container.textContent).toContain("case-core-queue");
+    expect(adminV2Request.mock.calls.map(([path]) => path)).toEqual(["/api/v2/admin/today?workMode=support", "/api/v2/admin/today/all-work?workMode=support&limit=1&sla=overdue"]);
+    const background = [...container.querySelectorAll("details")].find(node => node.querySelector("summary")?.textContent === "Platform background")!;
+    await act(async () => { background.open = true; background.dispatchEvent(new Event("toggle")); });
+    await settle();
+    expect(background.querySelector('[role="alert"]')).not.toBeNull();
+    expect(container.textContent).toContain("case-core-queue");
+    backgroundUnavailable = false;
+    await click(buttons(background).find(button => /Retry|Try again/.test(button.textContent ?? "")));
+    await settle();
+    expect(background.textContent).toContain("23");
+    expect(background.textContent).not.toMatch(/Feature flags\s*8/);
+    expect(adminV2Request.mock.calls.filter(([path]) => path.startsWith("/api/v2/admin/today?")).length).toBe(1);
+  });
+
   it("marks a retained snapshot stale after a failed refresh and fresh after recovery", async () => {
     window.history.replaceState(null, "", "/admin/today?todayTab=all&severity=high");
     let unavailable = false;

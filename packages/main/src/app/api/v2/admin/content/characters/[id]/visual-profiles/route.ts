@@ -5,7 +5,6 @@ import {
 import { executeAdminMutation } from "@/server/modules/admin-v2/shared/admin-mutation";
 import {
   actorWithPermission,
-  type AdminV2RequestBody,
 } from "@/server/modules/admin-v2/shared/authority";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 
@@ -13,9 +12,6 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 type Context = { params: Promise<{ id: string }> };
-type Body = AdminV2RequestBody<
-  "characterVisualProfileCreateRequestSchema+idempotency-key"
->;
 
 export async function GET(request: Request, context: Context) {
   const { id } = await context.params;
@@ -28,7 +24,7 @@ export async function GET(request: Request, context: Context) {
 export async function POST(request: Request, context: Context) {
   const { id } = await context.params;
   return adminV2Route(request, () =>
-    executeAdminMutation<Body>(
+    executeAdminMutation(
       "POST /api/v2/admin/content/characters/:id/visual-profiles",
       request,
       {

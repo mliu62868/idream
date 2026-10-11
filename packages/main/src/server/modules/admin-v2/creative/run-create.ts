@@ -9,7 +9,6 @@ import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
-import { ok } from "@/server/lib/http";
 import { hasHydratableMediaBlobAuthority, isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-authority";
 import { toInputJson } from "@/server/lib/request-json";
 import type {
@@ -65,7 +64,6 @@ import {
   resolveProductionTarget,
   resolveProductionVisualProfile,
 } from "./run-create-authority";
-import { creativeRunCreationDTO, creativeRunInclude } from "./run-projection";
 
 // SPEC: 建一次 Creative Run —— 校验并 pin 生成路线、原子写入 Run + items + Generation
 // Request/Attempt + dispatch Outbox + 幂等命令 + 审计，然后投递 dispatch。
@@ -140,7 +138,7 @@ export async function createCreativeRun(
   request: Request,
   actor: AdminActor,
   body: CreativeRunCreateInput,
-): Promise<Response> {
+): Promise<{ batch: { id: string }; replayed: boolean }> {
   const characterVideoRun = body.purpose === "character_video";
   const productionMode = characterVideoRun ? "video" as const : "image" as const;
   const idempotencyKey = request.headers.get("idempotency-key")?.trim() || null;
@@ -167,15 +165,9 @@ export async function createCreativeRun(
       }
       const batch = await prisma.contentProductionBatch.findUniqueOrThrow({
         where: { id: result.batchId },
-        include: creativeRunInclude,
+        select: { id: true },
       });
-      return ok(
-        {
-          batch: await creativeRunCreationDTO(batch),
-          replayed: true,
-        },
-        { status: 200 },
-      );
+      return { batch, replayed: true };
     }
   }
   const profile = await resolveProductionProfile(
@@ -700,7 +692,7 @@ export async function createCreativeRun(
         replayed = true;
         return tx.contentProductionBatch.findUniqueOrThrow({
           where: { id: result.batchId },
-          include: creativeRunInclude,
+          select: { id: true, items: { select: { id: true } } },
         });
       }
     }
@@ -1302,15 +1294,12 @@ export async function createCreativeRun(
     });
     return tx.contentProductionBatch.findUniqueOrThrow({
       where: { id: createdBatch.id },
-      include: creativeRunInclude,
+      select: { id: true, items: { select: { id: true } } },
     });
   });
   await dispatchGenerationAttemptOutbox(prisma, {
     limit: totalOutputCount,
     outboxIds: batch.items.map((item) => `creative_initial_${batch.id}_${item.id}`),
   });
-  return ok(
-    { batch: await creativeRunCreationDTO(batch), replayed },
-    { status: replayed ? 200 : 202 },
-  );
+  return { batch: { id: batch.id }, replayed };
 }

@@ -47,6 +47,7 @@ describe("operational artwork publication", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
     expect(apiGet).toHaveBeenCalledTimes(1);
     expect(assetSelector.disabled).toBe(false);
+    await chooseAsset(container, "artwork");
     const title = container.querySelector<HTMLInputElement>('[aria-label="Campaign title"]');
     expect(title).not.toBeNull();
     await change(title!, "Autumn collection");
@@ -65,13 +66,14 @@ describe("operational artwork publication", () => {
     expect(submit.disabled).toBe(false);
   });
 
-  it("invalidates the asset selection immediately when paging and retains no stale choices after failure", async () => {
+  it("preserves the explicitly selected asset when paging fails", async () => {
     let rejectPage: (reason: Error) => void = () => {};
     apiGet.mockResolvedValueOnce({ items: [{ id: "artwork", purpose: "campaign", targetId: null, customerPublishable: true, publishabilityReasons: [] }], pageInfo: { hasNextPage: true, endCursor: "page-two" } })
       .mockImplementation(() => new Promise((_resolve, reject) => { rejectPage = reject; }));
     await act(async () => root.render(<PlacementsNewPage />));
     await act(async () => { await vi.advanceTimersByTimeAsync(200); });
     expect(container.querySelector<HTMLSelectElement>('[aria-label="Asset"]')!.disabled).toBe(false);
+    await chooseAsset(container, "artwork");
     await change(container.querySelector<HTMLInputElement>('[aria-label="Campaign title"]')!, "Autumn collection");
     await change(container.querySelector<HTMLInputElement>('[aria-label="Campaign eyebrow"]')!, "Featured");
     await change(container.querySelector<HTMLInputElement>('[aria-label="Campaign destination key"]')!, "autumn");
@@ -79,14 +81,16 @@ describe("operational artwork publication", () => {
     expect(button(container, "Create placement")!.disabled).toBe(false);
     const next = button(container, "Next page")!;
     await act(async () => { next.click(); next.click(); });
-    expect(button(container, "Create placement")!.disabled).toBe(true);
+    expect(button(container, "Create placement")!.disabled).toBe(false);
     expect(container.querySelector('[data-testid="admin-pagination"]')?.textContent).toContain("Page 2");
     expect(container.querySelector('select')!.disabled).toBe(true);
     await act(async () => { await vi.advanceTimersByTimeAsync(200); });
     expect(apiGet).toHaveBeenCalledTimes(2);
     await act(async () => rejectPage(new Error("Image library unavailable")));
-    expect(container.querySelector('select')!.options.length).toBe(0);
-    expect(button(container, "Create placement")!.disabled).toBe(true);
+    expect(container.querySelector('select')!.value).toBe("artwork");
+    expect(container.querySelector('select')!.options.length).toBe(1);
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Campaign destination key"]')!.value).toBe("autumn");
+    expect(button(container, "Create placement")!.disabled).toBe(false);
     expect(container.textContent).toContain("Image library unavailable");
     expect(apiGet.mock.calls[1][0]).toContain("cursor=page-two");
   });
@@ -160,4 +164,12 @@ async function waitFor(predicate: () => boolean) {
     await act(async () => { await vi.advanceTimersByTimeAsync(5); });
   }
   throw new Error("Condition did not become true");
+}
+
+async function chooseAsset(container: HTMLElement, value: string) {
+  const select = container.querySelector<HTMLSelectElement>('[aria-label="Asset"]')!;
+  await act(async () => {
+    select.value = value;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
 }

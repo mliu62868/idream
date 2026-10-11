@@ -2,7 +2,10 @@
 
 import { todayAllWorkResponseSchema, type TodayAllWorkResponse, type TodayProjection, type TodaySourceType } from "@idream/shared/admin";
 import { AlertTriangle, CheckCircle2, Clock3, Eye, Inbox, SlidersHorizontal, UserRound, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
+import { useAuthorityResource } from "@/lib/authority-resource";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { useAdminI18n } from "@/components/admin/i18n";
 import type { WorkMode } from "@/components/admin/nav-config";
 import { formatDateTime } from "@/components/admin/ui/format";
@@ -24,8 +27,6 @@ import {
 } from "./query";
 import { WorkQueue, type WorkDensity } from "./WorkQueue";
 
-type Row = Record<string, unknown>;
-
 const DENSITY_STORAGE_KEY = "idream.admin.today.density";
 
 // SPEC: 走过的游标挂在 history entry 上，不只挂在组件 state 里。
@@ -39,24 +40,7 @@ function restoredPageCursors(): readonly string[] {
   return Array.isArray(state?.pageCursors) ? state.pageCursors : [];
 }
 
-export type TodayLegacyData = {
-  metrics: {
-    users: { active: number; suspended: number };
-    generation: {
-      queued: number;
-      failed: number;
-      blocked: number;
-      successRate: number | null;
-    };
-    moderation: { openReports: number };
-    billing: { activeSubscriptions: number };
-  };
-  featureFlags: Row[];
-  featureFlagCount: number;
-};
-
 export type TodayData = {
-  legacy: TodayLegacyData;
   projection: TodayProjection;
 };
 
@@ -280,17 +264,34 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
       </section>}
         </div>
       </div>
-      <details className="border-t border-[var(--ad-border)] pt-3 text-sm text-[var(--ad-text-muted)]">
-        <summary className="cursor-pointer">{t("Platform background")}</summary>
-        <div className="grid gap-3 sm:grid-cols-4">
-          <ContextValue label={t("Active users")} value={data.legacy.metrics.users.active} />
-          <ContextValue label={t("Queued generation jobs")} value={data.legacy.metrics.generation.queued} />
-          <ContextValue label={t("Active subscriptions")} value={data.legacy.metrics.billing.activeSubscriptions} />
-          <ContextValue label={t("Feature flags")} value={data.legacy.featureFlagCount} />
-        </div>
-      </details>
+      <PlatformBackground />
     </div>
   );
+}
+
+export function PlatformBackground() {
+  const { t } = useAdminI18n();
+  const [opened, setOpened] = useState(false);
+  const load = useCallback(() => adminV2Operation("GET /api/v2/admin/dashboard", {}), []);
+  const resource = useAuthorityResource({ key: "today:platform-background", load, enabled: opened });
+  const { refresh } = resource;
+  useEffect(() => {
+    if (!opened) return;
+    const reload = () => void refresh();
+    window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, reload);
+    return () => window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, reload);
+  }, [opened, refresh]);
+  return <details className="border-t border-[var(--ad-border)] pt-3 text-sm text-[var(--ad-text-muted)]" onToggle={event => { if (event.currentTarget.open) setOpened(true); }}>
+    <summary className="cursor-pointer">{t("Platform background")}</summary>
+    {resource.loading ? <p role="status">{t("Loading")}</p> : null}
+    {resource.error ? <AuthorityRequestError requestKind="read" cause={resource.cause} message={resource.error} snapshotAt={resource.refreshedAt ?? undefined} onRetry={() => void refresh()} /> : null}
+    {resource.data ? <div className="grid gap-3 sm:grid-cols-4">
+      <ContextValue label={t("Active users")} value={resource.data.metrics.users.active} />
+      <ContextValue label={t("Queued generation jobs")} value={resource.data.metrics.generation.queued} />
+      <ContextValue label={t("Active subscriptions")} value={resource.data.metrics.billing.activeSubscriptions} />
+      <ContextValue label={t("Feature flags")} value={resource.data.featureFlagCount} />
+    </div> : null}
+  </details>;
 }
 
 const BANNER_TONE = {

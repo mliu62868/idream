@@ -3,7 +3,6 @@
 import { useAdminI18n } from "@/components/admin/i18n";
 import {
   AlertTriangle,
-  Bookmark,
   Check,
   ClipboardCheck,
   Inbox,
@@ -11,20 +10,16 @@ import {
   MessageSquare,
   Search,
   ShieldCheck,
-  Trash2,
 } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  savedViewListResponseSchema,
-  supportConversationResponseSchema,
   type SavedView,
 } from "@idream/shared/admin";
 import type { SupportConversation } from "@idream/shared/contracts";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
 import { StatusPill } from "@/components/admin/ui/StatusPill";
-import { adminV2Request } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import {
   ConfirmDialog,
@@ -41,6 +36,7 @@ import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { FeedbackQueue } from "./FeedbackQueue";
+import { SavedViewsControl } from "@/features/collaboration/SavedViewsControl";
 import {
   defaultSupportQuery,
   SUPPORT_PAGE_SIZE,
@@ -79,7 +75,6 @@ export function SupportWorkspace({
   const { t, value } = useAdminI18n();
   const format = useAdminFormat();
   const { toast } = useToast();
-  const failureToast = useFailureToast();
   // INVARIANT: the server render and first client render use the same state.
   // URL-owned filters are restored only after hydration (the mount effect below
   // calls `restore()`, so a shared link opens on the filters it encodes).
@@ -90,18 +85,12 @@ export function SupportWorkspace({
   const [error, setError] = useState<string | null>(null);
   const [errorCause, setErrorCause] = useState<unknown>(undefined);
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
-  const [savedViews, setSavedViews] = useState<SavedView[]>([]);
-  const [savedViewsLoading, setSavedViewsLoading] = useState(true);
-  const [savedViewLabel, setSavedViewLabel] = useState("");
-  const [savedViewError, setSavedViewError] = useState<string | null>(null);
-  const [savedViewErrorCause, setSavedViewErrorCause] = useState<unknown>(undefined);
-  const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
+  const [selectedSavedViewId, setSelectedSavedViewId] = useState<string | null>(null);
   const [commandConfirmation, setCommandConfirmation] = useState<ConfirmSpec | null>(null);
   const [confirmationPermission, setConfirmationPermission] = useState(canWrite);
   const writeAuthority = useRef({ canWrite });
   const [conversationTicket, setConversationTicket] = useState<string | null>(null);
   const [conversationRevision, setConversationRevision] = useState(0);
-  const [savingView, setSavingView] = useState(false);
   // SPEC: 「上一页」走自己走过的游标回头，不给后端发 `before`。
   // INTENT: 支持工单列表还是单向 keyset（响应里没有 startCursor / hasPreviousPage），
   //         把 startCursor 塞进 `before` 会被 .strict() 挡成 400。翻页栈是本地的，
@@ -143,26 +132,6 @@ export function SupportWorkspace({
     }
   }, []);
 
-  const loadSavedViews = useCallback(async () => {
-    setSavedViewsLoading(true);
-    setSavedViewError(null);
-    setSavedViewErrorCause(undefined);
-    try {
-      const response = await adminV2Request(
-        `/api/v2/admin/saved-views?scope=${savedViewScope}`,
-        { schema: savedViewListResponseSchema },
-      );
-      setSavedViews([...response.items]);
-    } catch (cause) {
-      setSavedViewError(
-        cause instanceof Error ? cause.message : "Saved views failed",
-      );
-      setSavedViewErrorCause(cause);
-    } finally {
-      setSavedViewsLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
     const requestGate = gate.current;
     const restore = () => {
@@ -171,10 +140,10 @@ export function SupportWorkspace({
       setDraft(next);
       setCursorTrail([]);
       setConversationTicket(new URLSearchParams(window.location.search).get("ticket") || null);
+      setSelectedSavedViewId(new URLSearchParams(window.location.search).get("savedView"));
       void load(next);
     };
     const timer = window.setTimeout(() => {
-      void loadSavedViews();
       restore();
     }, 0);
     window.addEventListener("popstate", restore);
@@ -185,7 +154,7 @@ export function SupportWorkspace({
       window.removeEventListener("popstate", restore);
       window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, restore);
     };
-  }, [load, loadSavedViews]);
+  }, [load]);
 
   useEffect(() => {
     const next = { ...draft, cursor: "" };
@@ -229,57 +198,27 @@ export function SupportWorkspace({
   }
 
   function updateDraft(updates: Partial<SupportQuery>) {
+    setSelectedSavedViewId(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("savedView");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
     setDraft((value) => ({ ...value, ...updates, cursor: "" }));
   }
 
-  async function saveCurrentView(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const label = savedViewLabel.trim();
-    if (!label || savingView) return;
-    setSavedViewError(null);
-    setSavingView(true);
-    try {
-      await adminV2Operation("POST /api/v2/admin/saved-views", {
-        body: { scope: savedViewScope, label, queryState: supportSavedState(draft) },
-      });
-      setSavedViewLabel("");
-      toast({ tone: "success", title: t("Saved view {label} created", { label }) });
-      await loadSavedViews();
-    } catch (cause) {
-      // INTENT: 失败时不清 savedViewLabel —— 运营刚敲的名字得留着，重试只差再点一次。
-      failureToast(cause);
-    } finally {
-      setSavingView(false);
-    }
-  }
-
-  // SPEC: 删除保存视图走确认框并要求敲出视图名。
-  // INTENT: 它以前是一个点了就删的垃圾桶图标，误点无法恢复——后台没有回收站。
-  function confirmDeleteSavedView(view: SavedView) {
-    setConfirmation({
-      title: t("Delete saved view {label}", { label: view.label }),
-      destructive: { expectedName: view.label, inputLabel: t("Saved view name") },
-      consequence: {
-        effect: t("The saved view is gone for everyone who uses it. There is no recycle bin."),
-        reversible: false,
-      },
-      // 后端 DELETE 契约没有 reason 字段。
-      requireReason: false,
-      submitLabel: t("Delete saved view"),
-      onSubmit: async () => {
-        // SPEC: 删除按版本号删 —— 服务端 If-Match 不匹配就 409。
-        await adminV2Operation("DELETE /api/v2/admin/saved-views/:id", {
-          path: { id: view.id },
-          ifMatch: view.version,
-        });
-        setSavedViews((items) => items.filter((item) => item.id !== view.id));
-        toast({ tone: "success", title: t("Saved view {label} deleted", { label: view.label }) });
-      },
-    });
-  }
-
   function applySavedView(view: SavedView) {
+    setSelectedSavedViewId(view.id);
     navigate(supportQueryFromSavedState(view.queryState));
+    const url = new URL(window.location.href);
+    url.searchParams.set("savedView", view.id);
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  }
+
+  function resetFilters() {
+    setSelectedSavedViewId(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("savedView");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    navigate(defaultSupportQuery);
   }
 
   function confirmAction(input: {
@@ -310,7 +249,7 @@ export function SupportWorkspace({
             : t("The ticket moves to this status and its SLA clock is recalculated. Another status command moves it back."),
         reversible: input.label !== "Escalate",
       },
-      reasonLabel: "Reason",
+      reasonLabel: input.includeResolution ? "Manual verification and resolution summary" : "Reason",
       submitLabel: "Confirm",
       onSubmit: async (reason) => {
         if (!writeAuthority.current.canWrite || writeAuthority.current !== authority) return;
@@ -397,89 +336,15 @@ export function SupportWorkspace({
             onChange={(category) => updateDraft({ category })}
             value={draft.category}
           />
-          <form
-            className="grid min-w-0 gap-1 sm:col-span-2"
-            onSubmit={(event) => void saveCurrentView(event)}
-          >
-            <span className="text-xs font-semibold text-[var(--ad-text-muted)]">
-
-              {t("Saved view")}
-            </span>
-            <div className="flex min-w-0 flex-wrap gap-2">
-              <input
-                aria-label={t("Support saved view label")}
-                className="min-h-10 min-w-0 flex-1 rounded-md border px-3 text-sm"
-                onChange={(event) => setSavedViewLabel(event.target.value)}
-                value={savedViewLabel}
-              />
-              <button
-                className="inline-flex min-h-10 shrink-0 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-3 text-sm font-semibold whitespace-nowrap text-white disabled:opacity-50"
-                disabled={savingView || !savedViewLabel.trim()}
-                type="submit"
-              >
-                {savingView ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bookmark className="h-4 w-4" />}
-
-                {t("Save view")}
-              </button>
-            </div>
-          </form>
         </div>
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          {savedViews.map((view) => (
-            <span
-              className="inline-flex min-h-8 items-center rounded-md border"
-              key={view.id}
-            >
-              <button
-                className="h-full px-3 text-xs"
-                onClick={() => applySavedView(view)}
-                type="button"
-              >
-                {view.label}
-              </button>
-              <button
-                aria-label={t("Delete saved view {label}", { label: view.label })}
-                className="grid h-8 w-8 place-items-center border-l"
-                onClick={() => confirmDeleteSavedView(view)}
-                type="button"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            </span>
-          ))}
-          {savedViewsLoading ? (
-            <span className="text-xs text-[var(--ad-text-muted)]">
-
-              {t("Loading…")}
-            </span>
-          ) : null}
-          {!savedViewsLoading && !savedViews.length ? (
-            <span className="text-xs text-[var(--ad-text-muted)]">
-
-              {t("No saved views.")}
-            </span>
-          ) : null}
-          {filtered ? (
-            <button
-              className="min-h-8 rounded-md border px-3 text-xs"
-              onClick={() => navigate(defaultSupportQuery)}
-              type="button"
-            >
-
-              {t("Reset filters")}
-            </button>
-          ) : null}
-        </div>
-        {savedViewError ? (
-          <div className="mt-2">
-            <AuthorityRequestError
-              cause={savedViewErrorCause}
-              message={savedViewError}
-              onRetry={() => void loadSavedViews()}
-              requestKind="read"
-            />
-          </div>
-        ) : null}
+        <SavedViewsControl
+          scope={savedViewScope}
+          currentState={supportSavedState(query)}
+          selectedId={selectedSavedViewId}
+          onSelectedChange={setSelectedSavedViewId}
+          onApply={applySavedView}
+        />
+        {filtered ? <GhostButton onClick={resetFilters}>{t("Reset filters")}</GhostButton> : null}
       </section>
       {error ? (
         <AuthorityRequestError
@@ -506,7 +371,7 @@ export function SupportWorkspace({
         <EmptyState
           action={
             filtered ? (
-              <GhostButton onClick={() => navigate(defaultSupportQuery)}>
+              <GhostButton onClick={resetFilters}>
                 {t("Clear filters")}
               </GhostButton>
             ) : null
@@ -563,12 +428,6 @@ export function SupportWorkspace({
         <summary className="cursor-pointer text-sm font-semibold">{t("Product feedback")}</summary>
         <FeedbackQueue canWrite={canWrite} />
       </details>
-      {confirmation ? (
-        <ConfirmDialog
-          onClose={() => setConfirmation(null)}
-          spec={confirmation}
-        />
-      ) : null}
       {canWrite && commandConfirmation ? (
         <ConfirmDialog
           onClose={() => setCommandConfirmation((current) => current === commandConfirmation ? null : current)}
@@ -579,8 +438,8 @@ export function SupportWorkspace({
   );
 }
 
-function SupportConversationPanel({ ticketId, canWrite, canViewPlaintext, refreshRevision, onClose, onUpdated }: {
-  ticketId: string; canWrite: boolean; canViewPlaintext: boolean; refreshRevision: number; onClose: () => void; onUpdated: () => void;
+export function SupportConversationPanel({ ticketId, canWrite, canViewPlaintext, refreshRevision, onClose, onUpdated }: {
+  ticketId: string; canWrite: boolean; canViewPlaintext: boolean; refreshRevision: number; onClose?: () => void; onUpdated: () => void;
 }) {
   const { t, value } = useAdminI18n();
   const format = useAdminFormat();
@@ -598,7 +457,7 @@ function SupportConversationPanel({ ticketId, canWrite, canViewPlaintext, refres
     const request = gate.current.begin();
     setLoading(true); setError(null);
     try {
-      const result = await adminV2Request(`/api/v2/admin/support/requests/${encodeURIComponent(ticketId)}`, { schema: supportConversationResponseSchema });
+      const result = await adminV2Operation("GET /api/v2/admin/support/requests/:id", { path: { id: ticketId } });
       if (request.isCurrent()) setConversation(result.request);
     } catch (cause) { if (request.isCurrent()) setError(cause); }
     finally { if (request.isCurrent()) setLoading(false); }
@@ -646,7 +505,7 @@ function SupportConversationPanel({ ticketId, canWrite, canViewPlaintext, refres
     }
   }
   return <section className="space-y-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5" ref={section}>
-    <div className="flex items-center justify-between gap-3"><h2 className="font-semibold">{t("Support conversation")} · {ticketId}</h2><GhostButton onClick={onClose}>{t("Close conversation")}</GhostButton></div>
+    <div className="flex items-center justify-between gap-3"><h2 className="font-semibold">{t("Support conversation")} · {ticketId}</h2>{onClose ? <GhostButton onClick={onClose}>{t("Close conversation")}</GhostButton> : null}</div>
     {error ? <AuthorityRequestError cause={error} message={t("Support conversation could not load")} onRetry={() => void load()} requestKind="read" /> : null}
     {loading ? <p role="status">{t("Loading conversation…")}</p> : null}
     {conversation ? <>

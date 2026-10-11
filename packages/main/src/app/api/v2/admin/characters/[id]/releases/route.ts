@@ -5,7 +5,7 @@ import {
   actorWithPermission,
   jsonBody,
 } from "@/server/modules/admin-v2/shared/authority";
-import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
+import { adminMutationResultValidator, adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { requireMatchingProjectVersion } from "@/server/modules/admin-v2/characters/project-version";
@@ -36,7 +36,7 @@ export async function POST(
     const idempotencyKey = requireIdempotencyKey(request);
     const requestId =
       request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
-    return executeAtomicIdempotentMutation({
+    return executeAtomicIdempotentMutation({ validateResult: adminMutationResultValidator(request),
       environment: env.APP_ENV,
       actor,
       idempotencyKey,

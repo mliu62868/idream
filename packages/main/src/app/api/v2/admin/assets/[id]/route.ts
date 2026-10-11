@@ -1,4 +1,3 @@
-import type { AdminV2RequestBody } from "@/server/modules/admin-v2/shared/authority";
 import {
   getContentAsset,
   patchContentAsset,
@@ -11,9 +10,6 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 type Context = { params: Promise<{ id: string }> };
-type AssetPatch = AdminV2RequestBody<
-  "contentAssetPatchRequestSchema+idempotency-key"
->;
 
 export async function GET(request: Request, context: Context) {
   const { id } = await context.params;
@@ -26,7 +22,7 @@ export async function GET(request: Request, context: Context) {
 export async function PATCH(request: Request, context: Context) {
   const { id } = await context.params;
   return adminV2Route(request, () =>
-    executeAdminMutation<AssetPatch>(
+    executeAdminMutation(
       "PATCH /api/v2/admin/assets/:id",
       request,
       {

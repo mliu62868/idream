@@ -96,6 +96,17 @@ function uniqueBy<T>(items: readonly T[], key: (item: T) => string): T[] {
   return [...result.values()];
 }
 
+function groupBy<T>(items: readonly T[], key: (item: T) => string): Map<string, T[]> {
+  const groups = new Map<string, T[]>();
+  for (const item of items) {
+    const identity = key(item);
+    const rows = groups.get(identity);
+    if (rows) rows.push(item);
+    else groups.set(identity, [item]);
+  }
+  return groups;
+}
+
 export function deriveQualifiedConversationEpisodes(
   exchanges: readonly MetricChatExchange[],
 ): readonly QualifiedConversationEpisode[] {
@@ -260,6 +271,11 @@ export function evaluateCanonicalMetrics(
   const subscriptions = dataset.subscriptions.filter((row) => row.eligible && row.activeAt < asOf);
   const qualifiedEpisodes = deriveQualifiedConversationEpisodes(exchanges);
   const pairCohorts = [...firstEpisodeByPair(qualifiedEpisodes).values()];
+  // Index this evaluation's eligible facts once; cohort checks must not rescan other users.
+  const episodesByUser = groupBy(qualifiedEpisodes, (row) => row.userId);
+  const episodesByPair = groupBy(qualifiedEpisodes, (row) => `${row.userId}\u0000${row.characterId}`);
+  const deliveriesByUser = groupBy(deliveries, (row) => row.userId);
+  const subscriptionsByUser = groupBy(subscriptions, (row) => row.userId);
 
   function signupWindowMetric(
     days: number,
@@ -281,7 +297,10 @@ export function evaluateCanonicalMetrics(
       addDays(utcDayStart(cohort.productDay), endOffset + 1) <= asOf,
     );
     return rateMetric({
-      numerator: mature.filter((cohort) => episodeOnDay(qualifiedEpisodes, cohort, startOffset, endOffset)).length,
+      numerator: mature.filter((cohort) => episodeOnDay(
+        episodesByPair.get(`${cohort.userId}\u0000${cohort.characterId}`) ?? [],
+        cohort, startOffset, endOffset,
+      )).length,
       denominator: mature.length,
       immature: pairCohorts.length - mature.length,
       window,
@@ -290,30 +309,26 @@ export function evaluateCanonicalMetrics(
   }
 
   const chatActivation = signupWindowMetric(1, (signup, cutoff) =>
-    qualifiedEpisodes.some((episode) =>
-      episode.userId === signup.userId &&
+    (episodesByUser.get(signup.userId) ?? []).some((episode) =>
       episode.completedAt >= signup.occurredAt &&
       episode.completedAt <= cutoff,
     ), "signup_plus_24h");
 
   const relationshipActivation = signupWindowMetric(7, (signup, cutoff) => {
-    const userEpisodes = qualifiedEpisodes.filter((episode) =>
-      episode.userId === signup.userId &&
+    const userEpisodes = (episodesByUser.get(signup.userId) ?? []).filter((episode) =>
       episode.startedAt >= signup.occurredAt &&
       episode.startedAt <= cutoff,
     );
     return sustainedPairs(userEpisodes, signup.occurredAt, new Date(cutoff.getTime() + 1)).length > 0;
   }, "signup_plus_7d");
 
-  const generationActivation = signupWindowMetric(7, (signup, cutoff) => deliveries.some((delivery) =>
-    delivery.userId === signup.userId &&
+  const generationActivation = signupWindowMetric(7, (signup, cutoff) => (deliveriesByUser.get(signup.userId) ?? []).some((delivery) =>
     delivery.occurredAt >= signup.occurredAt &&
     delivery.occurredAt <= cutoff,
   ), "signup_plus_7d");
 
   function conversion(days: number) {
-    return signupWindowMetric(days, (signup, cutoff) => subscriptions.some((subscription) =>
-      subscription.userId === signup.userId &&
+    return signupWindowMetric(days, (signup, cutoff) => (subscriptionsByUser.get(signup.userId) ?? []).some((subscription) =>
       subscription.activeAt >= signup.occurredAt &&
       subscription.activeAt <= cutoff,
     ), `signup_plus_${days}d`);
@@ -332,8 +347,7 @@ export function evaluateCanonicalMetrics(
       .map((delivery) => delivery.userId),
   ]);
   const payingCoreUsers = new Set([...coreActivityUsers].filter((userId) =>
-    subscriptions.some((subscription) =>
-      subscription.userId === userId &&
+    (subscriptionsByUser.get(userId) ?? []).some((subscription) =>
       subscription.activeAt < asOf &&
       (subscription.endedAt === null || subscription.endedAt > calendarWeekStart),
     ),
@@ -341,8 +355,7 @@ export function evaluateCanonicalMetrics(
   const sustained = sustainedPairs(qualifiedEpisodes, rollingWindowStart, asOf);
   const sustainedUsers = new Set(sustained.map(({ first }) => first.userId));
   const payingSustainedUsers = new Set(sustained.filter(({ first, second }) =>
-    subscriptions.some((subscription) =>
-      subscription.userId === first.userId &&
+    (subscriptionsByUser.get(first.userId) ?? []).some((subscription) =>
       (isSubscriptionActiveAt(subscription, first.completedAt) || isSubscriptionActiveAt(subscription, second.completedAt)),
     ),
   ).map(({ first }) => first.userId));

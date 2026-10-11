@@ -102,11 +102,8 @@ export type AuthorityResource<T> = AuthorityState<T> & {
   readonly refreshError: string | null;
   /** 前台刷新，会进入 loading。 */
   readonly refresh: () => Promise<void>;
-  /**
-   * 本地改写已取到的数据；同时重置轮询节奏，让新一轮从最快档重新开始。
-   * 支持函数式更新，因为改写常发生在异步 handler 里，直接读闭包里的 data 会拿到旧值。
-   */
-  readonly setData: (next: T | ((current: T | null) => T)) => void;
+  /** 提交后的回读；保持当前画面，返回经过门控的投影，失败或被新查询取代时抛出。 */
+  readonly readback: () => Promise<T>;
 };
 
 /**
@@ -120,11 +117,17 @@ export function useAuthorityResource<T>(
 ): AuthorityResource<T> {
   const { key, enabled = true, load } = query;
 
-  const [state, setState] = useState<AuthorityState<T>>(createAuthorityState<T>);
-  const [refreshError, setRefreshError] = useState<string | null>(null);
+  type Snapshot = { key: string; state: AuthorityState<T>; refreshError: string | null };
+  const [snapshot, setSnapshot] = useState<Snapshot>(() => ({
+    key, state: createAuthorityState<T>(), refreshError: null,
+  }));
   // INTENT: useState 的惰性初始化保证门控只建一次，又不必在渲染期写 ref。
   const [gate] = useState(createLatestRequestGate);
-  const dataRef = useRef<T | null>(null);
+  const snapshotRef = useRef(snapshot);
+  const commit = useCallback((next: Snapshot) => {
+    snapshotRef.current = next;
+    setSnapshot(next);
+  }, []);
 
   // INTENT: 同 initialDelay —— 调用点内联写 pollWhile 是常态，当依赖会让轮询永远重置。
   const pollWhileRef = useRef(options.pollWhile);
@@ -138,40 +141,55 @@ export function useAuthorityResource<T>(
   const cadenceRef = useRef({ attempt: 0, consecutiveFailures: 0, error: null as string | null });
 
   const run = useCallback(
-    async (mode: "foreground" | "background"): Promise<string | null> => {
+    async (mode: "foreground" | "background"): Promise<T> => {
+      if (snapshotRef.current.key !== key) {
+        throw new DOMException("The resource query changed before this read.", "AbortError");
+      }
       const token = gate.begin();
+      const current = snapshotRef.current;
       if (mode === "foreground") {
-        setState((current) => authorityRequestStarted(current, key));
+        commit({ key, state: authorityRequestStarted(current.state, key), refreshError: null });
       }
       try {
         const data = await load();
-        if (!token.isCurrent()) return null;
-        dataRef.current = data;
-        setState(authorityRequestSucceeded(key, data));
-        setRefreshError(null);
-        return null;
+        if (!token.isCurrent()) {
+          throw new DOMException("A newer authority request replaced this read.", "AbortError");
+        }
+        commit({ key, state: authorityRequestSucceeded(key, data), refreshError: null });
+        return data;
       } catch (cause) {
         const message = cause instanceof Error
           ? cause.message
           : "The authoritative projection could not be loaded";
-        if (!token.isCurrent()) return null;
+        if (!token.isCurrent()) throw cause;
+        const latest = snapshotRef.current;
         if (mode === "foreground") {
-          setState((current) => authorityRequestFailed(current, key, message, cause));
+          commit({ key, state: authorityRequestFailed(latest.state, key, message, cause), refreshError: null });
         } else {
-          setRefreshError(message);
+          commit({ key, state: latest.key === key ? latest.state : createAuthorityState<T>(), refreshError: message });
         }
-        return message;
+        throw cause;
       }
     },
-    [gate, key, load],
+    [commit, gate, key, load],
   );
 
   const foreground = useCallback(async () => {
     cadenceRef.current = { attempt: 0, consecutiveFailures: 0, error: null };
-    await run("foreground");
+    // The foreground result is represented by the resource state. Mutation callers use readback.
+    await run("foreground").catch(() => undefined);
+  }, [run]);
+
+  const readback = useCallback(() => {
+    cadenceRef.current = { attempt: 0, consecutiveFailures: 0, error: null };
+    return run("background");
   }, [run]);
 
   useEffect(() => {
+    if (snapshotRef.current.key !== key) {
+      commit({ key, state: createAuthorityState<T>(), refreshError: null });
+      cadenceRef.current = { attempt: 0, consecutiveFailures: 0, error: null };
+    }
     if (!enabled) return;
     // SPEC: 首次取数推迟到挂载提交之后。
     // INTENT: 28 个调用点各自手写这段 setTimeout(…, 0) "挂载仪式"。它真正的作用是让
@@ -182,39 +200,45 @@ export function useAuthorityResource<T>(
       gate.invalidate();
       window.clearTimeout(timer);
     };
-  }, [enabled, foreground, gate]);
+  }, [commit, enabled, foreground, gate, key]);
 
   const decide = () =>
-    pollWhileRef.current?.({ data: dataRef.current, ...cadenceRef.current }) ?? null;
+    pollWhileRef.current?.({
+      data: snapshotRef.current.key === key ? snapshotRef.current.state.data : null,
+      ...cadenceRef.current,
+    }) ?? null;
 
   // SPEC: refreshedAt 进依赖，使循环在每次数据更新后重新武装并重问"还该不该轮询"。
   // INTENT: 这就是"终态 → 又活跃"（比如刚提交一个新 Run）能自动恢复轮询的原因；
   //         节奏计数器在 cadenceRef 里跨武装存活，所以自适应档位不会被重置。
   const pollTask = useCallback<PollingTask>(
     async (context) => {
-      const error = await run("background");
+      let error: string | null = null;
+      try {
+        await run("background");
+      } catch (cause) {
+        error = cause instanceof Error ? cause.message : "The authoritative projection could not be loaded";
+      }
+      // A newer read of the same resource may supersede this request and still
+      // fail. Only session cleanup stops polling; request failures follow its policy.
       if (context.cancelled) return null;
       const cadence = cadenceRef.current;
       cadence.attempt += 1;
       cadence.consecutiveFailures = error === null ? 0 : cadence.consecutiveFailures + 1;
       cadence.error = error;
-      return pollWhileRef.current?.({ data: dataRef.current, ...cadence }) ?? null;
+      return pollWhileRef.current?.({
+        data: snapshotRef.current.key === key ? snapshotRef.current.state.data : null,
+        ...cadence,
+      }) ?? null;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [run, state.refreshedAt],
+    [run, snapshot.state.refreshedAt],
   );
 
   const armed = enabled && Boolean(options.pollWhile);
   usePollingTask(armed ? pollTask : null, decide);
 
-  const setData = useCallback((next: T | ((current: T | null) => T)) => {
-    const resolved = typeof next === "function"
-      ? (next as (current: T | null) => T)(dataRef.current)
-      : next;
-    dataRef.current = resolved;
-    cadenceRef.current = { attempt: 0, consecutiveFailures: 0, error: null };
-    setState(authorityRequestSucceeded(key, resolved));
-  }, [key]);
-
-  return { ...state, refreshError, refresh: foreground, setData };
+  // A key change is visible during the first render, before its loading effect runs.
+  const visible = snapshot.key === key ? snapshot : { state: createAuthorityState<T>(), refreshError: null };
+  return { ...visible.state, refreshError: visible.refreshError, refresh: foreground, readback };
 }

@@ -201,6 +201,61 @@ describe("useAuthorityResource", () => {
     expect(latest!.refreshError).toBe("Projection unavailable");
   });
 
+  it("continues polling when a newer manual refresh supersedes a poll and then fails", async () => {
+    let releasePoll: ((row: Row) => void) | undefined;
+    let rejectRefresh: ((cause: Error) => void) | undefined;
+    const load = vi.fn<() => Promise<Row>>()
+      .mockResolvedValueOnce({ id: "run", state: "running" })
+      .mockImplementationOnce(() => new Promise((resolve) => { releasePoll = resolve; }))
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectRefresh = reject; }))
+      .mockResolvedValue({ id: "run", state: "succeeded" });
+    let latest: AuthorityResource<Row> | null = null;
+    await act(async () => root.render(<Harness queryKey="run" load={load}
+      pollWhile={({ data }) => data?.state === "running" ? 1_000 : null}
+      onState={(resource) => { latest = resource; }} />));
+    await advance(1);
+    await advance(1_000);
+    let refresh: Promise<void> | undefined;
+    await act(async () => { refresh = latest!.refresh(); });
+    await act(async () => { releasePoll!({ id: "run", state: "succeeded" }); });
+    // The superseded result cannot overwrite the last-good snapshot.
+    expect(latest!.data?.state).toBe("running");
+    await act(async () => { rejectRefresh!(new Error("Manual refresh failed")); await refresh; });
+    expect(latest!.error).toBe("Manual refresh failed");
+    await advance(1_000);
+    expect(load).toHaveBeenCalledTimes(4);
+    expect(latest!.data?.state).toBe("succeeded");
+    expect(latest!.error).toBeNull();
+    await advance(10_000);
+    expect(load).toHaveBeenCalledTimes(4);
+  });
+
+  it.each(["key change", "unmount"])("does not restart an obsolete polling session after %s", async (change) => {
+    let releasePoll: ((row: Row) => void) | undefined;
+    const load = vi.fn<() => Promise<Row>>()
+      .mockResolvedValueOnce({ id: "old", state: "running" })
+      .mockImplementationOnce(() => new Promise((resolve) => { releasePoll = resolve; }));
+    const nextLoad = vi.fn(async () => ({ id: "new", state: "succeeded" }));
+    let latest: AuthorityResource<Row> | null = null;
+    const render = (queryKey: string, read: () => Promise<Row>) => act(async () => root.render(
+      <Harness queryKey={queryKey} load={read}
+        pollWhile={({ data }) => data?.state === "running" ? 1_000 : null}
+        onState={(resource) => { latest = resource; }} />,
+    ));
+    await render("old", load);
+    await advance(1);
+    await advance(1_000);
+    if (change === "key change") await render("new", nextLoad);
+    else await act(async () => root.render(null));
+    await act(async () => { releasePoll!({ id: "old", state: "running" }); });
+    await advance(10_000);
+    expect(load).toHaveBeenCalledTimes(2);
+    if (change === "key change") {
+      expect(nextLoad).toHaveBeenCalledTimes(1);
+      expect(latest!.data?.id).toBe("new");
+    }
+  });
+
   it("discards data from a superseded query key", async () => {
     let releaseSecond: ((row: Row) => void) | null = null;
     const load = vi.fn((key: string) => async () =>
@@ -225,6 +280,7 @@ describe("useAuthorityResource", () => {
     expect(latest!).toMatchObject({ dataKey: "run-1", data: { id: "run-1" } });
 
     await render("run-2");
+    expect(latest!).toMatchObject({ data: null, dataKey: null, loading: true });
     await advance(1);
     // INVARIANT: 换查询后，在新数据到达前不得继续显示旧资源的数据。
     expect(latest!).toMatchObject({ data: null, dataKey: null, loading: true });
@@ -233,6 +289,58 @@ describe("useAuthorityResource", () => {
       releaseSecond?.({ id: "run-2", state: "queued" });
     });
     expect(latest!).toMatchObject({ dataKey: "run-2", data: { id: "run-2" } });
+  });
+
+  it("never gives a new query's polling policy the previous query's snapshot", async () => {
+    const seen: Array<string | null> = [];
+    let latest: AuthorityResource<Row> | null = null;
+    const oldLoad = async () => ({ id: "old", state: "succeeded" });
+    const nextLoad = async (): Promise<Row> => { throw new Error("next read failed"); };
+    const onState = (resource: AuthorityResource<Row>) => { latest = resource; };
+    await act(async () => root.render(<Harness queryKey="old" load={oldLoad} onState={onState} />));
+    await advance(1);
+    await act(async () => root.render(<Harness queryKey="next" load={nextLoad} onState={onState}
+      pollWhile={({ data }) => { seen.push(data?.id ?? null); return null; }} />));
+    await advance(1);
+    expect(latest!.data).toBeNull();
+    expect(latest!.error).toBe("next read failed");
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((id) => id === null)).toBe(true);
+  });
+
+  it("coordinates committed readback with an older in-flight refresh", async () => {
+    let releaseOlder: ((row: Row) => void) | undefined;
+    const load = vi.fn<() => Promise<Row>>()
+      .mockResolvedValueOnce({ id: "run", state: "initial" })
+      .mockImplementationOnce(() => new Promise((resolve) => { releaseOlder = resolve; }))
+      .mockResolvedValueOnce({ id: "run", state: "committed" });
+    let latest: AuthorityResource<Row> | null = null;
+    await act(async () => root.render(<Harness queryKey="run" load={load} onState={(r) => { latest = r; }} />));
+    await advance(1);
+    let refresh: Promise<void> | undefined;
+    await act(async () => { refresh = latest!.refresh(); });
+    await act(async () => {
+      expect(await latest!.readback()).toEqual({ id: "run", state: "committed" });
+    });
+    await act(async () => {
+      releaseOlder!({ id: "run", state: "before-commit" });
+      await refresh;
+    });
+    expect(latest!.data).toEqual({ id: "run", state: "committed" });
+  });
+
+  it("throws readback failures without discarding the last-good projection", async () => {
+    const cause = new Error("projection unavailable");
+    const load = vi.fn<() => Promise<Row>>()
+      .mockResolvedValueOnce({ id: "run", state: "running" })
+      .mockRejectedValueOnce(cause);
+    let latest: AuthorityResource<Row> | null = null;
+    await act(async () => root.render(<Harness queryKey="run" load={load} onState={(r) => { latest = r; }} />));
+    await advance(1);
+    await act(async () => { await expect(latest!.readback()).rejects.toBe(cause); });
+    expect(latest!.data?.id).toBe("run");
+    expect(latest!.error).toBeNull();
+    expect(latest!.refreshError).toBe(cause.message);
   });
 
   it("ignores a stale in-flight response that resolves after the query key changed", async () => {

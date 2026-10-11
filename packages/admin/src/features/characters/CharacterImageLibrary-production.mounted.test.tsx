@@ -24,8 +24,9 @@ vi.mock("@/components/admin/i18n", () => {
 import { CharacterImageLibrary } from "./CharacterImageLibrary";
 import { characterWorkspaceDetail } from "./character-workspace-fixture";
 
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
 it.each([false, true])("refreshes the library when a generated candidate is delivered (polling: %s)", async (polling) => {
-  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -62,10 +63,14 @@ it.each([false, true])("refreshes the library when a generated candidate is deli
       };
       return { items: [asset], nextCursor: null };
     }
-    if (path.includes("/creative/runs?")) return {
-      items: polling ? [{ ...run, id: "historical-completed-run", executionOutcome: "succeeded" }, run] : [run],
-      pageInfo: { endCursor: null, hasNextPage: false },
-    };
+    if (path.includes("/creative/runs?")) {
+      const query = new URL(path, "http://admin.test").searchParams;
+      const items = polling ? [{ ...run, id: "historical-completed-run", executionOutcome: "succeeded" }, run] : [run];
+      return {
+        items: items.filter(item => item.purpose === query.get("purpose") && (!query.has("executionOutcome") || item.executionOutcome === query.get("executionOutcome"))),
+        pageInfo: { endCursor: null, hasNextPage: false },
+      };
+    }
     if (path.endsWith(`/creative/runs/${run.id}`)) return {
       ...run, version: rejected ? 2 : 1,
       items: [{
@@ -134,7 +139,10 @@ it("uses an unknown request's recovery authority without declaring failure or al
   const root = createRoot(container);
   window.localStorage.clear();
   adminV2Request.mockReset();
-  const data = structuredClone(characterWorkspaceDetail({ visual: { identityBootstrap: { allowed: true } } }));
+  const data = structuredClone(characterWorkspaceDetail({
+    visual: { identityBootstrap: { allowed: true } },
+    journey: { assetPack: { draft: { missingPurposes: ["character_cover", "character_hero", "character_chat"] } } },
+  }));
   const operation = data.mediaOperations.operations.find((item) => item.modality === "image")!;
   operation.requestId = "unknown-image-job";
   operation.status = "unknown";
@@ -146,7 +154,13 @@ it("uses an unknown request's recovery authority without declaring failure or al
   };
   adminV2Request.mockImplementation(async (path: string) => {
     if (path.includes("/image-sources")) return { items: [], nextCursor: null };
-    if (path.includes("/creative/runs?")) return { items: [run], pageInfo: { endCursor: null, hasNextPage: false } };
+    if (path.includes("/creative/runs?")) {
+      const query = new URL(path, "http://admin.test").searchParams;
+      return {
+        items: [run].filter(item => item.purpose === query.get("purpose") && (!query.has("executionOutcome") || item.executionOutcome === query.get("executionOutcome"))),
+        pageInfo: { endCursor: null, hasNextPage: false },
+      };
+    }
     if (path.endsWith("/creative/runs/unknown-run")) return { ...run, version: 1, items: [{
       id: "unknown-item", ordinal: 0, version: 1, status: "running", executionState: "failed", asset: null,
       review: null, failure: null, identityReviewMode: "defines_identity", lineage: { requestId: operation.requestId },

@@ -312,6 +312,12 @@ export function CharacterVideoStudio({
   const [createIntent, setCreateIntent] = useState<DurableMutationIntent | null>(
     () => readActiveDurableMutationIntent({ scope: createIntentScope }),
   );
+  const createIntentRef = useRef(createIntent);
+  const verifiedMessage = useRef<string | null>(null);
+  const rememberCreateIntent = useCallback((intent: DurableMutationIntent | null) => {
+    createIntentRef.current = intent;
+    setCreateIntent(intent);
+  }, []);
   const runList = useAuthorityResource({
     key: data.character.id,
     enabled: permissions.read,
@@ -347,11 +353,19 @@ export function CharacterVideoStudio({
       path: { id: runId },
     });
     if (
+      detail.id !== runId ||
       detail.purpose !== "character_video" ||
       detail.target.type !== "character" ||
       detail.target.id !== data.character.id
     ) {
       throw new Error("The selected video Run does not belong to this Character.");
+    }
+    const intent = createIntentRef.current;
+    if (intent?.status === "committed_projection_pending" && intent.committedTargetId === runId) {
+      const request = savedCreateRequest(intent, data.character.id);
+      if (!request || !createdRunProjectionMatches(detail, request)) {
+        throw new Error("The exact created video Run is not present in the latest projection yet.");
+      }
     }
     return detail;
   }, [data.character.id]);
@@ -421,30 +435,30 @@ export function CharacterVideoStudio({
     });
   }, [onProjectReload, selectedRun]);
 
-  const { setData: setRunDetailData } = runDetail;
-  // SPEC: 恢复/校验路径已经拿到 detail 了，直接让它成为当前 Run。
-  // INTENT: 换 Run 时 setData 写在旧 key 上会立刻被新一轮取数覆盖成同一份数据，
-  //         所以两句都发无需分支；同 Run 时 setData 才是真正生效的那一句。
-  const showRun = useCallback((detail: CreativeRunDetail) => {
-    setSelectedRunId(detail.id);
-    setRunDetailData(detail);
-  }, [setRunDetailData]);
+  // The displayed authority must acknowledge the committed Run before its recovery
+  // receipt is released; a separate successful GET cannot unlock an empty screen.
+  useEffect(() => {
+    if (!selectedRun || createIntent?.status !== "committed_projection_pending" ||
+      createIntent.committedTargetId !== selectedRun.id) return;
+    const request = savedCreateRequest(createIntent, data.character.id);
+    if (!request || !createdRunProjectionMatches(selectedRun, request)) return;
+    const timer = window.setTimeout(() => {
+      if (createIntentRef.current !== createIntent) return;
+      clearDurableMutationIntent(createIntent);
+      rememberCreateIntent(null);
+      setError(null);
+      if (verifiedMessage.current) setMessage(verifiedMessage.current);
+      verifiedMessage.current = null;
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [createIntent, data.character.id, rememberCreateIntent, selectedRun]);
 
-  const verifyCreatedRun = async (
-    intent: DurableMutationIntent,
-    body: CharacterVideoCreateRequest,
-    runId: string,
-  ) => {
-    const detail = await fetchRunDetail(runId);
-    showRun(detail);
-    if (!createdRunProjectionMatches(detail, body)) {
-      throw new Error(
-        "The exact created video Run is not present in the latest projection yet.",
-      );
-    }
-    clearDurableMutationIntent(intent);
-    setCreateIntent(null);
-    return detail;
+  const verifyCreatedRun = async (runId: string, successMessage: string) => {
+    verifiedMessage.current = successMessage;
+    setSelectedRunId(runId);
+    // A new key loads through the resource effect. Retrying the same key needs
+    // an explicit readback, using the same validation and display commit path.
+    if (activeRunId === runId) await runDetail.readback();
   };
 
   const createVideo = async () => {
@@ -498,7 +512,7 @@ export function CharacterVideoStudio({
         });
         if (receipt.state === "cancelled") {
           clearDurableMutationIntent(intent);
-          setCreateIntent(null);
+          rememberCreateIntent(null);
           setMessage(
             "The old video request had no committed effect. A new request is now safe.",
           );
@@ -533,11 +547,9 @@ export function CharacterVideoStudio({
           committedTargetId: receipt.committedTargetId,
           requestSnapshot: body,
         });
-        setCreateIntent(intent);
-        await verifyCreatedRun(intent, body, receipt.committedTargetId);
-        setMessage(
-          "The committed video request was recovered and verified in its exact Run.",
-        );
+        rememberCreateIntent(intent);
+        await verifyCreatedRun(receipt.committedTargetId,
+          "The committed video request was recovered and verified in its exact Run.");
         return;
       }
       if (!body) {
@@ -549,10 +561,8 @@ export function CharacterVideoStudio({
         intent?.status === "committed_projection_pending" &&
         intent.committedTargetId
       ) {
-        await verifyCreatedRun(intent, body, intent.committedTargetId);
-        setMessage(
-          "The committed video Run is now visible. No duplicate request was submitted.",
-        );
+        await verifyCreatedRun(intent.committedTargetId,
+          "The committed video Run is now visible. No duplicate request was submitted.");
         return;
       }
       const signature = createRequestSignature(data.character.id, body);
@@ -563,7 +573,7 @@ export function CharacterVideoStudio({
           requestSnapshot: body,
         });
         intent = claim.intent;
-        setCreateIntent(intent);
+        rememberCreateIntent(intent);
         if (intent.signature !== signature) {
           setError(
             "Another tab already started a different video request. Resume its exact saved request first.",
@@ -572,24 +582,24 @@ export function CharacterVideoStudio({
         }
       }
       let currentIntent = intent;
+      const committedBody = body;
       const mutation = await runCommittedMutation({
         action: "Create Character video",
         commit: async () => {
           const result = await adminV2Operation("POST /api/v2/admin/creative/runs", {
             replayIdempotencyKey: currentIntent.idempotencyKey,
-            body,
+            body: committedBody,
           });
           currentIntent = updateDurableMutationIntent(currentIntent, {
             status: "committed_projection_pending",
             committedTargetId: result.batch.id,
           });
           intent = currentIntent;
-          setCreateIntent(currentIntent);
+          rememberCreateIntent(currentIntent);
           return result;
         },
       });
-      await verifyCreatedRun(currentIntent, body, mutation.result.batch.id);
-      setMessage(
+      await verifyCreatedRun(mutation.result.batch.id,
         mutation.result.replayed
           ? "The existing video Run was recovered. This page will keep its progress current."
           : "Video generation started. This page will keep the progress current.",
@@ -609,13 +619,13 @@ export function CharacterVideoStudio({
         );
       } else if (intent && isDefinitiveMutationRejection(cause)) {
         clearDurableMutationIntent(intent);
-        setCreateIntent(null);
+        rememberCreateIntent(null);
         setError(cause.message);
       } else if (intent) {
         const unknown = updateDurableMutationIntent(intent, {
           status: "outcome_unknown",
         });
-        setCreateIntent(unknown);
+        rememberCreateIntent(unknown);
         setError(
           "Video creation outcome is unknown. Resume video creation to replay the exact request with the same key.",
         );
@@ -675,10 +685,11 @@ export function CharacterVideoStudio({
   // SPEC: 写入失败优先，然后是详情取数失败（含轮询失败），最后才是列表失败。
   // INTENT: 三种失败原来共用一个 error，谁最后写谁显示。拆开之后要显式定一个次序：
   //         越靠近运营刚才那个动作的越先说。轮询失败当年就是红色报错，保持不变。
+  const detailError = runDetail.error ?? runDetail.refreshError;
   const shownError = error ??
-    runDetail.error ??
-    runDetail.refreshError ??
-    runList.error;
+    (detailError && createIntent?.status === "committed_projection_pending"
+      ? t("The video Run was committed, but exact projection verification is pending: {detail}", { detail: t(detailError) })
+      : detailError) ?? runList.error;
 
   if (!permissions.read) {
     return (

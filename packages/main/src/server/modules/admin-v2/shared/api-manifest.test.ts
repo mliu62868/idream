@@ -62,11 +62,7 @@ const ROUTE_SEAM_DEBT: ReadonlyMap<string, string> = new Map([
  * hand-parse cannot hide behind an old entry, and an entry that no longer offends must be
  * deleted rather than left to rot.
  */
-const MODULE_BODY_PARSE_DEBT: ReadonlyMap<string, string> = new Map([
-  // The console sends the version in the body only, so demanding If-Match here would 400
-  // every Saved View rename. See the SPEC note on `updateSavedViewV2`.
-  ["collaboration/service.ts", "PATCH /api/v2/admin/saved-views/:id"],
-]);
+const MODULE_BODY_PARSE_DEBT: ReadonlyMap<string, string> = new Map();
 
 /**
  * SPEC: modules allowed to hold a request contract schema as a symbol, and the operation
@@ -245,7 +241,7 @@ function collectSchemas(node: unknown, seen: Set<unknown>, depth = 0): void {
 /** The schema a contract ref names, or null when the shared registry does not own the name. */
 function schemaForRef(ref: string): unknown {
   const binding = resolveAdminV2Contract(ref);
-  return binding && binding.kind !== "pending" ? binding.schema : null;
+  return binding?.schema ?? null;
 }
 
 /**

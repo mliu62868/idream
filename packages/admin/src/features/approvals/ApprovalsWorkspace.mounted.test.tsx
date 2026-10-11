@@ -19,6 +19,8 @@ const { apiGet, apiWrite } = vi.hoisted(() => ({
 vi.mock("@/components/admin/api", () => ({ apiGet, apiWrite }));
 
 import { ToastProvider } from "@/components/admin/ui/Toast";
+import { AdminI18nProvider } from "@/components/admin/i18n";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { ApprovalsWorkspace } from "./ApprovalsWorkspace";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
@@ -63,16 +65,16 @@ describe("ApprovalsWorkspace decision evidence", () => {
     vi.restoreAllMocks();
   });
 
-  async function mount(items: unknown[], options: { canToggleEnforcement?: boolean; enforcementEnabled?: boolean } = {}) {
+  async function mount(items: unknown[], options: { canToggleEnforcement?: boolean; enforcementEnabled?: boolean; canReview?: boolean; locale?: "zh" | "en" } = {}) {
     apiGet.mockImplementation(async () => {
       reads += 1;
       return { items, pageInfo: { endCursor: null, hasNextPage: false }, enforcementEnabled: options.enforcementEnabled };
     });
     await act(async () => {
       root.render(
-        <ToastProvider>
-          <ApprovalsWorkspace canReview canToggleEnforcement={options.canToggleEnforcement} />
-        </ToastProvider>,
+        <AdminI18nProvider locale={options.locale ?? "en"}><ToastProvider>
+          <ApprovalsWorkspace canReview={options.canReview ?? true} canToggleEnforcement={options.canToggleEnforcement} />
+        </ToastProvider></AdminI18nProvider>,
       );
     });
     await waitUntil(() => reads >= 1 && container.textContent !== "");
@@ -153,6 +155,41 @@ describe("ApprovalsWorkspace decision evidence", () => {
     expect(container.querySelector("tbody")?.textContent).toContain("approved");
     expect(container.textContent).not.toContain("Awaiting decision");
     expect(findButton("Approve", container)).toBeNull();
+  });
+
+  it.each(["en", "zh"] as const)("explains legacy approval recovery in %s and returns to the live action without cloning payload", async locale => {
+    await mount([{ ...pendingApproval, action: "billing.ledger.adjust", permissionKey: "billing.ledger.adjust" }], { locale });
+    apiWrite.mockRejectedValue(new AdminV2RequestError("Approval is unbound, expired, or invalid; request a new approval", 403, "forbidden", { recovery: "request_new_approval", action: "billing.ledger.adjust", targetId: "user-7" }));
+    await click(findButton(locale === "zh" ? "通过" : "Approve", container));
+    const dialog = await waitForDialog();
+    const inputs = dialog.querySelectorAll<HTMLInputElement>("input");
+    await enter(inputs[0]!, "Review the exact current adjustment");
+    await enter(inputs[1]!, approvalId);
+    await click(findButton(locale === "zh" ? "确认" : "Confirm", dialog));
+    await waitUntil(() => dialog.querySelector('[role="alert"]') !== null);
+    expect(dialog.textContent).toContain(locale === "zh" ? "此审批需要重新申请。" : "This approval must be requested again.");
+    expect(dialog.textContent).not.toContain("Your account does not hold the permission");
+    const link = dialog.querySelector<HTMLAnchorElement>('a[href="/admin/customer-ops/billing?billingView=ledger&billingSearch=user-7#billing-adjustment-title"]');
+    expect(link).not.toBeNull();
+    expect(link!.textContent).toBe(locale === "zh" ? "返回原操作申请审批" : "Open action to request approval");
+    expect(apiWrite.mock.calls).toEqual([[`/api/v2/admin/approvals/${approvalId}/approve`, "POST", { reason: "Review the exact current adjustment", confirmation: approvalId }]]);
+    expect(container.textContent).toContain(approvalId);
+    expect(container.textContent).not.toContain(locale === "zh" ? "已批准" : "Approved approval-1");
+  });
+
+  it("keeps all known original actions reachable on historical rows without granting review", async () => {
+    const actions = [
+      { action: "billing.ledger.adjust", targetType: "user", targetId: "user-7", href: "/admin/customer-ops/billing?billingView=ledger&billingSearch=user-7#billing-adjustment-title" },
+      { action: "config.pricing.publish", targetType: "pricing_rule", targetId: "rule/7", href: "/admin/growth/offers?view=pricing&pricingSearch=rule%2F7" },
+      { action: "config.coin_offer.publish", targetType: "coin_offer", targetId: "offer-7", href: "/admin/growth/offers?view=pricing#coin-offers" },
+      { action: "promo.redeem_code.create", targetType: "redeem_code", targetId: "redeem_code", href: "/admin/growth/offers?view=promo" },
+      { action: "config.feature_flag.write", targetType: "feature_flag", targetId: "dual_approval_enforced", href: "/admin/system/approvals#approval-enforcement" },
+    ];
+    await mount(actions.map((entry, index) => ({ ...pendingApproval, ...entry, id: `historic-${index}`, status: index % 2 ? "rejected" : "approved" })), { canReview: false });
+    for (const entry of actions) expect([...container.querySelectorAll("a")].some(link => link.getAttribute("href") === entry.href && link.textContent === "Open action to request approval")).toBe(true);
+    expect(findButton("Approve", container)).toBeNull();
+    expect(findButton("Reject", container)).toBeNull();
+    expect(apiWrite).not.toHaveBeenCalled();
   });
 
   it("does not call a canceled request awaiting a decision", async () => {

@@ -28,7 +28,7 @@ describe("admin proxy 404 authority", () => {
   it("lets every published destination through untouched", () => {
     for (const item of ALL_SECTION_ITEMS) {
       expect(statusOf(item.href), item.href).toBe(200);
-      if (item.legacyHref) expect(statusOf(item.legacyHref), item.legacyHref).toBe(200);
+      expect(statusOf(`/admin/${item.id}`), item.id).toBe(200);
     }
   });
 

@@ -8,6 +8,9 @@
 // "Check backend health — needs engineering"、"Unknown error"、
 // "Share the error code with engineering"。改 failureReasons.ts 的 title/hint 时同步改这里。
 export const adminZhPlatformOps: Record<string, string> = {
+  "Search model profiles": "搜索模型档案",
+  "Mitigation command": "处置命令",
+  "Mitigation plan accepted": "处置方案已受理",
   "The start of the window must not be after the end.": "开始时间不能晚于结束时间。",
   "Selected test profile is unavailable": "已选择的测试配置不可用",
   "Selected test profile is unavailable. Choose an available profile before running samples.": "已选择的测试配置不可用。请先选择可用配置，再运行样本。",

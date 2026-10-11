@@ -1,6 +1,5 @@
 import {
   incidentCorrelationOutboxReplayResultSchema,
-  type IncidentCorrelationOutboxReplayRequest,
 } from "@idream/shared/admin";
 import { replayFailedIncidentCorrelationOutboxEvents } from "@/server/modules/admin-v2/incidents/correlation-outbox";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
@@ -12,7 +11,7 @@ export const runtime = "nodejs";
 
 export function POST(request: Request) {
   return adminV2Route(request, () =>
-    executeAdminMutation<IncidentCorrelationOutboxReplayRequest>(
+    executeAdminMutation(
       "POST /api/v2/admin/incidents/correlation-outbox/commands/replay",
       request,
       {

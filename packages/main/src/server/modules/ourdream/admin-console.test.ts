@@ -17,10 +17,7 @@ import { POST as createCreativeRunV2 } from "@/app/api/v2/admin/creative/runs/ro
 import { POST as adminBillingAdjustmentV2 } from "@/app/api/v2/admin/billing/adjustments/route";
 import { GET as adminBillingLedgerV2 } from "@/app/api/v2/admin/billing/ledger/route";
 import { GET as adminDashboardV2 } from "@/app/api/v2/admin/dashboard/route";
-import {
-  creativeRunDTOs,
-  creativeRunInclude,
-} from "@/server/modules/admin-v2/creative/run-projection";
+import { getCreativeRunDetail } from "@/server/modules/admin-v2/creative/run-read";
 import { adminV2 as adminV2Api } from "@/server/test/admin-v2-http";
 import {
   characterVisualProfileSnapshotHash,
@@ -159,19 +156,13 @@ async function createCreativeRunThroughV2(input: {
   };
 }
 
-/**
- * SPEC: the operator-visible Creative Run projection, read straight from its authority.
- * INTENT: this used to arrive over the v1 production-batch detail endpoint, a
- * read-only duplicate of `GET /api/v2/admin/creative/runs`. The endpoint is gone with v1; the
- * projection it served is not, so the assertions below keep reading the same shape.
- */
+/** Test both persisted aggregates and the actual v2 detail projection. */
 async function readCreativeRunProjection(runId: string) {
   const batch = await prisma.contentProductionBatch.findUniqueOrThrow({
     where: { id: runId },
-    include: creativeRunInclude,
   });
-  const [projection] = await creativeRunDTOs([batch]);
-  return projection!;
+  const detail = await getCreativeRunDetail({ runId, actor: { id: "test-projection", role: "admin" } });
+  return { ...batch, items: detail.items, state: detail };
 }
 
 async function seedEditorialPublicCharacterAuthority(input: {

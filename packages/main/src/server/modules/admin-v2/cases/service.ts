@@ -266,7 +266,7 @@ export async function ensureSupportCaseForRequest(db: Db, request: SupportReques
 export async function synchronizeSupportCaseFromRequest(
   db: Db,
   request: SupportRequest,
-  input: { readonly statusChanged: boolean; readonly priorityChanged: boolean },
+  input: { readonly statusChanged: boolean; readonly priorityChanged: boolean; readonly reason?: string },
 ) {
   const current = await ensureSupportCaseForRequest(db, request);
   if (!current) throw Errors.internal("Support Case is missing");
@@ -327,7 +327,9 @@ export async function synchronizeSupportCaseFromRequest(
             state: "overridden",
             evidenceRefs: [resolutionEvidenceId],
             verifiedAt: (request.resolvedAt ?? request.updatedAt).toISOString(),
-            overrideReason: "Legacy Support Request update does not include system verification.",
+            overrideReason: request.resolutionNotes?.trim() || input.reason?.trim() ||
+              "Operator manually resolved this Support Request; no system verification was claimed.",
+            method: "manual_attestation",
           },
         })
       : toInputJson({ ...baseResolution, severity: caseSeverityForPriority(priority), category: request.category }),

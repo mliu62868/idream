@@ -407,7 +407,7 @@ export function CharacterCreateWizard({
               code: "character_wizard_started",
               summary: "Create a server-authoritative Character draft",
             },
-            confirmation: "CREATE CHARACTER",
+            confirmation: "CREATE CHARACTER" as const,
           };
           const recoveredRequest = recoveredCreateRequest;
           if (recoveredRequest && !recoveredRequest.success) {

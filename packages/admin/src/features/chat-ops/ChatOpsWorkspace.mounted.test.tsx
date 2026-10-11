@@ -268,6 +268,31 @@ describe("ChatOpsWorkspace Main to Chat failed-delivery operations", () => {
     expect(document.body.textContent).toContain("migration-command");
   });
 
+  it("removes previous-query session actions immediately and keeps them absent if the next query fails", async () => {
+    let rejectNext: (reason: Error) => void = () => undefined;
+    apiGet.mockImplementation(async (path: string) => {
+      if (!path.includes("/chat/sessions?")) return chatReadFixtures.get(path) ?? { configured: true, items: [], pageInfo };
+      if (new URL(path, "http://admin.test").searchParams.get("characterId") === "character-2") {
+        return new Promise((_resolve, reject) => { rejectNext = reject; });
+      }
+      return { configured: true, pageInfo, items: [{ id: "session-old", characterId: "character-1", status: "active",
+        releasePin: { contentVersionId: "old-content", releaseId: "old-release", schemaVersion: 2, state: "legacy",
+          recommendedTarget: { characterReleaseId: "new-release", characterContentVersionId: "new-content", schemaVersion: 3, entityVersion: 7 } },
+      }] };
+    });
+    await act(async () => root.render(<ToastProvider><ChatOpsWorkspace canRead canMigrateSessionRelease /></ToastProvider>));
+    await waitUntil(() => Boolean(findButton("Migrate 1 pins", container)));
+    await enter([...container.querySelectorAll("label")].find((label) => label.textContent === "Character ID")?.querySelector("input") ?? null, "character-2");
+    await click(findButton("Filter Chat Ops", container));
+    expect(findButton("Migrate 1 pins", container)).toBeNull();
+    expect(container.textContent).not.toContain("session-old");
+    await waitUntil(() => apiGet.mock.calls.some(([path]) => String(path).includes("characterId=character-2")));
+    await act(async () => rejectNext(new Error("Second query unavailable")));
+    expect(container.textContent).toContain("Second query unavailable");
+    expect(findButton("Migrate 1 pins", container)).toBeNull();
+    expect(adminV2Operation).not.toHaveBeenCalled();
+  });
+
   it("does not claim connected while an authority has not answered", async () => {
     let finishProviderRead: (value: unknown) => void = () => undefined;
     apiGet.mockImplementation((path: string) => path.endsWith("/provider-health")
