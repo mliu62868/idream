@@ -7,15 +7,17 @@ import type {
 } from "./contracts";
 
 export type TerminalValidationCode =
+  | "model_output_exhausted"
+  | "empty_model_response"
   | "unexecuted_tool_payload"
   | "image_reply_language_mismatch"
   | "image_reply_exposed_process";
 
 export interface TerminalCandidateFacts {
   attemptId: string;
-  /** 组装好的终态 assistant 正文；DSH 没给出终态消息时为 undefined。 */
+  /** 组装好的终态 assistant 正文；Pi 没给出终态消息时为 undefined。 */
   assistantContent: string | undefined;
-  /** DSH finish chunk 的 reason.kind；没有 finish chunk 时为 undefined。 */
+  /** 宿主归一化后的 Pi finish reason；没有终态 reason 时为 undefined。 */
   finishReasonKind: string | undefined;
   /** 本轮用户原话，用于图片回复的书写体系判定。 */
   currentUserText: string;
@@ -47,8 +49,9 @@ export function evaluateTerminalCandidate(
     return { accepted: false, message: "turn stopped without a terminal assistant candidate" };
   }
   const content = facts.assistantContent;
-  if (!content) {
-    return { accepted: false, message: "terminal assistant candidate is empty" };
+  if (!content.trim()) {
+    return { accepted: false, code: facts.finishReasonKind === "max-tokens" ? "model_output_exhausted" : "empty_model_response",
+      message: "terminal assistant candidate is empty" };
   }
   if (
     hasUnexecutedMemorySearchPayload(content) ||

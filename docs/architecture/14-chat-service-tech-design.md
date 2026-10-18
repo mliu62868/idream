@@ -7,7 +7,7 @@
 - Main PostgreSQL 是产品聊天唯一权威：`ChatSession`、`Turn`、附件、Scene、额度、计费和生成结算。
 - 一个 `Turn` 恰好是一条用户消息和一条被选中的最终 assistant 回复。重试/再生成增加 `attempt`，不制造第二份产品回复。
 - Chat 服务不连接 PostgreSQL。它只在 `CHAT_FS_ROOT` 保存未决恢复证据和有界失败 trace。
-- DSH/official igrep 是 `packages/chat/src/agent-runtime` 的内部实现，与 Chat 同进程、同生命周期。`SOUL.md` 不是独立产品权威。
+- Pi/igrep 是 `packages/chat/src/agent-runtime` 的内部实现，与 Chat 同进程、同生命周期。`SOUL.md` 不是独立产品权威。
 - Main 在调用 Chat 前先提交 Turn，并在同一事务内冻结 ContentVersion、Release、VisualProfile、上下文与 Scene 执行快照；重试不得从可变 Session 重算。
 - Chat 的终态必须先得到 Main 的持久 ACK，之后才能发 SSE `done`；成功 run 随即清理。
 - pending Turn 是可恢复的 admission intent；带退避的租约调度保证 Chat 不可用时不丢 Turn，也不让队首坏 Turn 饿死后续 Turn。
@@ -21,7 +21,7 @@
 | ChatSession、Turn、Scene、产品消息列表 | Main PostgreSQL |
 | 额度、DreamCoin、Generation Request/Attempt/Artifact/Delivery/Settlement | Main PostgreSQL |
 | 未决 proposal 与 7 天失败 trace | `CHAT_FS_ROOT/runs/` |
-| 通用 companion memory | DSH official igrep workspace |
+| 通用 companion memory | official igrep workspace |
 | token 流 | Redis SSE 缓冲；不是终态权威 |
 
 Main 与 Chat 同时保存数据并不重复：Main 保存产品事实，Chat 只保存尚未判定的恢复输入或短期诊断事实。两者不能互相回填为另一类权威。
@@ -34,17 +34,17 @@ Chat 只构造一条 system message，层级固定：
 2. `buildCompanionRuntimeAuthority`：当前 Turn 的 memory、tool、事实与输出约束。
 3. immutable compiled Character Soul：角色身份、声音和角色特有互动方式。
 
-opening、历史 Turn、检索到的 memory notes、Scene 与时间是可变事实，作为紧邻当前用户消息的 replay/plugin messages 输入。DSH 官方 igrep 的 resident profile 经 `igrep_memory_profile` 变量进入运行时 system section，不属于不可变 Character Soul。
+opening、历史 Turn、检索到的 memory notes、Scene 与时间是可变事实，作为紧邻当前用户消息的 replay/plugin messages 输入。igrep 的 resident profile 经宿主公共上下文投影进入运行时，不属于不可变 Character Soul。
 
-`PreparedTurn.trace` 固定 Product Contract 版本、Chat 编译的产品 system SHA-256 与 Soul fingerprint；Main terminal 的 `preparedSystemPromptDigest` 保留该编译摘要。实际 provider 请求边界另记录 `modelRequests`：每次物理请求的完整正文摘要、最终 system 摘要与输入估算；`prompt.systemPromptDigest` 对应最后一次实际模型请求。图片的本地确认步骤不制造模型请求或用量。预算在该边界重新检查，包含 DSH 动态记忆、工具结果及序列化工具 schema；超预算停止请求，不能静默裁掉固定 Soul 或当前用户输入。输入估算沿用字符启发式，不等同于 provider tokenizer 的精确计数。
+`PreparedTurn.trace` 固定 Product Contract 版本、Chat 编译的产品 system SHA-256 与 Soul fingerprint；Main terminal 的 `preparedSystemPromptDigest` 保留该编译摘要。实际 provider 请求边界另记录 `modelRequests`：每次物理请求的完整正文摘要、最终 system 摘要与输入估算；`prompt.systemPromptDigest` 对应最后一次实际模型请求。图片的本地确认步骤不制造模型请求或用量。预算在该边界重新检查，包含 Pi/igrep 动态记忆、工具结果及序列化工具 schema；超预算停止请求，不能静默裁掉固定 Soul 或当前用户输入。输入估算沿用字符启发式，不等同于 provider tokenizer 的精确计数。
 
 Product Contract 决定「Chat 交互共同遵循什么产品行为」，Soul 决定「此刻由谁、用什么声音表达」。Soul 不能覆盖 Product Contract 或 Runtime Authority，Runtime 也不能重写 Soul 的角色事实。
 
 记忆维护使用独立的确定性采样（temperature 0、top_p 1、presence_penalty 0），经官方 `IGREP_LLM_EXTRA_BODY` 交给子进程，并进入 composition digest；启动时覆盖环境中的同名任意请求覆写。角色对话继续使用原 `CHAT_MODEL_*` 采样。维护返回 deferred 或非法操作时仍保留待处理数据，full readiness 仍须验证 pending 为 0。
 
-普通 Agent 在 DSH 工具注册层继承 `memory_search`；普通及私密 Agent 都可使用 `igrep_search`、`session_recall` 和已配置 provider 的 `igrep_web_search`。本地检索限定于该 attempt 的 Character、Scene 和 Main 授权的对话快照，会话召回限定于该运行退出上下文的原始消息及工具结果。私密模式不加载跨会话记忆。官方插件随 `memory: true` 注册的 `memory_record` 不进入模型 schema，也不能执行，Main 已提交 Turn 投影仍是长期记忆唯一写入路径。图片工具由本轮不可变授权在 Agent scope 注册。记忆回答优先采用用户原始陈述，完整保留被问及的名称、标识、数字和日期；助手的简写不能替换用户事实。
+普通 Agent 通过 Pi 公共工具 API 注册只读 `memory_search`；普通及私密 Agent 都可使用 `igrep_search`、`session_recall` 和已配置 provider 的 `igrep_web_search`。本地检索限定于该 attempt 的 Character、Scene 和 Main 授权的对话快照，会话召回限定于该运行退出上下文的原始消息及工具结果。私密模式不加载跨会话记忆。`memory_record` 不进入模型 schema，也不能执行，Main 已提交 Turn 投影仍是长期记忆唯一写入路径。图片工具由本轮不可变授权在 Agent scope 注册。记忆回答优先采用用户原始陈述，完整保留被问及的名称、标识、数字和日期；助手的简写不能替换用户事实。
 
-上下文压力与 provider overflow 由 DSH 官方 token meter 和 igrep compaction 后端处理，不能在 transport 中静默丢弃历史。退出输入窗口的 Main 快照仍作为完整 replay seed 提供，官方 archive 在 surface replacement 后保留原文并给出 `seq:N#K` 索引。宿主提供只覆盖当前 attempt 的异步 session query；不增加持久 DSH session log。召回的角色发言按原始事件绑定 speaker 元数据，经 DSH additionalContexts 一并交付，不改动官方分页与原文。固定 Scene、偏好、预召回与当前用户请求在模型请求边界重新投影，继续作为 plugin/current_user 消息而非 system 事实；摘要不具备新授权。每次实际模型请求的 usage 独立计入终态，包括被拒绝的摘要与兼容重试；任何回执缺失时总量保持未知。图片编辑回退也读取本轮固定请求，不能因压缩移除 surface 消息而丢失原始编辑指令。attempt 结束删除官方 archive；Chat 启动接纳请求前，另按官方 owner 标记清理本机已退出进程的 archive，保留活进程、外机或所有者不可验证的目录。full readiness 以真实插件和 CLI、受控模型响应验证压缩、群聊身份与原文召回、本地检索、私密工具隔离与清理，并独立执行真实 provider warmup 和记忆生命周期验证。
+上下文压力与 provider overflow 由 Pi 公共 compaction 生命周期处理，不能在 transport 中静默丢弃历史。每次 attempt 使用独立 `MemoryStorage`；它不跨进程持久化，恢复仍由 Main 固定快照与既有 AgentRun proposal 协议负责。Main seed/omitted 原文和 Pi 公共 entries/contributions 构成只读召回投影，稳定 ID 绑定 attempt、source、block 与 byte offset，保留原始 UTF-8 字节及 speaker。`session_recall` 的 query 使用公共 igrep JSONL `ultra` 搜索，结果仅能按合法 ID 回查不可变原文，不能把摘要或工具自身输出当成来源。固定 Scene、偏好、预召回与当前用户请求在模型请求边界重新投影，摘要不具备新授权。每次物理模型请求（含摘要）分别记录原始 usage 回执，缺失则总量保持未知。attempt 结束释放内存状态与临时副本；启动仅清理已证明本机 owner 退出的旧 DSH archive。full readiness 以真实 Pi 公共 API 和 CLI、受控模型响应验证压缩、群聊身份、原文召回、本地检索、私密隔离与清理，并独立执行真实 provider warmup 和记忆生命周期验证。精确实现边界见 [ADR-21](21-companion-chat-deep-runtime.md)。
 
 编辑已有图片时，Main 从已验证的 source image 编译局部编辑指令，不再套用新建肖像提示词。Gen 的 Qwen multi-reference workflow v3 将源图接入 image1、身份图接入 image2，并使用编码器的 Picture 1 / Picture 2 标签明确编辑目标；身份图不能替换源图的构图、姿势和背景。
 
@@ -58,7 +58,7 @@ Browser
   -> Main: sign immutable execution snapshot
   -> Chat POST /internal/agent-runs
   -> Chat: atomically persist input.json
-  -> DSH run + tool effects
+  -> Pi run + tool effects
   -> Chat: atomically persist proposal.json
   -> Chat: POST terminal candidate to Main
   -> Main: CAS exact turnId + assistantMessageId + attempt
@@ -106,24 +106,24 @@ CHAT_FS_ROOT/
 Agent 工具不能直接扣钱，也不能在 provider 成功后用普通 callback 猜测结算。
 
 ```text
-DSH tool_call
+Pi tool_call
   -> Chat ToolEffectPort
   -> Main validates exact active Turn attempt + callId
   -> Main creates/reserves Generation Request
   -> Gen executes provider
   -> Main delivery success settles reservation
   -> Main terminal failure releases/refunds reservation
-  -> Chat observes tool result and continues DSH
+  -> Chat observes tool result and continues Pi
 ```
 
 ToolEffect 明确携带作用域，不能把调用语义编码进模型生成的 `callId`。普通模型 tool call 使用 `effectScope=attempt`，幂等键由 `turnId + attempt + toolCallId` 决定，参数 digest 不同则冲突。`PreparedTurn.requiredAction` 表示产品已经接受的明确用户图片意图，使用 `effectScope=turn_action`，效果身份仅由 `turnId + tool name` 决定：regenerate 即使让 Agent 写出不同的具体场景，也只把首次接受的同一附件重绑到当前 attempt，不创建第二个 Generation Job、不改写已经持久化的生成控制，也不重复扣费。`intent.requestedNudity` 是独立的结构化用户边界，由 Main 编译进最终生图 prompt；Agent 负责具体场景，不负责重建或猜测这条边界。当前 Chat 工具只有图片生成与编辑，因此实现只覆盖 image。将来真实 video tool 出现时复用同一端口和既有 Generation 生命周期，不增加通用 hook 框架。
 
-明确图片意图在模型运行前由 `PreparedTurn` 固化授权；DSH Agent 编写画面描述，通过唯一匹配工具向 Main 预留 ToolEffect。Main 接受动作后，Chat 使用 DSH 官方 `llm/stream` waterfall 提供版本化确定性确认，不再请求 Caption 模型；DSH 继续记录工具结果并正常完成 `agent/turn-stopping`。确认语言由当前消息脚本和冻结的签名用户 locale 决定：
+明确图片意图在模型运行前由 `PreparedTurn` 固化授权；Pi Agent 编写画面描述，通过唯一匹配工具向 Main 预留 ToolEffect。Main 接受动作后，Chat 保留版本化动作确认与工具结果，并通过 Pi 公共生命周期完成终态。确认语言由当前消息脚本和冻结的签名用户 locale 决定：
 
 - 确认文案一次性进入 SSE 和 Main terminal，不能被 Character Soul 改写成拒绝、交换条件或拖延；
 - 附件状态独立拥有 `requesting/accepted/queued/running/completed/failed` 交付事实，文案不虚构图片已完成；
 - Main ACK 不确定时，Chat 使用完全相同的 effect identity 有界重试并对账；
-- terminal evidence 记录 Product Contract、PreparedTurn、system prompt digest、Soul fingerprint、ToolEffect identity，以及 `acknowledgement.version/locale`。附件表持有 attachment/job/media 交付事实；不能用 DSH 的 `toolCalls=0` 冒充没有产品动作。`execution.steps` 包含本地确认步骤，模型用量只累计实际 provider 步骤。
+- terminal evidence 记录 Product Contract、PreparedTurn、system prompt digest、Soul fingerprint、ToolEffect identity，以及 `acknowledgement.version/locale`。附件表持有 attachment/job/media 交付事实；不能用 内核的 `toolCalls=0` 冒充没有产品动作。`execution.steps` 包含本地确认步骤，模型用量只累计实际 provider 步骤。
 
 ## 6. API
 
@@ -169,11 +169,11 @@ Chat 到 Main：
 
 ## 8. Readiness
 
-Chat admission health 证明文件根、Redis、DSH/igrep 基础依赖可用；`/readyz?full=1` 另行认证精确版本、profile、provider/model、工具桥、rebuild 与隔离。green 结果只有 5 秒 TTL；旧的 green 不能永久覆盖后续依赖故障。
+Chat admission health 证明文件根、Redis、Pi/igrep 基础依赖可用；`/readyz?full=1` 另行认证精确版本、profile、provider/model、工具桥、rebuild 与隔离。green 结果只有 5 秒 TTL；旧的 green 不能永久覆盖后续依赖故障。
 
 ## 9. 账号删除
 
-Main 保留 30 天 grace period。到期后 Main 投递精确删除请求；Chat 先写 User admission tombstone，再幂等删除该用户的 AgentRun 和 DSH workspace，写本地无 PII 回执，再同步提交 Main completion。completion 可在精确 outbox request 的 `processing` 租约内回调；Main 随后删除 Blob 和产品数据库事实。
+Main 保留 30 天 grace period。到期后 Main 投递精确删除请求；Chat 先写 User admission tombstone，再幂等删除该用户的 AgentRun 和 igrep workspace，写本地无 PII 回执，再同步提交 Main completion。completion 可在精确 outbox request 的 `processing` 租约内回调；Main 随后删除 Blob 和产品数据库事实。
 
 ## 10. 运行配置
 
@@ -189,9 +189,9 @@ CHAT_PORT=3100
 CHAT_FS_ROOT=/absolute/durable/path
 CHAT_REDIS_URL=redis://...
 MAIN_WEB_URL=http://127.0.0.1:3000
-DSH_IGREP_PLUGIN_URL=file:///absolute/path/to/plugin.js
-DSH_IGREP_CANONICAL_ROOT=/absolute/durable/memory
-DSH_IGREP_PRIVATE_ROOT=/absolute/private/runtime
+PI_IGREP_COMMAND=igrep
+PI_IGREP_CANONICAL_ROOT=/absolute/durable/memory
+PI_IGREP_PRIVATE_ROOT=/absolute/private/runtime
 CHAT_MODEL_PROVIDER=openai
 CHAT_MODEL_BASE_URL=http://127.0.0.1:8080/v1
 CHAT_MODEL_NAME=...

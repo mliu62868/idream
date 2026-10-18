@@ -40,7 +40,7 @@ afterEach(async () => {
 describe("AgentRun local authority", () => {
   it("pins the configured deadline across duplicate admissions and recovery", async () => {
     const { root, store } = await fixture();
-    vi.stubEnv("DSH_AGENT_DEADLINE_MS", "600000");
+    vi.stubEnv("PI_AGENT_DEADLINE_MS", "600000");
     const input: AgentRunInput = {
       schemaVersion: 1, admittedAt: "2026-09-30T00:00:00.000Z",
       snapshot: {
@@ -59,7 +59,7 @@ describe("AgentRun local authority", () => {
       },
     };
     await expect(store.admitAgentRun(input)).resolves.toMatchObject({ deadlineAt: "2026-09-30T00:10:00.000Z" });
-    vi.stubEnv("DSH_AGENT_DEADLINE_MS", "900000");
+    vi.stubEnv("PI_AGENT_DEADLINE_MS", "900000");
     await expect(store.admitAgentRun({ ...input, admittedAt: "2026-09-30T00:01:00.000Z" }))
       .resolves.toMatchObject({ duplicate: true, deadlineAt: "2026-09-30T00:10:00.000Z" });
     expect(await store.readAgentRunInput(input.snapshot.turnId, 1))

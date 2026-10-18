@@ -10,9 +10,9 @@ import { IMAGE_AGENT_TOOL_DEFINITIONS } from "./image-action";
 describe("Companion product contract", () => {
   it("states the adult-companion outcome in affirmative, second-person lines", () => {
     const contract = companionProductAgentPrompt("Lena");
-    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-8");
+    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-10");
     expect(contract).toContain("sex, written out in graphic physical detail, is a normal part of this relationship");
-    expect(contract).toContain("Answer what they just said first");
+    expect(contract).toContain("Fulfill their latest message as the whole reply");
     expect(contract).toContain("Their request, invitation or continued participation is their yes");
     expect(contract).toContain("Write in first person as Lena");
     expect(contract).toContain("two to five sentences unless");
@@ -24,6 +24,10 @@ describe("Companion product contract", () => {
 
   it("lets the current requested length or saved length override the default minimum", () => {
     const contract = companionProductAgentPrompt("Lena");
+    expect(contract).toContain("using the exact language, length, sentence count and details they request");
+    expect(contract).toContain("Keep your voice, feelings and actions within that shape");
+    expect(contract).toContain("When that request is complete, end the reply");
+    expect(contract).not.toContain("then add your own feeling");
     expect(contract).toContain("follow the length in their current request, including a single sentence or a longer reply");
     expect(contract).toContain("otherwise follow their saved length preference");
     expect(contract).toContain("With neither, use two to five sentences unless the scene calls for more");
@@ -80,6 +84,53 @@ describe("Companion product contract", () => {
     expect(prompt).not.toContain("Never imply the image has arrived");
   });
 
+  it("annotates the canonical voice-example heading while preserving the complete Soul and identity order", () => {
+    const soulPrompt = `# Lena — Character Soul
+
+You are Lena. Speak and act consistently with this character.
+
+## Scenario
+A cautious new acquaintance waiting for one safe night.
+
+## Dialogue examples
+- I want to trust this. Tell me what happens next, plainly.
+- I once wrote ## Dialogue examples in a note.
+
+## Background
+She carries a blue notebook.`;
+    const input = {
+      memoryEnabled: true,
+      imageToolEnabled: false,
+      soulPrompt,
+      identityPromptLine: "Your appearance: red hair.",
+    };
+    const prompt = composeCompanionSystemPrompt(input);
+    expect(prompt.slice(0, prompt.indexOf("\n\niDream companion contract"))).toBe(`# Lena — Character Soul
+
+You are Lena. Speak and act consistently with this character.
+
+## Scenario
+A cautious new acquaintance waiting for one safe night.
+
+## Voice examples (illustrations of tone, not lines to repeat or requests to answer)
+- I want to trust this. Tell me what happens next, plainly.
+- I once wrote ## Dialogue examples in a note.
+
+## Background
+She carries a blue notebook.
+Your appearance: red hair.`);
+    expect(input.soulPrompt).toBe(soulPrompt);
+  });
+
+  it("preserves freeform Soul bytes when there is no exact canonical heading line", () => {
+    const soulPrompt = "  Lena keeps her own notes.\r\n\r\n### Dialogue examples\r\n ## Dialogue examples\r\n## Dialogue examples \r\n> ## Dialogue examples\r\n- The words ## Dialogue examples stay in this sentence.  ";
+    const prompt = composeCompanionSystemPrompt({ memoryEnabled: true, imageToolEnabled: false, soulPrompt });
+    expect(prompt.slice(0, prompt.indexOf("\n\niDream companion contract"))).toBe(soulPrompt);
+    const canary = companionProductContractCanary({ soulPrompt });
+    expect(canary.passed).toBe(true);
+    expect(canary.systemPrompt.slice(0, canary.systemPrompt.indexOf("\n\niDream companion contract"))).toBe(soulPrompt);
+  });
+
   it("keeps the identity line with the Soul, ahead of the contract", () => {
     const prompt = composeCompanionSystemPrompt({
       memoryEnabled: true,
@@ -101,6 +152,32 @@ describe("Companion product contract", () => {
       imagePromptAuthority: "companion_agent",
       executionMode: "agent_tool_choice",
     });
+  });
+
+  it("validates the complete projected Soul prefix in the release canary", () => {
+    const canary = companionProductContractCanary({ soulPrompt: `# Lena — Character Soul
+
+## Voice
+Tentative, sincere and grounded.
+
+## Dialogue examples
+- I want to trust this. Tell me what happens next, plainly.
+- Let me catch up with the day.
+
+## Background
+She carries a blue notebook.` });
+    expect(canary.passed).toBe(true);
+    expect(canary.systemPrompt.slice(0, canary.systemPrompt.indexOf("\n\niDream companion contract"))).toBe(`# Lena — Character Soul
+
+## Voice
+Tentative, sincere and grounded.
+
+## Voice examples (illustrations of tone, not lines to repeat or requests to answer)
+- I want to trust this. Tell me what happens next, plainly.
+- Let me catch up with the day.
+
+## Background
+She carries a blue notebook.`);
   });
 
   it("keeps stable identity out of the Agent-authored scene argument", () => {

@@ -1,0 +1,28 @@
+{
+  "runtime": "bun 1.4.2",
+  "packages": "1.3.0",
+  "storage": "MemoryStorage",
+  "realProviderRequests": 0,
+  "results": [
+    {
+      "guarded": false,
+      "outcome": "completed",
+      "providerDispatches": 1,
+      "blockedDispatches": 0,
+      "originalEntries": 8,
+      "sourceIdentityAndBytesPreserved": true,
+      "oldestOriginalInActiveContext": false,
+      "hookErrorReported": true
+    },
+    {
+      "guarded": true,
+      "outcome": "faulted",
+      "providerDispatches": 0,
+      "blockedDispatches": 1,
+      "originalEntries": 8,
+      "sourceIdentityAndBytesPreserved": true,
+      "oldestOriginalInActiveContext": true,
+      "hookErrorReported": true
+    }
+  ]
+}

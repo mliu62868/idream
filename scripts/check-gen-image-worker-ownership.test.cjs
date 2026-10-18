@@ -1,5 +1,13 @@
 const assert = require("node:assert/strict");
-const { readFileSync } = require("node:fs");
+const {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} = require("node:fs");
+const { tmpdir } = require("node:os");
 const test = require("node:test");
 const path = require("node:path");
 const { createRuntimeTopology } = require("./runtime-topology.cjs");
@@ -107,6 +115,18 @@ function videoRuntime(pid, daemonPid = 100, mode = "development") {
 
 function pm2BunRuntime(pid, daemonPid = 100) {
   return row(pid, daemonPid, pid, `${bunPath} ${pm2BunProcessContainer}`);
+}
+
+function separatePm2Container(t) {
+  const root = mkdtempSync(path.join(tmpdir(), "idream-pm2-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const container = path.join(
+    root,
+    "node_modules/pm2/lib/ProcessContainerForkBun.js",
+  );
+  mkdirSync(path.dirname(container), { recursive: true });
+  copyFileSync(pm2BunProcessContainer, container);
+  return container;
 }
 
 function legacyWrapper(pid, daemonPid = 100) {
@@ -288,6 +308,73 @@ test("accepts PM2 ProcessContainerForkBun as the registered Bun runtime", () => 
     ],
   );
   assert.equal(report.video.groups[0].runtimePid, 400);
+});
+
+test("accepts matching PM2 Bun containers from a separate global installation", (t) => {
+  const container = separatePm2Container(t);
+  const report = classifyOwnership({
+    mode: "ready",
+    expected: 1,
+    expectedVideo: 1,
+    runId: "release1",
+    videoRunId: "release1",
+    pm2Processes: [pm2(200, 0), videoPm2(400)],
+    psRows: [
+      row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"),
+      row(200, 100, 200, `${bunPath} ${container}`),
+      row(400, 100, 400, `${bunPath} ${container}`),
+    ],
+    redisWorkers: [redis("release1", 0, 200)],
+    videoRedisWorkers: [videoRedis("release1", 0, 400)],
+  });
+
+  assert.equal(report.ok, true, JSON.stringify(report.issues));
+  assert.equal(report.image.groups[0].runtimePid, 200);
+  assert.equal(report.video.groups[0].runtimePid, 400);
+});
+
+test("rejects an arbitrary same-name PM2 Bun container and extra arguments", (t) => {
+  const container = separatePm2Container(t);
+  const base = {
+    mode: "ready",
+    expected: 1,
+    runId: "release1",
+    pm2Processes: [pm2(200, 0)],
+    redisWorkers: [redis("release1", 0, 200)],
+  };
+  const reportFor = (command) => classifyOwnership({
+    ...base,
+    psRows: [
+      row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"),
+      row(200, 100, 200, command),
+    ],
+  });
+
+  assert.equal(reportFor(`${bunPath} ${container} --untrusted`).ok, false);
+  writeFileSync(container, "process.exit(0);\n");
+  const fake = reportFor(`${bunPath} ${container}`);
+  assert.equal(fake.ok, false);
+  assert.ok(fake.issues.includes("registered_root_missing_runtime"));
+});
+
+test("registered PM2 Bun containers require daemon parent and their own process group", () => {
+  const base = {
+    mode: "ready",
+    expected: 1,
+    runId: "release1",
+    pm2Processes: [pm2(200, 0)],
+    redisWorkers: [redis("release1", 0, 200)],
+  };
+  for (const [ppid, pgid] of [[999, 200], [100, 999]]) {
+    const report = classifyOwnership({
+      ...base,
+      psRows: [
+        row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"),
+        row(200, ppid, pgid, `${bunPath} ${pm2BunProcessContainer}`),
+      ],
+    });
+    assert.equal(report.ok, false, `ppid=${ppid}, pgid=${pgid}`);
+  }
 });
 
 test("uses the Redis identity to recover an unregistered PM2 Bun worker", () => {

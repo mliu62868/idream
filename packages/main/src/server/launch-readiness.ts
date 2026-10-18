@@ -682,7 +682,7 @@ function addChatServiceProbeCheck(
         probe.conversation.getSession?.ok !== true ||
         probe.conversation.getSession.assistantSent !== true ||
         probe.conversation.getSession.derivationSettled !== true ||
-        probe.conversation.getSession.dsh?.ok !== true
+        probe.conversation.getSession.runtime?.ok !== true
       ) {
         problems.push(
           "conversation smoke did not reload the assistant message",
@@ -696,7 +696,7 @@ function addChatServiceProbeCheck(
         probe.conversation.regenerateAnchor.recallMatched !== true ||
         probe.conversation.regenerateAnchor.wakeObserved !== true ||
         probe.conversation.regenerateAnchor.memorySearchHit !== true ||
-        probe.conversation.regenerateAnchor.regeneratedDsh?.ok !== true
+        probe.conversation.regenerateAnchor.regeneratedRuntime?.ok !== true
       ) {
         problems.push(
           "conversation smoke did not prove latest-turn regenerate anchoring and igrep recall",
@@ -705,7 +705,7 @@ function addChatServiceProbeCheck(
       if (
         probe.conversation.noMemory?.ok !== true ||
         probe.conversation.noMemory.authorityPinned !== true ||
-        probe.conversation.noMemory.dsh?.ok !== true
+        probe.conversation.noMemory.runtime?.ok !== true
       ) {
         problems.push(
           "conversation smoke did not prove no-memory turn authority",

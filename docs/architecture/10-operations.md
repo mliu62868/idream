@@ -12,7 +12,7 @@
 | --- | --- |
 | `main-web` | 产品 HTTP/BFF、Main PostgreSQL authority |
 | `admin-web` | 运营 UI |
-| `chat` | 本地 AgentRun + 内嵌 DSH/igrep + SSE |
+| `chat` | 本地 AgentRun + 内嵌 Pi/igrep + SSE |
 | `gen-image` / `gen-video` | 图片/视频 provider worker；mock video 时不注册 video worker |
 | `gen-finalizer` | Generation terminal relay/finalize，以及 Main 语音过期租约恢复 |
 | `main-event-consumer` | Main durable events |
@@ -54,8 +54,8 @@ source revision 的 production immutable topology 才能签发运行态证明。
 | 产品/Chat Turn/计费/Generation metadata | Main PostgreSQL | 唯一产品数据库 |
 | 媒体字节 | Blob/R2/S3 | DB 保存引用、校验和与交付事实 |
 | Chat AgentRun | `CHAT_FS_ROOT/runs` | 未决恢复与 7 天失败诊断，不是产品消息 |
-| companion memory | DSH igrep canonical root | 从已提交 Turn 派生 |
-| private run memory | DSH igrep private root | 隔离、短期、不可进入 canonical memory |
+| companion memory | Pi/igrep canonical root | 从已提交 Turn 派生 |
+| private run memory | Pi/igrep private root | 隔离、短期、不可进入 canonical memory |
 | Chat token stream | Redis | 暂态 SSE transport |
 
 `packages/chat` 不配置 PostgreSQL URL、role、Prisma 或 BullMQ prefix。Main/Gen 仍共享经过校验的 Redis/BullMQ authority。
@@ -79,10 +79,10 @@ source revision 的 production immutable topology 才能签发运行态证明。
 - `CHAT_PORT` / `CHAT_FS_ROOT` / `CHAT_REDIS_URL`
 - `MAIN_WEB_URL` / `INTERNAL_TOKEN`
 - `CHAT_BFF_SIGNING_SECRET`
-- `DSH_IGREP_PLUGIN_URL` / `DSH_BOOTSTRAP_STATE_PATH`
-- `DSH_IGREP_CANONICAL_ROOT` / `DSH_IGREP_PRIVATE_ROOT`
+- `PI_IGREP_COMMAND`：固定版本的 provider-neutral CLI
+- `PI_IGREP_CANONICAL_ROOT` / `PI_IGREP_PRIVATE_ROOT`
 - `CHAT_MODEL_PROVIDER` / `CHAT_MODEL_BASE_URL` / `CHAT_MODEL_NAME` / `CHAT_MODEL_API_KEY`：Turn 与 full readiness 共用唯一模型配置
-- `DSH_MAX_*` / `DSH_AGENT_DEADLINE_MS`：并发、step 与 attempt deadline
+- `PI_MAX_*` / `PI_AGENT_DEADLINE_MS`：并发、step 与 attempt deadline
 
 Chat 没有独立 moderation provider。输入/输出产品策略属于 Main。
 
@@ -113,7 +113,7 @@ native 加载失败时拒绝进入 provider，无不安全回退。Darwin 使用
 ## 4. Readiness
 
 - liveness 只说明进程活着；发布必须使用 full readiness。
-- Chat admission readiness 只检查可写 `CHAT_FS_ROOT`、Redis 与签名配置；full certification 另行检查内嵌 DSH package、official igrep plugin/bootstrap、provider/model 和 profile pin。
+- Chat admission readiness 只检查可写 `CHAT_FS_ROOT`、Redis 与签名配置；full certification 另行检查Pi/igrep 精确包版本、公共 API、provider/model、工具桥、原文召回与 profile pin。
 - Gen readiness 检查 worker ownership、provider/workflow/model bytes 和 terminal ingress。
 - Main readiness 检查 migration、Turn ledger、Character/Soul pins、Generation/settlement 和跨服务 secrets。
 - Voice live probe 默认验证 Pocket 可播放输出、官方英语 catalog 与 preset alias → synthesize → delete。配置 Fish identity override 时，同一份报告还必须包含 Fish clone → synthesize → delete。生产 PM2 按实际 system/identity provider 要求对应进程和 `/health`，不能只凭进程 online。
@@ -177,7 +177,7 @@ PM2 `online`、HTTP 200 或 mock 成功都不能单独作为发布通过证据�
 
 - Main PostgreSQL custom dump + migration/schema/logical manifests；
 - `CHAT_FS_ROOT` AgentRun archive + file checksum manifest；
-- DSH canonical/private workspace archive + manifest；
+- DSH canonical/private workspace archive + manifest；此处 DSH 是既有备份格式字段，新 Pi runtime 保持该格式与 canonical intake 不变；
 - local Blob archive，或独立 versioned recovery bucket 的 object inventory；
 - quiescence receipt、source revision、时间和总 manifest SHA-256。
 

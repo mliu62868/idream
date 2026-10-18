@@ -270,7 +270,7 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
     };
     await runCompanion(invocation, port, signal);
     if (!committedProposal || !committedAck) {
-      throw new Error("DSH ended without a terminal commit");
+      throw new Error("Pi ended without a terminal commit");
     }
     // INVARIANT: local terminal is downstream of Main's durable ACK. A crash
     // before this write replays the exact immutable proposal without rerunning
@@ -560,17 +560,17 @@ export function agentRunTraceEvent(
   switch (event.type) {
     case "started":
       return {
-        kind: "dsh.started",
+        kind: "pi.started",
         payload: { instance: event.instance, profileDigest: event.profileDigest },
       };
     case "tool_started":
       return {
-        kind: "dsh.tool_started",
+        kind: "pi.tool_started",
         payload: { callId: event.callId, name: event.name },
       };
     case "tool_finished":
       return {
-        kind: "dsh.tool_finished",
+        kind: "pi.tool_finished",
         payload: {
           callId: event.callId,
           name: event.name,
@@ -580,7 +580,7 @@ export function agentRunTraceEvent(
       };
     case "igrep_observation":
       return {
-        kind: "dsh.igrep_observation",
+        kind: "pi.igrep_observation",
         payload: {
           operation: event.operation,
           outcome: event.outcome,
@@ -589,14 +589,15 @@ export function agentRunTraceEvent(
           durationMs: event.durationMs,
         },
       };
+    case "usage":
+      return { kind: "pi.usage", payload: { usage: event.usage } };
     case "failed":
-      return { kind: "dsh.failed", payload: { error: event.error } };
+      return { kind: "pi.failed", payload: { error: event.error } };
     case "cancelled":
-      return { kind: "dsh.cancelled", payload: { reason: event.reason } };
+      return { kind: "pi.cancelled", payload: { reason: event.reason } };
     case "text_delta":
     case "text_reset":
     case "reasoning_usage":
-    case "usage":
     case "heartbeat":
     case "terminal_candidate":
       return null;
@@ -606,14 +607,14 @@ export function agentRunTraceEvent(
 function terminalEvidence(
   candidate: CompanionTerminalCandidate,
   profileDigest: string,
-  versions: { igrepVersion: string; pluginVersion: string },
+  versions: { igrepVersion: string; piVersion: string },
   memoryMode: "normal" | "private",
   runtimeInstance: { id: string; startedAt: string } | undefined,
   igrepObservations: IgrepObservations,
   prompt: TerminalPromptAttribution,
 ) {
   return {
-    authority: "dsh_terminal_candidate",
+    authority: "pi_terminal_candidate",
     attemptId: candidate.attemptId,
     provider: candidate.provider,
     model: candidate.model,
@@ -630,11 +631,11 @@ function terminalEvidence(
     preparedSystemPromptDigest: prompt.systemPromptDigest,
     ...(candidate.modelRequests ? { modelRequests: candidate.modelRequests } : {}),
     memoryMode,
-    runtime: "embedded_dsh",
+    runtime: "embedded_pi",
     runtimeInstance: runtimeInstance ?? null,
     igrepObservations,
     igrepVersion: versions.igrepVersion,
-    pluginVersion: versions.pluginVersion,
+    piVersion: versions.piVersion,
     contentDigest: sha256(candidate.content),
   };
 }

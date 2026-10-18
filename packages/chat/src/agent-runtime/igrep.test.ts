@@ -5,6 +5,7 @@ import type { CompanionWorkspaceRebuild } from "@idream/shared/chat/companion-ru
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   IgrepMemoryBuilder,
+  createIgrepTools,
   igrepFailureCategory,
   observeIgrepWake,
   recallIgrepMemory,
@@ -14,8 +15,16 @@ import {
 } from "./igrep";
 import { AttemptWorkspaceStore, relationshipWorkspacePath } from "./workspace";
 import { BoundedCommandError } from "./bounded-command";
+import { PROFILE_EVIDENCE_FILE } from "./profile-evidence";
+import { profileLineKey } from "./resident-profile";
 
 const temporary: string[] = [];
+const cli = (command = "igrep") => ({command, env: {PATH:process.env.PATH}});
+const memoryEnvelope = (options: JsonCommandOptions) => ({
+  schema: "igrep.mem/1", provider: "igrep", action: options.args[1], outcome: "success", pendingRows: 0, ok: true, warnings: [],
+  ...(options.args[1] === "wake" ? { workspaceRoot: options.args[options.args.indexOf("--workspace") + 1], markdownContext: "" } : {}),
+});
+const searchEnvelope = (workspace: string, payload: Record<string, unknown>) => ({schema:"igrep.mem/1", provider:"igrep", workspaceRoot:workspace, warnings:[], ...payload});
 
 // A fence is a Chat-wide durable fact under CHAT_FS_ROOT. Give every test its
 // own root so one test's fenced user cannot reject another test's invocation.
@@ -52,7 +61,7 @@ async function fixtureIngest(options: JsonCommandOptions) {
     content: row.content,
     source_at: { instant_utc: row.source_at },
   })).join("\n") + "\n");
-  return { events: rows.length, dialoguePath, sessionPath };
+  return { schema:"igrep.mem/1", provider:"igrep", action:"ingest", events: rows.length, dialoguePath, sessionPath };
 }
 
 async function recallFixture(messages: { role: string; content: string; source_at: string }[]) {
@@ -60,18 +69,18 @@ async function recallFixture(messages: { role: string; content: string; source_a
   temporary.push(workspace);
   const transcript = join(workspace, "transcript.jsonl");
   await writeFile(transcript, messages.map(row => JSON.stringify(row)).join("\n") + "\n");
-  const source = await fixtureIngest({ command: "igrep", args: ["mem", "ingest", "--workspace", workspace, "--session-id", "recall", "--transcript", transcript] });
+  const source = await fixtureIngest({ ...cli(), args: ["mem", "ingest", "--workspace", workspace, "--session-id", "recall", "--transcript", transcript] });
   return { workspace, path: source.dialoguePath.replace(".igrep/mem/", "") };
 }
 
 describe("igrep subprocess bounds", () => {
-  it("classifies plugin and subprocess failures without echoing their private text", () => {
+  it("classifies subprocess failures and discards arbitrary error text without echoing their private text", () => {
     const prefix = "memory unavailable (an availability error, not an empty memory): ";
     expect(igrepFailureCategory(new BoundedCommandError("exit_nonzero", "a".repeat(64)))).toBe("command_exit_nonzero");
-    expect(igrepFailureCategory({ message: `${prefix}igrep memory contract mismatch: PRIVATE_CONTRACT` })).toBe("contract_mismatch");
-    expect(igrepFailureCategory({ message: `${prefix}invalid igrep JSON output: PRIVATE_BODY` })).toBe("command_invalid_output");
-    expect(igrepFailureCategory({ message: `${prefix}igrep mem-api timed out after 10000ms` })).toBe("command_timeout");
-    expect(igrepFailureCategory({ message: `${prefix}PRIVATE_CHILD_ERROR` })).toBe("memory_unavailable");
+    expect(igrepFailureCategory({ message: `${prefix}igrep memory contract mismatch: PRIVATE_CONTRACT` })).toBe("unknown");
+    expect(igrepFailureCategory({ message: `${prefix}invalid igrep JSON output: PRIVATE_BODY` })).toBe("unknown");
+    expect(igrepFailureCategory({ message: `${prefix}igrep mem-api timed out after 10000ms` })).toBe("unknown");
+    expect(igrepFailureCategory({ message: `${prefix}PRIVATE_CHILD_ERROR` })).toBe("unknown");
     expect(igrepFailureCategory(new Error("PRIVATE_PROVIDER_BODY"))).toBe("unknown");
     expect(igrepFailureCategory({ code: "PRIVATE_ERROR_CODE", message: "PRIVATE_PROVIDER_BODY" })).toBe("unknown");
     expect(igrepFailureCategory({ code: "ENOENT", path: "/PRIVATE_PATH" })).toBe("source_missing");
@@ -82,6 +91,7 @@ describe("igrep subprocess bounds", () => {
     let thrown: unknown;
     try {
       await runJsonCommand({
+        env: { PATH: process.env.PATH },
         command: process.execPath,
         args: ["-e", script],
         timeoutMs: 5_000,
@@ -101,20 +111,20 @@ describe("official igrep wake observation", () => {
   it("reports the actual command result and keeps the profile bytes in-process", async () => {
     const calls: JsonCommandOptions[] = [];
     const observed = await observeIgrepWake(
-      "/opt/igrep",
-      "/private/workspace",
+      cli("/opt/igrep"),
+      temporary[0]!,
       undefined,
       async (options) => {
         calls.push(options);
-        return { markdownContext: "PRIVATE_SENTINEL" };
+        return { schema:"igrep.mem/1",provider:"igrep",action:"wake",workspaceRoot:temporary[0]!,warnings:[],markdownContext: "PRIVATE_SENTINEL" };
       },
     );
     expect(observed).toEqual({ outcome: "hit", resultCount: 1, profile: "PRIVATE_SENTINEL" });
     expect(calls).toEqual([expect.objectContaining({
       command: "/opt/igrep",
       args: [
-        "mem", "wake", "--workspace", "/private/workspace",
-        "--max-context-chars", "12000", "--format", "provider-json",
+        "mem", "wake", "--workspace", temporary[0]!,
+        "--max-context-chars", "12000", "--max-memory-chars", "0", "--format", "provider-json",
       ],
       timeoutMs: 10_000,
     })]);
@@ -122,27 +132,51 @@ describe("official igrep wake observation", () => {
 
   it("reports an empty wake as no profile", async () => {
     await expect(observeIgrepWake(
-      "/opt/igrep",
-      "/private/workspace",
+      cli("/opt/igrep"),
+      temporary[0]!,
       undefined,
-      async () => ({ markdownContext: "  \n" }),
+      async () => ({ schema:"igrep.mem/1",provider:"igrep",action:"wake",workspaceRoot:temporary[0]!,warnings:[],markdownContext: "  \n" }),
     )).resolves.toEqual({ outcome: "empty", resultCount: 0, profile: "" });
   });
 
   it("fails closed when wake does not return the official result shape", async () => {
     await expect(observeIgrepWake(
-      "/opt/igrep",
-      "/private/workspace",
+      cli("/opt/igrep"),
+      temporary[0]!,
       undefined,
       async () => ({ warnings: [] }),
     )).rejects.toThrow("unverifiable evidence");
-    await expect(recallIgrepMemory("igrep", "/w", "query", {}, async () => ({
+    await expect(recallIgrepMemory(cli("igrep"), temporary[0]!, "query", {}, async () => ({
       results: [], warnings: ["workspace memory search incomplete (1 dialogue file(s) could not be bound to canonical evidence); run mem reproject"],
     }))).rejects.toThrow("unverifiable evidence");
   });
 });
 
 describe("official igrep pre-recall", () => {
+  it.each([false, true, null] as const)("applies the stored profile verdict to explicit memory_search results: %s", async (supported) => {
+    const workspace = temporary[0]!;
+    await mkdir(join(workspace, ".igrep"));
+    const claim = "User is a system or automated agent generating profile observations from input data";
+    const extraClaim = "User prefers the readiness scope identifier";
+    if (supported !== null) await writeFile(join(workspace, ".igrep", PROFILE_EVIDENCE_FILE), JSON.stringify({
+      schema: 1, lines: { [profileLineKey(claim)]: { evidence: "controlled-fixture", supported } },
+    }));
+    const tools = createIgrepTools({
+      cli: cli(), workspace, knowledgePath: "/authorized/knowledge", mode: "normal",
+      recall: async () => { throw new Error("session recall was not requested"); },
+      run: async () => searchEnvelope(workspace, { results: [{
+        citation: "bank/cards/profile.md#L1-L4", sourceClass: "profile", snippet: `# User Profile\n\n- ${claim}\n- ${extraClaim}`,
+      }] }),
+    });
+    const result = await tools.find(tool => tool.name === "memory_search")!.execute({ query: "What do you remember about me?" }, new AbortController().signal);
+    if (supported === true) {
+      expect(result).toEqual([{ citation: "bank/cards/profile.md#L1-L4", sourceClass: "profile", snippet: expect.stringContaining(claim) }]);
+      expect(JSON.stringify(result)).not.toContain(extraClaim);
+    } else {
+      expect(result).toEqual([]);
+    }
+  });
+
   it.each([
     { payload: { results: [], warnings: ["PRIVATE_MEMORY_WARNING"] }, reason: "partial_evidence" },
     { payload: { results: [], failed: true, error: "PRIVATE_MEMORY_ERROR" }, reason: "failed_envelope" },
@@ -152,7 +186,7 @@ describe("official igrep pre-recall", () => {
   ])("classifies rejected memory evidence without retaining private envelope bytes ($reason)", async ({ payload, reason }) => {
     let thrown: unknown;
     try {
-      await recallIgrepMemory("igrep", "/w", "PRIVATE_QUERY", {}, async () => payload);
+      await recallIgrepMemory(cli("igrep"), temporary[0]!, "PRIVATE_QUERY", {}, async () => searchEnvelope(temporary[0]!, payload));
     } catch (error) {
       thrown = error;
     }
@@ -169,14 +203,14 @@ describe("official igrep pre-recall", () => {
       { role: "assistant", content: "Kestrel it is.", source_at: "2026-08-24T10:00:01.000Z" },
     ]);
     const recall = await recallIgrepMemory(
-      "/opt/igrep",
+      cli("/opt/igrep"),
       fixture.workspace,
       "what is my dog's name",
       { referenceAt: "2026-08-24T10:00:00.000Z" },
       async (options) => {
         calls.push(options);
         return {
-          provider: "igrep",
+          schema:"igrep.mem/1", provider: "igrep", workspaceRoot: fixture.workspace,
           results: [
             {
               citation: "bank/cards/profile.md#L1-L6",
@@ -208,16 +242,16 @@ describe("official igrep pre-recall", () => {
     });
     expect(recall).toMatchObject({
       outcome: "hit",
-      resultCount: 2,
+      resultCount: 1,
       notes: ["[user @ 2026-08-24T10:00:00.000Z] my dog is Kestrel [assistant @ 2026-08-24T10:00:01.000Z] Kestrel it is."],
     });
   });
 
   it("reports an empty page and fails closed on an error envelope", async () => {
-    await expect(recallIgrepMemory("igrep", "/w", "query", {}, async () => ({ results: [] })))
+    await expect(recallIgrepMemory(cli("igrep"), temporary[0]!, "query", {}, async () => searchEnvelope(temporary[0]!, { results: [] })))
       .resolves.toMatchObject({ outcome: "empty", resultCount: 0, notes: [] });
     await expect(recallIgrepMemory(
-      "igrep",
+      cli("igrep"),
       "/w",
       "query",
       {},
@@ -232,7 +266,7 @@ describe("official igrep pre-recall", () => {
       { role: "assistant", content: "The boat approaches the harbor. ".repeat(12), source_at: "2026-09-07T00:00:01.000Z" },
       { role: "user", content: `My blue notebook is beside the window. Its exact label is ${label}.`, source_at: "2026-09-07T00:00:02.000Z" },
     ]);
-    const recall = await recallIgrepMemory("igrep", fixture.workspace, "What is my notebook label?", {}, async () => ({
+    const recall = await recallIgrepMemory(cli("igrep"), fixture.workspace, "What is my notebook label?", {}, async () => searchEnvelope(fixture.workspace, {
       results: [{ citation: `${fixture.path}#L2-L3`, snippet: "Derived preview", sourceClass: "dialogue" }],
     }));
     expect(recall.notes[0]).toContain(`[user @ 2026-09-07T00:00:02.000Z] My blue notebook is beside the window. Its exact label is ${label}.`);
@@ -242,7 +276,7 @@ describe("official igrep pre-recall", () => {
     const prefix = "Earlier context. ".repeat(123);
     const identifier = "full_identifier_".repeat(30);
     const fixture = await recallFixture([{ role: "user", content: `${prefix}${identifier}`, source_at: "2026-09-07T00:00:00.000Z" }]);
-    const recall = await recallIgrepMemory("igrep", fixture.workspace, "What is the exact identifier?", {}, async () => ({
+    const recall = await recallIgrepMemory(cli("igrep"), fixture.workspace, "What is the exact identifier?", {}, async () => searchEnvelope(fixture.workspace, {
       results: [{ citation: `${fixture.path}#L1`, snippet: `L1: ${prefix}${identifier}`, sourceClass: "dialogue" }],
     }));
     expect(recall.notes[0]?.length).toBeLessThanOrEqual(2000);
@@ -257,7 +291,7 @@ describe("official igrep canonical rebuild", () => {
     temporary.push(workspace);
     await mkdir(join(workspace, ".igrep"));
     const run = async (options: JsonCommandOptions) => {
-      if (options.args[1] !== "ingest") return { ok: true };
+      if (options.args[1] !== "ingest") return memoryEnvelope(options);
       const result = await fixtureIngest(options);
       // Captured from official mem_dialogue_facts.project_rows in igrep 0.1.150.
       await writeFile(join(workspace, result.dialoguePath), [
@@ -266,7 +300,7 @@ describe("official igrep canonical rebuild", () => {
       ].map((row) => JSON.stringify(row)).join("\n") + "\n");
       return result;
     };
-    const builder = new IgrepMemoryBuilder("igrep", { status: async () => ({ dialogueFiles: 1, pendingProfileRows: 0, processedProfileRows: 1, lastMaintainAt: "2026-09-30T17:00:01.000Z" }) }, run);
+    const builder = new IgrepMemoryBuilder(cli("igrep"), { status: async () => ({ dialogueFiles: 1, pendingProfileRows: 0, processedProfileRows: 1, lastMaintainAt: "2026-09-30T17:00:01.000Z" }) }, run);
     await expect(builder.build(workspace, {
       scope: "relationship", userId: "user-1", characterId: "character-1", mode: "rebuild",
       messages: [
@@ -282,7 +316,7 @@ describe("official igrep canonical rebuild", () => {
       temporary.push(workspace);
       await mkdir(join(workspace, ".igrep"));
       const run = async (options: JsonCommandOptions) => {
-        if (options.args[1] !== "ingest") return { ok: true };
+        if (options.args[1] !== "ingest") return memoryEnvelope(options);
         const result = await fixtureIngest(options);
         await writeFile(join(workspace, result.dialoguePath), [
           ["2026-09-30T17:00:00.000Z", content],
@@ -290,7 +324,7 @@ describe("official igrep canonical rebuild", () => {
         ].map((row) => JSON.stringify(row)).join("\n") + "\n");
         return result;
       };
-      const builder = new IgrepMemoryBuilder("igrep", { status: async () => ({ dialogueFiles: 1, pendingProfileRows: 0, processedProfileRows: 1, lastMaintainAt: "2026-09-30T17:00:01.000Z" }) }, run);
+      const builder = new IgrepMemoryBuilder(cli("igrep"), { status: async () => ({ dialogueFiles: 1, pendingProfileRows: 0, processedProfileRows: 1, lastMaintainAt: "2026-09-30T17:00:01.000Z" }) }, run);
       await expect(builder.build(workspace, {
         scope: "relationship", userId: "user-1", characterId: "character-1", mode: "rebuild",
         messages: [
@@ -328,7 +362,7 @@ describe("official igrep canonical rebuild", () => {
         })).toEqual(expected);
         return fixtureIngest(options);
       }
-      return { ok: true };
+      return memoryEnvelope(options);
     };
     const request: CompanionWorkspaceRebuild = {
       scope: "relationship",
@@ -367,7 +401,7 @@ describe("official igrep canonical rebuild", () => {
       ],
     };
     const builder = new IgrepMemoryBuilder(
-      "igrep",
+      cli("igrep"),
       {
         status: async () => ({
           dialogueFiles: 2,
@@ -396,12 +430,12 @@ describe("official igrep canonical rebuild", () => {
     expect(commands[0]?.timeoutMs).toBeGreaterThan(30_000);
   });
 
-  it("accepts a completed rebuild when profile rows remain pending", async () => {
+  it("keeps source ready without claiming completion when profile work is deferred", async () => {
     const root = await mkdtemp(join(tmpdir(), "chat-runtime-igrep-rebuild-pending-"));
     temporary.push(root);
     await mkdir(join(root, ".igrep"));
     const builder = new IgrepMemoryBuilder(
-      "igrep",
+      cli("igrep"),
       {
         status: async () => ({
           dialogueFiles: 0,
@@ -410,7 +444,7 @@ describe("official igrep canonical rebuild", () => {
           lastMaintainAt: "2026-08-19T12:00:02.000Z",
         }),
       },
-      async () => ({ ok: true }),
+      async (options) => ({ ...memoryEnvelope(options), ...(options.args[1] === "maintain" ? {outcome:"deferred", pendingRows:2, reason:"llm_not_configured"} : {}) }),
     );
 
     await expect(builder.build(root, {
@@ -419,7 +453,7 @@ describe("official igrep canonical rebuild", () => {
       characterId: "character-1",
       mode: "rebuild",
       messages: [],
-    })).resolves.toEqual({ sessions: 0, messages: 0, sourceReady: true, derivation: "accepted" });
+    })).resolves.toEqual({ sessions: 0, messages: 0, sourceReady: true, derivation: "deferred" });
   });
 
   it("maintains an ordinary projection without re-deriving canonical memory", async () => {
@@ -428,7 +462,7 @@ describe("official igrep canonical rebuild", () => {
     await mkdir(join(root, ".igrep"));
     const commands: JsonCommandOptions[] = [];
     const builder = new IgrepMemoryBuilder(
-      "igrep",
+      cli("igrep"),
       {
         status: async () => ({
           dialogueFiles: 0,
@@ -439,7 +473,7 @@ describe("official igrep canonical rebuild", () => {
       },
       async (options) => {
         commands.push(options);
-        return { ok: true };
+        return memoryEnvelope(options);
       },
     );
 
@@ -461,7 +495,7 @@ describe("official igrep canonical rebuild", () => {
     await mkdir(join(root, ".igrep"));
     const commands: JsonCommandOptions[] = [];
     const builder = new IgrepMemoryBuilder(
-      "igrep",
+      cli("igrep"),
       { status: async () => ({ dialogueFiles: 0, pendingProfileRows: 0, processedProfileRows: 0, lastMaintainAt: null }) },
       async (options) => {
         commands.push(options);
@@ -470,7 +504,7 @@ describe("official igrep canonical rebuild", () => {
           expect((await stat(join(root, ".igrep/mem"))).isDirectory()).toBe(true);
           expect(await readdir(join(root, ".igrep/mem"))).toEqual([]);
         }
-        return { ok: true };
+        return memoryEnvelope(options);
       },
     );
 
@@ -485,7 +519,7 @@ describe("official igrep canonical rebuild", () => {
     temporary.push(root);
     await mkdir(join(root, ".igrep"));
     const builder = new IgrepMemoryBuilder(
-      "igrep",
+      cli("igrep"),
       {
         status: async () => ({
           dialogueFiles: 0,
@@ -569,11 +603,11 @@ describe("igrep Main source admission", () => {
   it("accepts the captured igrep 0.1.150 tuple and session formats", async () => {
     const workspace = await fixture();
     const calls: string[] = [];
-    const builder = new IgrepMemoryBuilder("igrep", { status: async () => ({
+    const builder = new IgrepMemoryBuilder(cli("igrep"), { status: async () => ({
       dialogueFiles: 1, pendingProfileRows: 0, processedProfileRows: 4, lastMaintainAt: "2026-09-10T01:08:00Z",
     }) }, async (options) => {
       calls.push(options.args[1]!);
-      return options.args[1] === "ingest" ? fixtureIngest(options) : { ok: true };
+      return options.args[1] === "ingest" ? fixtureIngest(options) : memoryEnvelope(options);
     });
     await expect(builder.build(workspace, request)).resolves.toMatchObject({
       sourceReady: true, derivation: "accepted", sessions: 1, messages: 4,
@@ -582,13 +616,50 @@ describe("igrep Main source admission", () => {
     await expectSources(workspace, request);
   });
 
+  it("accepts initial pending rows after a successful maintain pass has settled", async () => {
+    const workspace = await fixture();
+    const builder = new IgrepMemoryBuilder(cli("igrep"), { status: async () => ({
+      dialogueFiles: 1, pendingProfileRows: 0, processedProfileRows: 4, lastMaintainAt: "2026-09-10T01:08:00Z",
+    }) }, async (options) => {
+      if (options.args[1] === "ingest") return fixtureIngest(options);
+      return { ...memoryEnvelope(options), pendingRows: 4, processedRows: 4 };
+    });
+    await expect(builder.build(workspace, request)).resolves.toMatchObject({
+      sourceReady: true, derivation: "accepted", sessions: 1, messages: 4,
+    });
+    await expectSources(workspace, request);
+  });
+
+  it("checks remaining status rows independently from initial pending rows", async () => {
+    const workspace = await fixture();
+    let observedStatus = false;
+    const builder = new IgrepMemoryBuilder(cli("igrep"), { status: async () => {
+      observedStatus = true;
+      return { dialogueFiles: 1, pendingProfileRows: 1, processedProfileRows: 3, lastMaintainAt: "2026-09-10T01:08:00Z" };
+    } }, async (options) => {
+      if (options.args[1] === "ingest") return fixtureIngest(options);
+      return { ...memoryEnvelope(options), pendingRows: 4, processedRows: 3 };
+    });
+    await expect(builder.build(workspace, request)).rejects.toMatchObject({ reason: "partial_evidence" });
+    expect(observedStatus).toBe(true);
+  });
+
+  it.each([undefined, -1, 0.5, "4"])("rejects malformed initial pending row counts: %s", async (pendingRows) => {
+    const workspace = await fixture();
+    const builder = new IgrepMemoryBuilder(cli("igrep"), sourceOnlyStatus, async (options) => {
+      if (options.args[1] === "ingest") return fixtureIngest(options);
+      return { ...memoryEnvelope(options), pendingRows, processedRows: 4 };
+    });
+    await expect(builder.build(workspace, request)).rejects.toMatchObject({ reason: "invalid_envelope" });
+  });
+
   it.each(["text", "timestamp", "order", "extra-field", "role", "session-id", "turn-index", "source-text", "missing-source"])(
     "rejects changed tuple/session evidence: %s", async (fault) => {
       const workspace = await fixture();
       const calls: string[] = [];
-      const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async (options) => {
+      const builder = new IgrepMemoryBuilder(cli("igrep"), sourceOnlyStatus, async (options) => {
         calls.push(options.args[1]!);
-        if (options.args[1] !== "ingest") return { ok: true };
+        if (options.args[1] !== "ingest") return memoryEnvelope(options);
         const result = await fixtureIngest(options);
         const sourceFault = ["role", "session-id", "turn-index", "source-text", "missing-source"].includes(fault);
         const path = join(workspace, sourceFault ? result.sessionPath : result.dialoguePath);
@@ -613,7 +684,7 @@ describe("igrep Main source admission", () => {
   it.each(["dialogue", "session"] as const)("rejects maintenance changes to the %s source", async (kind) => {
     const workspace = await fixture();
     const calls: string[] = [];
-    const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async (options) => {
+    const builder = new IgrepMemoryBuilder(cli("igrep"), sourceOnlyStatus, async (options) => {
       calls.push(options.args[1]!);
       if (options.args[1] === "ingest") return fixtureIngest(options);
       if (options.args[1] === "maintain") {
@@ -623,7 +694,7 @@ describe("igrep Main source admission", () => {
         else rows[0].role = "assistant";
         await writeFile(path, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
       }
-      return { ok: true };
+      return memoryEnvelope(options);
     });
     await expect(builder.build(workspace, request)).resolves.toMatchObject({
       sourceReady: true, derivation: "rejected", rejectionReason: "dialogue_source_mismatch",
@@ -637,14 +708,14 @@ describe("igrep Main source admission", () => {
     const calls: string[] = [];
     // A destructive rebuild supplies only the surviving Main messages.
     const input = { ...request, mode, messages: mode === "rebuild" ? request.messages.slice(2) : request.messages };
-    const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async (options) => {
+    const builder = new IgrepMemoryBuilder(cli("igrep"), sourceOnlyStatus, async (options) => {
       calls.push(options.args[1]!);
       if (options.args[1] === "ingest") return fixtureIngest(options);
       if (options.args[1] === "maintain") {
         await retract(workspace);
         await writeFile(join(workspace, ".igrep", "untrusted-profile.txt"), "The notebook was forgotten.");
       }
-      return { ok: true };
+      return memoryEnvelope(options);
     });
     await expect(builder.build(workspace, input)).resolves.toEqual({
       sessions: 1, messages: input.messages.length, sourceReady: true,
@@ -663,9 +734,9 @@ describe("igrep Main source admission", () => {
       await writeFile(join(workspace, dirname(dialogue), "unknown.jsonl"), '{"content":"not a Main source"}\n');
     }
     const calls: string[] = [];
-    const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async (options) => {
+    const builder = new IgrepMemoryBuilder(cli("igrep"), sourceOnlyStatus, async (options) => {
       calls.push(options.args[1]!);
-      return options.args[1] === "ingest" ? fixtureIngest(options) : { ok: true };
+      return options.args[1] === "ingest" ? fixtureIngest(options) : memoryEnvelope(options);
     });
     await expect(builder.build(workspace, request)).resolves.toMatchObject({ sourceReady: true, derivation: "rejected" });
     await expectSources(workspace, request);
@@ -674,7 +745,7 @@ describe("igrep Main source admission", () => {
 
   it.each(["content", "delete", "provenance"] as const)("rejects maintenance that changes source %s", async (fault) => {
     const workspace = await fixture();
-    const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async (options) => {
+    const builder = new IgrepMemoryBuilder(cli("igrep"), sourceOnlyStatus, async (options) => {
       if (options.args[1] === "ingest") return fixtureIngest(options);
       if (options.args[1] === "maintain") {
         const path = join(workspace, fault === "provenance" ? dialogue.replace("/dialogues/", "/sessions/") : dialogue);
@@ -686,7 +757,7 @@ describe("igrep Main source admission", () => {
             : text.replace("fixture-session-1-0", "rewritten-provenance"));
         }
       }
-      return { ok: true };
+      return memoryEnvelope(options);
     });
     await expect(builder.build(workspace, request)).resolves.toMatchObject({ sourceReady: true, derivation: "rejected" });
     await expectSources(workspace, request);
@@ -705,7 +776,7 @@ describe("igrep Main source admission", () => {
     await store.promoteRelationshipRebuild({ ...identity, rebuildId: old.rebuildId, fence: oldFence });
     const calls: string[] = [];
     let ingests = 0;
-    const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async (options) => {
+    const builder = new IgrepMemoryBuilder(cli("igrep"), sourceOnlyStatus, async (options) => {
       calls.push(options.args[1]!);
       const candidate = options.args[options.args.indexOf("--workspace") + 1]!;
       if (options.args[1] === "ingest") {
@@ -714,7 +785,7 @@ describe("igrep Main source admission", () => {
         return result;
       }
       if (options.args[1] === "maintain") await retract(candidate);
-      return { ok: true };
+      return memoryEnvelope(options);
     });
     await expect(store.prepareRelationshipRebuild(identity, {
       mutationId: "new", authorityVersion: "2", claimToken: "22222222-2222-4222-8222-222222222222",
@@ -736,8 +807,8 @@ describe("igrep Main source admission", () => {
     const canonicalRoot = join(workspace, "canonical");
     const store = new AttemptWorkspaceStore({ canonicalRoot, privateRoot: join(workspace, "private") });
     const transcripts: string[] = [];
-    const builder = new IgrepMemoryBuilder("igrep", maintainedStatus, async (options) => {
-      if (options.args[1] !== "ingest") return { ok: true };
+    const builder = new IgrepMemoryBuilder(cli("igrep"), maintainedStatus, async (options) => {
+      if (options.args[1] !== "ingest") return memoryEnvelope(options);
       transcripts.push(options.args[options.args.indexOf("--transcript") + 1]!);
       return fixtureIngest(options);
     });
@@ -760,9 +831,9 @@ describe("igrep Main source admission", () => {
     const workspace = await fixture();
     await writeFile(join(workspace, ".igrep", "stale-seed.txt"), "registered to an old path");
     const calls: string[][] = [];
-    const builder = new IgrepMemoryBuilder("igrep", maintainedStatus, async (options) => {
+    const builder = new IgrepMemoryBuilder(cli("igrep"), maintainedStatus, async (options) => {
       calls.push(options.args.slice(1, 2).concat(options.args.includes("--rebuild") ? ["--rebuild"] : []));
-      if (options.args[1] !== "ingest") return { ok: true };
+      if (options.args[1] !== "ingest") return memoryEnvelope(options);
       if (calls.length === 1) throw new BoundedCommandError("exit_nonzero", "refused");
       return fixtureIngest(options);
     });
@@ -774,9 +845,9 @@ describe("igrep Main source admission", () => {
 
   it("does not turn a timed-out project ingest into a rebuild", async () => {
     const workspace = await fixture();
-    const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async (options) => {
+    const builder = new IgrepMemoryBuilder(cli("igrep"), sourceOnlyStatus, async (options) => {
       if (options.args[1] === "ingest") throw new BoundedCommandError("timeout", "slow");
-      return { ok: true };
+      return memoryEnvelope(options);
     });
     await expect(builder.build(workspace, request)).rejects.toMatchObject({ code: "timeout" });
   });
@@ -785,14 +856,14 @@ describe("igrep Main source admission", () => {
     const workspace = await fixture();
     const controller = new AbortController();
     const calls: string[] = [];
-    const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async (options) => {
+    const builder = new IgrepMemoryBuilder(cli("igrep"), sourceOnlyStatus, async (options) => {
       calls.push(options.args[1]!);
       if (options.args[1] === "ingest") return fixtureIngest(options);
       if (options.args[1] === "maintain") {
         await retract(workspace);
         controller.abort(new Error("Main claim cancelled"));
       }
-      return { ok: true };
+      return memoryEnvelope(options);
     });
     await expect(builder.build(workspace, request, controller.signal)).rejects.toThrow("Main claim cancelled");
     expect(calls).toEqual(["ingest", "maintain"]);
@@ -804,7 +875,7 @@ describe("igrep Main source admission", () => {
     await rm(join(workspace, ".igrep"), { recursive: true });
     await symlink(join(outside, ".igrep"), join(workspace, ".igrep"));
     let calls = 0;
-    const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async () => { calls++; return {}; });
+    const builder = new IgrepMemoryBuilder(cli("igrep"), sourceOnlyStatus, async () => { calls++; return {}; });
     await expect(builder.build(workspace, request)).rejects.toThrow("dialogue_format_invalid");
     expect(calls).toBe(0);
     expect(await readdir(join(outside, ".igrep"))).toEqual([]);
@@ -818,7 +889,7 @@ describe("igrep Main source admission", () => {
     await mkdir(dirname(join(workspace, ".igrep", directory)), { recursive: true });
     await symlink(target, join(workspace, ".igrep", directory));
     const calls: string[] = [];
-    const builder = new IgrepMemoryBuilder("igrep", sourceOnlyStatus, async (options) => {
+    const builder = new IgrepMemoryBuilder(cli("igrep"), sourceOnlyStatus, async (options) => {
       calls.push(options.args[1]!);
       return fixtureIngest(options);
     });
@@ -834,9 +905,9 @@ describe("igrep Main source admission", () => {
     await mkdir(join(workspace, ".igrep/mem/memory"), { recursive: true });
     await symlink(join(outside, ".igrep"), join(workspace, ".igrep/mem/memory/dialogues"));
     const calls: string[] = [];
-    const builder = new IgrepMemoryBuilder("igrep", { status: async () => ({
+    const builder = new IgrepMemoryBuilder(cli("igrep"), { status: async () => ({
       dialogueFiles: 0, pendingProfileRows: 0, processedProfileRows: 0, lastMaintainAt: null,
-    }) }, async (options) => { calls.push(options.args[1]!); return { ok: true }; });
+    }) }, async (options) => { calls.push(options.args[1]!); return memoryEnvelope(options); });
     await expect(builder.build(workspace, { ...request, messages: [] })).rejects.toThrow("dialogue_format_invalid");
     expect(calls).toEqual([]);
     expect(await readdir(join(outside, ".igrep"))).toEqual([]);
@@ -844,18 +915,69 @@ describe("igrep Main source admission", () => {
 });
 
 describe("igrep readiness isolation evidence", () => {
-  it("proves same-session replay and bidirectional cross-workspace isolation without returning probe content", async () => {
+  it.each([false, true, null] as const)("qualifies the rendered profile through the production evidence verdict: %s", async (supported) => {
+    const verified: Array<{ claim: string; quotes: string[] }> = [];
+    const claimed = "User is a system or automated agent, not a human user with personal attributes";
+    const promise = probeIgrepLifecycle(cli("igrep"), {
+      verifyClaim: async (claim, quotes) => { verified.push({ claim, quotes }); return supported; },
+      run: async (options) => {
+        if (options.args[1] === "ingest") return fixtureIngest(options);
+        if (options.args[1] === "reproject") return { schema: "igrep.mem/1", provider: "igrep", action: "reproject", migrated: false };
+        if (options.args[0] === "mem-api" && options.args[1] === "memory-search") {
+          const payload = JSON.parse(options.stdin ?? "{}") as { workspace: string; query: string };
+          const [file] = await readdir(join(payload.workspace, ".igrep/mem/memory/dialogues"));
+          return {
+            schema: "igrep.mem/1", provider: "igrep", strategy: "shared-search", workspaceRoot: payload.workspace,
+            results: [
+              { citation: "bank/cards/profile.md#L1-L3", sourceClass: "profile", snippet: `# User Profile\n\n- ${claimed}` },
+              ...(payload.workspace.includes(payload.query.startsWith("scope-a-") ? "scope-a" : "scope-b")
+                ? [{ citation: `memory/dialogues/${file}#L1-L2`, sourceClass: "dialogue", snippet: payload.query }] : []),
+            ],
+            warnings: [], markdownContext: "",
+          };
+        }
+        const workspace = options.args[options.args.indexOf("--workspace") + 1]!;
+        if (options.args[1] === "maintain") {
+          const source = JSON.parse((await readFile(join(workspace, "readiness.jsonl"), "utf8")).split("\n")[0]!);
+          await mkdir(join(workspace, ".igrep/mem/bank/cards"), { recursive: true });
+          await mkdir(join(workspace, ".igrep/mem/.state"), { recursive: true });
+          await writeFile(join(workspace, ".igrep/mem/bank/cards/profile.md"), `# User Profile\n\n- ${claimed}\n`);
+          await writeFile(join(workspace, ".igrep/mem/.state/facts.jsonl"), JSON.stringify({ status: "active", value: claimed, source_refs: [{ quote: source.content }] }) + "\n");
+        }
+        if (options.args[1] === "wake") return { ...memoryEnvelope(options), workspaceRoot: workspace, markdownContext: await readFile(join(workspace, ".igrep/mem/bank/cards/profile.md"), "utf8") };
+        return { ...memoryEnvelope(options), observations: 1, pendingRows: 2, processedRows: 2 };
+      },
+      status: async () => ({
+        dialogueFiles: 1,
+        pendingProfileRows: 0,
+        processedProfileRows: 2,
+        lastMaintainAt: "2026-08-19T12:00:02.000Z",
+      }),
+      nonce: () => "fact-free",
+    });
+    if (supported === false) {
+      await expect(promise).resolves.toEqual({ duplicateIngest: { replayedSessions: 1, duplicateDialogueFiles: 0 }, crossScope: { probes: 2, leakedResults: 0 } });
+    } else {
+      await expect(promise).rejects.toThrow(supported === null
+        ? "igrep readiness profile evidence could not be verified"
+        : "igrep readiness rendered unsupported profile facts");
+    }
+    expect(verified).toHaveLength(supported === false ? 2 : 1);
+    expect(verified[0]).toEqual({ claim: claimed, quotes: ["readiness scope-a-fact-free"] });
+  });
+
+  it("accepts initial pending rows while proving replay and bidirectional isolation without returning probe content", async () => {
     const searches: Array<{ workspace: string; query: string }> = [];
     const run = async (options: JsonCommandOptions): Promise<unknown> => {
       if (options.args[1] === "ingest") return fixtureIngest(options);
-      if (options.args[1] === "reproject") return { provider: "igrep", action: "reproject", migrated: false };
+      if (options.args[1] === "reproject") return { schema:"igrep.mem/1", provider: "igrep", action: "reproject", migrated: false };
       if (options.args[0] === "mem-api" && options.args[1] === "memory-search") {
         const payload = JSON.parse(options.stdin ?? "{}") as { workspace: string; query: string };
         const [file] = await readdir(join(payload.workspace, ".igrep/mem/memory/dialogues"));
         const citation = `memory/dialogues/${file}#L1-L2`;
         searches.push(payload);
         return {
-          provider: "igrep",
+          schema:"igrep.mem/1", provider: "igrep",
           strategy: "shared-search",
           workspaceRoot: payload.workspace,
           results: payload.workspace.includes(payload.query.startsWith("scope-a-") ? "scope-a" : "scope-b")
@@ -864,10 +986,11 @@ describe("igrep readiness isolation evidence", () => {
           markdownContext: "",
         };
       }
-      return { events: 2, dialoguePath: ".igrep/mem/memory/dialogues/readiness.jsonl" };
+      return { ...memoryEnvelope(options), pendingRows: 2, processedRows: 2 };
     };
 
-    const evidence = await probeIgrepLifecycle("igrep", {
+    const evidence = await probeIgrepLifecycle(cli("igrep"), {
+      verifyClaim: async () => { throw new Error("empty readiness fixture unexpectedly requested verification"); },
       run,
       status: async () => ({
         dialogueFiles: 1,
@@ -887,10 +1010,26 @@ describe("igrep readiness isolation evidence", () => {
     expect(JSON.stringify(evidence)).not.toContain("fixed-nonce");
   });
 
+  it.each([1, undefined])("rejects unsettled or missing remaining profile rows: %s", async (pendingProfileRows) => {
+    let statusCalls = 0;
+    await expect(probeIgrepLifecycle(cli("igrep"), {
+      verifyClaim: async () => { throw new Error("empty readiness fixture unexpectedly requested verification"); },
+      run: async (options) => options.args[1] === "ingest"
+        ? fixtureIngest(options)
+        : { ...memoryEnvelope(options), pendingRows: 2, processedRows: 1 },
+      status: async () => {
+        statusCalls += 1;
+        return { dialogueFiles: 1, pendingProfileRows, processedProfileRows: 1, lastMaintainAt: "2026-08-19T12:00:02.000Z" };
+      },
+      nonce: () => "unsettled",
+    })).rejects.toThrow("igrep readiness lifecycle did not settle");
+    expect(statusCalls).toBe(3);
+  });
+
   it("accepts an igrep workspaceRoot alias that resolves to the probed workspace", async () => {
     const run = async (options: JsonCommandOptions): Promise<unknown> => {
       if (options.args[1] === "ingest") return fixtureIngest(options);
-      if (options.args[1] === "reproject") return { provider: "igrep", action: "reproject", migrated: false };
+      if (options.args[1] === "reproject") return { schema:"igrep.mem/1", provider: "igrep", action: "reproject", migrated: false };
       if (options.args[0] === "mem-api" && options.args[1] === "memory-search") {
         const payload = JSON.parse(options.stdin ?? "{}") as { workspace: string; query: string };
         const [file] = await readdir(join(payload.workspace, ".igrep/mem/memory/dialogues"));
@@ -898,7 +1037,7 @@ describe("igrep readiness isolation evidence", () => {
         const alias = `${payload.workspace}-alias`;
         await symlink(payload.workspace, alias).catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });
         return {
-          provider: "igrep",
+          schema:"igrep.mem/1", provider: "igrep",
           strategy: "shared-search",
           workspaceRoot: alias,
           results: payload.workspace.includes(payload.query.startsWith("scope-a-") ? "scope-a" : "scope-b")
@@ -907,10 +1046,11 @@ describe("igrep readiness isolation evidence", () => {
           markdownContext: "",
         };
       }
-      return { events: 2, dialoguePath: ".igrep/mem/memory/dialogues/readiness.jsonl" };
+      return memoryEnvelope(options);
     };
 
-    await expect(probeIgrepLifecycle("igrep", {
+    await expect(probeIgrepLifecycle(cli("igrep"), {
+      verifyClaim: async () => { throw new Error("empty readiness fixture unexpectedly requested verification"); },
       run,
       status: async () => ({
         dialogueFiles: 1,
@@ -928,13 +1068,13 @@ describe("igrep readiness isolation evidence", () => {
   it("fails closed when either workspace can recall the other scope sentinel", async () => {
     const run = async (options: JsonCommandOptions): Promise<unknown> => {
       if (options.args[1] === "ingest") return fixtureIngest(options);
-      if (options.args[1] === "reproject") return { provider: "igrep", action: "reproject", migrated: false };
+      if (options.args[1] === "reproject") return { schema:"igrep.mem/1", provider: "igrep", action: "reproject", migrated: false };
       if (options.args[0] === "mem-api" && options.args[1] === "memory-search") {
         const payload = JSON.parse(options.stdin ?? "{}") as { workspace: string; query: string };
         const [file] = await readdir(join(payload.workspace, ".igrep/mem/memory/dialogues"));
         const citation = `memory/dialogues/${file}#L1-L2`;
         return {
-          provider: "igrep",
+          schema:"igrep.mem/1", provider: "igrep",
           strategy: "shared-search",
           workspaceRoot: payload.workspace,
           results: [{ citation, sourceClass: "dialogue", snippet: payload.query }],
@@ -942,10 +1082,11 @@ describe("igrep readiness isolation evidence", () => {
           markdownContext: "",
         };
       }
-      return { events: 2, dialoguePath: ".igrep/mem/memory/dialogues/readiness.jsonl" };
+      return memoryEnvelope(options);
     };
 
-    await expect(probeIgrepLifecycle("igrep", {
+    await expect(probeIgrepLifecycle(cli("igrep"), {
+      verifyClaim: async () => { throw new Error("empty readiness fixture unexpectedly requested verification"); },
       run,
       status: async () => ({
         dialogueFiles: 1,
@@ -955,5 +1096,85 @@ describe("igrep readiness isolation evidence", () => {
       }),
       nonce: () => "leak-nonce",
     })).rejects.toThrow(/cross-scope readiness probe leaked 2 results/);
+  });
+});
+
+describe("igrep machine protocol admission", () => {
+  it.each([
+    {schema:undefined}, {schema:"igrep.mem/2"}, {failed:true}, {error:"private-error"},
+    {warnings:["private-warning"]}, {workspaceRoot:"/different-workspace"}, {markdownContext:"# Memory Status\n\n- operational status"},
+  ])("does not turn an unavailable or operational wake envelope into profile facts (%j)", async overrides => {
+    await expect(observeIgrepWake(cli(),temporary[0]!,undefined,async()=>({
+      schema:"igrep.mem/1",provider:"igrep",action:"wake",workspaceRoot:temporary[0]!,warnings:[],markdownContext:"Profile fact",...overrides,
+    }))).rejects.toThrow("unverifiable evidence");
+  });
+
+  it.each([undefined,"igrep.mem/2"])("rejects an unrecognized memory schema %s", async schema => {
+    await expect(recallIgrepMemory(cli(),temporary[0]!,"query",{},async()=>({...searchEnvelope(temporary[0]!,{results:[]}),schema}))).rejects.toMatchObject({reason:"invalid_envelope"});
+  });
+
+  it.each(["completed","failed","partial",undefined])("does not treat unknown maintain outcome %s as source-ready", async outcome => {
+    const workspace = temporary[0]!;
+    await mkdir(join(workspace,".igrep"));
+    const builder = new IgrepMemoryBuilder(cli(),{status:async()=>({dialogueFiles:0,pendingProfileRows:0,processedProfileRows:0,lastMaintainAt:null})},async options=>({...memoryEnvelope(options),outcome}));
+    await expect(builder.build(workspace,{scope:"relationship",userId:"u",characterId:"c",mode:"rebuild",messages:[]})).rejects.toMatchObject({reason:"invalid_envelope"});
+  });
+
+  it("reports only unique verified memory audit markers as evidence matches", async () => {
+    const marker = `idreamrecall_${"a".repeat(32)}`;
+    const f = await recallFixture([{role:"user",content:`The marker is ${marker}; repeated ${marker}.`,source_at:"2026-10-17T00:00:00.000Z"}]);
+    const events: unknown[] = [];
+    const tools = createIgrepTools({cli:cli(),workspace:f.workspace,knowledgePath:"/authorized/knowledge",mode:"normal",recall:async()=>{throw new Error("unused");},observe:event=>events.push(event),run:async()=>searchEnvelope(f.workspace,{results:[{citation:`${f.path}#L1`,snippet:"untrusted preview",sourceClass:"dialogue"}]})});
+    await tools.find(tool=>tool.name === "memory_search")!.execute({query:"marker"},new AbortController().signal);
+    expect(events).toEqual([expect.objectContaining({operation:"memory",outcome:"hit",resultCount:1,evidenceMatches:1})]);
+  });
+});
+
+describe("explicit read-only public web tool", () => {
+  const webCli = {command:"/service/igrep",env:{IGREP_WEB_SEARCH_PROVIDER:"searxng",IGREP_SEARXNG_URL:"https://search.example",IGREP_NO_CACHE:"1"}};
+  const unavailableRecall = async () => {throw new Error("session recall was not requested");};
+  const web = (run: (options: JsonCommandOptions) => Promise<unknown>, observe?: Parameters<typeof createIgrepTools>[0]["observe"]) => createIgrepTools({cli:webCli,workspace:"/relationship",knowledgePath:"/authorized/knowledge",mode:"private",recall:unavailableRecall,run,observe}).find(tool=>tool.name === "igrep_web_search")!;
+
+  it("registers only when explicitly enabled, with the same private scope boundary", () => {
+    const base = {workspace:"/relationship",knowledgePath:"/authorized/knowledge",mode:"private" as const,recall:unavailableRecall};
+    expect(createIgrepTools({...base,cli:cli()}).map(tool=>tool.name)).toEqual(["igrep_search","session_recall"]);
+    expect(createIgrepTools({...base,cli:webCli}).map(tool=>tool.name)).toEqual(["igrep_search","session_recall","igrep_web_search"]);
+  });
+
+  it("passes only bounded public query options and renders cited provider snippets without diagnostics", async () => {
+    const calls: JsonCommandOptions[] = [];
+    const events: unknown[] = [];
+    const tool = web(async options => {calls.push(options);return {results:[{ref:"https://docs.example/report?q=one#section",content:"The provider reports a result.",score:0.8,trace:"private diagnostic",html:"ignored html"}],trace:"ignored envelope trace"};},event=>events.push(event));
+    const signal = new AbortController().signal;
+    await expect(tool.execute({query:"public research question",site:"docs.example/report",max_results:2},signal)).resolves.toEqual([{citation:"https://docs.example/report?q=one#section",snippet:"The provider reports a result.",score:0.8,evidence:"unverified-provider-snippet"}]);
+    expect(calls).toEqual([{...webCli,args:["web-search","--mode","fast","--max-count","2","--web-provider","searxng","--site","docs.example/report","--json","--","public research question"],acceptedExitCodes:[0,1],timeoutMs:30000,signal}]);
+    expect(events).toEqual([expect.objectContaining({operation:"web",outcome:"hit",resultCount:1})]);
+    expect(JSON.stringify(events)).not.toContain("evidenceMatches");
+  });
+
+  it.each([
+    {failed:true,results:[]}, {error:"private-error",results:[]}, {complete:false,results:[]}, {warnings:["incomplete"],results:[]},
+    {results:[{ref:"file:///private",content:"not public"}]}, {results:[{ref:"https://user:secret@example.com",content:"credential URL"}]},
+    {results:[{ref:"https://example.com",content:17}]}, {results:[{ref:"https://example.com",content:"fact",score:"invalid"}]}, {results:"invalid"},
+  ])("rejects incomplete or unverifiable web evidence (%j)", async payload => {
+    await expect(web(async()=>payload).execute({query:"public query"},new AbortController().signal)).rejects.toThrow("unverifiable evidence");
+  });
+
+  it("preserves empty result meaning, bounds excerpts and passes cancellation to the child", async () => {
+    await expect(web(async()=>({results:[]})).execute({query:"public query"},new AbortController().signal)).resolves.toEqual([]);
+    const result = await web(async()=>({results:[{ref:"https://example.com",content:"🙂".repeat(4001)}]})).execute({query:"public query"},new AbortController().signal) as Array<{snippet:string;truncated?:boolean}>;
+    expect(Array.from(result[0]!.snippet)).toHaveLength(4000);
+    expect(result[0]!.truncated).toBe(true);
+    expect(result[0]!.snippet.isWellFormed()).toBe(true);
+    const controller = new AbortController();
+    const tool = web(async options => {expect(options.signal).toBe(controller.signal);options.signal!.throwIfAborted();return {results:[]};});
+    controller.abort(new Error("cancelled"));
+    await expect(tool.execute({query:"public query"},controller.signal)).rejects.toThrow("cancelled");
+  });
+
+  it.each([{site:"https://example.com"},{site:"user@example.com"},{site:"example.com\n--all"},{max_results:0},{max_results:7}])("rejects unsafe web arguments before dispatch (%j)", async overrides => {
+    let calls = 0;
+    await expect(web(async()=>{calls++;return {results:[]};}).execute({query:"public query",...overrides},new AbortController().signal)).rejects.toThrow();
+    expect(calls).toBe(0);
   });
 });

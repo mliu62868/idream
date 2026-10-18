@@ -48,15 +48,16 @@ function terminal(snapshot: ChatExecutionSnapshot): ChatTerminalCommit {
 
 describe("Main Scene terminal authority", () => {
   it.each([
-    { name: "unknown", promptTokens: null, completionTokens: null },
-    { name: "measured zero", promptTokens: 0, completionTokens: 0 },
-    { name: "complete measured total", promptTokens: 126, completionTokens: 36 },
-  ])("persists $name usage and consumes a delivered Turn exactly once", async ({ promptTokens, completionTokens }) => {
+    { name: "unknown", promptTokens: null, completionTokens: null, reasoningTokens: null },
+    { name: "measured zero", promptTokens: 0, completionTokens: 0, reasoningTokens: 0 },
+    { name: "complete measured total", promptTokens: 126, completionTokens: 36, reasoningTokens: 0 },
+    { name: "known total with unknown reasoning", promptTokens: 126, completionTokens: 36, reasoningTokens: null },
+  ])("persists $name usage and consumes a delivered Turn exactly once", async ({ promptTokens, completionTokens, reasoningTokens }) => {
     const f = await fixture();
     const snapshot = await f.begin();
     const selected = {
       ...terminal(snapshot), promptTokens, completionTokens,
-      terminalEvidence: { ...terminal(snapshot).terminalEvidence, replyUsage: promptTokens === null ? null : { promptTokens, completionTokens, reasoningTokens: 0 } },
+      terminalEvidence: { ...terminal(snapshot).terminalEvidence, replyUsage: promptTokens === null ? null : { promptTokens, completionTokens, reasoningTokens } },
     };
     await expect(prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: snapshot.turnId } })).resolves.toMatchObject({ consumedAt: null, voidedAt: null });
     const first = await commitChatTerminal(selected);

@@ -207,8 +207,8 @@ describe("recovery service environment", () => {
         "CHAT_BFF_SIGNING_SECRET=chat-bff-secret",
         "SENTRY_RELEASE=idream@chat-revision",
         "CHAT_FS_ROOT=/srv/chat/runtime",
-        "DSH_IGREP_CANONICAL_ROOT=/srv/chat/companion-canonical",
-        "DSH_IGREP_PRIVATE_ROOT=/srv/chat/companion-private",
+        "PI_IGREP_CANONICAL_ROOT=/srv/chat/companion-canonical",
+        "PI_IGREP_PRIVATE_ROOT=/srv/chat/companion-private",
         "CHAT_MODEL_PROVIDER=openai",
         "CHAT_MODEL_BASE_URL=https://chat-model.example.com/v1",
         "CHAT_MODEL_NAME=chat-runtime-model",
@@ -247,8 +247,8 @@ describe("recovery service environment", () => {
       expect(env).toMatchObject({
         DATABASE_URL: "postgresql://main:pass@db.internal/idream",
         CHAT_FS_ROOT: "/srv/chat/runtime",
-        DSH_IGREP_CANONICAL_ROOT: "/srv/chat/companion-canonical",
-        DSH_IGREP_PRIVATE_ROOT: "/srv/chat/companion-private",
+        PI_IGREP_CANONICAL_ROOT: "/srv/chat/companion-canonical",
+        PI_IGREP_PRIVATE_ROOT: "/srv/chat/companion-private",
         BLOB_ENDPOINT: "https://live.example.com",
         IDREAM_GEN_BLOB_ENDPOINT: "https://gen-live.example.com",
         IDREAM_GEN_BLOB_BUCKET: "gen-live",
@@ -342,8 +342,8 @@ describe("recovery service environment", () => {
       const chat = path.join(workspaceRoot, "chat.env");
       writeFileSync(chat, [
         "CHAT_FS_ROOT=./data/chat",
-        "DSH_IGREP_CANONICAL_ROOT=./data/canonical",
-        "DSH_IGREP_PRIVATE_ROOT=./data/private",
+        "PI_IGREP_CANONICAL_ROOT=./data/canonical",
+        "PI_IGREP_PRIVATE_ROOT=./data/private",
         "",
       ].join("\n"));
       const env = loadRecoveryServiceEnvironment({
@@ -357,10 +357,10 @@ describe("recovery service environment", () => {
       expect(env.CHAT_FS_ROOT).toBe(
         path.join(workspaceRoot, "packages/chat/data/chat"),
       );
-      expect(env.DSH_IGREP_CANONICAL_ROOT).toBe(
+      expect(env.PI_IGREP_CANONICAL_ROOT).toBe(
         path.join(workspaceRoot, "packages/chat/data/canonical"),
       );
-      expect(env.DSH_IGREP_PRIVATE_ROOT).toBe(
+      expect(env.PI_IGREP_PRIVATE_ROOT).toBe(
         path.join(workspaceRoot, "packages/chat/data/private"),
       );
     } finally {

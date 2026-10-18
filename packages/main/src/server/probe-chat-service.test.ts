@@ -28,12 +28,12 @@ import {
   assertDedicatedChatProbeActor,
   cleanupCompletedProbeState,
   cleanupExistingProbeState,
-  describeDshRecallFailure,
+  describeRuntimeRecallFailure,
   fetchProbeCompanionAttemptEvidence,
   fetchAuditCompanionAttemptEvidence,
   waitForProbeMemoryMaintenance,
-  evaluateDshRecallEvidence,
-  projectDshCompanionEvidence,
+  evaluateRuntimeRecallEvidence,
+  projectRuntimeCompanionEvidence,
   runProbe,
   selectSoulReadyProbeCharacter,
 } from "./probe-chat-service";
@@ -48,9 +48,9 @@ const auditActor = {
 
 beforeEach(() => { db.findSessions.mockResolvedValue([]); });
 
-function completedDshTrace() {
+function completedRuntimeTrace() {
   return {
-    authority: "dsh_terminal_candidate",
+    authority: "pi_terminal_candidate",
     prompt: {
       productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION,
       preparedTurnVersion: 4,
@@ -58,7 +58,7 @@ function completedDshTrace() {
       soulFingerprint: "d".repeat(64),
     },
     attemptId: "assistant-normal:1",
-    runtime: "embedded_dsh",
+    runtime: "embedded_pi",
     memoryMode: "normal",
     provider: "openai",
     model: "fixture-model",
@@ -71,8 +71,8 @@ function completedDshTrace() {
       id: "5dd87053-012f-4ca3-a4d7-5aeb89466d5b",
       startedAt: "2026-08-19T12:00:00.000Z",
     },
-    igrepVersion: "0.14.1",
-    pluginVersion: "0.1.0",
+    igrepVersion: "0.1.161",
+    piVersion: "1.3.0",
     contentDigest: "b".repeat(64),
     igrepObservations: {
       wake: { calls: 1, hits: 0, failures: 0, evidenceMatches: 0 },
@@ -110,7 +110,7 @@ function installFailFastProbeFetch(
     attempt: 1,
     assistantStatus: "sent",
     terminalEvidence: {
-      ...completedDshTrace(),
+      ...completedRuntimeTrace(),
       attribution: {
         requestId: `chatcmpl-${args.where.assistantMessageId}`,
         actualProvider: "local-openai",
@@ -325,15 +325,15 @@ describe("chat service probe actor authority", () => {
   });
 });
 
-describe("chat service DSH evidence", () => {
-  it("uses one bounded settlement envelope for the sole DSH runtime", () => {
+describe("chat service Pi evidence", () => {
+  it("uses one bounded settlement envelope for the sole Pi runtime", () => {
     expect(chatServiceProbeSettleTimeoutMs()).toBe(90_000);
     vi.stubEnv("CHAT_SERVICE_PROBE_SETTLE_TIMEOUT_MS", "120000");
     expect(chatServiceProbeSettleTimeoutMs()).toBe(120_000);
   });
 
-  it("projects a settled allowlisted DSH turn without exposing the raw trace", () => {
-    const evidence = projectDshCompanionEvidence(completedDshTrace(), "normal");
+  it("projects a settled allowlisted Pi turn without exposing the raw trace", () => {
+    const evidence = projectRuntimeCompanionEvidence(completedRuntimeTrace(), "normal");
 
     expect(evidence).toEqual({
       ok: true,
@@ -341,14 +341,14 @@ describe("chat service DSH evidence", () => {
       preparedTurnVersion: 4,
       systemPromptDigest: "c".repeat(64),
       soulFingerprint: "d".repeat(64),
-      runtime: "embedded_dsh",
+      runtime: "embedded_pi",
       memoryMode: "normal",
       provider: "openai",
       model: "fixture-model",
       profileDigest: "a".repeat(64),
       runtimeInstanceId: "5dd87053-012f-4ca3-a4d7-5aeb89466d5b",
-      igrepVersion: "0.14.1",
-      pluginVersion: "0.1.0",
+      igrepVersion: "0.1.161",
+      piVersion: "1.3.0",
       requestId: "chatcmpl-probe",
       actualProvider: "local-openai",
       memoryOutcome: "projected",
@@ -365,19 +365,19 @@ describe("chat service DSH evidence", () => {
     expect(JSON.stringify(evidence)).not.toContain("must-not-leak");
   });
 
-  it("fails closed when a normal DSH candidate has no provider attribution", () => {
-    const trace = completedDshTrace();
+  it("fails closed when a normal Pi candidate has no provider attribution", () => {
+    const trace = completedRuntimeTrace();
     delete (trace as { attribution?: unknown }).attribution;
-    const evidence = projectDshCompanionEvidence(trace, "normal");
+    const evidence = projectRuntimeCompanionEvidence(trace, "normal");
 
     expect(evidence.ok).toBe(false);
     expect(evidence.error).toContain("attribution");
   });
 
   it("requires private turns to carry no igrep activity", () => {
-    const trace = completedDshTrace();
+    const trace = completedRuntimeTrace();
     trace.memoryMode = "private";
-    const evidence = projectDshCompanionEvidence(trace, "private");
+    const evidence = projectRuntimeCompanionEvidence(trace, "private");
 
     expect(evidence.ok).toBe(false);
     expect(evidence.error).toContain("privateMemoryIsolation");
@@ -548,7 +548,7 @@ describe("chat service conversation probe", () => {
       recallMatched: false,
       wakeObserved: true,
       memorySearchHit: true,
-      dsh: { requestId: "chatcmpl-assistant-recall", memorySearchEvidenceMatches: 1 },
+      runtime: { requestId: "chatcmpl-assistant-recall", memorySearchEvidenceMatches: 1 },
     });
     expect(report.conversation.error).toContain("matched=false");
     expect(report.conversation.cleanup.ok).toBe(true);
@@ -594,10 +594,10 @@ describe("chat service conversation probe", () => {
 
   it("requires actual wake and a memory_search hit without exposing the recall sentinel", () => {
     const sentinel = "recall-probe-secret-42";
-    const evidence = evaluateDshRecallEvidence({
+    const evidence = evaluateRuntimeRecallEvidence({
       assistantContent: `You told me ${sentinel}.`,
       sentinel,
-      dsh: projectDshCompanionEvidence(completedDshTrace(), "normal"),
+      runtime: projectRuntimeCompanionEvidence(completedRuntimeTrace(), "normal"),
     });
     expect(evidence).toEqual({
       ok: true,
@@ -606,44 +606,44 @@ describe("chat service conversation probe", () => {
       memorySearchHit: true,
     });
     expect(JSON.stringify(evidence)).not.toContain(sentinel);
-    expect(evaluateDshRecallEvidence({
+    expect(evaluateRuntimeRecallEvidence({
       assistantContent: `I remember ${sentinel}.\n\n{memory_search: "exact rooftop probe code word"}`,
       sentinel,
-      dsh: projectDshCompanionEvidence(completedDshTrace(), "normal"),
+      runtime: projectRuntimeCompanionEvidence(completedRuntimeTrace(), "normal"),
     }).ok).toBe(false);
     for (const example of [
       `The phrase is ${sentinel}. You quoted '{memory_search: "example"}'.`,
       `The phrase is ${sentinel}.\n\nExample:\n\n\`\`\`text\n\n{memory_search: "example"}\n\`\`\``,
     ]) {
-      expect(evaluateDshRecallEvidence({
+      expect(evaluateRuntimeRecallEvidence({
         assistantContent: example,
         sentinel,
-        dsh: projectDshCompanionEvidence(completedDshTrace(), "normal"),
+        runtime: projectRuntimeCompanionEvidence(completedRuntimeTrace(), "normal"),
       }).ok).toBe(true);
     }
-    expect(evaluateDshRecallEvidence({
+    expect(evaluateRuntimeRecallEvidence({
       assistantContent: "I cannot recall it.",
       sentinel,
-      dsh: projectDshCompanionEvidence(completedDshTrace(), "normal"),
+      runtime: projectRuntimeCompanionEvidence(completedRuntimeTrace(), "normal"),
     }).ok).toBe(false);
-    const unrelated = completedDshTrace();
+    const unrelated = completedRuntimeTrace();
     unrelated.igrepObservations.memory.evidenceMatches = 0;
-    expect(evaluateDshRecallEvidence({
+    expect(evaluateRuntimeRecallEvidence({
       assistantContent: `You told me ${sentinel}.`,
       sentinel,
-      dsh: projectDshCompanionEvidence(unrelated, "normal"),
+      runtime: projectRuntimeCompanionEvidence(unrelated, "normal"),
     }).ok).toBe(false);
-    expect(describeDshRecallFailure({
+    expect(describeRuntimeRecallFailure({
       ok: false,
       recallMatched: false,
       wakeObserved: true,
       memorySearchHit: false,
-    }, projectDshCompanionEvidence(unrelated, "normal"))).toBe(
+    }, projectRuntimeCompanionEvidence(unrelated, "normal"))).toBe(
       "accepted=false;matched=false;wake=true;memorySearch=false;calls=1;hits=1;evidenceMatches=0",
     );
   });
 
-  it("keeps the SSE observer outside the default DSH execution deadline", () => {
+  it("keeps the SSE observer outside the default Pi execution deadline", () => {
     expect(DEFAULT_CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS).toBe(330_000);
   });
 
@@ -651,7 +651,7 @@ describe("chat service conversation probe", () => {
     db.findTurn.mockResolvedValue({
       attempt: 1,
       assistantStatus: "sent",
-      terminalEvidence: completedDshTrace(),
+      terminalEvidence: completedRuntimeTrace(),
       memoryEnabled: true,
       session: {
         sessionId: "session-probe",
@@ -673,7 +673,7 @@ describe("chat service conversation probe", () => {
 
     expect(evidence).toMatchObject({
       ok: true,
-      runtime: "embedded_dsh",
+      runtime: "embedded_pi",
       memoryOutcome: "projected",
     });
     expect(JSON.stringify(evidence)).not.toContain("must-not-leak");
@@ -684,7 +684,7 @@ describe("chat service conversation probe", () => {
     db.findUser.mockResolvedValue({ ...auditActor, id: userId });
     db.findPendingProjection.mockResolvedValue(null);
     db.findTurn.mockResolvedValue({
-      attempt: 1, assistantStatus: "sent", terminalEvidence: completedDshTrace(),
+      attempt: 1, assistantStatus: "sent", terminalEvidence: completedRuntimeTrace(),
       session: { sessionId: "quality-session", userId, characterId: "private-character" },
     });
     const input = { serviceUrl: "http://127.0.0.1:3100", internalToken: "audit-token", userId, sessionId: "quality-session", messageId: "assistant-normal", attempt: 1, mode: "normal" as const };
@@ -718,7 +718,7 @@ describe("chat service conversation probe", () => {
     db.findTurn.mockResolvedValue({
       attempt: 1,
       assistantStatus: "sent",
-      terminalEvidence: completedDshTrace(),
+      terminalEvidence: completedRuntimeTrace(),
       memoryEnabled: true,
       session: {
         sessionId: "session-probe",
@@ -752,7 +752,7 @@ describe("chat service conversation probe", () => {
     db.findTurn.mockResolvedValue({
       attempt: 1,
       assistantStatus: "sent",
-      terminalEvidence: completedDshTrace(),
+      terminalEvidence: completedRuntimeTrace(),
       memoryEnabled: true,
       session: {
         sessionId: "session-probe",

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { compileCharacterSoul, COMPANION_PRODUCT_PROMPT_VERSION } from "@idream/shared";
-import type { RequestMessage } from "@deepseek-ai/dsh-llm";
 import {
   EDIT_LAST_IMAGE_TOOL,
   GENERATE_IMAGE_ASYNC_TOOL,
@@ -15,6 +14,7 @@ import { resolvePolicy } from "./policy.js";
 import { OpenAiCompatibleAdapter } from "./agent-runtime/openai-adapter.js";
 import type { CompanionModelRequestEvidence } from "./agent-runtime/contracts.js";
 import { formatModelRequestInput } from "./agent-runtime/model-request-format.js";
+import { formatCompanionMessages } from "./agent-runtime/pi-context.js";
 
 function context(): BuiltContext {
   const policy = {
@@ -144,14 +144,15 @@ describe("PreparedTurn budget", () => {
     expect(prepared.messages[0].content).not.toContain("Jules");
     expect(source.userPersona.version).toBe(2);
 
-    // Match the runtime's two memory placements: resident facts in the
-    // system prompt, and episodic recall after state before the current user.
+    // Match the runtime: resident facts and episodic recall stay background
+    // data, before the unchanged current user message.
     const resident = "What you know about the person you are talking to, from earlier conversations:\n- The user's name is Casey";
     const recall = "Moments from earlier conversations that may matter right now:\n- My name is Casey and I face the west balcony.";
-    const wire = formatModelRequestInput({
+    const wire = formatModelRequestInput({ respondingCharacterId: "character-1",
       messages: [
-        { ...prepared.messages[0], content: `${prepared.messages[0].content}\n\n${resident}` },
+        prepared.messages[0],
         ...prepared.messages.slice(1, -1),
+        { id: "resident:current", sourceKind: "plugin", role: "user", content: resident },
         { id: "recall:current", sourceKind: "plugin", role: "user", content: recall },
         prepared.messages.at(-1)!,
       ],
@@ -160,12 +161,15 @@ describe("PreparedTurn budget", () => {
     const current = wire.messages.at(-1) as { role: string; content: string };
     expect(system.role).toBe("system");
     expect(system.content).toContain(authority);
-    expect(system.content).toContain(resident);
+    const background = wire.messages.at(-2) as { role: string; content: string };
+    expect(background.role).toBe("user");
+    expect(background.content).toContain(resident);
+    expect(system.content).not.toContain(resident);
     expect(system.content).not.toContain("Jules");
-    expect(current.content).toContain(state.content);
-    expect(current.content).toContain(recall);
-    expect(current.content.indexOf(state.content)).toBeLessThan(current.content.indexOf(recall));
-    expect(current.content.endsWith(source.recentMessages.at(-1)!.content)).toBe(true);
+    expect(background.content).toContain(state.content);
+    expect(background.content).toContain(recall);
+    expect(background.content.indexOf(state.content)).toBeLessThan(background.content.indexOf(recall));
+    expect(current.content).toBe(source.recentMessages.at(-1)!.content);
     expect(wire.messages).toContainEqual({ role: "user", content: source.recentMessages[0].content });
     if (group) expect(system.content).toContain("You are only Mara");
 
@@ -200,9 +204,8 @@ describe("PreparedTurn budget", () => {
     expect(compilePreparedTurn(source, "current").messages.find(message => message.id === "state:current")!.content).not.toContain("open differently");
   });
 
-  // SPEC (2026-10-08): a clear photo request is recorded so the engine can keep it,
-  // and the turn state tells the Agent the photo goes out with this reply.
-  it("records a clear photo request and tells the Agent the photo goes out with this reply", () => {
+  // A clear photo request records the action; its result owns delivery status.
+  it("records a clear photo request without treating photo discussion as an action", () => {
     const withImages = (text: string, enabled = true) => {
       const source = context();
       source.policy = { ...source.policy, imageToolEnabled: enabled, modelProfile: { ...source.policy.modelProfile, supportsTools: true } };
@@ -218,6 +221,26 @@ describe("PreparedTurn budget", () => {
     expect(chatting.messages.find(message => message.id === "state:current")?.content).not.toContain("asks you for a photo now");
 
     expect(withImages("Send me a selfie.", false).imageRequest).toBeNull();
+  });
+
+  it.each([
+    { text: "Send me a selfie.", name: GENERATE_IMAGE_ASYNC_TOOL, hasRecentImageContext: false },
+    { text: "Change the last photo to show a red coat.", name: EDIT_LAST_IMAGE_TOOL, hasRecentImageContext: true },
+  ])("keeps $name acceptance distinct from delivery in the prepared request", ({ text, name, hasRecentImageContext }) => {
+    const source = context();
+    source.policy = { ...source.policy, imageToolEnabled: true, modelProfile: { ...source.policy.modelProfile, supportsTools: true } };
+    source.hasRecentImageContext = hasRecentImageContext;
+    source.recentMessages = [{ id: "current", role: "user", content: text }];
+    const prepared = compilePreparedTurn(source, "current");
+    const state = prepared.messages.find(message => message.id === "state:current")!.content;
+
+    expect(prepared.imageRequest?.name).toBe(name);
+    expect(state).toContain(`call ${name}`);
+    expect(state).not.toContain("is sent with this reply");
+    expect(state).not.toContain("answer as you send it");
+    expect(state).toContain("accepted means still being made");
+    expect(state).toContain("completed means delivered");
+    expect(prepared.messages.at(-1)?.content).toBe(text);
   });
 
   it.each(["Please acknowledge in one short sentence.", "Please give a detailed thirty-step plan."])(
@@ -274,28 +297,22 @@ describe("PreparedTurn budget", () => {
           }] })}\n\ndata: [DONE]\n\n`);
         },
       });
-      for await (const _chunk of adapter.stream({
-        provider: "openai", model: prepared.model, system: prepared.messages[0].content, tools: prepared.tools,
-        messages: prepared.messages.filter(message => message.role !== "system").map((message): RequestMessage => ({
-          id: message.id as never, role: "user",
-          source: message.sourceKind === "current_user" ? { kind: "user" } : { kind: "idream", context: "snapshot" },
-          content: [{ type: "text", text: message.content }],
-        })),
-      })) { /* Exercise native conversation and tool calls. */ }
+      for await (const _chunk of adapter.stream(formatCompanionMessages(prepared.messages, [], prepared.messages[0].content, prepared.tools, "character-1"))) { /* Exercise native conversation and tool calls. */ }
       expect(bodies).toHaveLength(1);
       for (const body of bodies) {
         const system = body.messages.find(message => message.role === "system")!.content;
         const current = body.messages.findLast(message => message.role === "user")!.content;
-        const preferenceAt = current.indexOf(preference);
-        // Preferences are a live user-level choice carried with the current
-        // message, never in the system prompt; facts stay turn-state data.
+        const background = body.messages.at(-2)!.content;
+        const preferenceAt = background.indexOf(preference);
+        // Preferences are a live user-level choice in background context,
+        // never in the system prompt; facts stay turn-state data.
         expect(preferenceAt).toBeGreaterThanOrEqual(0);
-        expect(preferenceAt).toBeLessThan(current.indexOf(pin));
+        expect(preferenceAt).toBeLessThan(background.indexOf(pin));
         expect(system).not.toContain(preference);
         expect(system).not.toContain(pin);
         expect(body.tools ?? []).toHaveLength(1);
-        expect(current).toContain(pin);
-        expect(current.endsWith(source.recentMessages[0].content)).toBe(true);
+        expect(background).toContain(pin);
+        expect(current).toBe(source.recentMessages[0].content);
         expect(current).not.toContain("Conversation records");
       }
       expect(prepared.messages.find(message => message.id === "state:current")!.content).not.toContain(preference);
@@ -375,22 +392,7 @@ describe("PreparedTurn budget", () => {
         return new Response('data: {"choices":[{"delta":{"content":"Ready."},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
       },
     });
-    for await (const _chunk of adapter.stream({
-      provider: profile.provider, model: profile.model, system,
-      messages: prepared.messages.filter(message => message.role !== "system").map((message): RequestMessage => {
-        if (message.role === "assistant") return {
-          id: message.id as never, role: "assistant",
-          source: { kind: "model", provider: profile.provider, model: profile.model, ...(message.speaker ? { speaker: message.speaker } : {}) },
-          content: [{ type: "text", text: message.content }],
-        };
-        return {
-          id: message.id as never, role: "user",
-          source: message.sourceKind === "current_user" ? { kind: "user" }
-            : { kind: "idream", context: message.sourceKind === "plugin" ? "snapshot" : "replay" },
-          content: [{ type: "text", text: message.content }],
-        };
-      }), tools: prepared.tools,
-    })) { /* This response is a transport fixture, not a model identity qualification. */ }
+    for await (const _chunk of adapter.stream(formatCompanionMessages(prepared.messages, [], system, prepared.tools, "character-1"))) { /* This response is a transport fixture, not a model identity qualification. */ }
     expect(bodies).toHaveLength(1);
     const request = JSON.parse(bodies[0]) as { messages: Array<{ role: string; content: string }> };
     const finalSystem = request.messages.filter(message => message.role === "system").map(message => message.content).join("\n");
@@ -400,10 +402,10 @@ describe("PreparedTurn budget", () => {
     expect(evidence[0].systemPromptDigest).toBe(prepared.trace.systemPromptDigest);
     expect(evidence[0].estimatedInputTokens).toBeLessThanOrEqual(prepared.budget.maxInputTokens);
     if (mode === "group") {
-      const conversation = request.messages.findLast(message => message.role === "user")!.content;
+      const conversation = request.messages.at(-2)!.content;
       expect(conversation).toContain(`Replying now: ${name}`);
-      expect(request.messages.filter(message => message.role === "assistant"))
-        .toEqual([{ role: "assistant", content: `${other.name}: I am Briar Stone.` }]);
+      expect(request.messages.filter(message => message.content === `${other.name}: I am Briar Stone.`))
+        .toEqual([{ role: "user", content: `${other.name}: I am Briar Stone.` }]);
       expect(finalSystem).toContain("never write their next reply");
     }
   });
@@ -585,7 +587,7 @@ describe("PreparedTurn budget", () => {
     const prepared = compilePreparedTurn(source, "user-current");
     expect(prepared).not.toHaveProperty("requiredAction");
     expect(prepared.tools.map(tool => tool.name)).toEqual([GENERATE_IMAGE_ASYNC_TOOL]);
-    const wire = formatModelRequestInput({ messages: prepared.messages, tools: prepared.tools });
+    const wire = formatModelRequestInput({ respondingCharacterId: "character-1", messages: prepared.messages, tools: prepared.tools });
     const current = wire.messages.at(-1) as { role: string; content: string };
     expect(current.role).toBe("user");
     expect(current.content.endsWith(userText)).toBe(true);
@@ -642,7 +644,7 @@ describe("PreparedTurn budget", () => {
   });
 
   it.each([
-    // The complete product contract plus the runtime reserve (DSH guidance, igrep
+    // The complete product contract plus the runtime reserve (Pi guidance, igrep
     // tools, recall notes) leaves room for some prior exchanges, depending on their
     // size; the provider must receive the bounded suffix.
     { priorChars: 3_010, retainedStart: 4 },
@@ -676,24 +678,10 @@ describe("PreparedTurn budget", () => {
       },
     });
     const chunks = [];
-    for await (const chunk of adapter.stream({
-      provider: profile.provider, model: profile.model,
-      system: prepared.messages.find(message => message.role === "system")!.content,
-      messages: prepared.messages.filter(message => message.role !== "system").map(message => ({
-        id: message.id as never,
-        role: message.role === "assistant" ? "assistant" as const : "user" as const,
-        source: message.sourceKind === "current_user"
-          ? { kind: "user" as const }
-          : message.role === "assistant"
-            ? { kind: "model" as const, provider: profile.provider, model: profile.model }
-            : { kind: "idream" as const, context: message.sourceKind === "plugin" ? "snapshot" as const : "replay" as const },
-        content: [{ type: "text" as const, text: message.content }],
-      }) as never),
-      tools: prepared.tools,
-    })) chunks.push(chunk);
+    for await (const chunk of adapter.stream(formatCompanionMessages(prepared.messages, [], prepared.messages.find(message => message.role === "system")!.content, prepared.tools, "character-1"))) chunks.push(chunk);
 
     expect(requests).toHaveLength(1);
-    expect(chunks.filter(chunk => chunk.type === "block-end" && chunk.block.type === "tool-call")).toHaveLength(1);
+    expect(chunks.filter(chunk => chunk.type === "toolcall_end")).toHaveLength(1);
     expect(prepared.budget.maxInputTokens).toBe(6_000);
     expect(prepared.budget.dropped).toEqual(retainedStart > 0 ? ["transcript"] : []);
     expect(prepared.omittedMessages).toEqual(source.recentMessages.slice(0, retainedStart).map(message => ({
@@ -762,7 +750,7 @@ describe("PreparedTurn budget", () => {
     expect(wire.messages[0]?.id).toContain(wire.trace.systemPromptDigest);
   });
 
-  it("preserves Soul and Scene in the sole DSH projection", () => {
+  it("preserves Soul and Scene in the sole product projection", () => {
     const source = context();
     source.recentMessages = [
       { id: "user-history", role: "user", content: "Earlier question" },
@@ -798,16 +786,18 @@ describe("PreparedTurn budget", () => {
       { id: "clock-question", role: "user", content: "Where are we, what time is it, and what color is the scarf?" },
     ];
     const prepared = compilePreparedTurn(source, "clock-question", new Date("2026-10-07T09:46:00Z"));
-    const wire = formatModelRequestInput({ messages: prepared.messages });
+    const wire = formatModelRequestInput({ respondingCharacterId: "character-1", messages: prepared.messages });
     const current = wire.messages.at(-1) as { role: string; content: string };
 
+    const background = wire.messages.at(-2) as { role: string; content: string };
+    expect(background.role).toBe("user");
     expect(wire.messages).toContainEqual({ role: "user", content: source.recentMessages[0]!.content });
-    expect(current.content).toContain("Real-world clock: 2026-10-07 09:46 UTC, Wednesday");
-    expect(current.content).toContain("Use it for real-world time and calendar questions.");
-    expect(current.content).toContain("Story time follows the user's latest established time in the conversation or, if none, the saved Scene.");
-    expect(current.content).toContain("Keep it until the story explicitly changes it; the real-world clock never advances it.");
-    expect(current.content).toContain(source.recentMessages.at(-1)!.content);
-    expect(current.content).not.toMatch(/^- Time:/mu);
+    expect(background.content).toContain("Real-world clock: 2026-10-07 09:46 UTC, Wednesday");
+    expect(background.content).toContain("Use it for real-world time and calendar questions.");
+    expect(background.content).toContain("Story time follows the user's latest established time in the conversation or, if none, the saved Scene.");
+    expect(background.content).toContain("Keep it until the story explicitly changes it; the real-world clock never advances it.");
+    expect(current.content).toBe(source.recentMessages.at(-1)!.content);
+    expect(background.content).not.toMatch(/^- Time:/mu);
     expect(prepared.context.scene.time).toBeNull();
   });
 

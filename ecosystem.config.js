@@ -1,4 +1,4 @@
-// pm2 process topology (design §12). Chat embeds the DSH/igrep runtime in its
+// pm2 process topology (design §12). Chat embeds the Pi/igrep runtime in its
 // single Bun process; mock video omits gen-video in every mode.
 // Development is the default: web apps use Next dev/Fast Refresh and source
 // services use PM2 watch. Production keeps the immutable standalone web runtime.
@@ -15,7 +15,7 @@
 // routing to keep old clients and workers on the same release during the overlap.
 // ⚠️ chat is instances:1 — each AgentRun has one local-file writer.
 //    Product Turn/Scene/attachment authority stays in Main PostgreSQL; generic
-//    memory lives in the DSH/igrep workspace. Do NOT scale it past 1 without
+//    memory lives in the Pi/igrep workspace. Do NOT scale it past 1 without
 //    shared storage plus explicit per-run writer arbitration.
 // ⚠️ Every first-party JavaScript/TypeScript/Next process uses Bun as PM2's
 //    interpreter. Voice-runtime Bun wrappers own their Python Uvicorn children;

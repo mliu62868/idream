@@ -8,7 +8,7 @@ import {
   createCompanionWorkspaceRebuildStream,
   decodeCompanionWorkspaceRebuildFrame,
   encodeCompanionWorkspaceRebuildFrame,
-  projectCompanionProbeDshEvidence,
+  projectCompanionProbeRuntimeEvidence,
   type CompanionWorkspaceRebuildMessage,
 } from "./companion-runtime";
 
@@ -31,9 +31,9 @@ const messages: CompanionWorkspaceRebuildMessage[] = [
 
 function imageToolEvidence(tool: unknown) {
   return {
-    authority: "dsh_terminal_candidate",
+    authority: "pi_terminal_candidate",
     prompt: { productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION, preparedTurnVersion: 5, systemPromptDigest: "c".repeat(64), soulFingerprint: "d".repeat(64) },
-    runtime: "embedded_dsh",
+    runtime: "embedded_pi",
     memoryMode: "normal",
     provider: "openai",
     model: "model-1",
@@ -42,8 +42,8 @@ function imageToolEvidence(tool: unknown) {
     execution: { steps: 2, toolCalls: 1 },
     tools: [tool],
     contentDigest: "b".repeat(64),
-    igrepVersion: "0.1.137",
-    pluginVersion: "0.1.0",
+    igrepVersion: "0.1.161",
+    piVersion: "1.3.0",
     igrepObservations: {
       wake: { calls: 1, hits: 0, failures: 0, evidenceMatches: 0 },
       search: { calls: 0, hits: 0, failures: 0, evidenceMatches: 0 },
@@ -73,13 +73,13 @@ describe("shared companion authority contracts", () => {
         session: { calls: 1, hits: 1, failures: 0, evidenceMatches: 0 },
       },
     };
-    expect(projectCompanionProbeDshEvidence(evidence, "private")).toMatchObject({ ok: true, error: null, igrepSearchCalls: 1, memorySearchCalls: 0 });
+    expect(projectCompanionProbeRuntimeEvidence(evidence, "private")).toMatchObject({ ok: true, error: null, igrepSearchCalls: 1, memorySearchCalls: 0 });
     evidence.igrepObservations.memory.calls = 1;
-    expect(projectCompanionProbeDshEvidence(evidence, "private")).toMatchObject({ ok: false, error: expect.stringContaining("privateMemoryIsolation") });
+    expect(projectCompanionProbeRuntimeEvidence(evidence, "private")).toMatchObject({ ok: false, error: expect.stringContaining("privateMemoryIsolation") });
   });
 
   it.each(["generate_image_async", "edit_last_image"])("accepts current %s reservation authority without exposing its intent", (name) => {
-    const projected = projectCompanionProbeDshEvidence(imageToolEvidence({ ...imageReservation, name }), "normal");
+    const projected = projectCompanionProbeRuntimeEvidence(imageToolEvidence({ ...imageReservation, name }), "normal");
     expect(projected).toMatchObject({ ok: true, error: null, memorySearchEvidenceMatches: 1 });
     expect(projected).not.toHaveProperty("tools");
     expect(projected).not.toHaveProperty("intent");
@@ -93,7 +93,7 @@ describe("shared companion authority contracts", () => {
     { argumentsDigest: "invalid" },
     { untrustedAuthority: true },
   ])("rejects incomplete or malformed reservation authority: %j", (overrides) => {
-    const projected = projectCompanionProbeDshEvidence(imageToolEvidence({ ...imageReservation, ...overrides }), "normal");
+    const projected = projectCompanionProbeRuntimeEvidence(imageToolEvidence({ ...imageReservation, ...overrides }), "normal");
     expect(projected.ok).toBe(false);
     expect(projected.error).toContain("execution.tools");
   });
@@ -101,15 +101,23 @@ describe("shared companion authority contracts", () => {
   it("still rejects a tool count that disagrees with the actual reservations", () => {
     const evidence = imageToolEvidence(imageReservation);
     evidence.execution.toolCalls = 0;
-    expect(projectCompanionProbeDshEvidence(evidence, "normal")).toMatchObject({ ok: false, error: expect.stringContaining("execution.tools") });
+    expect(projectCompanionProbeRuntimeEvidence(evidence, "normal")).toMatchObject({ ok: false, error: expect.stringContaining("execution.tools") });
   });
 
   it.each(["companion-product-1", "companion-product-6"])("does not relabel prior-contract terminal evidence as current probe qualification (%s)", (version) => {
     const evidence = imageToolEvidence(imageReservation);
     const historical = { ...evidence, prompt: { ...evidence.prompt, productPromptVersion: version } };
-    expect(projectCompanionProbeDshEvidence(historical, "normal"))
+    expect(projectCompanionProbeRuntimeEvidence(historical, "normal"))
       .toMatchObject({ ok: false, error: expect.stringContaining("prompt.productPromptVersion") });
     expect(historical.prompt.productPromptVersion).toBe(version);
+  });
+
+  it("retains historical DSH evidence while refusing to certify it as a current Pi run", () => {
+    const { piVersion: _piVersion, ...current } = imageToolEvidence(imageReservation);
+    const historical = { ...current, authority: "dsh_terminal_candidate", runtime: "embedded_dsh", pluginVersion: "0.1.0" };
+    const original = structuredClone(historical);
+    expect(projectCompanionProbeRuntimeEvidence(historical, "normal")).toMatchObject({ ok: false, error: expect.stringContaining("runtime") });
+    expect(historical).toEqual(original);
   });
 
   it("accepts only contiguous, complete user-assistant rebuild exchanges", () => {
@@ -185,15 +193,15 @@ describe("shared companion authority contracts", () => {
   });
 
   it("projects internal evidence into a content-free operator shape", () => {
-    const projected = projectCompanionProbeDshEvidence({
-      authority: "dsh_terminal_candidate",
+    const projected = projectCompanionProbeRuntimeEvidence({
+      authority: "pi_terminal_candidate",
       prompt: {
         productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION,
         preparedTurnVersion: 4,
         systemPromptDigest: "c".repeat(64),
         soulFingerprint: "d".repeat(64),
       },
-      runtime: "embedded_dsh",
+      runtime: "embedded_pi",
       memoryMode: "private",
       provider: "openai",
       model: "model-1",
@@ -205,8 +213,8 @@ describe("shared companion authority contracts", () => {
       execution: { steps: 1, toolCalls: 0 },
       tools: [],
       contentDigest: "b".repeat(64),
-      igrepVersion: "0.1.134",
-      pluginVersion: "0.1.0",
+      igrepVersion: "0.1.161",
+      piVersion: "1.3.0",
       igrepObservations: {
         wake: { calls: 0, hits: 0, failures: 0, evidenceMatches: 0 },
         search: { calls: 0, hits: 0, failures: 0, evidenceMatches: 0 },

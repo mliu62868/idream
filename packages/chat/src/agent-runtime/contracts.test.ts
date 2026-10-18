@@ -125,6 +125,8 @@ describe("embedded companion runtime contracts", () => {
     };
     expect(companionTerminalCandidateSchema.safeParse(candidate).success).toBe(true);
     expect(companionTerminalCandidateSchema.parse({ ...candidate, usage: null }).usage).toBeNull();
+    expect(companionTerminalCandidateSchema.parse({ ...candidate, usage: { ...candidate.usage, reasoningTokens: null } }).usage)
+      .toEqual({ promptTokens: 10, completionTokens: 2, reasoningTokens: null });
     expect(companionTerminalCandidateSchema.safeParse({
       ...candidate,
       execution: { steps: 1, toolCalls: 1 },

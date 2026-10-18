@@ -1,0 +1,6127 @@
+{
+  "recordedAt": "2026-10-17T08:50:01.108Z",
+  "sourceRevision": "7e26cea97a26ca7a5703077f4dbdd607e808023f",
+  "runtime": {
+    "node": "v26.3.0",
+    "bun": "1.4.0",
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "packages": {
+    "@earendil-works/pi-ai": "1.3.0",
+    "openai": "7.19.0"
+  },
+  "publicAPIs": [
+    "@earendil-works/pi-ai/api/openai-completions:stream",
+    "@earendil-works/pi-ai:normalizeContext",
+    "StreamOptions.onProviderStreamEvent (read-only)",
+    "StreamOptions.fetch",
+    "StreamOptions.signal",
+    "StreamOptions.maxRetries"
+  ],
+  "boundaries": {
+    "loopbackOnly": true,
+    "externalRequests": 0,
+    "physicalRequests": 41,
+    "productionFilesChanged": false,
+    "ownSseJsonParser": true,
+    "customSseByteFramingGuard": true,
+    "privatePackagePatch": false
+  },
+  "evidenceEncoding": "Strings above 4096 code units are recorded as byte length, SHA-256 and a 128-character preview; fixtures remain replayable in probe.mjs.",
+  "sourceHashes": {
+    "node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js": "4b3875e5ec18c5e2d06ce12409feb2554563fd2c392a5c1773af968b265e2bea",
+    "node_modules/openai/core/streaming.mjs": "1b8fa8338dc28913351993382187962082f0af42c5274a009060de3263579842",
+    "candidate-adapter.ts": "9882a77d939497eeec57d5c751398b98ab577a73a342c9dbf22467f75fbd743e"
+  },
+  "summary": {
+    "candidate": {
+      "passed": 41,
+      "total": 41,
+      "failed": []
+    }
+  },
+  "cases": [
+    {
+      "label": "fragmented-tool-name",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 4,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": null,
+      "publicText": "",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "done",
+        "reason": "toolUse",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "fragmented-call",
+              "name": "generate_image_async",
+              "arguments": {
+                "prompt": "A rainy window portrait"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "toolUse",
+          "timestamp": 1792226999460,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "responseId": "qualification-response",
+          "rawStopReason": "tool_calls",
+          "durationMs": 4
+        }
+      },
+      "eventTypes": [
+        "start",
+        "toolcall_start",
+        "toolcall_delta",
+        "toolcall_delta",
+        "toolcall_end",
+        "done"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Tool names accumulate across native deltas before dispatch",
+      "pass": true
+    },
+    {
+      "label": "done-before-http-eof",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 0,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": null,
+      "publicText": "Complete.",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "known",
+        "seen": true,
+        "usage": {
+          "input": 3,
+          "output": 2,
+          "cacheRead": 0,
+          "reasoning": 0
+        }
+      },
+      "terminal": {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Complete."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "stop",
+          "timestamp": 1792226999464,
+          "usage": {
+            "input": 3,
+            "output": 2,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 5,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "responseId": "qualification-response",
+          "rawStopReason": "stop",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "text_end",
+        "done"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "DONE completes and retains preceding usage without HTTP EOF",
+      "pass": true
+    },
+    {
+      "label": "done-with-stalled-body-cancel",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 1,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": null,
+      "publicText": "Complete.",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "known",
+        "seen": true,
+        "usage": {
+          "input": 3,
+          "output": 2,
+          "cacheRead": 0,
+          "reasoning": 0
+        }
+      },
+      "terminal": {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Complete."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "stop",
+          "timestamp": 1792226999464,
+          "usage": {
+            "input": 3,
+            "output": 2,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 5,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "responseId": "qualification-response",
+          "rawStopReason": "stop",
+          "durationMs": 1
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "text_end",
+        "done"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "DONE completion cannot await an indefinitely stalled body cancellation",
+      "pass": true
+    },
+    {
+      "label": "usage-absent",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 1,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": null,
+      "publicText": "Complete.",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Complete."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "stop",
+          "timestamp": 1792226999465,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "responseId": "qualification-response",
+          "rawStopReason": "stop",
+          "durationMs": 1
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "text_end",
+        "done"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Missing/invalid usage is unknown, not measured zero",
+      "pass": true
+    },
+    {
+      "label": "usage-empty",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 0,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": null,
+      "publicText": "Complete.",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Complete."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "stop",
+          "timestamp": 1792226999466,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "responseId": "qualification-response",
+          "rawStopReason": "stop",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "text_end",
+        "done"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Missing/invalid usage is unknown, not measured zero",
+      "pass": true
+    },
+    {
+      "label": "usage-input-only",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 0,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": null,
+      "publicText": "Complete.",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Complete."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "stop",
+          "timestamp": 1792226999466,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "responseId": "qualification-response",
+          "rawStopReason": "stop",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "text_end",
+        "done"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Missing/invalid usage is unknown, not measured zero",
+      "pass": true
+    },
+    {
+      "label": "usage-negative",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 0,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": null,
+      "publicText": "Complete.",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Complete."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "stop",
+          "timestamp": 1792226999466,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "responseId": "qualification-response",
+          "rawStopReason": "stop",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "text_end",
+        "done"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Missing/invalid usage is unknown, not measured zero",
+      "pass": true
+    },
+    {
+      "label": "usage-fractional",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 0,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": null,
+      "publicText": "Complete.",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Complete."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "stop",
+          "timestamp": 1792226999467,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "responseId": "qualification-response",
+          "rawStopReason": "stop",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "text_end",
+        "done"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Missing/invalid usage is unknown, not measured zero",
+      "pass": true
+    },
+    {
+      "label": "usage-invalid-detail",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 0,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": null,
+      "publicText": "Complete.",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Complete."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "stop",
+          "timestamp": 1792226999467,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "responseId": "qualification-response",
+          "rawStopReason": "stop",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "text_end",
+        "done"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Missing/invalid usage is unknown, not measured zero",
+      "pass": true
+    },
+    {
+      "label": "usage-zero",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 0,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": null,
+      "publicText": "Complete.",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "known",
+        "seen": true,
+        "usage": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "reasoning": 0
+        }
+      },
+      "terminal": {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Complete."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "stop",
+          "timestamp": 1792226999467,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "responseId": "qualification-response",
+          "rawStopReason": "stop",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "text_end",
+        "done"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Measured counters = 0,0",
+      "pass": true
+    },
+    {
+      "label": "usage-aliases",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 0,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": null,
+      "publicText": "Complete.",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "known",
+        "seen": true,
+        "usage": {
+          "input": 13,
+          "output": 7,
+          "cacheRead": 0,
+          "reasoning": 0
+        }
+      },
+      "terminal": {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Complete."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "stop",
+          "timestamp": 1792226999467,
+          "usage": {
+            "input": 13,
+            "output": 7,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 20,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "responseId": "qualification-response",
+          "rawStopReason": "stop",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "text_end",
+        "done"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Measured counters = 13,7",
+      "pass": true
+    },
+    {
+      "label": "usage-zero-alias-priority",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 0,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": null,
+      "publicText": "Complete.",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "known",
+        "seen": true,
+        "usage": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "reasoning": 0
+        }
+      },
+      "terminal": {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Complete."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "stop",
+          "timestamp": 1792226999468,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "responseId": "qualification-response",
+          "rawStopReason": "stop",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "text_end",
+        "done"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Measured counters = 0,0",
+      "pass": true
+    },
+    {
+      "label": "invalid-receipt-invalidates-earlier",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 0,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": null,
+      "publicText": "A",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "A"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "stop",
+          "timestamp": 1792226999468,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "responseId": "qualification-response",
+          "rawStopReason": "stop",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "text_end",
+        "done"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Receipt replacement preserves unknown vs known semantics",
+      "pass": true
+    },
+    {
+      "label": "null-placeholder-retains-earlier",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 0,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": null,
+      "publicText": "A",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "known",
+        "seen": true,
+        "usage": {
+          "input": 13,
+          "output": 7,
+          "cacheRead": 0,
+          "reasoning": 0
+        }
+      },
+      "terminal": {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "A"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "stop",
+          "timestamp": 1792226999468,
+          "usage": {
+            "input": 13,
+            "output": 7,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 20,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "responseId": "qualification-response",
+          "rawStopReason": "stop",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "text_end",
+        "done"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Receipt replacement preserves unknown vs known semantics",
+      "pass": true
+    },
+    {
+      "label": "absent-placeholder-retains-earlier",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 0,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": null,
+      "publicText": "A",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "known",
+        "seen": true,
+        "usage": {
+          "input": 13,
+          "output": 7,
+          "cacheRead": 0,
+          "reasoning": 0
+        }
+      },
+      "terminal": {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "A"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "stop",
+          "timestamp": 1792226999468,
+          "usage": {
+            "input": 13,
+            "output": 7,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 0,
+            "totalTokens": 20,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "responseId": "qualification-response",
+          "rawStopReason": "stop",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "text_end",
+        "done"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Receipt replacement preserves unknown vs known semantics",
+      "pass": true
+    },
+    {
+      "label": "first-token-metadata-heartbeats",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 244,
+      "responseStatus": 200,
+      "deadlineReason": "MODEL_FIRST_TOKEN_TIMEOUT",
+      "failureCode": null,
+      "publicText": "",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "error",
+        "reason": "error",
+        "error": {
+          "role": "assistant",
+          "content": [],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "error",
+          "timestamp": 1792226999469,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "errorMessage": "model first-token timeout",
+          "durationMs": 244
+        }
+      },
+      "eventTypes": [
+        "start",
+        "error"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Metadata and SSE comments cannot count as the first token",
+      "pass": true
+    },
+    {
+      "label": "idle-metadata-heartbeats",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 93,
+      "responseStatus": 200,
+      "deadlineReason": "MODEL_IDLE_TIMEOUT",
+      "failureCode": null,
+      "publicText": "A",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "error",
+        "reason": "error",
+        "error": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "A"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "error",
+          "timestamp": 1792226999713,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "errorMessage": "model stream idle timeout",
+          "durationMs": 93
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "error"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Metadata and SSE comments cannot renew output idle deadline",
+      "pass": true
+    },
+    {
+      "label": "first-token-independent-of-idle",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 144,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": null,
+      "publicText": "After prefill.",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "After prefill."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "stop",
+          "timestamp": 1792226999806,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "responseId": "qualification-response",
+          "rawStopReason": "stop",
+          "durationMs": 144
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "text_end",
+        "done"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Slow first token gets full first-token window even after early metadata",
+      "pass": true
+    },
+    {
+      "label": "progress-text",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 295,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": null,
+      "publicText": "AAAAAAAA",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "AAAAAAAA"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "stop",
+          "timestamp": 1792226999950,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "responseId": "qualification-response",
+          "rawStopReason": "stop",
+          "durationMs": 294
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_end",
+        "done"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Actual output renews idle deadline and clears first-token deadline",
+      "pass": true
+    },
+    {
+      "label": "progress-thinking",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 293,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": null,
+      "publicText": "",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": "AAAAAAAA"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "stop",
+          "timestamp": 1792227000245,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "responseId": "qualification-response",
+          "rawStopReason": "stop",
+          "durationMs": 293
+        }
+      },
+      "eventTypes": [
+        "start",
+        "thinking_start",
+        "thinking_delta",
+        "thinking_delta",
+        "thinking_delta",
+        "thinking_delta",
+        "thinking_delta",
+        "thinking_delta",
+        "thinking_delta",
+        "thinking_delta",
+        "thinking_end",
+        "done"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Actual output renews idle deadline and clears first-token deadline",
+      "pass": true
+    },
+    {
+      "label": "progress-tool",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 294,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": null,
+      "publicText": "",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "done",
+        "reason": "toolUse",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "progress-call",
+              "name": "generate_image_async",
+              "arguments": {
+                "prompt": "AAAAAA"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "toolUse",
+          "timestamp": 1792227000539,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "responseId": "qualification-response",
+          "rawStopReason": "tool_calls",
+          "durationMs": 294
+        }
+      },
+      "eventTypes": [
+        "start",
+        "toolcall_start",
+        "toolcall_delta",
+        "toolcall_delta",
+        "toolcall_delta",
+        "toolcall_delta",
+        "toolcall_delta",
+        "toolcall_delta",
+        "toolcall_delta",
+        "toolcall_delta",
+        "toolcall_end",
+        "done"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Actual output renews idle deadline and clears first-token deadline",
+      "pass": true
+    },
+    {
+      "label": "http-422-closed",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 1,
+      "responseStatus": 422,
+      "deadlineReason": null,
+      "failureCode": "PROVIDER_HTTP_ERROR",
+      "publicText": "",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "error",
+        "reason": "error",
+        "error": {
+          "role": "assistant",
+          "content": [],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "error",
+          "timestamp": 1792227000832,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "errorMessage": "OpenAI-compatible provider returned HTTP 422",
+          "durationMs": 1
+        }
+      },
+      "eventTypes": [
+        "error"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Non-2xx failure is bounded and preserves HTTP status without waiting for cancellation",
+      "pass": true
+    },
+    {
+      "label": "http-422-stalled",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 243,
+      "responseStatus": 422,
+      "deadlineReason": "MODEL_FIRST_TOKEN_TIMEOUT",
+      "failureCode": null,
+      "publicText": "",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "error",
+        "reason": "error",
+        "error": {
+          "role": "assistant",
+          "content": [],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "error",
+          "timestamp": 1792227000834,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "errorMessage": "model first-token timeout",
+          "durationMs": 242
+        }
+      },
+      "eventTypes": [
+        "error"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Context-inspected HTTP error body obeys first-token deadline (existing adapter contract)",
+      "pass": true
+    },
+    {
+      "label": "http-503-closed",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 1,
+      "responseStatus": 503,
+      "deadlineReason": null,
+      "failureCode": "PROVIDER_HTTP_ERROR",
+      "publicText": "",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "error",
+        "reason": "error",
+        "error": {
+          "role": "assistant",
+          "content": [],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "error",
+          "timestamp": 1792227001076,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "errorMessage": "OpenAI-compatible provider returned HTTP 503",
+          "durationMs": 1
+        }
+      },
+      "eventTypes": [
+        "error"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Non-2xx failure is bounded and preserves HTTP status without waiting for cancellation",
+      "pass": true
+    },
+    {
+      "label": "http-503-stalled",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 0,
+      "responseStatus": 503,
+      "deadlineReason": null,
+      "failureCode": "PROVIDER_HTTP_ERROR",
+      "publicText": "",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "error",
+        "reason": "error",
+        "error": {
+          "role": "assistant",
+          "content": [],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "error",
+          "timestamp": 1792227001078,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "errorMessage": "OpenAI-compatible provider returned HTTP 503",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "error"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Non-2xx failure is bounded and preserves HTTP status without waiting for cancellation",
+      "pass": true
+    },
+    {
+      "label": "context-overflow-http-400",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 1,
+      "responseStatus": 400,
+      "deadlineReason": null,
+      "failureCode": "CONTEXT_WINDOW_EXCEEDED",
+      "publicText": "",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "error",
+        "reason": "error",
+        "error": {
+          "role": "assistant",
+          "content": [],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "error",
+          "timestamp": 1792227001078,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "errorMessage": "context_length_exceeded",
+          "durationMs": 1
+        }
+      },
+      "eventTypes": [
+        "error"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "HTTP context overflow keeps dedicated recovery code and does not expose provider text",
+      "pass": true
+    },
+    {
+      "label": "context-overflow-http-413",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 0,
+      "responseStatus": 413,
+      "deadlineReason": null,
+      "failureCode": "CONTEXT_WINDOW_EXCEEDED",
+      "publicText": "",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "error",
+        "reason": "error",
+        "error": {
+          "role": "assistant",
+          "content": [],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "error",
+          "timestamp": 1792227001079,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "errorMessage": "context_length_exceeded",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "error"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "HTTP context overflow keeps dedicated recovery code and does not expose provider text",
+      "pass": true
+    },
+    {
+      "label": "context-overflow-http-422",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 0,
+      "responseStatus": 422,
+      "deadlineReason": null,
+      "failureCode": "CONTEXT_WINDOW_EXCEEDED",
+      "publicText": "",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "error",
+        "reason": "error",
+        "error": {
+          "role": "assistant",
+          "content": [],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "error",
+          "timestamp": 1792227001080,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "errorMessage": "context_length_exceeded",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "error"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "HTTP context overflow keeps dedicated recovery code and does not expose provider text",
+      "pass": true
+    },
+    {
+      "label": "context-overflow-stream-code-only",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 0,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": "CONTEXT_WINDOW_EXCEEDED",
+      "publicText": "",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "error",
+        "reason": "error",
+        "error": {
+          "role": "assistant",
+          "content": [],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "error",
+          "timestamp": 1792227001080,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "errorMessage": "context_length_exceeded",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "start",
+        "error"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Current code-only in-band overflow fixture keeps its recovery class",
+      "pass": true
+    },
+    {
+      "label": "context-overflow-stream",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 0,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": "CONTEXT_WINDOW_EXCEEDED",
+      "publicText": "",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "error",
+        "reason": "error",
+        "error": {
+          "role": "assistant",
+          "content": [],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "error",
+          "timestamp": 1792227001081,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "errorMessage": "context_length_exceeded",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "start",
+        "error"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "In-band overflow retains recovery class even though SDK rejects before raw observer",
+      "pass": true
+    },
+    {
+      "label": "undelimited-event-limit",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 3,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": "PROVIDER_STREAM_LIMIT",
+      "publicText": "",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "error",
+        "reason": "error",
+        "error": {
+          "role": "assistant",
+          "content": [],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "error",
+          "timestamp": 1792227001082,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "errorMessage": "provider SSE event exceeded the configured byte limit",
+          "durationMs": 3
+        }
+      },
+      "eventTypes": [
+        "start",
+        "error"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Provider stream/event/output byte caps fail before successful delivery",
+      "pass": true
+    },
+    {
+      "label": "delimited-event-limit",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 4,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": "PROVIDER_STREAM_LIMIT",
+      "publicText": "",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "error",
+        "reason": "error",
+        "error": {
+          "role": "assistant",
+          "content": [],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "error",
+          "timestamp": 1792227001085,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "errorMessage": "provider SSE event exceeded the configured byte limit",
+          "durationMs": 4
+        }
+      },
+      "eventTypes": [
+        "start",
+        "error"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Provider stream/event/output byte caps fail before successful delivery",
+      "pass": true
+    },
+    {
+      "label": "total-stream-byte-limit",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 4,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": "PROVIDER_STREAM_LIMIT",
+      "publicText": "",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "error",
+        "reason": "error",
+        "error": {
+          "role": "assistant",
+          "content": [],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "error",
+          "timestamp": 1792227001089,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "errorMessage": "provider stream exceeded the configured byte limit",
+          "durationMs": 4
+        }
+      },
+      "eventTypes": [
+        "start",
+        "error"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Provider stream/event/output byte caps fail before successful delivery",
+      "pass": true
+    },
+    {
+      "label": "cumulative-output-limit",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 10,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": "PROVIDER_STREAM_LIMIT",
+      "publicText": {
+        "stringBytes": 2040000,
+        "sha256": "4b0969c4f7d5498aa360232e0097b850f32b79e74d35d39351225499364bd978",
+        "preview": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+      },
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "error",
+        "reason": "error",
+        "error": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": {
+                "stringBytes": 2040000,
+                "sha256": "4b0969c4f7d5498aa360232e0097b850f32b79e74d35d39351225499364bd978",
+                "preview": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "error",
+          "timestamp": 1792227001093,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "errorMessage": "provider output exceeded the configured byte limit",
+          "durationMs": 9
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "error"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Provider stream/event/output byte caps fail before successful delivery",
+      "pass": true
+    },
+    {
+      "label": "missing-finish-reason",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 1,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": "INVALID_RESPONSE",
+      "publicText": "Unfinished.",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "error",
+        "reason": "error",
+        "error": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Unfinished."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "error",
+          "timestamp": 1792227001104,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "errorMessage": "provider stream ended without a finish reason",
+          "durationMs": 1
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "error"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "DONE cannot substitute for a native finish reason",
+      "pass": true
+    },
+    {
+      "label": "unsupported-finish-reason",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 1,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": "INVALID_RESPONSE",
+      "publicText": "End.",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "error",
+        "reason": "error",
+        "error": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "End."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "error",
+          "timestamp": 1792227001105,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "errorMessage": "provider returned unsupported finish_reason end",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "error"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Only the existing finish-reason whitelist can complete the request",
+      "pass": true
+    },
+    {
+      "label": "invalid-json",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 0,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": "INVALID_RESPONSE",
+      "publicText": "",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "error",
+        "reason": "error",
+        "error": {
+          "role": "assistant",
+          "content": [],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "error",
+          "timestamp": 1792227001106,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "errorMessage": "provider sent a non-JSON stream event",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "start",
+        "error"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Malformed SSE JSON fails closed",
+      "pass": true
+    },
+    {
+      "label": "reasoning-hidden-from-public-text",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 0,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": null,
+      "publicText": "Visible reply.",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": "PRIVATE_REASONING"
+            },
+            {
+              "type": "text",
+              "text": "Visible reply."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "stop",
+          "timestamp": 1792227001106,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "responseId": "qualification-response",
+          "rawStopReason": "stop",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "start",
+        "thinking_start",
+        "thinking_delta",
+        "text_start",
+        "text_delta",
+        "thinking_end",
+        "text_end",
+        "done"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Request disables thinking; presentation emits text only while retaining internal reasoning",
+      "pass": true
+    },
+    {
+      "label": "attribution-pinned",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 0,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": null,
+      "publicText": "Attributed.",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "provider": {
+          "only": [
+            "DeepSeek"
+          ],
+          "allow_fallbacks": false
+        }
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Attributed."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "stop",
+          "timestamp": 1792227001106,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "responseId": "qualification-response",
+          "rawStopReason": "stop",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "text_end",
+        "done"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Provider route is pinned on wire and final attribution is enforced",
+      "pass": true
+    },
+    {
+      "label": "attribution-unpinned",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 0,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": "INVALID_RESPONSE",
+      "publicText": "Attributed.",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "provider": {
+          "only": [
+            "DeepSeek"
+          ],
+          "allow_fallbacks": false
+        }
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "error",
+        "reason": "error",
+        "error": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Attributed."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "error",
+          "timestamp": 1792227001107,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "errorMessage": "OpenRouter attributed the response to unpinned provider Other",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "error"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Provider route is pinned on wire and final attribution is enforced",
+      "pass": true
+    },
+    {
+      "label": "attribution-missing",
+      "mode": "candidate",
+      "state": "settled",
+      "elapsedMs": 0,
+      "responseStatus": 200,
+      "deadlineReason": null,
+      "failureCode": "INVALID_RESPONSE",
+      "publicText": "Attributed.",
+      "requestControls": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "provider": {
+          "only": [
+            "DeepSeek"
+          ],
+          "allow_fallbacks": false
+        }
+      },
+      "receipt": {
+        "state": "unknown",
+        "seen": false,
+        "usage": null
+      },
+      "terminal": {
+        "type": "error",
+        "reason": "error",
+        "error": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Attributed."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "qualification-local",
+          "model": "qualification-model",
+          "stopReason": "error",
+          "timestamp": 1792227001107,
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "errorMessage": "OpenRouter stream omitted request/provider attribution",
+          "durationMs": 0
+        }
+      },
+      "eventTypes": [
+        "start",
+        "text_start",
+        "text_delta",
+        "error"
+      ],
+      "rawEvents": [],
+      "requestCount": 1,
+      "requirement": "Provider route is pinned on wire and final attribution is enforced",
+      "pass": true
+    }
+  ],
+  "requests": [
+    {
+      "case": "fragmented-tool-name-candidate",
+      "method": "POST",
+      "path": "/fragmented-tool-name-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "done-before-http-eof-candidate",
+      "method": "POST",
+      "path": "/done-before-http-eof-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "done-with-stalled-body-cancel-candidate",
+      "method": "POST",
+      "path": "/done-with-stalled-body-cancel-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "usage-absent-candidate",
+      "method": "POST",
+      "path": "/usage-absent-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "usage-empty-candidate",
+      "method": "POST",
+      "path": "/usage-empty-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "usage-input-only-candidate",
+      "method": "POST",
+      "path": "/usage-input-only-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "usage-negative-candidate",
+      "method": "POST",
+      "path": "/usage-negative-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "usage-fractional-candidate",
+      "method": "POST",
+      "path": "/usage-fractional-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "usage-invalid-detail-candidate",
+      "method": "POST",
+      "path": "/usage-invalid-detail-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "usage-zero-candidate",
+      "method": "POST",
+      "path": "/usage-zero-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "usage-aliases-candidate",
+      "method": "POST",
+      "path": "/usage-aliases-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "usage-zero-alias-priority-candidate",
+      "method": "POST",
+      "path": "/usage-zero-alias-priority-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "invalid-receipt-invalidates-earlier-candidate",
+      "method": "POST",
+      "path": "/invalid-receipt-invalidates-earlier-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "null-placeholder-retains-earlier-candidate",
+      "method": "POST",
+      "path": "/null-placeholder-retains-earlier-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "absent-placeholder-retains-earlier-candidate",
+      "method": "POST",
+      "path": "/absent-placeholder-retains-earlier-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "first-token-metadata-heartbeats-candidate",
+      "method": "POST",
+      "path": "/first-token-metadata-heartbeats-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "idle-metadata-heartbeats-candidate",
+      "method": "POST",
+      "path": "/idle-metadata-heartbeats-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "first-token-independent-of-idle-candidate",
+      "method": "POST",
+      "path": "/first-token-independent-of-idle-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "progress-text-candidate",
+      "method": "POST",
+      "path": "/progress-text-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "progress-thinking-candidate",
+      "method": "POST",
+      "path": "/progress-thinking-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "progress-tool-candidate",
+      "method": "POST",
+      "path": "/progress-tool-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "http-422-closed-candidate",
+      "method": "POST",
+      "path": "/http-422-closed-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "http-422-stalled-candidate",
+      "method": "POST",
+      "path": "/http-422-stalled-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "http-503-closed-candidate",
+      "method": "POST",
+      "path": "/http-503-closed-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "http-503-stalled-candidate",
+      "method": "POST",
+      "path": "/http-503-stalled-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "context-overflow-http-400-candidate",
+      "method": "POST",
+      "path": "/context-overflow-http-400-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "context-overflow-http-413-candidate",
+      "method": "POST",
+      "path": "/context-overflow-http-413-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "context-overflow-http-422-candidate",
+      "method": "POST",
+      "path": "/context-overflow-http-422-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "context-overflow-stream-code-only-candidate",
+      "method": "POST",
+      "path": "/context-overflow-stream-code-only-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "context-overflow-stream-candidate",
+      "method": "POST",
+      "path": "/context-overflow-stream-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "undelimited-event-limit-candidate",
+      "method": "POST",
+      "path": "/undelimited-event-limit-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "delimited-event-limit-candidate",
+      "method": "POST",
+      "path": "/delimited-event-limit-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "total-stream-byte-limit-candidate",
+      "method": "POST",
+      "path": "/total-stream-byte-limit-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "cumulative-output-limit-candidate",
+      "method": "POST",
+      "path": "/cumulative-output-limit-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "missing-finish-reason-candidate",
+      "method": "POST",
+      "path": "/missing-finish-reason-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "unsupported-finish-reason-candidate",
+      "method": "POST",
+      "path": "/unsupported-finish-reason-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "invalid-json-candidate",
+      "method": "POST",
+      "path": "/invalid-json-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "reasoning-hidden-from-public-text-candidate",
+      "method": "POST",
+      "path": "/reasoning-hidden-from-public-text-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "case": "attribution-pinned-candidate",
+      "method": "POST",
+      "path": "/attribution-pinned-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "provider": {
+          "only": [
+            "DeepSeek"
+          ],
+          "allow_fallbacks": false
+        }
+      }
+    },
+    {
+      "case": "attribution-unpinned-candidate",
+      "method": "POST",
+      "path": "/attribution-unpinned-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "provider": {
+          "only": [
+            "DeepSeek"
+          ],
+          "allow_fallbacks": false
+        }
+      }
+    },
+    {
+      "case": "attribution-missing-candidate",
+      "method": "POST",
+      "path": "/attribution-missing-candidate/v1/chat/completions",
+      "body": {
+        "model": "qualification-model",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Controlled qualification request."
+          }
+        ],
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "temperature": 0.9,
+        "top_p": 0.95,
+        "repetition_penalty": 1.05,
+        "max_tokens": 256,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_image_async",
+              "description": "Controlled tool declaration; never executes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "prompt"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "provider": {
+          "only": [
+            "DeepSeek"
+          ],
+          "allow_fallbacks": false
+        }
+      }
+    }
+  ]
+}

@@ -9,7 +9,7 @@
 ```text
 Character 内容与 Release 收口
   -> Main Chat Turn cutover
-  -> 本地 AgentRun + DSH 稳定验证
+  -> 本地 AgentRun + Pi 稳定验证
   -> 图片/视频 ToolEffect 计费闭环
   -> 完整用户/运营 E2E
   -> production provider/envelope gate
@@ -32,11 +32,11 @@ Character 内容与 Release 收口
 
 退出：所有产品会话、消息、附件、Scene、额度和计费只从 Main 读写；运行环境无 Chat DB URL/role/queue。
 
-## R3 · AgentRun/DSH 运行闭环
+## R3 · AgentRun/Pi 运行闭环
 
 - 验证 admission、SSE 重连、取消、重生成、Chat 重启恢复和 terminal exact replay。
 - 验证 Main ACK 前不发 `done`；成功 run 清理；memory 只从 Main committed Turns 异步投影。
-- 完成账号删除对 AgentRun 和 DSH workspace 的精确 purge。
+- 完成账号删除对 AgentRun 和 igrep workspace 的精确 purge。
 - 生产 cutover 后隔离旧 package/env；新 runtime 不解析旧 wire 或 cutover proof。
 
 退出：Chat isolated tests、typecheck、build 通过；本地真实进程 probe 绑定当前 source revision。

@@ -24,9 +24,9 @@ test("migrates runtime keys, retires routing flags, and quarantines the legacy p
   });
   const chatEnv = await readFile(path.join(root, "packages/chat/.env"), "utf8");
 
-  assert.deepEqual(result.migratedKeys, ["DSH_IGREP_COMMAND", "IGREP_LLM_MODEL"]);
+  assert.deepEqual(result.migratedKeys, ["PI_IGREP_COMMAND", "IGREP_LLM_MODEL"]);
   assert.deepEqual(result.retiredKeys, ["DSH_AGENT_URL", "DSH_READY_MODEL"]);
-  assert.match(chatEnv, /DSH_IGREP_COMMAND=igrep-pinned/);
+  assert.match(chatEnv, /PI_IGREP_COMMAND=igrep-pinned/);
   assert.doesNotMatch(chatEnv, /DSH_AGENT_URL/);
   assert.doesNotMatch(chatEnv, /DSH_READY_MODEL/);
   assert.equal(result.quarantine, path.join(
@@ -48,6 +48,22 @@ test("is idempotent after the legacy package is gone", async (t) => {
   assert.equal(first.quarantine, null);
   assert.equal(second.quarantine, null);
   assert.equal(await readFile(chatEnv, "utf8"), firstText);
+});
+
+test("preserves configured memory paths when the embedded DSH environment is cut over to Pi", async (t) => {
+  const root = await fixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const chatEnv = path.join(root, "packages/chat/.env");
+  await writeFile(chatEnv, "DSH_IGREP_CANONICAL_ROOT=/persistent/canonical\nDSH_IGREP_PRIVATE_ROOT=/persistent/private\nDSH_AGENT_DEADLINE_MS=450000\nDSH_IGREP_PLUGIN_URL=file:///old/plugin.mjs\nDSH_BOOTSTRAP_STATE_PATH=/old/state.json\n");
+  const result = await runCutover(root);
+  assert.deepEqual(result.migratedKeys, ["PI_IGREP_CANONICAL_ROOT", "PI_IGREP_PRIVATE_ROOT", "PI_AGENT_DEADLINE_MS"]);
+  const migrated = await readFile(chatEnv, "utf8");
+  assert.match(migrated, /PI_IGREP_CANONICAL_ROOT=\/persistent\/canonical/u);
+  assert.match(migrated, /PI_IGREP_PRIVATE_ROOT=\/persistent\/private/u);
+  assert.match(migrated, /PI_AGENT_DEADLINE_MS=450000/u);
+  assert.doesNotMatch(migrated, /DSH_|PLUGIN_URL|BOOTSTRAP_STATE/u);
+  await runCutover(root);
+  assert.equal(await readFile(chatEnv, "utf8"), migrated);
 });
 
 test("rejects incomplete source and target environments", async (t) => {

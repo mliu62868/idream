@@ -1,0 +1,73 @@
+{
+  "version": "0.1.161",
+  "moduleSha256": "b33a0e0176f732108fa1d6c58700e1eceb2111f85ff2a790597b0e5eb587618c",
+  "checks": [
+    {
+      "name": "only_missing_current_branch_raw_messages",
+      "passed": true,
+      "detail": [
+        "entry:first#1",
+        "entry:second#1",
+        "entry:third#1"
+      ]
+    },
+    {
+      "name": "reasoning_and_recall_results_omitted",
+      "passed": true
+    },
+    {
+      "name": "unicode_chunks_are_lossless_and_bounded",
+      "passed": true
+    },
+    {
+      "name": "version_specific_render_order",
+      "passed": true,
+      "detail": [
+        "entry:first#1",
+        "entry:second#1",
+        "entry:third#1"
+      ]
+    },
+    {
+      "name": "other_branch_id_rejected",
+      "passed": true
+    },
+    {
+      "name": "query_uses_one_bounded_public_stdin_search",
+      "passed": true,
+      "detail": [
+        "search",
+        "--stdin-format",
+        "jsonl",
+        "--mode",
+        "ultra",
+        "--json",
+        "-m",
+        "8",
+        "--",
+        "synthetic earlier exchange"
+      ]
+    },
+    {
+      "name": "incomplete_search_is_visible",
+      "passed": true
+    },
+    {
+      "name": "duplicate_search_reference_rejected",
+      "passed": true
+    },
+    {
+      "name": "archive_index_is_bounded",
+      "passed": true,
+      "detail": {
+        "characters": 436,
+        "index": "Archived session: 3 entries, 3 chunks.\nUse session_recall(query) for missing evidence, or session_recall(ids=[…]) for verbatim passages.\nentry:X#1…#K is one entry split into chunks #1 to #K. Index previews are navigation, not evidence:\n- entry:first#1 user · First synthetic request: amber otter.\n- entry:third#1 toolResult lookup ✗ · Third synthetic failure: mint whale.\n- entry:second#1 assistant · Second synthetic reply: cobalt fox."
+      }
+    }
+  ],
+  "network": "No process or network: query ranking is an explicit stub",
+  "limitations": [
+    "Does not evaluate semantic relevance or real provider latency.",
+    "Uses synthetic coding-agent context; does not prove pi-durable compatibility."
+  ]
+}

@@ -1,0 +1,240 @@
+{
+  "network": "sandbox-exec deny network*",
+  "models": "none requested",
+  "checks": [
+    {
+      "name": "empty_search_is_successful_empty_page",
+      "passed": true,
+      "detail": {
+        "schema": "igrep.mem/1",
+        "provider": "igrep",
+        "strategy": "shared-search",
+        "workspaceRoot": "<TEMP>/store/tenants/84d4f6994135c3019dac24cd8a09c89e77f951b61bc030c3adee1c2953e41489/users/69/696e9aa826a582077aeb5cba37681bbac0e2f70c16bbdeca2b934c80871242c8",
+        "results": [],
+        "markdownContext": "",
+        "warnings": [],
+        "rankingPolicy": {
+          "revision": "memory-role-aware-v1",
+          "assistantWeight": 1.0
+        }
+      }
+    },
+    {
+      "name": "no_cache_payload_field_is_rejected",
+      "passed": true,
+      "detail": {
+        "error": {
+          "code": "INVALID_ARGS",
+          "message": "unsupported memory_search fields: no_cache",
+          "action": "retry"
+        }
+      }
+    },
+    {
+      "name": "explicit_null_is_rejected",
+      "passed": true,
+      "detail": {
+        "error": {
+          "code": "INVALID_ARGS",
+          "message": "memory_search fields must not be null: max_results",
+          "action": "retry"
+        }
+      }
+    },
+    {
+      "name": "fast_search_retrieves_agent_note_without_network",
+      "passed": true,
+      "detail": {
+        "schema": "igrep.mem/1",
+        "provider": "igrep",
+        "strategy": "shared-search",
+        "workspaceRoot": "<TEMP>/store/tenants/84d4f6994135c3019dac24cd8a09c89e77f951b61bc030c3adee1c2953e41489/users/69/696e9aa826a582077aeb5cba37681bbac0e2f70c16bbdeca2b934c80871242c8",
+        "results": [
+          {
+            "path": "MEMORY.md",
+            "startLine": 1,
+            "endLine": 3,
+            "score": 1.0,
+            "snippet": "L1: # Agent Memory\nL2: \nL3: - [2026-10-17] Synthetic test preference: amber otter.",
+            "citation": "MEMORY.md#L1-L3",
+            "citations": [
+              "MEMORY.md#L1-L3"
+            ],
+            "sourceClass": "agent-memory",
+            "sourceType": "agent-memory",
+            "rank": 1,
+            "evidenceRole": "agent",
+            "matchedRole": null,
+            "evidenceStatus": "active",
+            "sourceAt": null,
+            "rankingWeight": 1.0
+          }
+        ],
+        "markdownContext": "### Memory 1\nL1: # Agent Memory\nL2: \nL3: - [2026-10-17] Synthetic test preference: amber otter.\nSource: MEMORY.md#L1-L3",
+        "warnings": [],
+        "rankingPolicy": {
+          "revision": "memory-role-aware-v1",
+          "assistantWeight": 1.0
+        }
+      }
+    },
+    {
+      "name": "different_principal_does_not_retrieve_note",
+      "passed": true,
+      "detail": {
+        "schema": "igrep.mem/1",
+        "provider": "igrep",
+        "strategy": "shared-search",
+        "workspaceRoot": "<TEMP>/store/tenants/84d4f6994135c3019dac24cd8a09c89e77f951b61bc030c3adee1c2953e41489/users/c6/c60446eb2882f9a585702cf01fb1635708fc65d440bbc29ab5d85004876cc88d",
+        "results": [],
+        "markdownContext": "",
+        "warnings": [],
+        "rankingPolicy": {
+          "revision": "memory-role-aware-v1",
+          "assistantWeight": 1.0
+        }
+      }
+    },
+    {
+      "name": "same_source_seq_changed_payload_keeps_first",
+      "passed": true,
+      "detail": {
+        "first": {
+          "schema": "igrep.mem/1",
+          "provider": "igrep",
+          "action": "ingest",
+          "transcript": "<TEMP>/store/tenants/84d4f6994135c3019dac24cd8a09c89e77f951b61bc030c3adee1c2953e41489/users/69/696e9aa826a582077aeb5cba37681bbac0e2f70c16bbdeca2b934c80871242c8/.igrep/mem/inbox/agent-immutable-rows-625cc1fddfeea8bf55e6abf3e2662f939e788a7cddda24e54f975b854055ae61.jsonl",
+          "sessionPath": ".igrep/mem/memory/sessions/agent-immutable-rows-625cc1fddfeea8bf55e6abf3e2662f939e788a7cddda24e54f975b854055ae61.jsonl",
+          "dialoguePath": ".igrep/mem/memory/dialogues/agent-immutable-rows-625cc1fddfeea8bf55e6abf3e2662f939e788a7cddda24e54f975b854055ae61.jsonl",
+          "events": 1,
+          "newEvents": 1,
+          "rebuilt": false,
+          "invalidRows": 0,
+          "written": true,
+          "sessionWritten": true,
+          "dialogueWritten": true,
+          "sourceChanged": true,
+          "profileInvalidated": false,
+          "inbox": "<TEMP>/store/tenants/84d4f6994135c3019dac24cd8a09c89e77f951b61bc030c3adee1c2953e41489/users/69/696e9aa826a582077aeb5cba37681bbac0e2f70c16bbdeca2b934c80871242c8/.igrep/mem/inbox/agent-immutable-rows-625cc1fddfeea8bf55e6abf3e2662f939e788a7cddda24e54f975b854055ae61.jsonl",
+          "duplicateRows": 0
+        },
+        "changed": {
+          "schema": "igrep.mem/1",
+          "provider": "igrep",
+          "action": "ingest",
+          "transcript": "<TEMP>/store/tenants/84d4f6994135c3019dac24cd8a09c89e77f951b61bc030c3adee1c2953e41489/users/69/696e9aa826a582077aeb5cba37681bbac0e2f70c16bbdeca2b934c80871242c8/.igrep/mem/inbox/agent-immutable-rows-625cc1fddfeea8bf55e6abf3e2662f939e788a7cddda24e54f975b854055ae61.jsonl",
+          "sessionPath": ".igrep/mem/memory/sessions/agent-immutable-rows-625cc1fddfeea8bf55e6abf3e2662f939e788a7cddda24e54f975b854055ae61.jsonl",
+          "dialoguePath": ".igrep/mem/memory/dialogues/agent-immutable-rows-625cc1fddfeea8bf55e6abf3e2662f939e788a7cddda24e54f975b854055ae61.jsonl",
+          "events": 1,
+          "newEvents": 0,
+          "rebuilt": false,
+          "invalidRows": 0,
+          "written": false,
+          "sessionWritten": false,
+          "dialogueWritten": false,
+          "sourceChanged": false,
+          "profileInvalidated": false,
+          "inbox": "<TEMP>/store/tenants/84d4f6994135c3019dac24cd8a09c89e77f951b61bc030c3adee1c2953e41489/users/69/696e9aa826a582077aeb5cba37681bbac0e2f70c16bbdeca2b934c80871242c8/.igrep/mem/inbox/agent-immutable-rows-625cc1fddfeea8bf55e6abf3e2662f939e788a7cddda24e54f975b854055ae61.jsonl",
+          "duplicateRows": 1
+        }
+      }
+    },
+    {
+      "name": "replace_history_removes_old_canonical_turn",
+      "passed": true,
+      "detail": {
+        "before": {
+          "schema": "igrep.mem/1",
+          "provider": "igrep",
+          "action": "ingest",
+          "transcript": "<TEMP>/authoritative-transcript.jsonl",
+          "sessionPath": ".igrep/mem/memory/sessions/agent-editable-transcript-f0859dd1e3a6ff3582ebb0054610503c57f8634af35905801f66769dc7ce491a.jsonl",
+          "dialoguePath": ".igrep/mem/memory/dialogues/agent-editable-transcript-f0859dd1e3a6ff3582ebb0054610503c57f8634af35905801f66769dc7ce491a.jsonl",
+          "events": 1,
+          "newEvents": 1,
+          "rebuilt": false,
+          "invalidRows": 0,
+          "written": true,
+          "sessionWritten": true,
+          "dialogueWritten": true,
+          "sourceChanged": true,
+          "profileInvalidated": false
+        },
+        "after": {
+          "schema": "igrep.mem/1",
+          "provider": "igrep",
+          "action": "ingest",
+          "transcript": "<TEMP>/authoritative-transcript.jsonl",
+          "sessionPath": ".igrep/mem/memory/sessions/agent-editable-transcript-f0859dd1e3a6ff3582ebb0054610503c57f8634af35905801f66769dc7ce491a.jsonl",
+          "dialoguePath": ".igrep/mem/memory/dialogues/agent-editable-transcript-f0859dd1e3a6ff3582ebb0054610503c57f8634af35905801f66769dc7ce491a.jsonl",
+          "events": 1,
+          "newEvents": 1,
+          "rebuilt": true,
+          "invalidRows": 0,
+          "written": true,
+          "sessionWritten": true,
+          "dialogueWritten": true,
+          "sourceChanged": true,
+          "profileInvalidated": true
+        }
+      }
+    },
+    {
+      "name": "global_no_cache_disables_shared_backend",
+      "passed": true,
+      "detail": {
+        "enabled": false,
+        "backend": "disabled",
+        "source": "IGREP_NO_CACHE",
+        "url": null,
+        "reason": "IGREP_NO_CACHE is enabled",
+        "redis_dir": null,
+        "socket_path": null,
+        "ping": false
+      }
+    },
+    {
+      "name": "principal_purge_removes_searchable_note",
+      "passed": true,
+      "detail": {
+        "purge": {
+          "schema": "igrep.mem/1",
+          "provider": "igrep",
+          "action": "store-purge",
+          "tenant": "synthetic-tenant",
+          "user": "alice-character-7",
+          "workspace": "<TEMP>/store/tenants/84d4f6994135c3019dac24cd8a09c89e77f951b61bc030c3adee1c2953e41489/users/69/696e9aa826a582077aeb5cba37681bbac0e2f70c16bbdeca2b934c80871242c8",
+          "deleted": true,
+          "cleanupPending": false
+        },
+        "search": {
+          "schema": "igrep.mem/1",
+          "provider": "igrep",
+          "strategy": "shared-search",
+          "workspaceRoot": "<TEMP>/store/tenants/84d4f6994135c3019dac24cd8a09c89e77f951b61bc030c3adee1c2953e41489/users/69/696e9aa826a582077aeb5cba37681bbac0e2f70c16bbdeca2b934c80871242c8",
+          "results": [],
+          "markdownContext": "",
+          "warnings": [],
+          "rankingPolicy": {
+            "revision": "memory-role-aware-v1",
+            "assistantWeight": 1.0
+          }
+        }
+      }
+    },
+    {
+      "name": "principal_purge_does_not_delete_host_transcript",
+      "passed": true,
+      "detail": null
+    }
+  ],
+  "version": "igrep 0.1.161",
+  "python": "Python 3.14.3",
+  "binary_sha256": "39823cd05321c0f3fadf3e1c620fa50b6446a2e84f787b447eb4d7091ad1f3a0",
+  "probe_script_sha256": "f223103af6894931d657547e2d9e02645030e3c0909da7cd21cfb08c514d0112",
+  "finished_at_utc": "2026-10-17T07:40:30Z",
+  "limitations": [
+    "No maintain/model calls, relevance-quality evaluation, HTTP auth, concurrency/crash or Redis server deletion test.",
+    "Temporary synthetic memory removed after the run; host transcript preservation is checked before temporary cleanup."
+  ]
+}

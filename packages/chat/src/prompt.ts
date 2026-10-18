@@ -10,8 +10,8 @@ import type { SceneState } from "./scene.js";
  * SPEC: the system prompt carries only what stays constant across a
  * character's turns — the pinned Soul and the product contract, including
  * identity precedence when a saved user persona is enabled. Persona values,
- * Scene and time travel in `buildTurnStateBlock`, folded into the current
- * user message.
+ * Scene and time travel in `buildTurnStateBlock`, in background context
+ * before the unchanged current user message.
  * INTENT: the local model server caches prompt prefixes in 2048-token blocks
  * (measured 2026-08-24: an identical prefix cut first-token latency from
  * 2.2 s to 0.45 s). Per-turn data inside the system prompt invalidated that
@@ -29,8 +29,8 @@ export function buildCompanionSystemPrompt(context: BuiltContext): string {
   });
   const layers = [prompt];
   // INTENT: a real group greeting chose an old remembered name over the
-  // enabled profile. Resident memory also enters the system prompt, so the
-  // authority rule belongs here while the current profile stays turn state.
+  // enabled profile. Keep the stable authority rule here while both the
+  // current profile and historical resident facts remain turn context.
   if (context.userPersona?.enabled) {
     layers.push("When the turn includes a current saved chat persona, use it for the user's identity. It overrides conflicting names or self-descriptions in resident profiles, recalled memories and conversation history. It describes the user, never your Character identity.");
   }

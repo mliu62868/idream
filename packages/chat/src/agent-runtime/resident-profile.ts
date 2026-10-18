@@ -2,9 +2,9 @@
  * SPEC: turn the memory tool's free-text user profile into the facts a
  * companion may actually rely on, or nothing at all.
  *
- * INTENT: the profile is the only input that enters the system prompt on every
- * single turn, and it is generated as free prose by a separate maintenance
- * model. Chat consumed it as an opaque string, so whatever that model wrote
+ * INTENT: the profile reaches each normal turn as historical context and is
+ * generated as free prose by a separate maintenance model. It used to enter
+ * the system prompt; historical user instructions must not regain that authority. Chat consumed it as an opaque string, so whatever that model wrote
  * became "what you know about this person". A survey of 25 real relationship
  * workspaces on 2026-09-13 found the empty state alone phrased six different
  * ways ("- None", "No core user-profile observations extracted.", "No facts or

@@ -1,281 +1,69 @@
 import { createHash } from "node:crypto";
-import { AgentRegistry } from "@deepseek-ai/dsh-agent";
-import { AgentLoop } from "@deepseek-ai/dsh-agent-loop";
-import { LlmRuntime } from "@deepseek-ai/dsh-llm";
-import { SessionStore } from "@deepseek-ai/dsh-session";
-import { SessionProjectionRegistry } from "@deepseek-ai/dsh-session-projection";
-import { SystemPrompt } from "@deepseek-ai/dsh-system-prompt";
-import * as ToolTimeoutPolicy from "@deepseek-ai/dsh-tool-call-timeout-policy";
-import { ToolRuntime } from "@deepseek-ai/dsh-tools";
-import { TokenMeter } from "@deepseek-ai/dsh-token-meter";
-import {
-  COMPANION_DSH_VERSION,
-  COMPANION_IGREP_PLUGIN_VERSION,
-} from "@idream/shared/chat/companion-runtime";
-import type { Context } from "@deepseek-ai/cordis";
-import {
-  NORMAL_IGREP_CONFIG,
-  PRIVATE_IGREP_CONFIG,
-  type IgrepPluginModule,
-} from "./igrep";
+import { COMPANION_PI_VERSION, COMPANION_IGREP_VERSION } from "@idream/shared/chat/companion-runtime";
 import { stableJson } from "../stable-json";
 import { IGREP_MAINTENANCE_SAMPLING } from "./config";
-import { CompanionSessionQuery } from "./session-query";
 
-export const COMPANION_CORE_PACKAGES = [
-  "@deepseek-ai/dsh-agent",
-  "@deepseek-ai/dsh-agent-loop",
-  "@deepseek-ai/dsh-attachment",
-  "@deepseek-ai/dsh-brand",
-  "@deepseek-ai/dsh-compaction-basic",
-  "@deepseek-ai/dsh-invariants",
-  "@deepseek-ai/dsh-llm",
-  "@deepseek-ai/dsh-scope",
-  "@deepseek-ai/dsh-session",
-  "@deepseek-ai/dsh-session-persistence",
-  "@deepseek-ai/dsh-session-projection",
-  "@deepseek-ai/dsh-settings",
-  "@deepseek-ai/dsh-system-prompt",
-  "@deepseek-ai/dsh-timeout",
-  "@deepseek-ai/dsh-token-meter",
-  "@deepseek-ai/dsh-tool-call-timeout-policy",
-  "@deepseek-ai/dsh-tools",
-  "@deepseek-ai/dsh-typert-protocol",
-  "@deepseek-ai/dsh-user-approval",
-] as const;
-
-const SYSTEM_PROMPT_OPTIONS = Object.freeze({
-  includeHarnessIdentity: false,
-  includeRuntimeContext: true,
-  persona: "",
-});
-const AGENT_LOOP_OPTIONS = Object.freeze({ agents: [] as never[], maxParallelToolCalls: 1 });
-
-const IDREAM_COMPOSITION_IDENTITY = Object.freeze({
-  adapter: Object.freeze({ name: "openai-compatible", contractVersion: 1 }),
-  bridges: Object.freeze({
-    preparedTurn: 1,
-    tool: 1,
-    event: 1,
-    commit: 1,
-  }),
-});
-// Scene participants and tasks require independent source-bound identity/state receipts.
-// Terminal totals remain unknown if any physical model request was unmeasured.
-// Saved expression preferences stay outside quoted facts, without tool or memory authority.
-const EXECUTION_POLICY_VERSION = 29;
-export const COMPANION_COMPACTION_CONFIG = Object.freeze({
-  thresholdRatio: 0.85,
-  headroomTokens: 512,
-  retainRatio: 0.25,
-  maxTokens: 1024,
-  compactionRetries: 1,
-  maxOverflowRetries: 1,
-});
-const EFFECTFUL_TOOL_CONCURRENCY = 1;
-export const FORBIDDEN_COMPANION_EXECUTION_SERVICES = [
-  "shell",
-  "fs",
-  "filesystem",
-  "subagent",
-  "goal",
-  "scheduler",
-] as const;
-
+export const COMPANION_CORE_PACKAGES = ["@earendil-works/pi-ai", "@earendil-works/pi-durable", "@earendil-works/chord"] as const;
+export const COMPANION_COMPACTION_CONFIG = Object.freeze({ thresholdRatio: 0.85, headroomTokens: 512, retainRatio: 0.25, maxTokens: 1024 });
+export const FORBIDDEN_COMPANION_EXECUTION_SERVICES = ["shell", "fs", "filesystem", "subagent", "goal"] as const;
 export type CompanionCompositionMode = "normal" | "private";
-
 export interface CompanionCompositionAuthority {
   maxSteps: number;
-  igrepLlm: {
-    url: string;
-    model: string;
-  };
+  igrepLlm: { url: string; model: string };
+  igrepRoutes?: Readonly<Record<string, unknown>>;
 }
-
 export interface CompanionCompositionPlan {
   readonly mode: CompanionCompositionMode;
   readonly normalizedIgrepConfig: Readonly<Record<string, unknown>>;
   readonly manifest: Readonly<Record<string, unknown>>;
   readonly digest: string;
 }
-
-interface CompanionCompositionInput {
-  plugin: IgrepPluginModule;
-  plan: CompanionCompositionPlan;
+export function companionIgrepConfig(mode: CompanionCompositionMode, command: string, env: Readonly<Record<string, string | undefined>> = {}): Record<string, unknown> {
+  return { command, memory: mode === "normal", searchMode: "fast", memorySearchMode: "fast", sessionRecallMode: "ultra",
+    sessionRecallLimit: 8, sessionRecallTimeoutMs: 60000, automaticIngest: false, automaticMaintain: false,
+    memoryRecord: false, sharedCaches: false,
+    web: env.IGREP_WEB_SEARCH_PROVIDER ? { provider:env.IGREP_WEB_SEARCH_PROVIDER, url:env.IGREP_SEARXNG_URL || "", mode:"fast", maxResults:6, timeoutMs:30000, evidence:"unverified-provider-snippet" } : false,
+    source: "Main committed Turn projection" };
 }
-
-// INVARIANT: this table is both the executable registration path and Gate C's
-// manifest source, so evidence cannot stay green after runtime composition drifts.
-const COMPANION_EXECUTION_PLUGINS = [
-  { name: "llm", install: async (ctx: Context) => { await ctx.plugin(LlmRuntime); } },
-  { name: "session", install: async (ctx: Context) => { await ctx.plugin(SessionStore); } },
-  { name: "session-query", install: async (ctx: Context) => { await ctx.plugin(CompanionSessionQuery); } },
-  // AgentLoop injects this registry; no idream unit registers into it.
-  {
-    name: "session-projections",
-    install: async (ctx: Context) => { await ctx.plugin(SessionProjectionRegistry); },
-  },
-  {
-    name: "system-prompt",
-    install: async (ctx: Context) => { await ctx.plugin(SystemPrompt, SYSTEM_PROMPT_OPTIONS); },
-  },
-  { name: "tools", install: async (ctx: Context) => { await ctx.plugin(ToolRuntime, {}); } },
-  { name: "agent-registry", install: async (ctx: Context) => { await ctx.plugin(AgentRegistry); } },
-  {
-    name: "igrep",
-    install: async (ctx: Context, input: CompanionCompositionInput) => {
-      await ctx.plugin(input.plugin as never, input.plan.normalizedIgrepConfig as never);
-    },
-  },
-  { name: "token-meter", install: async (ctx: Context) => { await ctx.plugin(TokenMeter); } },
-  {
-    name: "igrep-compaction",
-    install: async (ctx: Context, input: CompanionCompositionInput) => {
-      if (typeof input.plugin.Compaction !== "function") throw new Error("official igrep compaction backend is missing");
-      await ctx.plugin(input.plugin.Compaction, COMPANION_COMPACTION_CONFIG);
-    },
-  },
-  {
-    name: "tool-call-timeout-policy",
-    install: async (ctx: Context) => { await ctx.plugin(ToolTimeoutPolicy); },
-  },
-  {
-    name: "agent-loop",
-    install: async (ctx: Context) => { await ctx.plugin(AgentLoop, AGENT_LOOP_OPTIONS); },
-  },
-] as const;
-
-export const COMPANION_EXECUTION_PLUGIN_ORDER = Object.freeze(
-  COMPANION_EXECUTION_PLUGINS.map((entry) => entry.name),
-);
-
-export function companionIgrepConfig(
-  mode: CompanionCompositionMode,
-  command: string,
-): Record<string, unknown> {
+/** Routes affect retrieval semantics; machine paths and credentials do not. */
+export function companionIgrepRoutes(env: Readonly<Record<string, string | undefined>>): Record<string, unknown> {
+  return Object.fromEntries([
+    "IGREP_LLM_URL", "IGREP_LLM_MODEL", "IGREP_ASK_LLM_URL", "IGREP_ASK_LLM_MODEL",
+    "IGREP_LLM_FINAL_SORT_URL", "IGREP_LLM_FINAL_SORT_MODEL", "IGREP_EMBEDDING_URL", "IGREP_EMBED_MODEL", "IGREP_EMBED_DIM",
+    "IGREP_RERANK_URL", "IGREP_RERANK_MODEL", "IGREP_RERANK_API_FORMAT", "IGREP_NO_CACHE",
+    "IGREP_WEB_SEARCH_PROVIDER", "IGREP_SEARXNG_URL", "IGREP_WEB_FAST_BUDGET_S", "IGREP_WEB_PROVIDER_TIMEOUT_S", "IGREP_WEB_LLM_TIMEOUT_S",
+  ].map(name => [name, env[name] ?? ""]));
+}
+export function companionCompositionManifest(mode: CompanionCompositionMode, igrep: Record<string, unknown>, authority: CompanionCompositionAuthority) {
+  if (!Number.isSafeInteger(authority.maxSteps) || authority.maxSteps <= 0) throw new Error("companion maxSteps must be a positive integer");
+  const url = new URL(authority.igrepLlm.url);
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("igrep maintenance URL must be credential-free HTTP(S)");
   return {
-    command,
-    ...(mode === "normal" ? NORMAL_IGREP_CONFIG : PRIVATE_IGREP_CONFIG),
+    schemaVersion: 3, piVersion: COMPANION_PI_VERSION, igrepVersion: COMPANION_IGREP_VERSION,
+    corePackages: COMPANION_CORE_PACKAGES, storage: "memory", builtInTools: [],
+    compaction: { backend: "pi-durable", ...COMPANION_COMPACTION_CONFIG },
+    reasoning: { generation: false, compaction: false, structured: false, totalLimit: "profile" },
+    execution: { version: 42, maxSteps: authority.maxSteps, toolExecution: "sequential", maxParallelToolCalls: 1,
+      retry: false, backgroundCompaction: false, deadlineSource: "invocation.deadlineAt", commitBeforeProjection: true,
+      recovery: "Main snapshot and immutable local proposal" },
+    igrepMaintenance: { url: url.toString().replace(/\/$/u, ""), model: authority.igrepLlm.model.trim(), sampling: IGREP_MAINTENANCE_SAMPLING },
+    ...(authority.igrepRoutes ? { igrepRoutes: digestSafeIgrepConfig(authority.igrepRoutes as Record<string, unknown>) } : {}),
+    mode, igrep: digestSafeIgrepConfig(igrep),
   };
 }
-
-export function resolvedCompanionIgrepConfig(
-  plugin: IgrepPluginModule,
-  mode: CompanionCompositionMode,
-  command: string,
-): Record<string, unknown> {
-  const raw = companionIgrepConfig(mode, command);
-  return plugin.resolveConfig?.(raw) ?? raw;
+export function assertCompanionExecutionManifest(manifest: Readonly<Record<string, unknown>>): void {
+  if (manifest.piVersion !== COMPANION_PI_VERSION || manifest.storage !== "memory"
+    || stableJson(manifest.corePackages) !== stableJson(COMPANION_CORE_PACKAGES)
+    || stableJson(manifest.builtInTools) !== "[]") throw new Error("companion execution manifest drifted");
 }
-
-/** Execute only the registrations whose names are hashed into Gate C evidence. */
-export async function applyCompanionComposition(
-  ctx: Context,
-  input: CompanionCompositionInput,
-): Promise<void> {
-  assertCompanionExecutionManifest(input.plan.manifest);
-  for (const registration of COMPANION_EXECUTION_PLUGINS) {
-    await registration.install(ctx, input);
-  }
+export function companionCompositionDigest(mode: CompanionCompositionMode, config: Record<string, unknown>, authority: CompanionCompositionAuthority): string {
+  return digestCompositionManifest(companionCompositionManifest(mode, config, authority));
 }
-
-/** Reject a digest whose declared services differ from the executable table. */
-export function assertCompanionExecutionManifest(
-  manifest: Readonly<Record<string, unknown>>,
-): void {
-  const pluginOrder = manifest.pluginOrder;
-  if (
-    !Array.isArray(pluginOrder) ||
-    pluginOrder.length !== COMPANION_EXECUTION_PLUGIN_ORDER.length ||
-    pluginOrder.some((entry, index) => entry !== COMPANION_EXECUTION_PLUGIN_ORDER[index])
-  ) {
-    throw new Error("companion execution plugin order drifted");
-  }
-  const forbidden = pluginOrder.find((entry) =>
-    FORBIDDEN_COMPANION_EXECUTION_SERVICES.includes(entry as never)
-  );
-  if (forbidden) {
-    throw new Error(`forbidden companion execution service loaded: ${String(forbidden)}`);
-  }
-}
-
-/**
- * Digest the composition that actually executes turns, not the installer-only
- * DSH profile (whose official manager also materializes dsh-base).
- */
-export function companionCompositionDigest(
-  mode: CompanionCompositionMode,
-  normalizedIgrepConfig: Record<string, unknown>,
-  authority: CompanionCompositionAuthority,
-): string {
-  return digestCompositionManifest(
-    companionCompositionManifest(mode, normalizedIgrepConfig, authority),
-  );
-}
-
-/** Pure authority plan: no Context, workspace, adapter or provider is initialized here. */
-export function createCompanionCompositionPlan(
-  mode: CompanionCompositionMode,
-  normalizedIgrepConfig: Record<string, unknown>,
-  authority: CompanionCompositionAuthority,
-): CompanionCompositionPlan {
-  const immutableIgrepConfig = immutableClone(normalizedIgrepConfig);
-  const manifest = immutableClone(
-    companionCompositionManifest(mode, immutableIgrepConfig, authority),
-  ) as Readonly<Record<string, unknown>>;
+export function createCompanionCompositionPlan(mode: CompanionCompositionMode, config: Record<string, unknown>, authority: CompanionCompositionAuthority): CompanionCompositionPlan {
+  const normalizedIgrepConfig = immutableClone(config);
+  const manifest = immutableClone(companionCompositionManifest(mode, config, authority));
   assertCompanionExecutionManifest(manifest);
-  return Object.freeze({
-    mode,
-    normalizedIgrepConfig: immutableIgrepConfig,
-    manifest,
-    digest: digestCompositionManifest(manifest),
-  });
-}
-
-export function companionCompositionManifest(
-  mode: CompanionCompositionMode,
-  normalizedIgrepConfig: Record<string, unknown>,
-  authority: CompanionCompositionAuthority,
-) {
-  if (!Number.isSafeInteger(authority.maxSteps) || authority.maxSteps <= 0) {
-    throw new Error("companion maxSteps must be a positive integer");
-  }
-  const maintenanceUrl = new URL(authority.igrepLlm.url);
-  if (maintenanceUrl.protocol !== "http:" && maintenanceUrl.protocol !== "https:") {
-    throw new Error("igrep maintenance LLM URL must use HTTP(S)");
-  }
-  if (maintenanceUrl.username || maintenanceUrl.password || maintenanceUrl.search || maintenanceUrl.hash) {
-    throw new Error("igrep maintenance LLM URL must not contain credentials, query or fragment");
-  }
-  return {
-    schemaVersion: 2,
-    cordisVersion: "4.0.4",
-    dshVersion: COMPANION_DSH_VERSION,
-    pluginVersion: COMPANION_IGREP_PLUGIN_VERSION,
-    pluginOrder: COMPANION_EXECUTION_PLUGIN_ORDER,
-    systemPrompt: SYSTEM_PROMPT_OPTIONS,
-    toolRuntime: {},
-    agentLoop: AGENT_LOOP_OPTIONS,
-    compaction: { backend: "@igrep/dsh-plugin/compaction", ...COMPANION_COMPACTION_CONFIG },
-    idream: {
-      ...IDREAM_COMPOSITION_IDENTITY,
-      executionPolicy: {
-        version: EXECUTION_POLICY_VERSION,
-        maxSteps: authority.maxSteps,
-        maxParallelToolCalls: AGENT_LOOP_OPTIONS.maxParallelToolCalls,
-        effectfulToolConcurrency: EFFECTFUL_TOOL_CONCURRENCY,
-        deadlineSource: "invocation.deadlineAt",
-        commitBeforeProjection: true,
-      },
-      igrepMaintenance: {
-        url: maintenanceUrl.toString().replace(/\/$/u, ""),
-        model: authority.igrepLlm.model.trim(),
-        sampling: IGREP_MAINTENANCE_SAMPLING,
-      },
-    },
-    mode,
-    igrep: digestSafeIgrepConfig(normalizedIgrepConfig),
-  };
+  return Object.freeze({ mode, normalizedIgrepConfig, manifest, digest: digestCompositionManifest(manifest) });
 }
 
 function digestSafeIgrepConfig(value: Record<string, unknown>): Record<string, unknown> {

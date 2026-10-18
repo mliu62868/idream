@@ -4,6 +4,8 @@ import type { ChatToolDefinition } from "./openai-compatible-model";
 export const GENERATE_IMAGE_ASYNC_TOOL = "generate_image_async" as const;
 export const EDIT_LAST_IMAGE_TOOL = "edit_last_image" as const;
 
+// Historical calls retain optional captions. The model definitions omit them:
+// only the ordinary reply after the tool receipt owns the spoken text.
 export const generateImageAsyncArgsSchema = z.object({
   prompt: z.string().trim().min(12).max(1_200),
   subject: z.enum(["companion", "scene"]),
@@ -62,10 +64,6 @@ export const IMAGE_AGENT_TOOL_DEFINITIONS: readonly ChatToolDefinition[] = [
           type: "string", enum: ["companion", "scene"],
           description: "Follow the latest user: companion for selfies/scenes with you; scene for objects/scenery without you or no-people requests. Only companion adds identity.",
         },
-        caption: {
-          type: "string",
-          description: "Short in-character message to accompany the photo",
-        },
         requestedNudity: { type: "string", enum: ["unspecified", "none", "full"], description: "Current wardrobe intent: none for clothed, full for nude, unspecified when neither is requested. All wardrobe clauses in prompt must agree with this value: full depicts a fully nude adult without clothes; none preserves requested clothing. Drop conflicting outfits from earlier photos or default appearance." },
         orientation: { type: "string", enum: ["4:5", "16:9"], description: "4:5 portrait (default) or 16:9 landscape" },
       },
@@ -82,10 +80,6 @@ export const IMAGE_AGENT_TOOL_DEFINITIONS: readonly ChatToolDefinition[] = [
         instruction: {
           type: "string",
           description: "English description of every requested edit to the last photo (4-1200 chars)",
-        },
-        caption: {
-          type: "string",
-          description: "Short in-character message to accompany the edited photo",
         },
         requestedNudity: { type: "string", enum: ["unspecified", "none", "full"], description: "Wardrobe intent in the current user request; preserve all concrete edit and clothing constraints in instruction." },
       },

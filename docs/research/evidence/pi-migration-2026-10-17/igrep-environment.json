@@ -1,0 +1,339 @@
+{
+  "testedVersion": "igrep2 0.1.161",
+  "runtime": "Bun 1.4.2",
+  "network": "macOS sandbox-exec deny network*",
+  "modelRequests": 0,
+  "fixtures": "temporary synthetic only; removed after probe",
+  "environmentMutation": "no parent/global mutation; HOME and CODEX_HOME not set",
+  "passes": 23,
+  "checks": [
+    {
+      "name": "builder_is_pure_and_does_not_mutate_parent",
+      "passed": true
+    },
+    {
+      "name": "unknown_ambient_and_application_secrets_are_dropped",
+      "passed": true
+    },
+    {
+      "name": "home_and_codex_home_are_not_repurposed",
+      "passed": true
+    },
+    {
+      "name": "published_0_1_161_is_used",
+      "passed": true
+    },
+    {
+      "name": "explicit_service_routes_override_hostile_user_and_project_files",
+      "passed": true,
+      "details": {
+        "checks": {
+          "llm_route": true,
+          "ask_route": true,
+          "embedding_route": true,
+          "rerank_route": true,
+          "llm_key": true,
+          "ask_key": true,
+          "embedding_key": true,
+          "rerank_key": true,
+          "openai_fallback_disabled": true,
+          "shared_and_ask_sampling_pinned": true,
+          "llm_api_format_pinned": true,
+          "optional_service_urls_disabled": true,
+          "optional_models_disabled": true,
+          "web_autodetection_disabled": true,
+          "global_credential_disabled": true,
+          "cache_disabled": true,
+          "cache_disabled_by_host": true,
+          "proxies_disabled": true,
+          "user_prompt_disabled": true,
+          "final_selector_route": true,
+          "layered_cache_switches_pinned": true,
+          "layered_proxy_switches_pinned": true
+        },
+        "configuration_files_are_still_read": true,
+        "fixed_user_path": true,
+        "unrelated_user_setting_can_survive": true
+      }
+    },
+    {
+      "name": "explicit_empty_values_disable_all_routes_despite_personal_cloud_defaults",
+      "passed": true,
+      "details": {
+        "checks": {
+          "llm_route": true,
+          "ask_route": true,
+          "embedding_route": true,
+          "rerank_route": true,
+          "llm_key": true,
+          "ask_key": true,
+          "embedding_key": true,
+          "rerank_key": true,
+          "openai_fallback_disabled": true,
+          "shared_and_ask_sampling_pinned": true,
+          "llm_api_format_pinned": true,
+          "optional_service_urls_disabled": true,
+          "optional_models_disabled": true,
+          "web_autodetection_disabled": true,
+          "global_credential_disabled": true,
+          "cache_disabled": true,
+          "cache_disabled_by_host": true,
+          "proxies_disabled": true,
+          "user_prompt_disabled": true,
+          "final_selector_route": true,
+          "layered_cache_switches_pinned": true,
+          "layered_proxy_switches_pinned": true
+        },
+        "configuration_files_are_still_read": true,
+        "fixed_user_path": true,
+        "unrelated_user_setting_can_survive": true
+      }
+    },
+    {
+      "name": "actual_load_user_env_and_from_env_keep_service_routes",
+      "passed": true,
+      "details": {
+        "checks": {
+          "llm_route": true,
+          "ask_route": true,
+          "embedding_route": true,
+          "rerank_route": true,
+          "llm_key": true,
+          "ask_key": true,
+          "embedding_key": true,
+          "rerank_key": true,
+          "openai_fallback_disabled": true,
+          "shared_and_ask_sampling_pinned": true,
+          "llm_api_format_pinned": true,
+          "optional_service_urls_disabled": true,
+          "optional_models_disabled": true,
+          "web_autodetection_disabled": true,
+          "global_credential_disabled": true,
+          "cache_disabled": true,
+          "cache_disabled_by_host": true,
+          "proxies_disabled": true,
+          "user_prompt_disabled": true,
+          "final_selector_route": true,
+          "layered_cache_switches_pinned": true,
+          "layered_proxy_switches_pinned": true
+        },
+        "configuration_files_are_still_read": true,
+        "fixed_user_path": true,
+        "unrelated_user_setting_can_survive": false
+      }
+    },
+    {
+      "name": "existing_bounded_command_accepts_explicit_environment",
+      "passed": true,
+      "details": {
+        "checks": {
+          "llm_route": true,
+          "ask_route": true,
+          "embedding_route": true,
+          "rerank_route": true,
+          "llm_key": true,
+          "ask_key": true,
+          "embedding_key": true,
+          "rerank_key": true,
+          "openai_fallback_disabled": true,
+          "shared_and_ask_sampling_pinned": true,
+          "llm_api_format_pinned": true,
+          "optional_service_urls_disabled": true,
+          "optional_models_disabled": true,
+          "web_autodetection_disabled": true,
+          "global_credential_disabled": true,
+          "cache_disabled": true,
+          "cache_disabled_by_host": true,
+          "proxies_disabled": true,
+          "user_prompt_disabled": true,
+          "final_selector_route": true,
+          "layered_cache_switches_pinned": true,
+          "layered_proxy_switches_pinned": true
+        },
+        "configuration_files_are_still_read": true,
+        "fixed_user_path": true,
+        "unrelated_user_setting_can_survive": false
+      }
+    },
+    {
+      "name": "retired_personal_configuration_fails_closed_before_routing",
+      "passed": true,
+      "details": {
+        "configuration_rejected": "ConfigurationError"
+      }
+    },
+    {
+      "name": "no_public_config_option",
+      "passed": true
+    },
+    {
+      "name": "no_public_no-config_option",
+      "passed": true
+    },
+    {
+      "name": "no_public_env-file_option",
+      "passed": true
+    },
+    {
+      "name": "status_and_fast_empty_search_have_contract_handshake",
+      "passed": true
+    },
+    {
+      "name": "synthetic_record_has_contract_handshake",
+      "passed": true
+    },
+    {
+      "name": "wake_max_memory_zero_excludes_agent_owned_memory",
+      "passed": true
+    },
+    {
+      "name": "synthetic_ingest_has_contract_handshake",
+      "passed": true
+    },
+    {
+      "name": "maintain_exit_zero_is_not_completion",
+      "passed": true,
+      "details": {
+        "schema": "igrep.mem/1",
+        "provider": "igrep",
+        "action": "maintain",
+        "outcome": "deferred",
+        "reason": "llm_not_configured",
+        "classification": "deferred",
+        "failed": false,
+        "warningCount": null,
+        "resultCount": null,
+        "pendingRows": 1
+      }
+    },
+    {
+      "name": "wake_memory_zero_does_not_remove_operational_status",
+      "passed": true,
+      "details": {
+        "schema": "igrep.mem/1",
+        "provider": "igrep",
+        "action": "wake",
+        "classification": "incomplete",
+        "failed": false,
+        "warningCount": 1,
+        "resultCount": null,
+        "hasMemoryStatus": true,
+        "hasAgentMemory": false
+      }
+    },
+    {
+      "name": "invalid_memory_root_is_command_failure_not_empty_page",
+      "passed": true,
+      "details": {
+        "exitCode": 5,
+        "errorCode": "RUNTIME_ERROR",
+        "hasSchema": false
+      }
+    },
+    {
+      "name": "contract_fixture_failed_true_is_unavailable_even_with_empty_results",
+      "passed": true
+    },
+    {
+      "name": "missing_and_future_schema_fail_closed",
+      "passed": true
+    },
+    {
+      "name": "search_warnings_cannot_be_classified_as_complete_empty",
+      "passed": true
+    },
+    {
+      "name": "no_cache_is_an_environment_contract_not_a_payload_field",
+      "passed": true
+    }
+  ],
+  "observations": {
+    "deferred": {
+      "schema": "igrep.mem/1",
+      "provider": "igrep",
+      "action": "maintain",
+      "outcome": "deferred",
+      "reason": "llm_not_configured",
+      "classification": "deferred",
+      "failed": false,
+      "warningCount": null,
+      "resultCount": null,
+      "pendingRows": 1
+    },
+    "warningWake": {
+      "schema": "igrep.mem/1",
+      "provider": "igrep",
+      "action": "wake",
+      "classification": "incomplete",
+      "failed": false,
+      "warningCount": 1,
+      "resultCount": null,
+      "hasMemoryStatus": true,
+      "hasAgentMemory": false
+    },
+    "statusMemory": {
+      "memoryRoot": "/private<TEMP>/workspace/.igrep/mem",
+      "agentMemory": true,
+      "profile": false,
+      "sessionFiles": 1,
+      "dialogueFiles": 1,
+      "pendingProfileRows": 1,
+      "processedProfileRows": 0,
+      "profileLines": 0,
+      "factCount": 0,
+      "lifecycleEvents": 3,
+      "lastMaintain": {
+        "at": "2026-10-17T08:50:58Z",
+        "condensedLines": 0,
+        "cost": {
+          "elapsedMs": 49,
+          "errors": [],
+          "forgetConfirmSkipped": 0,
+          "inputTokens": 0,
+          "lanes": {},
+          "llmCalls": 0,
+          "outputTokens": 0,
+          "tokenReportedCalls": 0
+        },
+        "images": {
+          "described": 0,
+          "enabled": false,
+          "failed": 0,
+          "pending": 0
+        },
+        "observations": 0,
+        "outcome": "deferred",
+        "processedRows": 0,
+        "reason": "llm_not_configured"
+      },
+      "deferral": {
+        "reason": "llm_not_configured",
+        "class": "environment",
+        "streak": 3,
+        "since": "2026-10-17T08:50:57Z",
+        "at": "2026-10-17T08:50:58Z",
+        "stuck": true,
+        "retryable": true
+      },
+      "ingest": {
+        "refusedSessions": [],
+        "invalidRows": 0
+      }
+    },
+    "brokenRoot": {
+      "exitCode": 5,
+      "errorCode": "RUNTIME_ERROR",
+      "hasSchema": false
+    }
+  },
+  "hashes": {
+    "environment.ts": "4206c33600f067dcf4e8c7b77697b8aed7e74f771092db6ff0d1e9c6ac758949",
+    "probe-config.py": "ebc45f346149fa9e17211ea9b1bfc39e1f9652f08a04426ca57f2a1224c7ff9b",
+    "probe.ts": "76c57336fb35c29e2c88690e682001d64c351faa061a1bfbc8f36c7ba85db0fc"
+  },
+  "limitations": [
+    "No config-path bypass exists; user configuration is still read. Explicit route/cache pins are the qualification goal.",
+    "Hostile personal dotenv is exercised through installed EnvLayers inputs; the user's actual file is never edited.",
+    "No real model, embedding, rerank, Redis server, or recall-quality test."
+  ]
+}

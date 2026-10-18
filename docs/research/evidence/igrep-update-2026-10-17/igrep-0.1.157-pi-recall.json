@@ -1,0 +1,73 @@
+{
+  "version": "0.1.157",
+  "moduleSha256": "bfb30c6f67cc6b0c029952b616a1c9f65bb04514e327617e2d968e13e6d81452",
+  "checks": [
+    {
+      "name": "only_missing_current_branch_raw_messages",
+      "passed": true,
+      "detail": [
+        "entry:first#1",
+        "entry:second#1",
+        "entry:third#1"
+      ]
+    },
+    {
+      "name": "reasoning_and_recall_results_omitted",
+      "passed": true
+    },
+    {
+      "name": "unicode_chunks_are_lossless_and_bounded",
+      "passed": true
+    },
+    {
+      "name": "version_specific_render_order",
+      "passed": true,
+      "detail": [
+        "entry:third#1",
+        "entry:second#1",
+        "entry:first#1"
+      ]
+    },
+    {
+      "name": "other_branch_id_rejected",
+      "passed": true
+    },
+    {
+      "name": "query_uses_one_bounded_public_stdin_search",
+      "passed": true,
+      "detail": [
+        "search",
+        "--stdin-format",
+        "jsonl",
+        "--mode",
+        "ultra",
+        "--json",
+        "-m",
+        "8",
+        "--",
+        "synthetic earlier exchange"
+      ]
+    },
+    {
+      "name": "incomplete_search_is_visible",
+      "passed": true
+    },
+    {
+      "name": "duplicate_search_reference_rejected",
+      "passed": true
+    },
+    {
+      "name": "archive_index_is_bounded",
+      "passed": true,
+      "detail": {
+        "characters": 395,
+        "index": "Archived session: 3 entries, 3 chunks.\nUse session_recall(query) for missing evidence, or session_recall(ids=[…]) for verbatim passages.\nIndex previews are navigation, not evidence:\n- entry:third#1 toolResult lookup L1-1 · Third synthetic failure: mint whale.\n- entry:second#1 assistant L1-1 · Second synthetic reply: cobalt fox.\n- entry:first#1 user L1-1 · First synthetic request: amber otter."
+      }
+    }
+  ],
+  "network": "No process or network: query ranking is an explicit stub",
+  "limitations": [
+    "Does not evaluate semantic relevance or real provider latency.",
+    "Uses synthetic coding-agent context; does not prove pi-durable compatibility."
+  ]
+}

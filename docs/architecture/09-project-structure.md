@@ -66,7 +66,7 @@ idream/
 | `lib/*` | 仅彼此与基础库，**不 import 任何 modules** |
 | 跨包 | 经 `packages/shared` 共享契约；Main 经 BFF 发送不可变产品执行快照，Chat 内编译成 `PreparedTurn` 并返回执行证据（ADR-21） |
 
-**禁止**：catch-all route 写业务逻辑或直接用 Prisma；provider/lib import 业务模块；把 Chat 本地文件、SSE 或 DSH transcript 当成产品历史/账本；循环依赖（用事件/job 打破）。Chat 不拥有产品权威表。
+**禁止**：catch-all route 写业务逻辑或直接用 Prisma；provider/lib import 业务模块；把 Chat 本地文件、SSE 或 Pi transcript 当成产品历史/账本；循环依赖（用事件/job 打破）。Chat 不拥有产品权威表。
 
 > 可用 ESLint `no-restricted-imports` / `eslint-plugin-boundaries` 把以上规则**机器化**（10 §CI）。
 

@@ -37,7 +37,7 @@ export const env = {
   get CHAT_MODEL_PROVIDER() {
     return resolveChatModelProfile(process.env).provider;
   },
-  // Product policy and the embedded DSH runtime resolve the same provider
+  // Product policy and the embedded Pi runtime resolve the same provider
   // profile; these getters expose that pin to health and operator probes.
   get CHAT_MODEL_BASE_URL() {
     return resolveChatModelProfile(process.env).baseUrl;
@@ -45,15 +45,15 @@ export const env = {
   get CHAT_MODEL_NAME() {
     return resolveChatModelProfile(process.env).model;
   },
-  // Keep the admin probe bounded below the DSH turn deadline.
+  // Keep the admin probe bounded below the Pi turn deadline.
   get CHAT_MODEL_TIMEOUT_MS() {
     return resolveChatModelProfile(process.env).idleTimeoutMs;
   },
   get CHAT_MODEL_API_KEY() {
     return resolveChatModelProfile(process.env).apiKey;
   },
-  get DSH_OPENROUTER_PROVIDER_ONLY() {
-    return process.env.DSH_OPENROUTER_PROVIDER_ONLY?.split(",").map(value => value.trim()).filter(Boolean);
+  get PI_OPENROUTER_PROVIDER_ONLY() {
+    return process.env.PI_OPENROUTER_PROVIDER_ONLY?.split(",").map(value => value.trim()).filter(Boolean);
   },
   get BFF_SIGNING_SECRET() {
     return process.env.CHAT_BFF_SIGNING_SECRET ?? "";
@@ -70,9 +70,9 @@ export const env = {
     return Number.parseInt(process.env.CHAT_PORT ?? "3100", 10);
   },
   get AGENT_RUN_DEADLINE_MS() {
-    const value = Number(process.env.DSH_AGENT_DEADLINE_MS ?? 300_000);
+    const value = Number(process.env.PI_AGENT_DEADLINE_MS ?? 300_000);
     if (!Number.isSafeInteger(value) || value <= 0) {
-      throw new Error("DSH_AGENT_DEADLINE_MS must be a positive integer");
+      throw new Error("PI_AGENT_DEADLINE_MS must be a positive integer");
     }
     return value;
   },

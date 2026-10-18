@@ -52,6 +52,12 @@ function imageActionFacts(overrides: Partial<TerminalCandidateFacts> = {}): Term
 }
 
 describe("evaluateTerminalCandidate", () => {
+  it.each(["stop", "max-tokens"])("rejects whitespace left by thinking-only %s output", finishReasonKind => {
+    expect(evaluateTerminalCandidate(facts({ assistantContent: "\n\n \t", finishReasonKind }))).toEqual({
+      accepted: false, code: finishReasonKind === "max-tokens" ? "model_output_exhausted" : "empty_model_response", message: "terminal assistant candidate is empty",
+    });
+  });
+
   it("preserves unknown measured usage without changing a valid reply", () => {
     expect(evaluateTerminalCandidate(facts({ usage: null }))).toMatchObject({
       accepted: true, candidate: { content: "I missed you today.", usage: null },
@@ -150,10 +156,11 @@ describe("evaluateTerminalCandidate", () => {
     });
   });
 
-  it("rejects empty terminal content without a validation code", () => {
+  it("classifies empty terminal content", () => {
     const decision = evaluateTerminalCandidate(facts({ assistantContent: "" }));
     expect(decision).toEqual({
       accepted: false,
+      code: "empty_model_response",
       message: "terminal assistant candidate is empty",
     });
   });

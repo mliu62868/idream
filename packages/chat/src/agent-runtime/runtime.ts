@@ -1,17 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir } from "node:fs/promises";
 import {
-  COMPANION_IGREP_PLUGIN_VERSION,
+  COMPANION_PI_VERSION,
+  COMPANION_IGREP_VERSION,
   type CompanionReadiness,
 } from "@idream/shared/chat/companion-runtime";
 import type { CompanionInvocation } from "./contracts.js";
 import {
-  bindIgrepLlmEnvironment,
   loadAgentRuntimeConfig,
 } from "./config.js";
 import {
   companionCompositionDigest,
-  resolvedCompanionIgrepConfig,
+  companionIgrepConfig,
+  companionIgrepRoutes,
 } from "./composition.js";
 import {
   CompanionEngine,
@@ -21,7 +22,6 @@ import {
 import {
   IgrepMemoryBuilder,
   igrepVersion,
-  loadIgrepPlugin,
 } from "./igrep.js";
 import { OpenAiCompatibleAdapter } from "./openai-adapter.js";
 import { llmProfileClaimVerifier } from "./profile-evidence.js";
@@ -48,7 +48,7 @@ interface AgentRuntime {
 
 interface AgentRuntimeHealth {
     igrepVersion: string;
-    pluginVersion: string;
+    piVersion: string;
     profileDigests: { normal: string; private: string };
 }
 
@@ -56,12 +56,12 @@ let runtime: AgentRuntime | undefined;
 
 function createRuntime(): AgentRuntime {
   const config = loadAgentRuntimeConfig();
-  bindIgrepLlmEnvironment(config.igrepLlm);
   const instance = {
     id: randomUUID(),
     startedAt: new Date().toISOString(),
   };
-  const plugin = Promise.resolve().then(() => loadIgrepPlugin(config.igrepPluginUrl));
+  const cli = { command: config.igrepCommand, env: config.igrepEnvironment };
+  const igrepRoutes = companionIgrepRoutes(config.igrepEnvironment);
   const workspaces = new AttemptWorkspaceStore({
     canonicalRoot: config.canonicalRoot,
     privateRoot: config.privateRoot,
@@ -69,17 +69,17 @@ function createRuntime(): AgentRuntime {
   const engine = new CompanionEngine({
     instance,
     workspaces,
-    plugin: async () => (await plugin).module,
     adapter: (profile, requestPolicy) => new OpenAiCompatibleAdapter({
       profile,
       apiKey: config.modelProfile.apiKey,
       openRouterProviderOnly: config.openRouterProviderOnly,
       ...requestPolicy,
     }),
-    igrepCommand: config.igrepCommand,
+    igrep: cli,
+    igrepRoutes,
     igrepLlm: config.igrepLlm,
     memoryBuilder: new IgrepMemoryBuilder(
-      config.igrepCommand,
+      cli,
       undefined,
       undefined,
       llmProfileClaimVerifier(config.igrepLlm),
@@ -98,41 +98,32 @@ function createRuntime(): AgentRuntime {
       chmod(config.canonicalRoot, 0o700),
       chmod(config.privateRoot, 0o700),
     ]);
-    const loaded = await plugin;
-    if (loaded.version !== COMPANION_IGREP_PLUGIN_VERSION) {
-      throw new Error(`igrep plugin version drifted to ${loaded.version}`);
-    }
-    const normal = resolvedCompanionIgrepConfig(
-      loaded.module,
-      "normal",
-      config.igrepCommand,
-    );
-    const privateProfile = resolvedCompanionIgrepConfig(
-      loaded.module,
-      "private",
-      config.igrepCommand,
-    );
+    const normal = companionIgrepConfig("normal", config.igrepCommand, config.igrepEnvironment);
+    const privateProfile = companionIgrepConfig("private", config.igrepCommand, config.igrepEnvironment);
     const profileDigests = {
       normal: companionCompositionDigest("normal", normal, {
         maxSteps: config.maxSteps,
         igrepLlm: config.igrepLlm,
+        igrepRoutes,
       }),
       private: companionCompositionDigest("private", privateProfile, {
         maxSteps: config.maxSteps,
         igrepLlm: config.igrepLlm,
+        igrepRoutes,
       }),
     };
     const [resolvedIgrepVersion] = await Promise.all([
-      igrepVersion(config.igrepCommand),
+      igrepVersion(cli),
       new OpenAiCompatibleAdapter({
         profile: readinessProfile(config.modelProfile),
         apiKey: config.modelProfile.apiKey,
         openRouterProviderOnly: config.openRouterProviderOnly,
       }).resolveModel(config.modelProfile.provider, config.modelProfile.model),
     ]);
+    if (resolvedIgrepVersion !== COMPANION_IGREP_VERSION) throw new Error("igrep runtime version drifted");
     return {
       igrepVersion: resolvedIgrepVersion,
-      pluginVersion: loaded.version,
+      piVersion: COMPANION_PI_VERSION,
       profileDigests,
     };
   };
@@ -152,7 +143,6 @@ function createRuntime(): AgentRuntime {
     fullReadiness: createReadinessProbe({
       config,
       instance,
-      plugin: () => plugin,
       bridgeProbe: probeCompanionBridges,
       workspaceRebuildProbe: () => probeWorkspaceRebuild(engine),
     }),
@@ -180,12 +170,12 @@ export async function agentRuntimeProfileDigest(
 
 export async function agentRuntimeVersions(): Promise<{
   igrepVersion: string;
-  pluginVersion: string;
+  piVersion: string;
 }> {
   const health = await current().latestHealth();
   return {
     igrepVersion: health.igrepVersion,
-    pluginVersion: health.pluginVersion,
+    piVersion: health.piVersion,
   };
 }
 

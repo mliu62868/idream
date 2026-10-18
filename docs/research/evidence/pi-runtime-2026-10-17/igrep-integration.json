@@ -1,0 +1,59 @@
+{
+  "igrepVersion": "0.1.157",
+  "discoveryCommand": "igrep setup pi --dry-run --json",
+  "dryRun": true,
+  "installedByThisResearch": false,
+  "source": "/Users/kk/.local/share/uv/tools/igrep2/lib/python3.14/site-packages/igrep/data/pi/igrep-memory",
+  "package": {
+    "name": "@igrep/pi-memory",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "keywords": [
+      "pi-package"
+    ],
+    "scripts": {
+      "test": "bun test tests/*.test.js"
+    },
+    "pi": {
+      "extensions": [
+        "./index.mjs"
+      ]
+    },
+    "peerDependencies": {
+      "@earendil-works/pi-coding-agent": ">=1.0.0",
+      "typebox": "*"
+    }
+  },
+  "files": {
+    "handoff.mjs": "719f918af06ba5f79fdc689730f3fb3c91d6c4a373fe1129431687d3d13717f7",
+    "lifecycle.mjs": "e74d33662c6027b0c09c6a02717a0f7e39e1ff256b6e9699efef2f90ae9916ae",
+    "session-recall.mjs": "bfb30c6f67cc6b0c029952b616a1c9f65bb04514e327617e2d968e13e6d81452",
+    "README.md": "702c23f4af187b94aadbe0d6566cfad65c3bc9af277645a9b70038aaf38ecf0e",
+    "igrep-cli.mjs": "b212a217b8c031bef8f56f5146fa328540a6fa30999b6b48d5a43cc1b28e66dc",
+    "handoff-charset.mjs": "e62d6aa748741d4e763609d5d197080b149a2038a6e7aaecd097ac3fce5cff35",
+    "compaction.mjs": "4cbd297cb41fea94ee980ab53f75f72ebfcecc5ba6865f29e88e14d1fc36b47e",
+    "package.json": "75806dcbefa46848a3a2092e2e6f6999b788f91ea1e020f7a04fb23fabe93470",
+    "index.mjs": "ea2d06828aad7ad16655563213fbc85a8d024a665ab47a62b7aac797f7f01b40"
+  },
+  "observedIntegration": {
+    "target": "pi-coding-agent ExtensionAPI and SessionManager; not pi-durable",
+    "tools": [
+      "memory_search",
+      "memory_record",
+      "session_recall"
+    ],
+    "compactionHook": "session_before_compact",
+    "memoryWriteHooks": [
+      "agent_end",
+      "session_shutdown"
+    ],
+    "recallSources": [
+      "getBranch",
+      "buildSessionProjection"
+    ],
+    "mainAuthorityCompatibilityVerified": false
+  },
+  "providerNeutralMemoryHelp": "igrep mem-api {memory-search,memory-record,memory-status}",
+  "runtimeTestsPerformed": false
+}

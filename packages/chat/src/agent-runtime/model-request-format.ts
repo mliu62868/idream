@@ -1,7 +1,7 @@
 import type { ChatToolDefinition } from "@idream/shared";
 import type { PreparedTurnMessage } from "./contracts";
 
-// DSH can attach tool provenance even to plain text, without a tool-result block.
+// Main identities survive execution context edits until the final wire projection.
 export type ModelInputMessage = PreparedTurnMessage;
 
 /** Remove only an immutable history exchange, never a current execution step. */
@@ -18,11 +18,12 @@ export function dropOldestReplayExchange<T extends { id: string; role: string }>
 
 /** The provider input format is shared by preparation and the final transport guard. */
 export function formatModelRequestInput(input: {
+  respondingCharacterId: string;
   messages: readonly ModelInputMessage[];
   tools?: readonly ChatToolDefinition[];
 }) {
   return {
-    messages: openAiMessages(input.messages),
+    messages: openAiMessages(input.messages, input.respondingCharacterId),
     ...(input.tools?.length ? {
       tools: input.tools.map((tool) => ({
         type: "function" as const,
@@ -45,10 +46,11 @@ export function estimateModelRequestInputTokens(input: {
 
 /**
  * SPEC: an ordinary turn reaches the provider as a native chat transcript —
- * the Character's earlier lines are `assistant` messages, the user's are
- * `user` messages, and per-turn context (saved preferences, turn state,
- * recalled moments) is folded into the current user message right before the
- * user's own words.
+ * the responding Character's earlier lines are `assistant` messages; the
+ * user and other Characters are incoming `user` messages. Per-turn context
+ * (saved preferences, turn state, recalled moments) is bounded background in
+ * a preceding user message. The current user's own words remain a separate,
+ * unchanged native message.
  *
  * INTENT: from 2026-09-09 to 2026-10-04 this path collapsed the whole history
  * into one user message holding a JSON array labelled "quoted conversation
@@ -63,10 +65,13 @@ export function estimateModelRequestInputTokens(input: {
  * server's prefix cache needs.
  *
  * INVARIANT: the transport distinguishes Main-pinned replay from the current
- * user request by message identity; context blocks are prepended, never promoted to
- * standalone user turns, so nothing in them can read as a fresh request.
+ * user request by message identity; context blocks never gain system authority
+ * or become product Turns. Chat emits a separate native current message;
+ * providers may merge adjacent user roles, so background also has explicit
+ * text delimiters and answered replay requests carry their historical status.
  */
-function openAiMessages(messages: readonly ModelInputMessage[]): unknown[] {
+function openAiMessages(messages: readonly ModelInputMessage[], respondingCharacterId: string): unknown[] {
+  const wire = (message: ModelInputMessage) => wireMessage(message, respondingCharacterId);
   const currentIndex = messages.findLastIndex(
     (message) => message.role === "user" && message.sourceKind === "current_user",
   );
@@ -75,40 +80,51 @@ function openAiMessages(messages: readonly ModelInputMessage[]): unknown[] {
     const context = messages.slice(0, currentIndex)
       .filter((message) => message.sourceKind === "plugin" && message.role === "user" && message.content);
     const contextIds = new Set(context.map((message) => message.id));
-    const history = messages.slice(0, currentIndex)
-      .filter((message) => message.role !== "system" && !contextIds.has(message.id))
-      .map(wireMessage);
+    const replay = messages.slice(0, currentIndex)
+      .filter((message) => message.role !== "system" && !contextIds.has(message.id));
+    const lastOwnAnswer = replay.findLastIndex(message => message.role === "assistant" && !message.tool_calls?.length
+      && (!message.speaker || message.speaker.characterId === respondingCharacterId));
+    const history = replay.map((message, index) => {
+      const answer = replay[index + 1];
+      // Our native assistant reply already closes preceding incoming turns.
+      // Only the remaining tail needs an explicit answered marker when another
+      // Character's answer also projects to an incoming user role.
+      if (index > lastOwnAnswer && message.role === "user" && message.sourceKind === "replay"
+        && answer?.role === "assistant" && !answer.tool_calls?.length
+        && answer.speaker && answer.speaker.characterId !== respondingCharacterId) {
+        return { role: "user", content: `Earlier user message, already answered:\n${message.content}` };
+      }
+      return wire(message);
+    });
     return [
       ...messages.filter((message) => message.role === "system").map((message) => ({
         role: "system", content: message.content,
       })),
       ...history,
-      {
+      ...(context.length ? [{
         role: "user",
-        content: [...context.map((message) => message.content), current.content].join("\n\n"),
-      },
-      ...messages.slice(currentIndex + 1).map(wireMessage),
+        content: `Context for this reply (earlier messages are already answered):\n<context>\n${context.map(message => message.content).join("\n\n")}\n</context>`,
+      }] : []),
+      { role: "user", content: current.content },
+      ...messages.slice(currentIndex + 1).map(wire),
     ];
   }
-  return messages.map(wireMessage);
+  return messages.map(wire);
 }
 
-function wireMessage(message: ModelInputMessage): unknown {
+function wireMessage(message: ModelInputMessage, respondingCharacterId: string): unknown {
   if (message.role === "system") return { role: "system", content: message.content };
   if (message.role === "tool") return {
     role: "tool", tool_call_id: message.tool_call_id, content: message.content,
   };
+  const otherSpeaker = message.role === "assistant" && message.speaker && message.speaker.characterId !== respondingCharacterId;
   return {
-    role: message.role,
-    content: message.role === "assistant" ? speakerLabelled(message) || null : message.content || null,
+    // Native tool exchanges keep their protocol roles. Ordinary group lines
+    // from another Character are input to this Character, not its own output.
+    role: otherSpeaker && !message.tool_calls?.length ? "user" : message.role,
+    content: (otherSpeaker ? `${message.speaker!.name}: ${message.content}` : message.content) || null,
     ...(message.role === "assistant" && message.tool_calls?.length
       ? { tool_calls: message.tool_calls }
       : {}),
   };
-}
-
-/** Group chat: every Character line carries its speaker name, the responding Character included. */
-function speakerLabelled(message: ModelInputMessage): string {
-  if (message.role === "assistant" && message.speaker) return `${message.speaker.name}: ${message.content}`;
-  return message.content;
 }

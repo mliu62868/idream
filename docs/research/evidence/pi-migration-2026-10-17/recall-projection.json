@@ -1,0 +1,60 @@
+{
+  "runtime": "Bun 1.4.2",
+  "piVersion": "1.3.0",
+  "installedIgrepVersion": "0.1.161",
+  "data": "synthetic only",
+  "adapterPhysicalLines": 153,
+  "coreNonblankNoncommentLines": 144,
+  "fauxModelCalls": 2,
+  "realModelCalls": 0,
+  "checks": [
+    {
+      "name": "public-entries-and-contributions-exclude-visible-originals",
+      "passed": true,
+      "detail": {
+        "nativeEntries": 4,
+        "archivedChunks": 2
+      }
+    },
+    {
+      "name": "native-compaction-restores-raw-seed-and-attempt-originals",
+      "passed": true,
+      "detail": {
+        "chunks": 75,
+        "piEntries": 11,
+        "fauxModelCalls": 2,
+        "realModelCalls": 0
+      }
+    },
+    {
+      "name": "utf8-oversized-lines-crlf-whitespace-and-combining-marks-lossless",
+      "passed": true,
+      "detail": {
+        "chunks": 68,
+        "bytes": 8591,
+        "sha256": "edea523f96d7d4835a1c289791cf3cbfbe3e6e31847533f08f451d85351fd3d4"
+      }
+    },
+    {
+      "name": "duplicate-text-keeps-main-identity-and-speaker",
+      "passed": true
+    },
+    {
+      "name": "stable-ids-and-by-id-never-call-search",
+      "passed": true
+    },
+    {
+      "name": "attempt-and-source-fences-reject-before-dispatch",
+      "passed": true
+    },
+    {
+      "name": "public-jsonl-search-maps-id-to-authorized-original-not-snippet",
+      "passed": true
+    },
+    {
+      "name": "incomplete-failed-forged-and-duplicate-query-results-fail-closed",
+      "passed": true
+    }
+  ],
+  "ok": true
+}

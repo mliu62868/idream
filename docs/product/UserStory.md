@@ -200,7 +200,7 @@
 | US-UP-02 | 作为免费用户，我希望在遇到高级功能锁时进入升级页。 | P0 | custom prompt、dreamcoin 余额不足或 Premium entitlement 缺失时都有升级/充值入口 |
 | US-UP-03 | 作为购买用户，我希望安全完成 checkout。 | P0 | 支持支付成功、失败、取消；状态回写 Subscription |
 | US-UP-04 | 作为 Premium 用户，我希望支付后立即获得权益。 | P0 | 权益实时生效；原任务可继续；账号页显示当前方案 |
-| US-UP-05 | 作为 Deluxe 用户，我希望获得更多 included dreamcoins、更多 voice minutes 和条件视频权益。 | P0 | Entitlement 明确区分 Premium 与 Deluxe；服务端按 plan enforcement；DSH Chat 不按方案切换模型或承诺记忆倍率 |
+| US-UP-05 | 作为 Deluxe 用户，我希望获得更多 included dreamcoins、更多 voice minutes 和条件视频权益。 | P0 | Entitlement 明确区分 Premium 与 Deluxe；服务端按 plan enforcement；Pi Chat 不按方案切换模型或承诺记忆倍率 |
 | US-UP-06 | 作为付费用户，我希望查看当前档位、权益结束时间并在需要时重新购买。 | P0 | Profile 显示 benefitsEndAt 与无自动续订；到期前后均可选择新周期；不展示不存在的 Cancel/Resume renewal |
 | US-UP-07 | 作为付费用户，我希望计划变化不会夺走已有聊天历史和媒体。 | P0 | 到期/降级只关闭未来高阶能力；既有聊天仍可查看，已交付媒体仍可查看与下载 |
 | US-UP-08 | 作为需要额外余额的用户，我希望单独购买 dreamcoin，而不购买或续订访问计划。 | P1 | coin store offer 版本化；执行前显示币量/价格；一次性 checkout 成功后幂等入账；失败/重放不重复入账；购买历史可查 |

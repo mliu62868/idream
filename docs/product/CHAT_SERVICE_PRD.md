@@ -34,7 +34,7 @@ Main 的权限、预算与交付事实限定能做什么；在此范围内，共
 
 - 普通 Turn 包含一条用户消息和一条 selected final assistant reply。opening 与 proactive 有显式来源；内部工具步骤、未选候选和 trace 不进入用户历史。
 - Main PostgreSQL 持有 Session、Turn/attempt、Character/Release、Scene、附件、交付、额度和账务。刷新、跨设备与运行恢复都读取 Main。
-- Chat 无数据库，在同一进程内嵌 DSH/official igrep，使用自托管 OpenAI-compatible 模型。本地 AgentRun 只保留执行和未决接纳证据，不形成第二套产品状态机。
+- Chat 无数据库，在同一进程内嵌 Pi/igrep，使用自托管 OpenAI-compatible 模型。本地 AgentRun 只保留执行和未决接纳证据，不形成第二套产品状态机。
 - 回复完成以 Main 持久接纳为准；流式文本和 Agent 轨迹不是已保存历史，也不是记忆来源。每个终态能追溯到适用的 Contract、Soul 与实际模型请求。
 - Scene、附件与角色版本固定到精确 attempt；同一用户原文的图片动作跨重生成复用原请求与计费效果，编辑改变原文则使旧动作身份失效。
 - 套餐与 conversation profile 可以控制额度、速度和高成本能力，不能换掉角色人格或基础连续性。产品不建立 Relationship 等级/分数。

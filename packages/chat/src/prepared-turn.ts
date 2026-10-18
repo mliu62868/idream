@@ -209,26 +209,25 @@ export function fitPreparedTurnBudget(
     ...(language ? [`- ${language}`] : []),
     ...(length ? [`- ${length}`] : []),
     ...recentOpeningsLines(fitted, currentUserMessageId),
-    // INTENT: measured 2026-10-08, the Agent alone kept ~half of clear photo
-    // requests and otherwise promised one in words. The photo now goes out with
-    // this reply either way, so the words must match it.
+    // The requested action is asynchronous. Its returned status, not this
+    // preparation step, establishes whether the image has been delivered.
     ...(imageRequest?.name === "generate_image_async"
-      ? ["- Their message asks you for a photo now, and it is sent with this reply: call generate_image_async with the scene and answer as you send it. Never say you cannot send photos."]
+      ? ["- Their message asks you for a photo now: call generate_image_async with the scene. After its result, answer in character: status=accepted means still being made; status=completed means delivered."]
       : imageRequest?.name === "edit_last_image"
-        ? ["- Their message asks you to change the photo you just sent, and the change is sent with this reply: call edit_last_image and answer as you send it."]
+        ? ["- Their message asks you to change the last delivered photo: call edit_last_image. After its result, answer in character: status=accepted means still being made; status=completed means delivered."]
         : []),
   ].join("\n");
   const turnPreferences = buildTurnPreferencesBlock(fitted);
   const calculate = () => {
     const messages = buildPreparedMessages(fitted, currentUserMessageId, turnState(), turnPreferences);
-    const usedInputTokens = estimateModelRequestInputTokens(formatModelRequestInput({ messages, tools }));
+    const usedInputTokens = estimateModelRequestInputTokens(formatModelRequestInput({ messages, tools, respondingCharacterId: fitted.persona.characterId }));
     return { messages, usedInputTokens };
   };
 
-  // SPEC: leave room for what the runtime adds after this snapshot — DSH tool
-  // guidance (~370 tokens), igrep tool schemas (~825), recall notes (~700),
-  // measured on a real 2026-10-08 request — plus DSH's compaction headroom (512),
-  // so a normal request stays under the compaction trigger.
+  // SPEC: leave room for runtime tools, recall notes and compaction headroom.
+  // This reserve retains the conservative 2026-10-08 DSH measurements (tool
+  // guidance ~370, schemas ~825, notes ~700, headroom 512 tokens); Pi still
+  // validates the fully assembled request at the actual provider boundary.
   // INTENT: past that trigger DSH folded the dialogue into a task-handoff digest
   // (its "Goal" was the session's first message) and the companion acted on it:
   // around turn 13 for free readers, replies derailed and took 13–34 s.

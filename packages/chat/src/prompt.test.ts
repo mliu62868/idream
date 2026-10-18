@@ -30,7 +30,7 @@ describe("companion prompt instruction hierarchy", () => {
     } as never);
 
     expect(prompt.startsWith("Speak softly.")).toBe(true);
-    expect(prompt).toContain("iDream companion contract (companion-product-8)");
+    expect(prompt).toContain("iDream companion contract (companion-product-10)");
     expect(prompt).toContain("Write in first person as Mira");
     // An ordinary memory-on turn adds no capability section: nothing about
     // photos or memory mode seeds the reply, and the bytes stay cacheable.

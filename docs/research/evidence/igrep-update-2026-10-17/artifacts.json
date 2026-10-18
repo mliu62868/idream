@@ -1,0 +1,88 @@
+{
+  "source_ref": "4f987477570d170806b039a6bdbfc3e1798b1212",
+  "source_artifact_relationship": "Current official source snapshot; wheel metadata does not prove this exact git revision.",
+  "versions": {
+    "0.1.157": {
+      "wheels": [
+        {
+          "filename": "igrep2-0.1.157-cp314-cp314-macosx_11_0_arm64.whl",
+          "url": "https://files.pythonhosted.org/packages/a2/a7/fa96b49c4f4ac2155a7b89abc28c985161729c2c547ec7dd30a92f1985dc/igrep2-0.1.157-cp314-cp314-macosx_11_0_arm64.whl",
+          "upload_time_iso_8601": "2026-10-11T02:26:32.886681Z",
+          "digests": {
+            "blake2b_256": "a2a7fa96b49c4f4ac2155a7b89abc28c985161729c2c547ec7dd30a92f1985dc",
+            "md5": "9dab55ee86362bb20715767c869e653d",
+            "sha256": "bcb44056698e755f7857c3d8645551fa15c841360f22acb66670df9f094c6777"
+          }
+        }
+      ],
+      "bundles": {
+        "pi": {
+          "README.md": "702c23f4af187b94aadbe0d6566cfad65c3bc9af277645a9b70038aaf38ecf0e",
+          "compaction.mjs": "4cbd297cb41fea94ee980ab53f75f72ebfcecc5ba6865f29e88e14d1fc36b47e",
+          "handoff-charset.mjs": "e62d6aa748741d4e763609d5d197080b149a2038a6e7aaecd097ac3fce5cff35",
+          "handoff.mjs": "719f918af06ba5f79fdc689730f3fb3c91d6c4a373fe1129431687d3d13717f7",
+          "igrep-cli.mjs": "b212a217b8c031bef8f56f5146fa328540a6fa30999b6b48d5a43cc1b28e66dc",
+          "index.mjs": "ea2d06828aad7ad16655563213fbc85a8d024a665ab47a62b7aac797f7f01b40",
+          "lifecycle.mjs": "e74d33662c6027b0c09c6a02717a0f7e39e1ff256b6e9699efef2f90ae9916ae",
+          "package.json": "75806dcbefa46848a3a2092e2e6f6999b788f91ea1e020f7a04fb23fabe93470",
+          "session-recall.mjs": "bfb30c6f67cc6b0c029952b616a1c9f65bb04514e327617e2d968e13e6d81452"
+        },
+        "dsh": {
+          "README.md": "a0fba0d21e154d4a8623c6056a8c9ade7bd97ae5b4b0a559f69973d911f99380",
+          "compaction.mjs": "aaa2f083e29d76b70402fb2800163fa217530e46db801ce5a394d45185e297cd",
+          "cordis.patch.yml": "91246ca9b2573bcc2ff0c9925858eb07439c23701e9ba75e79702491ef2db967",
+          "handoff-charset.mjs": "e62d6aa748741d4e763609d5d197080b149a2038a6e7aaecd097ac3fce5cff35",
+          "handoff.mjs": "719f918af06ba5f79fdc689730f3fb3c91d6c4a373fe1129431687d3d13717f7",
+          "igrep-cli.mjs": "b212a217b8c031bef8f56f5146fa328540a6fa30999b6b48d5a43cc1b28e66dc",
+          "index.mjs": "c9414106d27d7920b501705430e2e7ffc6e01ad16485bd8956e624939d4ab732",
+          "memory-binding.mjs": "a068086fba9ad7193da9268b8b003e05044a42715cd03100b8415223b7e71062",
+          "memory-lifecycle.mjs": "1570c8ee6f625e92de914f2d4700bd2eb94a80b8557dc70f72f50421d8b6f880",
+          "package.json": "03757731919a675eb9a4230287d80211d68bd60151b0acd8acc4cedc6917ae73",
+          "search-routing.mjs": "b9cd0e2e77207628f2b220681c5d197e73efd64019a64db4e382da0adac32938",
+          "session-recall.mjs": "3e81476ee49e0866ac6b596d80e7cad3cfe4b1a60c0bc8572e778f4e7d66930b"
+        }
+      }
+    },
+    "0.1.161": {
+      "wheels": [
+        {
+          "filename": "igrep2-0.1.161-cp314-cp314-macosx_11_0_arm64.whl",
+          "url": "https://files.pythonhosted.org/packages/66/d6/5b104d8cbe768ac8b620024fec2be67297fd59ba3876cca6473543173419/igrep2-0.1.161-cp314-cp314-macosx_11_0_arm64.whl",
+          "upload_time_iso_8601": "2026-10-17T06:48:54.840816Z",
+          "digests": {
+            "blake2b_256": "66d65b104d8cbe768ac8b620024fec2be67297fd59ba3876cca6473543173419",
+            "md5": "25e468f7286bad0d5a6afa8056e35586",
+            "sha256": "fd2dfb59ebb293467c1d4cec31452c903d2620c2069d9edbb6362051535704cd"
+          }
+        }
+      ],
+      "bundles": {
+        "pi": {
+          "README.md": "bf64bafc0d8fa38a5857f80e10305efaf2a4f3a461f1db92930c5785230e64d7",
+          "compaction.mjs": "4cbd297cb41fea94ee980ab53f75f72ebfcecc5ba6865f29e88e14d1fc36b47e",
+          "handoff-charset.mjs": "e62d6aa748741d4e763609d5d197080b149a2038a6e7aaecd097ac3fce5cff35",
+          "handoff.mjs": "719f918af06ba5f79fdc689730f3fb3c91d6c4a373fe1129431687d3d13717f7",
+          "igrep-cli.mjs": "b212a217b8c031bef8f56f5146fa328540a6fa30999b6b48d5a43cc1b28e66dc",
+          "index.mjs": "ea2d06828aad7ad16655563213fbc85a8d024a665ab47a62b7aac797f7f01b40",
+          "lifecycle.mjs": "e74d33662c6027b0c09c6a02717a0f7e39e1ff256b6e9699efef2f90ae9916ae",
+          "package.json": "75806dcbefa46848a3a2092e2e6f6999b788f91ea1e020f7a04fb23fabe93470",
+          "session-recall.mjs": "b33a0e0176f732108fa1d6c58700e1eceb2111f85ff2a790597b0e5eb587618c"
+        },
+        "dsh": {
+          "README.md": "a0fba0d21e154d4a8623c6056a8c9ade7bd97ae5b4b0a559f69973d911f99380",
+          "compaction.mjs": "22f8be0a6e140a786c179f03d1138acb117caa23bd55f8d9dc96bb55be6ffcea",
+          "cordis.patch.yml": "91246ca9b2573bcc2ff0c9925858eb07439c23701e9ba75e79702491ef2db967",
+          "handoff-charset.mjs": "e62d6aa748741d4e763609d5d197080b149a2038a6e7aaecd097ac3fce5cff35",
+          "handoff.mjs": "719f918af06ba5f79fdc689730f3fb3c91d6c4a373fe1129431687d3d13717f7",
+          "igrep-cli.mjs": "b212a217b8c031bef8f56f5146fa328540a6fa30999b6b48d5a43cc1b28e66dc",
+          "index.mjs": "c9414106d27d7920b501705430e2e7ffc6e01ad16485bd8956e624939d4ab732",
+          "memory-binding.mjs": "a068086fba9ad7193da9268b8b003e05044a42715cd03100b8415223b7e71062",
+          "memory-lifecycle.mjs": "1570c8ee6f625e92de914f2d4700bd2eb94a80b8557dc70f72f50421d8b6f880",
+          "package.json": "03757731919a675eb9a4230287d80211d68bd60151b0acd8acc4cedc6917ae73",
+          "search-routing.mjs": "b9cd0e2e77207628f2b220681c5d197e73efd64019a64db4e382da0adac32938",
+          "session-recall.mjs": "3a7bd24eda7ab9db3498b9671886d374d8ff3e73e14d7591a799b155fea0d620"
+        }
+      }
+    }
+  }
+}

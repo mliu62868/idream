@@ -1,0 +1,57 @@
+{
+  "recordedAt": "2026-10-17T08:48:14.146Z",
+  "runtime": {
+    "node": "v26.3.0",
+    "bun": "1.4.0"
+  },
+  "passed": 11,
+  "total": 11,
+  "physicalRequests": 12,
+  "externalRequests": 0,
+  "cases": [
+    {
+      "name": "native current system/tools projection and exact body digest",
+      "pass": true
+    },
+    {
+      "name": "assistant dialogue and tool result keep native HTTP roles",
+      "pass": true
+    },
+    {
+      "name": "image choice gets full budget while ordinary text keeps answer cap",
+      "pass": true
+    },
+    {
+      "name": "over-budget request fails before provider and before usage receipt",
+      "pass": true
+    },
+    {
+      "name": "response schema is sent and included in preflight budget",
+      "pass": true
+    },
+    {
+      "name": "compaction purpose is explicit, neutral sampling and independent max tokens",
+      "pass": true
+    },
+    {
+      "name": "asProvider works through Models and advertises exact prepared capacity",
+      "pass": true
+    },
+    {
+      "name": "asProvider rejects route drift without contacting provider",
+      "pass": true
+    },
+    {
+      "name": "unknown usage observes one physical request and does not become known zero",
+      "pass": true
+    },
+    {
+      "name": "usage survives a rejected response and is observed exactly once",
+      "pass": true
+    },
+    {
+      "name": "transport failures retain retryable host code without provider text",
+      "pass": true
+    }
+  ]
+}

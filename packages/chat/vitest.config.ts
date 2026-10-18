@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { defineConfig } from "vitest/config";
 
 // Chat has no database test harness. Tests use temporary AgentRun directories;
-// Redis/DSH boundaries are covered by focused adapter tests.
+// Redis/Pi boundaries are covered by focused adapter tests.
 export default defineConfig({
   test: {
     environment: "node",

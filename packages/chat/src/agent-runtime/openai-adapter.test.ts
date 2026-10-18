@@ -2,9 +2,37 @@ import { once } from "node:events";
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GenerateOptions, StreamChunk } from "@deepseek-ai/dsh-llm";
+import { createModels, isContextOverflow, normalizeContext, type AssistantMessageEvent, type Tool } from "@earendil-works/pi-ai";
+import type { InvocationOptions } from "./openai-adapter";
+import type { ModelInputMessage } from "./model-request-format";
+import { formatCompanionMessages } from "./pi-context";
 import { OpenAiCompatibleAdapter, type OpenAiCompatibleAdapterOptions } from "./openai-adapter";
 import type { CompanionModelRequestEvidence } from "./contracts";
+
+interface RequestFixture extends InvocationOptions {
+  messages: readonly ModelInputMessage[];
+  systemPrompt?: string;
+  tools?: readonly Tool[];
+  pinned?: readonly ModelInputMessage[];
+}
+
+async function* streamRequest(adapter: OpenAiCompatibleAdapter, request: RequestFixture): AsyncIterable<AssistantMessageEvent> {
+  const { messages, pinned = [], systemPrompt = "", tools = [], ...options } = request;
+  for await (const event of adapter.stream(formatCompanionMessages(messages, pinned, systemPrompt, tools, "character-1"), options)) {
+    if (event.type === "error") {
+      const error = adapter.getError(event.error);
+      if (error?.code === "CONTEXT_WINDOW_EXCEEDED") expect(isContextOverflow(event.error)).toBe(true);
+      throw error ?? new Error(event.error.errorMessage);
+    }
+    yield event;
+  }
+}
+
+function terminal(events: readonly AssistantMessageEvent[]) {
+  const event = events.at(-1);
+  if (event?.type !== "done") throw new Error("Provider did not produce a native terminal event");
+  return event.message;
+}
 
 const servers: Server[] = [];
 
@@ -39,19 +67,123 @@ function adapterFor(baseUrl: string, fetchImpl?: typeof fetch, requestPolicy: Pa
 }
 
 async function drain(adapter: OpenAiCompatibleAdapter): Promise<void> {
-  for await (const _chunk of adapter.stream({
-    provider: "openrouter",
-    model: "deepseek/test",
-    messages: [],
-  })) {
+  for await (const _chunk of streamRequest(adapter, { messages: [] })) {
     // Drain the stream so response limits and terminal validation run.
   }
 }
 
-describe("OpenAI-compatible DSH adapter", () => {
-  it.each([400, 413, 422])("routes a provider HTTP %s context overflow to DSH compaction", async (status) => {
+describe("OpenAI-compatible Pi adapter", () => {
+  it("preserves measured totals when the provider omits the reasoning subtotal", async () => {
+    const adapter = adapterFor("https://provider.example/v1", async () => new Response(
+      'data: {"choices":[{"delta":{"reasoning_content":"Private thought","content":"Done."},"finish_reason":"stop"}],"usage":{"prompt_tokens":13,"completion_tokens":7}}\n\ndata: [DONE]\n\n'));
+    const chunks = [];
+    for await (const chunk of streamRequest(adapter, { messages: [] })) chunks.push(chunk);
+    expect(adapter.getUsage(terminal(chunks))).toEqual({ inputTokens: 13, outputTokens: 7 });
+  });
+
+  it.each([1, 32, 128, 256, 384])("reserves the unchanged %s-token reply cap for the answer", async limit => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const adapter = adapterFor("https://provider.example/v1", async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response('data: {"choices":[{"delta":{"content":"Done."},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+    }, { profile: {
+      tier: "test", adapter: "openai-compatible-v1", provider: "local", baseUrl: "https://provider.example/v1",
+      model: "fixture", supportsTools: true, maxOutputTokens: 1_024, answerMaxOutputTokens: limit,
+      timeout: { firstTokenMs: 1_000, idleMs: 1_000 }, sampling: { temperature: 0.9, topP: 0.95, repetitionPenalty: 1.05 },
+    } });
+    const messages = [{ id: "now", sourceKind: "current_user" as const, role: "user" as const, content: "Current question" }];
+    for await (const _event of streamRequest(adapter, { messages })) { /* drain */ }
+    expect(bodies[0]).toMatchObject({ max_tokens: limit, chat_template_kwargs: { enable_thinking: false } });
+    expect(bodies[0]).not.toHaveProperty("thinking_budget");
+    for await (const _event of streamRequest(adapter, { messages, purpose: "compaction", maxTokens: limit })) { /* drain */ }
+    expect(bodies[1]).toMatchObject({ max_tokens: limit, chat_template_kwargs: { enable_thinking: false } });
+    expect(bodies[1]).not.toHaveProperty("thinking_budget");
+  });
+
+  it.each([false, true])("keeps tool evidence without enabling hidden reasoning (%s)", async currentResult => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const adapter = adapterFor("https://provider.example/v1", async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response('data: {"choices":[{"delta":{"content":"The original wording."},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+    });
+    const roundTrip: ModelInputMessage[] = [
+      { id: "read", sourceKind: "plugin", role: "assistant", content: "", tool_calls: [
+        { id: "read-1", type: "function", function: { name: "session_recall", arguments: "{}" } },
+      ] },
+      { id: "read-result", sourceKind: "plugin", role: "tool", tool_call_id: "read-1", content: "The original wording." },
+    ];
+    const current: ModelInputMessage = { id: "current", sourceKind: "current_user", role: "user", content: "Quote the original wording." };
+    for await (const _event of streamRequest(adapter, { messages: currentResult ? [current, ...roundTrip] : [...roundTrip, current] })) { /* drain */ }
+    expect(bodies[0]).toMatchObject({ max_tokens: 16, chat_template_kwargs: { enable_thinking: false } });
+    expect(bodies[0]).not.toHaveProperty("thinking_budget");
+    expect(bodies[0]!.messages).toContainEqual({ role: "tool", tool_call_id: "read-1", content: "The original wording." });
+  });
+
+  it("runs through Pi Models with the pinned capacity and explicit compaction policy", async () => {
+    const bodies: Array<{ messages: Array<{ role: string; content: string }>; temperature: number; max_tokens: number }> = [];
+    const adapter = adapterFor("https://provider.example/v1", async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response('data: {"choices":[{"delta":{"content":"Complete."},"finish_reason":"stop"}],"usage":{"prompt_tokens":13,"completion_tokens":7}}\n\ndata: [DONE]\n\n');
+    }, { maxInputTokens: 2_000 });
+    const provider = adapter.asProvider();
+    const models = createModels();
+    models.setProvider(provider);
+    const model = models.getModel("openrouter", "deepseek/test")!;
+    expect(model.contextWindow).toBe(2_016);
+    expect(model.reasoning).toBe(false);
+    const context = normalizeContext({ systemPrompt: "Pinned Soul", messages: [{ role: "user", content: "Current request", timestamp: 1 }] });
+    const result = await models.completeSimple(model, context, { maxTokens: 9 });
+    expect(result.stopReason).toBe("stop");
+    expect(adapter.getAttribution(result)).toBeUndefined();
+    expect(adapter.getUsage(result)).toMatchObject({ inputTokens: 13, outputTokens: 7 });
+    expect(bodies.at(-1)).toMatchObject({ messages: [{ role: "system", content: "Pinned Soul" }, { role: "user", content: "Current request" }], max_tokens: 9, temperature: 0.9 });
+
+    await adapter.asProvider({ purpose: "compaction" }).stream(model, context, { maxTokens: 19 }).result();
+    expect(bodies.at(-1)).toMatchObject({ max_tokens: 19, temperature: 0 });
+    const mismatched = await provider.stream({ ...model, id: "different-model" }, context).result();
+    expect(adapter.getError(mismatched)).toMatchObject({ code: "INVALID_ROUTE" });
+    expect(bodies).toHaveLength(2);
+  });
+
+  it("uses Pi's current system sections and tool additions and removals on the physical request", async () => {
+    let body = "";
+    const evidence: CompanionModelRequestEvidence[] = [];
+    const adapter = adapterFor("https://provider.example/v1", async (_url, init) => {
+      body = String(init?.body);
+      return new Response('data: {"choices":[{"delta":{"content":"Done."},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+    }, { observeRequest: value => evidence.push(value) });
+    const context = normalizeContext({ systemPrompt: "Pinned Soul", tools: [{ name: "old_tool", description: "Old", parameters: { type: "object" } }], messages: [] });
+    const result = await adapter.stream([...context.messages, {
+      role: "system", content: "Runtime guidance", sections: { state: "Current state" }, timestamp: 1,
+      toolsRemoved: [{ name: "old_tool" }], toolsAdded: [{ name: "new_tool", description: "Current", parameters: { type: "object" } }],
+    }]).result();
+    expect(result.stopReason).toBe("stop");
+    const wire = JSON.parse(body) as { messages: Array<{ content: string }>; tools: Array<{ function: { name: string } }> };
+    expect(wire.messages[0]!.content).toContain("Pinned Soul");
+    expect(wire.messages[0]!.content).toContain("Runtime guidance");
+    expect(wire.messages[0]!.content).toContain("Current state");
+    expect(wire.tools.map(tool => tool.function.name)).toEqual(["new_tool"]);
+    expect(evidence[0]!.bodyDigest).toBe(createHash("sha256").update(body).digest("hex"));
+    expect(evidence[0]!.systemPromptDigest).toBe(createHash("sha256").update(wire.messages[0]!.content).digest("hex"));
+  });
+
+  it.each([undefined, { prompt_tokens: 13, completion_tokens: 7 }])("observes each rejected physical request once, with its actual usage receipt: %j", async usage => {
+    const observeUsage = vi.fn();
+    const adapter = adapterFor("https://provider.example/v1", async () => new Response(
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "Rejected." }, finish_reason: "content_filter" }], usage })}\n\ndata: [DONE]\n\n`,
+    ), { observeUsage });
+    const result = await adapter.stream([]).result();
+    const expected = usage ? { inputTokens: 13, outputTokens: 7 } : undefined;
+    expect(adapter.getError(result)).toMatchObject({ code: "INVALID_RESPONSE" });
+    expect(observeUsage).toHaveBeenCalledExactlyOnceWith(expected);
+    expect(adapter.getUsage(result)).toEqual(expected);
+    // Persisted Pi counters cannot substitute for a measured receipt.
+    expect(adapter.getUsage(structuredClone(result))).toBeUndefined();
+  });
+
+  it.each([400, 413, 422])("routes a provider HTTP %s context overflow to Pi compaction", async (status) => {
     const adapter = adapterFor("https://provider.example/v1", async () => new Response(JSON.stringify({ error: { code: "context_length_exceeded", message: "maximum context length exceeded" } }), { status }));
-    await expect(drain(adapter)).rejects.toMatchObject({ code: "CONTEXT_WINDOW_EXCEEDED", failure: { status } });
+    await expect(drain(adapter)).rejects.toMatchObject({ code: "CONTEXT_WINDOW_EXCEEDED", status });
   });
 
   it("routes an in-band streamed context overflow to the same recovery path", async () => {
@@ -69,18 +201,18 @@ describe("OpenAI-compatible DSH adapter", () => {
     const adapter = adapterFor("https://provider.example/v1", async (_url, init) => {
       body = String(init?.body);
       return new Response('data: {"choices":[{"delta":{"content":"Ready."},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
-    }, {
-      turnContextMessages: [
+    });
+    for await (const _chunk of streamRequest(adapter, { messages: [
+      { id: "pi.compaction:handoff", sourceKind: "plugin", role: "user", content: "Prior summary." },
+      { id: "tool-output", sourceKind: "replay", role: "tool", content: "Cedar Finch.", tool_call_id: "recall" },
+    ],
+      pinned: [
         { id: "state:current", sourceKind: "plugin", role: "user", content: "Scene: the library." },
         { id: "current", sourceKind: "current_user", role: "user", content: "Quote the boat's name exactly." },
-      ],
-    });
-    for await (const _chunk of adapter.stream({ provider: "openrouter", model: "deepseek/test", messages: [
-      { id: "handoff" as never, role: "user", source: { kind: "compact-checkpoint", compactionId: "compact-1" as never }, content: [{ type: "text", text: "Prior summary." }] },
-      { id: "tool-output" as never, role: "tool", source: { kind: "tool", callId: "recall" as never }, toolCallId: "recall" as never, isError: false, content: [{ type: "text", text: "Cedar Finch." }] },
-    ] })) { /* drain */ }
+      ] })) { /* drain */ }
     expect(JSON.parse(body).messages).toEqual([
-      { role: "user", content: "Prior summary.\n\nScene: the library.\n\nQuote the boat's name exactly." },
+      { role: "user", content: "Context for this reply (earlier messages are already answered):\n<context>\nPrior summary.\n\nScene: the library.\n</context>" },
+      { role: "user", content: "Quote the boat's name exactly." },
       { role: "tool", tool_call_id: "recall", content: "Cedar Finch." },
     ]);
   });
@@ -91,20 +223,16 @@ describe("OpenAI-compatible DSH adapter", () => {
     const adapter = adapterFor("https://provider.example/v1", async (_url, init) => {
       bodies.push(JSON.parse(String(init?.body)));
       return new Response('data: {"choices":[{"delta":{"content":"I can help with that."},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":3}}\n\ndata: [DONE]\n\n');
-    }, {
-      turnContextMessages: [{ id: "current", sourceKind: "current_user", role: "user", content: current }],
     });
-    const chunks: StreamChunk[] = [];
-    for await (const chunk of adapter.stream({
-      provider: "openrouter", model: "deepseek/test",
-      messages: [{ id: "handoff" as never, role: "user", source: { kind: "compact-checkpoint", compactionId: "compact-1" as never }, content: [{ type: "text", text: "Earlier photo discussion." }] }],
+    const chunks: AssistantMessageEvent[] = [];
+    for await (const chunk of streamRequest(adapter, { messages: [{ id: "pi.compaction:handoff", sourceKind: "plugin", role: "user", content: "Earlier photo discussion." }],
       tools: [{ name: "edit_last_image", description: "Edit image", parameters: { type: "object", properties: {} } }],
-    })) chunks.push(chunk);
+      pinned: [{ id: "current", sourceKind: "current_user", role: "user", content: current }] })) chunks.push(chunk);
 
     expect(bodies).toHaveLength(1);
     expect(bodies[0]?.tool_choice).toBe("auto");
     expect(JSON.stringify(bodies[0]?.messages)).toContain(current);
-    expect(chunks.some(chunk => chunk.type === "tool-call-delta")).toBe(false);
+    expect(chunks.some(chunk => chunk.type === "toolcall_delta")).toBe(false);
   });
 
   it("sends the structured projection schema in the observed physical request", async () => {
@@ -120,6 +248,8 @@ describe("OpenAI-compatible DSH adapter", () => {
     }, { responseFormat, observeRequest: value => evidence.push(value) });
     await drain(adapter);
     expect(bodies[0]?.response_format).toEqual(responseFormat);
+    expect(bodies[0]?.chat_template_kwargs).toEqual({ enable_thinking: false });
+    expect(bodies[0]).not.toHaveProperty("thinking_budget");
     expect(evidence[0]?.bodyDigest).toBe(createHash("sha256").update(JSON.stringify(bodies[0])).digest("hex"));
   });
 
@@ -149,19 +279,17 @@ describe("OpenAI-compatible DSH adapter", () => {
         "data: [DONE]\n\n",
       ].join(""));
     });
-    const chunks: StreamChunk[] = [];
-    for await (const chunk of adapter.stream({
-      provider: "openrouter", model: "deepseek/test", messages: [],
-      tools: [{ name: "generate_image_async", description: "Generate", parameters: { type: "object" } }],
-    })) chunks.push(chunk);
+    const chunks: AssistantMessageEvent[] = [];
+    for await (const chunk of streamRequest(adapter, { messages: [],
+      tools: [{ name: "generate_image_async", description: "Generate", parameters: { type: "object" } }] })) chunks.push(chunk);
 
     expect(requests).toBe(1);
     expect(chunks).toContainEqual(expect.objectContaining({
-      type: "tool-call-delta", name: "generate_image_async", argumentsDelta: 'window portrait"}',
+      type: "toolcall_delta", delta: 'window portrait"}',
     }));
-    expect(chunks).toContainEqual({ type: "block-end", index: 0, block: {
-      type: "tool-call", id: "fragmented-call", name: "generate_image_async", arguments: '{"prompt":"A rainy window portrait"}',
-    } });
+    expect(chunks).toContainEqual(expect.objectContaining({ type: "toolcall_end", contentIndex: 0, toolCall: {
+      type: "toolCall", id: "fragmented-call", name: "generate_image_async", arguments: { prompt: "A rainy window portrait" },
+    } }));
   });
 
   it("completes on DONE without waiting for HTTP EOF and retains the usage trailer", async () => {
@@ -186,10 +314,10 @@ describe("OpenAI-compatible DSH adapter", () => {
         sampling: { temperature: 0.9, topP: 0.95, repetitionPenalty: 1.05 },
       },
     });
-    const chunks: StreamChunk[] = [];
-    for await (const chunk of adapter.stream({ provider: "openrouter", model: "deepseek/test", messages: [] })) chunks.push(chunk);
-    expect(chunks).toContainEqual({ type: "usage", usage: { inputTokens: 3, outputTokens: 2, reasoningTokens: 0 } });
-    expect(chunks.at(-1)).toMatchObject({ type: "finish", reason: { kind: "stop" } });
+    const chunks: AssistantMessageEvent[] = [];
+    for await (const chunk of streamRequest(adapter, { messages: [] })) chunks.push(chunk);
+    expect(adapter.getUsage(terminal(chunks))).toEqual({ inputTokens: 3, outputTokens: 2 });
+    expect(chunks.at(-1)).toMatchObject({ type: "done", reason: "stop" });
     await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
   });
 
@@ -213,10 +341,10 @@ describe("OpenAI-compatible DSH adapter", () => {
     const adapter = adapterFor("https://provider.example/v1", async () => new Response(
       `data: ${JSON.stringify({ choices: [{ delta: { content: "Done." }, finish_reason: "stop" }], usage })}\n\ndata: [DONE]\n\n`,
     ));
-    const chunks: StreamChunk[] = [];
-    for await (const chunk of adapter.stream({ provider: "openrouter", model: "deepseek/test", messages: [] })) chunks.push(chunk);
-    expect(chunks.filter(chunk => chunk.type === "usage")).toEqual([]);
-    expect(chunks.at(-1)).toMatchObject({ type: "finish", reason: { kind: "stop" } });
+    const chunks: AssistantMessageEvent[] = [];
+    for await (const chunk of streamRequest(adapter, { messages: [] })) chunks.push(chunk);
+    expect(adapter.getUsage(terminal(chunks))).toBeUndefined();
+    expect(chunks.at(-1)).toMatchObject({ type: "done", reason: "stop" });
   });
 
   it.each([
@@ -235,10 +363,10 @@ describe("OpenAI-compatible DSH adapter", () => {
     const adapter = adapterFor("https://provider.example/v1", async () => new Response(
       `data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":13,"completion_tokens":7,${details}}}\n\ndata: [DONE]\n\n`,
     ));
-    const chunks: StreamChunk[] = [];
-    for await (const chunk of adapter.stream({ provider: "openrouter", model: "deepseek/test", messages: [] })) chunks.push(chunk);
-    expect(chunks.filter(chunk => chunk.type === "usage")).toEqual([]);
-    expect(chunks.at(-1)).toMatchObject({ type: "finish", reason: { kind: "stop" } });
+    const chunks: AssistantMessageEvent[] = [];
+    for await (const chunk of streamRequest(adapter, { messages: [] })) chunks.push(chunk);
+    expect(adapter.getUsage(terminal(chunks))).toBeUndefined();
+    expect(chunks.at(-1)).toMatchObject({ type: "done", reason: "stop" });
   });
 
   it.each([
@@ -250,10 +378,10 @@ describe("OpenAI-compatible DSH adapter", () => {
       'data: {"choices":[{"delta":{"content":"Done."},"finish_reason":null}],"usage":{"prompt_tokens":13,"completion_tokens":1}}\n\n',
       `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage })}\n\ndata: [DONE]\n\n`,
     ].join("")));
-    const chunks: StreamChunk[] = [];
-    for await (const chunk of adapter.stream({ provider: "openrouter", model: "deepseek/test", messages: [] })) chunks.push(chunk);
-    expect(chunks.filter(chunk => chunk.type === "usage")).toEqual([]);
-    expect(chunks.at(-1)).toMatchObject({ type: "finish", reason: { kind: "stop" } });
+    const chunks: AssistantMessageEvent[] = [];
+    for await (const chunk of streamRequest(adapter, { messages: [] })) chunks.push(chunk);
+    expect(adapter.getUsage(terminal(chunks))).toBeUndefined();
+    expect(chunks.at(-1)).toMatchObject({ type: "done", reason: "stop" });
   });
 
   it.each([undefined, null])("retains measured usage across an ordinary %j usage placeholder", async usage => {
@@ -261,40 +389,42 @@ describe("OpenAI-compatible DSH adapter", () => {
       'data: {"choices":[{"delta":{"content":"Done."},"finish_reason":null}],"usage":{"prompt_tokens":13,"completion_tokens":1}}\n\n',
       `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage })}\n\ndata: [DONE]\n\n`,
     ].join("")));
-    const chunks: StreamChunk[] = [];
-    for await (const chunk of adapter.stream({ provider: "openrouter", model: "deepseek/test", messages: [] })) chunks.push(chunk);
-    expect(chunks).toContainEqual({ type: "usage", usage: { inputTokens: 13, outputTokens: 1, reasoningTokens: 0 } });
+    const chunks: AssistantMessageEvent[] = [];
+    for await (const chunk of streamRequest(adapter, { messages: [] })) chunks.push(chunk);
+    expect(adapter.getUsage(terminal(chunks))).toEqual({ inputTokens: 13, outputTokens: 1 });
   });
 
   it.each([
     { name: "explicit zero", usage: { prompt_tokens: 0, completion_tokens: 0 }, inputTokens: 0, outputTokens: 0 },
     { name: "provider aliases", usage: { input_tokens: 13, output_tokens: 7 }, inputTokens: 13, outputTokens: 7 },
+    { name: "explicit zero reasoning", usage: { prompt_tokens: 13, completion_tokens: 7, completion_tokens_details: { reasoning_tokens: 0 } }, inputTokens: 13, outputTokens: 7 },
     { name: "canonical zero with aliases", usage: { prompt_tokens: 0, completion_tokens: 0, input_tokens: 13, output_tokens: 7 }, inputTokens: 0, outputTokens: 0 },
   ])("preserves $name counts as known usage", async ({ usage, inputTokens, outputTokens }) => {
     const adapter = adapterFor("https://provider.example/v1", async () => new Response(
       `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage })}\n\ndata: [DONE]\n\n`,
     ));
-    const chunks: StreamChunk[] = [];
-    for await (const chunk of adapter.stream({ provider: "openrouter", model: "deepseek/test", messages: [] })) chunks.push(chunk);
-    expect(chunks).toContainEqual({ type: "usage", usage: { inputTokens, outputTokens, reasoningTokens: 0 } });
+    const chunks: AssistantMessageEvent[] = [];
+    for await (const chunk of streamRequest(adapter, { messages: [] })) chunks.push(chunk);
+    expect(adapter.getUsage(terminal(chunks))).toEqual({ inputTokens, outputTokens,
+      ...(usage.completion_tokens_details ? { reasoningTokens: usage.completion_tokens_details.reasoning_tokens } : {}) });
   });
 
-  it("rejects dynamic DSH context exceeding the prepared budget before contacting a provider", async () => {
+  it("rejects dynamic Pi context exceeding the prepared budget before contacting a provider", async () => {
     let requests = 0;
+    const observeUsage = vi.fn();
     const adapter = adapterFor("https://provider.example/v1", async () => {
       requests += 1;
       return new Response('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n');
-    }, { maxInputTokens: 20 });
+    }, { maxInputTokens: 20, observeUsage });
     await expect((async () => {
-      for await (const _chunk of adapter.stream({
-        provider: "openrouter", model: "deepseek/test", messages: [],
-        system: "Dynamic resident memory ".repeat(40),
-      })) {}
+      for await (const _chunk of streamRequest(adapter, { messages: [],
+      systemPrompt: "Dynamic resident memory ".repeat(40) })) {}
     })()).rejects.toThrow(/input budget/);
     expect(requests).toBe(0);
+    expect(observeUsage).not.toHaveBeenCalled();
   });
 
-  it("preserves all pinned replay until DSH handles overflow with image tools available", async () => {
+  it("preserves all pinned replay until Pi handles overflow with image tools available", async () => {
     const requests: { messages: unknown[]; tools: unknown[] }[] = [];
     const evidence: CompanionModelRequestEvidence[] = [];
     const adapter = adapterFor("https://provider.example/v1", async (_url, init) => {
@@ -304,21 +434,19 @@ describe("OpenAI-compatible DSH adapter", () => {
         delta: { tool_calls: [{ index: 0, id: "image-1", function: { name: "generate_image_async", arguments: args } }] },
         finish_reason: "tool_calls",
       }] })}\n\ndata: [DONE]\n\n`);
-    }, { maxInputTokens: 1_000, replayMessageIds: ["old-user", "old-assistant", "next-user", "next-assistant"], observeRequest: value => evidence.push(value) });
+    }, { maxInputTokens: 1_000, observeRequest: value => evidence.push(value) });
     const drainRequest = async () => {
-    for await (const _chunk of adapter.stream({
-      provider: "openrouter", model: "deepseek/test", system: "Pinned Soul.",
+    for await (const _chunk of streamRequest(adapter, { systemPrompt: "Pinned Soul.",
       messages: [
-        { id: "old-user" as never, role: "user", source: { kind: "idream", context: "replay" }, content: [{ type: "text", text: `OLD_USER ${"x".repeat(2_000)}` }] },
-        { id: "old-assistant" as never, role: "assistant", source: { kind: "model", provider: "openrouter", model: "deepseek/test" }, content: [{ type: "text", text: `OLD_ASSISTANT ${"y".repeat(2_000)}` }] },
-        { id: "next-user" as never, role: "user", source: { kind: "idream", context: "replay" }, content: [{ type: "text", text: "The notebook is on the table." }] },
-        { id: "next-assistant" as never, role: "assistant", source: { kind: "model", provider: "openrouter", model: "deepseek/test" }, content: [{ type: "text", text: "I lit the lamp." }] },
-        { id: "state:current" as never, role: "user", source: { kind: "idream", context: "snapshot" }, content: [{ type: "text", text: "Scene: the rainy library." }] },
-        { id: "recall:current" as never, role: "user", source: { kind: "idream", context: "recall" }, content: [{ type: "text", text: "Your notebook is called Harbor Finch." }] },
-        { id: "current" as never, role: "user", source: { kind: "user" }, content: [{ type: "text", text: "Send me a fully clothed photo." }] },
+        { id: "old-user", sourceKind: "replay", role: "user", content: `OLD_USER ${"x".repeat(2_000)}` },
+        { id: "old-assistant", sourceKind: "replay", role: "assistant", content: `OLD_ASSISTANT ${"y".repeat(2_000)}` },
+        { id: "next-user", sourceKind: "replay", role: "user", content: "The notebook is on the table." },
+        { id: "next-assistant", sourceKind: "replay", role: "assistant", content: "I lit the lamp." },
+        { id: "state:current", sourceKind: "plugin", role: "user", content: "Scene: the rainy library." },
+        { id: "recall:current", sourceKind: "plugin", role: "user", content: "Your notebook is called Harbor Finch." },
+        { id: "current", sourceKind: "current_user", role: "user", content: "Send me a fully clothed photo." },
       ],
-      tools: [{ name: "generate_image_async", description: "Generate", parameters: { type: "object", properties: { prompt: { type: "string" } } } }],
-    })) { /* drain */ }
+      tools: [{ name: "generate_image_async", description: "Generate", parameters: { type: "object", properties: { prompt: { type: "string" } } } }] })) { /* drain */ }
     };
     await expect(drainRequest()).rejects.toMatchObject({ code: "CONTEXT_WINDOW_EXCEEDED" });
     expect(requests).toHaveLength(0);
@@ -330,20 +458,18 @@ describe("OpenAI-compatible DSH adapter", () => {
     const adapter = adapterFor("https://provider.example/v1", async (_url, init) => {
       body = String(init?.body);
       return new Response('data: {"choices":[{"delta":{"content":"Okay"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
-    }, { maxInputTokens, replayMessageIds: ["old-user", "old-assistant"] });
+    }, { maxInputTokens });
     const args = JSON.stringify({ query: `EXACT_QUERY ${"q".repeat(500)}` });
     const result = `EXACT_RESULT ${"m".repeat(1_500)}`;
     const drainRequest = async () => {
-      for await (const _chunk of adapter.stream({
-        provider: "openrouter", model: "deepseek/test", system: "Pinned Soul.",
-        messages: [
-          { id: "old-user" as never, role: "user", source: { kind: "idream", context: "replay" }, content: [{ type: "text", text: `OLD_USER ${"x".repeat(2_000)}` }] },
-          { id: "old-assistant" as never, role: "assistant", source: { kind: "model", provider: "openrouter", model: "deepseek/test" }, content: [{ type: "text", text: `OLD_ASSISTANT ${"y".repeat(2_000)}` }] },
-          { id: "current" as never, role: "user", source: { kind: "user" }, content: [{ type: "text", text: "What did I tell you?" }] },
-          { id: "current-call" as never, role: "assistant", source: { kind: "model", provider: "openrouter", model: "deepseek/test" }, content: [{ type: "tool-call", id: "lookup" as never, name: "memory_search", arguments: args }] },
-          { id: "current-result" as never, role: "tool", source: { kind: "tool", callId: "lookup" as never }, toolCallId: "lookup" as never, isError: false, content: [{ type: "text", text: result }] },
-        ],
-      })) { /* drain */ }
+      for await (const _chunk of streamRequest(adapter, { systemPrompt: "Pinned Soul.",
+      messages: [
+          { id: "old-user", sourceKind: "replay", role: "user", content: `OLD_USER ${"x".repeat(2_000)}` },
+          { id: "old-assistant", sourceKind: "replay", role: "assistant", content: `OLD_ASSISTANT ${"y".repeat(2_000)}` },
+          { id: "current", sourceKind: "current_user", role: "user", content: "What did I tell you?" },
+          { id: "current-call", sourceKind: "replay", role: "assistant", content: "", tool_calls: [{ id: "lookup", type: "function", function: { name: "memory_search", arguments: args } }] },
+          { id: "current-result", sourceKind: "replay", role: "tool", content: result, tool_call_id: "lookup" },
+        ] })) { /* drain */ }
     };
     await expect(drainRequest()).rejects.toMatchObject({ code: "CONTEXT_WINDOW_EXCEEDED" });
     expect(body).toBe("");
@@ -356,13 +482,11 @@ describe("OpenAI-compatible DSH adapter", () => {
       body = String(init?.body);
       return new Response('data: {"choices":[{"delta":{"content":"Okay"},"finish_reason":"stop"}]}\n\n');
     }, { maxInputTokens: 2_000, observeRequest: value => observed.push(value) });
-    for await (const _chunk of adapter.stream({
-      provider: "openrouter", model: "deepseek/test", messages: [],
-      system: "Product rules\nDSH memory guidance\nResident profile",
-    })) {}
+    for await (const _chunk of streamRequest(adapter, { messages: [],
+      systemPrompt: "Product rules\nPi memory guidance\nResident profile" })) {}
     expect(observed).toEqual([expect.objectContaining({
       bodyDigest: createHash("sha256").update(body).digest("hex"),
-      systemPromptDigest: createHash("sha256").update("Product rules\nDSH memory guidance\nResident profile").digest("hex"),
+      systemPromptDigest: createHash("sha256").update("Product rules\nPi memory guidance\nResident profile").digest("hex"),
       maxInputTokens: 2_000,
     })]);
   });
@@ -370,9 +494,11 @@ describe("OpenAI-compatible DSH adapter", () => {
   it("lets the Agent choose tools while preserving image arguments from a short-reply limit", async () => {
     const choices: unknown[] = [];
     const tokenLimits: unknown[] = [];
+    const thinkingBudgets: unknown[] = [];
     const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
       choices.push((JSON.parse(String(init?.body)) as Record<string, unknown>).tool_choice);
       tokenLimits.push((JSON.parse(String(init?.body)) as Record<string, unknown>).max_tokens);
+      thinkingBudgets.push((JSON.parse(String(init?.body)) as Record<string, unknown>).thinking_budget);
       const firstStep = choices.length === 1;
       return new Response(firstStep
         ? [
@@ -415,26 +541,23 @@ describe("OpenAI-compatible DSH adapter", () => {
       apiKey: "provider-secret",
       fetch: fetchImpl,
     });
-    const options: GenerateOptions = {
-      provider: "openai",
-      model: "deepseek/test",
-      messages: [
-        { id: "old-call" as never, role: "assistant", source: { kind: "model", provider: "openai", model: "deepseek/test" }, content: [{ type: "tool-call", id: "old-image" as never, name: "generate_image_async", arguments: "{}" }] },
-        { id: "old-result" as never, role: "tool", source: { kind: "tool", callId: "old-image" as never }, toolCallId: "old-image" as never, isError: false, content: [{ type: "text", text: "Accepted." }] },
-        { id: "current" as never, role: "user", source: { kind: "user" }, content: [{ type: "text", text: "Send me another photo." }] },
+    const options: RequestFixture = { messages: [
+        { id: "old-call", sourceKind: "replay", role: "assistant", content: "", tool_calls: [{ id: "old-image", type: "function", function: { name: "generate_image_async", arguments: "{}" } }] },
+        { id: "old-result", sourceKind: "replay", role: "tool", content: "Accepted.", tool_call_id: "old-image" },
+        { id: "current", sourceKind: "current_user", role: "user", content: "Send me another photo." },
       ],
       tools: [{
         name: "generate_image_async",
         description: "Generate an image",
         parameters: { type: "object", properties: {} },
-      }],
-    };
+      }] };
 
-    for await (const _chunk of adapter.stream(options)) { /* drain */ }
-    for await (const _chunk of adapter.stream({ ...options, messages: [
+    for await (const _chunk of streamRequest(adapter, options)) { /* drain */ }
+    for await (const _chunk of streamRequest(adapter, { ...options,
+      messages: [
       ...options.messages,
-      { id: "call" as never, role: "assistant", source: { kind: "model", provider: "openai", model: options.model }, content: [{ type: "tool-call", id: "image-1" as never, name: "generate_image_async", arguments: "{}" }] },
-      { id: "result" as never, role: "tool", source: { kind: "tool", callId: "image-1" as never }, toolCallId: "image-1" as never, isError: false, content: [{ type: "text", text: "Accepted." }] },
+      { id: "call", sourceKind: "replay", role: "assistant", content: "", tool_calls: [{ id: "image-1", type: "function", function: { name: "generate_image_async", arguments: "{}" } }] },
+      { id: "result", sourceKind: "replay", role: "tool", content: "Accepted.", tool_call_id: "image-1" },
     ] })) { /* drain */ }
 
     expect(choices).toEqual([
@@ -442,6 +565,7 @@ describe("OpenAI-compatible DSH adapter", () => {
       "auto",
     ]);
     expect(tokenLimits).toEqual([256, 32]);
+    expect(thinkingBudgets).toEqual([undefined, undefined]);
   });
 
   it("preserves committed dialogue, Scene and recall in the native image decision request", async () => {
@@ -459,26 +583,9 @@ describe("OpenAI-compatible DSH adapter", () => {
         "data: [DONE]\n\n",
       ].join(""));
     }) as typeof fetch);
-    for await (const _chunk of adapter.stream({
-      provider: "openrouter", model: "deepseek/test", system: "Character and image skill",
-      messages: [{
-        id: "prior-user" as never, role: "user", source: { kind: "idream", context: "replay" },
-        content: [{ type: "text", text: userFact }],
-      }, {
-        id: "prior-assistant" as never, role: "assistant", source: { kind: "model", provider: "openai", model: "deepseek/test" },
-        content: [{ type: "text", text: assistantFact }],
-      }, {
-        id: "state:current" as never, role: "user", source: { kind: "idream", context: "snapshot" },
-        content: [{ type: "text", text: "Current Scene: location unknown; time unknown" }],
-      }, {
-        id: "recall:current" as never, role: "user", source: { kind: "idream", context: "snapshot" },
-        content: [{ type: "text", text: recalledFact }],
-      }, {
-        id: "current-user" as never, role: "user", source: { kind: "user" },
-        content: [{ type: "text", text: currentRequest }],
-      }],
-      tools: [{ name: "generate_image_async", description: "Generate an image", parameters: { type: "object", properties: { prompt: { type: "string" } }, required: ["prompt"] } }],
-    })) { /* drain the actual native adapter */ }
+    for await (const _chunk of streamRequest(adapter, { systemPrompt: "Character and image skill",
+      messages: [{ id: "prior-user", sourceKind: "replay", role: "user", content: userFact }, { id: "prior-assistant", sourceKind: "replay", role: "assistant", content: assistantFact }, { id: "state:current", sourceKind: "plugin", role: "user", content: "Current Scene: location unknown; time unknown" }, { id: "recall:current", sourceKind: "plugin", role: "user", content: recalledFact }, { id: "current-user", sourceKind: "current_user", role: "user", content: currentRequest }],
+      tools: [{ name: "generate_image_async", description: "Generate an image", parameters: { type: "object", properties: { prompt: { type: "string" } }, required: ["prompt"] } }] })) { /* drain the actual native adapter */ }
     expect(requests).toHaveLength(1);
     for (const request of requests) {
       const serialized = JSON.stringify(request.messages);
@@ -490,7 +597,8 @@ describe("OpenAI-compatible DSH adapter", () => {
         { role: "system", content: "Character and image skill" },
         { role: "user", content: userFact },
         { role: "assistant", content: assistantFact },
-        { role: "user", content: `Current Scene: location unknown; time unknown\n\n${recalledFact}\n\n${currentRequest}` },
+        { role: "user", content: `Context for this reply (earlier messages are already answered):\n<context>\nCurrent Scene: location unknown; time unknown\n\n${recalledFact}\n</context>` },
+        { role: "user", content: currentRequest },
       ]);
     }
   });
@@ -502,16 +610,8 @@ describe("OpenAI-compatible DSH adapter", () => {
       throw new Error("provider must not be contacted");
     }, { maxInputTokens: 200 });
     await expect((async () => {
-      for await (const _chunk of adapter.stream({
-        provider: "openrouter", model: "deepseek/test", messages: [{
-          id: "past-user" as never, role: "user", source: { kind: "idream", context: "replay" },
-          content: [{ type: "text", text: "Earlier rain and notebook facts. ".repeat(100) }],
-        }, {
-          id: "current-user" as never, role: "user", source: { kind: "user" },
-          content: [{ type: "text", text: "Generate a photo in our current scene." }],
-        }],
-        tools: [{ name: "generate_image_async", description: "Generate", parameters: { type: "object", properties: {} } }],
-      })) { /* drain */ }
+      for await (const _chunk of streamRequest(adapter, { messages: [{ id: "past-user", sourceKind: "replay", role: "user", content: "Earlier rain and notebook facts. ".repeat(100) }, { id: "current-user", sourceKind: "current_user", role: "user", content: "Generate a photo in our current scene." }],
+      tools: [{ name: "generate_image_async", description: "Generate", parameters: { type: "object", properties: {} } }] })) { /* drain */ }
     })()).rejects.toThrow("assembled model request exceeds the prepared input budget");
     expect(contacted).toBe(false);
   });
@@ -560,21 +660,17 @@ describe("OpenAI-compatible DSH adapter", () => {
       apiKey: "provider-secret",
       fetch: fetchImpl,
     });
-    const options: GenerateOptions = {
-      provider: "openai",
-      model: "deepseek/test",
-      messages: [],
+    const options: RequestFixture = { messages: [],
       tools: [{
         name: "generate_image_async",
         description: "Generate an image",
         parameters: { type: "object", properties: {} },
-      }],
-    };
+      }] };
 
     await expect((async () => {
-      for await (const _chunk of adapter.stream(options)) { /* drain */ }
+      for await (const _chunk of streamRequest(adapter, options)) { /* drain */ }
     })()).rejects.toMatchObject({ code: "TRANSPORT" });
-    for await (const _chunk of adapter.stream(options)) { /* drain */ }
+    for await (const _chunk of streamRequest(adapter, options)) { /* drain */ }
 
     expect(choices).toEqual([
       "auto",
@@ -587,13 +683,12 @@ describe("OpenAI-compatible DSH adapter", () => {
       choices: [{ delta: { content: text }, finish_reason: "stop" }],
     })}\n\ndata: [DONE]\n\n`));
     const adapter = adapterFor("https://provider.example/v1", request);
-    const chunks: StreamChunk[] = [];
-    for await (const chunk of adapter.stream({ provider: "openrouter", model: "deepseek/test", messages: [],
-      tools: [{ name: "generate_image_async", description: "Generate", parameters: { type: "object" } }],
-    })) chunks.push(chunk);
+    const chunks: AssistantMessageEvent[] = [];
+    for await (const chunk of streamRequest(adapter, { messages: [],
+      tools: [{ name: "generate_image_async", description: "Generate", parameters: { type: "object" } }] })) chunks.push(chunk);
     expect(request).toHaveBeenCalledOnce();
-    expect(chunks).toContainEqual(expect.objectContaining({ type: "text-delta", text }));
-    expect(chunks.some(chunk => chunk.type === "tool-call-delta")).toBe(false);
+    expect(chunks).toContainEqual(expect.objectContaining({ type: "text_delta", delta: text }));
+    expect(chunks.some(chunk => chunk.type === "toolcall_delta")).toBe(false);
     expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body)).tool_choice).toBe("auto");
   });
 
@@ -606,20 +701,17 @@ describe("OpenAI-compatible DSH adapter", () => {
         "",
       ].map((line) => line ? `${line}\n\n` : "").join(""),
     ));
-    const chunks: StreamChunk[] = [];
-    for await (const chunk of adapter.stream({
-      provider: "openrouter", model: "deepseek/test", messages: [],
-      tools: [{ name: "generate_image_async", description: "Reserved image action", parameters: { type: "object", properties: {} } }],
-    })) chunks.push(chunk);
+    const chunks: AssistantMessageEvent[] = [];
+    for await (const chunk of streamRequest(adapter, { messages: [],
+      tools: [{ name: "generate_image_async", description: "Reserved image action", parameters: { type: "object", properties: {} } }] })) chunks.push(chunk);
 
     // 台词写在工具结果出现之前；运行时再决定它能不能留给用户看。
     expect(chunks).toContainEqual(expect.objectContaining({
-      type: "text-delta",
-      text: "Elbow-deep in clay — give me a second.",
+      type: "text_delta",
+      delta: "Elbow-deep in clay — give me a second.",
     }));
     expect(chunks.some((chunk) =>
-      chunk.type === "block-end" && chunk.block.type === "tool-call"
-      && chunk.block.name === "generate_image_async")).toBe(true);
+      chunk.type === "toolcall_end" && chunk.toolCall.name === "generate_image_async")).toBe(true);
   });
 
   it("rejects an unpinned provider before accepting its native tool call", async () => {
@@ -641,10 +733,8 @@ describe("OpenAI-compatible DSH adapter", () => {
       }) as typeof fetch,
     });
     await expect((async () => {
-      for await (const _chunk of adapter.stream({
-        provider: "openai", model: "deepseek/test", messages: [],
-        tools: [{ name: "edit_last_image", description: "Edit the image", parameters: { type: "object", properties: {} } }],
-      })) { /* drain */ }
+      for await (const _chunk of streamRequest(adapter, { messages: [],
+      tools: [{ name: "edit_last_image", description: "Edit the image", parameters: { type: "object", properties: {} } }] })) { /* drain */ }
     })()).rejects.toThrow(/unpinned provider/);
     expect(requests).toBe(1);
   });
@@ -703,25 +793,16 @@ describe("OpenAI-compatible DSH adapter", () => {
       openRouterProviderOnly: ["DeepSeek"],
       fetch: fetchImpl,
     });
-    const options: GenerateOptions = {
-      provider: "openai",
-      model: "deepseek/test",
-      system: "Pinned Soul",
-      messages: [{
-        id: "user-1" as never,
-        role: "user",
-        source: { kind: "user" },
-        content: [{ type: "text", text: "Show me the observatory" }],
-      }],
+    const options: RequestFixture = { systemPrompt: "Pinned Soul",
+      messages: [{ id: "user-1", sourceKind: "current_user", role: "user", content: "Show me the observatory" }],
       tools: [{
         name: "generate_image_async",
         description: "Generate an image",
         parameters: { type: "object", properties: {} },
       }],
-      maxTokens: 256,
-    };
+      maxTokens: 256 };
     const chunks = [];
-    for await (const chunk of adapter.stream(options)) chunks.push(chunk);
+    for await (const chunk of streamRequest(adapter, options)) chunks.push(chunk);
 
     expect(authorization).toBe("Bearer provider-secret");
     expect(requestBody).toMatchObject({
@@ -734,15 +815,9 @@ describe("OpenAI-compatible DSH adapter", () => {
       tool_choice: "auto",
       provider: { only: ["DeepSeek"], allow_fallbacks: false },
     });
-    expect(chunks).toContainEqual({
-      type: "usage",
-      usage: { inputTokens: 10, outputTokens: 7, cacheReadTokens: 3, reasoningTokens: 2 },
-    });
-    expect(chunks.at(-1)).toMatchObject({
-      type: "finish",
-      reason: { kind: "stop" },
-      replayState: { response: { id: "provider-request-1", provider: "DeepSeek" } },
-    });
+    expect(adapter.getUsage(terminal(chunks))).toEqual({ inputTokens: 10, outputTokens: 7, cacheReadTokens: 3, reasoningTokens: 2 });
+    expect(chunks.at(-1)).toMatchObject({ type: "done", reason: "stop" });
+    expect(adapter.getAttribution(terminal(chunks))).toEqual({ requestId: "provider-request-1", actualProvider: "DeepSeek" });
   });
 
   it("keeps the same conversational sampling when no tools are exposed", async () => {
@@ -783,11 +858,7 @@ describe("OpenAI-compatible DSH adapter", () => {
       openRouterProviderOnly: ["DeepSeek"],
     });
 
-    for await (const _chunk of adapter.stream({
-      provider: "openrouter",
-      model: "deepseek/test",
-      messages: [],
-    })) {
+    for await (const _chunk of streamRequest(adapter, { messages: [] })) {
       // Drain the response so the request body is observable.
     }
 
@@ -800,9 +871,7 @@ describe("OpenAI-compatible DSH adapter", () => {
       requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
       return new Response('data: {"choices":[{"delta":{"content":"The exact label is cedar-7301."},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
     }, { samplingTemperature: 0.2 });
-    for await (const _chunk of adapter.stream({
-      provider: "openrouter", model: "deepseek/test", messages: [],
-    })) {
+    for await (const _chunk of streamRequest(adapter, { messages: [] })) {
       // Drain the factual turn.
     }
     expect(requestBody).toMatchObject({ temperature: 0.2 });
@@ -838,11 +907,7 @@ describe("OpenAI-compatible DSH adapter", () => {
     });
 
     await expect((async () => {
-      for await (const _chunk of adapter.stream({
-        provider: "openai",
-        model: "deepseek/test",
-        messages: [],
-      })) {
+      for await (const _chunk of streamRequest(adapter, { messages: [] })) {
         // Drain the full provider stream so the terminal invariant is evaluated.
       }
     })()).rejects.toThrow(/attribution/);
@@ -883,11 +948,7 @@ describe("OpenAI-compatible DSH adapter", () => {
     });
 
     await expect((async () => {
-      for await (const _chunk of adapter.stream({
-        provider: "openrouter",
-        model: "deepseek/test",
-        messages: [],
-      })) {
+      for await (const _chunk of streamRequest(adapter, { messages: [] })) {
         // Drain the stream so terminal validation runs.
       }
     })()).rejects.toThrow(/unsupported finish_reason content_filter/);
@@ -913,11 +974,7 @@ describe("OpenAI-compatible DSH adapter", () => {
 
     let thrown: unknown;
     try {
-      for await (const _chunk of adapter.stream({
-        provider: "openrouter",
-        model: "deepseek/test",
-        messages: [],
-      })) {
+      for await (const _chunk of streamRequest(adapter, { messages: [] })) {
         // Drain until the provider failure is surfaced.
       }
     } catch (error) {
@@ -948,7 +1005,7 @@ describe("OpenAI-compatible DSH adapter", () => {
       // Even the request's first-token deadline cannot settle a transport's
       // cleanup promise. The HTTP status must already have reached the caller.
       await vi.advanceTimersByTimeAsync(1_100);
-      expect(outcome).toMatchObject({ code: "PROVIDER_HTTP_ERROR", failure: { status: 503 } });
+      expect(outcome).toMatchObject({ code: "PROVIDER_HTTP_ERROR", status: 503 });
       expect(cancel).toHaveBeenCalledOnce();
     } finally {
       cancellation.resolve();
@@ -1066,7 +1123,8 @@ describe("OpenAI-compatible DSH adapter", () => {
     });
     const finished = (async () => {
       try {
-        for await (const _chunk of adapter.stream({ provider: "openrouter", model: "deepseek/test", messages: [], signal: source.signal })) { /* drain */ }
+        for await (const _chunk of streamRequest(adapter, { messages: [],
+      signal: source.signal })) { /* drain */ }
         outcome = "resolved";
       } catch (error) { outcome = error as Error; }
     })();

@@ -106,7 +106,7 @@ describe("recorded scene extraction projection", () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(capturedObjectCase.sse));
     const result = await projectSceneForReply({ ...input, ...capturedObjectCase, previous: chatSceneStateSchema.parse(capturedObjectCase.previous) }, { profile, apiKey: "secret", maxInputTokens: 6_000, signal: new AbortController().signal, fetch });
     expect(result.scene).toEqual({ ...capturedObjectCase.previous, version: 5 });
-    expect(result.evidence).toMatchObject({ status: "rejected", failureCode: capturedObjectCase.expectedFailureCode, usage: { promptTokens: 1_163, completionTokens: 117, reasoningTokens: 0 } });
+    expect(result.evidence).toMatchObject({ status: "rejected", failureCode: capturedObjectCase.expectedFailureCode, usage: { promptTokens: 1_163, completionTokens: 117, reasoningTokens: null } });
     expect(fetch).toHaveBeenCalledOnce();
   });
 
@@ -394,7 +394,9 @@ describe("source-level scene degradation", () => {
       expect(result.evidence.phases.map(phase => phase.maxInputTokens)).toEqual([6000, 6000, 5047, 2704]);
       expect(result.evidence.requests.every(request => request.estimatedInputTokens <= 6_000)).toBe(true);
       expect(result.evidence.phases.map(phase => phase.maxOutputTokens)).toEqual([384, 384, 384, 384]);
-      expect(result.evidence.usage).toEqual({ promptTokens: 1230, completionTokens: 160, reasoningTokens: 6 });
+      // The recorded provider phase lacks the subtotal; known later phases
+      // cannot turn that missing measurement into a measured zero.
+      expect(result.evidence.usage).toEqual({ promptTokens: 1230, completionTokens: 160, reasoningTokens: null });
       expect(fetch).toHaveBeenCalledTimes(4);
     }
   });

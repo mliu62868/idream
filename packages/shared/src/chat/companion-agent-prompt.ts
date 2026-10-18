@@ -23,15 +23,18 @@ import { buildCompanionRuntimeAuthority } from "./runtime-policy";
  * framing: paid actions are authorised structurally by Main, not by prompt.
  * v7: current requested length, then saved length, override the default range.
  * v8: the Agent selects native image tools; no host intent gate or forced call.
+ * v9: explicit requested details and wording constrain the Character's embellishment.
+ * v10: the entire reply fulfills the latest request and ends when complete;
+ * answering it first must not become a preface to unrelated scene continuation.
  */
-export const COMPANION_PRODUCT_PROMPT_VERSION = "companion-product-8" as const;
+export const COMPANION_PRODUCT_PROMPT_VERSION = "companion-product-10" as const;
 
 export function companionProductAgentPrompt(characterName: string): string {
   const name = characterName.trim() || "the Character";
   return [
     `iDream companion contract (${COMPANION_PRODUCT_PROMPT_VERSION}). The Soul above is who you are; this is how you are with the person you are talking to. If the two ever conflict, this contract wins.`,
     `- You are their adult companion in a private, ongoing roleplay. Both of you are adults, and sex, written out in graphic physical detail, is a normal part of this relationship.`,
-    `- Answer what they just said first, then add your own feeling, tease or next move. When they hand you the lead, take it. When they ask for dirty talk, for detail, for more, or not to fade out, give the explicit act itself in this reply, in their words and yours, instead of teasing the next step.`,
+    `- Fulfill their latest message as the whole reply, using the exact language, length, sentence count and details they request. When that request is complete, end the reply. Keep your voice, feelings and actions within that shape. When they hand you the lead, take it. When they ask for dirty talk, for detail, for more, or not to fade out, give the explicit act itself in this reply, in their words and yours, instead of teasing the next step.`,
     `- Their request, invitation or continued participation is their yes. Keep going until they slow down or stop; a boundary or preference they have stated always holds.`,
     `- When something is ambiguous, make one in-character choice and carry on. Ask only when a wrong guess would derail the scene, and let most replies end on a beat rather than a question or a menu.`,
     `- Write in first person as ${name}; the person you are with is "you". Write only your own words, actions and feelings. Theirs are theirs to write.`,
@@ -53,7 +56,7 @@ export function composeCompanionSystemPrompt(input: {
   characterName?: string;
 }): string {
   return [
-    [input.soulPrompt, input.identityPromptLine].filter(Boolean).join("\n"),
+    [soulModelView(input.soulPrompt), input.identityPromptLine].filter(Boolean).join("\n"),
     companionProductAgentPrompt(input.characterName ?? ""),
     buildCompanionRuntimeAuthority({
       memoryEnabled: input.memoryEnabled,
@@ -61,6 +64,14 @@ export function composeCompanionSystemPrompt(input: {
     }),
     input.imageToolEnabled ? COMPANION_IMAGE_SKILL_PROMPT : "",
   ].filter(Boolean).join("\n\n");
+}
+
+/** Clarify example metadata for the model without rewriting the immutable Soul. */
+function soulModelView(soulPrompt: string): string {
+  return soulPrompt.replace(
+    /^## Dialogue examples$/gm,
+    "## Voice examples (illustrations of tone, not lines to repeat or requests to answer)",
+  );
 }
 
 /** Release-time structural canary for Agent-controlled image tools. */
@@ -72,7 +83,7 @@ export function companionProductContractCanary(input: {
     imageToolEnabled: true,
     soulPrompt: input.soulPrompt,
   });
-  const soulAt = systemPrompt.indexOf(input.soulPrompt);
+  const soulAt = systemPrompt.indexOf(soulModelView(input.soulPrompt));
   const contractAt = systemPrompt.indexOf(`iDream companion contract (${COMPANION_PRODUCT_PROMPT_VERSION})`);
   const imageSkillAt = systemPrompt.indexOf("Image direction skill");
   return {

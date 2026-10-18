@@ -2,7 +2,7 @@
   "name": "idream",
   "version": "0.3.1",
   "private": true,
-  "description": "iDream — AI companion platform (monorepo). main-web + chat service + gen workers, split by execution-time SLA.",
+  "description": "iDream \u2014 AI companion platform (monorepo). main-web + chat service + gen workers, split by execution-time SLA.",
   "license": "MIT",
   "engines": {
     "node": ">=22",
@@ -31,9 +31,7 @@
     "check": "bun run lint && bun run typecheck && bun run build",
     "dev": "bun run --filter @idream/main dev",
     "dev:admin": "bun run --filter @idream/admin dev",
-    "dsh-companion:setup": "node scripts/setup-dsh-companion.mjs",
     "chat-runtime:cutover": "bun scripts/cutover-embedded-chat-runtime.mjs",
-    "dsh-companion:check": "node scripts/setup-dsh-companion.mjs --check",
     "chat:purge-legacy-session-traces": "node --env-file=packages/chat/.env scripts/purge-legacy-chat-session-traces.mjs",
     "pm2:start": "bun scripts/start-pm2-ecosystem.cjs",
     "pm2:start:production": "bun scripts/start-pm2-ecosystem.cjs production",
@@ -51,8 +49,7 @@
     "comfyui:status": "pm2 status comfyui-video comfyui-image",
     "comfyui:logs": "pm2 logs comfyui-video comfyui-image",
     "source:revision": "node scripts/source-revision.cjs",
-    "test:pm2-config": "node --test scripts/bound-react-async-debug.test.cjs scripts/next-hmr-client-isolation.test.cjs scripts/source-revision.test.cjs scripts/build-bun-service.test.cjs scripts/build-next-standalone.test.mjs scripts/ecosystem-config.test.cjs scripts/voice-launcher-environment.test.cjs scripts/check-gen-image-worker-ownership.test.cjs scripts/recover-gen-worker-orphans.test.cjs scripts/start-comfyui-idream.test.cjs scripts/cutover-embedded-chat-runtime.test.mjs scripts/launch-operator-docs.test.cjs scripts/development-process-exit.test.cjs scripts/setup-dsh-companion.test.mjs scripts/run-dsh-gate-t.test.mjs scripts/purge-legacy-chat-session-traces.test.mjs packages/main/scripts/start-development.test.cjs packages/admin/scripts/start-development.test.cjs",
-    "test:dsh-gate-t": "node scripts/run-dsh-gate-t.mjs",
+    "test:pm2-config": "node --test scripts/bound-react-async-debug.test.cjs scripts/next-hmr-client-isolation.test.cjs scripts/source-revision.test.cjs scripts/build-bun-service.test.cjs scripts/build-next-standalone.test.mjs scripts/ecosystem-config.test.cjs scripts/voice-launcher-environment.test.cjs scripts/check-gen-image-worker-ownership.test.cjs scripts/recover-gen-worker-orphans.test.cjs scripts/start-comfyui-idream.test.cjs scripts/cutover-embedded-chat-runtime.test.mjs scripts/launch-operator-docs.test.cjs scripts/development-process-exit.test.cjs scripts/setup-pi-companion.test.mjs scripts/run-pi-gate.test.mjs scripts/purge-legacy-chat-session-traces.test.mjs packages/main/scripts/start-development.test.cjs packages/admin/scripts/start-development.test.cjs",
     "probe:gen-image-ownership": "node scripts/check-gen-image-worker-ownership.cjs --mode steady",
     "generation:quiesce-for-orphan-recovery": "bun scripts/start-pm2-ecosystem.cjs current quiesce",
     "generation:plan-orphan-recovery": "bun scripts/recover-gen-worker-orphans.cjs plan",
@@ -91,7 +88,10 @@
     "launch:probe:video": "bun run --filter @idream/gen probe:video",
     "launch:probe:web-surface": "bun run --filter @idream/main probe:web-surface",
     "launch:probe:voice": "bun run --filter @idream/main probe:voice",
-    "launch:secrets": "node scripts/generate-launch-secrets.mjs"
+    "launch:secrets": "node scripts/generate-launch-secrets.mjs",
+    "pi-companion:setup": "node scripts/setup-pi-companion.mjs",
+    "pi-companion:check": "node scripts/setup-pi-companion.mjs --check",
+    "test:pi-gate": "node scripts/run-pi-gate.mjs"
   },
   "devDependencies": {
     "turbo": "^2.9.18"

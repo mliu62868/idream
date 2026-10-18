@@ -1,0 +1,65 @@
+{
+  "date": "2026-10-17",
+  "purpose": "Isolated package/storage contract probe; no iDream service or real LLM execution",
+  "idreamHead": "7e26cea97a26ca7a5703077f4dbdd607e808023f",
+  "upstreamTag": "v1.3.0",
+  "upstreamCommit": "71023aec1546d6d677a65669c5665c0927ce0dd0",
+  "runtime": {
+    "bun": "1.4.2",
+    "node": "22.22.0",
+    "platform": "darwin",
+    "architecture": "arm64",
+    "projectPinnedBun": "1.4.0"
+  },
+  "installation": {
+    "command": "npm install --ignore-scripts --no-audit --no-fund",
+    "scope": "isolated OS temporary directory",
+    "projectDependenciesChanged": false,
+    "packagesInstalled": 92
+  },
+  "crashProbe": {
+    "command": "bun probe.mjs crash",
+    "exitCode": 73,
+    "checkpointCommitted": true,
+    "harnessClosedBeforeExit": false,
+    "kind": "process.exit(73), not power failure"
+  },
+  "resumeProbe": {
+    "command": "bun probe.mjs resume",
+    "exitCode": 0,
+    "storage": "JSONL fsync=true",
+    "reopenedSameConversation": true,
+    "checkpointSurvivedAbruptExit": true,
+    "resumedTaskCompleted": true,
+    "duplicateRequestDeduplicated": true,
+    "sameRequestIdChangedPayload": "returns original submission without conflict; original entry unchanged"
+  },
+  "sqliteSmoke": {
+    "adapter": "openNodeSqliteStorage",
+    "runtime": "Bun 1.4.2",
+    "openedAndClosed": true,
+    "fullConformanceTested": false
+  },
+  "probeCorrection": {
+    "initialExpectedState": "running",
+    "actualState": "pending",
+    "reason": "TaskScheduler.open explicitly converts surviving running tasks to pending while preserving checkpoint; assertion corrected against v1.3.0 scheduler.ts:303-304, then resume passed"
+  },
+  "modelRequests": 0,
+  "externalModelCost": 0,
+  "notVerified": [
+    "Bun 1.4.0",
+    "real provider streaming",
+    "real tool effects or billing",
+    "compaction model quality",
+    "igrep adapter",
+    "power failure durability",
+    "multi-process ownership",
+    "production deployment"
+  ],
+  "sha256": {
+    "probe.mjs": "6db7f5948932863fca6705778ec6b8ce8bdf016ac78eed5cb29dd52effd08795",
+    "package.json": "3c1659bac2c3054c30fee5abc2c5b2e1eef224856df3f24fbf6c3ad059ce80b6",
+    "package-lock.json": "18c3870a17c2ead445f81b613dda7bb0942c2aeca50c23e40250574b0509aabb"
+  }
+}

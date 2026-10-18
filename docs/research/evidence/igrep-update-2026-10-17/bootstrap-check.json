@@ -1,0 +1,19 @@
+{
+  "command": [
+    "node",
+    "scripts/setup-dsh-companion.mjs",
+    "--check",
+    "--json"
+  ],
+  "exitCode": 1,
+  "stdout": "",
+  "stderr": "{\"ok\":false,\"error\":{\"code\":\"PLUGIN_PEER_RANGE_MISMATCH\",\"message\":\"@igrep/dsh-plugin must declare the pinned @deepseek-ai/dsh-llm peer range\"}}\n",
+  "sourceRevision": "7e26cea97a26ca7a5703077f4dbdd607e808023f",
+  "checkedAtUtc": "2026-10-17T07:44:08.348339+00:00",
+  "scope": "Read-only bootstrap compatibility check; current PM2 process bundle and health were not inspected.",
+  "igrepVersion": "igrep 0.1.161",
+  "fileSha256": {
+    "scripts/setup-dsh-companion.mjs": "1381824b6690f2b2e15860dd922412a0f369713924e89f7a754f903976367e3c",
+    "packages/chat/package.json": "ade5f3d306c9c750ce20f76329b04a34e1729762cf13fe37160a9c1a57f634e3"
+  }
+}

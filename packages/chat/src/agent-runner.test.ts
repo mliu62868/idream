@@ -85,6 +85,13 @@ describe("AgentRun local trace", () => {
     expect(agentRunTraceEvent(event)).toBeNull();
   });
 
+  it("persists physical usage even when no terminal candidate follows", () => {
+    const event: CompanionEvent = { invocationId: "invocation-1", attemptId: "attempt-1", sequence: 2,
+      occurredAt: "2026-08-28T12:00:00.000Z", type: "usage",
+      usage: { promptTokens: 1942, completionTokens: 256, reasoningTokens: null } };
+    expect(agentRunTraceEvent(event)).toEqual({ kind: "pi.usage", payload: { usage: event.usage } });
+  });
+
   it("keeps content-free failure classification", () => {
     const event: CompanionEvent = {
       invocationId: "invocation-1",
@@ -100,7 +107,7 @@ describe("AgentRun local trace", () => {
     };
 
     expect(agentRunTraceEvent(event)).toEqual({
-      kind: "dsh.failed",
+      kind: "pi.failed",
       payload: { error: event.error },
     });
   });
