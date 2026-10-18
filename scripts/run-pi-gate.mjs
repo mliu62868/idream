@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const REPO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const OUTPUT_LIMIT = 4_000;
 
-export const GATE_T_CHECKS = Object.freeze([
+export const PI_GATE_CHECKS = Object.freeze([
   Object.freeze({
     id: "embedded-runtime-tool-loop",
     cwd: "packages/chat",
@@ -17,12 +17,20 @@ export const GATE_T_CHECKS = Object.freeze([
       "test",
       "--",
       "src/agent-runtime/engine.test.ts",
+      "src/agent-runtime/openai-adapter.test.ts",
+      "src/agent-runtime/config.test.ts",
+      "src/agent-runtime/composition.test.ts",
+      "src/agent-runtime/readiness.test.ts",
+      "src/agent-runtime/session-recall.test.ts",
     ]),
     scenarios: Object.freeze([
       "direct_terminal_commit",
       "single_product_tool",
       "main_cas_rejection",
       "in_process_cancel",
+      "native_pi_provider_and_compaction",
+      "attempt_scoped_original_recall",
+      "pinned_runtime_readiness",
     ]),
   }),
   Object.freeze({
@@ -48,7 +56,7 @@ export const GATE_T_CHECKS = Object.freeze([
   }),
 ]);
 
-export function parseGateTArgs(argv) {
+export function parsePiGateArgs(argv) {
   let report = null;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -70,14 +78,14 @@ function tail(value) {
   return text.length <= OUTPUT_LIMIT ? text : text.slice(-OUTPUT_LIMIT);
 }
 
-export function runGateTProbe({
+export function runPiGateProbe({
   root = REPO_ROOT,
   execute = spawnSync,
   now = () => new Date(),
 } = {}) {
   const checkedAt = now().toISOString();
   const startedAt = Date.now();
-  const checks = GATE_T_CHECKS.map((check) => {
+  const checks = PI_GATE_CHECKS.map((check) => {
     const checkStartedAt = Date.now();
     const result = execute(check.command, [...check.args], {
       cwd: path.join(root, check.cwd),
@@ -86,7 +94,7 @@ export function runGateTProbe({
     });
     const exitCode = typeof result.status === "number" ? result.status : null;
     // Vitest can exit zero with all tests skipped (e.g. a stale file/filter).
-    // Gate T requires observed execution, not merely a successful process exit.
+    // Pi gate requires observed execution, not merely a successful process exit.
     const summary = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.replace(/\u001b\[[0-9;]*m/gu, "");
     const passedTests = Number(/\bTests\s+(\d+)\s+passed\b/u.exec(summary)?.[1] ?? 0);
     return {
@@ -114,8 +122,8 @@ export function runGateTProbe({
 }
 
 function main() {
-  const options = parseGateTArgs(process.argv.slice(2));
-  const report = runGateTProbe();
+  const options = parsePiGateArgs(process.argv.slice(2));
+  const report = runPiGateProbe();
   const output = `${JSON.stringify(report, null, 2)}\n`;
   if (options.report) {
     const reportPath = path.resolve(REPO_ROOT, options.report);

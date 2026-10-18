@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { CompanionProbeDshEvidence } from "@idream/shared/chat/companion-runtime";
+import type { CompanionProbeRuntimeEvidence } from "@idream/shared/chat/companion-runtime";
 
 // SPEC: 上线就绪探针的 evidence 契约 —— 12 个 probe-*.ts 作为独立进程跑真实依赖后写 JSON，
 //       launch-readiness.ts 经 *_PROBE_REPORT 环境变量读回来判定门禁。本文件是这条进程边界上
@@ -35,7 +35,7 @@ const optionalCompanionMemoryOutcome = z
   .enum(["projected", "pending", "disabled"])
   .optional()
   .catch(undefined);
-const optionalEmbeddedDshRuntime = z.literal("embedded_dsh").optional().catch(undefined);
+const optionalEmbeddedPiRuntime = z.literal("embedded_pi").optional().catch(undefined);
 const optionalCompanionMemoryMode = z.enum(["normal", "private"]).optional().catch(undefined);
 /** `typeof x === "number" ? x : undefined` */
 const optionalCount = z.number().optional().catch(undefined);
@@ -580,7 +580,7 @@ export interface ChatServiceProbeEvidence {
       assistantSent?: boolean;
       assistantStatus?: string | null;
       derivationSettled?: boolean;
-      dsh?: ChatProbeDshEvidence | null;
+      runtime?: ChatProbeRuntimeEvidence | null;
       error?: string | null;
     } | null;
     regenerateAnchor?: {
@@ -594,7 +594,7 @@ export interface ChatServiceProbeEvidence {
       recallMatched?: boolean;
       wakeObserved?: boolean;
       memorySearchHit?: boolean;
-      regeneratedDsh?: ChatProbeDshEvidence | null;
+      regeneratedRuntime?: ChatProbeRuntimeEvidence | null;
       error?: string | null;
     } | null;
     noMemory?: {
@@ -602,7 +602,7 @@ export interface ChatServiceProbeEvidence {
       status?: number;
       assistantMessageId?: string;
       authorityPinned?: boolean;
-      dsh?: ChatProbeDshEvidence | null;
+      runtime?: ChatProbeRuntimeEvidence | null;
       error?: string | null;
     } | null;
     blockedInput?: {
@@ -632,7 +632,7 @@ export interface ChatProbeOperationEvidence {
   error?: string | null;
 }
 
-export type ChatProbeDshEvidence = Partial<CompanionProbeDshEvidence>;
+export type ChatProbeRuntimeEvidence = Partial<CompanionProbeRuntimeEvidence>;
 
 const chatProbeOperationShape = {
   ok: flag,
@@ -640,16 +640,16 @@ const chatProbeOperationShape = {
   error: nullableText,
 };
 
-const chatProbeDshEvidenceShape = {
+const chatProbeRuntimeEvidenceShape = {
   ok: flag,
-  runtime: optionalEmbeddedDshRuntime,
+  runtime: optionalEmbeddedPiRuntime,
   memoryMode: optionalCompanionMemoryMode,
   provider: optionalText,
   model: optionalText,
   profileDigest: optionalText,
   runtimeInstanceId: optionalText,
   igrepVersion: optionalText,
-  pluginVersion: optionalText,
+  piVersion: optionalText,
   requestId: optionalText,
   actualProvider: optionalText,
   memoryOutcome: optionalCompanionMemoryOutcome,
@@ -717,7 +717,7 @@ const chatServiceProbeEvidenceSchema: z.ZodType<ChatServiceProbeEvidence> = z.ob
       assistantSent: flag,
       assistantStatus: nullableText,
       derivationSettled: flag,
-      dsh: nullableObject(chatProbeDshEvidenceShape),
+      runtime: nullableObject(chatProbeRuntimeEvidenceShape),
     }),
     regenerateAnchor: nullableObject({
       ...chatProbeOperationShape,
@@ -729,13 +729,13 @@ const chatServiceProbeEvidenceSchema: z.ZodType<ChatServiceProbeEvidence> = z.ob
       recallMatched: flag,
       wakeObserved: flag,
       memorySearchHit: flag,
-      regeneratedDsh: nullableObject(chatProbeDshEvidenceShape),
+      regeneratedRuntime: nullableObject(chatProbeRuntimeEvidenceShape),
     }),
     noMemory: nullableObject({
       ...chatProbeOperationShape,
       assistantMessageId: optionalText,
       authorityPinned: flag,
-      dsh: nullableObject(chatProbeDshEvidenceShape),
+      runtime: nullableObject(chatProbeRuntimeEvidenceShape),
     }),
     blockedInput: nullableObject({ ...chatProbeOperationShape, status_: nullableText }),
     cleanup: nullableObject({

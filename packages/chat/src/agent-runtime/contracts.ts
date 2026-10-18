@@ -1,5 +1,4 @@
 import { z } from "zod";
-import type {} from "@deepseek-ai/dsh-llm";
 import {
   EDIT_LAST_IMAGE_TOOL,
   editLastImageArgsSchema,
@@ -7,20 +6,7 @@ import {
   generateImageAsyncArgsSchema,
 } from "@idream/shared/chat/image-action";
 import { companionMemoryModeSchema } from "@idream/shared/chat/companion-runtime";
-import { groupChatMemberSchema, type GroupChatMember } from "@idream/shared/contracts";
-
-declare module "@deepseek-ai/dsh-llm" {
-  interface MessageSourceMap {
-    // Runtime context is distinct from Main-authorized user dialogue.
-    idream: { kind: "idream"; context: "replay" | "snapshot" | "recall" | "projection" };
-    "plugin:igrep": { kind: "plugin:igrep"; form: "notice" | "recall"; summary?: string };
-  }
-  interface ModelMessageSource {
-    // INVARIANT: replayed group dialogue retains its Character identity across
-    // DSH's immutable message projection into the actual provider request.
-    readonly speaker?: GroupChatMember;
-  }
-}
+import { groupChatMemberSchema } from "@idream/shared/contracts";
 
 const nonEmptyString = z.string().trim().min(1);
 const isoDateTime = z.string().datetime({ offset: true });

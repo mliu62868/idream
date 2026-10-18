@@ -100,7 +100,7 @@ describe("AgentRun local trace", () => {
     };
 
     expect(agentRunTraceEvent(event)).toEqual({
-      kind: "dsh.failed",
+      kind: "pi.failed",
       payload: { error: event.error },
     });
   });

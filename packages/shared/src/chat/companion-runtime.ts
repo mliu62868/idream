@@ -3,10 +3,8 @@ import { COMPANION_PRODUCT_PROMPT_VERSION } from "./companion-agent-prompt";
 
 // Shared contains only Main ↔ Chat contracts and operator evidence.
 export const COMPANION_RUNTIME_PROTOCOL_VERSION = 2 as const;
-export const COMPANION_DSH_VERSION = "0.2.0-rc.2" as const;
-export const COMPANION_DSH_COMMIT =
-  "639ed015397290b3745d163aafe02ffee4aa3f84" as const;
-export const COMPANION_IGREP_PLUGIN_VERSION = "0.1.0" as const;
+export const COMPANION_PI_VERSION = "1.3.0" as const;
+export const COMPANION_IGREP_VERSION = "0.1.161" as const;
 
 /**
  * SPEC: an unquoted terminal memory-search command is not a completed answer.
@@ -427,10 +425,9 @@ export const companionReadinessSchema = z
     ready: z.literal(true),
     checkedAt: isoDateTimeSchema,
     productPromptVersion: z.literal(COMPANION_PRODUCT_PROMPT_VERSION),
-    dshVersion: z.literal(COMPANION_DSH_VERSION),
-    dshCommit: z.literal(COMPANION_DSH_COMMIT),
-    igrepVersion: companionIgrepVersionSchema,
-    pluginVersion: z.literal(COMPANION_IGREP_PLUGIN_VERSION),
+    piVersion: z.literal(COMPANION_PI_VERSION),
+    igrepVersion: z.literal(COMPANION_IGREP_VERSION),
+    kernel: z.object({ storage: z.literal("memory"), publicApi: z.literal(true) }).strict(),
     instance: companionRuntimeInstanceSchema,
     provider: z
       .object({
@@ -473,21 +470,21 @@ export const companionReadinessSchema = z
   .strict();
 
 /** Content-free Gate-E projection shared by the signed probe and its report consumer. */
-export const companionProbeDshEvidenceSchema = z
+export const companionProbeRuntimeEvidenceSchema = z
   .object({
     ok: z.boolean(),
     productPromptVersion: z.literal(COMPANION_PRODUCT_PROMPT_VERSION).optional(),
     preparedTurnVersion: positiveIntegerSchema.optional(),
     systemPromptDigest: sha256Schema.optional(),
     soulFingerprint: sha256Schema.optional(),
-    runtime: z.literal("embedded_dsh").optional(),
+    runtime: z.literal("embedded_pi").optional(),
     memoryMode: companionMemoryModeSchema.optional(),
     provider: nonEmptyStringSchema.optional(),
     model: nonEmptyStringSchema.optional(),
     profileDigest: sha256Schema.optional(),
     runtimeInstanceId: z.string().uuid().optional(),
     igrepVersion: companionIgrepVersionSchema.optional(),
-    pluginVersion: nonEmptyStringSchema.optional(),
+    piVersion: nonEmptyStringSchema.optional(),
     requestId: nonEmptyStringSchema.optional(),
     actualProvider: nonEmptyStringSchema.optional(),
     memoryOutcome: z.enum(["projected", "pending", "disabled"]),
@@ -507,13 +504,13 @@ export const companionProbeDshEvidenceSchema = z
  * Project internal attempt trace into the only content-free shape an operator
  * probe may consume. Raw trace objects never cross the public Chat API.
  */
-export function projectCompanionProbeDshEvidence(
+export function projectCompanionProbeRuntimeEvidence(
   value: unknown,
   mode: "normal" | "private",
   memoryOutcome: "projected" | "pending" | "disabled" = mode === "private"
     ? "disabled"
     : "projected",
-): z.infer<typeof companionProbeDshEvidenceSchema> {
+): z.infer<typeof companionProbeRuntimeEvidenceSchema> {
   const evidence = probeRecord(value);
   const prompt = probeRecord(evidence.prompt);
   const execution = probeRecord(evidence.execution);
@@ -529,7 +526,7 @@ export function projectCompanionProbeDshEvidence(
     if (!condition) failures.push(field);
   };
 
-  expectFact(evidence.authority === "dsh_terminal_candidate", "authority");
+  expectFact(evidence.authority === "pi_terminal_candidate", "authority");
   expectFact(
     prompt.productPromptVersion === COMPANION_PRODUCT_PROMPT_VERSION,
     "prompt.productPromptVersion",
@@ -546,7 +543,7 @@ export function projectCompanionProbeDshEvidence(
     typeof prompt.soulFingerprint === "string" && /^[a-f0-9]{64}$/u.test(prompt.soulFingerprint),
     "prompt.soulFingerprint",
   );
-  expectFact(evidence.runtime === "embedded_dsh", "runtime");
+  expectFact(evidence.runtime === "embedded_pi", "runtime");
   expectFact(evidence.memoryMode === mode, "memoryMode");
   expectFact(
     typeof evidence.profileDigest === "string" && /^[a-f0-9]{64}$/u.test(evidence.profileDigest),
@@ -570,8 +567,8 @@ export function projectCompanionProbeDshEvidence(
     "execution.tools",
   );
   expectFact(typeof evidence.contentDigest === "string" && /^[a-f0-9]{64}$/u.test(evidence.contentDigest), "contentDigest");
-  expectFact(typeof evidence.igrepVersion === "string" && companionIgrepVersionSchema.safeParse(evidence.igrepVersion).success, "igrepVersion");
-  expectFact(typeof evidence.pluginVersion === "string" && evidence.pluginVersion.length > 0, "pluginVersion");
+  expectFact(evidence.igrepVersion === COMPANION_IGREP_VERSION, "igrepVersion");
+  expectFact(evidence.piVersion === COMPANION_PI_VERSION, "piVersion");
   expectFact(wake.valid && search.valid && memorySearch.valid, "igrepObservations");
 
   if (mode === "normal") {
@@ -589,7 +586,7 @@ export function projectCompanionProbeDshEvidence(
     );
   }
 
-  return companionProbeDshEvidenceSchema.parse({
+  return companionProbeRuntimeEvidenceSchema.parse({
     ok: failures.length === 0,
     ...(prompt.productPromptVersion === COMPANION_PRODUCT_PROMPT_VERSION
       ? { productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION }
@@ -603,7 +600,7 @@ export function projectCompanionProbeDshEvidence(
     ...(typeof prompt.soulFingerprint === "string"
       ? { soulFingerprint: prompt.soulFingerprint }
       : {}),
-    ...(evidence.runtime === "embedded_dsh" ? { runtime: "embedded_dsh" as const } : {}),
+    ...(evidence.runtime === "embedded_pi" ? { runtime: "embedded_pi" as const } : {}),
     ...(evidence.memoryMode === "normal" || evidence.memoryMode === "private"
       ? { memoryMode: evidence.memoryMode }
       : {}),
@@ -612,7 +609,7 @@ export function projectCompanionProbeDshEvidence(
     ...(typeof evidence.profileDigest === "string" ? { profileDigest: evidence.profileDigest } : {}),
     ...(typeof instance.id === "string" ? { runtimeInstanceId: instance.id } : {}),
     ...(typeof evidence.igrepVersion === "string" ? { igrepVersion: evidence.igrepVersion } : {}),
-    ...(typeof evidence.pluginVersion === "string" ? { pluginVersion: evidence.pluginVersion } : {}),
+    ...(typeof evidence.piVersion === "string" ? { piVersion: evidence.piVersion } : {}),
     ...(typeof attribution.requestId === "string" ? { requestId: attribution.requestId } : {}),
     ...(typeof attribution.actualProvider === "string" ? { actualProvider: attribution.actualProvider } : {}),
     memoryOutcome,
@@ -626,7 +623,7 @@ export function projectCompanionProbeDshEvidence(
     memorySearchFailures: memorySearch.failures,
     error: failures.length === 0
       ? null
-      : `DSH ${mode} evidence failed: ${failures.join(", ")}`,
+      : `Pi ${mode} evidence failed: ${failures.join(", ")}`,
   });
 }
 
@@ -686,4 +683,4 @@ export type CompanionWorkspaceRebuildFrame = z.infer<
   typeof companionWorkspaceRebuildFrameSchema
 >;
 export type CompanionReadiness = z.infer<typeof companionReadinessSchema>;
-export type CompanionProbeDshEvidence = z.infer<typeof companionProbeDshEvidenceSchema>;
+export type CompanionProbeRuntimeEvidence = z.infer<typeof companionProbeRuntimeEvidenceSchema>;

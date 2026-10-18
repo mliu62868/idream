@@ -316,8 +316,8 @@ describe("recovery rehearsal producer", () => {
       },
       env: {
         CHAT_FS_ROOT: "/var/lib/idream/chat",
-        DSH_IGREP_CANONICAL_ROOT: "/var/lib/idream/chat/canonical",
-        DSH_IGREP_PRIVATE_ROOT: "/var/lib/idream/private",
+        PI_IGREP_CANONICAL_ROOT: "/var/lib/idream/chat/canonical",
+        PI_IGREP_PRIVATE_ROOT: "/var/lib/idream/private",
         BLOB_PROVIDER: "mock",
         BLOB_ROOT: "/var/lib/idream/blob",
       },

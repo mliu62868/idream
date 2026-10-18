@@ -11,7 +11,7 @@ describe("Chat service probe evidence decoder", () => {
     const decoded = decodeChatServiceProbeEvidence({
       conversation: {
         getSession: {
-          dsh: {
+          runtime: {
             ok: true,
             memorySearchEvidenceMatches: 1,
           },
@@ -19,7 +19,7 @@ describe("Chat service probe evidence decoder", () => {
       },
     });
 
-    expect(decoded.conversation?.getSession?.dsh?.memorySearchEvidenceMatches).toBe(1);
+    expect(decoded.conversation?.getSession?.runtime?.memorySearchEvidenceMatches).toBe(1);
   });
 
   it("requires regenerate to increment attempt without moving the Scene anchor", () => {

@@ -51,8 +51,8 @@ async function fixture() {
     path, startLine: 1, endLine: 4, citation: `${path}#L1-L4`, sourceClass: "dialogue",
     evidenceStatus: "active", snippet: annotated.map((text, index) => `L${index + 1}: [${raw[index]!.role} @ ${raw[index]!.at.slice(0, 10)}] ${text}`).join("\n"),
   };
-  const payload = { provider: "igrep", workspaceRoot: workspace, results: [hit], warnings: [] as string[] };
-  const recall = (signal?: AbortSignal) => recallIgrepMemory("igrep", workspace, "What did the old letter mean?", { signal }, async () => payload);
+  const payload = { schema: "igrep.mem/1", provider: "igrep", workspaceRoot: workspace, results: [hit], warnings: [] as string[] };
+  const recall = (signal?: AbortSignal) => recallIgrepMemory({ command: "igrep", env: {} }, workspace, "What did the old letter mean?", { signal }, async () => payload);
   return { workspace, dialogue, session, sources, views, hit, payload, save, recall };
 }
 

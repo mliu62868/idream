@@ -355,11 +355,11 @@ function resolveRecoverySourceTargets(input: {
     : null;
   const dshCanonicalRoot = path.resolve(
     chatWorkingDirectory,
-    input.env.DSH_IGREP_CANONICAL_ROOT?.trim() || "data/companion-memory",
+    input.env.PI_IGREP_CANONICAL_ROOT?.trim() || "data/companion-memory",
   );
   const dshPrivateRoot = path.resolve(
     chatWorkingDirectory,
-    input.env.DSH_IGREP_PRIVATE_ROOT?.trim() || "data/companion-private",
+    input.env.PI_IGREP_PRIVATE_ROOT?.trim() || "data/companion-private",
   );
   return {
     database,

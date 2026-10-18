@@ -11,6 +11,7 @@ import { prisma } from "@/server/lib/db";
 import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
 import { dispatchPendingChatEvents } from "@/processes/chat-outbox";
 import { scheduleCompanionMemoryProjection, syncCompanionMemoryFromMain } from "./companion-memory-authority";
+import { createIgrepEnvironment, type IgrepLlmConfig } from "../../../../../chat/src/agent-runtime/config";
 import { IgrepMemoryBuilder, IgrepMemoryProbe, observeIgrepWake, recallIgrepMemory, reprojectIgrepMemory, runJsonCommand, type RunJsonCommand } from "../../../../../chat/src/agent-runtime/igrep";
 import { AttemptWorkspaceStore, relationshipWorkspacePath } from "../../../../../chat/src/agent-runtime/workspace";
 import type { CompanionInvocation } from "../../../../../chat/src/agent-runtime/contracts";
@@ -71,7 +72,7 @@ afterAll(async () => {
     method: "Real isolated Main PostgreSQL, actual dispatch leases and coalescing, Main NDJSON stream, Chat decoder, workspace promotion, installed igrep ingest/doctor/status and attempt copy/reproject/wake. Live representative attempts run wake and fast recall in parallel, as the engine does. In-process HTTP Request transport excludes network latency. Synthetic 1000-character content across interleaved sessions. One sample per phase; not a throughput SLA.",
     limitations: live
       ? "100-message bootstrap performs real maintenance (one CLI pass, short repeated facts), followed by one 2-message projection with maintenance intercepted. One representative attempt performs real fast recall after reproject, alongside wake. The four concurrent attempts measure copy/reproject/wake only. All model/embedding/rerank HTTP is routed through a task-local forwarding counter with a combined 6-request ceiling; failures stop the run. No maintained long-history, conversational model or user-visible first-token measurement."
-      : "All maintenance commands and their completion timestamp are intercepted. Attempts measure copy/reproject/wake; the query-recall stage is explicitly unmeasured. No recall, embedding or model request. This measures source-only pending history, not a maintained profile or user-visible first-token latency.",
+      : "All maintenance commands are intercepted and explicitly marked deferred. Attempts measure copy/reproject/wake; the query-recall stage is explicitly unmeasured. No recall, embedding or model request. This measures source-only pending history, not a maintained profile or user-visible first-token latency.",
     measurements,
     providerRequests,
   }, null, 2)}\n`, { flag: "wx" });
@@ -83,7 +84,8 @@ describe.skipIf(!enabled)("Main to Chat memory growth benchmark", () => {
     temporary.push(root);
     const canonicalRoot = join(root, "canonical");
     const store = new AttemptWorkspaceStore({ canonicalRoot, privateRoot: join(root, "private") });
-    const probe = new IgrepMemoryProbe("igrep");
+    const cli = { command: "igrep", env: createIgrepEnvironment({ llm: null, embedding: null, rerank: null }, process.env) };
+    const probe = new IgrepMemoryProbe(cli);
     let active: Record<string, unknown> = {};
     let prepareStarted = 0;
     let realMaintenance = false;
@@ -157,12 +159,29 @@ describe.skipIf(!enabled)("Main to Chat memory growth benchmark", () => {
         await new Promise<void>((resolve, reject) => proxy.close(error => error ? reject(error) : resolve()));
       });
     }
+    if (live) {
+      const endpoint = (prefix: string, modelName = `IGREP_${prefix}_MODEL`): IgrepLlmConfig => {
+        const url = process.env[`IGREP_${prefix}_URL`];
+        const model = process.env[modelName];
+        const apiKey = process.env[`IGREP_${prefix}_API_KEY`];
+        if (!url || !model || !apiKey) throw new Error(`Live benchmark requires an explicit ${prefix} route`);
+        return {url,model,apiKey};
+      };
+      cli.env = createIgrepEnvironment({
+        llm:endpoint("LLM"),
+        embedding:{...endpoint("EMBEDDING","IGREP_EMBED_MODEL"),dimensions:Number(process.env.IGREP_EMBED_DIM || 1024)},
+        rerank:{...endpoint("RERANK"),format:"omlx"},
+      },process.env);
+    }
     const run: RunJsonCommand = async options => {
       const operation = options.args.slice(0, 2).join(" ");
       const started = performance.now();
       if (operation === "mem maintain" && !realMaintenance) {
         active.maintenanceIntercepted = true;
-        return { benchmarkOnly: "maintenance scheduling seam; no model executed" };
+        const workspace = options.args[options.args.indexOf("--workspace") + 1];
+        if (!workspace) throw new Error("Benchmark maintenance omitted its workspace");
+        const status = await probe.status(workspace);
+        return { schema:"igrep.mem/1",provider:"igrep",action:"maintain",outcome:"deferred",reason:"benchmark_only",pendingRows:status.pendingProfileRows, benchmarkOnly: "maintenance scheduling seam; no model executed" };
       }
       if (operation === "mem maintain" && ++maintenanceCalls > 1) throw new Error("Live maintenance budget exceeded");
       const value = await runJsonCommand({ ...options, ...(live ? { signal: liveAbort.signal } : {}),
@@ -176,14 +195,12 @@ describe.skipIf(!enabled)("Main to Chat memory growth benchmark", () => {
       if (operation === "mem maintain") active.maintenanceResult = value;
       return value;
     };
-    const builder = new IgrepMemoryBuilder("igrep", {
+    const builder = new IgrepMemoryBuilder(cli, {
       async status(workspace) {
         const value = await probe.status(workspace);
         memoryStatuses.push(value);
         active.memoryStatus = value;
-        // Explicitly synthetic witness allows measuring the real source path
-        // without sending 10k rows through an unbounded profile derivation.
-        return realMaintenance ? value : { ...value, lastMaintainAt: "2000-01-01T00:00:00.000Z" };
+        return value;
       },
     }, run);
     downstream.prepare.mockImplementation(async (source: CompanionWorkspaceRebuildSpool) => {
@@ -303,8 +320,8 @@ describe.skipIf(!enabled)("Main to Chat memory growth benchmark", () => {
           const started = performance.now();
           const prepared = await timed(() => store.prepare({ userId, characterId, memoryMode: "normal", attemptId: `${phase}-${messages}-${index}` } as CompanionInvocation));
           try {
-            const reproject = await timed(() => reprojectIgrepMemory("igrep", prepared.value.path, undefined, run));
-            const wake = await timed(() => observeIgrepWake("igrep", prepared.value.path, undefined, run));
+            const reproject = await timed(() => reprojectIgrepMemory(cli, prepared.value.path, undefined, run));
+            const wake = await timed(() => observeIgrepWake(cli, prepared.value.path, undefined, run));
             return { prepareMs: prepared.ms, reprojectMs: reproject.ms, wakeMs: wake.ms,
               wakeOutcome: wake.value.outcome, residentProfileChars: wake.value.profile.length,
               copyReprojectWakeMs: round(performance.now() - started),
@@ -317,11 +334,11 @@ describe.skipIf(!enabled)("Main to Chat memory growth benchmark", () => {
           const started = performance.now();
           const attempt = await timed(() => store.prepare({ userId, characterId, memoryMode: "normal", attemptId: `recall-${messages}` } as CompanionInvocation));
           try {
-            const reproject = await timed(() => reprojectIgrepMemory("igrep", attempt.value.path, liveAbort.signal, run));
+            const reproject = await timed(() => reprojectIgrepMemory(cli, attempt.value.path, liveAbort.signal, run));
             const query = "Where do I keep my copper notebook?";
             const reads = await timed(() => Promise.all([
-              timed(() => observeIgrepWake("igrep", attempt.value.path, liveAbort.signal, run)),
-              timed(() => recallIgrepMemory("igrep", attempt.value.path, query, { signal: liveAbort.signal }, run)),
+              timed(() => observeIgrepWake(cli, attempt.value.path, liveAbort.signal, run)),
+              timed(() => recallIgrepMemory(cli, attempt.value.path, query, { signal: liveAbort.signal }, run)),
             ]));
             const [wake, recalled] = reads.value;
             const dialogueHits = recalled.value.results.filter(hit => hit.sourceClass === "dialogue");

@@ -13,9 +13,9 @@ export type TerminalValidationCode =
 
 export interface TerminalCandidateFacts {
   attemptId: string;
-  /** 组装好的终态 assistant 正文；DSH 没给出终态消息时为 undefined。 */
+  /** 组装好的终态 assistant 正文；Pi 没给出终态消息时为 undefined。 */
   assistantContent: string | undefined;
-  /** DSH finish chunk 的 reason.kind；没有 finish chunk 时为 undefined。 */
+  /** 宿主归一化后的 Pi finish reason；没有终态 reason 时为 undefined。 */
   finishReasonKind: string | undefined;
   /** 本轮用户原话，用于图片回复的书写体系判定。 */
   currentUserText: string;

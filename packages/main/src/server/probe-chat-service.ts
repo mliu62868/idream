@@ -10,10 +10,10 @@ import { loadCharacterSoulSnapshot } from "@idream/shared";
 import { mainWebUrlOrigin } from "@idream/shared/env";
 import { createSessionToken, SESSION_COOKIE } from "./lib/auth";
 import {
-  companionProbeDshEvidenceSchema,
+  companionProbeRuntimeEvidenceSchema,
   hasUnexecutedMemorySearchPayload,
-  projectCompanionProbeDshEvidence,
-  type CompanionProbeDshEvidence,
+  projectCompanionProbeRuntimeEvidence,
+  type CompanionProbeRuntimeEvidence,
 } from "@idream/shared/chat/companion-runtime";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { prisma } from "./lib/db";
@@ -58,7 +58,7 @@ type RuntimeAuthorityEvidence = OperationEvidence & {
 type NoMemoryEvidence = OperationEvidence & {
   assistantMessageId?: string;
   authorityPinned?: boolean;
-  dsh?: DshCompanionProbeEvidence;
+  runtime?: RuntimeCompanionProbeEvidence;
 };
 
 type RegenerateAnchorEvidence = OperationEvidence & {
@@ -70,10 +70,10 @@ type RegenerateAnchorEvidence = OperationEvidence & {
   recallMatched?: boolean;
   wakeObserved?: boolean;
   memorySearchHit?: boolean;
-  regeneratedDsh?: DshCompanionProbeEvidence;
+  regeneratedRuntime?: RuntimeCompanionProbeEvidence;
 };
 
-export type DshCompanionProbeEvidence = CompanionProbeDshEvidence & { turnId?: string };
+export type RuntimeCompanionProbeEvidence = CompanionProbeRuntimeEvidence & { turnId?: string };
 
 type CleanupEvidence = OperationEvidence & {
   memoryCleared?: boolean;
@@ -103,7 +103,7 @@ type ConversationEvidence = {
     assistantSent?: boolean;
     assistantStatus?: string | null;
     derivationSettled?: boolean;
-    dsh?: DshCompanionProbeEvidence;
+    runtime?: RuntimeCompanionProbeEvidence;
   };
   recall: OperationEvidence & {
     archiveSession?: OperationEvidence;
@@ -120,7 +120,7 @@ type ConversationEvidence = {
     recallMatched?: boolean;
     wakeObserved?: boolean;
     memorySearchHit?: boolean;
-    dsh?: DshCompanionProbeEvidence;
+    runtime?: RuntimeCompanionProbeEvidence;
   };
   regenerateAnchor: RegenerateAnchorEvidence;
   noMemory: NoMemoryEvidence;
@@ -137,7 +137,7 @@ type ChatServiceProbeReport = ProbeReportOf<ChatServiceProbeEvidence> & {
 };
 
 const CHAT_PROBE_USER_ID = "seed-chat-probe-user";
-// INVARIANT: the observer envelope must outlive Chat's default 300s DSH
+// INVARIANT: the observer envelope must outlive Chat's default 300s Pi
 // attempt budget so it can record the terminal cancel/error instead of racing it.
 export const DEFAULT_CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS = 330_000;
 
@@ -145,20 +145,20 @@ export const DEFAULT_CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS = 330_000;
  * INVARIANT: launch evidence may expose attribution and aggregate runtime facts,
  * never the raw trace that also carries prompts, workspace identities and URLs.
  */
-export function projectDshCompanionEvidence(
+export function projectRuntimeCompanionEvidence(
   value: unknown,
   mode: "normal" | "private",
-): DshCompanionProbeEvidence {
-  return companionProbeDshEvidenceSchema.parse(
-    projectCompanionProbeDshEvidence(value, mode),
+): RuntimeCompanionProbeEvidence {
+  return companionProbeRuntimeEvidenceSchema.parse(
+    projectCompanionProbeRuntimeEvidence(value, mode),
   );
 }
 
 /** Gate E reports only booleans; the unique recall token never leaves this process. */
-export function evaluateDshRecallEvidence(input: {
+export function evaluateRuntimeRecallEvidence(input: {
   assistantContent?: string;
   sentinel: string;
-  dsh?: DshCompanionProbeEvidence;
+  runtime?: RuntimeCompanionProbeEvidence;
 }): {
   ok: boolean;
   recallMatched: boolean;
@@ -169,12 +169,12 @@ export function evaluateDshRecallEvidence(input: {
     input.assistantContent?.toLowerCase().includes(input.sentinel.toLowerCase()),
   );
   const wakeObserved =
-    (input.dsh?.wakeCalls ?? 0) > 0 && input.dsh?.wakeFailures === 0;
+    (input.runtime?.wakeCalls ?? 0) > 0 && input.runtime?.wakeFailures === 0;
   const memorySearchHit =
-    (input.dsh?.memorySearchCalls ?? 0) > 0 &&
-    (input.dsh?.memorySearchHits ?? 0) > 0 &&
-    (input.dsh?.memorySearchEvidenceMatches ?? 0) > 0 &&
-    input.dsh?.memorySearchFailures === 0;
+    (input.runtime?.memorySearchCalls ?? 0) > 0 &&
+    (input.runtime?.memorySearchHits ?? 0) > 0 &&
+    (input.runtime?.memorySearchEvidenceMatches ?? 0) > 0 &&
+    input.runtime?.memorySearchFailures === 0;
   return {
     ok: recallMatched && wakeObserved && memorySearchHit &&
       !hasUnexecutedMemorySearchPayload(input.assistantContent ?? ""),
@@ -184,18 +184,18 @@ export function evaluateDshRecallEvidence(input: {
   };
 }
 
-export function describeDshRecallFailure(
-  recall: ReturnType<typeof evaluateDshRecallEvidence>,
-  dsh?: DshCompanionProbeEvidence,
+export function describeRuntimeRecallFailure(
+  recall: ReturnType<typeof evaluateRuntimeRecallEvidence>,
+  runtime?: RuntimeCompanionProbeEvidence,
 ): string {
   return [
     `accepted=${recall.ok}`,
     `matched=${recall.recallMatched}`,
     `wake=${recall.wakeObserved}`,
     `memorySearch=${recall.memorySearchHit}`,
-    `calls=${dsh?.memorySearchCalls ?? 0}`,
-    `hits=${dsh?.memorySearchHits ?? 0}`,
-    `evidenceMatches=${dsh?.memorySearchEvidenceMatches ?? 0}`,
+    `calls=${runtime?.memorySearchCalls ?? 0}`,
+    `hits=${runtime?.memorySearchHits ?? 0}`,
+    `evidenceMatches=${runtime?.memorySearchEvidenceMatches ?? 0}`,
   ].join(";");
 }
 
@@ -223,15 +223,15 @@ export async function fetchProbeCompanionAttemptEvidence(
     settleTimeoutMs?: number;
     sleep?: (ms: number) => Promise<void>;
   },
-): Promise<DshCompanionProbeEvidence> {
+): Promise<RuntimeCompanionProbeEvidence> {
   if (input.userId !== CHAT_PROBE_USER_ID || !input.internalToken?.trim()) {
-    throw new Error("content-free DSH attempt evidence requires the dedicated audit actor and INTERNAL_TOKEN");
+    throw new Error("content-free Pi attempt evidence requires the dedicated audit actor and INTERNAL_TOKEN");
   }
   return waitForCompanionAttemptEvidence(input);
 }
 
 /** Local quality samples may use the existing private Character's audit owner. */
-export async function fetchAuditCompanionAttemptEvidence(input: CompanionAttemptEvidenceInput): Promise<DshCompanionProbeEvidence> {
+export async function fetchAuditCompanionAttemptEvidence(input: CompanionAttemptEvidenceInput): Promise<RuntimeCompanionProbeEvidence> {
   const actor = await prisma.user.findUnique({
     where: { id: input.userId },
     select: { role: true, status: true, dataClass: true, deletedAt: true },
@@ -246,7 +246,7 @@ async function waitForCompanionAttemptEvidence(input: CompanionAttemptEvidenceIn
   awaitProjection?: boolean;
   settleTimeoutMs?: number;
   sleep?: (ms: number) => Promise<void>;
-}): Promise<DshCompanionProbeEvidence> {
+}): Promise<RuntimeCompanionProbeEvidence> {
   const deadline = Date.now() + (input.settleTimeoutMs ?? COMPANION_MEMORY_SETTLE_TIMEOUT_MS);
   const sleep = input.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   for (;;) {
@@ -262,7 +262,7 @@ async function waitForCompanionAttemptEvidence(input: CompanionAttemptEvidenceIn
 
 async function fetchProbeCompanionAttemptEvidenceOnce(
   input: CompanionAttemptEvidenceInput,
-): Promise<DshCompanionProbeEvidence> {
+): Promise<RuntimeCompanionProbeEvidence> {
   const turn = await prisma.chatTurn.findUnique({
     where: { assistantMessageId: input.messageId },
     select: {
@@ -303,7 +303,7 @@ async function fetchProbeCompanionAttemptEvidenceOnce(
       })
     : null;
   return {
-    ...companionProbeDshEvidenceSchema.parse(projectCompanionProbeDshEvidence(
+    ...companionProbeRuntimeEvidenceSchema.parse(projectCompanionProbeRuntimeEvidence(
       turn.terminalEvidence,
       input.mode,
       input.mode === "private" ? "disabled" : pending ? "pending" : "projected",
@@ -777,7 +777,7 @@ async function probeConversation(input: {
       assistant?.role === "assistant" &&
       assistant.status === "sent" &&
       Boolean(assistant.content?.trim());
-    const normalDsh = await fetchProbeCompanionAttemptEvidence({
+    const normalRuntime = await fetchProbeCompanionAttemptEvidence({
       ...input,
       sessionId,
       messageId: sent.assistantMessageId,
@@ -789,18 +789,18 @@ async function probeConversation(input: {
         normal.status === 200 &&
         assistantSent &&
         normal.settled === true &&
-        (normalDsh?.ok ?? true),
+        (normalRuntime?.ok ?? true),
       status: normal.status,
       assistantMessageId: sent.assistantMessageId,
       assistantSent,
       assistantStatus: assistant?.status ?? null,
       derivationSettled: normal.settled,
-      ...(normalDsh ? { dsh: normalDsh, error: normalDsh.error } : {}),
+      ...(normalRuntime ? { runtime: normalRuntime, error: normalRuntime.error } : {}),
     };
     if (!evidence.getSession.ok) {
       throw new Error(
         `normal terminal state failed: HTTP ${normal.status}; ` +
-        `settled=${normal.settled === true}; dsh=${normalDsh?.ok ?? "not_required"}`,
+        `settled=${normal.settled === true}; runtime=${normalRuntime?.ok ?? "not_required"}`,
       );
     }
 
@@ -810,7 +810,7 @@ async function probeConversation(input: {
     evidence.recall = {
       ok: false,
       sourceSessionId,
-      sourceTurnId: normalDsh.turnId,
+      sourceTurnId: normalRuntime.turnId,
       sourceAssistantMessageId: sent.assistantMessageId,
       expectedPhrase: recallSentinel,
     };
@@ -872,7 +872,7 @@ async function probeConversation(input: {
       assistantMessageId: recallTurn.assistantMessageId,
     });
     evidence.recall.actualAnswer = recallState.message?.content ?? null;
-    const recallDsh = await fetchProbeCompanionAttemptEvidence({
+    const recallRuntime = await fetchProbeCompanionAttemptEvidence({
       ...input,
       sessionId: recallSessionId,
       messageId: recallTurn.assistantMessageId,
@@ -880,32 +880,32 @@ async function probeConversation(input: {
       mode: "normal",
       awaitProjection: false,
     });
-    const recall = evaluateDshRecallEvidence({
+    const recall = evaluateRuntimeRecallEvidence({
       assistantContent: recallState.message?.content,
       sentinel: recallSentinel,
-      dsh: recallDsh,
+      runtime: recallRuntime,
     });
     // SPEC: runProbe admits only the dedicated audit actor. Keep its synthetic
     // source and answer before cleanup so a strict recall failure is diagnosable.
     evidence.recall = {
       ...evidence.recall,
       ...recall,
-      ok: recallState.status === 200 && recallState.settled === true && recall.ok && (recallDsh?.ok ?? true),
+      ok: recallState.status === 200 && recallState.settled === true && recall.ok && (recallRuntime?.ok ?? true),
       status: recallState.status,
       sourceSessionId,
-      sourceTurnId: normalDsh.turnId,
+      sourceTurnId: normalRuntime.turnId,
       sourceAssistantMessageId: sent.assistantMessageId,
       sessionId: recallSessionId,
-      turnId: recallDsh.turnId,
+      turnId: recallRuntime.turnId,
       assistantMessageId: recallTurn.assistantMessageId,
       expectedPhrase: recallSentinel,
       actualAnswer: recallState.message?.content ?? null,
-      dsh: recallDsh,
+      runtime: recallRuntime,
     };
     if (!evidence.recall.ok) {
       throw new Error(
         `relationship recall failed: HTTP ${recallState.status}; settled=${recallState.settled === true}; ` +
-        `dsh=${recallDsh?.ok ?? "not_required"}; ${describeDshRecallFailure(recall, recallDsh)}`,
+        `runtime=${recallRuntime?.ok ?? "not_required"}; ${describeRuntimeRecallFailure(recall, recallRuntime)}`,
       );
     }
 
@@ -965,7 +965,7 @@ async function probeConversation(input: {
         })
       : { status: 0, message: null, settled: false };
     const regeneratedSceneVersion = sceneVersion(regeneratedState.message?.scene);
-    const regeneratedDsh = await fetchProbeCompanionAttemptEvidence({
+    const regeneratedRuntime = await fetchProbeCompanionAttemptEvidence({
       ...input,
       sessionId: recallSessionId,
       messageId: regenerated.assistantMessageId!,
@@ -986,7 +986,7 @@ async function probeConversation(input: {
           regeneratedSceneVersion,
         }) &&
         regeneratedState.message?.attempt === regenerated.attempt &&
-        (regeneratedDsh?.ok ?? true),
+        (regeneratedRuntime?.ok ?? true),
       status: regenerate.status,
       assistantMessageId: regenerated.assistantMessageId,
       originalAttempt,
@@ -996,7 +996,7 @@ async function probeConversation(input: {
       recallMatched: recall.recallMatched,
       wakeObserved: recall.wakeObserved,
       memorySearchHit: recall.memorySearchHit,
-      ...(regeneratedDsh ? { regeneratedDsh } : {}),
+      ...(regeneratedRuntime ? { regeneratedRuntime } : {}),
       error:
         regeneratedStream.ok &&
         recall.ok &&
@@ -1006,9 +1006,9 @@ async function probeConversation(input: {
           originalSceneVersion,
           regeneratedSceneVersion,
         }) &&
-        (regeneratedDsh?.ok ?? true)
+        (regeneratedRuntime?.ok ?? true)
           ? null
-          : `regenerateStream=${regeneratedStream.ok}; regenerateSettled=${regeneratedState.settled}; attempts=${originalAttempt}/${regeneratedState.message?.attempt ?? "missing"}; scenes=${originalSceneVersion}/${regeneratedSceneVersion}; recall=${recall.ok}; regeneratedDsh=${regeneratedDsh?.ok ?? "not_required"}`,
+          : `regenerateStream=${regeneratedStream.ok}; regenerateSettled=${regeneratedState.settled}; attempts=${originalAttempt}/${regeneratedState.message?.attempt ?? "missing"}; scenes=${originalSceneVersion}/${regeneratedSceneVersion}; recall=${recall.ok}; regeneratedRuntime=${regeneratedRuntime?.ok ?? "not_required"}`,
     };
     if (!evidence.regenerateAnchor.ok) {
       throw new Error(evidence.regenerateAnchor.error ?? "regenerate evidence failed");
@@ -1071,33 +1071,33 @@ async function probeConversation(input: {
         assistantMessageId: noMemTurn.assistantMessageId,
       });
     }
-    const privateDsh = await fetchProbeCompanionAttemptEvidence({
+    const privateRuntime = await fetchProbeCompanionAttemptEvidence({
       ...input,
       sessionId,
       messageId: noMemTurn.assistantMessageId,
       attempt: noMemTurn.attempt ?? 1,
       mode: "private",
     });
-    const authorityPinned = privateDsh?.memoryMode === "private" &&
-      privateDsh.memoryOutcome === "disabled";
+    const authorityPinned = privateRuntime?.memoryMode === "private" &&
+      privateRuntime.memoryOutcome === "disabled";
     evidence.noMemory = {
       ok:
         disableMemory.status === 200 &&
         noMemSend.status === 202 &&
         noMemStream.ok &&
         authorityPinned &&
-        (privateDsh?.ok ?? true),
+        (privateRuntime?.ok ?? true),
       status: noMemSend.status,
       assistantMessageId: noMemTurn.assistantMessageId,
       authorityPinned,
-      ...(privateDsh ? { dsh: privateDsh } : {}),
+      ...(privateRuntime ? { runtime: privateRuntime } : {}),
       error:
         disableMemory.status === 200 &&
         noMemStream.ok &&
         authorityPinned &&
-        (privateDsh?.ok ?? true)
+        (privateRuntime?.ok ?? true)
         ? null
-        : `disable=${disableMemory.status}; stream=${noMemStream.ok}; authority=${authorityPinned}; privateDsh=${privateDsh?.ok ?? "not_required"}`,
+        : `disable=${disableMemory.status}; stream=${noMemStream.ok}; authority=${authorityPinned}; privateRuntime=${privateRuntime?.ok ?? "not_required"}`,
     };
     if (!evidence.noMemory.ok) {
       throw new Error(evidence.noMemory.error ?? "private no-memory evidence failed");

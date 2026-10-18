@@ -10,8 +10,8 @@ const legacyGenTsxEntrypoint = path.join(
   genCwd,
   "node_modules/tsx/dist/cli.mjs",
 );
-const pm2BunProcessContainer = require.resolve(
-  "pm2/lib/ProcessContainerForkBun.js",
+const pm2BunProcessContainerSource = readFileSync(
+  require.resolve("pm2/lib/ProcessContainerForkBun.js"),
 );
 const requireFromGen = createRequire(path.join(genCwd, "package.json"));
 
@@ -148,11 +148,20 @@ function isLegacyGenTsxWrapper(row) {
 
 function isPm2BunRuntime(row) {
   const [executable, container, ...rest] = row.command.split(/\s+/);
-  return (
-    path.basename(executable ?? "") === "bun" &&
-    container === pm2BunProcessContainer &&
-    rest.length === 0
-  );
+  if (
+    path.basename(executable ?? "") !== "bun" ||
+    !path.isAbsolute(container ?? "") ||
+    path.basename(container ?? "") !== "ProcessContainerForkBun.js" ||
+    rest.length !== 0
+  ) return false;
+  // The daemon can come from a global PM2 installation while this probe uses
+  // the repository dependency. Pin the container implementation, not its
+  // install location; a same-name script alone must never establish ownership.
+  try {
+    return readFileSync(container).equals(pm2BunProcessContainerSource);
+  } catch {
+    return false;
+  }
 }
 
 function redisIdentity(worker, spec = workerSpecs.image) {
@@ -308,6 +317,12 @@ function classifySingleOwnership(input, spec) {
   for (const runtime of runtimeChildren) {
     if (assignedRuntimePids.has(runtime.pid)) continue;
     const registered = registeredRoots.get(runtime.pid);
+    if (
+      registered &&
+      (runtime.ppid !== daemonPid || runtime.pgid !== runtime.pid)
+    ) {
+      issues.push("registered_runtime_process_identity_mismatch");
+    }
     const classification = registered
       ? "registered"
       : daemonPid && runtime.ppid === daemonPid

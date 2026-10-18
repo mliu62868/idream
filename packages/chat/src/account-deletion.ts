@@ -1,6 +1,6 @@
 import { durableEnvelopeHash } from "@idream/shared/contracts/durable-server";
 // SPEC: Chat owns no product rows. Account deletion erases only local AgentRun,
-// boundary and DSH workspace bytes, then synchronously commits that evidence to Main.
+// boundary and igrep workspace bytes, then synchronously commits that evidence to Main.
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";

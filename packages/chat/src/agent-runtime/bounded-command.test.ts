@@ -65,7 +65,7 @@ describe("content-free bounded child commands", () => {
     const stdoutCommand = await executable(
       `process.stdout.write(${JSON.stringify(stdoutSentinel)} + "x".repeat(4_194_304));`,
     );
-    const stdoutError = await runJsonCommand({
+    const stdoutError = await runJsonCommand({ env: { PATH: process.env.PATH },
       command: stdoutCommand,
       args: [],
     }).catch((caught) => caught);
@@ -88,33 +88,33 @@ describe("content-free bounded child commands", () => {
     const command = await executable(
       `process.stderr.write(${JSON.stringify(sentinel)}); setInterval(() => {}, 1_000);`,
     );
-    const timeoutError = await igrepVersion(command, { timeoutMs: 25 })
+    const timeoutError = await igrepVersion({ command: command, env: { PATH: process.env.PATH } }, { timeoutMs: 25 })
       .catch((caught) => caught);
     expectContentFree(timeoutError, "timeout", sentinel);
 
     const oversized = await executable(
       `process.stderr.write(${JSON.stringify(sentinel)} + "x".repeat(65_536));`,
     );
-    const limitError = await igrepVersion(oversized, { timeoutMs: 1_000 })
+    const limitError = await igrepVersion({ command: oversized, env: { PATH: process.env.PATH } }, { timeoutMs: 1_000 })
       .catch((caught) => caught);
     expectContentFree(limitError, "stderr_limit", sentinel);
   });
 
   it("parses a bounded semantic version and JSON response", async () => {
     const version = await executable(`process.stdout.write("igrep 0.1.134\\n");`);
-    await expect(igrepVersion(version)).resolves.toBe("0.1.134");
+    await expect(igrepVersion({ command: version, env: { PATH: process.env.PATH } })).resolves.toBe("0.1.134");
     const json = await executable(`process.stdout.write(JSON.stringify({ ok: true }));`);
-    await expect(runJsonCommand({ command: json, args: [] })).resolves.toEqual({ ok: true });
+    await expect(runJsonCommand({ env: { PATH: process.env.PATH }, command: json, args: [] })).resolves.toEqual({ ok: true });
   });
 
   it("does not echo invalid successful output in parse failures", async () => {
     const sentinel = "invalid-json-secret-sentinel";
     const json = await executable(`process.stdout.write(${JSON.stringify(sentinel)});`);
-    const error = await runJsonCommand({ command: json, args: [] }).catch((caught) => caught);
+    const error = await runJsonCommand({ env: { PATH: process.env.PATH }, command: json, args: [] }).catch((caught) => caught);
     expectContentFree(error, "invalid_output", sentinel);
 
     const version = await executable(`process.stdout.write(${JSON.stringify(sentinel)});`);
-    const versionError = await igrepVersion(version).catch((caught) => caught);
+    const versionError = await igrepVersion({ command: version, env: { PATH: process.env.PATH } }).catch((caught) => caught);
     expectContentFree(versionError, "invalid_output", sentinel);
   });
 
@@ -123,7 +123,7 @@ describe("content-free bounded child commands", () => {
     const command = await executable(
       `process.stdout.write(JSON.stringify({ error: ${JSON.stringify(sentinel)} }));`,
     );
-    const error = await new IgrepMemoryProbe(command).status("/tmp/workspace")
+    const error = await new IgrepMemoryProbe({ command, env: { PATH: process.env.PATH } }).status("/tmp/workspace")
       .catch((caught) => caught);
     expectContentFree(error, "invalid_output", sentinel);
   });

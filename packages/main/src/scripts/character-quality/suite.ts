@@ -29,7 +29,7 @@ export function qualityPrompts(scenario: QualityCase, runId: string) {
 }
 
 export function qualityTurnCheckNames(stage: QualityStage) {
-  return ["stream", "mainTerminal", "soulPin", "visualPin", "dshAuthority", "memoryProjection", "nonempty", "memoryToolPayloadNotLeaked", ...(stage === "recall" ? ["exactPriorLabel", "priorColor", "priorLocation", "memorySource"] : [])].map((key) => `${stage}.${key}`);
+  return ["stream", "mainTerminal", "soulPin", "visualPin", "runtimeAuthority", "memoryProjection", "nonempty", "memoryToolPayloadNotLeaked", ...(stage === "recall" ? ["exactPriorLabel", "priorColor", "priorLocation", "memorySource"] : [])].map((key) => `${stage}.${key}`);
 }
 
 export function requireQualityChecks(checks: Record<string, boolean>, names: readonly string[]) {

@@ -54,7 +54,7 @@ vi.mock("./agent-runtime/runtime.js", () => ({
   agentRuntimeProfileDigest: vi.fn(async () => "profile-digest"),
   agentRuntimeVersions: vi.fn(async () => ({
     igrepVersion: "igrep-test",
-    pluginVersion: "plugin-test",
+    piVersion: "1.3.0",
   })),
   runCompanion: runtime.runCompanion,
 }));
@@ -114,7 +114,7 @@ vi.mock("./env.js", () => ({
     INTERNAL_TOKEN: "test-token",
     MAIN_INTERNAL_BASE_URL: "http://main.test",
     CHAT_MODEL_API_KEY: "test-model-key",
-    DSH_OPENROUTER_PROVIDER_ONLY: [],
+    PI_OPENROUTER_PROVIDER_ONLY: [],
   },
 }));
 
@@ -348,7 +348,9 @@ describe("AgentRun account-erasure drain", () => {
         version: 1, turnId: "turn-1", sessionId: "session-1", assistantMessageId: "assistant-1", attempt: 1,
         status: "sent", content: "A durable reply.", model: "test-model",
         promptTokens: 10, completionTokens: 4, sceneVersion: 0, scene: null,
-        terminalEvidence: { authority: "test", prompt: {
+        // Immutable proposals may predate Pi. Recovery must resend their exact
+        // historical evidence, never synthesize a current-runtime certificate.
+        terminalEvidence: { authority: "dsh_terminal_candidate", runtime: "embedded_dsh", pluginVersion: "0.1.0", prompt: {
           productPromptVersion: "companion-product-1", preparedTurnVersion: 5,
           systemPromptDigest: "a".repeat(64), soulFingerprint: "b".repeat(64),
         } },
@@ -539,7 +541,7 @@ describe("AgentRun account-erasure drain", () => {
           content: "等我一下……",
           model: "test-model",
           terminalEvidence: expect.objectContaining({
-            authority: "dsh_terminal_candidate",
+            authority: "pi_terminal_candidate",
             prompt: expect.objectContaining({
               productPromptVersion: "companion-product-1",
               systemPromptDigest: "d".repeat(64),

@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "checks": [
+    "disabled",
+    "searxng",
+    "tavily",
+    "serper",
+    "exa"
+  ],
+  "igrepVersion": "0.1.161",
+  "network": "sandbox denied",
+  "webRequests": 0,
+  "modelRequests": 0
+}

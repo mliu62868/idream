@@ -151,47 +151,58 @@ leaves the Generation queues paused for the next controlled start.
 
 ## Chat Runtime
 
-Chat embeds DSH `0.2.0-rc.2` and the official igrep plugin. After updating the
-system igrep CLI, refresh its dedicated profiles and verify the installed code:
+Chat embeds Pi `1.3.0` (`pi-ai`, `pi-durable`, and `chord`) and calls the
+provider-neutral igrep `0.1.161` CLI. Install workspace dependencies, then verify
+the pinned packages, public Pi API, and CLI surface:
 
 ```bash
-bun run dsh-companion:setup
-bun run dsh-companion:check
+bun run pi-companion:setup
+bun run pi-companion:check
+bun run test:pi-gate
 ```
 
-Main's committed Turns own memory. Chat projects them through official igrep
-ingest/maintain, reads wake once before the first model request, and uses fast
-recall plus the read-only `memory_search` tool. Plugin auto-ingest, auto-wake,
-and maintenance timers are disabled: Main remains the sole durable writer.
-Agents also use `igrep_search` over an isolated authorized snapshot and
-`session_recall` over verbatim messages and tool results evicted from the current
-attempt. Official igrep compaction handles context pressure and provider overflow;
-its quoted summary keeps user provenance, while current Scene, preferences and
-the current request are reprojected from the immutable Turn. Recalled group
-dialogue keeps speaker metadata bound to its original events. Every physical
-model request contributes to terminal usage, including rejected summaries and
-compatibility retries; a missing receipt keeps the total unknown. Private execution retains these attempt-local
-capabilities and exposes no cross-session memory tools. All attempt data and
-session archives are discarded on teardown. Before serving requests, startup
-also removes official recall archives whose local owner process has exited.
-`igrep_web_search` is available when igrep's public web provider is configured
-(for SearXNG: `IGREP_WEB_SEARCH_PROVIDER=searxng` and `IGREP_SEARXNG_URL`).
-Bootstrap uses content-addressed official bundles and compares shipped and
-installed JavaScript because the package version can stay `0.1.0` across CLI
-releases. For igrep `0.1.151`, projection verifies both searchable `[timestamp, content]`
-dialogue tuples and the separate role-bearing session sources against Main.
-The dialogue v3 transport is decoded strictly; only structured date insertions
-may accompany the unchanged source text. Canonical session text, roles and
-timestamps must still match Main exactly. This does not certify the semantic
-correctness of igrep's relative-date interpretation.
-Each normal attempt runs official zero-model `mem reproject` on its owned copy
-before wake/recall, restoring source-file witnesses changed by copying. Incomplete
-recall warnings fail the attempt; they cannot masquerade as an empty memory.
-Full runtime certification exercises both empty and populated rebuilds.
-It also runs the actual plugin/CLI through compaction, exact archived recall,
-local retrieval, private tool isolation and workspace cleanup with a controlled
-model response; real provider warmup and memory maintenance are separate checks.
-Apply a running-process update through the controlled PM2 wrapper described above.
+Each attempt owns a fresh Pi `MemoryStorage` conversation. This storage is
+process-local: restart recovery uses Main's immutable snapshot and the existing
+AgentRun input/proposal protocol. A saved proposal, including historical runtime
+attribution, is replayed exactly without another model request. There is no Pi
+session database or persistent inbox. Tools execute sequentially; model retries
+and background compaction are disabled.
+
+Main's committed Turns own long-term memory. Chat alone invokes official
+`mem ingest`, `maintain`, `wake`, `reproject`, and the neutral memory JSON API.
+Normal execution exposes read-only `memory_search`; normal and private attempts
+can use explicitly configured `igrep_web_search`, search their authorized snapshot,
+and recall original evicted messages with
+`session_recall`. Pi performs context compaction. The host binds Main seed and
+omitted originals plus public Pi entries/contributions to stable attempt-scoped
+IDs, preserving speaker identity and UTF-8 bytes. Exact ID reads return stored
+originals; query recall uses public igrep JSONL search in `ultra` mode. Summaries,
+system instructions, reasoning, and recall's own output cannot become original
+user evidence. Current Scene, preferences and the user request are reprojected
+from the immutable Turn at each provider request.
+
+Every physical model request, including compaction, contributes its raw provider
+usage receipt. Missing receipts keep usage unknown. All helper LLM/ASK/final-sort,
+embedding and rerank routes are explicitly bound or disabled; shared caches and
+ambient credentials are excluded. Private execution does not read or write
+cross-session memory. Attempt-local Pi state and workspace copies are discarded
+on teardown; startup retains the narrowly scoped cleanup of orphaned historical
+DSH recall directories.
+
+Canonical igrep source/session bytes and the existing `deepseek-harness` intake
+and backup format remain unchanged. Projection verifies searchable dialogue and
+role-bearing session sources against Main. The dialogue v3 transport is decoded
+strictly; only structured date insertions may accompany unchanged source text.
+Each normal attempt runs zero-model `mem reproject` on its owned copy before
+wake/recall; incomplete recall warnings fail rather than certify empty memory.
+
+The setup commands certify installed surfaces only. Full Chat readiness also
+executes real provider warmup, memory lifecycle/isolation, empty and populated
+rebuilds, and production Pi compaction/recall/tool bridges with controlled model
+responses. Release qualification still requires same-revision real journeys.
+Apply running-process updates through the controlled PM2 wrapper above. The
+existing `chat-runtime:cutover` command migrates local `DSH_*` settings to `PI_*`
+while preserving configured memory roots and retiring plugin/bootstrap paths.
 
 ## Chat Voice Input
 
@@ -305,7 +316,7 @@ bun run launch:probe:age -- --report .tmp/launch-age-probe.json
 
 `bun run diagnose:chat-provider -- --report .tmp/chat-provider-diagnostic.json`
 is an optional raw OpenAI-compatible transport diagnostic. It bypasses the embedded
-DSH runtime, igrep, Chat commit authority, and tool bridge, so it is deliberately
+Pi runtime, igrep, Chat commit authority, and tool bridge, so it is deliberately
 excluded from launch readiness.
 
 Run the final direct gate:

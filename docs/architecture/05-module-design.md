@@ -26,7 +26,7 @@ Main 保存产品事实并执行领域命令；Admin 是独立 UI/BFF；Chat 执
 
 ## 4. chat
 
-Main 保存 Session、产品 Turn、当前 attempt、selected reply、Scene、附件、用量与账目，向 Chat 交付不可变执行快照。Chat 内嵌 AgentRun、DSH/official igrep，只保留执行、恢复与未决 Main ACK 证据，不连接数据库。
+Main 保存 Session、产品 Turn、当前 attempt、selected reply、Scene、附件、用量与账目，向 Chat 交付不可变执行快照。Chat 内嵌 AgentRun、Pi/igrep，只保留执行、恢复与未决 Main ACK 证据，不连接数据库。
 
 终态候选经 Main exact-attempt CAS 接纳，才成为保存的回复；SSE 断流恢复原 attempt。编辑/重生成遵守最近 Turn 修订边界，旧结果不能覆盖新回复。长期记忆只派生自 Main committed Turns，删除/修订后的隔离与重建不召回已撤销来源。
 
@@ -76,7 +76,7 @@ Create、Edit、Enhance、Chat Animate 与 Generate 序列各保留 source、控
 
 聚合本人资料、偏好、通知、兑换/推荐、余额与预付访问。语言入口仅在真实 UI 字典、路由内容和 locale persistence 齐备后发布；页面不借静态选项承诺能力。
 
-兑换/推荐按已接受资格和稳定身份唯一追加奖励；登出全部撤销原会话。账号删除处理 Main 来源、公开/私有资产、Chat AgentRun/DSH 派生与必要保留记录，提供查询和恢复，不以一次按钮成功代表清理完成。工程要求见[安全架构](07-security-and-compliance.md)与[ADR-21](21-companion-chat-deep-runtime.md)。
+兑换/推荐按已接受资格和稳定身份唯一追加奖励；登出全部撤销原会话。账号删除处理 Main 来源、公开/私有资产、Chat AgentRun/Pi 派生与必要保留记录，提供查询和恢复，不以一次按钮成功代表清理完成。工程要求见[安全架构](07-security-and-compliance.md)与[ADR-21](21-companion-chat-deep-runtime.md)。
 
 ## 12. feed & community（P1）
 

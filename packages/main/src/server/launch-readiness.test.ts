@@ -32,7 +32,7 @@ import type {
   AgeVerificationProbeEvidence,
   BlobStorageProbeEvidence,
   ChatModelProbeEvidence,
-  ChatProbeDshEvidence,
+  ChatProbeRuntimeEvidence,
   ChatServiceProbeEvidence,
   GenerationPersistenceProbeEvidence,
   ImagePipelineProbeEvidence,
@@ -416,7 +416,7 @@ function passingChatServiceProbe(
         assistantSent: true,
         assistantStatus: "sent",
         derivationSettled: true,
-        dsh: passingDshEvidence("normal"),
+        runtime: passingRuntimeEvidence("normal"),
         error: null,
       },
       regenerateAnchor: {
@@ -430,7 +430,7 @@ function passingChatServiceProbe(
         recallMatched: true,
         wakeObserved: true,
         memorySearchHit: true,
-        regeneratedDsh: passingDshEvidence("normal"),
+        regeneratedRuntime: passingRuntimeEvidence("normal"),
         error: null,
       },
       noMemory: {
@@ -438,7 +438,7 @@ function passingChatServiceProbe(
         status: 202,
         assistantMessageId: "msg_probe_no_memory_assistant",
         authorityPinned: true,
-        dsh: passingDshEvidence("private"),
+        runtime: passingRuntimeEvidence("private"),
         error: null,
       },
       blockedInput: {
@@ -462,17 +462,17 @@ function passingChatServiceProbe(
   };
 }
 
-function passingDshEvidence(mode: "normal" | "private"): ChatProbeDshEvidence {
+function passingRuntimeEvidence(mode: "normal" | "private"): ChatProbeRuntimeEvidence {
   return {
     ok: true,
-    runtime: "embedded_dsh",
+    runtime: "embedded_pi",
     memoryMode: mode,
     provider: "openai",
     model: "companion-model",
     profileDigest: "a".repeat(64),
     runtimeInstanceId: "11111111-1111-4111-8111-111111111111",
-    igrepVersion: "0.14.1",
-    pluginVersion: "0.1.0",
+    igrepVersion: "0.1.161",
+    piVersion: "1.3.0",
     igrepSearchCalls: 0,
     igrepSearchFailures: 0,
     ...(mode === "normal"
@@ -2535,7 +2535,7 @@ describe("launch readiness", () => {
     }
   });
 
-  it("requires DSH proof and a stable Scene anchor for regenerated turns", () => {
+  it("requires Pi proof and a stable Scene anchor for regenerated turns", () => {
     const passing = passingChatServiceProbe();
     const failingReport = assessLaunchReadiness({
       env: productionEnv,
@@ -2544,7 +2544,7 @@ describe("launch readiness", () => {
           ...passing.conversation,
           regenerateAnchor: {
             ...passing.conversation?.regenerateAnchor,
-            regeneratedDsh: { ...passingDshEvidence("normal"), ok: false },
+            regeneratedRuntime: { ...passingRuntimeEvidence("normal"), ok: false },
           },
         },
       }),

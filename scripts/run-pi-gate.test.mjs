@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  GATE_T_CHECKS,
-  parseGateTArgs,
-  runGateTProbe,
-} from "./run-dsh-gate-t.mjs";
+  PI_GATE_CHECKS,
+  parsePiGateArgs,
+  runPiGateProbe,
+} from "./run-pi-gate.mjs";
 
-test("Gate T runner is bounded to embedded runtime and Chat public-seam tests", () => {
+test("Pi gate runner is bounded to embedded runtime and Chat public-seam tests", () => {
   assert.deepEqual(
-    GATE_T_CHECKS.map(({ id, cwd, scenarios }) => ({ id, cwd, scenarios })),
+    PI_GATE_CHECKS.map(({ id, cwd, scenarios }) => ({ id, cwd, scenarios })),
     [
       {
         id: "embedded-runtime-tool-loop",
@@ -18,6 +18,9 @@ test("Gate T runner is bounded to embedded runtime and Chat public-seam tests", 
           "single_product_tool",
           "main_cas_rejection",
           "in_process_cancel",
+          "native_pi_provider_and_compaction",
+          "attempt_scoped_original_recall",
+          "pinned_runtime_readiness",
         ],
       },
       {
@@ -34,16 +37,16 @@ test("Gate T runner is bounded to embedded runtime and Chat public-seam tests", 
       },
     ],
   );
-  for (const check of GATE_T_CHECKS) {
+  for (const check of PI_GATE_CHECKS) {
     assert.equal(check.command, "bun");
     assert.ok(!check.args.some((argument) => /integration|prisma|db:/u.test(argument)));
   }
 });
 
-test("Gate T runner reports every check and fails closed on one non-zero exit", () => {
+test("Pi gate runner reports every check and fails closed on one non-zero exit", () => {
   const calls = [];
   const exits = [0, 1];
-  const report = runGateTProbe({
+  const report = runPiGateProbe({
     root: "/repo",
     now: () => new Date("2026-08-20T12:00:00.000Z"),
     execute(command, args, options) {
@@ -67,19 +70,19 @@ test("Gate T runner reports every check and fails closed on one non-zero exit", 
   ]);
 });
 
-test("Gate T rejects a zero exit when every selected test was skipped", () => {
-  const report = runGateTProbe({ execute() {
+test("Pi gate rejects a zero exit when every selected test was skipped", () => {
+  const report = runPiGateProbe({ execute() {
     return { status: 0, signal: null, stdout: "Test Files 1 skipped (1)\nTests 8 skipped (8)", stderr: "" };
   } });
   assert.equal(report.ok, false);
   assert.ok(report.checks.every((check) => check.ok === false));
 });
 
-test("Gate T CLI accepts only an optional explicit report path", () => {
-  assert.deepEqual(parseGateTArgs([]), { report: null });
-  assert.deepEqual(parseGateTArgs(["--report", ".tmp/gate-t.json"]), {
-    report: ".tmp/gate-t.json",
+test("Pi gate CLI accepts only an optional explicit report path", () => {
+  assert.deepEqual(parsePiGateArgs([]), { report: null });
+  assert.deepEqual(parsePiGateArgs(["--report", ".tmp/pi-gate.json"]), {
+    report: ".tmp/pi-gate.json",
   });
-  assert.throws(() => parseGateTArgs(["--live"]), /unknown argument/u);
-  assert.throws(() => parseGateTArgs(["--report"]), /requires a path/u);
+  assert.throws(() => parsePiGateArgs(["--live"]), /unknown argument/u);
+  assert.throws(() => parsePiGateArgs(["--report"]), /requires a path/u);
 });

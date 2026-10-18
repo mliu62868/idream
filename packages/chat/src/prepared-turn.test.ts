@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { compileCharacterSoul, COMPANION_PRODUCT_PROMPT_VERSION } from "@idream/shared";
-import type { RequestMessage } from "@deepseek-ai/dsh-llm";
 import {
   EDIT_LAST_IMAGE_TOOL,
   GENERATE_IMAGE_ASYNC_TOOL,
@@ -15,6 +14,7 @@ import { resolvePolicy } from "./policy.js";
 import { OpenAiCompatibleAdapter } from "./agent-runtime/openai-adapter.js";
 import type { CompanionModelRequestEvidence } from "./agent-runtime/contracts.js";
 import { formatModelRequestInput } from "./agent-runtime/model-request-format.js";
+import { formatCompanionMessages } from "./agent-runtime/pi-context.js";
 
 function context(): BuiltContext {
   const policy = {
@@ -274,14 +274,7 @@ describe("PreparedTurn budget", () => {
           }] })}\n\ndata: [DONE]\n\n`);
         },
       });
-      for await (const _chunk of adapter.stream({
-        provider: "openai", model: prepared.model, system: prepared.messages[0].content, tools: prepared.tools,
-        messages: prepared.messages.filter(message => message.role !== "system").map((message): RequestMessage => ({
-          id: message.id as never, role: "user",
-          source: message.sourceKind === "current_user" ? { kind: "user" } : { kind: "idream", context: "snapshot" },
-          content: [{ type: "text", text: message.content }],
-        })),
-      })) { /* Exercise native conversation and tool calls. */ }
+      for await (const _chunk of adapter.stream(formatCompanionMessages(prepared.messages, [], prepared.messages[0].content, prepared.tools))) { /* Exercise native conversation and tool calls. */ }
       expect(bodies).toHaveLength(1);
       for (const body of bodies) {
         const system = body.messages.find(message => message.role === "system")!.content;
@@ -375,22 +368,7 @@ describe("PreparedTurn budget", () => {
         return new Response('data: {"choices":[{"delta":{"content":"Ready."},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
       },
     });
-    for await (const _chunk of adapter.stream({
-      provider: profile.provider, model: profile.model, system,
-      messages: prepared.messages.filter(message => message.role !== "system").map((message): RequestMessage => {
-        if (message.role === "assistant") return {
-          id: message.id as never, role: "assistant",
-          source: { kind: "model", provider: profile.provider, model: profile.model, ...(message.speaker ? { speaker: message.speaker } : {}) },
-          content: [{ type: "text", text: message.content }],
-        };
-        return {
-          id: message.id as never, role: "user",
-          source: message.sourceKind === "current_user" ? { kind: "user" }
-            : { kind: "idream", context: message.sourceKind === "plugin" ? "snapshot" : "replay" },
-          content: [{ type: "text", text: message.content }],
-        };
-      }), tools: prepared.tools,
-    })) { /* This response is a transport fixture, not a model identity qualification. */ }
+    for await (const _chunk of adapter.stream(formatCompanionMessages(prepared.messages, [], system, prepared.tools))) { /* This response is a transport fixture, not a model identity qualification. */ }
     expect(bodies).toHaveLength(1);
     const request = JSON.parse(bodies[0]) as { messages: Array<{ role: string; content: string }> };
     const finalSystem = request.messages.filter(message => message.role === "system").map(message => message.content).join("\n");
@@ -642,7 +620,7 @@ describe("PreparedTurn budget", () => {
   });
 
   it.each([
-    // The complete product contract plus the runtime reserve (DSH guidance, igrep
+    // The complete product contract plus the runtime reserve (Pi guidance, igrep
     // tools, recall notes) leaves room for some prior exchanges, depending on their
     // size; the provider must receive the bounded suffix.
     { priorChars: 3_010, retainedStart: 4 },
@@ -676,24 +654,10 @@ describe("PreparedTurn budget", () => {
       },
     });
     const chunks = [];
-    for await (const chunk of adapter.stream({
-      provider: profile.provider, model: profile.model,
-      system: prepared.messages.find(message => message.role === "system")!.content,
-      messages: prepared.messages.filter(message => message.role !== "system").map(message => ({
-        id: message.id as never,
-        role: message.role === "assistant" ? "assistant" as const : "user" as const,
-        source: message.sourceKind === "current_user"
-          ? { kind: "user" as const }
-          : message.role === "assistant"
-            ? { kind: "model" as const, provider: profile.provider, model: profile.model }
-            : { kind: "idream" as const, context: message.sourceKind === "plugin" ? "snapshot" as const : "replay" as const },
-        content: [{ type: "text" as const, text: message.content }],
-      }) as never),
-      tools: prepared.tools,
-    })) chunks.push(chunk);
+    for await (const chunk of adapter.stream(formatCompanionMessages(prepared.messages, [], prepared.messages.find(message => message.role === "system")!.content, prepared.tools))) chunks.push(chunk);
 
     expect(requests).toHaveLength(1);
-    expect(chunks.filter(chunk => chunk.type === "block-end" && chunk.block.type === "tool-call")).toHaveLength(1);
+    expect(chunks.filter(chunk => chunk.type === "toolcall_end")).toHaveLength(1);
     expect(prepared.budget.maxInputTokens).toBe(6_000);
     expect(prepared.budget.dropped).toEqual(retainedStart > 0 ? ["transcript"] : []);
     expect(prepared.omittedMessages).toEqual(source.recentMessages.slice(0, retainedStart).map(message => ({
@@ -762,7 +726,7 @@ describe("PreparedTurn budget", () => {
     expect(wire.messages[0]?.id).toContain(wire.trace.systemPromptDigest);
   });
 
-  it("preserves Soul and Scene in the sole DSH projection", () => {
+  it("preserves Soul and Scene in the sole product projection", () => {
     const source = context();
     source.recentMessages = [
       { id: "user-history", role: "user", content: "Earlier question" },

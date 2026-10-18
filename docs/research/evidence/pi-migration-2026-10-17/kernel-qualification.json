@@ -1,0 +1,63 @@
+{
+  "runtime": "Bun 1.4.0",
+  "piVersion": "1.3.0",
+  "storage": "MemoryStorage",
+  "realProviderRequests": 0,
+  "results": [
+    {
+      "name": "native-role-provenance-duplicate-text-and-commit",
+      "passed": true,
+      "durationMs": 14
+    },
+    {
+      "name": "native-tool-round-trip-retracts-provisional-text",
+      "passed": true,
+      "durationMs": 7
+    },
+    {
+      "name": "unknown-tool-receipt-prevents-second-provider-and-commit",
+      "passed": true,
+      "durationMs": 3
+    },
+    {
+      "name": "cancel-aborts-provider-and-settles-harness",
+      "passed": true,
+      "durationMs": 85
+    },
+    {
+      "name": "blocking-compaction-preserves-originals-and-current-input",
+      "passed": true,
+      "durationMs": 4
+    },
+    {
+      "name": "compaction-policy-failure-blocks-upstream-fallback",
+      "passed": true,
+      "durationMs": 2
+    },
+    {
+      "name": "summary-transport-throw-blocks-upstream-fallback",
+      "passed": true,
+      "durationMs": 1
+    },
+    {
+      "name": "cancel-during-unsettled-tool-is-bounded-and-unknown",
+      "passed": true,
+      "durationMs": 14
+    },
+    {
+      "name": "unexecuted-tool-json-never-commits",
+      "passed": true,
+      "durationMs": 1
+    },
+    {
+      "name": "native-replay-tools-ordered-by-call-id",
+      "passed": true,
+      "durationMs": 1
+    },
+    {
+      "name": "missing-replay-tool-result-is-fatal-before-provider",
+      "passed": true,
+      "durationMs": 1
+    }
+  ]
+}

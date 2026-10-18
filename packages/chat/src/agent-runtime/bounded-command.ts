@@ -16,12 +16,14 @@ export type BoundedCommandFailureCode =
 export interface BoundedTextCommandOptions {
   command: string;
   args: readonly string[];
-  env?: NodeJS.ProcessEnv;
+  env?: Record<string, string | undefined>;
   stdin?: string;
   timeoutMs: number;
   signal?: AbortSignal;
   stdoutLimitBytes?: number;
   stderrLimitBytes?: number;
+  /** Only search defines exit 1 as a complete empty result. */
+  acceptedExitCodes?: readonly number[];
 }
 
 /**
@@ -55,7 +57,9 @@ export async function runBoundedTextCommand(
   const digest = createHash("sha256");
   const child = spawn(options.command, [...options.args], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: options.env ?? process.env,
+    // Next augments ProcessEnv with a mandatory NODE_ENV, while Node permits
+    // an empty child environment. Keep the actual launch dictionary explicit.
+    env: (options.env ?? process.env) as NodeJS.ProcessEnv,
   });
   const stdout: Buffer[] = [];
   let stdoutBytes = 0;
@@ -102,7 +106,7 @@ export async function runBoundedTextCommand(
   digest.update("result\0").update(String(result.code)).update("\0").update(String(result.signal));
   if (failure) throw commandError(failure, digest);
   if (spawnFailed) throw commandError("spawn_failed", digest);
-  if (result.code !== 0) throw commandError("exit_nonzero", digest);
+  if (result.code === null || !(options.acceptedExitCodes ?? [0]).includes(result.code)) throw commandError("exit_nonzero", digest);
   return Buffer.concat(stdout, stdoutBytes).toString("utf8");
 }
 

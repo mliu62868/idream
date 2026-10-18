@@ -60,7 +60,7 @@ export function resolvePolicy(
   };
 }
 
-/** DSH has exactly one configured provider/model for every entitlement plan. */
+/** Chat has exactly one configured provider/model for every entitlement plan. */
 export function currentModel(): string {
   return resolveChatModelProfile(process.env).model;
 }

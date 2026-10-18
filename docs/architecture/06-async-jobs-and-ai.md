@@ -34,7 +34,7 @@ Chat 没有 `chat.generate`、`chat.memory.extract` 或 `chat.outbox.deliver` qu
 Main transaction commits Turn
   -> Main signs execution + authority snapshot
   -> Chat atomically creates AgentRun
-  -> DSH emits model/tool events
+  -> Pi emits model/tool events
   -> Chat streams transient tokens through Redis/SSE
   -> Chat persists immutable pending proposal.json
   -> Chat posts terminal candidate to Main
@@ -90,4 +90,4 @@ Request admitted
 - 每次 attempt 记录 provider/model/workflow、开始/结束时间、错误、artifact 和 settlement。
 - terminal ingest 与 finalizer 可重复执行；所有写入都以 CAS/唯一约束保护。
 - 发布或恢复前 pause/drain 生成队列，确认没有 active/unknown attempt，再切进程。
-- Chat 监控 AgentRun active/failed trace、Main ACK 延迟、SSE 重连、memory projection lag 和内嵌 DSH readiness；不监控不存在的 Chat DB/queue。
+- Chat 监控 AgentRun active/failed trace、Main ACK 延迟、SSE 重连、memory projection lag 和内嵌 Pi readiness；不监控不存在的 Chat DB/queue。

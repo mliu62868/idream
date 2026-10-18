@@ -1,0 +1,134 @@
+{
+  "decision": "pass_P2_proceed_to_implementation_not_service_cutover",
+  "sourceRevision": "7e26cea97a26ca7a5703077f4dbdd607e808023f",
+  "runtime": "Bun 1.4.0",
+  "checks": {
+    "baselineProductionTests": 130,
+    "nativeHarnessScenarios": 11,
+    "providerTransportScenarios": 41,
+    "providerRequestContracts": 11,
+    "recallProjectionScenarios": 8,
+    "igrepEnvironmentChecks": 23
+  },
+  "realProvider": {
+    "model": "Ornith-1.5-35B-A3B-Abliterated-MLX-4bit",
+    "textNativeTools": true,
+    "warmPair": {
+      "sourceRevision": "7e26cea97a26ca7a5703077f4dbdd607e808023f",
+      "runtime": "1.4.0",
+      "provider": "openai",
+      "model": "Ornith-1.5-35B-A3B-Abliterated-MLX-4bit",
+      "results": [
+        {
+          "label": "baseline-warm-verified",
+          "durationMs": 229,
+          "firstTokenMs": 105,
+          "usage": [
+            {
+              "inputTokens": 7,
+              "outputTokens": 22,
+              "cacheReadTokens": 42,
+              "reasoningTokens": 0
+            }
+          ],
+          "reply": "The stars are beautiful tonight, but I'll admit they're not quite stealing my attention the way you are.",
+          "rss": 164118528
+        },
+        {
+          "label": "pi-warm-verified",
+          "durationMs": 198,
+          "firstTokenMs": 67,
+          "usage": [
+            {
+              "inputTokens": 7,
+              "outputTokens": 22,
+              "cacheReadTokens": 42,
+              "reasoningTokens": 0
+            }
+          ],
+          "requests": [
+            {
+              "bodyDigest": "cbf1d836f0206dac886fe94a757928685b91061b9963dc8fd3c2afb613acfa69",
+              "systemPromptDigest": "3fc19c8412785462ac6b3fb1eee8064213bdffeae66109df725f7126bc0b3cb3",
+              "estimatedInputTokens": 57,
+              "maxInputTokens": 8000
+            }
+          ],
+          "calls": [],
+          "reply": "The stars are beautiful tonight, but I'll admit they're not quite stealing my attention the way you are.",
+          "rss": 167723008,
+          "events": [
+            "started",
+            "text_delta",
+            "text_delta",
+            "text_delta",
+            "terminal_candidate"
+          ]
+        }
+      ]
+    },
+    "nativeToolMainAck": "simulated; no image generated"
+  },
+  "complexity": {
+    "removed": "Cordis service registration, DSH seed/session stream projection, official coding-agent plugin bootstrap; existing Main business fences/proposals remain",
+    "added": "public Pi MemoryStorage/Harness hooks + provider-native transport + source-bound recall projection + explicit CLI environment",
+    "upstreamPrivateAPIs": [],
+    "notes": [
+      "Provider SSE parser stays because builtin Pi transport loses required errors and unknown usage semantics.",
+      "No runtime persistence, new recovery state machine, or dual production runtime.",
+      "Final production diff must still show net simpler assembly before service cutover."
+    ]
+  },
+  "limitations": [
+    "Warm pair is a small sample, not p95 evidence.",
+    "Initial baseline probe mistakenly read text-delta.delta; corrected pair uses text-delta.text and verifies exact output.",
+    "No product persistence/quota/media/real Main ACK tested yet; P5 required."
+  ],
+  "sourceHashes": {
+    ".scratch/pi-qualification/runtime/real-probe.ts": "2170ccf8a70bc9d2a87f309346d75ce57789d8982f31b07e51a4cf223b030c9c",
+    ".scratch/pi-qualification/runtime/probe.ts": "1c6a4db12bc8502365d3d4717dd8481a10c2e00075a234367ea5b2fb50923157",
+    ".scratch/pi-qualification/runtime/companion.ts": "7d4933775450c2ead62a0d368f2abe202739cbf3a90201a37afe68c31faffdf7",
+    ".scratch/pi-qualification/provider/candidate-adapter.ts": "9882a77d939497eeec57d5c751398b98ab577a73a342c9dbf22467f75fbd743e",
+    ".scratch/pi-qualification/provider/candidate-request-probe.ts": "7dee60f462de836f35c4920b5759a816a331b69c22111c3f52120962d8c7ab19",
+    ".scratch/pi-qualification/recall/live.ts": "be85b54f4505b34cdd58871620ec3ed648e1e06bacb765601450ea680847365c",
+    ".scratch/pi-qualification/recall/probe.ts": "28bd7992e7205c4b52282804edebfb7e14b3aa8f86e3bd6cf98ed55e18a936d8",
+    ".scratch/pi-qualification/recall/adapter.ts": "f122091e953f26d4e14a602e8f6f5c19aeb171bfa9d4e913066b41901fbeacf0",
+    ".scratch/pi-qualification/igrep-host/environment.ts": "4206c33600f067dcf4e8c7b77697b8aed7e74f771092db6ff0d1e9c6ac758949",
+    ".scratch/pi-qualification/igrep-host/probe.ts": "ae8d53eec681b9445af8a97288b3d110a3abac65f287622b2932442b021ae8b6"
+  },
+  "postImplementationChecks": {
+    "chatTests": 819,
+    "sharedTests": 411,
+    "pm2ScriptTests": 169,
+    "mainPureTests": 2295,
+    "mainPureNote": "2293 passed in full suite; 2 workspace-lease failures on missing generated Admin next-env.d.ts resolved by official next typegen; all 4 lease tests then passed.",
+    "typecheck": "all packages passed",
+    "build": "all packages passed",
+    "lint": "0 errors, 2 preexisting warnings in Main admin access users",
+    "piGate": "passed; actual installed Pi 1.3.0 and igrep 0.1.161",
+    "web": "5 actual CLI configuration cases passed without network; external web provider requests not performed",
+    "retrieval": "Production Pi plus actual igrep compaction/recall probe passed; chat response controlled SSE. Real cross-session product check remains pending."
+  },
+  "implementationHashes": {
+    "packages/chat/src/agent-runtime/bounded-command.ts": "ca822c3011389e58cc2d3fd06011af91fe827fce3bc59edcecbd0a01d7b505ca",
+    "packages/chat/src/agent-runtime/composition.ts": "56db001f887cc1c651e8808b15e40c0d07db3056caf64b62ea9904824d8e5421",
+    "packages/chat/src/agent-runtime/config.ts": "24378e3308b64103b364bce6fa39e49cbd5fccd8c63bffdac5e4a3a8f2aad684",
+    "packages/chat/src/agent-runtime/contracts.ts": "65f7b24e690b960a7f7588e49d52d24e8948b92e9b1ff799f32b80fbd3eae380",
+    "packages/chat/src/agent-runtime/engine.ts": "265ddb946ebeb782e9635e57a45a27f516786b4fdf81028e3dd1d57e78144d53",
+    "packages/chat/src/agent-runtime/igrep.ts": "f7ec204683ae3324dc31c196ccf68539d3ac6597ba768cb5010cde8703be8686",
+    "packages/chat/src/agent-runtime/model-request-format.ts": "0ee4b0832f39584c40dcc6de45349a95fd0921f38c4f3301ac7cb0b89e67d6e2",
+    "packages/chat/src/agent-runtime/openai-adapter.ts": "56b3f9b4547add30e409f365d28446f2a87b74808a56a4efc1b41bb63652cc2b",
+    "packages/chat/src/agent-runtime/pi-context.ts": "79e8087953155b6c799c66c518721e3aaf396b893109688f7a7c805b4070fc4a",
+    "packages/chat/src/agent-runtime/pi-runtime.ts": "820ad05ce5a76e8d5fef25f89b3cf862f9edb670f70440911d93fbf3e1e6516c",
+    "packages/chat/src/agent-runtime/profile-evidence.ts": "16a149bc1ff09dd57ff2296a90b238fc39aa6430d2da394b45e372fd0fc5d3ff",
+    "packages/chat/src/agent-runtime/readiness.ts": "80dc9f21150424d9f54b87d1dafae7f554425f66fafdf7509113777fb5662998",
+    "packages/chat/src/agent-runtime/rebuild-source.ts": "448b17f902478e10ff6d11c9b30b241a1c01ceda8d8e3b849021aab41a17bd75",
+    "packages/chat/src/agent-runtime/recall-notes.ts": "7ad0b47025295419d912e7057b15eab3400e757df3b2f0e3819b9178b627c4b1",
+    "packages/chat/src/agent-runtime/resident-profile.ts": "5ab90a262e156c86d1d786cdc8fc4788f365dd60b94e6d776b9e96858887a58f",
+    "packages/chat/src/agent-runtime/retrieval-probe.ts": "2fce13b46307f51aa395a4fcaedaed1c3353240eecf5210b869b2210d6bcb02e",
+    "packages/chat/src/agent-runtime/runtime.ts": "431a7309cdf87b5a41fb0c2c4cbc3ad59c7b1bc62618f11c1086a01ba1ab7c7e",
+    "packages/chat/src/agent-runtime/session-recall.ts": "384e75b313a255bce1efdcdd13ee8a8de2c4fa8ae428398a5d19bcbbdac7c498",
+    "packages/chat/src/agent-runtime/terminal-candidate.ts": "75913b384c128bb3ca722855a49f5b78f2f784fd301c53453f6d4b3d52029611",
+    "packages/chat/src/agent-runtime/workspace.ts": "7791e989015bc3f619016f8e8d2235cb222d7be1924bded75927b229c02919af"
+  }
+}

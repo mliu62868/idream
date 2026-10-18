@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "checkedAt": "2026-10-17T09:17:35.485Z",
+  "ok": true,
+  "durationMs": 3454,
+  "effectMode": "none",
+  "databaseUsed": false,
+  "checks": [
+    {
+      "id": "embedded-runtime-tool-loop",
+      "ok": true,
+      "passedTests": 170,
+      "scenarios": [
+        "direct_terminal_commit",
+        "single_product_tool",
+        "main_cas_rejection",
+        "in_process_cancel",
+        "native_pi_provider_and_compaction",
+        "attempt_scoped_original_recall",
+        "pinned_runtime_readiness"
+      ],
+      "command": [
+        "bun",
+        "run",
+        "test",
+        "--",
+        "src/agent-runtime/engine.test.ts",
+        "src/agent-runtime/openai-adapter.test.ts",
+        "src/agent-runtime/config.test.ts",
+        "src/agent-runtime/composition.test.ts",
+        "src/agent-runtime/readiness.test.ts",
+        "src/agent-runtime/session-recall.test.ts"
+      ],
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 2070,
+      "stdout": "\n RUN  v4.1.9 /Users/kk/.codex/worktrees/pi-chat-runtime/idream/packages/chat\n\n\n Test Files  6 passed (6)\n      Tests  170 passed (170)\n   Start at  05:17:35\n   Duration  1.85s (transform 2.21s, setup 0ms, import 4.10s, tests 1.64s, environment 0ms)\n\n",
+      "stderr": "vel\":\"error\",\"component\":\"chat\",\"event\":\"companion_invocation_failed\",\"invocationId\":\"invocation-text\",\"attemptId\":\"attempt-text\",\"phase\":\"agent\",\"code\":\"invocation_failed\",\"retryable\":false,\"errorType\":\"Error\"}\n{\"level\":\"error\",\"component\":\"chat\",\"event\":\"companion_invocation_failed\",\"invocationId\":\"invocation-text\",\"attemptId\":\"attempt-text\",\"phase\":\"agent\",\"code\":\"invocation_failed\",\"retryable\":false,\"errorType\":\"Error\"}\n{\"level\":\"error\",\"component\":\"chat\",\"event\":\"companion_invocation_failed\",\"invocationId\":\"invocation-text\",\"attemptId\":\"attempt-text\",\"phase\":\"agent\",\"code\":\"invocation_failed\",\"retryable\":false,\"errorType\":\"Error\"}\n{\"level\":\"error\",\"component\":\"chat\",\"event\":\"companion_invocation_failed\",\"invocationId\":\"invocation-text\",\"attemptId\":\"attempt-text\",\"phase\":\"agent\",\"code\":\"invocation_failed\",\"retryable\":false,\"errorType\":\"Error\"}\n{\"level\":\"error\",\"component\":\"chat\",\"event\":\"companion_invocation_failed\",\"invocationId\":\"invocation-text\",\"attemptId\":\"attempt-text\",\"phase\":\"agent\",\"code\":\"invocation_failed\",\"retryable\":false,\"errorType\":\"Error\"}\n{\"level\":\"error\",\"component\":\"chat\",\"event\":\"companion_invocation_failed\",\"invocationId\":\"invocation-text\",\"attemptId\":\"attempt-text\",\"phase\":\"workspace\",\"code\":\"workspace_prepare_failed\",\"retryable\":true,\"errorType\":\"Error\"}\n{\"level\":\"warn\",\"component\":\"chat\",\"event\":\"companion_memory_tool_failed\",\"attemptId\":\"attempt-text\",\"memoryFailure\":\"unknown\"}\n{\"level\":\"error\",\"component\":\"chat\",\"event\":\"companion_invocation_failed\",\"invocationId\":\"invocation-text\",\"attemptId\":\"attempt-text\",\"phase\":\"agent\",\"code\":\"igrep_search_failed\",\"retryable\":true,\"errorType\":\"Error\",\"igrepFailure\":\"search\"}\n{\"level\":\"error\",\"component\":\"chat\",\"event\":\"companion_invocation_failed\",\"invocationId\":\"invocation-text\",\"attemptId\":\"attempt-text\",\"phase\":\"agent\",\"code\":\"unexecuted_tool_payload\",\"retryable\":true,\"errorType\":\"Error\"}\n{\"level\":\"warn\",\"component\":\"chat\",\"event\":\"companion_memory_tool_failed\",\"attemptId\":\"attempt-text\",\"memoryFailure\":\"source_missing\"}\n{\"level\":\"error\",\"component\":\"chat\",\"event\":\"companion_invocation_failed\",\"invocationId\":\"invocation-text\",\"attemptId\":\"attempt-text\",\"phase\":\"agent\",\"code\":\"igrep_memory_failed\",\"retryable\":true,\"errorType\":\"Error\",\"igrepFailure\":\"memory\"}\n{\"level\":\"error\",\"component\":\"chat\",\"event\":\"companion_invocation_failed\",\"invocationId\":\"invocation-tool\",\"attemptId\":\"attempt-tool\",\"phase\":\"agent\",\"code\":\"main_effect_unconfirmed\",\"retryable\":true,\"errorType\":\"Error\"}\n{\"level\":\"error\",\"component\":\"chat\",\"event\":\"companion_invocation_failed\",\"invocationId\":\"invocation-tool\",\"attemptId\":\"attempt-tool\",\"phase\":\"agent\",\"code\":\"main_effect_unconfirmed\",\"retryable\":true,\"errorType\":\"Error\"}\n{\"level\":\"error\",\"component\":\"chat\",\"event\":\"companion_invocation_failed\",\"invocationId\":\"invocation-text\",\"attemptId\":\"attempt-text\",\"phase\":\"agent\",\"code\":\"invocation_failed\",\"retryable\":false,\"errorType\":\"Error\"}\n{\"level\":\"error\",\"component\":\"chat\",\"event\":\"companion_invocation_failed\",\"invocationId\":\"invocation-text\",\"attemptId\":\"attempt-text\",\"phase\":\"agent\",\"code\":\"provider_first_token_timeout\",\"retryable\":true,\"errorType\":\"ProviderError\",\"providerCode\":\"MODEL_FIRST_TOKEN_TIMEOUT\"}\n{\"level\":\"error\",\"component\":\"chat\",\"event\":\"companion_invocation_failed\",\"invocationId\":\"invocation-text\",\"attemptId\":\"attempt-text\",\"phase\":\"agent\",\"code\":\"input_budget_exceeded\",\"retryable\":false,\"errorType\":\"ProviderError\",\"providerCode\":\"INPUT_BUDGET_EXCEEDED\"}\n{\"level\":\"error\",\"component\":\"chat\",\"event\":\"companion_invocation_failed\",\"invocationId\":\"invocation-text\",\"attemptId\":\"attempt-text\",\"phase\":\"agent\",\"code\":\"provider_unavailable\",\"retryable\":true,\"errorType\":\"ProviderError\",\"providerCode\":\"TRANSPORT\"}\n{\"level\":\"error\",\"component\":\"chat\",\"event\":\"companion_invocation_failed\",\"invocationId\":\"invocation-text\",\"attemptId\":\"attempt-text\",\"phase\":\"agent\",\"code\":\"provider_first_token_timeout\",\"retryable\":true,\"errorType\":\"ProviderError\",\"providerCode\":\"MODEL_FIRST_TOKEN_TIMEOUT\"}\n"
+    },
+    {
+      "id": "chat-tool-recovery",
+      "ok": true,
+      "passedTests": 35,
+      "scenarios": [
+        "admission_identity_and_deadline",
+        "bounded_terminal_candidate",
+        "recover_valid_agent_runs",
+        "account_erasure_drain",
+        "agent_authored_image_direction",
+        "same_identity_ambiguous_ack_recovery"
+      ],
+      "command": [
+        "bun",
+        "run",
+        "test",
+        "--",
+        "src/agent-tools.test.ts",
+        "src/agent-run-store.test.ts",
+        "src/agent-runner-lifecycle.test.ts"
+      ],
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 1384,
+      "stdout": "\n RUN  v4.1.9 /Users/kk/.codex/worktrees/pi-chat-runtime/idream/packages/chat\n\n\n Test Files  3 passed (3)\n      Tests  35 passed (35)\n   Start at  05:17:37\n   Duration  1.17s (transform 711ms, setup 0ms, import 1.29s, tests 640ms, environment 0ms)\n\n",
+      "stderr": "$ vitest run --config vitest.config.ts src/agent-tools.test.ts src/agent-run-store.test.ts src/agent-runner-lifecycle.test.ts\n"
+    }
+  ]
+}

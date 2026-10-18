@@ -91,9 +91,9 @@
 | Pinned Memory / Custom Instruction（P1） | 用户、角色/会话范围、内容版本与状态，由 Main 投影到 Turn context |
 | Experience Preference（P1） | conversation profile、response length、scene generation、active messages、interaction intensity 与版本 |
 | Group Chat / Voice Call（P1） | 最多 12 角色及各自内容/Release/Voice pin、参与顺序、call 状态、实际时长、用量/结算与终态证据 |
-| AgentRun / DSH workspace | Chat 本地执行、接纳、恢复与 Main ACK 未定的候选证据；normal 记忆从已提交 Turn 派生，private 不加载长期记忆 |
+| AgentRun / igrep workspace | Chat 本地执行、接纳、恢复与 Main ACK 未定的候选证据；normal 记忆从已提交 Turn 派生，private 不加载长期记忆 |
 
-Main PG 是产品聊天事实权威，Chat 无数据库。内部执行协议与内嵌 DSH/igrep 边界见 [ADR-21](../architecture/21-companion-chat-deep-runtime.md)。
+Main PG 是产品聊天事实权威，Chat 无数据库。内部执行协议与内嵌 Pi/igrep 边界见 [ADR-21](../architecture/21-companion-chat-deep-runtime.md)。
 
 ### 3.4 生成、媒体与作品
 

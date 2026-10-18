@@ -1,0 +1,54 @@
+{
+  "sourceRevision": "7e26cea97a26ca7a5703077f4dbdd607e808023f",
+  "runtime": "1.4.0",
+  "provider": "openai",
+  "model": "Ornith-1.5-35B-A3B-Abliterated-MLX-4bit",
+  "results": [
+    {
+      "label": "baseline-warm-verified",
+      "durationMs": 229,
+      "firstTokenMs": 105,
+      "usage": [
+        {
+          "inputTokens": 7,
+          "outputTokens": 22,
+          "cacheReadTokens": 42,
+          "reasoningTokens": 0
+        }
+      ],
+      "reply": "The stars are beautiful tonight, but I'll admit they're not quite stealing my attention the way you are.",
+      "rss": 164118528
+    },
+    {
+      "label": "pi-warm-verified",
+      "durationMs": 198,
+      "firstTokenMs": 67,
+      "usage": [
+        {
+          "inputTokens": 7,
+          "outputTokens": 22,
+          "cacheReadTokens": 42,
+          "reasoningTokens": 0
+        }
+      ],
+      "requests": [
+        {
+          "bodyDigest": "cbf1d836f0206dac886fe94a757928685b91061b9963dc8fd3c2afb613acfa69",
+          "systemPromptDigest": "3fc19c8412785462ac6b3fb1eee8064213bdffeae66109df725f7126bc0b3cb3",
+          "estimatedInputTokens": 57,
+          "maxInputTokens": 8000
+        }
+      ],
+      "calls": [],
+      "reply": "The stars are beautiful tonight, but I'll admit they're not quite stealing my attention the way you are.",
+      "rss": 167723008,
+      "events": [
+        "started",
+        "text_delta",
+        "text_delta",
+        "text_delta",
+        "terminal_candidate"
+      ]
+    }
+  ]
+}

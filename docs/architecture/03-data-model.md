@@ -408,7 +408,7 @@ model ChatTurnAttachment {
 }
 ```
 
-Chat 本地 `runs/<turnId>/<attempt>/` 不是数据库模型，也不进入 Prisma。不建立可编辑的 Relationship stage/score/attributes 模型；Main 仍以 `CompanionMemoryAuthority` 维护 user-character aggregate 的单调版本，DSH/igrep 内容由 Main committed Turns 派生并可重建。
+Chat 本地 `runs/<turnId>/<attempt>/` 不是数据库模型，也不进入 Prisma。不建立可编辑的 Relationship stage/score/attributes 模型；Main 仍以 `CompanionMemoryAuthority` 维护 user-character aggregate 的单调版本，Pi/igrep 内容由 Main committed Turns 派生并可重建。
 
 ### 3.5 Generation & Media
 
@@ -1119,7 +1119,7 @@ CREATE INDEX characters_name_trgm ON characters USING gin (name gin_trgm_ops);
 ## 7. 与 BackendFeatureSpec 的差异/补充
 
 - 队列状态在 Redis/BullMQ（ADR-5），关系库只存权威业务态 + 幂等记录；新增基础设施表：`ProviderEvent`、`AnalyticsEvent`、`RoutePage`、`CharacterLike`、`Follow`，spec 未显式列出但实现必需。
-- Chat 产品事实已收敛到 Main PostgreSQL：`RecentChat`、`ChatTurn`、`ChatTurnAttachment`、`Scene`、usage 与 settlement 均由 Main 持有。`packages/chat` 不使用 Prisma/Postgres，只保留本地 `AgentRun`、DSH/igrep 执行证据；记忆由 Main 已提交 Turns 派生（§3.4）。
+- Chat 产品事实已收敛到 Main PostgreSQL：`RecentChat`、`ChatTurn`、`ChatTurnAttachment`、`Scene`、usage 与 settlement 均由 Main 持有。`packages/chat` 不使用 Prisma/Postgres，只保留本地 `AgentRun`、Pi/igrep 执行证据；记忆由 Main 已提交 Turns 派生（§3.4）。
 - 新增 Admin 控制平面表（§3.10）：审计/审批/特性开关/应用设置/生成模型·prompt·路由·定价的可治理配置/权限/支持授权/法务保留。
 - `Character.source`（official|user）区分官方 CMS 角色与用户角色；新增 `CharacterTemplate`（建角色起步模板）。
 - `MediaAsset.liked` 保留为拥有者快捷标记，多用户点赞用 `MediaLike`。

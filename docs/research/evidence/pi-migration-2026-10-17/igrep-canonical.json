@@ -1,0 +1,18 @@
+{
+  "ok": true,
+  "checks": [
+    "version",
+    "deferred-source-ready",
+    "status",
+    "reproject",
+    "incomplete-profile-search-fails-closed",
+    "operational-wake-fails-closed",
+    "empty-build-no-evidence",
+    "empty-wake",
+    "empty-fast-search"
+  ],
+  "version": "0.1.161",
+  "modelRequests": 0,
+  "network": "sandbox denied",
+  "data": "synthetic temporary only"
+}

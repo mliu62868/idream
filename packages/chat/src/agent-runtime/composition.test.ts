@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  COMPANION_EXECUTION_PLUGIN_ORDER,
-  FORBIDDEN_COMPANION_EXECUTION_SERVICES,
+  COMPANION_CORE_PACKAGES,
+  assertCompanionExecutionManifest,
   companionCompositionDigest,
   companionCompositionManifest,
+  companionIgrepConfig,
+  companionIgrepRoutes,
   createCompanionCompositionPlan,
 } from "./composition";
 
@@ -27,30 +29,14 @@ describe("companion composition identity", () => {
     );
 
     expect(manifest).toMatchObject({
-      schemaVersion: 2,
-      idream: {
-        igrepMaintenance: { sampling: { temperature: 0, top_p: 1, presence_penalty: 0 } },
-        adapter: { name: "openai-compatible", contractVersion: 1 },
-        bridges: {
-          preparedTurn: 1,
-          tool: 1,
-          event: 1,
-          commit: 1,
-        },
-        executionPolicy: {
-          version: 29,
-          maxSteps: 8,
-          maxParallelToolCalls: 1,
-          effectfulToolConcurrency: 1,
-          deadlineSource: "invocation.deadlineAt",
-          commitBeforeProjection: true,
-        },
-      },
+      schemaVersion: 3, piVersion: "1.3.0", igrepVersion: "0.1.161", storage: "memory", builtInTools: [],
+      igrepMaintenance: { sampling: { temperature: 0, top_p: 1, presence_penalty: 0 } },
+      execution: { version: 30, maxSteps: 8, maxParallelToolCalls: 1, toolExecution: "sequential", retry: false,
+        deadlineSource: "invocation.deadlineAt", commitBeforeProjection: true },
     });
-    expect(manifest.pluginOrder).toEqual(COMPANION_EXECUTION_PLUGIN_ORDER);
-    expect(manifest.pluginOrder).not.toEqual(expect.arrayContaining(
-      [...FORBIDDEN_COMPANION_EXECUTION_SERVICES],
-    ));
+    expect(manifest.corePackages).toEqual(COMPANION_CORE_PACKAGES);
+    expect(() => assertCompanionExecutionManifest({ ...manifest, builtInTools: ["shell"] })).toThrow();
+    expect(() => assertCompanionExecutionManifest({ ...manifest, storage: "sqlite" })).toThrow();
     expect(JSON.stringify(manifest)).not.toContain("/opt/idream");
     expect(JSON.stringify(manifest)).not.toContain("must-not-enter-the-digest");
 
@@ -93,7 +79,7 @@ describe("companion composition identity", () => {
     )).not.toBe(alternateRuntime);
   });
 
-  it("builds an immutable plan without mutating the resolved plugin config", () => {
+  it("builds an immutable plan without mutating the explicit retrieval policy", () => {
     const normalized = {
       command: "/opt/idream/igrep/bin/igrep",
       search: true,
@@ -113,5 +99,21 @@ describe("companion composition identity", () => {
     expect(Object.isFrozen(plan.normalizedIgrepConfig)).toBe(true);
     expect(Object.isFrozen(plan.manifest)).toBe(true);
     expect(plan.digest).toBe(companionCompositionDigest("normal", normalized, authority));
+  });
+});
+
+
+describe("explicit web composition identity", () => {
+  const authority = {maxSteps:8,igrepLlm:{url:"https://maintenance.example/v1",model:"maintenance"}};
+  const env = {IGREP_WEB_SEARCH_PROVIDER:"searxng",IGREP_SEARXNG_URL:"https://search.example",IGREP_SEARXNG_API_KEY:"private-key"};
+  const digest = (environment: Record<string,string>) => companionCompositionDigest("private",companionIgrepConfig("private","igrep",environment),{...authority,igrepRoutes:companionIgrepRoutes(environment)});
+  it("includes explicit web registration and route policy but never the credential", () => {
+    const config = companionIgrepConfig("private","igrep",env);
+    expect(config.web).toMatchObject({provider:"searxng",url:"https://search.example",mode:"fast",maxResults:6,timeoutMs:30000});
+    expect(companionIgrepConfig("private","igrep").web).toBe(false);
+    expect(digest(env)).not.toBe(digest({}));
+    expect(digest(env)).not.toBe(digest({...env,IGREP_SEARXNG_URL:"https://other.example"}));
+    expect(digest(env)).toBe(digest({...env,IGREP_SEARXNG_API_KEY:"rotated-key"}));
+    expect(JSON.stringify(companionCompositionManifest("private",config,{...authority,igrepRoutes:companionIgrepRoutes(env)}))).not.toContain("private-key");
   });
 });

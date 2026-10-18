@@ -9,7 +9,7 @@ iDream 是 Bun + Turborepo monorepo，按事实权威和执行时长拆成五个
 | 包 | 职责 | 持久化权威 |
 | --- | --- | --- |
 | `packages/main` | 用户产品、Character、ChatSession/Turn、计费、Generation、媒体、Admin API | PostgreSQL + Blob |
-| `packages/chat` | 接收不可变 Turn 快照；内嵌 DSH/igrep 执行；流式 AgentRun | 未决/失败 run trace + DSH/igrep workspace；Redis 只缓存 SSE |
+| `packages/chat` | 接收不可变 Turn 快照；内嵌 Pi/igrep 执行；流式 AgentRun | 未决/失败 run trace + Pi/igrep workspace；Redis 只缓存 SSE |
 | `packages/gen` | 图片/视频 provider 执行与不可变终态记录 | Blob + Main/Gen durable protocol |
 | `packages/admin` | 运营界面；写操作进入 Main authority | 无独立产品数据库 |
 | `packages/shared` | 跨包协议、Zod schema 和稳定类型 | 无运行时权威 |
@@ -24,7 +24,7 @@ Browser
      -> Main PostgreSQL: transaction creates user message + pending assistant Turn
      -> signed immutable execution snapshot
         -> Chat: local AgentRun
-           -> Chat embedded agent-runtime: DSH model/tool loop
+           -> Chat embedded agent-runtime: Pi model/tool loop
               -> image/video ToolEffect
                  -> Main: entitlement + reserve + Generation Request/Attempt
                     -> Gen: provider execution
@@ -34,7 +34,7 @@ Browser
   <- Main SSE/history: only selected product Turn and current-attempt attachments
 ```
 
-Chat 收到 Main terminal ACK 后才能发送 SSE `done`；随后删除成功 run 文件。长期记忆只由 Main 已提交 Turn 的异步投影更新。DSH 事件、token、工具输出和本地 transcript 都不能反向成为用户消息列表。
+Chat 收到 Main terminal ACK 后才能发送 SSE `done`；随后删除成功 run 文件。长期记忆只由 Main 已提交 Turn 的异步投影更新。Pi 事件、token、工具输出和本地 transcript 都不能反向成为用户消息列表。
 
 ## 3. 一致性边界
 
@@ -75,7 +75,7 @@ Next Route/BFF
 - 只有 Main 使用 Prisma/PostgreSQL。`packages/chat` 没有 schema、role、migration 或数据库 URL。
 - 媒体字节进入 Blob；数据库保存身份、状态、校验和、交付和结算事实。
 - `CHAT_FS_ROOT` 必须是 Chat 单 writer 可持久访问的绝对路径。多实例前必须先解决共享文件和写入仲裁；当前固定 `instances: 1`。
-- DSH/igrep 与 Chat 同进程、同生命周期；只有 Main 端口可提交产品终态或 ToolEffect。
+- Pi/igrep 与 Chat 同进程、同生命周期；只有 Main 端口可提交产品终态或 ToolEffect。
 
 ## 7. 架构不变量
 

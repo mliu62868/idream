@@ -1,7 +1,7 @@
 import type { ChatToolDefinition } from "@idream/shared";
 import type { PreparedTurnMessage } from "./contracts";
 
-// DSH can attach tool provenance even to plain text, without a tool-result block.
+// Main identities survive execution context edits until the final wire projection.
 export type ModelInputMessage = PreparedTurnMessage;
 
 /** Remove only an immutable history exchange, never a current execution step. */

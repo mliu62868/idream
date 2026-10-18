@@ -2,8 +2,6 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import BasicCompactionEngine from "@deepseek-ai/dsh-compaction-basic";
-import { LlmAdapter, LlmError, type GenerateOptions, type StreamChunk, type TokenUsage } from "@deepseek-ai/dsh-llm";
 import type {
   CompanionEvent,
   CompanionInvocation,
@@ -21,7 +19,7 @@ import {
   type CompanionRuntimePort,
 } from "./engine";
 import { AttemptWorkspaceStore } from "./workspace";
-import { OpenAiCompatibleAdapter } from "./openai-adapter";
+import { OpenAiCompatibleAdapter, ProviderError, type OpenAiCompatibleAdapterOptions, type TokenUsage } from "./openai-adapter";
 import { compilePreparedTurn } from "../prepared-turn";
 import { resolvePolicy } from "../policy";
 import type { BuiltContext } from "../context";
@@ -42,130 +40,39 @@ afterEach(async () => {
   await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
-class OneStepAdapter extends LlmAdapter {
-  async *stream(): AsyncIterable<StreamChunk> {
-    const text = "Tonight, every blue-lit window remembers us.";
-    yield { type: "block-start", index: 0, blockType: "text" };
-    yield { type: "text-delta", index: 0, text };
-    yield { type: "block-end", index: 0, block: { type: "text", text } };
-    yield { type: "usage", usage: { inputTokens: 21, outputTokens: 9, reasoningTokens: 2 } };
-    yield {
-      type: "finish",
-      reason: { kind: "stop" },
-      replayState: { response: { id: "provider-request-1", provider: "DeepSeek" } },
-    };
+type WireRequest = { messages: Array<{role:string; content:string;tool_call_id?:string}>; tools?: Array<{function:{name:string}}> };
+function response(delta: unknown, finish = "stop", usage?: TokenUsage): Response {
+  return new Response(`data: ${JSON.stringify({ id: "provider-request-1", provider: "DeepSeek", choices: [{delta, finish_reason:finish}],
+    ...(usage ? {usage:{prompt_tokens:usage.inputTokens+(usage.cacheReadTokens??0),completion_tokens:usage.outputTokens,
+      prompt_tokens_details:{cached_tokens:usage.cacheReadTokens??0},completion_tokens_details:{reasoning_tokens:usage.reasoningTokens??0}}}:{}),
+  })}\n\ndata: [DONE]\n\n`);
+}
+class FixtureAdapter extends OpenAiCompatibleAdapter {
+  constructor(private readonly fixture: OpenAiCompatibleAdapterOptions) { super({maxInputTokens:8000,...fixture}); }
+  bind(profile: Parameters<CompanionEngineOptions["adapter"]>[0], policy: Parameters<CompanionEngineOptions["adapter"]>[1]) {
+    return new OpenAiCompatibleAdapter({...this.fixture, profile, ...policy});
   }
 }
-
-class ToolThenTextAdapter extends LlmAdapter {
-  calls = 0;
-
-  constructor(
-    private readonly imagePrompt = "Mira fully nude at the blue-lit observatory tonight",
-    private readonly reply = "Give me a moment, love.",
-    private readonly requestedNudity: "unspecified" | "none" | "full" = "full",
-  ) {
-    super();
-  }
-
-  async *stream(): AsyncIterable<StreamChunk> {
-    this.calls += 1;
-    if (this.calls === 1) {
-      const args = JSON.stringify({ prompt: this.imagePrompt, subject: "companion", requestedNudity: this.requestedNudity });
-      yield { type: "block-start", index: 0, blockType: "tool-call" };
-      yield {
-        type: "tool-call-delta",
-        index: 0,
-        id: "call-image-1" as never,
-        name: "generate_image_async",
-        argumentsDelta: args,
-      };
-      yield {
-        type: "block-end",
-        index: 0,
-        block: {
-          type: "tool-call",
-          id: "call-image-1" as never,
-          name: "generate_image_async",
-          arguments: args,
-        },
-      };
-      yield { type: "finish", reason: { kind: "tool-calls" } };
-      return;
-    }
-    const text = this.reply;
-    yield { type: "block-start", index: 0, blockType: "text" };
-    yield { type: "text-delta", index: 0, text };
-    yield { type: "block-end", index: 0, block: { type: "text", text } };
-    yield { type: "finish", reason: { kind: "stop" } };
+class OneStepAdapter extends FixtureAdapter {
+  constructor(){super({profile:invocation().preparedTurn.profile,apiKey:"fixture",fetch:async()=>response({content:"Tonight, every blue-lit window remembers us."},"stop",{inputTokens:21,outputTokens:9,reasoningTokens:2})});}
+}
+class ToolThenTextAdapter extends FixtureAdapter {
+  calls=0;
+  constructor(prompt="Mira fully nude at the blue-lit observatory tonight",reply="Give me a moment, love.",requestedNudity:"unspecified"|"none"|"full"="full",leadIn="") {
+    super({profile:invocation().preparedTurn.profile,apiKey:"fixture",fetch:async()=>{
+      this.calls++;
+      return this.calls===1 ? response({... (leadIn?{content:leadIn}:{}),tool_calls:[{index:0,id:"call-image-1",function:{name:"generate_image_async",arguments:JSON.stringify({prompt,subject:"companion",requestedNudity})}}]},"tool_calls") : response({content:reply});
+    }});
   }
 }
-
-/** 与工具调用同一步说话：这正是用户读到的那句台词的来源。 */
-class LeadInThenToolAdapter extends LlmAdapter {
-  calls = 0;
-
-  constructor(private readonly leadIn: string) {
-    super();
-  }
-
-  async *stream(): AsyncIterable<StreamChunk> {
-    this.calls += 1;
-    if (this.calls > 1) {
-      const text = "Give me a moment, love.";
-      yield { type: "block-start", index: 0, blockType: "text" };
-      yield { type: "text-delta", index: 0, text };
-      yield { type: "block-end", index: 0, block: { type: "text", text } };
-      yield { type: "finish", reason: { kind: "stop" } };
-      return;
-    }
-    const args = JSON.stringify({ prompt: "Mira at the blue-lit observatory tonight", subject: "companion" });
-    yield { type: "block-start", index: 0, blockType: "text" };
-    yield { type: "text-delta", index: 0, text: this.leadIn };
-    yield { type: "block-end", index: 0, block: { type: "text", text: this.leadIn } };
-    yield { type: "block-start", index: 1, blockType: "tool-call" };
-    yield {
-      type: "tool-call-delta",
-      index: 1,
-      id: "call-image-1" as never,
-      name: "generate_image_async",
-      argumentsDelta: args,
-    };
-    yield {
-      type: "block-end",
-      index: 1,
-      block: {
-        type: "tool-call",
-        id: "call-image-1" as never,
-        name: "generate_image_async",
-        arguments: args,
-      },
-    };
-    yield { type: "finish", reason: { kind: "tool-calls" } };
-  }
+class LeadInThenToolAdapter extends ToolThenTextAdapter { constructor(leadIn:string){super(undefined,undefined,undefined,leadIn);} }
+class BlockingAdapter extends FixtureAdapter {
+  constructor(){super({profile:invocation().preparedTurn.profile,apiKey:"fixture",fetch:async(_url,init)=>new Promise<Response>((_resolve,reject)=>{
+    const abort=()=>reject(init?.signal?.reason??new Error("aborted"));if(init?.signal?.aborted)abort();else init?.signal?.addEventListener("abort",abort,{once:true});
+  })});}
 }
-
-class BlockingAdapter extends LlmAdapter {
-  async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-    await new Promise<never>((_resolve, reject) => {
-      const abort = () => reject(options.signal?.reason ?? new Error("aborted"));
-      if (options.signal?.aborted) abort();
-      else options.signal?.addEventListener("abort", abort, { once: true });
-    });
-  }
-}
-
-class UnreachableProviderAdapter extends LlmAdapter {
-  async *stream(): AsyncIterable<StreamChunk> {
-    throw new LlmError("OpenAI-compatible provider is unreachable", "TRANSPORT");
-  }
-}
-
-class FirstTokenTimeoutAdapter extends LlmAdapter {
-  async *stream(): AsyncIterable<StreamChunk> {
-    throw new LlmError("model first-token timeout", "MODEL_FIRST_TOKEN_TIMEOUT");
-  }
-}
+class UnreachableProviderAdapter extends FixtureAdapter { constructor(){super({profile:invocation().preparedTurn.profile,apiKey:"fixture",fetch:async()=>{throw new ProviderError("unreachable","TRANSPORT");}});} }
+class FirstTokenTimeoutAdapter extends FixtureAdapter { constructor(){super({profile:invocation().preparedTurn.profile,apiKey:"fixture",fetch:async()=>{throw new ProviderError("timeout","MODEL_FIRST_TOKEN_TIMEOUT");}});} }
 
 function invocation(withTool = false): CompanionInvocation {
   const memoryMode = "private" as const;
@@ -244,7 +151,7 @@ function imageInvocation(): CompanionInvocation {
 }
 
 async function engine(
-  adapter: LlmAdapter,
+  adapter: FixtureAdapter,
   memoryBuilder?: CompanionEngineOptions["memoryBuilder"],
   overrides: Partial<CompanionEngineOptions> = {},
 ): Promise<CompanionEngine> {
@@ -255,9 +162,8 @@ async function engine(
       canonicalRoot: join(root, "canonical"),
       privateRoot: join(root, "private"),
     }),
-    plugin: async () => ({ name: "igrep", Compaction: BasicCompactionEngine, apply() {} }),
-    adapter: () => adapter,
-    igrepCommand: "igrep",
+    adapter: (profile, policy) => adapter.bind(profile, policy),
+    igrep: { command: "igrep", env: { IGREP_NO_CACHE: "1" } },
     igrepLlm: IGREP_LLM,
     ...(memoryBuilder ? { memoryBuilder } : {}),
     ...overrides,
@@ -276,41 +182,14 @@ function normalInvocation(): CompanionInvocation {
   };
 }
 
-class MemoryReplyAdapter extends LlmAdapter {
-  readonly requests: GenerateOptions[] = [];
-
-  constructor(
-    private readonly text: string,
-    private readonly nativeCall = false,
-    private readonly usages: readonly (TokenUsage | undefined)[] = [],
-    private readonly provisionalText = "",
-  ) { super(); }
-
-  async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-    this.requests.push(options);
-    if (this.nativeCall && this.requests.length === 1) {
-      if (this.provisionalText) {
-        yield { type: "block-start", index: 0, blockType: "text" };
-        yield { type: "text-delta", index: 0, text: this.provisionalText };
-        yield { type: "block-end", index: 0, block: { type: "text", text: this.provisionalText } };
-      }
-      const index = this.provisionalText ? 1 : 0;
-      const args = JSON.stringify({ query: "rooftop code word" });
-      yield { type: "block-start", index, blockType: "tool-call" };
-      yield { type: "tool-call-delta", index, id: "memory-1" as never,
-        name: "memory_search", argumentsDelta: args };
-      yield { type: "block-end", index, block: { type: "tool-call",
-        id: "memory-1" as never, name: "memory_search", arguments: args } };
-      if (this.usages[0]) yield { type: "usage", usage: this.usages[0] };
-      yield { type: "finish", reason: { kind: "tool-calls" } };
-      return;
-    }
-    yield { type: "block-start", index: 0, blockType: "text" };
-    yield { type: "text-delta", index: 0, text: this.text };
-    yield { type: "block-end", index: 0, block: { type: "text", text: this.text } };
-    const usage = this.usages[this.requests.length - 1];
-    if (usage) yield { type: "usage", usage };
-    yield { type: "finish", reason: { kind: "stop" } };
+class MemoryReplyAdapter extends FixtureAdapter {
+  readonly requests: WireRequest[]=[];
+  constructor(text:string,nativeCall=false,usages:readonly(TokenUsage|undefined)[]=[],provisionalText="") {
+    super({profile:invocation().preparedTurn.profile,apiKey:"fixture",fetch:async(_url,init)=>{
+      this.requests.push(JSON.parse(String(init?.body)));
+      if(nativeCall&&this.requests.length===1)return response({...(provisionalText?{content:provisionalText}:{}),tool_calls:[{index:0,id:"memory-1",function:{name:"memory_search",arguments:JSON.stringify({query:"rooftop code word"})}}]},"tool_calls",usages[0]);
+      return response({content:text},"stop",usages[this.requests.length-1]);
+    }});
   }
 }
 
@@ -319,8 +198,8 @@ const recallHit = { citation: "memory/dialogues/deepseek-harness-rooftop.jsonl#L
 // The engine speaks the real igrep protocol; only the subprocess is replaced,
 // so wake/recall parsing and note rendering stay under test here.
 const memoryPorts: Partial<CompanionEngineOptions> = {
-  runIgrep: async ({ args }) => {
-    if (args.includes("wake")) return { markdownContext: "" };
+  runIgrep: async ({ args, stdin }) => {
+    if (args.includes("wake")) return { schema: "igrep.mem/1", provider: "igrep", action: "wake", workspaceRoot: args[args.indexOf("--workspace") + 1], markdownContext: "", warnings: [] };
     if (args.includes("reproject")) {
       const workspace = args[args.indexOf("--workspace") + 1]!;
       const at = "2026-09-30T23:55:00.000Z";
@@ -330,9 +209,9 @@ const memoryPorts: Partial<CompanionEngineOptions> = {
         role: "user", content: recallHit.snippet, source_at: { instant_utc: at },
       }) + "\n");
       await writeFile(join(workspace, ".igrep/mem/memory/dialogues/deepseek-harness-rooftop.jsonl"), JSON.stringify([at, recallHit.snippet]) + "\n");
-      return { provider: "igrep", action: "reproject", migrated: false };
+      return { schema: "igrep.mem/1", provider: "igrep", action: "reproject", migrated: false };
     }
-    return { results: [recallHit] };
+    return { schema: "igrep.mem/1", provider: "igrep", action: "memory-search", workspaceRoot: JSON.parse(stdin!).workspace, warnings: [], results: [recallHit] };
   },
 };
 
@@ -385,7 +264,7 @@ describe("Chat embedded companion runtime", () => {
   ])("preserves complete or unknown usage across native image and answer requests: $missingAttempt $zero", async ({ missingAttempt, zero, expected }) => {
     const value = imageInvocation();
     let requests = 0;
-    const adapter = new OpenAiCompatibleAdapter({
+    const adapter = new FixtureAdapter({
       profile: value.preparedTurn.profile, apiKey: "fixture-key",
       fetch: async () => {
         requests++;
@@ -429,7 +308,7 @@ describe("Chat embedded companion runtime", () => {
     await first;
   });
 
-  it.each([true, false])("compacts a free-tier Turn through DSH and accounts for known or missing summary usage (%s)", async (withSummaryUsage) => {
+  it.each([true, false])("compacts a free-tier Turn through Pi and accounts for known or missing summary usage (%s)", async (withSummaryUsage) => {
     const policy = resolvePolicy({ modelTier: "free", unlimitedMessages: false, voiceEnabled: false, imageToolEnabled: false });
     const source: BuiltContext = {
       userLocale: "en", hasRecentImageContext: false,
@@ -446,16 +325,16 @@ describe("Chat embedded companion runtime", () => {
       recentMessages: Array.from({ length: 7 }, (_, index) => ({
         id: `message-${index}`, role: index % 2 === 0 ? "user" : "assistant",
         // Leave room for the product contract and the distinct clock authorities. The additional
-        // DSH memory guidance and tool schema must still force one whole exchange out.
+        // Pi memory guidance and tool schema must still force one whole exchange out.
         content: index === 6 ? "How are you tonight?" : `Established fact ${index}: ${"t".repeat(3_400)}`,
       })),
       scene: { schemaVersion: 1, version: 1, location: "the library", time: "tonight", participants: ["Mara"], emotionalBeat: "calm", unresolvedThreads: [] },
       sceneVersion: 1, lastExchangeAt: null, dropped: [], contextRevision: 0n,
     };
     const { context: _context, ...compiled } = compilePreparedTurn(source, "message-6", new Date("2026-08-24T15:04:00Z"));
-    // Current snapshots trim old exchanges for the runtime reserve, so DSH compaction is
+    // Current snapshots trim old exchanges for the runtime reserve, so Pi compaction is
     // only a last resort. A snapshot admitted before that reserve (replayed on recovery)
-    // still carries the whole transcript; DSH must compact it safely.
+    // still carries the whole transcript; Pi must compact it safely.
     expect(compiled.budget.dropped).toEqual(["transcript"]);
     const firstReplay = compiled.messages.findIndex(message => message.sourceKind === "replay");
     const preparedTurn = {
@@ -470,14 +349,7 @@ describe("Chat embedded companion runtime", () => {
     let requests = 0;
     const runtime = await engine(new OneStepAdapter(), undefined, {
       ...memoryPorts,
-      plugin: async () => ({ name: "igrep", Compaction: BasicCompactionEngine, inject: ["tools"], apply(ctx) {
-        ctx.tools.register({ name: "memory_search", description: "Recall shared facts.",
-          parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
-          output: { schema: { type: "object", properties: {} }, render: () => [] },
-          async execute() { return { results: [] }; },
-        });
-      } }),
-      adapter: (profile, requestPolicy) => new OpenAiCompatibleAdapter({
+      adapter: (profile, requestPolicy) => new FixtureAdapter({
         profile, ...requestPolicy, apiKey: "fixture-key",
         fetch: async (_url, init) => {
           requests += 1;
@@ -498,13 +370,14 @@ describe("Chat embedded companion runtime", () => {
     const evidence = connection.candidates[0]?.modelRequests?.at(-1);
     expect(evidence?.droppedReplayMessageIds).toBeUndefined();
     expect(connection.candidates[0]?.modelRequests?.[0]?.purpose).toBe("compaction");
-    for (const text of ["Established fact 0:", "Established fact 5:"]) expect(bodies[0]).toContain(text);
+    for (const text of ["Established fact 0:", "Established fact 3:"]) expect(bodies[0]).toContain(text);
     expect(evidence?.bodyDigest).toBe(createHash("sha256").update(body).digest("hex"));
     expect(evidence?.estimatedInputTokens).toBe(Math.ceil(JSON.stringify({ messages: request.messages, tools: request.tools }).length / 4));
     expect(evidence?.estimatedInputTokens).toBeLessThanOrEqual(preparedTurn.budget.maxInputTokens);
     const wire = JSON.stringify(request.messages);
     expect(wire).not.toContain("Established fact 0:");
     expect(wire).not.toContain("Established fact 1:");
+    for (const text of ["Established fact 4:", "Established fact 5:"]) expect(wire).toContain(text);
     for (const text of ["Stay specific and grounded.", "the library", "How are you tonight?", "memory_search"]) expect(wire).toContain(text);
     expect(source.recentMessages).toHaveLength(7);
   });
@@ -516,8 +389,8 @@ describe("Chat embedded companion runtime", () => {
       runIgrep: async (options) => {
         operations.push(options.args[1]!);
         return options.args[1] === "reproject"
-          ? { provider: "igrep", action: "reproject", migrated: false }
-          : options.args[1] === "wake" ? { markdownContext: "" } : { results: [] };
+          ? { schema: "igrep.mem/1", provider: "igrep", action: "reproject", migrated: false }
+          : options.args[1] === "wake" ? { schema: "igrep.mem/1", provider: "igrep", action: "wake", workspaceRoot: options.args[options.args.indexOf("--workspace") + 1], markdownContext: "", warnings: [] } : { schema: "igrep.mem/1", provider: "igrep", action: "memory-search", workspaceRoot: JSON.parse(options.stdin!).workspace, warnings: [], results: [] };
       },
     });
     const connection = port();
@@ -527,7 +400,7 @@ describe("Chat embedded companion runtime", () => {
   });
 
   it.each(["length", "empty", "oversize"].flatMap(rejection => [true, false].map(withUsage => ({ rejection, withUsage }))))(
-    "accounts for a rejected $rejection summary independently of its completion anchor (receipt=$withUsage)",
+    "fails closed on a rejected $rejection summary while retaining its physical receipt (receipt=$withUsage)",
     async ({ rejection, withUsage }) => {
       const value = invocation();
       value.preparedTurn.budget.maxInputTokens = 6_000;
@@ -539,14 +412,7 @@ describe("Chat embedded companion runtime", () => {
       let normalCalls = 0;
       const requests: Array<string | undefined> = [];
       const runtime = await engine(new OneStepAdapter(), undefined, {
-        plugin: async () => ({ name: "igrep", Compaction: BasicCompactionEngine, inject: ["tools"], apply(ctx) {
-          ctx.tools.register({ name: "igrep_search", description: "Find an observation.",
-            parameters: { type: "object", properties: { user_question: { type: "string" } }, required: ["user_question"] },
-            output: { schema: { type: "object", properties: {} }, render: () => [{ type: "text", text: "Original observation." }] },
-            async execute() { return { results: [{ citation: "controlled:1", snippet: "Original observation." }] }; },
-          });
-        } }),
-        adapter: (profile, policy) => new OpenAiCompatibleAdapter({
+        adapter: (profile, policy) => new FixtureAdapter({
           profile, ...policy, apiKey: "fixture-key",
           observeRequest: evidence => { purpose = evidence.purpose; policy.observeRequest(evidence); },
           fetch: async () => {
@@ -565,11 +431,13 @@ describe("Chat embedded companion runtime", () => {
       const connection = port();
       await runtime.run(value, connection.runtimePort);
 
-      expect(requests).toEqual([undefined, "compaction", undefined]);
+      expect(requests).toEqual(["compaction"]);
       expect(connection.events).toContainEqual(expect.objectContaining({ type: "igrep_observation", operation: "compaction", outcome: "failure" }));
-      expect(connection.candidates).toHaveLength(1);
-      expect(connection.candidates[0]?.usage).toEqual(withUsage ? { promptTokens: 300, completionTokens: 30, reasoningTokens: 0 } : null);
-      expect(connection.events.filter(event => event.type === "usage")).toHaveLength(withUsage ? 3 : 2);
+      // Required summaries no longer fall back to the upstream coding prompt or
+      // continue with rejected context. Every dispatched summary still has a receipt.
+      expect(connection.candidates).toHaveLength(0);
+      expect(connection.events.at(-1)?.type).toBe("failed");
+      expect(connection.events.filter(event => event.type === "usage")).toHaveLength(withUsage ? 1 : 0);
     },
   );
 
@@ -583,7 +451,7 @@ describe("Chat embedded companion runtime", () => {
     expect(connection.events.at(-1)).toMatchObject({ type: "failed" });
   });
 
-  it.each([false, true])("preserves group speakers through DSH into the provider request (image=%s)", async (image) => {
+  it.each([false, true])("preserves group speakers through Pi into the provider request (image=%s)", async (image) => {
     const value = image ? imageInvocation() : invocation();
     const speakers = [
       { characterId: "briar", sessionId: "briar-session", name: "Briar" },
@@ -596,7 +464,7 @@ describe("Chat embedded companion runtime", () => {
       { id: "preferences:current", sourceKind: "plugin", role: "user", content: "Saved interaction preferences: use a single short sentence." },
     );
     const requests: Array<{ messages: unknown[] }> = [];
-    const adapter = new OpenAiCompatibleAdapter({
+    const adapter = new FixtureAdapter({
       profile: value.preparedTurn.profile,
       apiKey: "fixture-key",
       fetch: async (_url, init) => {
@@ -622,7 +490,7 @@ describe("Chat embedded companion runtime", () => {
   });
 
   // SPEC (2026-10-08): budget-omitted dialogue is not seeded into the live session, so
-  // a long conversation does not cross DSH's compaction trigger on every turn.
+  // a long conversation does not cross Pi's compaction trigger on every turn.
   it("does not seed dialogue the PreparedTurn omitted for budget", () => {
     const value = invocation();
     value.preparedTurn.omittedMessages = [{ id: "old-1", sourceKind: "replay", role: "user", content: "An old line trimmed for budget." }];
@@ -630,89 +498,40 @@ describe("Chat embedded companion runtime", () => {
     expect(texts.some(text => text.includes("An old line trimmed for budget."))).toBe(false);
   });
 
-  it.each([false, true])("binds recalled group speakers to original events without altering passages (invalid=%s)", async (invalid) => {
-    const value = invocation();
-    const speakers = [
-      { characterId: "briar", sessionId: "briar-session", name: "Briar" },
-      { characterId: "cedar", sessionId: "cedar-session", name: "Cedar" },
-      { characterId: value.characterId, sessionId: value.sessionId, name: value.preparedTurn.characterName },
-    ];
-    const originals = ["I brought the cup.\n原文 ␊", "I moved the book.", "I carried the map."];
-    // Retained group history: omitted dialogue is no longer seeded (it stays searchable
-    // through igrep_search), so speaker binding is exercised on seeded passages.
-    value.preparedTurn.messages.splice(value.preparedTurn.messages.length - 1, 0, ...speakers.map((speaker, index) => ({
-      id: `group-${index}`, sourceKind: "replay" as const, role: "assistant" as const,
-      ...(index < 2 ? { speaker } : {}), content: originals[index]!,
-    })));
-    const sources = buildReplaySeed(value).filter(event => event.type === "assistant/message");
-    const hits = sources.map((source, index) => ({
-      id: `seq:${source.seq}#1`, ref: `seq:${invalid && index === 0 ? 999_999 : source.seq}`,
-      kind: "assistant/message", title: "assistant/message", snippet: originals[index]!,
-    }));
-    const requests: Array<{ messages: { role: string; content: string }[] }> = [];
-    const runtime = await engine(new OneStepAdapter(), undefined, {
-      plugin: async () => ({ name: "igrep", Compaction: BasicCompactionEngine, inject: ["tools"], apply(ctx) {
-        ctx.tools.register({ name: "session_recall", description: "Recall archived dialogue.", parameters: { type: "object", properties: {} },
-          output: { schema: { type: "object", properties: {} }, render: (_args, result) => [{ type: "text", text: JSON.stringify(result) }] },
-          async execute() { return { archived: { complete: true }, hits }; },
-        });
-      } }),
-      adapter: (profile, policy) => new OpenAiCompatibleAdapter({
-        profile, ...policy, apiKey: "fixture-key",
-        fetch: async (_url, init) => {
-          requests.push(JSON.parse(String(init?.body)));
-          const first = requests.length === 1;
-          return new Response(`data: ${JSON.stringify({ choices: [{ delta: first
-            ? { tool_calls: [{ index: 0, id: "group-recall", function: { name: "session_recall", arguments: "{}" } }] }
-            : { content: "Ready." }, finish_reason: first ? "tool_calls" : "stop" }] })}\n\ndata: [DONE]\n\n`);
-        },
-      }),
-    });
-    const connection = port();
-    await runtime.run(value, connection.runtimePort);
-    expect(connection.candidates).toHaveLength(1);
-    const messages = requests[1]!.messages;
-    const tool = messages.find(message => message.role === "tool")!;
-    expect(connection.events).toContainEqual(expect.objectContaining({ type: "igrep_observation", operation: "session", outcome: invalid ? "failure" : "hit" }));
-    if (invalid) {
-      expect(tool.content).toContain("unverifiable evidence");
-      expect(messages.some(message => message.role === "user" && message.content.includes("Speakers for recalled"))).toBe(false);
-    } else {
-      expect(JSON.parse(tool.content).hits).toEqual(hits);
-      for (const [index, speaker] of speakers.entries()) {
-        expect(messages.some(message => message.role === "user" && message.content.includes(`${hits[index]!.id} ${JSON.stringify(speaker)}`))).toBe(true);
-      }
+  it.each([false, true])("binds recalled group speakers to original entries without altering passages (invalid=%s)", async (invalid) => {
+    const value=invocation();
+    const speakers=[{characterId:"briar",sessionId:"briar-session",name:"Briar"},{characterId:"cedar",sessionId:"cedar-session",name:"Cedar"}];
+    const originals=["I brought the cup.\n原文 ␊","I moved the book."];
+    value.preparedTurn.omittedMessages=speakers.map((speaker,index)=>({id:`group-${index}`,sourceKind:"replay",role:"assistant",speaker,content:originals[index]!}));
+    const ids=originals.map((_text,index)=>`attempt:${value.attemptId}/main:group-${invalid&&index===0?999:index}/block:0/byte:0`);
+    const requests:WireRequest[]=[];
+    const runtime=await engine(new FixtureAdapter({profile:value.preparedTurn.profile,apiKey:"fixture",fetch:async(_url,init)=>{
+      requests.push(JSON.parse(String(init?.body)));
+      return requests.length===1?response({tool_calls:[{index:0,id:"recall",function:{name:"session_recall",arguments:JSON.stringify({ids})}}]},"tool_calls"):response({content:"Ready."});
+    }}));
+    const connection=port();await runtime.run(value,connection.runtimePort);
+    expect(connection.events).toContainEqual(expect.objectContaining({type:"igrep_observation",operation:"session",outcome:invalid?"failure":"hit"}));
+    expect(requests).toHaveLength(invalid?1:2);
+    expect(connection.candidates).toHaveLength(invalid?0:1);
+    if(!invalid){
+      const hits=JSON.parse(requests[1]!.messages.find(message=>message.role==="tool")!.content);
+      for(const [index,hit]of hits.entries()){expect(hit.content).toBe(originals[index]);expect(hit.speaker).toEqual(speakers[index]);}
     }
   });
 
-  it.each(["normal", "private"] as const)("restricts plugin tools in %s mode at presentation and dispatch", async (mode) => {
-    let writes = 0;
-    const denied: boolean[] = [];
-    const adapter = new MemoryReplyAdapter("I can read only the permitted memories.");
-    const runtime = await engine(adapter, undefined, {
-      ...memoryPorts,
-      plugin: async () => ({ name: "igrep", Compaction: BasicCompactionEngine, inject: ["tools"], apply(ctx) {
-        for (const name of ["memory_search", "memory_record", "unexpected_plugin_tool"]) {
-          ctx.tools.register({ name, description: name,
-            parameters: { type: "object", properties: {} },
-            output: { schema: { type: "object", properties: {} }, render: () => [] },
-            async execute() { if (name !== "memory_search") writes += 1; return {}; },
-          });
-        }
-        ctx.on("agent/created", async ({ agent }) => {
-          for (const name of ["memory_record", "unexpected_plugin_tool"]) {
-            const result = await ctx.tools.execute({ name, arguments: {}, callId: `blocked-${name}` as never, agent, signal: new AbortController().signal });
-            denied.push(result.isError === true);
-          }
-        });
-      } }),
-    });
-    const connection = port();
-    await runtime.run(mode === "normal" ? normalInvocation() : invocation(), connection.runtimePort);
-    expect(adapter.requests).toHaveLength(1);
-    expect(adapter.requests[0]?.tools?.map(tool => tool.name) ?? []).toEqual(mode === "normal" ? ["memory_search"] : []);
-    expect(writes).toBe(0);
-    expect(denied).toEqual([true, true]);
+  it.each(["normal","private"] as const)("restricts tools in %s mode at presentation and dispatch",async(mode)=>{
+    const requests:WireRequest[]=[];const effects:CompanionToolCall[]=[];
+    const adapter=new FixtureAdapter({profile:invocation().preparedTurn.profile,apiKey:"fixture",fetch:async(_url,init)=>{
+      requests.push(JSON.parse(String(init?.body)));
+      return requests.length===1?response({tool_calls:[{index:0,id:"forbidden",function:{name:"memory_record",arguments:"{}"}},{index:1,id:"unexpected",function:{name:"unexpected_plugin_tool",arguments:"{}"}}]},"tool_calls"):response({content:"I can read only permitted memories."});
+    }});
+    const runtime=await engine(adapter,undefined,memoryPorts);const connection=port({executeTool:async call=>{effects.push(call);throw new Error("forbidden tools cannot reach Main");}});
+    await runtime.run(mode==="normal"?normalInvocation():invocation(),connection.runtimePort);
+    expect(requests).toHaveLength(2);
+    expect(requests[0]!.tools?.map(tool=>tool.function.name).sort()).toEqual((mode==="normal"?["igrep_search","memory_search","session_recall"]:["igrep_search","session_recall"]).sort());
+    expect(effects).toEqual([]);
+    const errors=requests[1]!.messages.filter(message=>message.role==="tool");expect(errors).toHaveLength(2);
+    for(const error of errors)expect(error.content).toMatch(/not available|not found|unknown|not registered/i);
     expect(connection.candidates).toHaveLength(1);
   });
 
@@ -760,27 +579,17 @@ describe("Chat embedded companion runtime", () => {
     { finalUsage: { inputTokens: 30, outputTokens: 7, reasoningTokens: 2 }, expected: { promptTokens: 55, completionTokens: 11, reasoningTokens: 3 } },
     { finalUsage: undefined, expected: null },
   ])("accounts for every model step around native memory_search, including missing final usage: $finalUsage", async ({ finalUsage, expected }) => {
-    let executed = 0;
+    let searches = 0;
     const adapter = new MemoryReplyAdapter(`We chose ${recallMarker}.`, true, [
-      { inputTokens: 20, cacheReadTokens: 3, cacheWriteTokens: 2, outputTokens: 4, reasoningTokens: 1 },
+      { inputTokens: 20, cacheReadTokens: 5, outputTokens: 4, reasoningTokens: 1 },
       finalUsage,
     ]);
     const runtime = await engine(adapter, undefined, {
-      ...memoryPorts,
-      plugin: async () => ({ name: "igrep", Compaction: BasicCompactionEngine, inject: ["tools"], apply(ctx) {
-        ctx.tools.register({
-          name: "memory_search", description: "Recall a shared conversation.",
-          parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
-          output: { schema: { type: "object", properties: { results: { type: "array", items: { type: "object", properties: {
-            citation: { type: "string" }, snippet: { type: "string" }, sourceClass: { type: "string" }, score: { type: "number" },
-          }, required: ["citation", "snippet", "sourceClass", "score"] } } }, required: ["results"] }, render: (_args, value) => [{ type: "text", text: JSON.stringify(value) }] },
-          async execute() { executed += 1; return { results: [recallHit] }; },
-        });
-      } }),
+      runIgrep: async options => { if(options.args.includes("memory-search")) searches++; return memoryPorts.runIgrep!(options); },
     });
     const connection = port();
     await runtime.run(normalInvocation(), connection.runtimePort);
-    expect(executed).toBe(1);
+    expect(searches).toBe(2);
     expect(adapter.requests).toHaveLength(2);
     expect(JSON.stringify(adapter.requests[1].messages)).toContain('"role":"tool"');
     expect(connection.candidates[0]?.content).toBe(`We chose ${recallMarker}.`);
@@ -791,6 +600,7 @@ describe("Chat embedded companion runtime", () => {
   it.each([false, true])("binds native memory_search to original dated sources and blocks invalid citations (invalid=%s)", async (invalid) => {
     const original = "Yesterday (2026-09-30), I wrote 'tomorrow we meet' in an old letter.";
     const adapter = new MemoryReplyAdapter("The old letter said tomorrow.", true, [], "I am checking the old letter.");
+    let searches = 0;
     const runtime = await engine(adapter, undefined, {
       runIgrep: async (options) => {
         if (options.args.includes("reproject")) {
@@ -804,26 +614,13 @@ describe("Chat embedded companion runtime", () => {
           await writeFile(join(workspace, ".igrep/mem/memory/dialogues", name), JSON.stringify([
             "2026-10-01T00:05:00.000Z", original.replace("tomorrow", "tomorrow（2026-10-02）"),
           ]) + "\n");
-          return { provider: "igrep", action: "reproject", migrated: false };
+          return { schema: "igrep.mem/1", provider: "igrep", action: "reproject", migrated: false };
         }
-        return options.args.includes("wake") ? { markdownContext: "" } : { results: [] };
+        if(options.args.includes("wake")) return {schema:"igrep.mem/1",provider:"igrep",action:"wake",workspaceRoot:options.args[options.args.indexOf("--workspace")+1],markdownContext:"",warnings:[]};
+        return {schema:"igrep.mem/1",provider:"igrep",action:"memory-search",workspaceRoot:JSON.parse(options.stdin!).workspace,results:++searches===1?[]:[{
+          citation:`memory/dialogues/deepseek-harness-${invalid?"foreign":"dated"}.jsonl#L1`,snippet:original.replace("tomorrow","tomorrow（2026-10-02）"),sourceClass:"dialogue",score:1,
+        }],warnings:[]};
       },
-      plugin: async () => ({ name: "igrep", Compaction: BasicCompactionEngine, inject: ["tools"], apply(ctx) {
-        ctx.tools.register({
-          name: "memory_search", description: "Recall attributed conversations.",
-          parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
-          output: {
-            schema: { type: "object", properties: { results: { type: "array", items: { type: "object", properties: {
-              citation: { type: "string" }, snippet: { type: "string" }, sourceClass: { type: "string" }, score: { type: "number" },
-            }, required: ["citation", "snippet", "sourceClass", "score"] } }, warnings: { type: "array", items: { type: "string" } } }, required: ["results"] },
-            render: (_args, value) => [{ type: "text", text: JSON.stringify(value) }],
-          },
-          async execute() { return { results: [{
-            citation: `memory/dialogues/deepseek-harness-${invalid ? "foreign" : "dated"}.jsonl#L1`,
-            snippet: original.replace("tomorrow", "tomorrow（2026-10-02）"), sourceClass: "dialogue", score: 1,
-          }], warnings: [] }; },
-        });
-      } }),
     });
     const connection = port();
     await runtime.run(normalInvocation(), connection.runtimePort);
@@ -847,17 +644,10 @@ describe("Chat embedded companion runtime", () => {
     try {
       const adapter = new MemoryReplyAdapter("Must not commit.", true);
       const runtime = await engine(adapter, undefined, {
-        runIgrep: async ({ args }) => args.includes("reproject")
-          ? { provider: "igrep", action: "reproject", migrated: false }
-          : args.includes("wake") ? { markdownContext: "" }
-            : { results: [], warnings: ["PRIVATE_MEMORY_WARNING"] },
-        plugin: async () => ({ name: "igrep", Compaction: BasicCompactionEngine, inject: ["tools"], apply(ctx) {
-          ctx.tools.register({ name: "memory_search", description: "Recall shared facts.",
-            parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
-            output: { schema: { type: "object", properties: {} }, render: () => [] },
-            async execute() { return { results: [], warnings: ["PRIVATE_NATIVE_WARNING"] }; },
-          });
-        } }),
+        runIgrep: async ({ args, stdin }) => args.includes("reproject")
+          ? { schema: "igrep.mem/1", provider: "igrep", action: "reproject", migrated: false }
+          : args.includes("wake") ? { schema: "igrep.mem/1", provider: "igrep", action: "wake", workspaceRoot: args[args.indexOf("--workspace") + 1], markdownContext: "", warnings: [] }
+            : { schema: "igrep.mem/1", provider: "igrep", action: "memory-search", workspaceRoot: JSON.parse(stdin!).workspace, results: [], warnings: ["PRIVATE_MEMORY_WARNING"] },
       });
       const connection = port();
       await runtime.run(normalInvocation(), connection.runtimePort);
@@ -991,6 +781,27 @@ describe("Chat embedded companion runtime", () => {
     expect(calls[0]?.callId).not.toContain("host-image-request");
   });
 
+  it("preserves an unknown Main effect when the host photo request loses its receipt", async () => {
+    const runtime = await engine(new OneStepAdapter());
+    const calls: CompanionToolCall[] = [];
+    const connection = port({ executeTool: async call => {
+      calls.push(call);
+      throw new Error("connection lost before Main receipt");
+    } });
+    const value = invocation(true);
+    value.preparedTurn.imageRequest = { name: "generate_image_async", requestedNudity: "unspecified", userText: "Send me a selfie." };
+
+    await runtime.run(value, connection.runtimePort);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.callId).toBe(`host-image-request:${value.attemptId}`);
+    expect(connection.candidates).toEqual([]);
+    expect(connection.events).toContainEqual(expect.objectContaining({ type: "tool_finished", outcome: "unknown" }));
+    expect(connection.events.at(-1)).toMatchObject({
+      type: "failed", error: { code: "main_effect_unconfirmed", retryable: true },
+    });
+  });
+
   it("lets the Character answer when Main rejects the image action", async () => {
     const adapter = new ToolThenTextAdapter(undefined, "One at a time, love. Let me finish the one I'm already making for you.");
     const runtime = await engine(adapter);
@@ -1117,7 +928,7 @@ describe("Chat embedded companion runtime", () => {
     let requests = 0;
     const value = imageInvocation();
     const calls: CompanionToolCall[] = [];
-    const adapter = new OpenAiCompatibleAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture-key", fetch: async () => {
+    const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture-key", fetch: async () => {
       requests++;
       return new Response(`data: ${JSON.stringify({ choices: [{
         delta: requests <= 2 ? { tool_calls: [{ index: 0, id: `image-${requests}`, function: { name: "generate_image_async", arguments: JSON.stringify({ prompt: "A portrait beside the rainy window", subject: "companion" }) } }] } : { content: "Give me a moment, love." },
@@ -1166,11 +977,7 @@ describe("Chat embedded companion runtime", () => {
   });
 
   it("classifies a fixed dynamic input overflow without claiming a provider outage", async () => {
-    const adapter = new class extends LlmAdapter {
-      async *stream(): AsyncIterable<StreamChunk> {
-        throw new LlmError("assembled model request exceeds the prepared input budget", "INPUT_BUDGET_EXCEEDED");
-      }
-    }();
+    const adapter = new FixtureAdapter({profile:invocation().preparedTurn.profile,apiKey:"fixture",fetch:async()=>{throw new ProviderError("input budget","INPUT_BUDGET_EXCEEDED");}});
     const runtime = await engine(adapter);
     const connection = port();
     await runtime.run(invocation(), connection.runtimePort);

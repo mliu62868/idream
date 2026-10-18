@@ -1,9 +1,8 @@
 import { chatSceneStateSchema, type ChatSceneState } from "@idream/shared/contracts";
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { TokenUsage } from "@deepseek-ai/dsh-llm";
 import type { CompanionModelRequestEvidence, PreparedTurnProfile } from "./agent-runtime/contracts.js";
-import { OpenAiCompatibleAdapter, type OpenAiCompatibleAdapterOptions } from "./agent-runtime/openai-adapter.js";
+import { OpenAiCompatibleAdapter, type OpenAiCompatibleAdapterOptions, type TokenUsage } from "./agent-runtime/openai-adapter.js";
 
 export type SceneState = ChatSceneState;
 
@@ -514,21 +513,20 @@ export async function projectSceneForReply(
         apiKey: options.apiKey, openRouterProviderOnly: options.openRouterProviderOnly,
         responseFormat, maxInputTokens: phase.maxInputTokens, samplingTemperature: 0,
         observeRequest: request => { evidence.requests.push({ ...request, source, phaseId: phase.id }); remainingInputTokens -= request.estimatedInputTokens; },
+        observeUsage: receipt => { usage = receipt; },
         ...(options.fetch ? { fetch: options.fetch } : {}),
       });
       let text = "", finished = false;
-      for await (const chunk of adapter.stream({
-        provider: options.profile.provider, model: options.profile.model,
-        system: system ?? (kind === "extraction" ? SCENE_PROJECTION_PROMPT : SCENE_COMPLETION_PROMPT),
-        tools: [], maxTokens: phase.maxOutputTokens, signal: options.signal,
-        messages: [{ id: `scene:${input.attemptId}:${phase.id}` as never, role: "user", source: { kind: "idream", context: "projection" }, content: [{ type: "text", text: payload }] }],
-      })) {
-        if (chunk.type === "block-end" && chunk.block.type === "text") text += chunk.block.text;
-        if (chunk.type === "usage") usage = chunk.usage;
-        if (chunk.type === "finish") {
-          finished = chunk.reason.kind === "stop";
-          const response = chunk.replayState as { response?: { id?: string; provider?: string } } | undefined;
-          phase.requestId = response?.response?.id; phase.actualProvider = response?.response?.provider;
+      for await (const chunk of adapter.stream([
+        { role: "system", content: system ?? (kind === "extraction" ? SCENE_PROJECTION_PROMPT : SCENE_COMPLETION_PROMPT), timestamp: Date.now() },
+        { role: "user", content: payload, timestamp: Date.now() },
+      ], { maxTokens: phase.maxOutputTokens, signal: options.signal })) {
+        if (chunk.type === "text_end") text += chunk.content;
+        if (chunk.type === "error") throw adapter.getError(chunk.error) ?? new Error(chunk.error.errorMessage);
+        if (chunk.type === "done") {
+          finished = chunk.reason === "stop";
+          const response = adapter.getAttribution(chunk.message);
+          phase.requestId = response?.requestId; phase.actualProvider = response?.actualProvider;
         }
       }
       options.signal.throwIfAborted();

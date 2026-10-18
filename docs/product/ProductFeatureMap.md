@@ -198,7 +198,7 @@ iDream 按 OurDream 的完整用户任务对标，而不是只比较视觉页面
 | Upgrade plan cards | `/upgrade` | SubscriptionPlan |
 | Monthly/Yearly | `/upgrade` | billingPeriod；折扣与赠币只从有效 Plan/campaign 数据读取，不在功能地图硬编码 |
 | Premium plan | `/upgrade` | plan=premium（30 日或 365 日一次性预付；included dreamcoins、image + voice enabled，videoGeneration=false；精确价格/赠币从 Plan 读取） |
-| Deluxe plan | `/upgrade` | plan=deluxe（30 日或 365 日一次性预付；更多 dreamcoins、premium generation models、更多 voice minutes；video entitlement 需 `video_gen` + provider ready 才能曝光；精确价格/赠币从 Plan 读取；DSH Chat 不承诺模型或记忆倍率） |
+| Deluxe plan | `/upgrade` | plan=deluxe（30 日或 365 日一次性预付；更多 dreamcoins、premium generation models、更多 voice minutes；video entitlement 需 `video_gen` + provider ready 才能曝光；精确价格/赠币从 Plan 读取；Pi Chat 不承诺模型或记忆倍率） |
 | Promo surfaces | home toast/banner | campaign |
 | Checkout | `/upgrade` | payment provider |
 | Dreamcoin coin store | `/upgrade` / Buy Coins | 与访问计划分开的版本化 top-up offers、报价、一次性 checkout、provider confirmation、幂等 ledger 入账与购买历史 |

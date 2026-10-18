@@ -4,21 +4,24 @@ import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promise
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+// This one-way local cutover preserves old configured paths while retiring
+// DSH runtime settings. Persisted proposal and backup formats are untouched.
 const runtimeKeys = [
-  "DSH_BOOTSTRAP_STATE_PATH",
-  "DSH_IGREP_CANONICAL_ROOT",
-  "DSH_IGREP_COMMAND",
-  "DSH_IGREP_PLUGIN_URL",
-  "DSH_IGREP_PRIVATE_ROOT",
-  "DSH_OPENROUTER_PROVIDER_ONLY",
-  "DSH_MAX_STEPS",
-  "DSH_MAX_NORMAL_AGENTS",
-  "DSH_MAX_PRIVATE_AGENTS",
-  "IGREP_LLM_API_KEY",
-  "IGREP_LLM_MODEL",
-  "IGREP_LLM_URL",
+  ["DSH_IGREP_CANONICAL_ROOT", "PI_IGREP_CANONICAL_ROOT"],
+  ["DSH_IGREP_COMMAND", "PI_IGREP_COMMAND"],
+  ["DSH_IGREP_PRIVATE_ROOT", "PI_IGREP_PRIVATE_ROOT"],
+  ["DSH_OPENROUTER_PROVIDER_ONLY", "PI_OPENROUTER_PROVIDER_ONLY"],
+  ["DSH_AGENT_DEADLINE_MS", "PI_AGENT_DEADLINE_MS"],
+  ["DSH_MAX_STEPS", "PI_MAX_STEPS"],
+  ["DSH_MAX_NORMAL_AGENTS", "PI_MAX_NORMAL_AGENTS"],
+  ["DSH_MAX_PRIVATE_AGENTS", "PI_MAX_PRIVATE_AGENTS"],
+  ...["IGREP_LLM_API_KEY", "IGREP_LLM_MODEL", "IGREP_LLM_URL", "IGREP_EMBEDDING_URL", "IGREP_EMBED_MODEL", "IGREP_EMBEDDING_API_KEY", "IGREP_EMBED_DIM", "IGREP_RERANK_URL", "IGREP_RERANK_MODEL", "IGREP_RERANK_API_KEY", "IGREP_RERANK_API_FORMAT"].map(key => [key, key]),
 ];
 const retiredKeys = new Set([
+  ...runtimeKeys.filter(([source, target]) => source !== target).map(([source]) => source),
+  "DSH_BOOTSTRAP_STATE_PATH",
+  "DSH_IGREP_PLUGIN_URL",
+  "DSH_HOME",
   "DSH_AGENT_ENABLED",
   "DSH_AGENT_TOKEN",
   "DSH_AGENT_URL",
@@ -72,10 +75,10 @@ export async function runCutover(repoRoot, options = {}) {
     : new Map();
   const chatValues = parseEnv(chatText);
   const additions = [];
-  for (const key of runtimeKeys) {
-    if (chatValues.has(key)) continue;
-    const value = legacyValues.get(key);
-    if (value !== undefined) additions.push(`${key}=${value}`);
+  for (const [source, target] of runtimeKeys) {
+    if (chatValues.has(target)) continue;
+    const value = chatValues.get(source) ?? legacyValues.get(target) ?? legacyValues.get(source);
+    if (value !== undefined) additions.push(`${target}=${value}`);
   }
   const retained = chatText
     .split(/\r?\n/u)
@@ -86,7 +89,7 @@ export async function runCutover(repoRoot, options = {}) {
     .join("\n")
     .trimEnd();
   const next = additions.length > 0
-    ? `${retained}\n\n# Embedded DSH/igrep runtime.\n${additions.join("\n")}\n`
+    ? `${retained}\n\n# Embedded Pi/igrep runtime.\n${additions.join("\n")}\n`
     : `${retained}\n`;
   if (next !== chatText) {
     const temporary = `${chatEnv}.cutover-${(options.nonce ?? randomUUID)()}`;
