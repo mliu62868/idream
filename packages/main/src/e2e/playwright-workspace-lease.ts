@@ -19,15 +19,14 @@ import path from "node:path";
 const MAIN_PACKAGE_ROOT = process.cwd().endsWith(path.join("packages", "main"))
   ? process.cwd()
   : path.resolve(process.cwd(), "packages/main");
-const ADMIN_PACKAGE_ROOT = path.resolve(MAIN_PACKAGE_ROOT, "../admin");
-const LEASE_PATH = path.resolve(
-  MAIN_PACKAGE_ROOT,
-  "data/playwright-workspace-lease.json",
-);
-const MAIN_NEXT_ENV_PATH = path.resolve(MAIN_PACKAGE_ROOT, "next-env.d.ts");
-const ADMIN_NEXT_ENV_PATH = path.resolve(ADMIN_PACKAGE_ROOT, "next-env.d.ts");
 const AUTHORITY_HOST = "127.0.0.1";
-const AUTHORITY_PORT = workspaceAuthorityPort(MAIN_PACKAGE_ROOT);
+
+type WorkspacePaths = {
+  readonly leasePath: string;
+  readonly mainNextEnvPath: string;
+  readonly adminNextEnvPath: string;
+  readonly authorityPort: number;
+};
 
 type FileSnapshot = {
   readonly exists: boolean;
@@ -77,24 +76,33 @@ export type PlaywrightWorkspaceLease = {
  */
 export async function acquirePlaywrightWorkspaceLease(
   runId: string,
+  mainPackageRoot = MAIN_PACKAGE_ROOT,
 ): Promise<PlaywrightWorkspaceLease> {
   if (!/^[a-f0-9]{8}$/.test(runId)) {
     throw new Error("Playwright workspace lease run id is invalid");
   }
-  await mkdir(path.dirname(LEASE_PATH), { recursive: true });
+  // Tests own a disposable workspace; they must never restore or delete the
+  // recovery record of a browser run in the developer's checkout.
+  const workspace: WorkspacePaths = {
+    leasePath: path.resolve(mainPackageRoot, "data/playwright-workspace-lease.json"),
+    mainNextEnvPath: path.resolve(mainPackageRoot, "next-env.d.ts"),
+    adminNextEnvPath: path.resolve(mainPackageRoot, "../admin/next-env.d.ts"),
+    authorityPort: workspaceAuthorityPort(path.resolve(mainPackageRoot)),
+  };
+  await mkdir(path.dirname(workspace.leasePath), { recursive: true });
 
-  const authority = await acquireKernelAuthority().catch(async (error) => {
+  const authority = await acquireKernelAuthority(workspace.authorityPort).catch(async (error) => {
     if (!isAddressInUseError(error)) throw error;
-    const existing = await readLeaseRecord();
+    const existing = await readLeaseRecord(workspace);
     if (existing.kind === "ready") throw workspaceOwnedError(existing.record);
     throw new Error(
-      `Another Playwright process already owns or initializes this workspace through ${AUTHORITY_HOST}:${AUTHORITY_PORT}; use a separate worktree for concurrent browser runs`,
+      `Another Playwright process already owns or initializes this workspace through ${AUTHORITY_HOST}:${workspace.authorityPort}; use a separate worktree for concurrent browser runs`,
       { cause: error },
     );
   });
 
   try {
-    const existing = await readLeaseRecord();
+    const existing = await readLeaseRecord(workspace);
     if (existing.kind === "invalid") {
       throw new Error(
         "Playwright workspace recovery record is incomplete or invalid; refusing to overwrite it automatically",
@@ -102,15 +110,15 @@ export async function acquirePlaywrightWorkspaceLease(
     }
     if (existing.kind === "ready") {
       assertRecoverableRecord(existing.record);
-      await restoreNextEnvSnapshots(existing.record);
+      await restoreNextEnvSnapshots(existing.record, workspace);
     }
 
     // The authority has already been claimed and any dead owner's snapshots
     // have already been restored. A new owner can therefore never persist the
     // previous run's generated next-env state as its own baseline.
     const snapshots = await Promise.all([
-      snapshotFile(MAIN_NEXT_ENV_PATH),
-      snapshotFile(ADMIN_NEXT_ENV_PATH),
+      snapshotFile(workspace.mainNextEnvPath),
+      snapshotFile(workspace.adminNextEnvPath),
     ]);
     const record: WorkspaceLeaseRecord = {
       schemaVersion: 2,
@@ -118,13 +126,13 @@ export async function acquirePlaywrightWorkspaceLease(
       pid: process.pid,
       runId,
       ownerId: randomUUID(),
-      authorityPort: AUTHORITY_PORT,
+      authorityPort: workspace.authorityPort,
       mainNextEnv: snapshots[0],
       adminNextEnv: snapshots[1],
     };
-    await publishLeaseRecord(record);
+    await publishLeaseRecord(record, workspace);
     return {
-      release: createLeaseRelease(record, authority),
+      release: createLeaseRelease(record, authority, workspace),
     };
   } catch (error) {
     await closeAuthority(authority);
@@ -132,7 +140,7 @@ export async function acquirePlaywrightWorkspaceLease(
   }
 }
 
-async function acquireKernelAuthority() {
+async function acquireKernelAuthority(authorityPort: number) {
   const authority = createServer((socket) => {
     socket.destroy();
   });
@@ -144,7 +152,7 @@ async function acquireKernelAuthority() {
     authority.listen(
       {
         host: AUTHORITY_HOST,
-        port: AUTHORITY_PORT,
+        port: authorityPort,
         exclusive: true,
       },
       () => {
@@ -155,8 +163,8 @@ async function acquireKernelAuthority() {
   });
 }
 
-async function publishLeaseRecord(record: WorkspaceLeaseRecord) {
-  const candidatePath = `${LEASE_PATH}.${record.ownerId}.tmp`;
+async function publishLeaseRecord(record: WorkspaceLeaseRecord, workspace: WorkspacePaths) {
+  const candidatePath = `${workspace.leasePath}.${record.ownerId}.tmp`;
   const handle = await open(candidatePath, "wx", 0o600);
   let closed = false;
   try {
@@ -166,7 +174,7 @@ async function publishLeaseRecord(record: WorkspaceLeaseRecord) {
     closed = true;
     // rename is the only visible transition: observers see either the complete
     // previous recovery record or the complete new ready record.
-    await rename(candidatePath, LEASE_PATH);
+    await rename(candidatePath, workspace.leasePath);
   } finally {
     if (!closed) await handle.close().catch(() => undefined);
     await rm(candidatePath, { force: true }).catch(() => undefined);
@@ -182,11 +190,12 @@ function workspaceOwnedError(record: RecoverableWorkspaceLeaseRecord) {
 function createLeaseRelease(
   record: WorkspaceLeaseRecord,
   authority: Server,
+  workspace: WorkspacePaths,
 ) {
   let releasePromise: Promise<void> | null = null;
   const performRelease = async () => {
     try {
-      const current = await readLeaseRecord();
+      const current = await readLeaseRecord(workspace);
       const stillOwnsRecord =
         current.kind === "ready" &&
         current.record.schemaVersion === 2 &&
@@ -197,11 +206,11 @@ function createLeaseRelease(
       // The socket remains the exclusive authority until both files have been
       // restored. Keep the recovery record when ownership metadata is damaged
       // so a later run fails closed instead of snapshotting polluted state.
-      await restoreNextEnvSnapshots(record);
+      await restoreNextEnvSnapshots(record, workspace);
       if (!stillOwnsRecord) {
         throw new Error("Playwright workspace recovery record changed");
       }
-      await rm(LEASE_PATH);
+      await rm(workspace.leasePath);
     } finally {
       await closeAuthority(authority);
     }
@@ -223,10 +232,10 @@ async function closeAuthority(authority: Server) {
   });
 }
 
-async function readLeaseRecord(): Promise<LeaseReadResult> {
+async function readLeaseRecord(workspace: WorkspacePaths): Promise<LeaseReadResult> {
   let rawValue: string;
   try {
-    rawValue = await readFile(LEASE_PATH, "utf8");
+    rawValue = await readFile(workspace.leasePath, "utf8");
   } catch (error) {
     if (isFileMissingError(error)) return { kind: "missing" };
     throw error;
@@ -254,7 +263,7 @@ async function readLeaseRecord(): Promise<LeaseReadResult> {
       value.state !== "ready" ||
       typeof value.ownerId !== "string" ||
       !/^[0-9a-f-]{36}$/.test(value.ownerId) ||
-      value.authorityPort !== AUTHORITY_PORT
+      value.authorityPort !== workspace.authorityPort
     ) {
       return { kind: "invalid" };
     }
@@ -293,10 +302,11 @@ async function snapshotFile(filePath: string): Promise<FileSnapshot> {
 
 async function restoreNextEnvSnapshots(
   record: RecoverableWorkspaceLeaseRecord,
+  workspace: WorkspacePaths,
 ) {
   await Promise.all([
-    restoreFile(MAIN_NEXT_ENV_PATH, record.mainNextEnv),
-    restoreFile(ADMIN_NEXT_ENV_PATH, record.adminNextEnv),
+    restoreFile(workspace.mainNextEnvPath, record.mainNextEnv),
+    restoreFile(workspace.adminNextEnvPath, record.adminNextEnv),
   ]);
 }
 

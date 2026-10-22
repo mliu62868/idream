@@ -14,7 +14,6 @@ import {
   createPlaywrightLifecycleVerifier,
   writePlaywrightLifecycleReceipt,
 } from "./playwright-lifecycle-receipt";
-import { acquirePlaywrightWorkspaceLease } from "./playwright-workspace-lease";
 
 describe("Playwright resource lifecycle", () => {
   it("removes only the current run's Redis prefix", async () => {
@@ -146,29 +145,6 @@ describe("Playwright resource lifecycle", () => {
       "run-owned blob root still exists",
     );
     await expect(access(environment.blobRoot)).rejects.toThrow();
-  });
-
-  it("serializes workspace runs and restores both Next environment declarations", async () => {
-    const mainPackageRoot = path.resolve(import.meta.dirname, "../..");
-    const adminPackageRoot = path.resolve(mainPackageRoot, "../admin");
-    const mainNextEnvPath = path.resolve(mainPackageRoot, "next-env.d.ts");
-    const adminNextEnvPath = path.resolve(adminPackageRoot, "next-env.d.ts");
-    const originalMain = await readFile(mainNextEnvPath);
-    const originalAdmin = await readFile(adminNextEnvPath);
-    const lease = await acquirePlaywrightWorkspaceLease("a1b2c3d4");
-
-    try {
-      await expect(
-        acquirePlaywrightWorkspaceLease("d4c3b2a1"),
-      ).rejects.toThrow("already owns this workspace");
-      await writeFile(mainNextEnvPath, "injected Main declaration\n");
-      await writeFile(adminNextEnvPath, "injected Admin declaration\n");
-    } finally {
-      await lease.release();
-    }
-
-    expect(await readFile(mainNextEnvPath)).toEqual(originalMain);
-    expect(await readFile(adminNextEnvPath)).toEqual(originalAdmin);
   });
 
 });

@@ -3753,11 +3753,12 @@ test("chat UI opens Generate with character context and renders chat image attac
   });
   // The fixture answers in one model step. Main's prepared image request is
   // then reserved by the runtime's host fallback, with no second model call.
+  // It reports token totals without a reasoning subtotal; unknown stays null.
   expect(firstTerminal).toMatchObject({
     attempt: 1,
     assistantStatus: "sent",
     terminalEvidence: {
-      replyUsage: { promptTokens: 12, completionTokens: 8, reasoningTokens: 0 },
+      replyUsage: { promptTokens: 12, completionTokens: 8, reasoningTokens: null },
       execution: { steps: 1, toolCalls: 1 },
       tools: [{
         name: "generate_image_async",
@@ -3815,7 +3816,7 @@ test("chat UI opens Generate with character context and renders chat image attac
     attempt: 2,
     assistantStatus: "sent",
     terminalEvidence: {
-      replyUsage: { promptTokens: 12, completionTokens: 8, reasoningTokens: 0 },
+      replyUsage: { promptTokens: 12, completionTokens: 8, reasoningTokens: null },
       execution: { steps: 1, toolCalls: 1 },
       tools: [{
         name: "generate_image_async",

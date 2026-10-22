@@ -1,24 +1,55 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import {
+  mkdir,
+  mkdtemp,
   readFile,
   rm,
   writeFile,
 } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { acquirePlaywrightWorkspaceLease } from "./playwright-workspace-lease";
 
-const mainRoot = path.resolve(import.meta.dirname, "../..");
-const adminRoot = path.resolve(mainRoot, "../admin");
-const leasePath = path.resolve(
-  mainRoot,
-  "data/playwright-workspace-lease.json",
-);
-const mainNextEnvPath = path.resolve(mainRoot, "next-env.d.ts");
-const adminNextEnvPath = path.resolve(adminRoot, "next-env.d.ts");
+let workspaceRoot: string;
+let mainRoot: string;
+let leasePath: string;
+let mainNextEnvPath: string;
+let adminNextEnvPath: string;
+
+beforeEach(async () => {
+  workspaceRoot = await mkdtemp(path.join(tmpdir(), "idream-workspace-lease-test-"));
+  mainRoot = path.join(workspaceRoot, "packages/main");
+  leasePath = path.join(mainRoot, "data/playwright-workspace-lease.json");
+  mainNextEnvPath = path.join(mainRoot, "next-env.d.ts");
+  adminNextEnvPath = path.resolve(mainRoot, "../admin/next-env.d.ts");
+  await mkdir(path.dirname(leasePath), { recursive: true });
+  await mkdir(path.dirname(adminNextEnvPath), { recursive: true });
+  await writeFile(mainNextEnvPath, "original-main\n");
+  await writeFile(adminNextEnvPath, "original-admin\n");
+});
+
+afterEach(async () => {
+  await rm(workspaceRoot, { recursive: true, force: true });
+});
 
 describe("Playwright workspace lease authority", () => {
+  it("serializes workspace runs and restores both Next environment declarations", async () => {
+    const originals = await snapshotNextEnvFiles();
+    const lease = await acquirePlaywrightWorkspaceLease("a1b2c3d4", mainRoot);
+    try {
+      await expect(
+        acquirePlaywrightWorkspaceLease("d4c3b2a1", mainRoot),
+      ).rejects.toThrow("already owns this workspace");
+      await writePollutedNextEnv("injected");
+    } finally {
+      await lease.release();
+    }
+    expect(await readFile(mainNextEnvPath, "utf8")).toBe(originals.main.content);
+    expect(await readFile(adminNextEnvPath, "utf8")).toBe(originals.admin.content);
+  });
+
   it("publishes exactly one complete ready record under contention", async () => {
     const attempts = await Promise.allSettled(
       [
@@ -28,7 +59,7 @@ describe("Playwright workspace lease authority", () => {
         "04040404",
         "05050505",
         "06060606",
-      ].map((runId) => acquirePlaywrightWorkspaceLease(runId)),
+      ].map((runId) => acquirePlaywrightWorkspaceLease(runId, mainRoot)),
     );
     const acquired = attempts.filter(
       (attempt): attempt is PromiseFulfilledResult<
@@ -62,7 +93,7 @@ describe("Playwright workspace lease authority", () => {
     await writeFile(leasePath, "", { flag: "wx", mode: 0o600 });
     try {
       await expect(
-        acquirePlaywrightWorkspaceLease("abcdef12"),
+        acquirePlaywrightWorkspaceLease("abcdef12", mainRoot),
       ).rejects.toThrow("incomplete or invalid");
       expect(await readFile(leasePath, "utf8")).toBe("");
     } finally {
@@ -83,7 +114,7 @@ describe("Playwright workspace lease authority", () => {
       await waitForExit(child);
       child = null;
 
-      successor = await acquirePlaywrightWorkspaceLease("2222aaaa");
+      successor = await acquirePlaywrightWorkspaceLease("2222aaaa", mainRoot);
       expect(await readFile(mainNextEnvPath, "utf8")).toBe(
         originals.main.content,
       );
@@ -103,7 +134,7 @@ describe("Playwright workspace lease authority", () => {
 
   it("single-flights concurrent release and cannot delete a successor lease", async () => {
     const originals = await snapshotNextEnvFiles();
-    const first = await acquirePlaywrightWorkspaceLease("3333aaaa");
+    const first = await acquirePlaywrightWorkspaceLease("3333aaaa", mainRoot);
     let successor:
       | Awaited<ReturnType<typeof acquirePlaywrightWorkspaceLease>>
       | null = null;
@@ -125,7 +156,7 @@ describe("Playwright workspace lease authority", () => {
         "successor-owner",
       );
       await expect(
-        acquirePlaywrightWorkspaceLease("5555cccc"),
+        acquirePlaywrightWorkspaceLease("5555cccc", mainRoot),
       ).rejects.toThrow(/already owns|already owns or initializes/);
 
       await successor.release();
@@ -152,7 +183,7 @@ function startCrashableLeaseOwner() {
   const script = `
     import { writeFile } from "node:fs/promises";
     const { acquirePlaywrightWorkspaceLease } = await import(${JSON.stringify(moduleUrl)});
-    await acquirePlaywrightWorkspaceLease("1111aaaa");
+    await acquirePlaywrightWorkspaceLease("1111aaaa", ${JSON.stringify(mainRoot)});
     await Promise.all([
       writeFile(${JSON.stringify(mainNextEnvPath)}, "dead-owner-main\\n"),
       writeFile(${JSON.stringify(adminNextEnvPath)}, "dead-owner-admin\\n"),
@@ -210,7 +241,7 @@ async function eventuallyAcquire(runId: string) {
   let lastError: unknown;
   for (let attempt = 0; attempt < 100; attempt += 1) {
     try {
-      return await acquirePlaywrightWorkspaceLease(runId);
+      return await acquirePlaywrightWorkspaceLease(runId, mainRoot);
     } catch (error) {
       lastError = error;
       if (!String(error).match(/already owns|already owns or initializes/)) {

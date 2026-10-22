@@ -6,6 +6,8 @@ import { prisma } from "@/server/lib/db";
 import { redeemCodeHash } from "@/server/lib/redeem-codes";
 import { compileUserCharacterContent, materializeUserCharacterContentVersion } from "@/server/modules/ourdream/character-soul";
 import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
+import { bindApprovalIntent } from "@/server/modules/admin-v2/approvals/intent";
+import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 
 function uniqueEmail(tag: string) {
   return `e2e-admin-${tag}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@test.local`;
@@ -74,7 +76,8 @@ async function expectAdminShellReady(page: Page, heading: string) {
     timeout: 15_000,
   });
   await expect(page.getByText("Admin access denied")).toHaveCount(0);
-  await expect(page.getByText("Loading", { exact: true })).toHaveCount(0, {
+  // Collapsed lazy sections keep their unloaded placeholders in the DOM.
+  await expect(page.getByText("Loading", { exact: true }).filter({ visible: true })).toHaveCount(0, {
     timeout: 20_000,
   });
 }
@@ -1013,15 +1016,25 @@ test("admin support inbox resolves a help desk request", async ({ page }) => {
     await page.getByRole("combobox", { name: "Support status" }).selectOption("active");
     await page.getByRole("combobox", { name: "Support SLA" }).selectOption("overdue");
     await page.getByRole("textbox", { name: "Support category" }).fill("generation");
-    await page.getByRole("textbox", { name: "Support saved view label" }).fill(viewLabel);
-    await page.getByRole("button", { name: "Save view" }).click();
-    await expect(page.getByRole("button", { name: viewLabel, exact: true })).toBeVisible({
-      timeout: 10_000,
+    // Saved views capture the committed query after the filter debounce.
+    await expect(page).toHaveURL((url) =>
+      url.searchParams.get("search") === supportNeedle &&
+      url.searchParams.get("status") === "active" &&
+      url.searchParams.get("sla") === "overdue" &&
+      url.searchParams.get("category") === "generation",
+    );
+    await page.locator("summary").filter({ hasText: "Saved Views" }).click();
+    await page.getByRole("textbox", { name: "View label", exact: true }).fill(viewLabel);
+    await page.getByRole("button", { name: "Save new", exact: true }).click();
+    const savedViewOption = page.getByRole("option", {
+      name: `${viewLabel} · v1`, exact: true, includeHidden: true,
     });
+    await expect(savedViewOption).toHaveCount(1, { timeout: 10_000 });
 
     await page.reload();
     await expectAdminShellReady(page, "Support Cases");
-    await page.getByRole("button", { name: viewLabel, exact: true }).click();
+    await page.getByRole("combobox", { name: "Select a server view", exact: true })
+      .selectOption({ label: `${viewLabel} · v1` });
     const ticketRow = page.getByRole("row").filter({ hasText: ticketId });
     await expect(ticketRow).toHaveCount(1, { timeout: 10_000 });
     await expect(page.getByRole("row").filter({ hasText: freshTicketId })).toHaveCount(0);
@@ -1053,7 +1066,7 @@ test("admin support inbox resolves a help desk request", async ({ page }) => {
     await deleteViewDialog.getByRole("textbox", { name: "Saved view name", exact: true }).fill(viewLabel);
     await deleteViewDialog.getByRole("button", { name: "Delete saved view", exact: true }).click();
     await expect(deleteViewDialog).toHaveCount(0);
-    await expect(page.getByRole("button", { name: viewLabel, exact: true })).toHaveCount(0);
+    await expect(savedViewOption).toHaveCount(0);
     await page.getByRole("button", { name: "Reset filters" }).click();
     await page.getByRole("textbox", { name: "Support search" }).fill(ticketId);
 
@@ -1233,14 +1246,18 @@ test("admin approval decisions require request-id confirmation", async ({ page }
     },
     select: { id: true },
   });
+  const approvalIntent = {
+    permissionKey: "billing.ledger.adjust",
+    action: "billing.ledger.adjust",
+    targetType: "user",
+    targetId: requester.id,
+    payload: { delta: 250 },
+  };
   const approval = await prisma.adminActionRequest.create({
     data: {
+      ...approvalIntent,
       requestedById: requester.id,
-      permissionKey: "billing.ledger.adjust",
-      action: "billing.ledger.adjust",
-      targetType: "user",
-      targetId: requester.id,
-      payload: { delta: 250 },
+      payload: toInputJson(await bindApprovalIntent(prisma, approvalIntent)),
       status: "pending",
       reason: "E2E pending approval",
     },
