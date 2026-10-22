@@ -350,7 +350,7 @@ function systemVoiceCatalog(
             id: configured,
             label: catalogVoiceLabel(configured),
             presentation: "unspecified" as const,
-            description: "Configured Fish Audio system voice",
+            description: `Configured local system voice (${env.FISH_AUDIO_MODEL})`,
           },
           ...FISH_AUDIO_CATALOG,
         ];

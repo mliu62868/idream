@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   defaults: vi.fn(),
   previewDefault: vi.fn(),
   createPorts: vi.fn(),
+  capabilities: vi.fn(),
   createPreset: vi.fn(),
   preview: vi.fn(),
   deleteVoice: vi.fn(),
@@ -16,7 +17,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/server/modules/voice-defaults", () => ({
   getVoiceDefaultSettings: mocks.defaults,
-  previewVoiceDefault: mocks.previewDefault,
+  POCKET_TTS_CATALOG: [{ id: "anna", label: "Anna", description: "Second voice" }],
 }));
 vi.mock("@/server/providers/voice/factory", () => ({ createVoicePortsForKey: mocks.createPorts }));
 vi.mock("@/server/providers", () => ({
@@ -25,7 +26,7 @@ vi.mock("@/server/providers", () => ({
 vi.mock("@/server/lib/db", () => ({
   prisma: { characterVoiceProfile: { findUnique: mocks.findProfile } },
 }));
-vi.mock("@/server/lib/env", () => ({ env: { POCKET_TTS_LANGUAGE: "english", VOICE_IDENTITY_PROVIDER: "fish-audio" } }));
+vi.mock("@/server/lib/env", () => ({ env: { POCKET_TTS_LANGUAGE: "english", POCKET_TTS_DEFAULT_VOICE_ID: "anna", VOICE_IDENTITY_PROVIDER: "fish-audio" } }));
 
 import {
   bindCharacterDraftVoice,
@@ -48,9 +49,10 @@ beforeEach(() => {
     ],
   });
   mocks.createPorts.mockReturnValue({ identity: {
-    providerKey: "pocket_tts", createPresetVoice: mocks.createPreset,
+    providerKey: "pocket_tts", inspectCapabilities: mocks.capabilities, createPresetVoice: mocks.createPreset,
     previewVoice: mocks.preview, deleteVoice: mocks.deleteVoice,
   } });
+  mocks.capabilities.mockResolvedValue({ ok: true, data: { voiceCloning: false, catalogVoices: ["alba", "anna"] } });
   mocks.createPreset.mockImplementation(async (input) => ({ ok: true, data: {
     voiceId: input.voiceId, presetVoiceId: input.presetVoiceId, model: "pocket-tts", language: "english",
   } }));
@@ -91,16 +93,24 @@ describe("character draft catalog voice", () => {
     expect(mocks.deleteVoice).toHaveBeenCalledWith({ voiceId: mocks.createPreset.mock.calls[0]![0].voiceId });
   });
 
-  it("exposes the current catalog and previews with the saved system delivery", async () => {
+  it("exposes the ready catalog and previews its selected voice", async () => {
     expect(await getCharacterDraftVoiceCatalog()).toEqual({
       provider: "pocket_tts", defaultVoiceId: "alba", items: [
         { id: "alba", label: "Alba", description: "First voice" },
         { id: "anna", label: "Anna", description: "Second voice" },
       ],
     });
-    mocks.previewDefault.mockResolvedValue({ audioBase64: "AQID" });
-    await expect(previewCharacterDraftVoice({ ...selection, text: "Hello there." })).resolves.toEqual({ audioBase64: "AQID" });
-    expect(mocks.previewDefault).toHaveBeenCalledWith({ ...selection, text: "Hello there.", delivery: DEFAULT_FISH_AUDIO_DELIVERY });
+    await expect(previewCharacterDraftVoice({ ...selection, text: "Hello there." })).resolves.toMatchObject({ audioBase64: "AQID" });
+    expect(mocks.preview).toHaveBeenCalledWith({ voiceId: "anna", text: "Hello there." });
+  });
+
+  it("keeps Pocket creation and preview available when the system default is Ming", async () => {
+    mocks.defaults.mockResolvedValue({ provider: "fish_audio", defaultVoiceId: "anna-reference", catalog: [], delivery: DEFAULT_FISH_AUDIO_DELIVERY });
+    expect(await getCharacterDraftVoiceCatalog()).toMatchObject({ provider: "pocket_tts", defaultVoiceId: "anna", items: [{ id: "anna" }] });
+    expect(await prepareCharacterDraftVoice({ ...selection, userId: "owner", draftId: "draft" })).toMatchObject({ provider: "pocket_tts", model: "pocket-tts" });
+    await previewCharacterDraftVoice({ ...selection, text: "Hello." });
+    mocks.capabilities.mockResolvedValue({ ok: false, error: { code: "offline" } });
+    expect((await getCharacterDraftVoiceCatalog()).items).toEqual([]);
   });
 
   it("creates and verifies a distinct real Pocket alias despite a Fish identity route", async () => {

@@ -93,6 +93,7 @@ const fishAudioApiUrl = new URL(
   mainEnvValue("FISH_AUDIO_API_URL", "http://127.0.0.1:8062/v1"),
 );
 const fishAudioApiToken = mainEnvValue("FISH_AUDIO_API_TOKEN");
+const fishAudioModel = mainEnvValue("FISH_AUDIO_MODEL", "ming-3.0-tts-0.5b-8bit");
 const pocketTtsApiUrl = new URL(
   mainEnvValue("POCKET_TTS_API_URL", "http://127.0.0.1:8063/v1"),
 );
@@ -156,7 +157,7 @@ module.exports = {
         HF_HUB_OFFLINE: "1",
       },
     },
-    // Optional voice-cloning MLX runtime (Breeze TTS 2; `fish_audio` provider slot)
+    // Resident Ming/Breeze MLX runtime (`fish_audio` is the persisted provider slot)
     // + durable reference-voice registry.
     {
       ...runtimeProcess("fish-audio"),
@@ -171,16 +172,19 @@ module.exports = {
           fishAudioApiUrl.port ||
             (fishAudioApiUrl.protocol === "https:" ? "443" : "80"),
         ),
-        FISH_AUDIO_MODEL: mainEnvValue(
-          "FISH_AUDIO_MODEL",
-          "breeze-tts-2-mlx-8bit",
-        ),
+        FISH_AUDIO_MODEL: fishAudioModel,
         FISH_AUDIO_MODEL_PATH: mainEnvValue(
           "FISH_AUDIO_MODEL_PATH",
           path.join(
             process.env.HOME || __dirname,
-            ".idream/models/mlx-community/Breeze-TTS-2-mlx-8bit",
+            fishAudioModel === "breeze-tts-2-mlx-8bit"
+              ? ".idream/models/mlx-community/Breeze-TTS-2-mlx-8bit"
+              : ".idream/models/mlx-community/Ming-3.0-tts-0.5B-8bit",
           ),
+        ),
+        FISH_AUDIO_CAMPLUS_MODEL_PATH: mainEnvValue(
+          "FISH_AUDIO_CAMPLUS_MODEL_PATH",
+          path.join(process.env.HOME || __dirname, ".idream/models/ming/campplus.onnx"),
         ),
         FISH_AUDIO_LANGUAGE: mainEnvValue("FISH_AUDIO_LANGUAGE", "auto"),
         FISH_AUDIO_DEFAULT_VOICE_ID: mainEnvValue(

@@ -69,10 +69,14 @@ source revision 的 production immutable topology 才能签发运行态证明。
 - `CHAT_SERVICE_URL` / `CHAT_BFF_SIGNING_SECRET`
 - `INTERNAL_TOKEN`
 - `REDIS_URL` / `BULLMQ_PREFIX`
-- `VOICE_PROVIDER=pocket-tts`：未绑定角色声音时的默认英语语音权威
-- `VOICE_IDENTITY_PROVIDER=fish-audio`：可选的参考音频克隆入口；未设置时新角色声音候选跟随 Pocket；已激活 profile 始终以自身持久化 provider 为权威
+- `VOICE_PROVIDER=fish-audio` / `FISH_AUDIO_MODEL=ming-3.0-tts-0.5b-8bit`：未绑定角色声音时由 Ming 提供默认语音；provider 名保留既有 registry、幂等和删除契约
+- `VOICE_IDENTITY_PROVIDER=fish-audio`：可选的参考音频克隆入口；未设置时新角色声音候选跟随默认 provider；已激活 profile 始终以自身持久化 provider 为权威
 - `FISH_AUDIO_*` / `POCKET_TTS_*`：两个独立 runtime 的 endpoint、token、model、language 与 voice registry
 - Main moderation、billing、Blob、Generation 和 Sentry 配置
+
+Ming 的固定依赖与权重通过 `bun run voice:ming:install` 预装，运行时离线加载；CAM++ 路径由 `FISH_AUDIO_CAMPLUS_MODEL_PATH` 指定。完整参考录音始终用于声纹条件，`ming_prompt` 只能指定有完整 WAV SHA、边界与精确转录的已核验短片段。情绪使用原生结构化指令，固定 CFG=2、temperature=0、10 steps；Breeze 的 token 采样参数不适用于 Ming。
+
+切换前先确认没有未完成语音任务，再更新配置、通过 `bun run pm2:restart` 执行受控重启，并在 Admin 保存匹配当前 provider 的系统默认声音。默认 Ming 时 Pocket 仍常驻以服务既有 catalog profile。新 clip、call、旁白保存实际 model；历史已交付资产仍可读取，同 gateway 的旧模型仅允许精确命中缓存的重播，不会用新模型重新合成。
 
 ### Chat
 

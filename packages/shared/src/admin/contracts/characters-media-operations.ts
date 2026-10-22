@@ -199,6 +199,7 @@ export const characterVoiceWorkspaceSchema = z
       "inactive",
     ]),
     runtimeVersion: z.string().trim().min(1).nullable(),
+    runtimeModel: z.string().trim().min(1).nullable().optional(),
     runtimeLanguage: z.string().trim().min(1),
     catalogVoiceIds: z.array(z.string().trim().min(1)).readonly(),
     presetRuntime: z.object({

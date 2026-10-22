@@ -105,7 +105,7 @@ async function main() {
   // 的六个默认值又抄了一遍。probe-chat-model 的超时 bug 就是这么抄出来的：
   // 抄着抄着抄成了不一样的数。这些值目前与 zod 一致，改成引用后不可能再不一致。
   const system = configuredVoiceProbeTarget(env.VOICE_PROVIDER);
-  const options = readOptions(defaultVoiceForModel(system.model));
+  const options = readOptions(defaultVoiceForProvider(system.providerKey));
   const systemReport = await runProbe({
     ...system,
     voiceId: options.voiceId,
@@ -120,7 +120,7 @@ async function main() {
       ...identityTarget,
       voiceId:
         process.env.VOICE_IDENTITY_PROBE_VOICE_ID ??
-        defaultVoiceForModel(identityTarget.model),
+        defaultVoiceForProvider(identityTarget.providerKey),
       text: options.text,
       startedAt: Date.now(),
     });
@@ -174,6 +174,8 @@ async function runProbe(input: {
     const voice = createVoicePortsForKey(input.providerKey);
     if (voice.identity) {
       const capabilities = await voice.identity.inspectCapabilities();
+      if (!capabilities.ok) throw new Error(capabilities.error.message);
+      if (!input.model || !capabilities.data.supportedModels?.includes(input.model)) throw new Error("The probe model is not supported by the healthy runtime");
       voiceCloningAvailable = capabilities.ok
         ? capabilities.data.voiceCloning
         : null;
@@ -190,6 +192,7 @@ async function runProbe(input: {
       attemptNo: 1,
       idempotencyKey: `voice-probe-${input.startedAt}:1`,
       text: input.text,
+      model: input.model ?? undefined,
       voiceId: input.voiceId,
     });
     if (!result.ok) {
@@ -447,12 +450,9 @@ function hasText(value: string | null | undefined) {
   return Boolean(value?.trim());
 }
 
-function defaultVoiceForModel(model: string | null) {
-  const normalized = model?.toLowerCase() ?? "";
-  if (normalized.includes("qwen3-tts")) return "serena";
-  if (normalized.includes("kokoro")) return "af_heart";
-  if (normalized.includes("pocket-tts")) return "anna";
-  if (normalized.includes("breeze-tts")) return "fish-female-default";
+function defaultVoiceForProvider(provider: VoiceProviderKey) {
+  if (provider === "pocket_tts") return env.POCKET_TTS_DEFAULT_VOICE_ID;
+  if (provider === "fish_audio") return env.FISH_AUDIO_DEFAULT_VOICE_ID;
   return "default";
 }
 

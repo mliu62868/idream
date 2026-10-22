@@ -20,7 +20,7 @@ const {
 } = require("./runtime-topology.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
-function asrEnvironment(environment) {
+function localAudioEnvironment(environment) {
   // Production is secret-manager owned; local audio settings share Main's
   // existing .env authority rather than a second runtime configuration file.
   if (environment.APP_ENV === "production") return environment;
@@ -29,7 +29,10 @@ function asrEnvironment(environment) {
   const { parse } = createRequire(path.join(repoRoot, "packages/main/package.json"))("dotenv");
   const configured = parse(readFileSync(envPath));
   const values = {};
-  for (const key of ["ASR_PROVIDER", "PARAKEET_ASR_API_URL", "PARAKEET_ASR_API_TOKEN"]) {
+  for (const key of [
+    "VOICE_PROVIDER", "VOICE_IDENTITY_PROVIDER", "FISH_AUDIO_PORT", "POCKET_TTS_PORT",
+    "ASR_PROVIDER", "PARAKEET_ASR_API_URL", "PARAKEET_ASR_API_TOKEN",
+  ]) {
     if (configured[key] !== undefined) values[key] = configured[key];
   }
   return { ...values, ...environment };
@@ -644,7 +647,7 @@ function verifyAsrRuntime({ spawnSync: spawn, runtimeEnv, attempts = 120, delay 
 
 function runPm2Ecosystem(options = {}) {
   const args = options.args ?? process.argv.slice(2);
-  const env = options.env ?? asrEnvironment(process.env);
+  const env = options.env ?? localAudioEnvironment(process.env);
   const spawn = options.spawnSync ?? spawnSync;
   const requestedMode = args[0] ?? "development";
   const action = args[1] ?? "start";

@@ -1,5 +1,5 @@
 import { env } from "@/server/lib/env";
-import type { VoiceClipPort, VoicePorts, VoiceProviderKey } from "../types";
+import type { VoiceClipPort, VoiceIdentityPort, VoicePorts, VoiceProviderKey } from "../types";
 import { FishAudioVoiceModel } from "./fish-audio";
 import { MockVoiceModel } from "./mock";
 import { PocketTtsVoiceModel } from "./pocket-tts";
@@ -59,8 +59,26 @@ export function createVoicePortsForKey(
   }
 }
 
-function configuredVoiceProviderKey(): VoiceProviderKey {
+export function configuredVoiceProviderKey(): VoiceProviderKey {
   if (env.VOICE_PROVIDER === "pocket-tts") return "pocket_tts";
   if (env.VOICE_PROVIDER === "fish-audio") return "fish_audio";
   return env.VOICE_PROVIDER;
+}
+
+export function configuredVoiceModel(providerKey: VoiceProviderKey): string {
+  if (providerKey === "pocket_tts") return env.POCKET_TTS_MODEL;
+  if (providerKey === "fish_audio") return env.FISH_AUDIO_MODEL;
+  return "mock";
+}
+
+export async function englishVoiceRuntimeReady(providerKey: VoiceProviderKey, identity = createVoicePortsForKey(providerKey).identity): Promise<boolean> {
+  if (providerKey === "mock" || !identity || identity.providerKey !== providerKey) return false;
+  const capabilities = await identity.inspectCapabilities();
+  return capabilities.ok && voiceRuntimeSupportsEnglish(providerKey, capabilities.data);
+}
+
+export function voiceRuntimeSupportsEnglish(providerKey: VoiceProviderKey, capabilities: Extract<Awaited<ReturnType<VoiceIdentityPort["inspectCapabilities"]>>, { ok: true }>["data"]): boolean {
+  return providerKey !== "mock" &&
+    capabilities.supportedModels?.includes(configuredVoiceModel(providerKey)) === true &&
+    capabilities.languages?.some(language => ["en", "english"].includes(language.toLowerCase())) === true;
 }

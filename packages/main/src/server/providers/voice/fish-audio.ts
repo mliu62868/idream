@@ -32,6 +32,10 @@ type FishHealthResponse = {
   runtime_version?: unknown;
   acceleration?: unknown;
   model_loaded?: unknown;
+  model?: unknown;
+  language?: unknown;
+  languages?: unknown;
+  supported_models?: unknown;
 };
 
 export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
@@ -71,6 +75,7 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
         body: rendered.data.body,
         contentType: rendered.data.contentType,
         durationMs: rendered.data.durationMs,
+        model: rendered.data.model,
         // The resident gateway applies delivery, but has no Scene/tone input.
         sceneApplied: false,
         sceneAdapter: "fish-audio-delivery-1",
@@ -80,7 +85,7 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
 
   async previewVoice(
     input: Parameters<VoiceIdentityPort["previewVoice"]>[0],
-  ) {
+  ): ReturnType<VoiceIdentityPort["previewVoice"]> {
     return this.renderVoice(input);
   }
 
@@ -170,7 +175,13 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
       typeof raw.runtime_version !== "string" ||
       raw.runtime_version.trim().length === 0 ||
       raw.acceleration !== "mlx" ||
-      raw.model_loaded !== true
+      raw.model_loaded !== true ||
+      typeof raw.model !== "string" ||
+      !Array.isArray(raw.supported_models) ||
+      !raw.supported_models.includes(this.model) ||
+      !raw.supported_models.every(model => typeof model === "string" && model.length > 0) ||
+      !Array.isArray(raw.languages) ||
+      !raw.languages.every(language => typeof language === "string" && language.length > 0)
     ) {
       return fishFailure(
         "invalid_voice_health_response",
@@ -182,6 +193,9 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
       ok: true as const,
       data: {
         voiceCloning: true,
+        model: raw.model,
+        supportedModels: raw.supported_models as string[],
+        languages: raw.languages as string[],
         runtime: raw.runtime,
         runtimeVersion: raw.runtime_version,
         acceleration: raw.acceleration,
@@ -190,6 +204,7 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
   }
 
   private async renderVoice(input: {
+    model?: string;
     ownerId?: string;
     text: string;
     voiceId?: string;
@@ -219,7 +234,7 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
           : {}),
       },
       body: JSON.stringify({
-        model: this.model,
+        model: input.model ?? this.model,
         input: text,
         voice: input.voiceId?.trim() || this.defaultVoiceId,
         response_format: "wav",
@@ -228,6 +243,9 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     });
     if (!response.ok) return response;
 
+    const model = input.model ?? this.model;
+    const receivedModel = response.data.headers.get("x-idream-voice-model");
+    if (receivedModel && receivedModel !== model) return fishFailure("voice_model_mismatch", "Voice response does not match the pinned model", false);
     const contentType = response.data.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
     if (contentType !== "audio/wav" && contentType !== "audio/x-wav") {
       return fishFailure(
@@ -245,6 +263,7 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
         body,
         contentType: "audio/wav" as const,
         durationMs,
+        model,
       },
     };
   }

@@ -25,6 +25,7 @@ describe("Character Voice clip reclaim authority", () => {
   const actor = { id: actorId, role: "admin" as const };
   const providerPayload = {
     providerKey: "mock",
+    model: "mock",
     voiceId: "fish-female-default",
     voiceAuthority: "system_default",
     systemVoiceSettingVersion: 0,
@@ -465,6 +466,21 @@ describe("Character Voice clip reclaim authority", () => {
       await expect(reclaimExpiredVoiceClip({ characterId, requestId, deps })).rejects.toMatchObject({ code: "gone" });
       expect(synthesize).not.toHaveBeenCalled();
       expect(await prisma.voiceClipRequest.findUniqueOrThrow({ where: { id: requestId } })).toMatchObject({ status: "failed", errorCode: "voice_reply_delivery_revoked", leaseOwner: null });
+    } finally { synthesize.mockRestore(); }
+  });
+
+  it("refuses an unpinned historical model without mutating its request or calling TTS", async () => {
+    const requestId = `${prefix}missing-model`;
+    const { model: _model, ...historicalPayload } = providerPayload;
+    await createExpiredRequest(requestId, { providerPayload: historicalPayload });
+    const before = await prisma.voiceClipRequest.findUniqueOrThrow({ where: { id: requestId } });
+    const synthesize = vi.spyOn(providers.voice.clip, "synthesize");
+    try {
+      await expect(reclaimExpiredVoiceClip({ characterId, requestId, deps })).rejects.toMatchObject({
+        code: "conflict", details: { reason: "voice_pinned_model_missing" },
+      });
+      expect(synthesize).not.toHaveBeenCalled();
+      expect(await prisma.voiceClipRequest.findUniqueOrThrow({ where: { id: requestId } })).toEqual(before);
     } finally { synthesize.mockRestore(); }
   });
 

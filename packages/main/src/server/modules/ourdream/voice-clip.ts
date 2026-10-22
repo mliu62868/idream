@@ -23,7 +23,7 @@ import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { resolveCharacterVoiceAuthority } from "@/server/modules/voice-defaults";
 import { providers } from "@/server/providers";
 import type { VoiceClipPort } from "@/server/providers/types";
-import { createVoiceClipPortForKey } from "@/server/providers/voice/factory";
+import { configuredVoiceModel, createVoiceClipPortForKey } from "@/server/providers/voice/factory";
 import { audioFileExtension, voiceArtifactKey, voiceProviderIdempotencyKey } from "@/server/providers/voice/idempotency";
 import { encodeVoiceClipMp3 } from "@/server/providers/voice/transcode";
 import { acceptVoiceClipQuote, signVoiceClipQuote } from "./voice-clip-quote";
@@ -80,6 +80,8 @@ export const voiceClipSynthesisPayloadSchema = z
 export const pinnedVoiceProviderPayloadSchema = z
   .object({
     providerKey: z.enum(["mock", "pocket_tts", "fish_audio"]),
+    // Historical completed rows still replay their asset; an unpinned execution fails closed.
+    model: z.string().min(1).optional(),
     voiceId: z.string().min(1),
     voiceAuthority: z.enum(["system_default", "character_clone"]),
     systemVoiceSettingVersion: z.number().int().nonnegative().nullable(),
@@ -408,6 +410,7 @@ export async function createVoiceClip(request: Request, deps: VoiceClipDependenc
   });
   const proposedProviderPayload = authority?.providerPayload ?? pinnedVoiceProviderPayloadSchema.parse({
     providerKey: voiceAuthority!.providerKey,
+    model: configuredVoiceModel(voiceAuthority!.providerKey),
     voiceId: voiceAuthority!.voiceId,
     voiceAuthority: voiceAuthority!.source,
     systemVoiceSettingVersion: voiceAuthority!.settingVersion,
@@ -500,6 +503,11 @@ export async function reclaimExpiredVoiceClip(input: {
   if (!providerPayload.success) {
     throw Errors.conflict("Voice clip request has an invalid pinned provider payload", {
       requestId: existing.id,
+    });
+  }
+  if (!providerPayload.data.model) {
+    throw Errors.conflict("This historical voice request requires an explicit model cutover before recovery", {
+      requestId: existing.id, reason: "voice_pinned_model_missing",
     });
   }
   let voiceProvider: VoiceClipPort;
@@ -667,6 +675,10 @@ async function executeOwnedVoiceClaim(input: {
   const providerPayload = pinnedVoiceProviderPayloadSchema.parse(
     claim.request.providerPayload,
   );
+  if (!providerPayload.model) {
+    await failOwnedVoiceRequest(claim, "voice_pinned_model_missing", { reason: "historical_request_requires_model_cutover" });
+    throw Errors.unavailable("This historical voice request has no pinned model; reconcile it before retrying");
+  }
   let voiceProvider = input.voiceProvider;
   try {
     voiceProvider ??= resolvePinnedVoiceProvider(providerPayload.providerKey);
@@ -735,6 +747,7 @@ async function executeOwnedVoiceClaim(input: {
     attemptNo: claim.request.attemptNo,
     idempotencyKey: providerIdempotencyKey,
     text: body.text,
+    model: providerPayload.model,
     voiceId: providerPayload.voiceId,
     tone: providerPayload.tone,
     delivery: providerPayload.delivery,
@@ -962,6 +975,7 @@ async function executeOwnedVoiceClaim(input: {
         delivery: providerPayload.delivery,
         durationMs,
         provider: providerPayload.providerKey,
+        model: result.data.model ?? providerPayload.model,
         providerKey: storageKey,
         sceneVersion: body.sceneVersion ?? 0,
         scene: body.scene ?? null,

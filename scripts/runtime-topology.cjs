@@ -30,7 +30,11 @@ const processSpecs = Object.freeze([
       development: { cwd: ".", script: "scripts/start-fish-audio.cjs", execMode: "fork" },
       production: { cwd: ".", script: "scripts/start-fish-audio.cjs", execMode: "fork" },
     },
-    watchPaths: ["scripts/start-fish-audio.cjs", "scripts/fish_audio_gateway.py"],
+    watchPaths: [
+      "scripts/start-fish-audio.cjs", "scripts/fish_audio_gateway.py",
+      "scripts/ming_voice_runtime.py", "scripts/ming-tts-requirements.lock",
+      "scripts/breeze-tts-requirements.lock",
+    ],
   },
   {
     name: "pocket-tts",
@@ -158,6 +162,9 @@ function configuredVoiceRuntimeTargets(environment) {
   const configured = [
     environment.VOICE_PROVIDER ?? "pocket-tts",
     environment.VOICE_IDENTITY_PROVIDER,
+    // Pocket still serves persisted preset profiles and the creator catalog
+    // when Ming/Breeze owns the default speech and cloning route.
+    ...(environment.VOICE_PROVIDER === "fish-audio" ? ["pocket-tts"] : []),
     ...(environment.ASR_PROVIDER === "parakeet-redux" ? ["parakeet-asr"] : []),
   ];
   return namesWithRole("voice").filter((name) => configured.includes(name));

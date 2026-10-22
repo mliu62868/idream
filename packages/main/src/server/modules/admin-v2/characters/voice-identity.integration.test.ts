@@ -343,6 +343,7 @@ describe("Character voice identity authority", () => {
         runtimeStatus: "ready",
         runtimeEngine: "pocket_tts",
         runtimeVersion: "3.0.2",
+        runtimeModel: null,
         runtimeLanguage: expect.any(String),
         // The runtime also serves male voices (alba); the product offers only female ones.
         catalogVoiceIds: ["anna"],
@@ -944,8 +945,8 @@ describe("Character voice identity authority", () => {
       },
     })).toBe(1);
   });
-  it("keeps Pocket presets and candidate readiness independent of Fish cloning", async () => {
-    providerState.providerKey = "pocket_tts";
+  it("keeps Pocket presets and candidate readiness when the system and cloning routes use Fish", async () => {
+    providerState.providerKey = "fish_audio";
     providerState.identityProviderKey = "fish_audio";
     providerState.inspectOk = true;
     providerState.voiceCloning = true;

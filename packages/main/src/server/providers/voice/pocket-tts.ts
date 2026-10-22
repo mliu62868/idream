@@ -34,6 +34,10 @@ type PocketHealthResponse = {
   runtime_version?: unknown;
   acceleration?: unknown;
   model_loaded?: unknown;
+  model?: unknown;
+  language?: unknown;
+  languages?: unknown;
+  supported_models?: unknown;
   model_revision?: unknown;
   config_fingerprint?: unknown;
   system_voice_ready?: unknown;
@@ -77,6 +81,7 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
         body: rendered.data.body,
         contentType: rendered.data.contentType,
         durationMs: rendered.data.durationMs,
+        model: rendered.data.model,
         // Pocket 3.0.2 does not expose Fish-style scene/delivery controls.
         sceneApplied: false,
         sceneAdapter: "pocket-tts-reference-state-1",
@@ -84,11 +89,12 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     };
   }
 
-  async previewVoice(input: Parameters<VoiceIdentityPort["previewVoice"]>[0]) {
+  async previewVoice(input: Parameters<VoiceIdentityPort["previewVoice"]>[0]): ReturnType<VoiceIdentityPort["previewVoice"]> {
     return this.renderVoice(input);
   }
 
   private async renderVoice(input: {
+    model?: string;
     ownerId?: string;
     text: string;
     voiceId?: string;
@@ -116,7 +122,7 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
           : {}),
       },
       body: JSON.stringify({
-        model: this.model,
+        model: input.model ?? this.model,
         input: text,
         voice: input.voiceId?.trim() || this.defaultVoiceId,
         response_format: "wav",
@@ -124,6 +130,9 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     });
     if (!response.ok) return response;
 
+    const model = input.model ?? this.model;
+    const receivedModel = response.data.headers.get("x-idream-voice-model");
+    if (receivedModel && receivedModel !== model) return pocketFailure("voice_model_mismatch", "Voice response does not match the pinned model", false);
     const contentType = response.data.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
     if (contentType !== "audio/wav" && contentType !== "audio/x-wav") {
       return pocketFailure(
@@ -141,6 +150,7 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
         body,
         contentType: "audio/wav" as const,
         durationMs,
+        model,
       },
     };
   }
@@ -273,6 +283,8 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
       raw.runtime_version.trim().length === 0 ||
       raw.acceleration !== "cpu" ||
       raw.model_loaded !== true ||
+      raw.model !== this.model ||
+      typeof raw.language !== "string" ||
       raw.system_voice_ready !== true ||
       typeof raw.model_revision !== "string" ||
       raw.model_revision.trim().length === 0 ||
@@ -289,6 +301,9 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
       ok: true as const,
       data: {
         voiceCloning: raw.voice_cloning,
+        model: raw.model,
+        supportedModels: [raw.model],
+        languages: [raw.language],
         runtime: raw.runtime,
         runtimeVersion: raw.runtime_version,
         acceleration: raw.acceleration,

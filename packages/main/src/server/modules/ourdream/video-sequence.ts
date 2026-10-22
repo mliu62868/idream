@@ -1,14 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
-import { videoSequenceRequestSchema, REDGRAFT_VIDEO_OPTIONS, REDGRAFT_VIDEO_DEFAULTS, type VideoSequenceRequest } from "@idream/shared/contracts";
+import { fishAudioDeliverySettingsSchema, videoSequenceRequestSchema, REDGRAFT_VIDEO_OPTIONS, REDGRAFT_VIDEO_DEFAULTS, type VideoSequenceRequest } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
-import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
 import { resolveMediaAssetBlobLocator } from "@/server/lib/media-asset-authority";
 import { providers } from "@/server/providers";
-import { createVoiceClipPortForKey } from "@/server/providers/voice/factory";
+import { configuredVoiceModel, createVoiceClipPortForKey, voiceRuntimeSupportsEnglish } from "@/server/providers/voice/factory";
 import { getVoiceDefaultSettings } from "@/server/modules/voice-defaults";
 import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
@@ -28,7 +27,7 @@ import { appendGenerationEvent, generationWriteRequestFingerprint } from "./gene
 import { generationJobInclude, readGenerationJobs, latestGenerationAttemptStatuses } from "./generation-job-read-model";
 import { composeVideoScenes } from "./video-composition";
 
-const voicePinSchema = z.object({ provider: z.literal("pocket_tts"), voiceId: z.string().min(1), settingVersion: z.number().int().nonnegative(), language: z.literal("en"), model: z.string().min(1) }).strict();
+const voicePinSchema = z.object({ provider: z.enum(["pocket_tts", "fish_audio"]), voiceId: z.string().min(1), settingVersion: z.number().int().nonnegative(), language: z.literal("en"), model: z.string().min(1), delivery: fishAudioDeliverySettingsSchema.optional() }).strict();
 const include = { mediaAsset: true, scenes: { orderBy: { ordinal: "asc" as const }, include: { generationJob: { include: generationJobInclude() }, narrationMediaAsset: true } } } satisfies Prisma.VideoSequenceInclude;
 type SequenceRow = Prisma.VideoSequenceGetPayload<{ include: typeof include }>;
 
@@ -36,7 +35,8 @@ export async function videoSequenceCapabilities(userId: string) {
   const entitlements = await entitlementMap(userId);
   if (!entitlements.video_generation || !await featureFlagEnabled("video_gen")) throw Errors.paymentRequired("Video generation is unavailable for this account");
   const profile = await selectGenerationProfile({ mode: "video", accessibleEntitlements: entitlements });
-  const narration = providers.voice.clip.providerKey === "pocket_tts" && ["english", "en"].includes(env.POCKET_TTS_LANGUAGE.toLowerCase()) && await featureFlagEnabled("voice_gen");
+  const runtime = await providers.voice.identity?.inspectCapabilities();
+  const narration = runtime?.ok === true && voiceRuntimeSupportsEnglish(providers.voice.clip.providerKey, runtime.data) && await featureFlagEnabled("voice_gen");
   return { options: hasProductionVideoOptions(profile) ? REDGRAFT_VIDEO_OPTIONS : { seconds: [5], orientations: [REDGRAFT_VIDEO_DEFAULTS.orientation], qualities: [REDGRAFT_VIDEO_DEFAULTS.quality] }, audio: narration ? ["generated", "silent", "narration"] : ["generated", "silent"] };
 }
 
@@ -66,10 +66,12 @@ export async function quoteVideoSequence(userId: string, body: VideoSequenceRequ
   if (body.audio === "narration") {
     if (!await featureFlagEnabled("voice_gen")) throw Errors.unavailable("English narration is currently unavailable");
     const settings = await getVoiceDefaultSettings();
-    if (settings.provider !== "pocket_tts" || env.VOICE_PROVIDER !== "pocket-tts" || !["english", "en"].includes(env.POCKET_TTS_LANGUAGE.toLowerCase())) throw Errors.unavailable("English narration requires the configured Pocket TTS voice");
+    if (settings.provider !== "pocket_tts" && settings.provider !== "fish_audio") throw Errors.unavailable("English narration requires a local voice runtime");
     const ready = await providers.voice.identity?.inspectCapabilities();
-    if (!ready?.ok || !ready.data.catalogVoices?.includes(settings.defaultVoiceId)) throw Errors.unavailable("The selected English narration voice is not ready");
-    voicePin = voicePinSchema.parse({ provider: "pocket_tts", voiceId: settings.defaultVoiceId, settingVersion: settings.settingVersion, language: "en", model: env.POCKET_TTS_MODEL });
+    if (!ready?.ok || !voiceRuntimeSupportsEnglish(settings.provider, ready.data) ||
+      (settings.provider === "pocket_tts" && !ready.data.catalogVoices?.includes(settings.defaultVoiceId))) throw Errors.unavailable("The selected English narration voice is not ready");
+    voicePin = voicePinSchema.parse({ provider: settings.provider, voiceId: settings.defaultVoiceId, settingVersion: settings.settingVersion,
+      language: "en", model: configuredVoiceModel(settings.provider), delivery: settings.delivery });
   }
   const costs = resolved.map(scene => ({ ordinal: scene.ordinal, costDreamcoins: scene.authority.costDreamcoins }));
   const costDreamcoins = costs.reduce((sum, scene) => sum + scene.costDreamcoins, 0);
@@ -219,7 +221,6 @@ async function loadAssetBytes(asset: { storageKey: string | null; url: string; m
 async function narrationForScene(row: SequenceRow, scene: SequenceRow["scenes"][number], owner: string) {
   if (scene.narrationMediaAsset) return loadAssetBytes(scene.narrationMediaAsset);
   const pin = voicePinSchema.parse(row.voicePin);
-  if (env.VOICE_PROVIDER !== "pocket-tts" || env.POCKET_TTS_MODEL !== pin.model) throw new Error("The pinned narration model is no longer configured");
   const request = videoSequenceRequestSchema.parse(row.request);
   const text = request.scenes[scene.ordinal]!.narration!;
   const requestId = `video-narration:${row.id}:${scene.ordinal}`;
@@ -231,7 +232,7 @@ async function narrationForScene(row: SequenceRow, scene: SequenceRow["scenes"][
   });
   let key: string | null = null;
   try {
-    const result = await createVoiceClipPortForKey(pin.provider).synthesize({ ownerId: row.userId, requestId, attemptNo: 1, idempotencyKey: requestId, text, voiceId: pin.voiceId });
+    const result = await createVoiceClipPortForKey(pin.provider).synthesize({ ownerId: row.userId, requestId, attemptNo: 1, idempotencyKey: requestId, text, voiceId: pin.voiceId, model: pin.model, delivery: pin.delivery });
     if (!result.ok) throw new Error(result.error.message);
     const digest = createHash("sha256").update(result.data.body).digest("hex");
     key = `video-sequences/${row.userId}/${row.id}/${owner}/narration-${scene.ordinal}-${digest}.wav`;

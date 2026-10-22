@@ -184,7 +184,7 @@ export function CharacterVoicePanel({
     sampleText.trim().length >= 3,
   ];
   const cloneReadyCount = cloneReadiness.filter(Boolean).length;
-  const cloneProviderLabel = voiceProviderLabel(voice.provider);
+  const cloneProviderLabel = voiceProviderLabel(voice.provider, voice.runtimeModel);
   const activationProviderAvailable = voice.candidateRuntimeStatus === "ready";
   const liveProvider = active?.provider ?? voice.systemDefaults.provider;
   const liveVoiceName = active ? profileName(active) : catalogLabel(voice.effectiveVoiceId);
@@ -364,7 +364,7 @@ export function CharacterVoicePanel({
       };
       const signature = `voice-activate:${data.character.id}:${candidate.id}:${JSON.stringify(body)}`;
       const mutation = await runCommittedMutation({
-        action: `Activate ${voiceProviderLabel(candidate.provider)} voice`,
+        action: `Activate ${voiceProviderLabel(candidate.provider, candidate.model)} voice`,
         commit: () =>
           adminV2Operation("POST /api/v2/admin/characters/:id/voice-profiles/:profileId/activate", {
             path: { id: data.character.id, profileId: candidate.id },
@@ -573,7 +573,7 @@ export function CharacterVoicePanel({
               {liveVoiceName}
             </p>
             <dl className="mt-3 flex flex-wrap gap-x-5 gap-y-1.5 text-xs">
-              <MetaItem label={t("Model")} value={voiceProviderLabel(liveProvider)} />
+              <MetaItem label={t("Model")} value={voiceProviderLabel(liveProvider, liveProvider === voice.provider ? voice.runtimeModel : active?.model)} />
               <MetaItem
                 label={t("Current source")}
                 value={voice.authoritySource === "character_clone" ? t("Character override") : t("System inheritance")}
@@ -627,7 +627,7 @@ export function CharacterVoicePanel({
               <div className="flex flex-wrap items-center gap-2">
                 <StatusBadge tone="warn" value={t("candidate")} />
                 <span className="text-xs text-[var(--ad-text-muted)]">
-                  {voiceProviderLabel(candidate.provider)} · v{candidate.version}
+                  {voiceProviderLabel(candidate.provider, candidate.model)} · v{candidate.version}
                 </span>
               </div>
               <h3 className="mt-2 text-lg font-semibold text-[var(--ad-ink)]" id="voice-candidate-review-title">
@@ -934,6 +934,7 @@ export function CharacterVoicePanel({
                 <div className="mt-3">
                   <VoiceDeliveryEditor
                     delivery={cloneDelivery}
+                    runtimeModel={voice.runtimeModel}
                     disabled={!canWrite || busy}
                     onChange={setCloneDelivery}
                     t={t}
@@ -985,7 +986,7 @@ export function CharacterVoicePanel({
                 <span className="min-w-0">
                   <strong className="font-semibold">{profileName(profile)}</strong>
                   <span className="text-[var(--ad-text-muted)]">
-                    {" "}· {voiceProviderLabel(profile.provider)} · v{profile.version} ·{" "}
+                    {" "}· {voiceProviderLabel(profile.provider, profile.model)} · v{profile.version} ·{" "}
                     {new Date(profile.createdAt).toLocaleString(locale === "zh" ? "zh-CN" : "en-US")}
                   </span>
                 </span>
@@ -1078,6 +1079,7 @@ export function CharacterVoicePanel({
                 <VoiceDeliveryEditor
                   disabled={!canManageDefaults || busy || defaultDraftStale}
                   delivery={defaultDraft.delivery}
+                  runtimeModel={voice.provider === defaultDraft.provider ? voice.runtimeModel : undefined}
                   onChange={(delivery) => setDefaultDraftOverride({ ...defaultDraft, delivery })}
                   t={t}
                 />
@@ -1350,7 +1352,7 @@ function officialStatusDetail(status: ModelStatus) {
   return {
     ready: null,
     unavailable: "Official voice service is unavailable. Refresh after it recovers.",
-    inactive: "Official voices require Pocket TTS as the system voice provider.",
+    inactive: "Official voices require the Pocket TTS runtime.",
     cloning_disabled: null,
   }[status];
 }
@@ -1379,11 +1381,13 @@ function voiceIdForGender(
 
 function VoiceDeliveryEditor({
   delivery,
+  runtimeModel,
   disabled,
   onChange,
   t,
 }: {
   delivery: FishAudioDeliverySettings;
+  runtimeModel?: string | null;
   disabled: boolean;
   onChange: (value: FishAudioDeliverySettings) => void;
   t: (key: string, values?: Record<string, string | number>) => string;
@@ -1473,51 +1477,57 @@ function VoiceDeliveryEditor({
           />
         </label>
       </div>
-      <details className="border-t border-[var(--ad-border)] pt-3">
-        <summary className="cursor-pointer text-xs font-semibold text-[var(--ad-text-muted)]">
-          {t("Advanced Fish sampling")}
-        </summary>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <DeliveryNumberField
-            disabled={disabled}
-            label={t("Temperature")}
-            max={1.5}
-            min={0.1}
-            onChange={(temperature) => onChange({ ...delivery, temperature })}
-            step={0.01}
-            value={delivery.temperature}
-          />
-          <DeliveryNumberField
-            disabled={disabled}
-            label={t("Top P")}
-            max={1}
-            min={0.1}
-            onChange={(topP) => onChange({ ...delivery, topP })}
-            step={0.01}
-            value={delivery.topP}
-          />
-          <DeliveryNumberField
-            disabled={disabled}
-            label={t("Top K")}
-            max={100}
-            min={1}
-            onChange={(topK) => onChange({ ...delivery, topK })}
-            step={1}
-            value={delivery.topK}
-          />
-          <DeliveryNumberField
-            disabled={disabled}
-            label={t("Repetition penalty")}
-            max={2}
-            min={1}
-            onChange={(repetitionPenalty) =>
-              onChange({ ...delivery, repetitionPenalty })
-            }
-            step={0.01}
-            value={delivery.repetitionPenalty}
-          />
-        </div>
-      </details>
+      {runtimeModel?.startsWith("ming-") ? (
+        <p className="border-t border-[var(--ad-border)] pt-3 text-xs leading-5 text-[var(--ad-text-muted)]">
+          {t("Ming uses fixed sampling. Saved advanced settings are retained for other models.")}
+        </p>
+      ) : (
+        <details className="border-t border-[var(--ad-border)] pt-3">
+          <summary className="cursor-pointer text-xs font-semibold text-[var(--ad-text-muted)]">
+            {t("Advanced Fish sampling")}
+          </summary>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <DeliveryNumberField
+              disabled={disabled}
+              label={t("Temperature")}
+              max={1.5}
+              min={0.1}
+              onChange={(temperature) => onChange({ ...delivery, temperature })}
+              step={0.01}
+              value={delivery.temperature}
+            />
+            <DeliveryNumberField
+              disabled={disabled}
+              label={t("Top P")}
+              max={1}
+              min={0.1}
+              onChange={(topP) => onChange({ ...delivery, topP })}
+              step={0.01}
+              value={delivery.topP}
+            />
+            <DeliveryNumberField
+              disabled={disabled}
+              label={t("Top K")}
+              max={100}
+              min={1}
+              onChange={(topK) => onChange({ ...delivery, topK })}
+              step={1}
+              value={delivery.topK}
+            />
+            <DeliveryNumberField
+              disabled={disabled}
+              label={t("Repetition penalty")}
+              max={2}
+              min={1}
+              onChange={(repetitionPenalty) =>
+                onChange({ ...delivery, repetitionPenalty })
+              }
+              step={0.01}
+              value={delivery.repetitionPenalty}
+            />
+          </div>
+        </details>
+      )}
     </div>
   );
 }
@@ -1689,9 +1699,9 @@ function voiceRuntimeMessage(
     }[status];
   }
   return {
-    ready: "Breeze TTS 2 voice cloning through MLX is ready.",
+    ready: "Local voice cloning through MLX is ready.",
     unavailable:
-      "Fish Audio is configured but unavailable. Verify the Breeze TTS 2 model, resident MLX process, and system female reference.",
+      "Local voice cloning is unavailable. Verify the configured model, resident MLX process, and reference audio.",
     inactive:
       "Fish Audio is not the Character voice-cloning provider. Set VOICE_IDENTITY_PROVIDER=fish-audio and start the Fish Audio process.",
   }[status];
@@ -1699,9 +1709,14 @@ function voiceRuntimeMessage(
 
 function voiceProviderLabel(
   provider: CharacterWorkspaceDetail["voice"]["provider"],
+  model?: string | null,
 ) {
   if (provider === "pocket_tts") return "Pocket TTS";
-  if (provider === "fish_audio") return "Breeze TTS 2";
+  if (provider === "fish_audio") {
+    if (model?.startsWith("ming-")) return "Ming 3.0 TTS";
+    if (model?.startsWith("breeze-")) return "Breeze TTS 2";
+    return model ?? "Local voice";
+  }
   return provider;
 }
 

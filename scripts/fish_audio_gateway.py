@@ -1,12 +1,9 @@
 """Resident voice-cloning MLX gateway for iDream (the `fish_audio` provider slot).
 
-SPEC: the gateway loads Breeze TTS 2 (8-bit MLX) once, owns the durable
-reference-voice registry, and passes reference audio to the model as an MLX array.
-INTENT: the engine changed from Fish Audio S2 Pro to Breeze after a 2026-10-02
-blind listening test; the provider key, env names and on-disk registry keep the
-`fish_audio` name so stored profiles and voices keep working without a data
-migration. oMLX is not used: its bundled mlx-audio predates Breeze, and its
-reference-cloning path forwards a temporary filename string to the model.
+SPEC: one configured Ming or Breeze model owns generation; a previous model's
+completed result may only be replayed from its exact persistent request cache.
+INTENT: the provider key, environment names and durable voice registry keep the
+`fish_audio` name so existing voice identities survive an engine switch.
 """
 
 from __future__ import annotations
@@ -34,17 +31,32 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 try:
     from scripts.voice_erasure import AccountErasureRequest, VoiceErasureRegistry
+    from scripts.ming_voice_runtime import (
+        CAMPLUS_SHA256, MLX_AUDIO_VERSION, MODEL_ID as MING_MODEL_ID,
+        MingGenerationOptions, MingReferenceError, MingSynthesisError, MingVoiceRuntime,
+        control_caption, validate_prompt_metadata,
+    )
 except ModuleNotFoundError:
     from voice_erasure import AccountErasureRequest, VoiceErasureRegistry
-
-
-MODEL_ID = os.getenv("FISH_AUDIO_MODEL", "breeze-tts-2-mlx-8bit").strip()
-MODEL_PATH = Path(
-    os.getenv(
-        "FISH_AUDIO_MODEL_PATH",
-        "~/.idream/models/mlx-community/Breeze-TTS-2-mlx-8bit",
+    from ming_voice_runtime import (
+        CAMPLUS_SHA256, MLX_AUDIO_VERSION, MODEL_ID as MING_MODEL_ID,
+        MingGenerationOptions, MingReferenceError, MingSynthesisError, MingVoiceRuntime,
+        control_caption, validate_prompt_metadata,
     )
+
+
+BREEZE_MODEL_ID = "breeze-tts-2-mlx-8bit"
+MODEL_PATHS = {
+    MING_MODEL_ID: "~/.idream/models/mlx-community/Ming-3.0-tts-0.5B-8bit",
+    BREEZE_MODEL_ID: "~/.idream/models/mlx-community/Breeze-TTS-2-mlx-8bit",
+}
+MODEL_ID = os.getenv("FISH_AUDIO_MODEL", MING_MODEL_ID).strip()
+if MODEL_ID not in MODEL_PATHS:
+    raise RuntimeError(f"Unsupported FISH_AUDIO_MODEL: {MODEL_ID!r}")
+MODEL_PATH = Path(
+    os.getenv("FISH_AUDIO_MODEL_PATH", MODEL_PATHS[MODEL_ID])
 ).expanduser().resolve()
+CAMPLUS_MODEL_PATH = os.getenv("FISH_AUDIO_CAMPLUS_MODEL_PATH", "").strip()
 LANGUAGE = os.getenv("FISH_AUDIO_LANGUAGE", "auto").strip()
 DEFAULT_VOICE = os.getenv(
     "FISH_AUDIO_DEFAULT_VOICE_ID",
@@ -73,13 +85,13 @@ MAX_REFERENCE_BYTES = 15 * 1024 * 1024
 MAX_REFERENCE_SECONDS = 30
 MIN_REFERENCE_BYTES = 1_024
 BUILTIN_VOICES = {"fish-female-default"}
+SYSTEM_VOICE_IDS = BUILTIN_VOICES | {DEFAULT_VOICE}
 registry_lock = threading.RLock()
 idempotency_lock = threading.RLock()
 generation_lock = threading.Lock()
 runtime_model: Any | None = None
+ming_runtime: MingVoiceRuntime | None = None
 
-if not MODEL_ID:
-    raise RuntimeError("FISH_AUDIO_MODEL is required")
 if not LANGUAGE:
     raise RuntimeError("FISH_AUDIO_LANGUAGE is required")
 
@@ -116,10 +128,40 @@ def load_runtime_model() -> Any:
         return runtime_model
     if not MODEL_PATH.is_dir():
         raise RuntimeError(f"Voice model directory does not exist: {MODEL_PATH}")
+    if MODEL_ID == MING_MODEL_ID:
+        if version("mlx-audio") != MLX_AUDIO_VERSION:
+            raise RuntimeError(f"Ming requires the pinned mlx-audio {MLX_AUDIO_VERSION} runtime")
+        load_ming_runtime()
     from mlx_audio.tts.utils import load_model
 
-    runtime_model = load_model(model_path=str(MODEL_PATH))
+    candidate = load_model(model_path=str(MODEL_PATH))
+    if MODEL_ID == MING_MODEL_ID and (
+        not getattr(candidate, "ming3", False)
+        or getattr(candidate, "patch_size", None) != 1
+        or getattr(candidate, "sample_rate", None) != 44100
+    ):
+        raise RuntimeError("Configured Ming directory does not contain the supported Ming-3.0 dense model")
+    if MODEL_ID == BREEZE_MODEL_ID and getattr(candidate, "ming3", False):
+        raise RuntimeError("Configured Breeze directory contains a Ming model")
+    runtime_model = candidate
     return runtime_model
+
+
+def load_ming_runtime() -> MingVoiceRuntime:
+    global ming_runtime
+    if ming_runtime is None:
+        if not CAMPLUS_MODEL_PATH:
+            raise RuntimeError("Ming requires an explicit FISH_AUDIO_CAMPLUS_MODEL_PATH")
+        ming_runtime = MingVoiceRuntime(Path(CAMPLUS_MODEL_PATH).expanduser().resolve())
+    return ming_runtime
+
+
+def clear_reference_cache() -> None:
+    # Registry mutation/erasure waits for active synthesis before releasing its
+    # derived speaker vectors; no embedding cache is written to disk.
+    with generation_lock:
+        if ming_runtime is not None:
+            ming_runtime.clear_reference_cache()
 
 
 @asynccontextmanager
@@ -129,7 +171,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="iDream Breeze TTS 2 MLX voice-cloning gateway",
+    title="iDream MLX voice-cloning gateway",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -155,7 +197,7 @@ def voice_manifest_path(voice_id: str) -> Path:
     return VOICE_DIR / f"{safe_voice_id(voice_id)}.json"
 
 
-def load_voice_manifest(voice_id: str) -> dict[str, str] | None:
+def load_voice_manifest(voice_id: str) -> dict[str, Any] | None:
     audio_path = voice_audio_path(voice_id)
     manifest_path = voice_manifest_path(voice_id)
     if not audio_path.is_file() and not manifest_path.is_file():
@@ -178,6 +220,7 @@ def load_voice_manifest(voice_id: str) -> dict[str, str] | None:
         or not isinstance(raw.get("ref_text"), str)
         or not raw["ref_text"].strip()
         or not isinstance(raw.get("language"), str)
+        or ("ming_prompt" in raw and not isinstance(raw["ming_prompt"], dict))
     ):
         raise HTTPException(
             status_code=503,
@@ -186,10 +229,11 @@ def load_voice_manifest(voice_id: str) -> dict[str, str] | None:
     return {
         "ref_text": raw["ref_text"].strip(),
         "language": raw["language"],
+        **({"ming_prompt": raw["ming_prompt"]} if "ming_prompt" in raw else {}),
     }
 
 
-def load_system_reference() -> tuple[Path, dict[str, str]]:
+def load_system_reference() -> tuple[Path, dict[str, Any]]:
     if not SYSTEM_REFERENCE_AUDIO or not SYSTEM_REFERENCE_MANIFEST:
         raise HTTPException(
             status_code=503,
@@ -218,6 +262,7 @@ def load_system_reference() -> tuple[Path, dict[str, str]]:
         not isinstance(raw, dict)
         or not isinstance(raw.get("ref_text"), str)
         or not raw["ref_text"].strip()
+        or ("ming_prompt" in raw and not isinstance(raw["ming_prompt"], dict))
     ):
         raise HTTPException(
             status_code=503,
@@ -227,14 +272,32 @@ def load_system_reference() -> tuple[Path, dict[str, str]]:
     return audio_path, {
         "ref_text": raw["ref_text"].strip(),
         "language": language if isinstance(language, str) else LANGUAGE,
+        **({"ming_prompt": raw["ming_prompt"]} if "ming_prompt" in raw else {}),
     }
+
+
+def resolve_reference(voice_id: str) -> tuple[Path, dict[str, Any]]:
+    manifest = load_voice_manifest(voice_id)
+    if manifest is not None:
+        return voice_audio_path(voice_id), manifest
+    if voice_id not in BUILTIN_VOICES:
+        raise HTTPException(status_code=404, detail="Stored voice not found")
+    return load_system_reference()
 
 
 def system_voice_status() -> tuple[bool, str | None]:
     try:
-        load_system_reference()
+        with registry_lock:
+            path, manifest = resolve_reference(safe_voice_id(DEFAULT_VOICE))
+            reference = path.read_bytes()
+            validate_wav(reference)
+            if MODEL_ID == MING_MODEL_ID:
+                validate_prompt_metadata(reference, manifest.get("ming_prompt"))
+                load_ming_runtime().embedding(reference)
     except HTTPException as error:
         return False, str(error.detail)
+    except (OSError, ValueError, RuntimeError, ImportError) as error:
+        return False, str(error)
     return True, None
 
 
@@ -399,6 +462,8 @@ def render_idempotent_wav(
     attempt_no: int,
     owner_hash: str | None = None,
 ) -> tuple[bytes, bool]:
+    if request.model not in MODEL_PATHS:
+        raise HTTPException(status_code=409, detail=f"Unrecognized speech model: '{request.model}'")
     if not request_id.strip() or attempt_no < 1:
         raise HTTPException(
             status_code=400,
@@ -416,6 +481,7 @@ def render_idempotent_wav(
         if replay is not None:
             erasure_registry.check(owner_hash, idempotency_key, request.voice)
             return replay, True
+        require_generation_model(request.model)
         rendered = render_wav(request)
         manifest = {
             "format": IDEMPOTENCY_MANIFEST_FORMAT,
@@ -475,40 +541,67 @@ def delivery_instruction(delivery: DeliverySettings) -> str:
     return " ".join(parts)
 
 
+def ming_delivery_caption(delivery: DeliverySettings) -> str:
+    speed = "慢速" if delivery.speed <= 0.97 else "快速" if delivery.speed >= 1.03 else "中速"
+    if delivery.preset in {"intimate", "sensual"}:
+        if speed == "中速":
+            speed = "慢速"
+        return control_caption(speed=speed, volume="中" if delivery.intensity <= 30 else "低")
+    if delivery.preset == "confident":
+        return control_caption(speed=speed, volume="中" if delivery.intensity <= 30 else "高")
+    emotion = "高兴" if delivery.preset == "playful" and delivery.intensity > 30 else "中性"
+    return control_caption(emotion=emotion, speed=speed)
+
+
+def require_generation_model(requested_model: str) -> None:
+    if requested_model != MODEL_ID:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Configured model is '{MODEL_ID}'; '{requested_model}' can only replay an existing matching result",
+        )
+
+
 def render_wav(request: SpeechRequest) -> bytes:
+    require_generation_model(request.model)
+    if not request.input.strip():
+        raise HTTPException(status_code=400, detail="Speech text must contain non-whitespace characters")
     model = load_runtime_model()
     voice_id = safe_voice_id(request.voice)
-    with registry_lock:
-        manifest = load_voice_manifest(voice_id)
-        reference_path = voice_audio_path(voice_id) if manifest is not None else None
-    if manifest is None and voice_id not in BUILTIN_VOICES:
-        raise HTTPException(status_code=404, detail="Stored voice not found")
-    if manifest is None:
-        reference_path, manifest = load_system_reference()
-
     from mlx_audio.utils import load_audio
 
-    ref_audio = load_audio(str(reference_path), sample_rate=model.sample_rate)
-
-    with generation_lock:
-        # INTENT: no classifier-free guidance. Measured 2026-10-02: cfg_scale=4 with a
-        # "low, breathy" direction pulled speaker similarity below the other-woman
-        # baseline (0.81-0.90 vs 0.87) and nearly doubled duration; without CFG the
-        # clone holds (0.90-0.96) at about real time, and the direction stays a nudge.
-        results = list(
-            model.generate(
-                text=request.input.strip(),
-                instruct=delivery_instruction(request.delivery),
-                ref_audio=ref_audio,
-                ref_text=manifest["ref_text"],
-                temperature=request.delivery.temperature,
-                top_p=request.delivery.topP,
-                top_k=request.delivery.topK,
-                repetition_penalty=request.delivery.repetitionPenalty,
-                max_tokens=1200,
-                stream=False,
+    # Keep the manifest, WAV and derived identity in one registry generation.
+    # Erasure persists its barrier first, then waits for this lock to release.
+    with registry_lock, generation_lock:
+        reference_path, manifest = resolve_reference(voice_id)
+        ref_audio = load_audio(str(reference_path), sample_rate=model.sample_rate)
+        if MODEL_ID == MING_MODEL_ID:
+            try:
+                results = load_ming_runtime().generate(
+                    model, text=request.input.strip(), ref_audio=ref_audio,
+                    reference=reference_path.read_bytes(), ref_text=manifest["ref_text"],
+                    caption=ming_delivery_caption(request.delivery), options=MingGenerationOptions(),
+                    prompt_metadata=manifest.get("ming_prompt"),
+                )
+            except MingReferenceError as error:
+                raise HTTPException(status_code=503, detail=str(error)) from error
+            except MingSynthesisError as error:
+                raise HTTPException(status_code=502, detail=str(error)) from error
+        else:
+            # Preserve Breeze's measured no-CFG conditioning path and sampling.
+            results = list(
+                model.generate(
+                    text=request.input.strip(),
+                    instruct=delivery_instruction(request.delivery),
+                    ref_audio=ref_audio,
+                    ref_text=manifest["ref_text"],
+                    temperature=request.delivery.temperature,
+                    top_p=request.delivery.topP,
+                    top_k=request.delivery.topK,
+                    repetition_penalty=request.delivery.repetitionPenalty,
+                    max_tokens=1200,
+                    stream=False,
+                )
             )
-        )
     if not results:
         raise HTTPException(status_code=502, detail="Voice model returned no audio")
     audio = np.concatenate(
@@ -530,30 +623,46 @@ def render_wav(request: SpeechRequest) -> bytes:
 @app.get("/health")
 @app.get("/v1/health")
 async def health() -> JSONResponse:
-    model = load_runtime_model()
+    model, model_error = None, None
+    try:
+        model = load_runtime_model()
+    except (OSError, ValueError, RuntimeError, ImportError, PackageNotFoundError) as error:
+        model_error = str(error)
     system_voice_ready, system_voice_error = system_voice_status()
     try:
         runtime_version = version("mlx-audio")
     except PackageNotFoundError:
         runtime_version = "unknown"
+    ready = model is not None and system_voice_ready
     payload = {
-        "status": "healthy" if system_voice_ready else "degraded",
+        "status": "healthy" if ready else "degraded",
         "provider": "fish_audio",
         "runtime": "mlx_audio",
         "runtime_version": runtime_version,
         "acceleration": "mlx",
         "model": MODEL_ID,
+        "configured_model": MODEL_ID,
+        "supported_models": [MODEL_ID],
+        "recognized_models": list(MODEL_PATHS),
+        "replay_only_models": [value for value in MODEL_PATHS if value != MODEL_ID],
+        "languages": ["en"],
         "model_path": str(MODEL_PATH),
         "model_loaded": model is not None,
+        "model_error": model_error,
         "language": LANGUAGE,
         "voice_cloning": True,
         "system_voice_ready": system_voice_ready,
         "system_voice_error": system_voice_error,
         "stored_voice_count": stored_voice_count(),
     }
+    if MODEL_ID == MING_MODEL_ID:
+        payload["speaker_encoder"] = {
+            "model": "campplus", "execution_provider": "CPUExecutionProvider",
+            "sha256": CAMPLUS_SHA256, "loaded": ming_runtime is not None,
+        }
     return JSONResponse(
         content=payload,
-        status_code=200 if system_voice_ready else 503,
+        status_code=200 if ready else 503,
     )
 
 
@@ -568,13 +677,14 @@ async def synthesize(
     erasure_registry.check(owner_hash, idempotency_key, request.voice)
     if request.response_format != "wav":
         raise HTTPException(status_code=400, detail="Only WAV output is supported")
-    if request.model != MODEL_ID:
+    if request.model not in MODEL_PATHS:
         raise HTTPException(
             status_code=409,
-            detail=f"Configured model is '{MODEL_ID}', received '{request.model}'",
+            detail=f"Unrecognized speech model: '{request.model}'",
         )
     replayed = False
     if idempotency_key is None:
+        require_generation_model(request.model)
         rendered = render_wav(request)
     else:
         if request_id is None or attempt_no is None:
@@ -592,12 +702,14 @@ async def synthesize(
             attempt_no,
             owner_hash,
         )
+    erasure_registry.check(owner_hash, idempotency_key, request.voice)
     return Response(
         content=rendered,
         media_type="audio/wav",
         headers={
             "Content-Disposition": "inline; filename=generated_speech.wav",
             "X-Idream-Idempotency-Replayed": "true" if replayed else "false",
+            "X-Idream-Voice-Model": request.model,
         },
     )
 
@@ -612,7 +724,7 @@ def clone_voice(
 ) -> dict[str, str]:
     normalized_id = safe_voice_id(voice_id)
     erasure_registry.check(owner_hash, voice=normalized_id)
-    if normalized_id in BUILTIN_VOICES:
+    if normalized_id in SYSTEM_VOICE_IDS:
         raise HTTPException(
             status_code=409,
             detail="The system female voice id is reserved",
@@ -650,13 +762,14 @@ def clone_voice(
             atomic_write(voice_audio_path(normalized_id), normalized_audio)
             atomic_write(voice_manifest_path(normalized_id), json.dumps(manifest, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
         erasure_registry.commit(owner_hash, None, normalized_id, persist)
+        clear_reference_cache()
     return {"voice_id": normalized_id, "model": MODEL_ID, "language": language}
 
 
 @app.delete("/v1/voices/{voice_id}", dependencies=[Depends(authorize)])
 def delete_voice(voice_id: str) -> dict[str, bool]:
     normalized_id = safe_voice_id(voice_id)
-    if normalized_id in BUILTIN_VOICES:
+    if normalized_id in SYSTEM_VOICE_IDS:
         raise HTTPException(
             status_code=409,
             detail="The system female voice id is reserved",
@@ -664,13 +777,14 @@ def delete_voice(voice_id: str) -> dict[str, bool]:
     with registry_lock:
         voice_audio_path(normalized_id).unlink(missing_ok=True)
         voice_manifest_path(normalized_id).unlink(missing_ok=True)
+        clear_reference_cache()
     return {"deleted": True}
 
 
 @app.post("/v1/account-erasure", dependencies=[Depends(authorize)])
 def erase_account(request: AccountErasureRequest) -> dict[str, bool]:
     voice_ids = [safe_voice_id(value) for value in request.voice_ids]
-    if any(value in BUILTIN_VOICES for value in voice_ids):
+    if any(value in SYSTEM_VOICE_IDS for value in voice_ids):
         raise HTTPException(status_code=409, detail="System voices cannot be erased")
     with erasure_registry.lock:
         for key in request.request_keys:
@@ -685,10 +799,11 @@ def erase_account(request: AccountErasureRequest) -> dict[str, bool]:
         erasure_registry.delete_cache(request)
         for path in VOICE_DIR.glob("*.json"):
             manifest = json.loads(path.read_text())
-            if manifest.get("owner_hash") == request.subject_hash and path.stem not in BUILTIN_VOICES:
+            if manifest.get("owner_hash") == request.subject_hash and path.stem not in SYSTEM_VOICE_IDS:
                 voice_ids.append(path.stem)
         for voice_id in set(voice_ids):
             erasure_registry.mark_erased(AccountErasureRequest(subject_hash=request.subject_hash, voice_ids=[voice_id]))
             delete_voice(voice_id)
+        clear_reference_cache()
         erasure_registry.sync_directory(VOICE_DIR)
     return {"erased": True}

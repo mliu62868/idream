@@ -365,16 +365,18 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
     expect(await prisma.generationJob.count({ where: { userId } })).toBe(1); expect(await dreamcoinBalance(userId)).toBe(900);
   });
 
-  it("pins narration, persists its actual artifact and extends playback without a fake Chat or VoiceUsage row", async () => {
-    env.VOICE_PROVIDER = "pocket-tts"; env.POCKET_TTS_LANGUAGE = "english"; providers.voice = createVoicePortsForKey("pocket_tts");
+  it.each(["pocket_tts", "fish_audio"] as const)("pins %s narration and persists its artifact without a fake Chat or VoiceUsage row", async providerKey => {
+    env.VOICE_PROVIDER = providerKey === "pocket_tts" ? "pocket-tts" : "fish-audio";
+    env.POCKET_TTS_LANGUAGE = "english"; providers.voice = createVoicePortsForKey(providerKey);
+    const model = voiceFactory.configuredVoiceModel(providerKey);
     const defaults = await getVoiceDefaultSettings();
-    vi.spyOn(providers.voice.identity!, "inspectCapabilities").mockResolvedValue({ ok: true, data: { voiceCloning: false, catalogVoices: [defaults.defaultVoiceId] } });
+    vi.spyOn(providers.voice.identity!, "inspectCapabilities").mockResolvedValue({ ok: true, data: { voiceCloning: false, model, supportedModels: [model], languages: ["en"], catalogVoices: [defaults.defaultVoiceId] } });
     const speech = await narrationFixture(4.2), tts = vi.fn().mockResolvedValue({ ok: true, data: { body: speech, contentType: "audio/wav", durationMs: 4200 } });
-    vi.spyOn(voiceFactory, "createVoiceClipPortForKey").mockReturnValue({ providerKey: "pocket_tts", synthesize: tts });
+    vi.spyOn(voiceFactory, "createVoiceClipPortForKey").mockReturnValue({ providerKey, synthesize: tts });
     const native = await mockedNativeSuccess(), { sequence, price } = await create(body(1, "narration"));
-    expect(price).toMatchObject({ narrationExtendsLastFrame: true, narrationExtraCostDreamcoins: 0, voicePin: { provider: "pocket_tts", voiceId: defaults.defaultVoiceId, language: "en" } });
+    expect(price).toMatchObject({ narrationExtendsLastFrame: true, narrationExtraCostDreamcoins: 0, voicePin: { provider: providerKey, model, voiceId: defaults.defaultVoiceId, language: "en", delivery: defaults.delivery } });
     const result = await finish(sequence.id, 1); expect(result.status).toBe("completed"); expect(result.asset?.metadata.durationSeconds).toBeGreaterThanOrEqual(4.2);
-    expect(tts).toHaveBeenCalledTimes(1); expect(tts).toHaveBeenCalledWith(expect.objectContaining({ requestId: `video-narration:${sequence.id}:0`, idempotencyKey: `video-narration:${sequence.id}:0`, voiceId: defaults.defaultVoiceId }));
+    expect(tts).toHaveBeenCalledTimes(1); expect(tts).toHaveBeenCalledWith(expect.objectContaining({ requestId: `video-narration:${sequence.id}:0`, idempotencyKey: `video-narration:${sequence.id}:0`, voiceId: defaults.defaultVoiceId, model, delivery: defaults.delivery }));
     expect(await prisma.videoSequenceScene.findFirstOrThrow({ where: { sequenceId: sequence.id } })).toMatchObject({ narrationState: "completed", narrationMediaAssetId: expect.any(String) });
     expect(await prisma.voiceUsageFact.count({ where: { userId } })).toBe(0); expect(await prisma.chatTurn.count({ where: { session: { userId } } })).toBe(0); expect(await dreamcoinBalance(userId)).toBe(900); expect(native).toHaveBeenCalledTimes(1);
     // The library lists the narrated video, not its scene clip or speech track.
@@ -385,7 +387,7 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
   it("delivers three complete narration assets and retries only missing speech or packaging without another debit", async () => {
     env.VOICE_PROVIDER = "pocket-tts"; env.POCKET_TTS_LANGUAGE = "english"; providers.voice = createVoicePortsForKey("pocket_tts");
     const defaults = await getVoiceDefaultSettings();
-    vi.spyOn(providers.voice.identity!, "inspectCapabilities").mockResolvedValue({ ok: true, data: { voiceCloning: false, catalogVoices: [defaults.defaultVoiceId] } });
+    vi.spyOn(providers.voice.identity!, "inspectCapabilities").mockResolvedValue({ ok: true, data: { voiceCloning: false, model: env.POCKET_TTS_MODEL, supportedModels: [env.POCKET_TTS_MODEL], languages: ["en"], catalogVoices: [defaults.defaultVoiceId] } });
     const lines = ["The first scene begins here.", "The second scene is a short pause.", "The third scene closes our story."];
     const durations = [4.2, 0.4, 3.6];
     const speeches = await Promise.all(durations.map((seconds, ordinal) => narrationFixture(seconds, 550 + ordinal * 330)));
@@ -403,13 +405,15 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
     vi.spyOn(voiceFactory, "createVoiceClipPortForKey").mockReturnValue({ providerKey: "pocket_tts", synthesize: tts });
     const native = await mockedNativeSuccess();
     const request = { ...body(3, "narration"), scenes: body(3, "narration").scenes.map((scene, ordinal) => ({ ...scene, narration: lines[ordinal]! })) };
-    const { sequence, key } = await create(request);
+    const { sequence, key, request: acceptedRequest } = await create(request);
     const first = await finish(sequence.id, 3);
     expect(first.status).toBe("composition_failed");
     const afterSpeechFailure = await prisma.videoSequenceScene.findMany({ where: { sequenceId: sequence.id }, orderBy: { ordinal: "asc" } });
     expect(afterSpeechFailure.map(scene => scene.narrationState)).toEqual(["completed", "completed", "failed"]);
     expect(afterSpeechFailure.map(scene => Boolean(scene.narrationMediaAssetId))).toEqual([true, true, false]);
     expect(tts).toHaveBeenCalledTimes(3);
+    // Changing the default engine must not retarget the missing third narration.
+    env.VOICE_PROVIDER = "fish-audio"; providers.voice = createVoicePortsForKey("fish_audio");
     const packageOnce = vi.spyOn(composition, "composeVideoScenes").mockRejectedValueOnce(new Error("Controlled packaging failure after all speech persisted"));
     expectOk(await api("POST", `generation/video-sequences/${sequence.id}/retry-composition`, { userId, ageGate: true }));
     await advanceVideoSequences();
@@ -424,6 +428,7 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
     expect(result.asset?.metadata.sceneDurations).toEqual([101 / 24, 73 / 24, 87 / 24]);
     expect(result.asset?.metadata.sceneGenerationJobIds).toEqual(result.scenes.map(scene => scene.job.id));
     expect(tts.mock.calls.map(([request]) => request.text)).toEqual([...lines, lines[2]]);
+    expect(tts.mock.calls.every(([request]) => request.model === env.POCKET_TTS_MODEL)).toBe(true);
     expect(native).toHaveBeenCalledTimes(3);
     expect(packageOnce).toHaveBeenCalledTimes(2);
     const saved = await prisma.videoSequenceScene.findMany({ where: { sequenceId: sequence.id }, include: { narrationMediaAsset: true }, orderBy: { ordinal: "asc" } });
@@ -437,8 +442,11 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
       expectOk(download); expect(download.bytes!.length).toBeGreaterThan(100);
       expect(download.headers.get("content-disposition")).toMatch(/^attachment;/);
     }
-    const replay = await create(request, key);
-    expect(replay.sequence.id).toBe(sequence.id);
+    // Replay the accepted request after the provider switch without asking the
+    // replacement runtime for a new quote or changing the pinned narration.
+    const replay = await api("POST", "generation/video-sequences", { userId, ageGate: true, headers: { "idempotency-key": key }, body: acceptedRequest });
+    expectOk(replay, 202);
+    expect(videoSequenceDtoSchema.parse(replay.data.sequence).id).toBe(sequence.id);
     await advanceVideoSequences();
     expect(tts).toHaveBeenCalledTimes(4); expect(native).toHaveBeenCalledTimes(3);
     expect(await prisma.generationJob.count({ where: { userId } })).toBe(3);
@@ -514,7 +522,7 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
   it("retains the winning narration and prevents a late voice upload after its composition lease expires", async () => {
     env.VOICE_PROVIDER = "pocket-tts"; env.POCKET_TTS_LANGUAGE = "english"; providers.voice = createVoicePortsForKey("pocket_tts");
     const defaults = await getVoiceDefaultSettings();
-    vi.spyOn(providers.voice.identity!, "inspectCapabilities").mockResolvedValue({ ok: true, data: { voiceCloning: false, catalogVoices: [defaults.defaultVoiceId] } });
+    vi.spyOn(providers.voice.identity!, "inspectCapabilities").mockResolvedValue({ ok: true, data: { voiceCloning: false, model: env.POCKET_TTS_MODEL, supportedModels: [env.POCKET_TTS_MODEL], languages: ["en"], catalogVoices: [defaults.defaultVoiceId] } });
     const lateSpeech = await narrationFixture(3.8), winningSpeech = await narrationFixture(4.2), oldStarted = barrier(), releaseOld = barrier();
     const tts = vi.fn()
       .mockImplementationOnce(async () => { oldStarted.release(); await releaseOld.promise; return { ok: true, data: { body: lateSpeech, contentType: "audio/wav", durationMs: 3800 } }; })

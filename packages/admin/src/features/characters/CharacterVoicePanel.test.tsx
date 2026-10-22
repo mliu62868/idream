@@ -141,6 +141,7 @@ function pocketWorkspace() {
       cloningAvailable: true,
       runtimeStatus: "ready",
       runtimeEngine: "mlx_audio",
+      runtimeModel: "ming-3.0-tts-0.5b-8bit",
       runtimeVersion: "0.4.3",
       presetRuntime: { provider: "pocket_tts", runtimeStatus: "ready", catalogVoiceIds: ["vera", "anna"] },
       candidateRuntimeStatus: null,
@@ -304,7 +305,7 @@ describe("CharacterVoicePanel voice identity controls", () => {
     expect(modelRadio("voice-model-clone")?.checked).toBe(false);
     const change = container.querySelector('[data-testid="voice-change"]');
     expect(change?.textContent).toContain("Pocket TTS · Official voices");
-    expect(change?.textContent).toContain("Breeze TTS 2 · Voice cloning");
+    expect(change?.textContent).toContain("Ming 3.0 TTS · Voice cloning");
     expect(change?.textContent).toContain("2 official English female voices");
     expect(change?.textContent).toContain("Engine MLX 0.4.3");
     expect(container.querySelector('[data-testid="voice-preset-builder"]')).not.toBeNull();
@@ -326,7 +327,7 @@ describe("CharacterVoicePanel voice identity controls", () => {
     await render(data);
     expect(modelRadio("voice-model-official")?.disabled).toBe(true);
     expect(container.textContent).toContain(
-      "Official voices require Pocket TTS as the system voice provider.",
+      "Official voices require the Pocket TTS runtime.",
     );
     expect(modelRadio("voice-model-clone")?.checked).toBe(true);
     expect(container.textContent).toContain("cloning not enabled");
@@ -635,6 +636,39 @@ describe("CharacterVoicePanel voice identity controls", () => {
       }),
     );
     expect(adminV2Request.mock.calls[0]?.[1]?.body).not.toHaveProperty("reason");
+  });
+
+  it("hides unsupported Ming sampling controls while retaining saved values on a delivery edit", async () => {
+    const data = withCandidate();
+    data.voice.runtimeModel = "ming-3.0-tts-0.5b-8bit";
+    data.voice.systemDefaults.delivery = { ...data.voice.systemDefaults.delivery,
+      temperature: 0.93, topP: 0.84, topK: 63, repetitionPenalty: 1.24 };
+    await render(data);
+    expect(container.textContent).not.toContain("Advanced Fish sampling");
+    expect(container.querySelectorAll('input[type="number"]')).toHaveLength(0);
+    expect(container.textContent).toContain("Ming uses fixed sampling. Saved advanced settings are retained for other models.");
+    const system = container.querySelector('[data-testid="system-voice-defaults"]')!;
+    const natural = [...system.querySelectorAll("button")].find(item => item.textContent?.includes("Natural"))!;
+    await act(async () => natural.click());
+    await act(async () => button("Save system defaults")?.click());
+    adminV2Request.mockResolvedValue({ replayed: false });
+    await confirmDialog("Save system defaults");
+    expect(adminV2Request).toHaveBeenCalledWith("/api/v2/admin/voice-defaults", expect.objectContaining({
+      body: expect.objectContaining({ delivery: { ...data.voice.systemDefaults.delivery, preset: "natural" } }),
+    }));
+  });
+
+  it("retains the four advanced sampling controls for Breeze in both editors", async () => {
+    const data = withCandidate();
+    data.voice.runtimeModel = "breeze-tts-2-mlx-8bit";
+    await render(data);
+    expect(container.querySelectorAll('input[type="number"]')).toHaveLength(8);
+    const system = container.querySelector('[data-testid="system-voice-defaults"]')!;
+    expect([...system.querySelectorAll<HTMLInputElement>('input[type="number"]')].map(input => input.value)).toEqual([
+      data.voice.systemDefaults.delivery.temperature, data.voice.systemDefaults.delivery.topP,
+      data.voice.systemDefaults.delivery.topK, data.voice.systemDefaults.delivery.repetitionPenalty,
+    ].map(String));
+    expect(container.textContent).not.toContain("Ming uses fixed sampling.");
   });
 
   it("preserves gender mappings when editing only the global fallback", async () => {

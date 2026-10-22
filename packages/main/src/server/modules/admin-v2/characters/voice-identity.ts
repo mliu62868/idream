@@ -63,6 +63,7 @@ export type ConfiguredVoiceIdentityRuntime = Pick<
   | "runtimeStatus"
   | "runtimeEngine"
   | "runtimeVersion"
+  | "runtimeModel"
   | "runtimeLanguage"
   | "catalogVoiceIds"
 >;
@@ -80,14 +81,15 @@ export async function inspectConfiguredVoiceIdentityRuntime(): Promise<Configure
       runtimeStatus: "inactive",
       runtimeEngine: "inactive",
       runtimeVersion: null,
+      runtimeModel: null,
       catalogVoiceIds: [],
     };
   }
   return inspectVoiceIdentityProviderRuntime(configuredProvider);
 }
 
-// Catalog selection follows the system clip route; cloning may use a separate
-// provider. Candidate activation always inspects its persisted provider.
+// Pocket catalog selection is independent of the default clip route; cloning
+// may use a separate provider. Candidate activation always inspects its persisted provider.
 export async function inspectCharacterVoiceRuntimes(candidateProvider: string | null) {
   const configuredProvider = configuredVoiceIdentityProviderKey();
   const inspections = new Map<CharacterVoiceProviderKey, Promise<ConfiguredVoiceIdentityRuntime>>();
@@ -103,7 +105,7 @@ export async function inspectCharacterVoiceRuntimes(candidateProvider: string | 
     isCharacterVoiceProviderKey(configuredProvider)
       ? inspect(configuredProvider)
       : inspectConfiguredVoiceIdentityRuntime(),
-    providers.voice.clip.providerKey === "pocket_tts" ? inspect("pocket_tts") : null,
+    inspect("pocket_tts"),
     candidateProvider && isCharacterVoiceProviderKey(candidateProvider)
       ? inspect(candidateProvider) : null,
   ]);
@@ -165,6 +167,7 @@ async function inspectVoiceIdentityProviderRuntime(
       runtimeVersion: capabilities.ok
         ? (capabilities.data.runtimeVersion ?? null)
         : null,
+      runtimeModel: capabilities.ok ? capabilities.data.model ?? null : null,
       catalogVoiceIds,
     };
   } catch {
@@ -174,6 +177,7 @@ async function inspectVoiceIdentityProviderRuntime(
       runtimeStatus: "unavailable",
       runtimeEngine: "unknown",
       runtimeVersion: null,
+      runtimeModel: null,
       catalogVoiceIds: [],
     };
   }
@@ -578,8 +582,8 @@ export async function createCharacterVoicePreset(input: {
         sampleText: input.request.sampleText,
       },
       prepare: async () => {
-        if (providers.voice.clip.providerKey !== providerKey || !voice.createPresetVoice) {
-          throw Errors.unavailable("Official voice presets require the Pocket TTS system voice provider");
+        if (!voice.createPresetVoice) {
+          throw Errors.unavailable("Official voice presets require the Pocket TTS runtime");
         }
         const ownerId = await voiceResourceOwner(input.characterId);
         const runtime = await inspectVoiceIdentityProviderRuntime(providerKey);

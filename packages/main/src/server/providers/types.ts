@@ -52,6 +52,8 @@ export interface VoiceClipPort {
     requestId: string;
     attemptNo: number;
     idempotencyKey: string;
+    // Durable callers pin the engine independently of the stable provider/voice identity.
+    model?: string;
     // Account owner, distinct from the shared character/voice identity.
     ownerId?: string;
     text: string;
@@ -77,6 +79,7 @@ export interface VoiceClipPort {
     body: Uint8Array;
     contentType: string;
     durationMs: number;
+    model?: string;
     sceneApplied?: boolean;
     sceneAdapter?: string;
   }>>;
@@ -155,6 +158,9 @@ export interface VoiceIdentityPort {
       runtimeVersion?: string;
       acceleration?: string;
       catalogVoices?: readonly string[];
+      model?: string;
+      supportedModels?: readonly string[];
+      languages?: readonly string[];
     }>
   >;
 }

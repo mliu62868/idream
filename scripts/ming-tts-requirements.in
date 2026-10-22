@@ -1,0 +1,8 @@
+# Fixed MLX implementation used by the character-voice qualification.
+mlx-audio @ https://github.com/Blaizzy/mlx-audio/archive/7cc680b2bea1e8ef34b1a78ee4ff389953aebe40.tar.gz
+onnxruntime==1.31.0
+kaldi-native-fbank==1.22.4
+scipy==1.18.1
+fastapi
+uvicorn
+python-multipart

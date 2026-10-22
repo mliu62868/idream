@@ -13,11 +13,15 @@ if (!uv) {
   throw new Error("uv is required to start the voice-cloning gateway; set UV_BIN to its executable");
 }
 
-// SPEC: start only from the wheels `bun run voice:fish:install` put in the uv cache.
-// INTENT: the gateway runs Breeze TTS 2, which needs mlx-audio >= 0.5; oMLX's
-// bundled mlx-audio predates it, so the gateway owns a hashed lock instead of
-// borrowing oMLX's Python. --offline keeps a restart from crash-looping when
-// PyPI or the host proxy is unreachable, same as Pocket TTS.
+const model = process.env.FISH_AUDIO_MODEL || "ming-3.0-tts-0.5b-8bit";
+const requirements = {
+  "ming-3.0-tts-0.5b-8bit": "scripts/ming-tts-requirements.lock",
+  "breeze-tts-2-mlx-8bit": "scripts/breeze-tts-requirements.lock",
+}[model];
+if (!requirements) throw new Error(`Unsupported voice-cloning model: ${model}`);
+
+// Each engine owns its pinned dependencies. A restart must use the prepared
+// offline cache; it must not upgrade Breeze or import the host's Python packages.
 // The locked Python environment must not import packages from another runtime.
 const childEnv = { ...process.env };
 delete childEnv.PYTHONPATH;
@@ -31,7 +35,7 @@ const child = spawn(
     "--python",
     "3.12",
     "--with-requirements",
-    "scripts/breeze-tts-requirements.lock",
+    requirements,
     "uvicorn",
     "scripts.fish_audio_gateway:app",
     "--host",

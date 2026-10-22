@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { FishAudioDeliverySettings } from "@idream/shared/contracts";
+import { DEFAULT_FISH_AUDIO_DELIVERY, type FishAudioDeliverySettings } from "@idream/shared/contracts";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "@/server/lib/request-json";
-import { getVoiceDefaultSettings, previewVoiceDefault } from "@/server/modules/voice-defaults";
+import { getVoiceDefaultSettings, POCKET_TTS_CATALOG } from "@/server/modules/voice-defaults";
 import { providers } from "@/server/providers";
 import { createVoicePortsForKey } from "@/server/providers/voice/factory";
 import { mediaViewUrl } from "./public-read-model";
@@ -31,13 +31,14 @@ export type PreparedCharacterDraftVoice = {
 
 export async function getCharacterDraftVoiceCatalog() {
   const settings = await getVoiceDefaultSettings();
+  const runtime = await createVoicePortsForKey("pocket_tts").identity?.inspectCapabilities();
+  const catalog = settings.provider === "pocket_tts" ? settings.catalog : POCKET_TTS_CATALOG;
+  const items = runtime?.ok ? catalog.filter(voice => runtime.data.catalogVoices?.includes(voice.id)) : [];
+  const preferred = settings.provider === "pocket_tts" ? settings.defaultVoiceId : env.POCKET_TTS_DEFAULT_VOICE_ID;
   return {
-    provider: settings.provider,
-    defaultVoiceId: settings.defaultVoiceId,
-    // Only Pocket exposes an existing catalog-alias creation capability.
-    items: settings.provider === "pocket_tts"
-      ? settings.catalog.map(({ id, label, description }) => ({ id, label, description }))
-      : [],
+    provider: "pocket_tts" as const,
+    defaultVoiceId: items.find(voice => voice.id === preferred)?.id ?? items[0]?.id ?? env.POCKET_TTS_DEFAULT_VOICE_ID,
+    items: items.map(({ id, label, description }) => ({ id, label, description })),
   };
 }
 
@@ -46,8 +47,11 @@ export async function previewCharacterDraftVoice(input: {
   voiceId: string;
   text: string;
 }) {
-  const settings = await assertCurrentCatalogSelection(input);
-  return previewVoiceDefault({ ...input, delivery: settings.delivery });
+  await assertCurrentCatalogSelection(input);
+  const preview = await createVoicePortsForKey("pocket_tts").identity!.previewVoice({ text: input.text, voiceId: input.voiceId });
+  if (!preview.ok) throw Errors.unavailable("Could not preview the selected catalog voice", preview.error);
+  return { voiceId: input.voiceId, contentType: preview.data.contentType,
+    audioBase64: Buffer.from(preview.data.body).toString("base64"), durationMs: preview.data.durationMs };
 }
 
 export async function prepareCharacterDraftVoice(input: {
@@ -56,9 +60,9 @@ export async function prepareCharacterDraftVoice(input: {
   userId: string;
   draftId: string;
 }): Promise<PreparedCharacterDraftVoice> {
-  const settings = await assertCurrentCatalogSelection(input);
+  await assertCurrentCatalogSelection(input);
   return preparePresetCharacterVoice({
-    ...input, delivery: settings.delivery, language: env.POCKET_TTS_LANGUAGE,
+    ...input, delivery: DEFAULT_FISH_AUDIO_DELIVERY, language: env.POCKET_TTS_LANGUAGE,
     sampleText: "Hello, it's good to meet you. I'm happy we can spend some time together.",
   });
 }
@@ -89,8 +93,8 @@ async function preparePresetCharacterVoice(input: {
   sampleText: string;
   expectedModel?: string;
 }): Promise<PreparedCharacterDraftVoice> {
-  // INVARIANT: ordinary catalog selection follows the clip provider, independent
-  // of the Admin cloning provider. Each Character owns a real, distinct alias.
+  // INVARIANT: Pocket catalog aliases remain available independently of the
+  // default speech engine. Each Character owns a real, distinct alias.
   const voice = createVoicePortsForKey("pocket_tts").identity;
   if (!voice?.createPresetVoice) throw Errors.unavailable("Catalog voice creation is unavailable");
   const voiceId = `idream-${randomUUID()}`;
@@ -213,11 +217,9 @@ export async function cleanupPreparedCharacterDraftVoice(prepared: PreparedChara
 }
 
 async function assertCurrentCatalogSelection(input: { provider: string; voiceId: string }) {
-  const settings = await getVoiceDefaultSettings();
-  if (input.provider !== settings.provider) throw Errors.conflict("Voice provider changed; choose a voice again");
-  if (settings.provider !== "pocket_tts") throw Errors.unavailable("Catalog voice creation is unavailable");
-  if (!settings.catalog.some((voice) => voice.id === input.voiceId)) {
-    throw Errors.badRequest("The selected voice is no longer in the catalog");
+  if (input.provider !== "pocket_tts") throw Errors.conflict("Voice provider changed; choose a voice again");
+  const catalog = await getCharacterDraftVoiceCatalog();
+  if (!catalog.items.some(voice => voice.id === input.voiceId)) {
+    throw Errors.badRequest("The selected voice is no longer available in the catalog");
   }
-  return settings;
 }

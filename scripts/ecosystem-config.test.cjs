@@ -369,6 +369,14 @@ test("the ecosystem loads Fish only when system or identity configuration requir
   );
 });
 
+test("a cloning-model default retains Pocket for existing preset identities", () => {
+  for (const mode of ["development", "production"]) {
+    const config = loadConfig(mode, { VOICE_PROVIDER: "fish-audio" });
+    assert.equal(config.apps.some((app) => app.name === "fish-audio"), true);
+    assert.equal(config.apps.some((app) => app.name === "pocket-tts"), true);
+  }
+});
+
 test("configuration fixtures isolate their baseline from local Fish identity settings", (t) => {
   const mainEnvPath = path.join(repoRoot, "packages/main/.env");
   const existsSync = fs.existsSync;

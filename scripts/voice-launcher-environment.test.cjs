@@ -6,7 +6,8 @@ const path = require("node:path");
 const test = require("node:test");
 
 const launchers = [
-  ["fish-audio", "scripts/breeze-tts-requirements.lock"],
+  ["fish-audio", "scripts/ming-tts-requirements.lock", "ming-3.0-tts-0.5b-8bit"],
+  ["fish-audio", "scripts/breeze-tts-requirements.lock", "breeze-tts-2-mlx-8bit"],
   ["parakeet-asr", "scripts/parakeet-asr-requirements.lock"],
   ["pocket-tts", "scripts/pocket-tts-requirements.lock"],
 ];
@@ -14,8 +15,8 @@ const launchers = [
 // Exercise the real executable entrypoints, including Bun's PM2 interpreter.
 // A probe replaces only uv: no model, Python installation, or listener is needed
 // to catch foreign interpreter paths leaking across the actual spawn boundary.
-for (const executable of [process.execPath, "bun"]) for (const [name, lock] of launchers) {
-  test(`${name} on ${path.basename(executable)} isolates Python paths while preserving runtime configuration`, () => {
+for (const executable of [process.execPath, "bun"]) for (const [name, lock, model] of launchers) {
+  test(`${name}${model ? ` (${model})` : ""} on ${path.basename(executable)} isolates Python paths while preserving runtime configuration`, () => {
     const directory = mkdtempSync(path.join(tmpdir(), "idream-voice-environment-"));
     const probe = path.join(directory, "uv-probe.cjs");
     const preserved = {
@@ -23,6 +24,8 @@ for (const executable of [process.execPath, "bun"]) for (const [name, lock] of l
       HF_HOME: path.join(directory, "model-cache"),
       HTTPS_PROXY: "http://proxy.fixture.invalid:8080",
       FISH_AUDIO_MODEL_PATH: path.join(directory, "breeze-model"),
+      FISH_AUDIO_CAMPLUS_MODEL_PATH: path.join(directory, "campplus.onnx"),
+      ...(model ? { FISH_AUDIO_MODEL: model } : {}),
       FISH_AUDIO_API_TOKEN: "fixture-fish-token",
       FISH_AUDIO_PORT: "18062",
       PARAKEET_ASR_API_TOKEN: "fixture-asr-token",

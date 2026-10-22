@@ -47,7 +47,7 @@ const EnvSchema = z.object({
   LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).default("info"),
   CHAT_PROVIDER: z.enum(["mock", "pipeline"]).default("mock"),
   // Tests with no environment remain isolated on mock. Versioned local and
-  // production env templates select Pocket TTS as the English product authority.
+  // production env templates select Ming through the fish-audio provider slot.
   VOICE_PROVIDER: z
     .enum(["mock", "pocket-tts", "fish-audio"])
     .default("mock"),
@@ -125,7 +125,7 @@ const EnvSchema = z.object({
   POCKET_TTS_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
   FISH_AUDIO_API_URL: z.string().url().default("http://127.0.0.1:8062/v1"),
   FISH_AUDIO_API_TOKEN: z.string().optional(),
-  FISH_AUDIO_MODEL: z.string().min(1).default("breeze-tts-2-mlx-8bit"),
+  FISH_AUDIO_MODEL: z.string().min(1).default("ming-3.0-tts-0.5b-8bit"),
   FISH_AUDIO_LANGUAGE: z.string().min(1).default("auto"),
   FISH_AUDIO_DEFAULT_VOICE_ID: z
     .string()

@@ -91,7 +91,9 @@
     "launch:secrets": "node scripts/generate-launch-secrets.mjs",
     "pi-companion:setup": "node scripts/setup-pi-companion.mjs",
     "pi-companion:check": "node scripts/setup-pi-companion.mjs --check",
-    "test:pi-gate": "node scripts/run-pi-gate.mjs"
+    "test:pi-gate": "node scripts/run-pi-gate.mjs",
+    "voice:ming:install": "env -u PYTHONPATH -u PYTHONHOME uv run --no-project --python 3.12 --with-requirements scripts/ming-tts-requirements.lock python -m scripts.install_ming_tts",
+    "test:voice:ming": "env -u PYTHONPATH -u PYTHONHOME uv run --offline --no-project --python 3.12 --with-requirements scripts/ming-tts-requirements.lock python -m unittest scripts.test_fish_audio_gateway"
   },
   "devDependencies": {
     "turbo": "^2.9.18"

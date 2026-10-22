@@ -16,12 +16,27 @@ afterAll(() => { env.VOICE_PROVIDER = previous.provider; env.POCKET_TTS_LANGUAGE
 const health = { ready: true, model: "moondream/parakeet-redux", modelRevision: "2bf128600aac4b16946f7ed8372e56117fe5e23b", runtimeVersion: "2.6.1" };
 describe("qualified English turn-based Call capability", () => {
   it("requires both resident TTS readiness and the pinned ASR runtime", async () => {
-    vi.spyOn(providers.voice.identity!, "inspectCapabilities").mockResolvedValue({ ok: true, data: { voiceCloning: false } });
+    vi.spyOn(providers.voice.identity!, "inspectCapabilities").mockResolvedValue({ ok: true, data: { voiceCloning: false, model: env.POCKET_TTS_MODEL, supportedModels: [env.POCKET_TTS_MODEL], languages: ["en"] } });
     const fetcher = vi.fn().mockResolvedValue(Response.json(health)); vi.stubGlobal("fetch", fetcher);
     expect(await voiceCallAvailability()).toEqual({ status: "available", language: "en", transport: "turn-based" });
     expect(fetcher).toHaveBeenCalledWith(expect.stringContaining("/health"), expect.objectContaining({ cache: "no-store" }));
     fetcher.mockResolvedValue(Response.json({ ...health, modelRevision: "unqualified" }));
     expect((await voiceCallAvailability()).status).toBe("unavailable");
+  });
+  it("qualifies the actual Ming English model and refuses replay-only or non-English capability", async () => {
+    const original = providers.voice;
+    env.VOICE_PROVIDER = "fish-audio";
+    providers.voice = createVoicePortsForKey("fish_audio");
+    const inspect = vi.spyOn(providers.voice.identity!, "inspectCapabilities");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(health)));
+    try {
+      inspect.mockResolvedValue({ ok: true, data: { voiceCloning: true, model: env.FISH_AUDIO_MODEL, supportedModels: [env.FISH_AUDIO_MODEL], languages: ["en", "zh"] } });
+      expect((await voiceCallAvailability()).status).toBe("available");
+      inspect.mockResolvedValue({ ok: true, data: { voiceCloning: true, model: env.FISH_AUDIO_MODEL, supportedModels: [], languages: ["en"] } });
+      expect((await voiceCallAvailability()).status).toBe("unavailable");
+      inspect.mockResolvedValue({ ok: true, data: { voiceCloning: true, model: env.FISH_AUDIO_MODEL, supportedModels: [env.FISH_AUDIO_MODEL], languages: ["zh"] } });
+      expect((await voiceCallAvailability()).status).toBe("unavailable");
+    } finally { providers.voice = original; }
   });
   it("configuration and a healthy ASR cannot mask an unavailable voice model", async () => {
     vi.spyOn(providers.voice.identity!, "inspectCapabilities").mockResolvedValue({ ok: false, error: { code: "offline", message: "offline", retryable: true } });

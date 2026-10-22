@@ -714,6 +714,12 @@ export const adminZhCharacters: Record<string, string> = {
   "First message preview": "第一条消息预览",
   "First-time setup": "首次设置",
   "Breeze TTS 2": "Breeze TTS 2",
+  "Ming 3.0 TTS": "Ming 3.0 TTS",
+  "Ming uses fixed sampling. Saved advanced settings are retained for other models.": "Ming 使用固定采样参数，已保存的高级设置会保留，供其他模型使用。",
+  "Local voice": "本地声音",
+  "Official voices require the Pocket TTS runtime.": "官方声音需要 Pocket TTS 运行时。",
+  "Local voice cloning through MLX is ready.": "通过 MLX 运行的本地声音克隆已就绪。",
+  "Local voice cloning is unavailable. Verify the configured model, resident MLX process, and reference audio.": "本地声音克隆当前不可用；请检查配置模型、常驻 MLX 进程和参考音频。",
   "Breeze TTS 2 voice cloning through MLX is ready.":
     "通过 MLX 运行的 Breeze TTS 2 声音克隆已就绪。",
   "Fish Audio is configured but unavailable. Verify the Breeze TTS 2 model, resident MLX process, and system female reference.":

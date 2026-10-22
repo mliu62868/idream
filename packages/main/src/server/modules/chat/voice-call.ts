@@ -12,6 +12,7 @@ import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency"
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { resolveCharacterVoiceAuthority } from "@/server/modules/voice-defaults";
 import { providers } from "@/server/providers";
+import { configuredVoiceModel, configuredVoiceProviderKey, englishVoiceRuntimeReady } from "@/server/providers/voice/factory";
 import { asrReady, requestAsr } from "@/server/providers/asr/parakeet-redux";
 import { readVoiceUpload } from "@/server/providers/asr/upload";
 import { createVoiceClip, characterVoiceTone, pinnedVoiceProviderPayloadSchema, voiceMinutesRemainingMs } from "../ourdream/voice-clip";
@@ -28,10 +29,9 @@ type Start = z.infer<typeof voiceCallStartSchema>;
 // SPEC: English local batch ASR/TTS supports turn-based calls, not streaming
 // audio or a claim that every ASR-supported language is qualified for calls.
 export async function voiceCallAvailability() {
-  const local = env.VOICE_PROVIDER === "pocket-tts" && providers.voice.clip.providerKey === "pocket_tts" &&
-    providers.voice.identity?.providerKey === "pocket_tts" && ["en", "english"].includes(env.POCKET_TTS_LANGUAGE.toLowerCase());
-  const voice = local ? await providers.voice.identity?.inspectCapabilities() : null;
-  const available = Boolean(env.CHAT_SERVICE_URL) && local && voice?.ok === true && await asrReady();
+  const providerKey = providers.voice.clip.providerKey;
+  const local = configuredVoiceProviderKey() === providerKey && await englishVoiceRuntimeReady(providerKey, providers.voice.identity);
+  const available = Boolean(env.CHAT_SERVICE_URL) && local && await asrReady();
   return { status: available ? "available" as const : "unavailable" as const,
     ...(!available ? { reason: "local_english_audio_unavailable" } : {}), language: "en", transport: "turn-based" };
 }
@@ -45,15 +45,14 @@ async function callTerms(userId: string, sessionId: string, body: Start) {
   const session = await sessionAuthority(userId, sessionId);
   const entitlements = await entitlementMap(userId);
   let identity = await resolveCharacterVoiceAuthority({ characterId: session.characterId, systemDefaultOnly: entitlements.voice_enabled !== true });
-  // INTENT: Calls only run on local English Pocket TTS. A Character voice on
-  // another provider (a Fish clone) falls back to the system default voice the
-  // free route uses, so a voice plan never makes the Call worse than no plan.
-  const voiceFallback = identity.source === "character_clone" && identity.providerKey !== "pocket_tts";
+  // A healthy character identity is used directly, including Ming clones.
+  // If its runtime is down, the quoted fallback remains explicit to the caller.
+  const voiceFallback = identity.source === "character_clone" && !await englishVoiceRuntimeReady(identity.providerKey);
   if (voiceFallback) identity = await resolveCharacterVoiceAuthority({ characterId: session.characterId, systemDefaultOnly: true });
-  if (identity.providerKey !== "pocket_tts") throw Errors.unavailable("This voice is not qualified for English local calls");
+  if (!await englishVoiceRuntimeReady(identity.providerKey)) throw Errors.unavailable("This voice is not qualified for English local calls");
   const character = await readableCharacter(session.characterId, userId);
   const providerPayload = pinnedVoiceProviderPayloadSchema.parse({
-    providerKey: identity.providerKey, voiceId: identity.voiceId, voiceAuthority: identity.source,
+    providerKey: identity.providerKey, model: configuredVoiceModel(identity.providerKey), voiceId: identity.voiceId, voiceAuthority: identity.source,
     systemVoiceSettingVersion: identity.settingVersion, characterVoiceProfileVersion: identity.characterVoiceProfileVersion,
     tone: characterVoiceTone(character), delivery: identity.delivery,
   });

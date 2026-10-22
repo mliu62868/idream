@@ -34,6 +34,7 @@ export default defineConfig({
       "src/server/modules/voice-defaults.test.ts",
       "src/server/modules/billing/cash-capture.test.ts",
       "src/server/modules/chat/companion-memory-authority.test.ts",
+      "src/server/modules/chat/voice-call.test.ts",
       "src/server/modules/admin-v2/metrics/certification.test.ts",
       "src/server/modules/admin-v2/metrics/engine.test.ts",
       "src/server/modules/admin-v2/metrics/formula-validation.test.ts",

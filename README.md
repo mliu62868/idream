@@ -222,6 +222,38 @@ Apply running-process updates through the controlled PM2 wrapper above. The
 existing `chat-runtime:cutover` command migrates local `DSH_*` settings to `PI_*`
 while preserving configured memory roots and retiring plugin/bootstrap paths.
 
+## Default Speech Runtime
+
+Ming 3.0 0.5B MLX 8-bit provides the default speech runtime. Its existing
+`fish-audio` provider name, reference registry and erasure contract stay stable.
+Pocket TTS remains available for existing Character catalog identities.
+
+```bash
+bun run voice:ming:install
+bun run test:voice:ming
+```
+
+Set `VOICE_PROVIDER=fish-audio`, `FISH_AUDIO_MODEL=ming-3.0-tts-0.5b-8bit`,
+`FISH_AUDIO_MODEL_PATH` and `FISH_AUDIO_CAMPLUS_MODEL_PATH` in Main's environment.
+Configure a verified adult reference WAV and exact transcript using
+`FISH_AUDIO_SYSTEM_REFERENCE_AUDIO` / `FISH_AUDIO_SYSTEM_REFERENCE_MANIFEST`, or
+set `FISH_AUDIO_DEFAULT_VOICE_ID` to an existing registry identity. After pending
+voice work has settled, apply the configuration with `bun run pm2:restart` and
+save the matching system voice in Admin. Runtime restarts load only local assets.
+
+Ming uses the full reference for CAM++ speaker conditioning and structured
+emotion/speed/volume captions. A verified short acoustic prompt can be recorded
+as `ming_prompt` in the reference manifest, with `reference_sha256`, `start_s`,
+`end_s` and exact `ref_text`; unverified automatic cropping is not used. The
+sampler is fixed at CFG 2, temperature 0 and 10 steps. Breeze's token sampling
+controls do not apply. Long text is split within Ming's conditioning budget.
+
+For reproducible Breeze comparisons, its separate hashed environment remains
+available through `bun run voice:fish:install` and the explicit
+`FISH_AUDIO_MODEL=breeze-tts-2-mlx-8bit` setting. A gateway runs one model at a
+time; old-model idempotency requests may replay exact cached audio but cannot
+silently regenerate with the current model.
+
 ## Chat Voice Input
 
 Single and group chats support English dictation into an editable draft. Click the
