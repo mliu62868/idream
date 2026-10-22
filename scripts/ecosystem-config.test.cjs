@@ -337,6 +337,34 @@ test("Fish Audio direct and PM2 launchers use Bun while preserving the Python ga
   }
 });
 
+test("Fish Audio preserves its configured idempotency and erasure directory across checkout changes", (t) => {
+  const mainEnvPath = path.join(repoRoot, "packages/main/.env");
+  const existsSync = fs.existsSync;
+  const readFileSync = fs.readFileSync;
+  const previous = process.env.FISH_AUDIO_IDEMPOTENCY_DIR;
+  let fixture = "";
+  t.mock.method(fs, "existsSync", (filename) => filename === mainEnvPath || existsSync(filename));
+  t.mock.method(fs, "readFileSync", (filename, ...args) => filename === mainEnvPath
+    ? fixture : readFileSync(filename, ...args));
+  try {
+    for (const mode of ["development", "production"]) {
+      delete process.env.FISH_AUDIO_IDEMPOTENCY_DIR;
+      fixture = "";
+      assert.equal(byName(loadConfig(mode, { VOICE_PROVIDER: "fish-audio" }), "fish-audio").env.FISH_AUDIO_IDEMPOTENCY_DIR,
+        path.join(repoRoot, ".data/fish-audio/idempotency"));
+      fixture = "FISH_AUDIO_IDEMPOTENCY_DIR=/shared/voice/fish-idempotency\n";
+      assert.equal(byName(loadConfig(mode, { VOICE_PROVIDER: "fish-audio" }), "fish-audio").env.FISH_AUDIO_IDEMPOTENCY_DIR,
+        "/shared/voice/fish-idempotency");
+      process.env.FISH_AUDIO_IDEMPOTENCY_DIR = "/operator/voice/fish-idempotency";
+      assert.equal(byName(loadConfig(mode, { VOICE_PROVIDER: "fish-audio" }), "fish-audio").env.FISH_AUDIO_IDEMPOTENCY_DIR,
+        "/operator/voice/fish-idempotency");
+    }
+  } finally {
+    if (previous === undefined) delete process.env.FISH_AUDIO_IDEMPOTENCY_DIR;
+    else process.env.FISH_AUDIO_IDEMPOTENCY_DIR = previous;
+  }
+});
+
 test("Pocket TTS runs the pinned official default CPU gateway on 8063", () => {
   assert.equal(
     rootPackage.scripts["voice:pocket:start"],

@@ -203,6 +203,10 @@ module.exports = {
           "FISH_AUDIO_VOICE_DIR",
           dir(".data/fish-audio/voices"),
         ),
+        FISH_AUDIO_IDEMPOTENCY_DIR: mainEnvValue(
+          "FISH_AUDIO_IDEMPOTENCY_DIR",
+          dir(".data/fish-audio/idempotency"),
+        ),
         HF_HUB_OFFLINE: "1",
         ...(fishAudioApiToken
           ? { FISH_AUDIO_API_TOKEN: fishAudioApiToken }
