@@ -497,7 +497,14 @@ export async function quoteGeneration(input: {
       lookReferenceAssetId: plan.requestedLookReferenceAssetId,
       entitlements: plan.entitlements,
     }) : null;
-  const orientations = jsonStringArray(plan.profile.allowedOrientations);
+  const allowedOrientations = jsonStringArray(plan.profile.allowedOrientations);
+  const sourceOrientation = plan.body.orientation ?? plan.body.controls.orientation;
+  // Image Edit has no framing control: preserve the source direction resolved
+  // by its admission contract. The quote contract places its default first.
+  const orientations = input.profileSelectionAuthority === "public_image_edit" &&
+    sourceOrientation && allowedOrientations.includes(sourceOrientation)
+    ? [sourceOrientation, ...allowedOrientations.filter((value) => value !== sourceOrientation)]
+    : allowedOrientations;
   const defaultOrientation = orientations[0];
   if (!defaultOrientation) {
     throw Errors.unavailable(

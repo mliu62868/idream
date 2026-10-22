@@ -21,6 +21,7 @@ import {
 } from "./generation-job-retry";
 import { duplicateCharacterForUser } from "./character-duplicate";
 import { recordMediaIdentityFeedback } from "./media-feedback";
+import { requestMediaVariationWithExactQuote } from "@/lib/generation-write-client";
 
 // SPEC: 用户侧生成写入的领域接口在没有 HTTP 的情况下也能被驱动 —— 直接传已解析的
 // 业务参数，直接拿回数据。
@@ -128,6 +129,39 @@ afterAll(async () => {
 });
 
 describe("createGenerationJobForUser", () => {
+  it("preserves a portrait source through the Image Edit quote and browser write contract", async () => {
+    const userId = `${P}portrait-edit`;
+    const sourceJobId = `${userId}-source-job`;
+    const sourceAssetId = `${userId}-source-image`;
+    await createUser({ id: userId });
+    await grantPremiumControls(userId);
+    await grantCoins(userId, 100, "seed");
+    await prisma.generationJob.create({ data: {
+      id: sourceJobId, userId, mode: "image", ...PINNED_RETRY_JOB_AUTHORITY,
+      status: "completed", orientation: "4:5", controls: { orientation: "4:5" }, presetIds: [],
+    } });
+    await createMedia({ id: sourceAssetId, ownerId: userId, sourceJobId });
+    await prisma.mediaAsset.update({ where: { id: sourceAssetId }, data: { width: 832, height: 1024 } });
+
+    const result = await requestMediaVariationWithExactQuote({
+      mediaId: sourceAssetId, outputCount: 1, consistencyMode: "balanced",
+      prompt: "Change only the umbrella to blue; preserve the composition.",
+      createIdempotencyKey: () => `${userId}-edit`,
+    }, async (url, init) => {
+      const response = await api(init?.method ?? "GET", String(url).replace(/^\/api\/v1\//, ""), {
+        userId, ageGate: true, autoGenerationQuote: false,
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        headers: Object.fromEntries(new Headers(init?.headers)),
+      });
+      return Response.json({ ok: response.ok, data: response.data, error: response.error }, { status: response.status });
+    });
+
+    const edit = await prisma.generationJob.findUniqueOrThrow({ where: { id: result.job.id } });
+    expect(edit).toMatchObject({ sourceType: "media_variation", orientation: "4:5", costDreamcoins: 5 });
+    expect(edit.controls).toMatchObject({ sourceImageAssetId: sourceAssetId, orientation: "4:5", width: 832, height: 1024 });
+    expect(await dreamcoinBalance(userId)).toBe(95);
+  });
+
   it("rolls back the accepted Job and debit if its dispatch outbox cannot commit", async () => {
     const userId = `${P}create-atomic`;
     await createUser({ id: userId });

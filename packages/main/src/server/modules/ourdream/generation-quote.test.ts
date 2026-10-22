@@ -104,6 +104,26 @@ describe("generation quote workflow authority", () => {
     expect(quote.defaultOrientation).toBe(orientation);
   });
 
+  it.each([
+    { selection: "public_image_edit" as const, orientation: "4:5" as const, controlOrientation: "1:1" as const, expected: ["4:5", "1:1"] },
+    { selection: "public_image_edit" as const, orientation: undefined, controlOrientation: "4:5" as const, expected: ["4:5", "1:1"] },
+    { selection: "public_image_edit" as const, orientation: "9:16" as const, controlOrientation: "9:16" as const, expected: ["1:1", "4:5"] },
+    { selection: "public_generator" as const, orientation: "4:5" as const, controlOrientation: "4:5" as const, expected: ["1:1", "4:5"] },
+  ])("quotes $selection source $orientation / control $controlOrientation with published defaults", async ({ selection, orientation, controlOrientation, expected }) => {
+    authority.selectGenerationProfile.mockResolvedValue({ ...profile, allowedOrientations: ["1:1", "4:5"] });
+    authority.generationWorkflowDescriptor.mockResolvedValue({ workflowKey: profile.workflowKey, version: 1 });
+    authority.dreamcoinBalance.mockResolvedValue(100);
+    authority.resolveGenerationPricingAuthority.mockResolvedValue({ id: "image-price", ruleKey: "image", version: 1, baseCost: 5, multiplier: 1, effectiveFrom: null, updatedAt: new Date("2026-09-02T00:00:00Z") });
+
+    const controls = { ...request.controls, orientation: controlOrientation, sourceImageAssetId: "source-image" };
+    const { quote } = await quoteGeneration({ userId: "user-1", body: {
+      ...request, orientation, controls,
+    }, profileSelectionAuthority: selection });
+
+    expect(quote.orientations).toEqual(expected);
+    expect(quote.defaultOrientation).toBe(expected[0]);
+  });
+
   it("rejects a ComfyUI plan before quote authority when its descriptor is missing", async () => {
     await expect(
       resolveGenerationPlan("user-1", request),
