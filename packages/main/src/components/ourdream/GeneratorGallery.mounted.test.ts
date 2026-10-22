@@ -146,6 +146,28 @@ describe("GeneratorWorkspace Gallery filters and video playback", () => {
     await settle();
   }
 
+  it.each([true, false])("keeps delete confirmation after refresh only while its target remains present (%s)", async (targetRemains) => {
+    await mount();
+    const refresh = deferredResponse();
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+      String(input) === "/api/v1/media?type=image" ? refresh.promise : originalFetch(input, init),
+    ));
+
+    // A same-tab refresh leaves the existing cards usable while the request runs.
+    await click(button("Images"));
+    const card = container.querySelector('[data-media-id="image-1"]')!;
+    await click(card.querySelector('button[aria-label="Delete"]')!);
+    expect(card.querySelector('button[aria-label="Confirm delete media"]')).not.toBeNull();
+    refresh.resolve(Response.json({ ok: true, data: {
+      items: [mediaItem(targetRemains ? "image-1" : "replacement")], nextCursor: null,
+    } }));
+    await settle();
+
+    expect(container.querySelector('button[aria-label="Confirm delete media"]') !== null).toBe(targetRemains);
+    expect(vi.mocked(globalThis.fetch).mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
+  });
+
   it("queries older media on the server and preserves filters through pages, tabs and reconnect", async () => {
     const originalFetch = globalThis.fetch;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

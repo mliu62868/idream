@@ -670,7 +670,10 @@ export function GeneratorWorkspace() {
       setMediaCursorTrail([null]);
     },
     onLoaded: (page, request) => {
-      setDeleteConfirmMediaId(null);
+      // A same-view refresh can finish between the two delete clicks.
+      setDeleteConfirmMediaId((id) =>
+        page.items.some((item) => item.id === id) ? id : null,
+      );
       setBulkDeleteConfirmKey(null);
       setSelectedMediaIds(new Set());
       setMediaCursorTrail(request.cursors);
