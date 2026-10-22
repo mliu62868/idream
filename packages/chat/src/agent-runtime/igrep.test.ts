@@ -699,7 +699,7 @@ describe("igrep Main source admission", () => {
     await expect(builder.build(workspace, request)).resolves.toMatchObject({
       sourceReady: true, derivation: "rejected", rejectionReason: "dialogue_source_mismatch",
     });
-    expect(calls).toEqual(["ingest", "maintain", "ingest", "doctor"]);
+    expect(calls).toEqual(["ingest", "maintain", "ingest", "wake", "doctor"]);
     await expectSources(workspace, request);
   });
 
@@ -723,7 +723,64 @@ describe("igrep Main source admission", () => {
     });
     await expectSources(workspace, input);
     await expect(readFile(join(workspace, ".igrep", "untrusted-profile.txt"))).rejects.toMatchObject({ code: "ENOENT" });
-    expect(calls).toEqual(["ingest", "maintain", "ingest", "doctor"]);
+    expect(calls).toEqual(["ingest", "maintain", "ingest", "wake", "doctor"]);
+  });
+
+  it.each(["project", "rebuild"] as const)("publishes wake-readable Main sources after a deferred %s", async (mode) => {
+    const workspace = await fixture();
+    const calls: string[] = [];
+    const pendingProfile = join(workspace, ".igrep/mem/.state/profile.json");
+    const run = async (options: JsonCommandOptions) => {
+      calls.push(options.args[1]!);
+      if (options.args[1] === "ingest") return fixtureIngest(options);
+      if (options.args[1] === "maintain") {
+        // Captured igrep 0.1.161 failure: the provider returned HTTP 404 and
+        // deferred --rebuild left publication pending despite doctor passing.
+        await mkdir(dirname(pendingProfile), { recursive: true });
+        await writeFile(pendingProfile, JSON.stringify({
+          schema: "igrep.mem.profile_state/2", rebuildProfile: true,
+          lastMaintain: { outcome: "deferred", reason: "provider_error" },
+        }));
+        return { ...memoryEnvelope(options), outcome: "deferred", reason: "provider_error" };
+      }
+      if (options.args[1] === "wake") {
+        const state = await readFile(pendingProfile, "utf8").catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+          return "{}";
+        });
+        return { ...memoryEnvelope(options), warnings: JSON.parse(state).rebuildProfile
+          ? ["profile omitted while a maintenance publication is incomplete"] : [] };
+      }
+      return memoryEnvelope(options);
+    };
+    const builder = new IgrepMemoryBuilder(cli("igrep"), sourceOnlyStatus, run);
+    await expect(builder.build(workspace, { ...request, mode })).resolves.toMatchObject({
+      sessions: 1, messages: 4, sourceReady: true, derivation: "deferred",
+    });
+    await expect(observeIgrepWake(cli("igrep"), workspace, undefined, run))
+      .resolves.toEqual({ outcome: "empty", resultCount: 0, profile: "" });
+    await expectSources(workspace, request);
+    expect(calls.filter((action) => action === "maintain")).toHaveLength(1);
+    await expect(readFile(pendingProfile)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects a deferred candidate when source-only recovery still cannot wake", async () => {
+    const workspace = await fixture();
+    const calls: string[] = [];
+    const builder = new IgrepMemoryBuilder(cli("igrep"), sourceOnlyStatus, async (options) => {
+      calls.push(options.args[1]!);
+      if (options.args[1] === "ingest") return fixtureIngest(options);
+      if (options.args[1] === "maintain") {
+        return { ...memoryEnvelope(options), outcome: "deferred", reason: "provider_error" };
+      }
+      if (options.args[1] === "wake") {
+        return { ...memoryEnvelope(options), warnings: ["profile omitted while a maintenance publication is incomplete"] };
+      }
+      return memoryEnvelope(options);
+    });
+    await expect(builder.build(workspace, request)).rejects.toThrow("unverifiable evidence");
+    expect(calls).toEqual(["ingest", "maintain", "ingest", "wake"]);
+    await expectSources(workspace, request);
   });
 
   it.each(["retraction", "unknown-dialogue"] as const)("discards an already contaminated canonical seed (%s) before maintenance", async (fault) => {
@@ -740,7 +797,7 @@ describe("igrep Main source admission", () => {
     });
     await expect(builder.build(workspace, request)).resolves.toMatchObject({ sourceReady: true, derivation: "rejected" });
     await expectSources(workspace, request);
-    expect(calls).toEqual(["ingest", "ingest", "doctor"]);
+    expect(calls).toEqual(["ingest", "ingest", "wake", "doctor"]);
   });
 
   it.each(["content", "delete", "provenance"] as const)("rejects maintenance that changes source %s", async (fault) => {

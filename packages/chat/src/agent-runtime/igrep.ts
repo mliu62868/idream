@@ -553,7 +553,7 @@ export class IgrepMemoryBuilder {
       }
     }
     let rejectionReason: MemorySourceIntegrityReason | undefined;
-    let deferred = false;
+    let deferred: { reason: string; digest: string } | undefined;
     try {
       const before = await verifyMemorySourceCorpus(workspace, sessions, signal);
       const maintenance = assertMemoryEnvelope(await this.run({
@@ -562,7 +562,13 @@ export class IgrepMemoryBuilder {
         timeoutMs: 300_000,
         signal,
       }), "maintain");
-      deferred = maintenance.outcome === "deferred";
+      if (maintenance.outcome === "deferred") {
+        deferred = {
+          reason: maintenance.reason === "provider_error" || maintenance.reason === "llm_not_configured"
+            ? maintenance.reason : "unknown",
+          digest: createHash("sha256").update(JSON.stringify(maintenance)).digest("hex"),
+        };
+      }
       if (!deferred && maintenance.outcome !== "success" && maintenance.outcome !== "no_evidence") {
         throw new IgrepEvidenceError("invalid_envelope");
       }
@@ -578,12 +584,15 @@ export class IgrepMemoryBuilder {
     } catch (error) {
       if (!(error instanceof MemorySourceIntegrityError)) throw error;
       rejectionReason = error.reason;
+    }
+    if (rejectionReason || deferred) {
       throwIfAborted(signal);
-      // The surrounding workspace is an unpublished candidate. Discard the
-      // whole derived store, never patch annotations or retain a deleted Main
-      // source from its old canonical seed. Retry ingestion only, exactly once.
+      // A deferred --rebuild can leave an incomplete profile publication that
+      // doctor accepts but wake refuses. Publish only re-ingested Main sources,
+      // never that partial derived state or edits to igrep's private markers.
+      // The candidate is still unpublished; retry ingestion once, not the model.
       await rm(join(workspace, ".igrep"), { recursive: true, force: true });
-      await mkdir(join(workspace, ".igrep"), { recursive: true, mode: 0o700 });
+      await mkdir(join(workspace, ".igrep", "mem"), { recursive: true, mode: 0o700 });
       for (const session of sessions) {
         const current = await memorySourceFingerprint(session.transcriptPath, "transcript", session.sessionId, { signal });
         if (current.digest !== session.expectedDigest || current.rows !== session.messageCount) {
@@ -592,6 +601,9 @@ export class IgrepMemoryBuilder {
         Object.assign(session, await ingest(session));
       }
       await verifyMemorySourceCorpus(workspace, sessions, signal);
+      // Source-ready also means a new attempt can read the resident profile
+      // boundary. Operational warnings must keep rejecting the candidate here.
+      await observeIgrepWake(this.cli, workspace, signal, this.run);
     }
     // A rejected derivation has no profile; an unverified one renders nothing.
     if (!rejectionReason && this.verifyClaim) {
@@ -612,24 +624,25 @@ export class IgrepMemoryBuilder {
     }
     // INTENT: A deferred profile pass may leave retryable rows pending when the
     // maintenance model is unavailable or under pressure. The rebuilt
-    // workspace already contains only the canonical Chat transcript, so
+    // workspace already contains only the Main-authoritative transcript, so
     // rejecting it here makes privacy deletion depend on optional derivation
     // work and permanently blocks every later mutation for the same user.
     if (!rejectionReason && !deferred && status.pendingProfileRows !== 0) throw new IgrepEvidenceError("partial_evidence");
     if (!rejectionReason && !deferred && metrics.messageCount > 0 && !status.lastMaintainAt) {
       throw new Error("igrep memory build did not expose a completed maintain pass");
     }
-    if (rejectionReason) {
+    if (rejectionReason || deferred) {
       logger.warn({
-        event: "companion_memory_derivation_rejected",
+        event: rejectionReason ? "companion_memory_derivation_rejected" : "companion_memory_derivation_deferred",
         mode: source.mode,
         mutationId: source.fence?.mutationId,
         authorityVersion: source.fence?.authorityVersion,
-        reason: rejectionReason,
+        reason: rejectionReason ?? deferred?.reason,
+        ...(deferred ? { maintenanceDigest: deferred.digest } : {}),
         sourceReady: true,
         sessions: metrics.sessionCount,
         messages: metrics.messageCount,
-      }, "rejected memory derivation; rebuilt a source-only candidate");
+      }, "memory derivation unavailable; rebuilt a source-only candidate");
     }
     return {
       sessions: metrics.sessionCount,
