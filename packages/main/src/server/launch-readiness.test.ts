@@ -677,6 +677,22 @@ function passingVideoEnabledProductConfigProbe(
   });
 }
 
+function passingDefaultVideoProductConfigProbe(
+  override: Partial<ProductConfigProbeEvidence> & { sourceRevision?: string | null } = {},
+) {
+  return passingVideoEnabledProductConfigProbe({
+    activeVideoProfiles: 1,
+    activeVideoExecutionBindings: [{
+      profileId: characterVideoProductionRecipe.profileKey,
+      profileKey: characterVideoProductionRecipe.profileKey,
+      model: characterVideoProductionRecipe.workflowKey,
+      workflowKey: characterVideoProductionRecipe.workflowKey,
+      workflowVersion: characterVideoProductionRecipe.workflowVersion,
+    }],
+    ...override,
+  });
+}
+
 function passingWebSurfaceProbe(
   override: Partial<WebSurfaceProbeEvidence> = {},
 ): WebSurfaceProbeEvidence {
@@ -4519,11 +4535,21 @@ describe("launch readiness", () => {
     );
   });
 
-  it("rejects product config that enables video without the H3 profile binding", () => {
+  it("qualifies the default RedGraft route when optional H3 is unpublished", () => {
     const report = assessLaunchReadiness({
-      env: productionEnv,
+      env: {
+        ...productionEnv,
+        VIDEO_H3_GENERATION_PROBE_REPORT: undefined,
+        GENERATION_VIDEO_H3_PERSISTENCE_PROBE_REPORT: undefined,
+      },
       imagePipelineProbe: passingImageProbe(),
       videoGenerationProbe: passingVideoProbe(),
+      videoGenerationPersistenceProbe: passingGenerationPersistenceProbe("video", {
+        profileVersion: characterVideoProductionRecipe.recipeVersion,
+        workflowVersion: characterVideoProductionRecipe.workflowVersion,
+      }),
+      videoH3GenerationProbe: null,
+      videoH3GenerationPersistenceProbe: null,
       ageVerificationProbe: passingAgeProbe(),
       blobStorageProbe: passingBlobProbe(),
       chatModelProbe: passingChatProbe(),
@@ -4531,24 +4557,78 @@ describe("launch readiness", () => {
       voiceModelProbe: passingVoiceProbe(),
       paymentProviderProbe: passingPaymentProbe(),
       safetyGatewayProbe: passingSafetyProbe(),
-      productConfigProbe: passingVideoEnabledProductConfigProbe({
-        activeVideoProfiles: 1,
-        activeVideoExecutionBindings: [{
-          profileId: characterVideoProductionRecipe.profileKey,
-          profileKey: characterVideoProductionRecipe.profileKey,
-          model: characterVideoProductionRecipe.workflowKey,
-          workflowKey: characterVideoProductionRecipe.workflowKey,
-          workflowVersion: characterVideoProductionRecipe.workflowVersion,
-        }],
-      }),
+      productConfigProbe: passingDefaultVideoProductConfigProbe(),
       webSurfaceProbe: passingWebSurfaceProbe(),
       publicCatalogProbe: passingPublicCatalogProbe(),
+      ...passingSentryProbes(),
       now,
     });
 
-    expect(checkById(report, "product-config-live-probe")?.message).toContain(
-      minimaxH3VideoProductionRecipe.profileKey,
-    );
+    expect(failedIds(report)).toEqual([]);
+    expect(report.ok).toBe(true);
+    expect(checkById(report, "source-revision-authority")?.status).toBe("pass");
+    expect(checkById(report, "video-generation-live-probe")?.status).toBe("pass");
+    expect(checkById(report, "generation-video-main-persistence")?.status).toBe("pass");
+    expect(checkById(report, "video-h3-generation-live-probe")?.status).toBe("pass");
+    expect(checkById(report, "generation-video-h3-main-persistence")?.status).toBe("pass");
+  });
+
+  it.each([
+    { name: "missing product report", probe: null },
+    { name: "failed product report", probe: passingDefaultVideoProductConfigProbe({ ok: false }) },
+    { name: "unknown video flag", probe: passingDefaultVideoProductConfigProbe({ videoFeatureEnabled: undefined }) },
+    { name: "missing bindings", probe: passingDefaultVideoProductConfigProbe({ activeVideoExecutionBindings: undefined }) },
+    { name: "missing default route", probe: passingDefaultVideoProductConfigProbe({
+      activeVideoProfiles: 0, activeVideoExecutionBindings: [],
+    }) },
+    { name: "duplicate bindings", probe: passingDefaultVideoProductConfigProbe({
+      activeVideoProfiles: 2,
+      activeVideoExecutionBindings: Array(2).fill(passingDefaultVideoProductConfigProbe().activeVideoExecutionBindings![0]),
+    }) },
+    { name: "unknown binding", probe: passingDefaultVideoProductConfigProbe({
+      activeVideoProfiles: 2,
+      activeVideoExecutionBindings: [
+        ...passingDefaultVideoProductConfigProbe().activeVideoExecutionBindings!,
+        { profileKey: "unknown-video-profile", model: "unknown-workflow", workflowKey: "unknown-workflow", workflowVersion: 1 },
+      ],
+    }) },
+    { name: "binding drift", probe: passingDefaultVideoProductConfigProbe({
+      activeVideoExecutionBindings: [{
+        ...passingDefaultVideoProductConfigProbe().activeVideoExecutionBindings![0],
+        workflowVersion: 999,
+      }],
+    }) },
+    { name: "profile count mismatch", probe: passingDefaultVideoProductConfigProbe({ activeVideoProfiles: 2 }) },
+    { name: "incomplete product authority", probe: passingDefaultVideoProductConfigProbe({ activeVoicePricingRules: 0 }) },
+    { name: "stale product report", probe: passingDefaultVideoProductConfigProbe({ checkedAt: "2026-06-20T00:00:00.000Z" }) },
+    { name: "wrong product revision", probe: passingDefaultVideoProductConfigProbe({ sourceRevision: "idream@another-revision" }) },
+    { name: "missing product revision", probe: passingDefaultVideoProductConfigProbe({ sourceRevision: null }) },
+  ])("does not exempt unpublished H3 using $name", ({ probe }) => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      productConfigProbe: probe,
+      videoGenerationProbe: passingVideoProbe(),
+      videoH3GenerationProbe: null,
+      videoH3GenerationPersistenceProbe: null,
+      now,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(checkById(report, "video-h3-generation-live-probe")?.status).toBe("fail");
+    expect(checkById(report, "generation-video-h3-main-persistence")?.status).toBe("fail");
+  });
+
+  it("does not exempt unpublished H3 when the product report path is unconfigured", () => {
+    const report = assessLaunchReadiness({
+      env: { ...productionEnv, PRODUCT_CONFIG_PROBE_REPORT: undefined },
+      productConfigProbe: passingDefaultVideoProductConfigProbe(),
+      videoH3GenerationProbe: null,
+      videoH3GenerationPersistenceProbe: null,
+      now,
+    });
+    expect(checkById(report, "product-config-live-probe")?.status).toBe("fail");
+    expect(checkById(report, "video-h3-generation-live-probe")?.status).toBe("fail");
+    expect(checkById(report, "generation-video-h3-main-persistence")?.status).toBe("fail");
   });
 
   it("rejects video evidence that is not bound to the exact production recipe", () => {

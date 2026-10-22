@@ -1602,6 +1602,15 @@ function addVideoGenerationProbeCheck(
     });
     return;
   }
+  if (optionalVideoRecipeIsUnpublished(env, productConfigProbe, now, recipe)) {
+    addCheck(checks, {
+      id: checkId,
+      area: "Generation",
+      status: "pass",
+      message: `Validated product config does not expose ${recipe.profileKey}; its live video evidence is not required.`,
+    });
+    return;
+  }
 
   const problems: string[] = [];
   addMissingProbeReportProblem(problems, env, probeName);
@@ -1800,6 +1809,19 @@ function addGenerationPersistenceProbeCheck(
     });
     return;
   }
+  if (
+    mode === "video" &&
+    videoBinding &&
+    optionalVideoRecipeIsUnpublished(env, productConfigProbe, now, videoBinding.recipe)
+  ) {
+    addCheck(checks, {
+      id: checkId,
+      area: "Generation",
+      status: "pass",
+      message: `Validated product config does not expose ${videoBinding.recipe.profileKey}; its Main persistence evidence is not required.`,
+    });
+    return;
+  }
 
   const problems: string[] = [];
   addMissingProbeReportProblem(problems, env, probeName);
@@ -1932,8 +1954,7 @@ function generationPersistenceRemediationReport(
   return `.tmp/launch-${mode}-persistence-probe.json`;
 }
 
-function addProductConfigProbeCheck(
-  checks: LaunchReadinessCheck[],
+function productConfigProbeProblems(
   env: EnvLike,
   probe: ProductConfigProbeEvidence | null,
   now: Date,
@@ -1995,32 +2016,41 @@ function addProductConfigProbeCheck(
           "video_gen is enabled but the probe predates video execution binding evidence",
         );
       } else {
-        for (const recipe of characterVideoProductionRecipes) {
-          const binding = probe.activeVideoExecutionBindings.find(
-            (candidate) => candidate.profileKey === recipe.profileKey,
+        const bindings = probe.activeVideoExecutionBindings;
+        if (!bindings.some((binding) => binding.profileKey === characterVideoProductionRecipe.profileKey)) {
+          problems.push(
+            `video_gen is enabled without the default execution binding ${characterVideoProductionRecipe.profileKey}`,
+          );
+        }
+        const profileKeys = new Set<string | undefined>();
+        for (const binding of bindings) {
+          const recipe = characterVideoProductionRecipes.find(
+            (candidate) => candidate.profileKey === binding.profileKey,
           );
           if (
-            binding?.model !== recipe.workflowKey ||
+            !recipe ||
+            profileKeys.has(binding.profileKey) ||
+            binding.model !== recipe.workflowKey ||
             binding.workflowKey !== recipe.workflowKey ||
             binding.workflowVersion !== recipe.workflowVersion
           ) {
             problems.push(
-              `video_gen is enabled without exact execution binding ${recipe.profileKey}`,
+              `video_gen has an unknown, duplicate, or inexact execution binding ${binding.profileKey ?? "unknown"}`,
             );
           }
+          profileKeys.add(binding.profileKey);
         }
         if (
-          probe.activeVideoExecutionBindings.length !==
-          characterVideoProductionRecipes.length
+          bindings.length !== probe.activeVideoProfiles
         ) {
           problems.push(
-            "video execution binding count does not match production recipes",
+            "video execution binding count does not match active profiles",
           );
         }
       }
-      if ((probe.activeVideoProfiles ?? 0) !== characterVideoProductionRecipes.length) {
+      if (!Number.isInteger(probe.activeVideoProfiles) || (probe.activeVideoProfiles ?? 0) < 1) {
         problems.push(
-          "video_gen is enabled without every production video model profile",
+          "video_gen is enabled without active video model profiles",
         );
       }
       if (!Array.isArray(probe.invalidActiveVideoProfileIds)) {
@@ -2044,6 +2074,36 @@ function addProductConfigProbeCheck(
 
     addProbeFreshnessProblems(problems, env, probeName, probe.checkedAt, now);
   }
+  return problems;
+}
+
+function optionalVideoRecipeIsUnpublished(
+  env: EnvLike,
+  probe: ProbeEvidenceOf<"productConfigProbe"> | null,
+  now: Date,
+  recipe: CharacterVideoProductionRecipe,
+) {
+  // INVARIANT: only fresh, same-revision, fully valid product authority can
+  // exempt an optional route. Missing or malformed bindings never mean disabled.
+  const revision = env.IDREAM_MAIN_SOURCE_REVISION?.trim();
+  if (!probe || !revision) return false;
+  return recipe.profileKey !== characterVideoProductionRecipe.profileKey &&
+    probe.sourceRevision?.trim() === revision &&
+    probe.videoFeatureEnabled === true &&
+    productConfigProbeProblems(env, probe, now).length === 0 &&
+    !probe.activeVideoExecutionBindings?.some(
+      (binding) => binding.profileKey === recipe.profileKey,
+    );
+}
+
+function addProductConfigProbeCheck(
+  checks: LaunchReadinessCheck[],
+  env: EnvLike,
+  probe: ProductConfigProbeEvidence | null,
+  now: Date,
+) {
+  const probeName: ProbeName = "productConfigProbe";
+  const problems = productConfigProbeProblems(env, probe, now);
 
   addCheck(checks, {
     id: "product-config-live-probe",
@@ -2640,6 +2700,7 @@ function requiredRevisionProbeNames(
   scope: LaunchScope,
   env: EnvLike,
   probes: { [K in ProbeName]: ProbeEvidenceOf<K> | null },
+  now: Date,
 ) {
   const names = new Set<ProbeName>([
     "imagePipelineProbe",
@@ -2663,8 +2724,10 @@ function requiredRevisionProbeNames(
   ) {
     names.add("videoGenerationProbe");
     names.add("videoGenerationPersistenceProbe");
-    names.add("videoH3GenerationProbe");
-    names.add("videoH3GenerationPersistenceProbe");
+    if (!optionalVideoRecipeIsUnpublished(env, probes.productConfigProbe, now, minimaxH3VideoProductionRecipe)) {
+      names.add("videoH3GenerationProbe");
+      names.add("videoH3GenerationPersistenceProbe");
+    }
   }
   if ((env.MODERATION_PROVIDER ?? "mock") !== "mock") {
     names.add("safetyGatewayProbe");
@@ -2753,10 +2816,11 @@ function addSourceRevisionAuthorityCheck(
   env: EnvLike,
   probes: { [K in ProbeName]: ProbeEvidenceOf<K> | null },
   scope: LaunchScope,
+  now: Date,
 ) {
   const expectedRevision = env.IDREAM_MAIN_SOURCE_REVISION?.trim() ?? "";
   const problems = serviceSourceRevisionProblems(env);
-  for (const name of requiredRevisionProbeNames(scope, env, probes)) {
+  for (const name of requiredRevisionProbeNames(scope, env, probes, now)) {
     const revision = probes[name]?.sourceRevision?.trim() ?? "";
     if (!expectedRevision || revision !== expectedRevision) {
       problems.push(`${PROBE_REPORTS[name].reportEnvKey} is not bound to the expected revision`);
@@ -2844,7 +2908,7 @@ function assessReadiness(
         ? "Set LAUNCH_SCOPE to full or core; unknown values never weaken the full launch gate."
         : undefined,
   });
-  if (includeRuntimeEvidence) addSourceRevisionAuthorityCheck(checks, env, probes, scope);
+  if (includeRuntimeEvidence) addSourceRevisionAuthorityCheck(checks, env, probes, scope, now);
   else {
     addSourceRevisionConfigurationCheck(checks, env, probes);
     addRuntimeProbeConfigurationCheck(checks, env);
@@ -3316,7 +3380,7 @@ function assessReadiness(
   // Bind deferred work to the same loaded database evidence used above; never
   // reread a changing feature-flag report after deciding preparation status.
   const pendingEvidence = includeRuntimeEvidence ? [] : [
-    ...[...requiredRevisionProbeNames(scope, env, probes)]
+    ...[...requiredRevisionProbeNames(scope, env, probes, now)]
       .filter((name) => name !== "productConfigProbe" && name !== "publicCatalogProbe")
       .map((name) => PROBE_REPORTS[name].reportEnvKey),
     "Immutable production process/source definitions, HTTP/model readiness and exact worker ownership.",
