@@ -1075,7 +1075,7 @@ test("admin support inbox resolves a help desk request", async ({ page }) => {
     await page.getByRole("textbox", { name: "Message to customer", exact: true })
       .fill("Your generation issue is fixed. Please refresh your gallery and retry the download.");
     await page
-      .getByRole("textbox", { name: "Reason", exact: true })
+      .getByRole("textbox", { name: "Manual verification and resolution summary", exact: true })
       .fill("Resolved from admin support inbox");
     await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill(ticketId);
     await page.getByRole("button", { name: "Confirm" }).click();
