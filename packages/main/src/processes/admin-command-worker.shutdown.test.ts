@@ -5,14 +5,14 @@ const mocks = vi.hoisted(() => ({
   monitor: vi.fn(),
   execute: vi.fn(),
   dispatch: vi.fn(),
+  findMany: vi.fn(),
+  reconcile: vi.fn(),
+  settle: vi.fn(),
   error: vi.fn(),
 }));
 
 vi.mock("@/server/lib/db", () => ({ prisma: {
-  controlPlaneCommand: { findMany: async () => [
-    { id: "first", commandType: "publish" },
-    { id: "second", commandType: "publish" },
-  ] },
+  controlPlaneCommand: { findMany: mocks.findMany },
 } }));
 vi.mock("@/server/lib/env", () => ({ env: { APP_ENV: "test" } }));
 vi.mock("@/server/lib/logger", () => ({ logger: { info: vi.fn(), error: mocks.error } }));
@@ -21,9 +21,9 @@ vi.mock("@/server/modules/admin-v2/characters/release-monitor", () => ({
   dispatchStaleReleaseRoutes: mocks.qualify,
   dispatchDueReleaseMonitors: mocks.monitor,
 }));
-vi.mock("@/server/modules/admin-v2/jobs/stale-unknown-dispatcher", () => ({ dispatchStaleUnknownGenerationRequests: vi.fn() }));
+vi.mock("@/server/modules/admin-v2/jobs/stale-unknown-dispatcher", () => ({ dispatchStaleUnknownGenerationRequests: mocks.settle }));
 vi.mock("@/server/modules/admin-v2/commands/executor", () => ({ ADMIN_COMMAND_TYPES: ["publish"], executeAcceptedAdminCommand: mocks.execute }));
-vi.mock("@/server/modules/admin-v2/shared/control-plane-command", () => ({ reconcileExpiredCommandLeases: vi.fn() }));
+vi.mock("@/server/modules/admin-v2/shared/control-plane-command", () => ({ reconcileExpiredCommandLeases: mocks.reconcile }));
 vi.mock("@/server/modules/admin-v2/creative/retry-executor", () => ({ verifyCreativeRetryCommands: vi.fn() }));
 vi.mock("@/server/modules/generation/generation-attempt-authority", () => ({ dispatchGenerationAttemptOutbox: mocks.dispatch }));
 vi.mock("@/server/modules/admin-v2/incidents/action-executor", () => ({ verifyIncidentActionPlanCommands: vi.fn() }));
@@ -45,6 +45,12 @@ beforeEach(() => {
   vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
   mocks.qualify.mockResolvedValue({ examined: 0, nextCursor: null });
   mocks.monitor.mockResolvedValue({ claimed: 0, failed: 0 });
+  mocks.findMany.mockResolvedValue([
+    { id: "first", commandType: "publish" },
+    { id: "second", commandType: "publish" },
+  ]);
+  mocks.reconcile.mockResolvedValue({ examined: 0 });
+  mocks.settle.mockResolvedValue({ examined: 0 });
   mocks.execute.mockImplementation(() => new Promise((resolve) => {
     finishCommand = () => resolve({ status: "succeeded" });
   }));
@@ -53,6 +59,19 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
+});
+
+it.each([false, true])("wakes the polling delay immediately on SIGTERM (busy: %s)", async (busy) => {
+  mocks.findMany.mockResolvedValue(busy ? [{ id: "first", commandType: "publish" }] : []);
+  mocks.execute.mockResolvedValue({ status: "succeeded" });
+  await import("./admin-command-worker");
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.findMany).toHaveBeenCalledTimes(1);
+  expect(mocks.error).not.toHaveBeenCalled();
+  signals.get("SIGTERM")!();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(process.exit).toHaveBeenCalledExactlyOnceWith(0);
+  expect(mocks.findMany).toHaveBeenCalledTimes(1);
 });
 
 it("waits for the accepted command on SIGTERM and does not claim the next command", async () => {

@@ -260,7 +260,16 @@ export async function runAdminCommandWorkerLoop() {
       logger.error({ error, workerId }, "admin command worker iteration failed");
     }
     if (stopping.signal.aborted) break;
-    await new Promise((resolve) => setTimeout(resolve, processed > 0 ? BUSY_DELAY_MS : IDLE_DELAY_MS));
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        clearTimeout(timer);
+        stopping.signal.removeEventListener("abort", finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, processed > 0 ? BUSY_DELAY_MS : IDLE_DELAY_MS);
+      stopping.signal.addEventListener("abort", finish, { once: true });
+      if (stopping.signal.aborted) finish();
+    });
   }
 }
 

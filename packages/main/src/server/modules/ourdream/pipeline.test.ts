@@ -953,6 +953,10 @@ describe("local AI service pipeline", () => {
     await prisma.entitlement.create({
       data: { userId, key: "video_generation", value: true, source: "test" },
     });
+    const previousVideoFlag = await prisma.featureFlag.findUniqueOrThrow({
+      where: { key: "video_gen" },
+      select: { enabled: true, rolloutPercent: true },
+    });
     await prisma.featureFlag.update({
       where: { key: "video_gen" },
       data: { enabled: true, rolloutPercent: 100 },
@@ -1032,7 +1036,7 @@ describe("local AI service pipeline", () => {
     } finally {
       await prisma.featureFlag.update({
         where: { key: "video_gen" },
-        data: { enabled: false, rolloutPercent: 0 },
+        data: previousVideoFlag,
       });
       await prisma.generationModelProfile.update({
         where: { id: "seed-profile-video-redgraft-ltx25-v1" },
@@ -1592,6 +1596,10 @@ describe("local AI service pipeline", () => {
     await prisma.entitlement.create({
       data: { userId, key: "video_generation", value: true, source: "test" },
     });
+    const previousVideoFlag = await prisma.featureFlag.findUniqueOrThrow({
+      where: { key: "video_gen" },
+      select: { enabled: true, rolloutPercent: true },
+    });
     await prisma.featureFlag.update({
       where: { key: "video_gen" },
       data: { enabled: true, rolloutPercent: 100 },
@@ -1636,7 +1644,7 @@ describe("local AI service pipeline", () => {
     } finally {
       await prisma.featureFlag.update({
         where: { key: "video_gen" },
-        data: { enabled: false, rolloutPercent: 0 },
+        data: previousVideoFlag,
       });
       await prisma.generationModelProfile.update({
         where: { id: "seed-profile-video-redgraft-ltx25-v1" },
