@@ -103,6 +103,43 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
       .toEqual(["10", 0]);
   });
 
+  it("serves RedCraft text-to-image and one reference with the measured six-step default recipe", async () => {
+    const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
+    const workflow = descriptors.find((d) => d.workflowKey === "redcraft-qw21t");
+    if (!workflow || workflow.backendKind !== "comfyui") throw new Error("missing RedCraft workflow");
+    expect(workflowRunsWithoutReferences(workflow)).toBe(true);
+    expect(workflow.version).toBe(3);
+    expect(workflow.inputs.find((slot) => slot.key === "steps")?.default).toBe(6);
+    expect(workflow.identity.maxReferences).toBe(1);
+    const referenceCases: Record<string, string>[] = [{}, { source_image: "adult-portrait.png" }];
+    for (const references of referenceCases) {
+      const graph = bindComfySlots(workflow, { prompt: "a blue jacket", seed: 123, width: 832, height: 1024, ...references });
+      expect(graph["1"]?.inputs.unet_name).toBe("fineview_qw21_turbo_fixed_int8.safetensors");
+      expect(graph["1:resident"]).toMatchObject({ class_type: "IDreamQwen21ResidentWeights", inputs: { model: ["1", 0] } });
+      expect(graph["4"]?.inputs.model).toEqual(["1:resident", 0]);
+      expect(graph["3"]?.inputs.vae_name).toBe("texture_fix_vae_for_qwen_image_2.1_bf16.safetensors");
+      expect(graph["2"]?.inputs.device).toBe("mps");
+      expect(graph["4:shift"]).toMatchObject({ class_type: "ModelSamplingAuraFlow", inputs: { model: ["4", 0], shift: 1.31, sampling: "flow" } });
+      expect(graph["7"]).toEqual({ class_type: "KSampler", inputs: {
+        model: ["4:shift", 0], positive: ["900:0", 0], negative: ["5", 1],
+        latent_image: ["6", 0], seed: 123, steps: 6, cfg: 1,
+        sampler_name: "er_sde", scheduler: "simple", denoise: 1,
+      } });
+      expect(Object.values(graph).filter((node) => ["KSampler", "SamplerCustomAdvanced"].includes(node.class_type))).toHaveLength(1);
+      expect(Object.values(graph).some((node) => node.class_type === "IDreamQwen21TurboSigmas")).toBe(false);
+      expect(Object.values(graph).some((node) => /Lora/.test(node.class_type))).toBe(false);
+      // Optional input removal must not leave a required resize node or dangling link.
+      expect(graph["5"]?.inputs["images.image_1"]).toEqual("source_image" in references ? ["10", 0] : undefined);
+      for (const node of Object.values(graph)) {
+        for (const value of Object.values(node.inputs)) {
+          if (Array.isArray(value) && typeof value[0] === "string" && typeof value[1] === "number") {
+            expect(graph[value[0]], `dangling node ${value[0]}`).toBeDefined();
+          }
+        }
+      }
+    }
+  });
+
   it("loads the qwen-image-edit img2img descriptor and validates it against the schema", async () => {
     const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
     const qwenEdit = descriptors.find((d) => d.workflowKey === "qwen-image-edit-img2img");

@@ -46,6 +46,13 @@ describe("ComfyUI memory transition", () => {
     await expect(waitForComfyUiAcceleratorIdle({ endpoints, fetchImpl: malformed })).rejects.toThrow(/malformed/);
   });
 
+  it("recognizes Bun's connection-refused code for a stopped runner", async () => {
+    const refused = vi.fn(async () => {
+      throw Object.assign(new TypeError("Unable to connect. Is the computer able to access the url?"), { code: "ConnectionRefused" });
+    }) as unknown as typeof fetch;
+    await expect(waitForComfyUiAcceleratorIdle({ endpoints, fetchImpl: refused })).resolves.toBeUndefined();
+  });
+
   it("releases both video runners before an image generation", async () => {
     const fetchImpl = successfulFetch();
 

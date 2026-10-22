@@ -204,6 +204,59 @@ REDQW21 V2 diffusion, community ConvRot INT8 Qwen3-VL 8B on MPS, corrected
 native VAE, and unmerged Viggle six-step Euler. MFLUX/MLX samplers remain
 research prototypes and are absent from the production graph.
 
+### Default RedCraft / FineView QW21 Fixed
+
+`redcraft-qw21t@3` is the default for text-to-image, single-reference Character
+generation and source-only image edits through `profile_image_default_v1`.
+The explicit `image-redcraft-qw21t@3` option uses the same six-step recipe.
+Multi-reference, identity-plus-source and look-reference requests retain the
+compatible REDQW21 V2 routes; reference authority is never truncated to fit.
+The default profile keeps its existing cost multiplier, access policy and
+allowed orientations, with a default canvas of 832×1024. Fresh databases use
+seed; existing databases publish immutable new versions with
+[`2026-10-21-redcraft-default-image-profile.sql`](../../db/sql/2026-10-21-redcraft-default-image-profile.sql)
+after quiescing admission and workers through the repository PM2 wrapper.
+
+This binds RedCraft model958009/version3407259/file3299030, the exact INT8
+asset already installed as `fineview_qw21_turbo_fixed_int8.safetensors`:
+SHA256 `712b44d2a79b30ed1aa11f19fc4e2cd0f1f46a43dc3bde5d6fe2a07e36b68f0f`.
+FineView and this RedCraft version publish the same bytes. It uses the
+TextureFix BF16 VAE, the existing ConvRot INT8 encoder on MPS, and
+`IDreamQwen21ResidentWeights` to materialize exact BF16 diffusion weights once.
+Keep enough unified memory for the roughly 13.3 GiB resident diffusion model
+and its cached INT8 source, encoder, activations and VAE; this is not native
+INT8 Metal execution.
+
+Resident Qwen graphs also keep one complete, lossless prefix KV entry across
+requests. Repeating the exact prompt/reference/geometry can reuse it with a
+different seed; changed inputs, model options or weights invalidate it. A real
+model unload frees the entry. The measured 1 MP references add roughly 2.1 GiB
+of retained unified memory. First requests and new prompts do not receive this
+cache-hit benefit. See the [M4 optimization comparison](../../docs/research/REDCRAFT_M4_OPTIMIZATION_2026-10-16.md)
+for timings, pixel-exact controls and MPS memory-release evidence.
+
+The descriptor uses six-step `er_sde/simple`, AuraFlow shift 1.31, CFG1 and
+denoise 1, without an extra Viggle LoRA or second sampler. This is the measured
+six-step variant of the author's eight-step first pass. Workflow v3 and the
+new profile versions archive the earlier parameters without rewriting Jobs or
+Attempts; publication refuses pending affected Jobs. The explicit model option
+retains its existing 832×1024, one-image, 4:5 policy and 1.5 cost multiplier.
+Preflight pins diffusion/encoder/VAE bytes and required runtime nodes. Smoke
+uses the descriptor's six-step default unless `--steps` is supplied:
+
+```bash
+bun run --filter @idream/gen smoke:backend --model redcraft-qw21t --out /tmp/redcraft-text.png
+bun run --filter @idream/gen smoke:backend --model redcraft-qw21t --ref /absolute/path/adult-reference.png --ref-role identity_anchor --out /tmp/redcraft-edit.png
+```
+
+[Initial integration evidence](../../docs/research/REDCRAFT_QW21T_INTEGRATION_2026-10-16.md)
+records the historical eight-step recipe and comparison with REDQW21.
+The [six-versus-eight benchmark](../../docs/research/REDCRAFT_SIX_VS_EIGHT_2026-10-21.md)
+found a median 29.25% paired latency reduction with no clear visual regression
+in eight controlled pairs. The user selected RedCraft/FineView as default on
+2026-10-21. This does not establish superiority over REDQW21 for every use case;
+NSFW remains untested in that comparison.
+
 The image PM2 definition pins Python from its Qwen21 installation;
 `bun run comfyui:restart` reloads that definition. The latest controlled local
 acceptance on M4 Max 128 GiB / PyTorch 2.14 delivered two real 832×1024 edits in

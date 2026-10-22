@@ -59,12 +59,25 @@ it.each([
   }
 }, 15_000);
 
-it("rejects visible Qwen image models whose bytes differ from the qualified recipe", async () => {
+it.each([
+  {
+    workflow: "qwen-image-edit-img2img",
+    diffusion: "redqw21_unlocked_v2_bf16.safetensors",
+    vae: "qwen_image_2.1_vae_bf16.safetensors",
+    viggle: true,
+  },
+  {
+    workflow: "redcraft-qw21t",
+    diffusion: "fineview_qw21_turbo_fixed_int8.safetensors",
+    vae: "texture_fix_vae_for_qwen_image_2.1_bf16.safetensors",
+    viggle: false,
+  },
+])("rejects visible $workflow models whose bytes differ from the qualified recipe", async ({ workflow: workflowKey, diffusion, vae, viggle }) => {
   const directory = await mkdtemp(path.join(tmpdir(), "idream-qwen-preflight-"));
   const workflowDirectory = path.join(directory, "workflows");
   const modelRoot = path.join(directory, "models");
   const workflow = JSON.parse(await readFile(
-    new URL("../workflows/qwen-image-edit-img2img.json", import.meta.url), "utf8",
+    new URL(`../workflows/${workflowKey}.json`, import.meta.url), "utf8",
   ));
   const visibleFiles = Object.fromEntries(Object.values(workflow.apiPrompt).flatMap((value) => {
     const node = value as { inputs: Record<string, unknown> };
@@ -110,9 +123,14 @@ it("rejects visible Qwen image models whose bytes differ from the qualified reci
     );
     expect(result.code).toBe(1);
     expect(result.stdout).toContain("qwen3vl_8b_int8_convrot.safetensors SHA-256");
-    expect(result.stdout).toContain("redqw21_unlocked_v2_bf16.safetensors cannot be read");
-    expect(result.stdout).toContain("qwen_image_2.1_vae_bf16.safetensors cannot be read");
-    expect(result.stdout).toContain("Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors cannot be read");
+    expect(result.stdout).toContain(`${diffusion} cannot be read`);
+    expect(result.stdout).toContain(`${vae} cannot be read`);
+    if (viggle) {
+      expect(result.stdout).toContain("Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors cannot be read");
+    } else {
+      expect(result.stdout).not.toContain("redqw21_unlocked_v2_bf16.safetensors cannot be read");
+      expect(result.stdout).not.toContain("Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors cannot be read");
+    }
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));

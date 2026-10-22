@@ -424,7 +424,7 @@ describe("seed data provenance", () => {
     expect(JSON.stringify(profile.runnerConfig)).not.toMatch(/krea|redmix3/i);
   });
 
-  it("seeds REDQW21 for default and Premium while preserving Premium pricing and access", async () => {
+  it("seeds RedCraft as default while preserving the existing Premium model, pricing and access", async () => {
     const profiles = await prisma.generationModelProfile.findMany({
       where: {
         profileKey: { in: ["profile_image_default_v1", "profile_image_premium_v1"] },
@@ -434,7 +434,7 @@ describe("seed data provenance", () => {
     });
 
     expect(profiles).toHaveLength(2);
-    for (const profile of profiles) {
+    for (const profile of profiles.filter((p) => p.profileKey === "profile_image_premium_v1")) {
       expect(profile).toMatchObject({
         pipelineModel: "redqw21",
         workflowKey: "redqw21",
@@ -465,7 +465,14 @@ describe("seed data provenance", () => {
       profileKey: "profile_image_premium_v1", costMultiplier: 1.5, requiredEntitlement: "premium_models", maxCount: 4,
       dryRunSummary: { status: "not_run", source: "seed_configuration_state" },
     });
-    expect(profiles[1].runnerConfig).toEqual(profiles[0].runnerConfig);
+    expect(profiles[0]).toMatchObject({
+      pipelineModel: "redcraft-qw21t", workflowKey: "redcraft-qw21t", steps: 6,
+      sampler: "er_sde", scheduler: "simple", defaultWidth: 832, defaultHeight: 1024,
+      runnerConfig: { workflowVersion: 3, textEncoderDevice: "mps",
+        capabilities: { textToImage: true, referenceImages: true, initImage: true },
+        publicSelection: { surface: "generator_image_edit" },
+      },
+    });
   });
 
   it("archives the legacy LTX route and seeds RedGraft as the replacement", async () => {

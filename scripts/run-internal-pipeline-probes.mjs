@@ -50,7 +50,7 @@ const imagePipelineUrl =
 const imagePipelineModel =
   process.env.PIPELINE_IMAGE_MODEL_DEFAULT ??
   genEnv.PIPELINE_IMAGE_MODEL_DEFAULT ??
-  "pornmaster-zimage-turbo";
+  "redcraft-qw21t";
 const configuredVoicePipelineUrl =
   process.env.PIPELINE_VOICE_API_URL ??
   process.env.MOSS_TTS_API_URL ??

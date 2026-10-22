@@ -45,15 +45,16 @@ const FP8_DTYPES = new Set(["fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2"]);
 
 // INVARIANT: filenames in dropdowns do not prove that the REDQW21 V2 recipe
 // loads the qualified BF16 diffusion, community ConvRot INT8 encoder and VAE.
+const QWEN21_TEXT_ENCODER_ASSET = {
+  path: "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+  sha256: "8bfd0f6e12abf2d2d697ecc888e5e90b0d6741d6708f05799f53afa560452e8f",
+};
 const QWEN21_EDIT_MODEL_ASSETS = [
   {
     path: "diffusion_models/redqw21_unlocked_v2_bf16.safetensors",
     sha256: "c2ff9ea7e983b61589363fe11d0437419f7ade088bb470ef2e501bd81513c45f",
   },
-  {
-    path: "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
-    sha256: "8bfd0f6e12abf2d2d697ecc888e5e90b0d6741d6708f05799f53afa560452e8f",
-  },
+  QWEN21_TEXT_ENCODER_ASSET,
   {
     path: "vae/qwen_image_2.1_vae_bf16.safetensors",
     sha256: "bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9",
@@ -63,6 +64,17 @@ const QWEN21_TURBO_MODEL_ASSET = {
   path: "loras/Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors",
   sha256: "0c98591700346f9777051d4e6fa29aa94519abec0d85b1f1f672a2a3db8c94b3",
 };
+const REDCRAFT_QW21T_MODEL_ASSETS = [
+  {
+    path: "diffusion_models/fineview_qw21_turbo_fixed_int8.safetensors",
+    sha256: "712b44d2a79b30ed1aa11f19fc4e2cd0f1f46a43dc3bde5d6fe2a07e36b68f0f",
+  },
+  QWEN21_TEXT_ENCODER_ASSET,
+  {
+    path: "vae/texture_fix_vae_for_qwen_image_2.1_bf16.safetensors",
+    sha256: "36f56608b02077a50a08ea3dbcdb88351298ceba49948f41f9f87186378e6908",
+  },
+];
 
 async function objectInfo(base: string, node: string): Promise<Record<string, unknown> | null> {
   const res = await fetch(`${base}/object_info/${node}`);
@@ -120,6 +132,7 @@ async function main() {
   let checkedModelAssets = 0;
   let qwen21EditPresent = false;
   let qwen21TurboPresent = false;
+  let redcraftQw21tPresent = false;
 
   for (const file of files) {
     let descriptor: Descriptor;
@@ -139,6 +152,7 @@ async function main() {
       : runner === "video-h3"
         ? env.COMFYUI_H3_API_URL
         : env.COMFYUI_VIDEO_API_URL;
+    redcraftQw21tPresent ||= runner === "image" && descriptor.workflowKey === "redcraft-qw21t";
     if (runner === "image" && descriptor.workflowKey?.startsWith("qwen-image-edit-")) {
       qwen21EditPresent = true;
       qwen21TurboPresent ||= Object.values(descriptor.apiPrompt).some(
@@ -192,10 +206,13 @@ async function main() {
     }
   }
 
-  if (env.IMAGE_PROVIDER === "backend" && qwen21EditPresent) {
-    const assets = qwen21TurboPresent
-      ? [...QWEN21_EDIT_MODEL_ASSETS, QWEN21_TURBO_MODEL_ASSET]
-      : QWEN21_EDIT_MODEL_ASSETS;
+  if (env.IMAGE_PROVIDER === "backend" && (qwen21EditPresent || redcraftQw21tPresent)) {
+    const requestedAssets = [
+      ...(qwen21EditPresent ? QWEN21_EDIT_MODEL_ASSETS : []),
+      ...(qwen21TurboPresent ? [QWEN21_TURBO_MODEL_ASSET] : []),
+      ...(redcraftQw21tPresent ? REDCRAFT_QW21T_MODEL_ASSETS : []),
+    ];
+    const assets = [...new Map(requestedAssets.map((asset) => [asset.path, asset])).values()];
     const attestation = await attestPinnedModelAssets({
       modelRoot: env.COMFYUI_MODEL_ROOT,
       assets,

@@ -1,0 +1,263 @@
+{
+  "workflowKey": "redcraft-qw21t",
+  "modelId": "redcraft-qw21t",
+  "backendKind": "comfyui",
+  "comfyWorkflow": {
+    "id": "baa1a89e-444c-4017-9da3-ed4b4f5ef194",
+    "name": "iDream · RedCraft 3.0 · QW21 Fixed"
+  },
+  "version": 3,
+  "negativePromptMode": "positive_instruction",
+  "capabilities": [
+    "textToImage",
+    "img2img",
+    "edit",
+    "referenceImages",
+    "stableSeed"
+  ],
+  "identity": {
+    "mode": "single_reference",
+    "maxReferences": 1,
+    "acceptedRoles": [
+      "identity_anchor",
+      "identity_reference",
+      "source_image"
+    ],
+    "supportsLookReference": false,
+    "supportsSourceImageWithIdentity": false
+  },
+  "quality": {
+    "maxCandidates": 2,
+    "evaluatorDimensions": [
+      "artifact",
+      "face_count",
+      "identity",
+      "intent"
+    ]
+  },
+  "apiPrompt": {
+    "1": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "fineview_qw21_turbo_fixed_int8.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "2": {
+      "class_type": "IDreamFreshCLIPLoader",
+      "inputs": {
+        "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+        "type": "qwen_image",
+        "device": "mps"
+      }
+    },
+    "3": {
+      "class_type": "IDreamQwen21VAELoader",
+      "inputs": {
+        "vae_name": "texture_fix_vae_for_qwen_image_2.1_bf16.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "QwenImage21Cache",
+      "inputs": {
+        "model": [
+          "1:resident",
+          0
+        ],
+        "device": "auto",
+        "dtype": "default"
+      }
+    },
+    "5": {
+      "class_type": "IDreamQwen21TextEncode",
+      "inputs": {
+        "clip": [
+          "2",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ],
+        "prompt": "",
+        "negative_prompt": "",
+        "resolution": 1024,
+        "images.image_1": [
+          "10",
+          0
+        ],
+        "cfg": 1
+      }
+    },
+    "6": {
+      "class_type": "EmptyLatentImage",
+      "inputs": {
+        "width": 832,
+        "height": 1024,
+        "batch_size": 1
+      }
+    },
+    "7": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "4:shift",
+          0
+        ],
+        "positive": [
+          "900:0",
+          0
+        ],
+        "negative": [
+          "5",
+          1
+        ],
+        "seed": 0,
+        "steps": 6,
+        "cfg": 1,
+        "sampler_name": "er_sde",
+        "scheduler": "simple",
+        "denoise": 1,
+        "latent_image": [
+          "6",
+          0
+        ]
+      }
+    },
+    "8": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "7",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "9": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "8",
+          0
+        ],
+        "filename_prefix": "idream_redcraft_qw21t"
+      }
+    },
+    "10": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": ""
+      }
+    },
+    "900:0": {
+      "class_type": "IDreamUnloadOffDeviceModels",
+      "inputs": {
+        "passthrough": [
+          "5",
+          0
+        ],
+        "after": [
+          "5",
+          1
+        ],
+        "release": [
+          "2",
+          0
+        ]
+      }
+    },
+    "1:resident": {
+      "class_type": "IDreamQwen21ResidentWeights",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ]
+      }
+    },
+    "4:shift": {
+      "class_type": "ModelSamplingAuraFlow",
+      "inputs": {
+        "model": [
+          "4",
+          0
+        ],
+        "shift": 1.31,
+        "sampling": "flow"
+      }
+    }
+  },
+  "inputs": [
+    {
+      "key": "prompt",
+      "type": "text",
+      "target": {
+        "nodeId": "5",
+        "field": "prompt"
+      }
+    },
+    {
+      "key": "negative",
+      "type": "text",
+      "target": {
+        "nodeId": "5",
+        "field": "negative_prompt"
+      },
+      "default": ""
+    },
+    {
+      "key": "source_image",
+      "type": "image",
+      "referenceRoles": [
+        "identity_anchor",
+        "identity_reference",
+        "source_image"
+      ],
+      "target": {
+        "nodeId": "10",
+        "field": "image"
+      },
+      "required": false,
+      "onAbsent": "remove_target_node"
+    },
+    {
+      "key": "width",
+      "type": "int",
+      "target": {
+        "nodeId": "6",
+        "field": "width"
+      },
+      "default": 832
+    },
+    {
+      "key": "height",
+      "type": "int",
+      "target": {
+        "nodeId": "6",
+        "field": "height"
+      },
+      "default": 1024
+    },
+    {
+      "key": "seed",
+      "type": "int",
+      "target": {
+        "nodeId": "7",
+        "field": "seed"
+      }
+    },
+    {
+      "key": "steps",
+      "type": "int",
+      "target": {
+        "nodeId": "7",
+        "field": "steps"
+      },
+      "default": 6
+    }
+  ]
+}

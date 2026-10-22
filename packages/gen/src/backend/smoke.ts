@@ -82,16 +82,12 @@ async function main() {
     // descriptor's own declared slot defaults apply instead.
     orientation: hasReferences ? undefined : "4:5",
     seed: generationOverrides.seed ?? "42",
-    // Reference-driven descriptors own their validated step defaults; only the
-    // generic text-to-image smoke supplies a ten-step fallback.
+    // The selected descriptor owns step defaults in both T2I and edit modes;
+    // forcing ten steps silently breaks fixed six-step distilled workflows.
     controls: {
       workflowKey: workflowPin.workflowKey,
       workflowVersion: workflowPin.workflowVersion,
-      ...(generationOverrides.steps === undefined
-        ? hasReferences
-          ? {}
-          : { steps: 10 }
-        : { steps: generationOverrides.steps }),
+      ...(generationOverrides.steps === undefined ? {} : { steps: generationOverrides.steps }),
     },
     ...(referenceImages ? { referenceImages } : {}),
   });

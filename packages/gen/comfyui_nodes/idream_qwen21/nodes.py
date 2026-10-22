@@ -10,6 +10,7 @@ import torch
 from comfy_api.latest import io
 from comfy_extras.nodes_qwen import TextEncodeQwenImage21
 from .turbo import IDreamQwen21TurboLora, IDreamQwen21TurboSigmas
+from .resident import IDreamQwen21ResidentWeights
 
 logger = logging.getLogger(__name__)
 
@@ -122,5 +123,6 @@ NODE_CLASS_MAPPINGS = {
     "IDreamQwen21TextEncode": IDreamQwen21TextEncode,
     "IDreamQwen21TurboLora": IDreamQwen21TurboLora,
     "IDreamQwen21TurboSigmas": IDreamQwen21TurboSigmas,
+    "IDreamQwen21ResidentWeights": IDreamQwen21ResidentWeights,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {"IDreamQwen21VAELoader": "iDream Qwen 2.1 VAE Loader"}

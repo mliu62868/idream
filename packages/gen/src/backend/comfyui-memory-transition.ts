@@ -65,7 +65,8 @@ export async function waitForComfyUiAcceleratorIdle(options: MemoryTransitionOpt
 function connectionWasRefused(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const candidate = error as { code?: unknown; cause?: unknown };
-  return candidate.code === "ECONNREFUSED" || (candidate.cause !== error && connectionWasRefused(candidate.cause));
+  // Node and the actual Bun worker use different codes for a refused connection.
+  return candidate.code === "ECONNREFUSED" || candidate.code === "ConnectionRefused" || (candidate.cause !== error && connectionWasRefused(candidate.cause));
 }
 
 // SPEC: once the host-wide accelerator lease is held, the selected ComfyUI

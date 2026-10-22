@@ -94,6 +94,28 @@ function redqw21V2RunnerConfig(workflowKey: string, apiModelId: string, workflow
     precisionPolicy: "bf16_resident_mps",
   };
 }
+const REDCRAFT_MODEL_PATH = path.join(COMFYUI_MODEL_ROOT, "diffusion_models", "fineview_qw21_turbo_fixed_int8.safetensors");
+const REDCRAFT_RUNNER_CONFIG = {
+  apiModelId: "redcraft-qw21t",
+  baseModel: "Qwen-Image 2.1",
+  civitaiModelId: 958009,
+  civitaiVersionId: 3407259,
+  civitaiFileId: 3299030,
+  diffusionModelPath: REDCRAFT_MODEL_PATH,
+  diffusionModelSha256: "712b44d2a79b30ed1aa11f19fc4e2cd0f1f46a43dc3bde5d6fe2a07e36b68f0f",
+  ...REDQW21_TEXT_ENCODER_CONFIG,
+  textEncoderDevice: "mps",
+  conditioningPasses: 1,
+  vaePath: path.join(COMFYUI_MODEL_ROOT, "vae", "texture_fix_vae_for_qwen_image_2.1_bf16.safetensors"),
+  vaeSha256: "36f56608b02077a50a08ea3dbcdb88351298ceba49948f41f9f87186378e6908",
+  vaeTemporalPadding: "torch_cat",
+  workflowPath: fileURLToPath(new URL("../../gen/workflows/redcraft-qw21t.json", import.meta.url)),
+  workflowVersion: 3,
+  precisionPolicy: "int8_exact_bf16_resident_mps",
+  publicSelection: { surface: "generator_image_edit" },
+  capabilities: { textToImage: true, stableSeed: true, referenceImages: true, initImage: true, lora: false },
+};
+
 const sensitiveTags = new Set(["teen", "bdsm", "virgin"]);
 
 const communityCollections = [
@@ -971,51 +993,30 @@ async function seedAdminControlPlane() {
     })).map((profile) => profile.profileKey),
   );
 
-  // INTENT: one REDQW21 (Qwen-Image-2.1) profile is the default for both
-  // text-to-image and single-anchor Character generation; its workflow image
-  // slot is optional. db/sql/2026-09-25-redqw21-default-image-profile.sql
-  // performs the same cutover on existing databases.
+  // One optional reference slot serves text-to-image, single-anchor Character
+  // generation and source-only edits. Existing DBs publish a new immutable
+  // profile version through 2026-10-21-redcraft-default-image-profile.sql.
   if (!existingProfileKeys.has("profile_image_default_v1")) {
     await prisma.generationModelProfile.upsert({
-      where: { id: "seed-profile-image-default-v1" },
+      where: { id: "seed-profile-image-default-redcraft-v7" },
       update: {},
       create: {
-        id: "seed-profile-image-default-v1",
+        id: "seed-profile-image-default-redcraft-v7",
         profileKey: "profile_image_default_v1",
-        label: "Default image · REDQW21 (Qwen-Image 2.1)",
+        label: "Default image · RedCraft / FineView",
         mode: "image",
         runner: "comfyui",
-        pipelineModel: "redqw21",
-        workflowKey: "redqw21",
-        sourceModelPath: REDQW21_MODEL_PATH,
+        pipelineModel: "redcraft-qw21t",
+        workflowKey: "redcraft-qw21t",
+        sourceModelPath: REDCRAFT_MODEL_PATH,
         convertedModelPath: null,
         modelFormat: "safetensors",
-        runnerConfig: {
-          diffusionModelPath: REDQW21_MODEL_PATH,
-          diffusionModelSha256: "9830a9925759a4b69ea1346133d08917ec2390b8495ea7f0eb613f37e7c46647",
-          ...REDQW21_TEXT_ENCODER_CONFIG,
-          vaePath: REDQW21_VAE_PATH,
-          vaeTemporalPadding: "torch_cat",
-          workflowPath: REDQW21_WORKFLOW_PATH,
-          workflowVersion: 3,
-          apiModelId: "redqw21",
-          baseModel: "Qwen-Image 2.1",
-          civitaiModelId: 452459,
-          civitaiVersionId: 3353689,
-          precisionPolicy: "bf16_resident_mps",
-          capabilities: {
-            textToImage: true,
-            stableSeed: true,
-            referenceImages: true,
-            initImage: false,
-            lora: false,
-          },
-        },
-        defaultWidth: 512,
-        defaultHeight: 512,
+        runnerConfig: REDCRAFT_RUNNER_CONFIG,
+        defaultWidth: 832,
+        defaultHeight: 1024,
         allowedOrientations: ["1:1", "4:5", "3:4", "9:16", "16:9"],
-        steps: 10,
-        sampler: "euler",
+        steps: 6,
+        sampler: "er_sde",
         scheduler: "simple",
         cfgScale: 1,
         costMultiplier: 1,
@@ -1024,14 +1025,14 @@ async function seedAdminControlPlane() {
         concurrencyLimit: 1,
         enabled: true,
         rolloutPercent: 100,
-        version: 4,
+        version: 7,
         status: "active",
         dryRunSummary: {
           status: "not_run",
           source: "seed_configuration_state",
-          notes: "Qwen3-VL 8B community INT8 ConvRot encoder on CPU; seed configuration does not certify generation quality or speed.",
+          notes: "RedCraft / FineView six-step er_sde/simple, shift 1.31 and CFG1. Seed configuration is not live qualification evidence.",
         },
-        publishedAt: new Date("2026-10-01T00:00:00.000Z"),
+        publishedAt: new Date("2026-10-21T00:00:00.000Z"),
       },
     });
   }
@@ -1232,6 +1233,42 @@ async function seedAdminControlPlane() {
       publishedAt: new Date("2026-10-01T00:00:00.000Z"),
     },
     });
+  }
+
+  if (!existingProfileKeys.has("image-redcraft-qw21t")) {
+    await prisma.generationModelProfile.create({ data: {
+      id: "seed-profile-image-redcraft-qw21t-v3",
+      profileKey: "image-redcraft-qw21t",
+      label: "RedCraft 3.0 · QW21 Fixed",
+      mode: "image",
+      runner: "comfyui",
+      pipelineModel: "redcraft-qw21t",
+      workflowKey: "redcraft-qw21t",
+      sourceModelPath: REDCRAFT_MODEL_PATH,
+      modelFormat: "safetensors",
+      runnerConfig: { ...REDCRAFT_RUNNER_CONFIG, publicSelection: { surface: "generator_image_edit", explicitOnly: true } },
+      defaultWidth: 832,
+      defaultHeight: 1024,
+      allowedOrientations: ["4:5"],
+      steps: 6,
+      sampler: "er_sde",
+      scheduler: "simple",
+      cfgScale: 1,
+      costMultiplier: 1.5,
+      requiredEntitlement: null,
+      maxCount: 1,
+      concurrencyLimit: 1,
+      enabled: true,
+      rolloutPercent: 100,
+      version: 3,
+      status: "active",
+      dryRunSummary: {
+        status: "not_run",
+        source: "seed_configuration_state",
+        notes: "RedCraft FixQW21T INT8 with exact BF16 resident weights, TextureFix BF16 VAE and the measured six-step configuration: er_sde/simple, shift 1.31, CFG1. No extra Viggle LoRA or upscale refinement. Seed configuration is not live qualification evidence.",
+      },
+      publishedAt: new Date("2026-10-21T00:00:00.000Z"),
+    } });
   }
 
   if (!existingProfileKeys.has("character-image-variation")) {
