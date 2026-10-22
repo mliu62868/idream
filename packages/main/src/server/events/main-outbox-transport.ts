@@ -32,6 +32,10 @@ export const MAIN_OUTBOX_TRANSPORT_QUEUES = [
     eventTypes: ["generation.blob_cleanup.requested.v1"],
   },
   {
+    queue: "voice_preparation_cleanup",
+    eventTypes: ["voice.preparation_cleanup.requested.v1"],
+  },
+  {
     queue: "generation_dispatch",
     eventTypes: MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES,
   },

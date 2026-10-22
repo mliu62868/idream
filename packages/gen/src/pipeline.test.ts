@@ -1335,33 +1335,77 @@ describe("processImageGenerate", () => {
     }));
   });
 
-  it("persists a failed terminal record when retryable errors hit the final attempt", async () => {
-    const providers = makeProviders({
-      image: {
-        retryCapabilities: {
-          deterministicIdempotencyKey: true,
-          retryableFailureCodes: ["timeout"],
-        },
-        generate: vi.fn(async () => ({
-          ok: false as const,
-          error: { code: "timeout", message: "timed out", retryable: true },
-        })),
-      },
+  it.each(["image", "video"] as const)("keeps an exhausted deterministic %s timeout unknown", async (mode) => {
+    const providers = makeProviders();
+    const model = mode === "image" ? providers.image : providers.video;
+    vi.mocked(model.generate).mockResolvedValue({
+      ok: false, error: { code: "timeout", message: "timed out", retryable: true },
     });
     const deps = makePipelineDeps(providers, { attemptsMade: 2, maxAttempts: 3 });
 
-    await processImageGenerate(imagePayload(), deps);
+    await (mode === "image" ? processImageGenerate : processVideoGenerate)(
+      mode === "image" ? imagePayload() : videoPayload(), deps,
+    );
 
     expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({
       terminalRecord: expect.objectContaining({
-        outcome: "failed",
-        error: expect.objectContaining({ code: "timeout" }),
+        outcome: "unknown", providerInvoked: true,
+        error: expect.objectContaining({ retryability: "not_retryable" }),
       }),
     }));
   });
 
+  it.each(["image", "video"] as const)("preserves an explicitly definitive %s timeout as failed", async (mode) => {
+    // The real backend can time out uploading a reference before /prompt is
+    // submitted. Its explicit outcome is stronger evidence than the code.
+    const generate = vi.fn(async () => ({
+      ok: false as const,
+      error: { code: "timeout", message: "reference upload timed out", retryable: true, outcome: "definitive" as const },
+    }));
+    const providers = makeProviders(mode === "image" ? { image: { generate } } : { video: { generate } });
+    const deps = makePipelineDeps(providers, { attemptsMade: 0, maxAttempts: 3 });
+
+    await (mode === "image" ? processImageGenerate : processVideoGenerate)(
+      mode === "image" ? imagePayload() : videoPayload(), deps,
+    );
+
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({
+      terminalRecord: expect.objectContaining({ outcome: "failed", error: expect.objectContaining({ code: "timeout" }) }),
+    }));
+  });
+
+  it.each(["image", "video"] as const)("keeps a prior %s invocation unknown when input moderation blocks a retry", async (mode) => {
+    const providers = makeProviders({ blob: makeMemoryBlob() });
+    const model = mode === "image" ? providers.image : providers.video;
+    vi.mocked(model.generate).mockResolvedValueOnce({
+      ok: false, error: { code: "timeout", message: "provider response lost", retryable: true },
+    });
+    const payload = mode === "image" ? imagePayload() : videoPayload();
+    const processor = mode === "image" ? processImageGenerate : processVideoGenerate;
+    await expect(processor(payload, makePipelineDeps(providers, { attemptsMade: 0, maxAttempts: 3 }))).rejects.toThrow("provider response lost");
+    vi.mocked(providers.moderation.check).mockResolvedValue({
+      ok: true, data: { status: "blocked", policyCode: "UNDERAGE", confidence: 0.99 },
+    });
+    const deps = makePipelineDeps(providers, { attemptsMade: 1, maxAttempts: 3 });
+
+    await processor(payload, deps);
+    await processor(payload, deps);
+
+    expect(model.generate).toHaveBeenCalledTimes(1);
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledTimes(2);
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenLastCalledWith(expect.objectContaining({
+      terminalRecord: expect.objectContaining({
+        outcome: "unknown", providerInvoked: true,
+        error: expect.objectContaining({ code: "ambiguous_incomplete_provider_invocation", retryability: "not_retryable" }),
+      }),
+    }));
+    expect(vi.mocked(deps.acknowledgeTerminalRecord).mock.calls[1]![0])
+      .toEqual(vi.mocked(deps.acknowledgeTerminalRecord).mock.calls[0]![0]);
+  });
+
   it("persists a blocked terminal record when input moderation blocks before provider work", async () => {
     const providers = makeProviders({
+      blob: makeMemoryBlob(),
       moderation: {
         check: vi.fn(async () => ({
           ok: true as const,

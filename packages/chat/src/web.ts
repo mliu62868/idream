@@ -6,6 +6,7 @@ import {
   type BffContext,
 } from "@idream/shared/bff";
 import { chatFsRootFingerprint } from "@idream/shared";
+import { z } from "zod";
 import {
   ACCOUNT_DELETION_V2_INGEST_PATH,
   CHAT_RUNTIME_DIAGNOSTICS_PATH,
@@ -34,6 +35,9 @@ import { createSseResponse, streamKey } from "./stream.js";
 
 const BFF_TTL_MS = 30_000;
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+const purgeRunBodySchema = z.object({
+  throughAttempt: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+}).strict();
 
 interface BunHttpServer {
   readonly port: number | undefined;
@@ -94,6 +98,11 @@ export async function handleChatRequest(
   const url = new URL(request.url);
   if (url.pathname === "/healthz") return json(200, { ok: true, service: "chat" });
   if (url.pathname === "/readyz") {
+    // Full certification performs provider calls and memory rebuilds. It is an
+    // operator action; ordinary readiness remains available to health checks.
+    if (url.searchParams.get("full") === "1" && !internal(request)) {
+      return json(401, { error: "unauthorized" });
+    }
     await readiness.refreshDependencies();
     const snapshot = readiness.snapshot();
     if (!readiness.canAcceptTurns()) return json(503, {
@@ -225,11 +234,14 @@ export async function handleChatRequest(
   if (purgeRun && request.method === "POST") {
     if (!internal(request)) return json(401, { error: "unauthorized" });
     const raw = await readBody(request);
-    const body = raw ? JSON.parse(raw) as { throughAttempt?: unknown } : {};
-    const throughAttempt = typeof body.throughAttempt === "number" &&
-        Number.isSafeInteger(body.throughAttempt) && body.throughAttempt > 0
-      ? body.throughAttempt
-      : null;
+    let body: unknown;
+    try { body = raw ? JSON.parse(raw) : {}; }
+    catch { return json(400, { error: "invalid_agent_run_purge_scope" }); }
+    const parsed = purgeRunBodySchema.safeParse(body);
+    if (!parsed.success) return json(400, { error: "invalid_agent_run_purge_scope" });
+    // Only an omitted scope requests a whole-Turn purge. Invalid attempt
+    // limits must never widen a retry cleanup into a permanent Turn fence.
+    const throughAttempt = parsed.data.throughAttempt ?? null;
     return json(200, {
       ok: true,
       purged: throughAttempt === null

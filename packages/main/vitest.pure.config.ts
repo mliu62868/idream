@@ -50,6 +50,8 @@ export default defineConfig({
       "src/server/modules/admin-v2/content/templates-reliability.test.ts",
       "src/server/modules/admin-v2/creative/run-create-authority.test.ts",
       "src/server/modules/admin-v2/shared/admin-mutation.test.ts",
+      "src/server/modules/admin-v2/shared/admin-bff.test.ts",
+      "src/processes/admin-command-worker.shutdown.test.ts",
       "src/server/modules/admin-v2/approvals/intent.test.ts",
       "src/server/modules/admin-v2/commands/executor.test.ts",
       "src/server/modules/admin-v2/jobs/stale-unknown-dispatcher.test.ts",

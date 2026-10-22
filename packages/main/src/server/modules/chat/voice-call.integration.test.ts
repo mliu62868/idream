@@ -22,7 +22,13 @@ const synthesize = vi.fn<VoiceClipPort["synthesize"]>(originalSynthesize);
 const asr = vi.fn(async (id: string) => Response.json({ requestId: id, status: "completed", text: "Hello, tell me one good thing about your day.", audioDurationMs: 800, expiresAt: Date.now() + 120_000 }));
 const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async (input, init) => {
   const url = String(input);
-  if (url.endsWith("/health")) return Response.json({ ready: true, model: "moondream/parakeet-redux", modelRevision: "2bf128600aac4b16946f7ed8372e56117fe5e23b", runtimeVersion: "2.6.1" });
+  if (url === `${env.POCKET_TTS_API_URL.replace(/\/$/, "")}/health`) return Response.json({
+    voice_cloning: false, catalog_ready: true, catalog_voices: ["anna"], runtime: "pocket_tts", runtime_version: "3.0.2",
+    acceleration: "cpu", model_loaded: true, model: env.POCKET_TTS_MODEL, language: "english", system_voice_ready: true,
+    model_revision: "controlled-call-model", config_fingerprint: "controlled-call-config",
+  });
+  if (url === `${env.FISH_AUDIO_API_URL.replace(/\/$/, "")}/health`) return Response.json({ error: "controlled-character-voice-outage" }, { status: 503 });
+  if (url === `${env.PARAKEET_ASR_API_URL.replace(/\/$/, "")}/health`) return Response.json({ ready: true, model: "moondream/parakeet-redux", modelRevision: "2bf128600aac4b16946f7ed8372e56117fe5e23b", runtimeVersion: "2.6.1" });
   if (url.includes("/v1/transcriptions")) {
     const id = new Headers(init?.headers).get("x-asr-request-id")!;
     if (init?.method === "DELETE") return Response.json({ requestId: id, status: "cancelled" });
@@ -39,9 +45,9 @@ beforeAll(async () => {
   await purgeTestData(P);
   env.VOICE_PROVIDER = "pocket-tts"; env.POCKET_TTS_LANGUAGE = "english";
   env.ASR_PROVIDER = "parakeet-redux"; env.PARAKEET_ASR_API_TOKEN = "call-handler-test-token";
+  vi.stubGlobal("fetch", fetcher);
   const voice = createVoicePortsForKey("pocket_tts");
   providers.voice = { clip: { providerKey: "pocket_tts", synthesize }, identity: voice.identity };
-  vi.spyOn(providers.voice.identity!, "inspectCapabilities").mockResolvedValue({ ok: true, data: { voiceCloning: false } });
   await prisma.featureFlag.upsert({ where: { key: "voice_gen" }, create: { key: "voice_gen", label: "Voice", enabled: true, rolloutPercent: 100, targetRoles: [], targetPlans: [] }, update: { enabled: true } });
 });
 beforeEach(() => { synthesize.mockClear(); synthesize.mockImplementation(originalSynthesize); asr.mockClear(); vi.stubGlobal("fetch", fetcher); });
@@ -77,9 +83,9 @@ async function run(f: Fixture, method: string, suffix = "", options: { body?: un
 }
 async function start(f: Fixture, maxCostDreamcoins = 4, maxDurationMs = 180_000) {
   const body = { id: randomUUID(), clientLeaseToken: randomUUID(), language: "en", maxCostDreamcoins, maxDurationMs };
-  const quote = await run(f, "POST", "/quote", { body }); expect(quote.response.status).toBe(200);
+  const quote = await run(f, "POST", "/quote", { body }); expect(quote.response.status, JSON.stringify(quote.value)).toBe(200);
   const intent = { ...body, quoteToken: quote.value.quoteToken };
-  const connected = await run(f, "POST", "", { body: intent }); expect(connected.response.status).toBe(200);
+  const connected = await run(f, "POST", "", { body: intent }); expect(connected.response.status, JSON.stringify(connected.value)).toBe(200);
   return { ...voiceCallSchema.parse(connected.value.call), intent };
 }
 async function recording() {
@@ -174,7 +180,7 @@ describe("canonical Call recording, recovery and settlement", () => {
   it.each(["start-first", "archive-first"])("serializes Call creation and archive through their real shared user lock (%s)", async order => {
     const f = await fixture();
     const body = { id: randomUUID(), clientLeaseToken: randomUUID(), language: "en", maxCostDreamcoins: 0, maxDurationMs: 180_000 };
-    const quote = await run(f, "POST", "/quote", { body }); expect(quote.response.status).toBe(200);
+    const quote = await run(f, "POST", "/quote", { body }); expect(quote.response.status, JSON.stringify(quote.value)).toBe(200);
     const intent = { ...body, quoteToken: quote.value.quoteToken };
     let ready!: () => void, release!: () => void;
     const readyPromise = new Promise<void>(resolve => { ready = resolve; });
@@ -205,7 +211,7 @@ describe("canonical Call recording, recovery and settlement", () => {
   it.each(["start-first", "clear-first"])("serializes Call creation and memory clear through their real shared user lock (%s)", async order => {
     const f = await fixture();
     const body = { id: randomUUID(), clientLeaseToken: randomUUID(), language: "en", maxCostDreamcoins: 0, maxDurationMs: 180_000 };
-    const quote = await run(f, "POST", "/quote", { body }); expect(quote.response.status).toBe(200);
+    const quote = await run(f, "POST", "/quote", { body }); expect(quote.response.status, JSON.stringify(quote.value)).toBe(200);
     const intent = { ...body, quoteToken: quote.value.quoteToken };
     let ready!: () => void, release!: () => void;
     const readyPromise = new Promise<void>(resolve => { ready = resolve; });
@@ -380,9 +386,9 @@ describe("canonical Call recording, recovery and settlement", () => {
     await prisma.character.update({ where: { id: f.characterId }, data: { voiceId } });
     const body = { id: randomUUID(), clientLeaseToken: randomUUID(), language: "en", maxCostDreamcoins: 2, maxDurationMs: 180_000 };
     const quote = await run(f, "POST", "/quote", { body });
-    expect(quote.response.status).toBe(200); expect(quote.value.voiceFallback).toBe(true);
+    expect(quote.response.status, JSON.stringify(quote.value)).toBe(200); expect(quote.value.voiceFallback).toBe(true);
     const connected = await run(f, "POST", "", { body: { ...body, quoteToken: quote.value.quoteToken } });
-    expect(connected.response.status).toBe(200);
+    expect(connected.response.status, JSON.stringify(connected.value)).toBe(200);
     const stored = await prisma.voiceCall.findUniqueOrThrow({ where: { id: body.id } });
     expect(stored.providerPayload).toMatchObject({ providerKey: "pocket_tts", voiceAuthority: "system_default" });
     await run(f, "POST", `/${body.id}/end`, { token: body.clientLeaseToken });

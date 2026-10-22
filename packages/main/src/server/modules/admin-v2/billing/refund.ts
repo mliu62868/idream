@@ -2,7 +2,7 @@ import { Prisma } from "@prisma/client";
 import type { AdminSubscriptionRefundRequest } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
-import { Errors } from "@/server/lib/errors";
+import { AppError, Errors } from "@/server/lib/errors";
 import { toInputJson } from "@/server/lib/request-json";
 import {
   acceptControlPlaneCommand,
@@ -18,6 +18,7 @@ import {
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import {
+  isTerminalSubscriptionRefund,
   parseSubscriptionRefundEvidence,
   projectSubscriptionRefundInTx,
   publicSubscriptionRefundDTO,
@@ -25,6 +26,7 @@ import {
   withSubscriptionRefundEvidence,
   type SubscriptionRefundEvidence,
 } from "@/server/modules/billing/subscription-refund";
+import { lockUserLedger } from "@/server/modules/ourdream/subscription-lifecycle";
 import { providers } from "@/server/providers";
 import type { PaymentRefund } from "@/server/providers/types";
 
@@ -275,11 +277,12 @@ async function prepareRefund(input: {
       throw Errors.conflict("Subscription checkout authority is unavailable");
     }
     await tx.$queryRaw`SELECT id FROM "checkout_sessions" WHERE id = ${checkoutIdentity.id} FOR UPDATE`;
-    await tx.$queryRaw`SELECT id FROM "subscriptions" WHERE id = ${input.subscriptionId} FOR UPDATE`;
     const checkout = await tx.checkoutSession.findUniqueOrThrow({
       where: { id: checkoutIdentity.id },
       include: { user: { select: { dataClass: true } } },
     });
+    await lockUserLedger(tx, checkout.userId);
+    await tx.$queryRaw`SELECT id FROM "subscriptions" WHERE id = ${input.subscriptionId} FOR UPDATE`;
     const subscription = await tx.subscription.findUniqueOrThrow({
       where: { id: input.subscriptionId },
     });
@@ -433,7 +436,6 @@ async function convergeProviderRefund(input: {
 }) {
   return prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "checkout_sessions" WHERE id = ${input.checkoutId} FOR UPDATE`;
-    await tx.$queryRaw`SELECT id FROM "subscriptions" WHERE id = ${input.subscriptionId} FOR UPDATE`;
     const projected = await projectSubscriptionRefundInTx(tx, {
       checkoutId: input.checkoutId,
       expectedReference: input.current.reference,
@@ -510,7 +512,14 @@ async function convergeProviderRefund(input: {
       },
     });
     return result;
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }).catch(async (cause) => {
+    // A transient projection rollback must retain the running lease so the
+    // same command can reconcile the already-created provider refund.
+    if (cause instanceof AppError && cause.code === "conflict") {
+      await failAcceptedCommand(input.commandId, input.attemptNo, commandFailure(cause, false));
+    }
+    throw cause;
+  });
 }
 
 /**
@@ -582,8 +591,11 @@ async function failRefundCommand(
     const checkout = await tx.checkoutSession.findUniqueOrThrow({
       where: { id: checkoutId },
     });
-    const evidence = { ...current, state: "provider_unknown" as const };
-    await tx.checkoutSession.update({
+    const saved = parseSubscriptionRefundEvidence(checkout.reconciliationEvidence);
+    const unresolved = saved?.reference === current.reference && !isTerminalSubscriptionRefund(saved);
+    // A failed lookup is not evidence against a refund outcome committed by
+    // another observer while the provider request was in flight.
+    if (unresolved) await tx.checkoutSession.update({
       where: { id: checkoutId },
       data: {
         status: "provider_unknown",
@@ -592,7 +604,7 @@ async function failRefundCommand(
         reconciliationEvidence: toInputJson(
           withSubscriptionRefundEvidence(
             checkout.reconciliationEvidence,
-            evidence,
+            { ...saved, state: "provider_unknown" },
           ),
         ),
       },
@@ -603,7 +615,7 @@ async function failRefundCommand(
       expected: { from: "running", attemptCount: attemptNo },
       data: {
         error: toInputJson(error),
-        needsReconciliation: true,
+        needsReconciliation: unresolved,
         leaseOwner: null,
         leaseExpiresAt: null,
         heartbeatAt: null,

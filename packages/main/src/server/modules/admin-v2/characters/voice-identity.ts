@@ -31,6 +31,7 @@ import type {
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { operationalCharacterWhere } from "@/server/modules/metric-data-scope";
+import { dispatchPendingVoicePreparationCleanup, recordVoicePreparationCleanup } from "./voice-preparation-cleanup";
 
 const MAX_REFERENCE_BYTES = 15 * 1024 * 1024;
 // Existing seeded owner of platform official assets; the operator is audit
@@ -280,13 +281,15 @@ export async function createCharacterVoiceClone(input: {
     `voice-references/${input.characterId}/${voiceId}${extensionFor(input.form.reference.contentType)}`;
   const previewKey = `voice-previews/${input.characterId}/${voiceId}.wav`;
   const preparedArtifacts: {
+    ownerId: string | null;
     voiceId: string | null;
     previewKey: string | null;
-    referenceStored: boolean;
+    referenceAttempted: boolean;
   } = {
+    ownerId: null,
     voiceId: null,
     previewKey: null,
-    referenceStored: false,
+    referenceAttempted: false,
   };
   let mutationCompleted = false;
 
@@ -312,6 +315,7 @@ export async function createCharacterVoiceClone(input: {
       },
       prepare: async () => {
         const ownerId = await voiceResourceOwner(input.characterId);
+        preparedArtifacts.ownerId = ownerId;
         const runtime = await inspectVoiceIdentityProviderRuntime(providerKey);
         if (!runtime.cloningAvailable || runtime.runtimeStatus !== "ready") {
           throw Errors.unavailable(`${voiceProviderLabel(providerKey)} voice cloning is unavailable`, runtime);
@@ -342,38 +346,39 @@ export async function createCharacterVoiceClone(input: {
           delivery: input.form.delivery,
         });
         if (!preview.ok) {
-          await voice.deleteVoice({ voiceId: cloned.data.voiceId });
           throw Errors.unavailable(
             `${voiceProviderLabel(providerKey)} cloned the voice but could not render its preview`,
             preview.error,
           );
         }
+        // Track ownership before I/O: a lost storage ACK can still leave bytes.
+        preparedArtifacts.previewKey = previewKey;
         const storedPreview = await providers.blob.putPrivate({
           key: previewKey,
           body: preview.data.body,
           contentType: preview.data.contentType,
         });
         if (!storedPreview.ok) {
-          await voice.deleteVoice({ voiceId: cloned.data.voiceId });
           throw Errors.unavailable(
             `${voiceProviderLabel(providerKey)} rendered the preview but storage failed`,
             storedPreview.error,
           );
         }
-        preparedArtifacts.previewKey = storedPreview.data.key;
+        if (storedPreview.data.key !== previewKey) {
+          throw Errors.unavailable("Voice preview storage returned a different key");
+        }
+        preparedArtifacts.referenceAttempted = true;
         const storedReference = await providers.blob.putPrivate({
           key: referenceKey,
           body: input.form.reference.body,
           contentType: input.form.reference.contentType,
         });
         if (!storedReference.ok) {
-          await Promise.all([
-            voice.deleteVoice({ voiceId: cloned.data.voiceId }),
-            providers.blob.delete({ key: storedPreview.data.key }),
-          ]);
           throw Errors.unavailable("Voice reference storage failed", storedReference.error);
         }
-        preparedArtifacts.referenceStored = true;
+        if (storedReference.data.key !== referenceKey) {
+          throw Errors.unavailable("Voice reference storage returned a different key");
+        }
         return {
           ownerId,
           cloned: cloned.data,
@@ -384,7 +389,7 @@ export async function createCharacterVoiceClone(input: {
         };
       },
       mutate: async (tx, prepared) => {
-        await tx.$queryRaw`SELECT "id" FROM "characters" WHERE "id" = ${input.characterId} FOR UPDATE`;
+        await lockVoiceResourceAuthority(tx, input.characterId, prepared.ownerId);
         const currentCandidate = await tx.characterVoiceProfile.findFirst({
           where: { characterId: input.characterId, status: "candidate" },
           orderBy: [{ version: "desc" }, { id: "desc" }],
@@ -515,9 +520,10 @@ export async function createCharacterVoiceClone(input: {
     });
     mutationCompleted = true;
     const parsed = result;
-    if (parsed.replayed && preparedArtifacts.previewKey) {
+    if (parsed.replayed && preparedArtifacts.voiceId) {
       await cleanupPreparedArtifacts({
         voice,
+        providerKey,
         characterId: input.characterId,
         preparedArtifacts,
         referenceKey,
@@ -528,6 +534,7 @@ export async function createCharacterVoiceClone(input: {
     if (!mutationCompleted && preparedArtifacts.voiceId) {
       await cleanupPreparedArtifacts({
         voice,
+        providerKey,
         characterId: input.characterId,
         preparedArtifacts,
         referenceKey,
@@ -561,9 +568,10 @@ export async function createCharacterVoicePreset(input: {
     `voice-references/${input.characterId}/${voiceId}.json`;
   const previewKey = `voice-previews/${input.characterId}/${voiceId}.wav`;
   const preparedArtifacts = {
+    ownerId: null as string | null,
     voiceId: null as string | null,
     previewKey: null as string | null,
-    referenceStored: false,
+    referenceAttempted: false,
   };
   let mutationCompleted = false;
 
@@ -586,6 +594,7 @@ export async function createCharacterVoicePreset(input: {
           throw Errors.unavailable("Official voice presets require the Pocket TTS runtime");
         }
         const ownerId = await voiceResourceOwner(input.characterId);
+        preparedArtifacts.ownerId = ownerId;
         const runtime = await inspectVoiceIdentityProviderRuntime(providerKey);
         if (runtime.runtimeStatus !== "ready" || !runtime.catalogVoiceIds.includes(input.request.presetVoiceId)) {
           throw Errors.unavailable("The requested Pocket TTS English catalog voice is unavailable", {
@@ -614,25 +623,27 @@ export async function createCharacterVoicePreset(input: {
           delivery: DEFAULT_FISH_AUDIO_DELIVERY,
         });
         if (!preview.ok) {
-          await voice.deleteVoice({ voiceId: created.data.voiceId });
           throw Errors.unavailable(
             "Pocket TTS created the voice alias but could not render its preview",
             preview.error,
           );
         }
+        // Track ownership before I/O: a lost storage ACK can still leave bytes.
+        preparedArtifacts.previewKey = previewKey;
         const storedPreview = await providers.blob.putPrivate({
           key: previewKey,
           body: preview.data.body,
           contentType: preview.data.contentType,
         });
         if (!storedPreview.ok) {
-          await voice.deleteVoice({ voiceId: created.data.voiceId });
           throw Errors.unavailable(
             "Pocket TTS rendered the preview but storage failed",
             storedPreview.error,
           );
         }
-        preparedArtifacts.previewKey = storedPreview.data.key;
+        if (storedPreview.data.key !== previewKey) {
+          throw Errors.unavailable("Voice preview storage returned a different key");
+        }
         const descriptor = new TextEncoder().encode(JSON.stringify({
           schemaVersion: 1,
           provider: providerKey,
@@ -641,22 +652,21 @@ export async function createCharacterVoicePreset(input: {
           model: created.data.model,
           language: created.data.language,
         }));
+        preparedArtifacts.referenceAttempted = true;
         const storedReference = await providers.blob.putPrivate({
           key: referenceKey,
           body: descriptor,
           contentType: "application/vnd.idream.pocket-tts-preset+json",
         });
         if (!storedReference.ok) {
-          await Promise.all([
-            voice.deleteVoice({ voiceId: created.data.voiceId }),
-            providers.blob.delete({ key: storedPreview.data.key }),
-          ]);
           throw Errors.unavailable(
             "Pocket TTS voice descriptor storage failed",
             storedReference.error,
           );
         }
-        preparedArtifacts.referenceStored = true;
+        if (storedReference.data.key !== referenceKey) {
+          throw Errors.unavailable("Voice reference storage returned a different key");
+        }
         return {
           ownerId,
           created: created.data,
@@ -672,7 +682,7 @@ export async function createCharacterVoicePreset(input: {
         };
       },
       mutate: async (tx, prepared) => {
-        await tx.$queryRaw`SELECT "id" FROM "characters" WHERE "id" = ${input.characterId} FOR UPDATE`;
+        await lockVoiceResourceAuthority(tx, input.characterId, prepared.ownerId);
         const currentCandidate = await tx.characterVoiceProfile.findFirst({
           where: { characterId: input.characterId, status: "candidate" },
           orderBy: [{ version: "desc" }, { id: "desc" }],
@@ -801,9 +811,10 @@ export async function createCharacterVoicePreset(input: {
     });
     mutationCompleted = true;
     const parsed = result;
-    if (parsed.replayed && preparedArtifacts.previewKey) {
+    if (parsed.replayed && preparedArtifacts.voiceId) {
       await cleanupPreparedArtifacts({
         voice,
+        providerKey,
         characterId: input.characterId,
         preparedArtifacts,
         referenceKey,
@@ -814,6 +825,7 @@ export async function createCharacterVoicePreset(input: {
     if (!mutationCompleted && preparedArtifacts.voiceId) {
       await cleanupPreparedArtifacts({
         voice,
+        providerKey,
         characterId: input.characterId,
         preparedArtifacts,
         referenceKey,
@@ -1182,64 +1194,75 @@ export function characterVoiceProfileDto(profile: VoiceProfileWithAssets): Chara
 
 async function cleanupPreparedArtifacts(input: {
   voice: VoiceIdentityPort;
+  providerKey: CharacterVoiceProviderKey;
   characterId: string;
   preparedArtifacts: {
+    ownerId: string | null;
     voiceId: string | null;
     previewKey: string | null;
-    referenceStored: boolean;
+    referenceAttempted: boolean;
   };
   referenceKey: string;
 }) {
-  if (input.preparedArtifacts.voiceId) {
-    // Both creation mutations lock this Character before committing a profile.
-    // Wait for that transaction to settle, then read at ReadCommitted; a direct
-    // snapshot read could miss a COMMIT still in flight after connection loss.
-    try {
-      const committed = await prisma.$transaction(async (tx) => {
-        await tx.$queryRaw`SELECT "id" FROM "characters" WHERE "id" = ${input.characterId} FOR UPDATE`;
-        return tx.characterVoiceProfile.findUnique({
-          where: { providerVoiceId: input.preparedArtifacts.voiceId! },
-          select: { id: true },
-        });
-      }, { isolationLevel: "ReadCommitted" });
-      if (committed) return;
-    } catch (error) {
-      // Preserve the caller's original failure and the recoverable artifacts.
-      logger.warn({
-        err: error,
-        characterId: input.characterId,
-        providerVoiceId: input.preparedArtifacts.voiceId,
-        referenceKey: input.referenceKey,
-        previewKey: input.preparedArtifacts.previewKey,
-      }, "Voice cleanup deferred because commit authority could not be verified");
-      return;
-    }
-  }
-  const cleanup: Promise<unknown>[] = [];
-  if (input.preparedArtifacts.voiceId) {
-    const voiceCleanup = input.voice.deleteVoice({
-      voiceId: input.preparedArtifacts.voiceId,
+  const { voiceId, ownerId, previewKey, referenceAttempted } = input.preparedArtifacts;
+  if (!voiceId || !ownerId) return;
+  let outboxId: string | null;
+  try {
+    outboxId = await recordVoicePreparationCleanup({
+      provider: input.providerKey, ownerId, characterId: input.characterId,
+      voiceId, previewKey, referenceKey: referenceAttempted ? input.referenceKey : null,
     });
-    cleanup.push(voiceCleanup);
+  } catch (error) {
+    // Preserve the original failure. No deletion is safe without commit
+    // authority; this database outage is observable, not a completed cleanup.
+    logger.warn({ err: error, characterId: input.characterId, providerVoiceId: voiceId,
+      referenceKey: input.referenceKey, previewKey,
+    }, "Voice cleanup deferred because commit authority could not be verified");
+    return;
   }
-  if (input.preparedArtifacts.previewKey) {
-    cleanup.push(providers.blob.delete({ key: input.preparedArtifacts.previewKey }));
+  if (!outboxId) return;
+  try {
+    await dispatchPendingVoicePreparationCleanup({
+      outboxIds: [outboxId], identityForProvider: () => input.voice,
+    });
+  } catch (error) {
+    // The committed intent survives database/provider failures and is picked
+    // up by event-consumer after its lease expires or next retry becomes due.
+    logger.warn({ err: error, outboxId }, "Voice cleanup deferred to durable retry");
   }
-  if (input.preparedArtifacts.referenceStored) {
-    cleanup.push(providers.blob.delete({ key: input.referenceKey }));
-  }
-  await Promise.allSettled(cleanup);
 }
 
-async function voiceResourceOwner(characterId: string) {
-  const character = await prisma.character.findFirst({
+async function voiceResourceOwner(
+  characterId: string,
+  db: Pick<Prisma.TransactionClient, "character" | "user"> = prisma,
+) {
+  const character = await db.character.findFirst({
     where: operationalCharacterWhere({ id: characterId, deletedAt: null }),
     select: { source: true, creatorId: true },
   });
   if (!character) throw Errors.notFound("Character not found");
   const ownerId = character.source === "official" ? PLATFORM_VOICE_OWNER_ID : character.creatorId;
   if (!ownerId) throw Errors.conflict("Character voice has no resource owner");
+  const owner = await db.user.findUnique({ where: { id: ownerId }, select: { status: true, deletedAt: true } });
+  if (owner?.status !== "active" || owner.deletedAt !== null) {
+    throw Errors.gone("Character voice resource owner is no longer active");
+  }
   return ownerId;
+}
+
+async function lockVoiceResourceAuthority(
+  tx: Prisma.TransactionClient,
+  characterId: string,
+  expectedOwnerId: string,
+) {
+  // Match account erasure's User → Character order. Preparation performs I/O
+  // without these locks, so its original owner/deletion snapshot is not consent
+  // to publish a candidate after ownership or account authority changes.
+  await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${expectedOwnerId} FOR UPDATE`;
+  await tx.$queryRaw`SELECT "id" FROM "characters" WHERE "id" = ${characterId} FOR UPDATE`;
+  if (await voiceResourceOwner(characterId, tx) !== expectedOwnerId) {
+    throw Errors.conflict("Character voice resource owner changed during preparation");
+  }
 }
 
 // SPEC: Character voice identity can canary independently from the system voice

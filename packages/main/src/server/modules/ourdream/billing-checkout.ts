@@ -543,7 +543,6 @@ async function convergeRefundWebhook(input: {
     });
     if (event.processedAt) return { processed: false, idempotent: true };
     await lockCheckoutSession(tx, checkout.id);
-    await tx.$queryRaw`SELECT id FROM "subscriptions" WHERE id = ${evidence.subscriptionId} FOR UPDATE`;
     const projected = await projectSubscriptionRefundInTx(tx, {
       checkoutId: checkout.id,
       expectedReference: evidence.reference,

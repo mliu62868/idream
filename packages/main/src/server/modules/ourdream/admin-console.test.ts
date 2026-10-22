@@ -1010,7 +1010,8 @@ describe("generation config control plane", () => {
       expect(gen.data.job).toMatchObject({
         status: "queued",
         profileId: "profile_image_default_v1",
-        profileVersion: 4,
+        // The published RedCraft seed is v7; jobs must retain its exact pin.
+        profileVersion: 7,
         recipeId: "template_image_character_default",
         recipeVersion: 1,
       });

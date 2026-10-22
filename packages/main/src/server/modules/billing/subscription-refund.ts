@@ -69,6 +69,10 @@ export type SubscriptionRefundEvidence = z.infer<
   typeof subscriptionRefundEvidenceSchema
 >;
 
+export function isTerminalSubscriptionRefund(refund: SubscriptionRefundEvidence) {
+  return refund.state === "completed" || refund.state === "canceled";
+}
+
 export function parseSubscriptionRefundEvidence(value: unknown) {
   const record = asRecord(value);
   const parsed = subscriptionRefundEvidenceSchema.safeParse(
@@ -97,6 +101,21 @@ export function applyProviderRefundEvidence(
     decimalAmountCents(refund.amount) !== current.amountCents
   ) {
     throw new Error("Provider refund amount or currency changed");
+  }
+  if (current.providerRefundId && current.providerRefundId !== refund.refundId) {
+    throw Errors.conflict("Provider refund identity changed");
+  }
+  if (isTerminalSubscriptionRefund(current)) {
+    if ((refund.state === "completed" || refund.state === "canceled") && refund.state !== current.state) {
+      throw Errors.conflict("Provider refund terminal evidence conflicts with the recorded outcome", {
+        reference: current.reference,
+        recordedState: current.state,
+        observedState: refund.state,
+      });
+    }
+    // Provider lookups happen before the database lock. An older response
+    // cannot reopen a settled refund or rewrite its first terminal evidence.
+    return current;
   }
   return {
     ...current,
@@ -142,7 +161,8 @@ export function publicSubscriptionRefundDTO(
   };
 }
 
-// INVARIANT: The caller locks checkout before subscription. This transition is
+// INVARIANT: The caller locks checkout; this transition then locks user before
+// subscription, matching activation and ledger writes. This transition is
 // the sole projection from provider refund truth into subscription, entitlement,
 // checkout, and Dreamcoin state, so admin polling and webhooks cannot diverge.
 export async function projectSubscriptionRefundInTx(
@@ -164,6 +184,8 @@ export async function projectSubscriptionRefundInTx(
   if (!current || current.reference !== input.expectedReference) {
     throw Errors.conflict("Refund authority changed before provider convergence");
   }
+  await lockUserLedger(tx, checkout.userId);
+  await tx.$queryRaw`SELECT id FROM "subscriptions" WHERE id = ${current.subscriptionId} FOR UPDATE`;
   let evidence = applyProviderRefundEvidence(
     current,
     input.providerRefund,
@@ -172,9 +194,11 @@ export async function projectSubscriptionRefundInTx(
   const subscription = await tx.subscription.findUniqueOrThrow({
     where: { id: current.subscriptionId },
   });
+  if (isTerminalSubscriptionRefund(current)) {
+    return { checkout, evidence: current, subscriptionStatus: subscription.status, terminal: true, restored: false } as const;
+  }
 
   if (evidence.state === "canceled") {
-    await lockUserLedger(tx, subscription.userId);
     const competingActive = await tx.subscription.findFirst({
       where: {
         ...activeSubscriptionWhere(subscription.userId, now),

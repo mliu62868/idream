@@ -4,21 +4,27 @@ import { recoverIncompleteAgentRuns } from "./agent-runner.js";
 import { logger } from "./logger.js";
 
 export function startWorker() {
-  let closed = false;
-  const recover = () => void recoverIncompleteAgentRuns()
-    .then(({ recovered, failed }) => {
-      if (closed) return;
-      if (recovered > 0) logger.info({ recovered }, "recovered incomplete AgentRuns");
-      if (failed > 0) logger.warn({ failed }, "skipped invalid AgentRun recovery inputs");
-    })
-    .catch((error) => logger.error({ err: error }, "AgentRun recovery failed"));
+  const controller = new AbortController();
+  let inFlight: Promise<void> | undefined;
+  const recover = () => {
+    if (controller.signal.aborted || inFlight) return;
+    inFlight = recoverIncompleteAgentRuns(controller.signal)
+      .then(({ recovered, failed }) => {
+        if (controller.signal.aborted) return;
+        if (recovered > 0) logger.info({ recovered }, "recovered incomplete AgentRuns");
+        if (failed > 0) logger.warn({ failed }, "skipped invalid AgentRun recovery inputs");
+      })
+      .catch((error) => logger.error({ err: error }, "AgentRun recovery failed"))
+      .finally(() => { inFlight = undefined; });
+  };
   recover();
   const timer = setInterval(recover, 5_000);
   timer.unref();
   return {
     async close() {
-      closed = true;
+      controller.abort();
       clearInterval(timer);
+      await inFlight;
     },
   };
 }

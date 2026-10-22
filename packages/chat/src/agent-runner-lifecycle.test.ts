@@ -276,6 +276,20 @@ describe("AgentRun account-erasure drain", () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 
+  it("does not restart an attempt when shutdown wins an in-flight recovery scan", async () => {
+    const pending = Promise.withResolvers<AgentRunRecoveryScan>();
+    store.listIncompleteAgentRuns.mockReturnValueOnce(pending.promise);
+    const controller = new AbortController();
+    const recovery = recoverIncompleteAgentRuns(controller.signal);
+    controller.abort();
+    pending.resolve({ runs: [{ turnId: "turn-1", attempt: 1, userId: "user-1" }], failures: [] });
+
+    await expect(recovery).resolves.toEqual({ recovered: 0, failed: 0 });
+    expect(store.readAgentRunInput).not.toHaveBeenCalled();
+    expect(runtime.runCompanion).not.toHaveBeenCalled();
+    expect(store.writeAgentRunProposal).not.toHaveBeenCalled();
+  });
+
   it("does not propose a replacement terminal when a cancellation fences an active write", async () => {
     store.appendAgentRunEvent.mockRejectedValueOnce(new ChatFenceError({ scope: "attempt", turnId: "turn-1", attempt: 1 }));
 

@@ -24,8 +24,9 @@ import { isProcessEntrypoint } from "./process-entrypoint";
 const IDLE_DELAY_MS = 1_000;
 const BUSY_DELAY_MS = 50;
 const RECONCILE_INTERVAL_MS = 60_000;
+const CLOSE_TIMEOUT_MS = 30_000;
 
-let running = true;
+const stopping = new AbortController();
 let lastReconcileAt = 0;
 // SPEC: unknown 生成结算的巡检节流。
 // INTENT: 它的宽限期是 30 分钟，没有任何理由挤在主循环的忙碌间隔里跑 ——
@@ -105,9 +106,11 @@ export async function drainAdminCommands(
     readonly routeQualificationPolicyVersion?: string;
     readonly routeQualificationEvaluatorVersion?: string;
     readonly routeQualificationReleaseIds?: readonly string[];
+    readonly signal?: AbortSignal;
   },
 ) {
   const now = input.now ?? new Date();
+  input.signal?.throwIfAborted();
   const routeQualifications = await dispatchStaleReleaseRoutes(db, {
     currentPolicyVersion: input.routeQualificationPolicyVersion ?? CHARACTER_RELEASE_POLICY_VERSION,
     currentEvaluatorVersion: input.routeQualificationEvaluatorVersion ?? env.GENERATION_ROUTE_EVALUATOR_VERSION,
@@ -117,10 +120,12 @@ export async function drainAdminCommands(
     cursorId: input.routeQualificationReleaseIds ? undefined : routeQualificationCursor ?? undefined,
   });
   if (!input.routeQualificationReleaseIds) routeQualificationCursor = routeQualifications.nextCursor;
+  input.signal?.throwIfAborted();
   const releaseMonitors = await dispatchDueReleaseMonitors(db, {
     workerId: input.workerId,
     now,
     limit: input.limit,
+    signal: input.signal,
   });
   if (releaseMonitors.failed > 0) {
     logger.error(
@@ -128,6 +133,7 @@ export async function drainAdminCommands(
       "due Release Monitor dispatch partially failed",
     );
   }
+  input.signal?.throwIfAborted();
   const commands = await db.controlPlaneCommand.findMany({
     where: {
       status: "accepted",
@@ -141,14 +147,19 @@ export async function drainAdminCommands(
   let failed = 0;
   let verifying = 0;
   for (const command of commands) {
+    input.signal?.throwIfAborted();
     const result = await executeAdminCommand(db, command, { workerId: input.workerId, now });
     if (result.status === "succeeded") succeeded += 1;
     else if (["accepted", "running", "verifying"].includes(result.status)) verifying += 1;
     else failed += 1;
   }
-  const dispatched = await dispatchGenerationAttemptOutbox(db, { limit: input.limit });
+  input.signal?.throwIfAborted();
+  const dispatched = await dispatchGenerationAttemptOutbox(db, { limit: input.limit, signal: input.signal });
+  input.signal?.throwIfAborted();
   const incidentCorrelation = await dispatchGenerationIncidentCorrelation(db, { limit: input.limit });
+  input.signal?.throwIfAborted();
   const verified = await verifyCreativeRetryCommands(db, { limit: input.limit });
+  input.signal?.throwIfAborted();
   const incidentActions = await verifyIncidentActionPlanCommands(db, { limit: input.limit });
   return {
     examined: commands.length,
@@ -204,7 +215,7 @@ export async function runAdminCommandWorkerLoop() {
   const workerId = `admin-command-worker-${randomUUID()}`;
   const chaos = adminCommandChaosConfig();
   logger.info({ workerId }, "admin command worker started");
-  while (running) {
+  while (!stopping.signal.aborted) {
     let processed = 0;
     try {
       const now = Date.now();
@@ -217,19 +228,24 @@ export async function runAdminCommandWorkerLoop() {
           now: new Date(now),
         });
         processed = result.examined;
+        if (stopping.signal.aborted) break;
         const reconciled = await reconcileExpiredCommandLeases(prisma, new Date(now), {
           commandIds: [chaos.commandId],
         });
         if (reconciled.examined > 0) logger.info(reconciled, "admin command lease reconciled");
       } else {
-        const result = await drainAdminCommands(prisma, { workerId });
+        // Finish the current authority operation on shutdown, without claiming
+        // another command or starting a new dispatch responsibility.
+        const result = await drainAdminCommands(prisma, { workerId, signal: stopping.signal });
         processed = result.examined + result.releaseMonitors.claimed + result.routeQualifications.examined;
       }
+      if (stopping.signal.aborted) break;
       if (!chaos && now - lastReconcileAt >= RECONCILE_INTERVAL_MS) {
         lastReconcileAt = now;
         const reconciled = await reconcileExpiredCommandLeases(prisma, new Date(now));
         if (reconciled.examined > 0) logger.info(reconciled, "admin command leases reconciled");
       }
+      if (stopping.signal.aborted) break;
       if (!chaos && shouldDispatchStaleUnknownSweep(lastStaleUnknownSweepAt, now)) {
         lastStaleUnknownSweepAt = now;
         const settled = await dispatchStaleUnknownGenerationRequests(prisma, {
@@ -240,14 +256,16 @@ export async function runAdminCommandWorkerLoop() {
         }
       }
     } catch (error) {
+      if (stopping.signal.aborted && error === stopping.signal.reason) break;
       logger.error({ error, workerId }, "admin command worker iteration failed");
     }
+    if (stopping.signal.aborted) break;
     await new Promise((resolve) => setTimeout(resolve, processed > 0 ? BUSY_DELAY_MS : IDLE_DELAY_MS));
   }
 }
 
 export function stopAdminCommandWorkerLoop() {
-  running = false;
+  stopping.abort();
 }
 
 export function isDirectAdminCommandWorkerInvocation(
@@ -261,11 +279,34 @@ export function isDirectAdminCommandWorkerInvocation(
 }
 
 if (isDirectAdminCommandWorkerInvocation()) {
+  const loop = runAdminCommandWorkerLoop();
+  let shutdownPromise: Promise<void> | null = null;
   const shutdown = () => {
+    if (shutdownPromise) return;
     stopAdminCommandWorkerLoop();
-    setTimeout(() => process.exit(0), 200);
+    shutdownPromise = (async () => {
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          loop,
+          new Promise<never>((_, reject) => {
+            deadline = setTimeout(() => reject(new Error("Admin command worker drain timed out")), CLOSE_TIMEOUT_MS);
+          }),
+        ]);
+        process.exit(0);
+      } catch (error) {
+        logger.error({ error, timeoutMs: CLOSE_TIMEOUT_MS }, "admin command worker shutdown failed; unfinished work retains its lease");
+        process.exit(1);
+      } finally {
+        clearTimeout(deadline);
+      }
+    })();
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
-  void runAdminCommandWorkerLoop();
+  void loop.catch((error) => {
+    if (shutdownPromise) return;
+    logger.error({ error }, "admin command worker exited unexpectedly");
+    process.exit(1);
+  });
 }

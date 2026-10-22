@@ -1,4 +1,4 @@
-"""Durable account-erasure barrier shared by the two resident voice gateways."""
+"""Durable account and alias deletion barriers for the resident voice gateways."""
 
 import hashlib
 import json
@@ -70,6 +70,16 @@ class VoiceErasureRegistry:
         with self.lock:
             self.check(owner, key, voice)
             write()
+
+    def mark_voice_deleted(self, voice: str):
+        # A caller timing out does not stop a clone already normalizing audio.
+        # Revoke its unique alias before DELETE waits for registry work; the
+        # existing commit barrier rejects that clone's eventual final write.
+        with self.lock:
+            with self.marker("voice", voice.strip()).open("wb") as target:
+                target.flush()
+                os.fsync(target.fileno())
+            self.sync_directory(self.directory)
 
     def mark_erased(self, request: AccountErasureRequest):
         # INVARIANT: persist the barrier before waiting for active synthesis or

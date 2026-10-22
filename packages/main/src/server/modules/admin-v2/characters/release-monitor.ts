@@ -738,6 +738,7 @@ export async function dispatchDueReleaseMonitors(
     readonly limit?: number;
     readonly leaseMs?: number;
     readonly retryDelayMs?: number;
+    readonly signal?: AbortSignal;
   },
 ) {
   const now = input.now ?? new Date();
@@ -771,6 +772,7 @@ export async function dispatchDueReleaseMonitors(
   const failures: DispatchFailure[] = [];
 
   for (const candidate of candidates) {
+    if (input.signal?.aborted) break;
     const claim = await db.releaseMonitor.updateMany({
       where: {
         id: candidate.id,

@@ -18,6 +18,14 @@ import numpy as np
 
 
 class FishAudioGatewayTests(unittest.TestCase):
+    def test_delete_fences_a_timed_out_clone_that_is_still_normalizing(self):
+        from scripts.voice_erasure_test_cases import assert_clone_delete_fence
+        assert_clone_delete_fence(self, "fish-female-default")
+
+    def test_delete_does_not_acknowledge_failed_private_file_removal(self):
+        from scripts.voice_erasure_test_cases import assert_voice_delete_failure_is_retryable
+        assert_voice_delete_failure_is_retryable(self)
+
     def test_account_erasure_deletes_owned_and_legacy_cache_without_erasing_shared_voice(self):
         from scripts.voice_erasure_test_cases import assert_speech_account_erasure
         assert_speech_account_erasure(self, "fish-female-default")

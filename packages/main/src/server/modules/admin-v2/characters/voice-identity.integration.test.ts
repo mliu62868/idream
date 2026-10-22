@@ -12,9 +12,15 @@ const providerState = vi.hoisted(() => ({
   synthesizeCalls: 0,
   failSynthesizeCall: null as number | null,
   deletedVoiceIds: [] as string[],
+  deletedVoiceProviders: [] as string[],
+  failVoiceDelete: null as "return" | "throw" | null,
+  failBlobDelete: null as "return" | "throw" | null,
   referenceTexts: [] as string[],
   createdOwners: [] as Array<string | undefined>,
   storedKeys: [] as string[],
+  loseStorageAckFor: null as "voice-previews" | "voice-references" | null,
+  beforeStorageAck: null as (() => Promise<void>) | null,
+  beforePreviewResponse: null as ((voiceId: string) => Promise<void>) | null,
   deletedKeys: [] as string[],
   inspectOk: true,
   unavailableProviders: [] as string[],
@@ -85,8 +91,13 @@ vi.mock("@/server/providers", () => ({
             },
           };
         },
-        async previewVoice() {
+        async previewVoice(input: { voiceId: string }) {
           providerState.synthesizeCalls += 1;
+          if (providerState.beforePreviewResponse) {
+            const beforeResponse = providerState.beforePreviewResponse;
+            providerState.beforePreviewResponse = null;
+            await beforeResponse(input.voiceId);
+          }
           if (
             !providerState.persistedPreviewOk ||
             providerState.synthesizeCalls === providerState.failSynthesizeCall
@@ -110,7 +121,10 @@ vi.mock("@/server/providers", () => ({
             };
         },
         async deleteVoice(input: { voiceId: string }) {
+          if (providerState.failVoiceDelete === "throw") throw new Error("Synthetic voice deletion outage");
+          if (providerState.failVoiceDelete === "return") return { ok: false as const, error: { code: "voice_delete_failed", message: "Synthetic voice deletion outage", retryable: true } };
           providerState.deletedVoiceIds.push(input.voiceId);
+          providerState.deletedVoiceProviders.push(providerState.identityProviderKey ?? providerState.providerKey);
           return { ok: true as const, data: { deleted: true as const } };
         },
         async inspectCapabilities() {
@@ -142,6 +156,14 @@ vi.mock("@/server/providers", () => ({
     blob: {
       async putPrivate(input: { key: string; body: Uint8Array }) {
         providerState.storedKeys.push(input.key);
+        if (providerState.beforeStorageAck) {
+          const beforeAck = providerState.beforeStorageAck;
+          providerState.beforeStorageAck = null;
+          await beforeAck();
+        }
+        if (providerState.loseStorageAckFor && input.key.startsWith(`${providerState.loseStorageAckFor}/`)) {
+          throw new Error("Synthetic lost Blob storage acknowledgement");
+        }
         return {
           ok: true as const,
           data: { key: input.key, size: input.body.byteLength },
@@ -151,6 +173,8 @@ vi.mock("@/server/providers", () => ({
         return { ok: true as const, data: { url: "https://blob.example.test/voice" } };
       },
       async delete(input: { key: string }) {
+        if (providerState.failBlobDelete === "throw") throw new Error("Synthetic Blob deletion outage");
+        if (providerState.failBlobDelete === "return") return { ok: false as const, error: { code: "blob_delete_failed", message: "Synthetic Blob deletion outage", retryable: true } };
         providerState.deletedKeys.push(input.key);
         return { ok: true as const, data: { deleted: true as const } };
       },
@@ -200,7 +224,11 @@ vi.mock("@/server/providers/voice/factory", () => ({
             },
           };
         },
-        async deleteVoice() {
+        async deleteVoice(input: { voiceId: string }) {
+          if (providerState.failVoiceDelete === "throw") throw new Error("Synthetic voice deletion outage");
+          if (providerState.failVoiceDelete === "return") return { ok: false as const, error: { code: "voice_delete_failed", message: "Synthetic voice deletion outage", retryable: true } };
+          providerState.deletedVoiceIds.push(input.voiceId);
+          providerState.deletedVoiceProviders.push(providerKey);
           return { ok: true as const, data: { deleted: true as const } };
         },
         async inspectCapabilities() {
@@ -235,6 +263,7 @@ vi.mock("@/server/providers/voice/factory", () => ({
 
 import { updateVoiceDefaultSettings, VOICE_DEFAULTS_SETTING_KEY } from "@/server/modules/voice-defaults";
 import { toInputJson } from "../shared/prisma-json";
+import { dispatchPendingVoicePreparationCleanup, recordVoicePreparationCleanup, VOICE_PREPARATION_CLEANUP_EVENT } from "./voice-preparation-cleanup";
 
 import {
   activateCharacterVoiceProfile,
@@ -278,7 +307,10 @@ describe("Character voice identity authority", () => {
     });
     await prisma.adminAuditLog.deleteMany({ where: { actorId } });
     await prisma.mainOutboxEvent.deleteMany({
-      where: { aggregateType: "character", aggregateId: characterId },
+      where: { OR: [
+        { aggregateType: "character", aggregateId: characterId },
+        { eventType: VOICE_PREPARATION_CLEANUP_EVENT, payload: { path: ["characterId"], equals: characterId } },
+      ] },
     });
     await prisma.characterVoiceProfile.deleteMany({ where: { characterId } });
     await prisma.mediaAsset.deleteMany({ where: { characterId } });
@@ -1005,6 +1037,247 @@ describe("Character voice identity authority", () => {
     } finally {
       providerState.inspectOk = true;
       providerState.providerKey = "fish_audio";
+    }
+  });
+
+  it.each([
+    ["clone", "voice-previews"],
+    ["clone", "voice-references"],
+    ["preset", "voice-previews"],
+    ["preset", "voice-references"],
+  ] as const)("cleans every attempted %s Blob after a lost %s storage acknowledgement", async (kind, prefix) => {
+    const storedBefore = providerState.storedKeys.length;
+    const profilesBefore = await prisma.characterVoiceProfile.count({ where: { characterId } });
+    const idempotencyKey = `voice-lost-blob-${kind}-${prefix}-${suffix}`;
+    providerState.loseStorageAckFor = prefix;
+    providerState.providerKey = kind === "clone" ? "fish_audio" : "pocket_tts";
+    providerState.runtime = kind === "clone" ? "mlx_audio" : "pocket_tts";
+    providerState.catalogVoices = ["anna"];
+    try {
+      const input = { characterId, actor: { id: actorId, role: "admin" as const }, idempotencyKey, requestId: randomUUID() };
+      const operation = kind === "clone"
+        ? createCharacterVoiceClone({ ...input, form: cloneForm("lost-storage.wav", "Keep the reference private.") })
+        : createCharacterVoicePreset({ ...input, request: { presetVoiceId: "anna", sampleText: "Keep the preview private." } });
+      await expect(operation).rejects.toThrow("Synthetic lost Blob storage acknowledgement");
+      const attemptedKeys = providerState.storedKeys.slice(storedBefore);
+      expect(attemptedKeys).toHaveLength(prefix === "voice-previews" ? 1 : 2);
+      for (const key of attemptedKeys) expect(providerState.deletedKeys).toContain(key);
+      expect(await prisma.characterVoiceProfile.count({ where: { characterId } })).toBe(profilesBefore);
+      expect(await prisma.controlPlaneCommand.findFirst({ where: { actorId, idempotencyKey } })).toBeNull();
+    } finally {
+      providerState.loseStorageAckFor = null;
+      providerState.providerKey = "fish_audio";
+      providerState.runtime = "mlx_audio";
+      providerState.catalogVoices = [];
+    }
+  });
+
+  it.each([
+    ["voice", "return"], ["voice", "throw"], ["blob", "return"], ["blob", "throw"],
+  ] as const)("durably retries a failed %s cleanup after delete methods %s", async (target, failure) => {
+    const storedBefore = providerState.storedKeys.length;
+    providerState.providerKey = "fish_audio";
+    providerState.loseStorageAckFor = "voice-references";
+    if (target === "voice") providerState.failVoiceDelete = failure;
+    else providerState.failBlobDelete = failure;
+    try {
+      await expect(createCharacterVoiceClone({
+        characterId, actor: { id: actorId, role: "admin" },
+        idempotencyKey: `voice-cleanup-retry-${target}-${failure}-${suffix}`, requestId: randomUUID(),
+        form: cloneForm("retry.wav", "A failed cleanup must survive process loss."),
+      })).rejects.toThrow("Synthetic lost Blob storage acknowledgement");
+      const keys = providerState.storedKeys.slice(storedBefore);
+      expect(keys).toHaveLength(2);
+      const voiceId = keys[0]!.split("/").at(-1)!.replace(/\.wav$/, "");
+      const id = `voice_preparation_cleanup_${voiceId}`;
+      const pending = await prisma.mainOutboxEvent.findUnique({ where: { id } });
+      expect(pending).toMatchObject({
+        eventType: VOICE_PREPARATION_CLEANUP_EVENT, status: "pending", attempts: 1,
+        leaseToken: null, leaseExpiresAt: null,
+        payload: { provider: "fish_audio", ownerId: "seed-system-creator", characterId, voiceId,
+          previewKey: keys[0], referenceKey: keys[1] },
+        lastError: { code: "voice_preparation_cleanup_failed" },
+      });
+      expect(pending!.nextRunAt.getTime()).toBeGreaterThan(Date.now());
+      providerState.failVoiceDelete = null;
+      providerState.failBlobDelete = null;
+      providerState.providerKey = "pocket_tts";
+      // A fresh dispatcher resolves the persisted provider, without the request's adapter.
+      await expect(dispatchPendingVoicePreparationCleanup({ outboxIds: [id], now: pending!.nextRunAt }))
+        .resolves.toEqual({ delivered: 1, failed: 0, cancelled: 0 });
+      expect(providerState.deletedVoiceIds).toContain(voiceId);
+      expect(providerState.deletedVoiceProviders.at(-1)).toBe("fish_audio");
+      for (const key of keys) expect(providerState.deletedKeys).toContain(key);
+      expect(await prisma.mainOutboxEvent.findUnique({ where: { id } })).toMatchObject({ status: "delivered", attempts: 2 });
+    } finally {
+      providerState.loseStorageAckFor = null;
+      providerState.failVoiceDelete = null;
+      providerState.failBlobDelete = null;
+      providerState.providerKey = "fish_audio";
+    }
+  });
+
+  it.each(["clone", "preset"] as const)("records the losing %s alias when failed preview preparation returns a concurrent receipt", async kind => {
+    providerState.providerKey = kind === "clone" ? "fish_audio" : "pocket_tts";
+    providerState.runtime = kind === "clone" ? "mlx_audio" : "pocket_tts";
+    providerState.catalogVoices = ["anna"];
+    const input = { characterId, actor: { id: actorId, role: "admin" as const },
+      idempotencyKey: `voice-preview-replay-${kind}-${suffix}`, requestId: randomUUID() };
+    const execute = () => kind === "clone"
+      ? createCharacterVoiceClone({ ...input, form: cloneForm("replay.wav", "Concurrent winner keeps its voice.") })
+      : createCharacterVoicePreset({ ...input, request: { presetVoiceId: "anna", sampleText: "Concurrent winner keeps its voice." } });
+    let entered = () => {};
+    let release = () => {};
+    let losingVoiceId = "";
+    const previewEntered = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    providerState.beforePreviewResponse = async voiceId => {
+      losingVoiceId = voiceId;
+      entered(); await gate;
+      throw new Error("Synthetic losing preview failure");
+    };
+    const losing = execute();
+    try {
+      await previewEntered;
+      const winner = await execute();
+      providerState.failVoiceDelete = "return";
+      release();
+      expect(await losing).toMatchObject({ replayed: true, profile: { id: winner.profile.id } });
+      const id = `voice_preparation_cleanup_${losingVoiceId}`;
+      const pending = await prisma.mainOutboxEvent.findUnique({ where: { id } });
+      expect(pending).toMatchObject({ status: "pending", attempts: 1,
+        payload: { voiceId: losingVoiceId, previewKey: null, referenceKey: null } });
+      providerState.failVoiceDelete = null;
+      expect(await dispatchPendingVoicePreparationCleanup({ outboxIds: [id], now: pending!.nextRunAt }))
+        .toEqual({ delivered: 1, failed: 0, cancelled: 0 });
+      expect(providerState.deletedVoiceIds).toContain(losingVoiceId);
+      expect(providerState.deletedVoiceIds).not.toContain(winner.profile.providerVoiceId);
+    } finally {
+      release();
+      await losing.catch(() => {});
+      providerState.beforePreviewResponse = null;
+      providerState.failVoiceDelete = null;
+      providerState.providerKey = "fish_audio";
+      providerState.runtime = "mlx_audio";
+      providerState.catalogVoices = [];
+    }
+  });
+
+  it("reclaims an expired cleanup lease without letting its stale worker acknowledge or delete remaining Blobs", async () => {
+    const voiceId = `idream-${randomUUID()}`;
+    const previewKey = `voice-previews/${characterId}/${voiceId}.wav`;
+    const referenceKey = `voice-references/${characterId}/${voiceId}.wav`;
+    const id = (await recordVoicePreparationCleanup({
+      provider: "fish_audio", ownerId: "seed-system-creator", characterId,
+      voiceId, previewKey, referenceKey,
+    }))!;
+    const controller = new AbortController();
+    controller.abort();
+    expect(await dispatchPendingVoicePreparationCleanup({ outboxIds: [id], signal: controller.signal }))
+      .toEqual({ delivered: 0, failed: 0, cancelled: 0 });
+    expect((await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id } })).attempts).toBe(0);
+    let started = () => {};
+    let release = () => {};
+    const entered = new Promise<void>(resolve => { started = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const staleBlobDelete = vi.fn();
+    const stale = dispatchPendingVoicePreparationCleanup({
+      outboxIds: [id], blob: { delete: staleBlobDelete },
+      identityForProvider: () => ({ providerKey: "fish_audio", async deleteVoice() {
+        started(); await gate;
+        return { ok: true, data: { deleted: true } };
+      } }),
+    });
+    try {
+      await entered;
+      expect(await dispatchPendingVoicePreparationCleanup({ outboxIds: [id] }))
+        .toEqual({ delivered: 0, failed: 0, cancelled: 0 });
+      await prisma.mainOutboxEvent.update({ where: { id }, data: { leaseExpiresAt: new Date(0) } });
+      expect(await dispatchPendingVoicePreparationCleanup({ outboxIds: [id] }))
+        .toEqual({ delivered: 1, failed: 0, cancelled: 0 });
+    } finally {
+      release();
+    }
+    expect(await stale).toEqual({ delivered: 0, failed: 0, cancelled: 0 });
+    expect(staleBlobDelete).not.toHaveBeenCalled();
+    expect(await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id } }))
+      .toMatchObject({ status: "delivered", attempts: 2, leaseToken: null, leaseExpiresAt: null });
+    expect(providerState.deletedKeys).toEqual(expect.arrayContaining([previewKey, referenceKey]));
+  });
+
+  it("rejects cleanup keys outside the exact preparation before calling either provider", async () => {
+    const voiceId = `idream-${randomUUID()}`;
+    const payload = { provider: "fish_audio" as const, ownerId: "seed-system-creator", characterId,
+      voiceId, previewKey: `voice-previews/${characterId}/${voiceId}.wav`, referenceKey: null };
+    const id = (await recordVoicePreparationCleanup(payload))!;
+    await prisma.mainOutboxEvent.update({ where: { id }, data: {
+      payload: { version: 1, ...payload, previewKey: `voice-previews/${characterId}/someone-else.wav` },
+    } });
+    const voiceBefore = providerState.deletedVoiceIds.length;
+    const blobsBefore = providerState.deletedKeys.length;
+    expect(await dispatchPendingVoicePreparationCleanup({ outboxIds: [id] }))
+      .toEqual({ delivered: 0, failed: 1, cancelled: 0 });
+    expect(providerState.deletedVoiceIds).toHaveLength(voiceBefore);
+    expect(providerState.deletedKeys).toHaveLength(blobsBefore);
+    expect(await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: "pending" });
+  });
+
+  it("protects committed profiles both when recording and when delivering a stale cleanup intent", async () => {
+    const result = await createCharacterVoiceClone({
+      characterId, actor: { id: actorId, role: "admin" },
+      idempotencyKey: `voice-cleanup-committed-${suffix}`, requestId: randomUUID(),
+      form: cloneForm("committed.wav", "Never erase a committed profile."),
+    });
+    const voiceId = result.profile.providerVoiceId;
+    const payload = { provider: "fish_audio" as const, ownerId: "seed-system-creator", characterId,
+      voiceId, previewKey: `voice-previews/${characterId}/${voiceId}.wav`, referenceKey: null };
+    expect(await recordVoicePreparationCleanup(payload)).toBeNull();
+    const id = `voice_preparation_cleanup_${voiceId}`;
+    await prisma.mainOutboxEvent.create({ data: {
+      id, eventType: VOICE_PREPARATION_CLEANUP_EVENT,
+      aggregateType: "character_voice_preparation", aggregateId: voiceId,
+      payload: { version: 1, ...payload },
+    } });
+    const voiceBefore = providerState.deletedVoiceIds.length;
+    const blobsBefore = providerState.deletedKeys.length;
+    expect(await dispatchPendingVoicePreparationCleanup({ outboxIds: [id] }))
+      .toEqual({ delivered: 0, failed: 0, cancelled: 1 });
+    expect(providerState.deletedVoiceIds).toHaveLength(voiceBefore);
+    expect(providerState.deletedKeys).toHaveLength(blobsBefore);
+    expect(await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id } }))
+      .toMatchObject({ status: "cancelled", lastError: { code: "voice_profile_committed", profileId: result.profile.id } });
+  });
+
+  it.each(["clone", "preset"] as const)("rejects a %s candidate when resource authority is revoked during preparation", async kind => {
+    const storedBefore = providerState.storedKeys.length;
+    const profilesBefore = await prisma.characterVoiceProfile.count({ where: { characterId } });
+    const idempotencyKey = `voice-revoked-during-prepare-${kind}-${suffix}`;
+    providerState.providerKey = kind === "clone" ? "fish_audio" : "pocket_tts";
+    providerState.runtime = kind === "clone" ? "mlx_audio" : "pocket_tts";
+    providerState.catalogVoices = ["anna"];
+    if (kind === "preset") await prisma.character.update({ where: { id: characterId }, data: { source: "user", creatorId: actorId } });
+    providerState.beforeStorageAck = async () => {
+      if (kind === "clone") await prisma.character.update({ where: { id: characterId }, data: { deletedAt: new Date() } });
+      else await prisma.user.update({ where: { id: actorId }, data: { status: "deleted", deletedAt: new Date() } });
+    };
+    try {
+      const input = { characterId, actor: { id: actorId, role: "admin" as const }, idempotencyKey, requestId: randomUUID() };
+      const operation = kind === "clone"
+        ? createCharacterVoiceClone({ ...input, form: cloneForm("revoked.wav", "This deleted character must not get a new voice.") })
+        : createCharacterVoicePreset({ ...input, request: { presetVoiceId: "anna", sampleText: "This deleted owner must not get a new voice." } });
+      await expect(operation).rejects.toMatchObject({ code: kind === "clone" ? "not_found" : "gone" });
+      const attemptedKeys = providerState.storedKeys.slice(storedBefore);
+      expect(attemptedKeys).toHaveLength(2);
+      for (const key of attemptedKeys) expect(providerState.deletedKeys).toContain(key);
+      expect(await prisma.characterVoiceProfile.count({ where: { characterId } })).toBe(profilesBefore);
+      expect(await prisma.controlPlaneCommand.findFirst({ where: { actorId, idempotencyKey } })).toBeNull();
+    } finally {
+      providerState.beforeStorageAck = null;
+      providerState.providerKey = "fish_audio";
+      providerState.runtime = "mlx_audio";
+      providerState.catalogVoices = [];
+      await prisma.character.update({ where: { id: characterId }, data: { source: "official", creatorId: null, deletedAt: null } });
+      await prisma.user.update({ where: { id: actorId }, data: { status: "active", deletedAt: null } });
     }
   });
 

@@ -22,6 +22,7 @@ describe("unrouted outbox settlement", () => {
         row("audit", "generation.request.cancelled.v2"),
         row("review", "creative.review.decided.v2"),
         row("transport", "product.event.persisted.v2"),
+        row("voice-cleanup", "voice.preparation_cleanup.requested.v1"),
         row("delivered-audit", "creative.review.decided.v2", "delivered"),
       ],
     });
@@ -35,6 +36,7 @@ describe("unrouted outbox settlement", () => {
       audit: "recorded",
       review: "recorded",
       transport: "pending",
+      "voice-cleanup": "pending",
       "delivered-audit": "delivered",
     });
   });

@@ -35,7 +35,13 @@ export async function verifyAdminBffRequest(
 
   let context: BffContext;
   try {
-    context = JSON.parse(contextHeader) as BffContext;
+    const parsed: unknown = JSON.parse(contextHeader);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) ||
+      !("userId" in parsed) || typeof parsed.userId !== "string" ||
+      !("authTime" in parsed) || typeof parsed.authTime !== "number" || !Number.isFinite(parsed.authTime)) {
+      return { ok: false, reason: "bad_context" };
+    }
+    context = parsed as BffContext;
   } catch {
     return { ok: false, reason: "bad_context" };
   }

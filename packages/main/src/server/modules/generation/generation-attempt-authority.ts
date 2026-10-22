@@ -1105,6 +1105,7 @@ export async function dispatchGenerationAttemptOutbox(
     readonly outboxIds?: readonly string[];
     readonly queue?: DispatchQueue;
     readonly now?: Date;
+    readonly signal?: AbortSignal;
   } = {},
 ) {
   const now = input.now ?? new Date();
@@ -1121,7 +1122,9 @@ export async function dispatchGenerationAttemptOutbox(
   let delivered = 0;
   let failed = 0;
   for (const row of rows) {
+    if (input.signal?.aborted) break;
     if (await videoSceneDispatchDeferred(db, row.aggregateId)) continue;
+    if (input.signal?.aborted) break;
     const leaseExpiresAt = new Date(now.getTime() + 60_000);
     const payload = jsonRecord(row.payload);
     let queueInput: EnqueueJobInput | null = null;

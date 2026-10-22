@@ -67,16 +67,20 @@ export async function acceptAgentRun(
 }
 
 /** Startup recovery is an AgentRun lifecycle operation, not worker orchestration. */
-export async function recoverIncompleteAgentRuns(): Promise<{
+export async function recoverIncompleteAgentRuns(signal?: AbortSignal): Promise<{
   recovered: number;
   failed: number;
 }> {
+  if (signal?.aborted) return { recovered: 0, failed: 0 };
   const scan = await listIncompleteAgentRuns();
   for (const failure of scan.failures) {
     logger.warn(failure, "skipping invalid AgentRun recovery evidence");
   }
   let recovered = 0;
   for (const run of scan.runs) {
+    // A scan can finish after worker shutdown began. Keep those immutable
+    // inputs for the next process instead of starting against a closing engine.
+    if (signal?.aborted) break;
     if (startAgentRun(run)) recovered += 1;
   }
   return { recovered, failed: scan.failures.length };

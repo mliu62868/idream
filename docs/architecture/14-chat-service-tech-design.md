@@ -169,7 +169,7 @@ Chat 到 Main：
 
 ## 8. Readiness
 
-Chat admission health 证明文件根、Redis、Pi/igrep 基础依赖可用；`/readyz?full=1` 另行认证精确版本、profile、provider/model、工具桥、rebuild 与隔离。green 结果只有 5 秒 TTL；旧的 green 不能永久覆盖后续依赖故障。
+Chat admission health 证明文件根、Redis、Pi/igrep 基础依赖可用；`/readyz?full=1` 必须携带 `x-internal-token: INTERNAL_TOKEN`，由运营另行认证精确版本、profile、provider/model、工具桥、rebuild 与隔离。普通 `/readyz` 仍供无令牌健康检查使用。green 结果只有 5 秒 TTL；旧的 green 不能永久覆盖后续依赖故障。
 
 ## 9. 账号删除
 

@@ -194,14 +194,14 @@ describe("local AI service pipeline", () => {
     expect(queuedGenerateJob?.payload).toMatchObject({
       controls: {
         profileId: "profile_image_default_v1",
-        width: 512,
-        height: 512,
-        // The default REDQW21 profile serves text-to-image and identity
-        // references from one graph; it never takes a source image.
+        width: 832,
+        height: 832,
+        // The published RedCraft v7 default accepts text-to-image,
+        // identity references, and source-image edits in the same graph.
         modelCapabilities: expect.objectContaining({
           textToImage: true,
           referenceImages: true,
-          initImage: false,
+          initImage: true,
         }),
       },
     });

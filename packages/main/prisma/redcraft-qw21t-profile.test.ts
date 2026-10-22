@@ -105,4 +105,24 @@ describe("RedCraft / FineView default image publication", () => {
       await prisma.generationJob.delete({ where: { id: job.id } });
     }
   });
+
+  it("inherits one deployment directory while rejecting per-profile path drift", async () => withTransaction(async (client) => {
+    const deploymentPath = "/srv/idream deployment/packages/gen/workflows/redcraft-qw21t.json";
+    await client.query(`UPDATE generation_model_profiles SET "runnerConfig" = jsonb_set("runnerConfig", '{workflowPath}', to_jsonb($1::text))
+      WHERE "profileKey" IN ($2, $3)`, [deploymentPath, profileKey, defaultKey]);
+    const before = await profiles(client);
+    await client.query(sql);
+    expect(await profiles(client)).toEqual(before);
+
+    await client.query(`UPDATE generation_model_profiles SET "runnerConfig" = jsonb_set("runnerConfig", '{workflowPath}', to_jsonb($1::text))
+      WHERE "profileKey" = $2`, ["/srv/other/packages/gen/workflows/redcraft-qw21t.json", profileKey]);
+    await expectRejected(client, "differs from the exact released configuration");
+    await client.query(`UPDATE generation_model_profiles SET "runnerConfig" = jsonb_set("runnerConfig", '{workflowPath}', to_jsonb($1::text))
+      WHERE "profileKey" = $2`, [deploymentPath, profileKey]);
+    for (const invalidPath of ["packages/gen/workflows/redcraft-qw21t.json", "/srv/../packages/gen/workflows/redcraft-qw21t.json", "/srv/app/packages/gen/workflows/other.json"]) {
+      await client.query(`UPDATE generation_model_profiles SET "runnerConfig" = jsonb_set("runnerConfig", '{workflowPath}', to_jsonb($1::text))
+        WHERE "profileKey" = $2`, [invalidPath, defaultKey]);
+      await expectRejected(client, "invalid workflow path");
+    }
+  }));
 });

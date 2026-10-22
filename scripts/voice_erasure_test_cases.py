@@ -4,7 +4,84 @@ import hashlib
 import json
 import threading
 import time
+from unittest.mock import patch
 from fastapi.testclient import TestClient
+
+
+def assert_clone_delete_fence(test, protected_voice):
+    gateway = test.gateway
+    gateway.API_TOKEN = "gateway-test-token"
+    client = TestClient(gateway.app)
+    headers = {"authorization": "Bearer gateway-test-token", "x-idream-owner-hash": "a" * 64}
+    alias = "idream-late-clone"
+    started, release = threading.Event(), threading.Event()
+    outcomes, failures = [], []
+
+    def normalize(reference, _filename):
+        started.set()
+        if not release.wait(2):
+            raise TimeoutError("Clone normalization gate was not released")
+        return reference
+
+    def clone(voice_id):
+        return client.post("/v1/voices", headers=headers,
+                           data={"voice_id": voice_id, "language": gateway.LANGUAGE,
+                                 "ref_text": "This pending clone must not survive deletion."},
+                           files={"audio": ("reference.wav", b"x" * 2048, "audio/wav")})
+
+    def delayed_clone():
+        try:
+            outcomes.append(clone(alias).status_code)
+        except Exception as error:
+            failures.append(error)
+
+    with patch.object(gateway, "normalize_reference_audio", normalize):
+        thread = threading.Thread(target=delayed_clone)
+        thread.start()
+        try:
+            test.assertTrue(started.wait(2))
+            # Main's HTTP timeout can happen here without stopping this POST.
+            # DELETE must durably revoke this alias before its response succeeds.
+            response = client.delete(f"/v1/voices/{alias}", headers=headers)
+            test.assertEqual(response.status_code, 200)
+        finally:
+            release.set()
+            thread.join(2)
+        test.assertFalse(thread.is_alive())
+        test.assertEqual(failures, [])
+        test.assertEqual(outcomes, [410])
+        test.assertFalse(gateway.voice_manifest_path(alias).exists())
+        from scripts.voice_erasure import VoiceErasureRegistry
+        gateway.erasure_registry = VoiceErasureRegistry(gateway.IDEMPOTENCY_DIR, gateway.IDEMPOTENCY_CACHE_MAGIC)
+        test.assertEqual(clone(alias).status_code, 410)
+        if gateway.MODEL_ID == "pocket-tts":
+            preset = client.post("/v1/voices/presets", headers=headers,
+                                 json={"voice_id": alias, "preset_voice_id": protected_voice,
+                                       "language": gateway.LANGUAGE})
+            test.assertEqual(preset.status_code, 410)
+        # Revocation is alias-local, not an accidental account-erasure marker.
+        test.assertEqual(clone("idream-fresh-clone").status_code, 200)
+        test.assertEqual(client.delete(f"/v1/voices/{alias}", headers=headers).status_code, 200)
+        test.assertEqual(client.delete(f"/v1/voices/{protected_voice}", headers=headers).status_code, 409)
+        test.assertFalse(gateway.erasure_registry.marker("voice", protected_voice).exists())
+
+
+def assert_voice_delete_failure_is_retryable(test):
+    gateway = test.gateway
+    alias = "idream-delete-io-failure"
+    manifest = gateway.voice_manifest_path(alias)
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text("{}")
+    if hasattr(gateway, "voice_audio_path"):
+        gateway.voice_audio_path(alias).write_bytes(b"private-reference")
+    with patch("os.unlink", side_effect=PermissionError("Injected voice deletion failure")):
+        with test.assertRaises(PermissionError):
+            gateway.delete_voice(alias)
+    # Failure cannot acknowledge cleanup; its durable fence still rejects late writes.
+    test.assertTrue(gateway.erasure_registry.marker("voice", alias).exists())
+    test.assertTrue(manifest.exists())
+    test.assertEqual(gateway.delete_voice(alias), {"deleted": True})
+    test.assertFalse(manifest.exists())
 
 
 def assert_speech_account_erasure(test, voice_id):

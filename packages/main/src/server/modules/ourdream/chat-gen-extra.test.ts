@@ -28,9 +28,9 @@ const P = "zt-cgx-";
 const SYS = `${P}sys`;
 const CHAR = `${P}char`;
 const PINNED_RETRY_JOB_AUTHORITY = {
-  model: "redqw21",
+  model: "redcraft-qw21t",
   profileId: "profile_image_default_v1",
-  profileVersion: 4,
+  profileVersion: 7,
   orientation: "1:1",
   outputCount: 1,
   provider: "comfyui",

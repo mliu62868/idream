@@ -10,6 +10,7 @@ DECLARE
   profile_count integer;
   previous_profile generation_model_profiles%ROWTYPE;
   default_profile generation_model_profiles%ROWTYPE;
+  current_workflow_path text;
   next_version integer;
   expected_config jsonb := '{
     "apiModelId":"redcraft-qw21t",
@@ -25,7 +26,6 @@ DECLARE
     "vaePath":"/Users/kk/ComfyUI-Shared/models/vae/texture_fix_vae_for_qwen_image_2.1_bf16.safetensors",
     "vaeSha256":"36f56608b02077a50a08ea3dbcdb88351298ceba49948f41f9f87186378e6908",
     "vaeTemporalPadding":"torch_cat",
-    "workflowPath":"/Users/kk/code/idream/packages/gen/workflows/redcraft-qw21t.json",
     "workflowVersion":3,"precisionPolicy":"int8_exact_bf16_resident_mps",
     "publicSelection":{"surface":"generator_image_edit","explicitOnly":true},
     "capabilities":{"textToImage":true,"stableSeed":true,"referenceImages":true,"initImage":true,"lora":false}
@@ -42,6 +42,32 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'Pending RedCraft jobs must finish before six-step default publication';
   END IF;
+
+  SELECT count(*) INTO profile_count FROM generation_model_profiles
+    WHERE "profileKey" = 'profile_image_default_v1' AND status = 'active';
+  IF profile_count <> 1 THEN
+    RAISE EXCEPTION 'Expected exactly one active default image profile, found %', profile_count;
+  END IF;
+  SELECT * INTO STRICT default_profile FROM generation_model_profiles
+    WHERE "profileKey" = 'profile_image_default_v1' AND status = 'active';
+  IF default_profile.mode IS DISTINCT FROM 'image' OR default_profile.runner IS DISTINCT FROM 'comfyui'
+    OR default_profile."workflowKey" IS NULL
+    OR default_profile."workflowKey" NOT IN ('redqw21','redcraft-qw21t')
+    OR default_profile."pipelineModel" IS DISTINCT FROM default_profile."workflowKey"
+  THEN RAISE EXCEPTION 'Active default image profile has an unexpected route'; END IF;
+
+  -- The active default pins the deployment directory; a developer's checkout
+  -- is not a release identity. Only this path varies: every model digest,
+  -- recipe and other profile must still match the exact released configuration.
+  current_workflow_path := default_profile."runnerConfig"->>'workflowPath';
+  IF current_workflow_path IS NULL
+    OR current_workflow_path !~ '^/.+/packages/gen/workflows/(redqw21|redcraft-qw21t)\.json$'
+    OR current_workflow_path ~ '/\.{1,2}/'
+    OR current_workflow_path NOT LIKE '%/' || default_profile."workflowKey" || '.json'
+  THEN RAISE EXCEPTION 'Active default image profile has an invalid workflow path'; END IF;
+  expected_config := jsonb_set(expected_config, '{workflowPath}', to_jsonb(
+    regexp_replace(current_workflow_path, '(redqw21|redcraft-qw21t)\.json$', 'redcraft-qw21t.json')
+  ));
 
   -- Historical recipes remain immutable, including the original Euler v1.
   FOR previous_profile IN SELECT * FROM generation_model_profiles
@@ -109,13 +135,6 @@ BEGIN
   UPDATE generation_model_profiles SET status = 'archived', "archivedAt" = CURRENT_TIMESTAMP, "updatedAt" = CURRENT_TIMESTAMP
     WHERE "profileKey" = 'image-redcraft-qw21t' AND version IN (1,2) AND status = 'active';
 
-  SELECT count(*) INTO profile_count FROM generation_model_profiles
-    WHERE "profileKey" = 'profile_image_default_v1' AND status = 'active';
-  IF profile_count <> 1 THEN
-    RAISE EXCEPTION 'Expected exactly one active default image profile, found %', profile_count;
-  END IF;
-  SELECT * INTO STRICT default_profile FROM generation_model_profiles
-    WHERE "profileKey" = 'profile_image_default_v1' AND status = 'active';
   expected_config := jsonb_set(expected_config, '{publicSelection}', '{"surface":"generator_image_edit"}'::jsonb);
   IF default_profile."workflowKey" = 'redcraft-qw21t' THEN
     IF default_profile."pipelineModel" IS DISTINCT FROM 'redcraft-qw21t'

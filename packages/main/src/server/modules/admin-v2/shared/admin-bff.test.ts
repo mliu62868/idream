@@ -87,6 +87,17 @@ describe("Admin BFF service HMAC", () => {
     })).resolves.toEqual({ ok: false, reason: "expired" });
   });
 
+  it.each(["null", "[]", '"admin-bff"', "7", JSON.stringify({ userId: "admin-bff" }), JSON.stringify({ userId: "admin-bff", authTime: String(now) })])(
+    "rejects malformed parsed contexts without throwing: %j",
+    async (context) => {
+      const request = new Request("https://main.example/api/v2/admin/today", {
+        headers: { [BFF_HEADER]: "invalid-signature", [BFF_USER_HEADER]: context },
+      });
+      await expect(verifyAdminBffRequest(request, { secret, appEnv: "production", now }))
+        .resolves.toEqual({ ok: false, reason: "bad_context" });
+    },
+  );
+
   it("allows unsigned direct requests only outside production when no secret is configured", async () => {
     const request = new Request("http://main.local/api/v2/admin/today");
     await expect(verifyAdminBffRequest(request, { appEnv: "test", secret: "" }))

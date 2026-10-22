@@ -625,7 +625,8 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
       timer = window.setTimeout(() => void poll(), delay);
     };
     const poll = async () => {
-      if (cancelled) return;
+      // A visibility wake-up must not replace the in-flight read's abort handle.
+      if (cancelled || controller) return;
       if (document.hidden) {
         schedule(2_000);
         return;

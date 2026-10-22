@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { resolvePermissions } from "@/server/admin/permissions";
 import { drainAdminCommands } from "@/processes/admin-command-worker";
 import { prisma } from "@/server/lib/db";
@@ -1065,5 +1065,44 @@ describe("Release route qualification and post-publish monitor", () => {
       workMode: "character_producer",
     });
     expect(today.nextBestActions.items.some((item) => item.sourceId === releaseId)).toBe(false);
+  });
+
+  it("finishes the claimed monitor but leaves the next due window unclaimed after shutdown", async () => {
+    await prisma.releaseMonitor.deleteMany({ where: { releaseId } });
+    await prisma.adminAuditLog.deleteMany({ where: { targetType: "release_monitor", targetId: { startsWith: releaseId } } });
+    await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: releaseId, eventType: "character.release.monitor_evaluated.v2" } });
+    await prisma.releaseMonitor.createMany({
+      data: (["24h", "72h"] as const).map((window) => ({
+        id: `${releaseId}:${window}`,
+        releaseId,
+        window,
+        status: "pending",
+        baseline: {},
+        observed: {},
+        verification: { state: "pending" },
+        startedAt: publishedAt,
+        dueAt: new Date(publishedAt.getTime() + (window === "24h" ? 24 : 72) * 60 * 60 * 1_000),
+      })),
+    });
+    const stopping = new AbortController();
+    const updateMany = prisma.releaseMonitor.updateMany.bind(prisma.releaseMonitor);
+    const claim = vi.spyOn(prisma.releaseMonitor, "updateMany").mockImplementation((args) => {
+      // Shutdown arrives after this claim starts, before its database result is awaited.
+      const result = updateMany(args);
+      if (args?.where?.id === `${releaseId}:24h`) stopping.abort();
+      return result;
+    });
+    try {
+      await dispatchDueReleaseMonitors(prisma, { workerId: "shutdown-monitor-worker", now, signal: stopping.signal });
+    } finally {
+      claim.mockRestore();
+    }
+    expect(stopping.signal.aborted).toBe(true);
+    await expect(prisma.releaseMonitor.findUniqueOrThrow({ where: { id: `${releaseId}:24h` } })).resolves.toMatchObject({
+      attemptCount: 1, leaseOwner: null, leaseExpiresAt: null,
+    });
+    await expect(prisma.releaseMonitor.findUniqueOrThrow({ where: { id: `${releaseId}:72h` } })).resolves.toMatchObject({
+      status: "pending", attemptCount: 0, leaseOwner: null,
+    });
   });
 });

@@ -852,11 +852,15 @@ def delete_voice(voice_id: str) -> dict[str, bool]:
     normalized_id = safe_voice_id(voice_id)
     if normalized_id in ENGLISH_CATALOG_VOICE_SET:
         raise HTTPException(status_code=409, detail="Catalog voices cannot be deleted")
+    erasure_registry.mark_voice_deleted(normalized_id)
     with registry_lock:
-        shutil.rmtree(voice_bundle_path(normalized_id), ignore_errors=True)
+        path = voice_bundle_path(normalized_id)
+        if path.exists():
+            shutil.rmtree(path)
         for key in list(voice_state_cache):
             if key.startswith(f"{normalized_id}:"):
                 del voice_state_cache[key]
+        erasure_registry.sync_directory(VOICE_DIR)
     return {"deleted": True}
 
 

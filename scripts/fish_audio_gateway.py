@@ -774,10 +774,12 @@ def delete_voice(voice_id: str) -> dict[str, bool]:
             status_code=409,
             detail="The system female voice id is reserved",
         )
+    erasure_registry.mark_voice_deleted(normalized_id)
     with registry_lock:
         voice_audio_path(normalized_id).unlink(missing_ok=True)
         voice_manifest_path(normalized_id).unlink(missing_ok=True)
         clear_reference_cache()
+        erasure_registry.sync_directory(VOICE_DIR)
     return {"deleted": True}
 
 

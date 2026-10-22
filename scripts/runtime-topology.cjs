@@ -143,6 +143,8 @@ const processSpecs = Object.freeze([
       production: { cwd: "packages/main", script: "dist/admin-command-worker.js", execMode: "fork" },
     },
     watchPaths: ["packages/main/src/processes", "packages/main/src/server", "packages/shared/src"],
+    // Allow its 30-second durable drain to report failure before forced exit.
+    killTimeout: 35_000,
   },
 ]);
 

@@ -189,32 +189,40 @@ class GenerationExecution {
 
   async failPreparation(error: unknown): Promise<void> {
     if (!this.isFinalAttempt()) throw error;
-    // A preparation error on a later transport must not erase a prior call,
-    // including one made by a provider with deterministic replay support.
-    const guard = await loadGenerationInvocationGuard(this.options.blob, this.#identity.attemptId);
-    if (guard) {
-      const expected = this.invocationGuard();
-      if (
-        guard.attemptId !== expected.attemptId || guard.attemptNo !== expected.attemptNo ||
-        guard.requestId !== expected.requestId || guard.generationJobId !== expected.generationJobId ||
-        guard.providerIdempotencyKey !== expected.providerIdempotencyKey ||
-        guard.mode !== expected.mode || guard.provider !== expected.provider || guard.model !== expected.model ||
-        guard.transportAttemptNo >= expected.transportAttemptNo
-      ) throw new Error(`provider invocation cannot be excluded for ${expected.attemptId}`);
-      await this.fail(
-        "ambiguous_incomplete_provider_invocation",
-        "A prior provider invocation did not leave terminal evidence before retry preparation failed",
-        { outcome: "unknown", retryability: "not_retryable" },
-        { providerInvoked: true, providerReplayIsSafe: false },
-      );
-      return;
-    }
+    if (await this.reconcilePriorInvocation()) return;
     await this.fail(
       "preparation_failed",
       error instanceof Error ? error.message : "Generation input preparation failed",
       { retryability: "retryable" },
       { providerInvoked: false },
     );
+  }
+
+  async blockInput(policyCode: string): Promise<void> {
+    // A new policy decision stops execution, but cannot prove that a prior
+    // transport never reached the provider. Preserve that unknown outcome.
+    if (await this.reconcilePriorInvocation()) return;
+    await this.block(policyCode, "Input moderation blocked the generation request", "input");
+  }
+
+  private async reconcilePriorInvocation(): Promise<boolean> {
+    const guard = await loadGenerationInvocationGuard(this.options.blob, this.#identity.attemptId);
+    if (!guard) return false;
+    const expected = this.invocationGuard();
+    if (
+      guard.attemptId !== expected.attemptId || guard.attemptNo !== expected.attemptNo ||
+      guard.requestId !== expected.requestId || guard.generationJobId !== expected.generationJobId ||
+      guard.providerIdempotencyKey !== expected.providerIdempotencyKey ||
+      guard.mode !== expected.mode || guard.provider !== expected.provider || guard.model !== expected.model ||
+      guard.transportAttemptNo >= expected.transportAttemptNo
+    ) throw new Error(`provider invocation cannot be excluded for ${expected.attemptId}`);
+    await this.fail(
+      "ambiguous_incomplete_provider_invocation",
+      "A prior provider invocation did not leave terminal evidence before retry preparation stopped",
+      { outcome: "unknown", retryability: "not_retryable" },
+      { providerInvoked: true, providerReplayIsSafe: false },
+    );
+    return true;
   }
 
   async execute<TProviderOutput>(
@@ -370,11 +378,14 @@ class GenerationExecution {
     invocationLatencyMs: number,
   ): Promise<void> {
     const safeRetry = canAutomaticallyRetry(model, error);
+    // Replay safety cannot establish whether the provider completed. Explicit
+    // backend evidence wins; an exhausted legacy timeout remains unknown even
+    // when earlier transports could safely retry the same idempotency key.
     const ambiguous =
       error.outcome === "ambiguous" ||
       (
+        error.outcome === undefined &&
         error.retryable &&
-        !safeRetry &&
         ["timeout", "internal"].includes(error.code)
       );
     const accounting = invocationAccounting(invocation, invocationLatencyMs);
@@ -684,11 +695,7 @@ export async function runGeneration<TPrepared, TProviderOutput>(
   }
 
   if (blockedPolicyCode !== undefined) {
-    await execution.block(
-      blockedPolicyCode,
-      "Input moderation blocked the generation request",
-      "input",
-    );
+    await execution.blockInput(blockedPolicyCode);
     return;
   }
 

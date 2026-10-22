@@ -257,6 +257,31 @@ describe("GenerationAttemptAuthority", () => {
     ).resolves.toMatchObject({ status: "delivered", attempts: 1 });
   });
 
+  it("finishes an accepted dispatch but leaves later rows unclaimed after shutdown", async () => {
+    const reservations = [];
+    for (const label of ["shutdown-first", "shutdown-second"]) {
+      const job = await createJob(label);
+      reservations.push(await prisma.$transaction((tx) => reserveInitialGenerationAttempt(tx, reservationFor(job))));
+    }
+    const stopping = new AbortController();
+    const enqueued: EnqueueJobInput[] = [];
+    const result = await dispatchGenerationAttemptOutbox(prisma, {
+      outboxIds: reservations.map(({ outbox }) => outbox.id),
+      signal: stopping.signal,
+      queue: {
+        enqueue: async (input) => { enqueued.push(input); stopping.abort(); },
+        removeByDedupeKey: async () => false,
+      },
+    });
+    expect(result).toMatchObject({ delivered: 1, failed: 0 });
+    expect(enqueued).toHaveLength(1);
+    const rows = await prisma.mainOutboxEvent.findMany({
+      where: { id: { in: reservations.map(({ outbox }) => outbox.id) } },
+    });
+    expect(rows.filter((row) => row.status === "delivered")).toHaveLength(1);
+    expect(rows.filter((row) => row.status === "pending")).toMatchObject([{ attempts: 0 }]);
+  });
+
   it("rolls back the Attempt and dispatch intent when the caller transaction fails", async () => {
     const job = await createJob("reservation-rollback");
     const input = reservationFor(job);

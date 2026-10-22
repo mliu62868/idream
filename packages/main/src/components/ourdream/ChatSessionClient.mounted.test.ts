@@ -647,6 +647,34 @@ describe("ChatSessionClient streaming composer", () => {
     expect(container.querySelector('[aria-label="Assistant is typing"]')).not.toBeNull();
   });
 
+  it("keeps visibility-triggered reconciliation serial and aborts its active read on unmount", async () => {
+    await startStreamingReply();
+    sessionMessages = [opening, userTurn, streamingReply];
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    const reads: Array<{ signal: AbortSignal | null | undefined; response: ReturnType<typeof Promise.withResolvers<Response>> }> = [];
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) !== "/api/v1/chat/sessions/session-1") return originalFetch(input, init);
+      const response = Promise.withResolvers<Response>();
+      reads.push({ signal: init?.signal, response });
+      return response.promise;
+    });
+
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await waitUntil(() => reads.length === 1);
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(reads).toHaveLength(1);
+    expect(reads[0]!.signal?.aborted).toBe(false);
+
+    await act(async () => reads[0]!.response.resolve(await originalFetch("/api/v1/chat/sessions/session-1")));
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await waitUntil(() => reads.length === 2);
+    await act(async () => root.render(null));
+    expect(reads[1]!.signal?.aborted).toBe(true);
+  });
+
   it("stops a running reply and unlocks the composer and regenerate", async () => {
     await startStreamingReply();
     expect(container.querySelector('[data-testid="chat-stop-reply"]')).not.toBeNull();

@@ -4783,10 +4783,14 @@ describe("launch readiness", () => {
     expect(genValues.GEN_VIDEO_TIMEOUT_MS).toBe("1800000");
   });
 
-  it("keeps Pocket TTS as the production English voice authority", () => {
+  it("pins Ming for default speech while retaining Pocket character identities", () => {
     const mainValues = envTemplateValues("../../.env.production.example");
 
-    expect(mainValues.VOICE_PROVIDER).toBe("pocket-tts");
+    expect(mainValues.VOICE_PROVIDER).toBe("fish-audio");
+    expect(mainValues.FISH_AUDIO_API_URL).toBe("http://127.0.0.1:8062/v1");
+    expect(mainValues.FISH_AUDIO_MODEL).toBe("ming-3.0-tts-0.5b-8bit");
+    expect(mainValues.FISH_AUDIO_LANGUAGE).toBe("auto");
+    expect(mainValues.FISH_AUDIO_API_TOKEN).toBeTruthy();
     expect(mainValues.POCKET_TTS_API_URL).toBe("http://127.0.0.1:8063/v1");
     expect(mainValues.POCKET_TTS_MODEL).toBe("pocket-tts");
     expect(mainValues.POCKET_TTS_LANGUAGE).toBe("english");

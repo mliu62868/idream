@@ -709,6 +709,7 @@ test("generation workers have bounded graceful-stop windows", () => {
 test("the durable event consumer can finish its bounded drain before PM2 forces termination", () => {
   for (const mode of ["development", "production"]) {
     assert.equal(byName(loadConfig(mode), "main-event-consumer").kill_timeout, 35_000);
+    assert.equal(byName(loadConfig(mode), "admin-command-worker").kill_timeout, 35_000);
   }
 });
 
