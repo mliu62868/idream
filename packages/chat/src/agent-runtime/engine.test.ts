@@ -433,7 +433,7 @@ describe("Chat embedded companion runtime", () => {
       const runtime = await engine(new OneStepAdapter(), undefined, {
         adapter: (profile, policy) => new FixtureAdapter({
           profile, ...policy, apiKey: "fixture-key",
-          observeRequest: evidence => { purpose = evidence.purpose; policy.observeRequest?.(evidence); },
+          observeRequest: evidence => { purpose = evidence.purpose; return policy.observeRequest?.(evidence); },
           fetch: async () => {
             requests.push(purpose);
             const compacting = purpose === "compaction";

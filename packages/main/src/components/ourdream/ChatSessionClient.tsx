@@ -1872,7 +1872,9 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
                         <span aria-label="Assistant reply unavailable" role="status">
                           {message.status === STOPPED_REPLY_STATUS
                             ? "Reply stopped."
-                            : "Reply unavailable."}
+                            : message.status === "failed" && message.replyInterrupted
+                              ? "Reply interrupted. Your message is saved. Regenerate to try again."
+                              : "Reply unavailable."}
                         </span>
                       ) : (
                         message.content

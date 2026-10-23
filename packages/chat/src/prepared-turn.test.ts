@@ -220,6 +220,10 @@ describe("PreparedTurn budget", () => {
     expect(chatting.imageRequest).toBeNull();
     expect(chatting.messages.find(message => message.id === "state:current")?.content).not.toContain("asks you for a photo now");
 
+    const textOnly = withImages("这是一段测试对话。图书室里我的绿色笔记本封面写着 ASTER-CUTOVER-827，请用中文一句话复述这个标签，不生成图片。");
+    expect(textOnly.imageRequest).toBeNull();
+    expect(textOnly.messages.find(message => message.id === "state:current")?.content).not.toContain("asks you for a photo now");
+
     expect(withImages("Send me a selfie.", false).imageRequest).toBeNull();
   });
 
@@ -386,7 +390,7 @@ describe("PreparedTurn budget", () => {
     const profile = { ...prepared.profile, provider: "openai", baseUrl: "https://provider.example/v1", model: "identity-test" };
     const adapter = new OpenAiCompatibleAdapter({
       profile, apiKey: "fixture-secret", maxInputTokens: prepared.budget.maxInputTokens,
-      observeRequest: value => evidence.push(value),
+      observeRequest: value => { evidence.push(value); },
       fetch: async (_url, init) => {
         bodies.push(String(init?.body));
         return new Response('data: {"choices":[{"delta":{"content":"Ready."},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');

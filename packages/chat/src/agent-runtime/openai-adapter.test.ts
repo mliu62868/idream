@@ -73,6 +73,29 @@ async function drain(adapter: OpenAiCompatibleAdapter): Promise<void> {
 }
 
 describe("OpenAI-compatible Pi adapter", () => {
+  it("waits for durable dispatch evidence before making the physical request", async () => {
+    const gate = Promise.withResolvers<void>();
+    const request = vi.fn(async () => new Response('data: {"choices":[{"delta":{"content":"Done."},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'));
+    const observeRequest = vi.fn(() => gate.promise);
+    const adapter = adapterFor("https://provider.example/v1", request, { observeRequest });
+    const running = drain(adapter);
+    await vi.waitFor(() => expect(observeRequest).toHaveBeenCalledOnce());
+    expect(request).not.toHaveBeenCalled();
+    gate.resolve();
+    await running;
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it("does not send or report usage when dispatch evidence cannot be persisted", async () => {
+    const request = vi.fn(), observeUsage = vi.fn();
+    const adapter = adapterFor("https://provider.example/v1", request, {
+      observeRequest: async () => { throw new Error("journal write failed"); }, observeUsage,
+    });
+    await expect(drain(adapter)).rejects.toThrow("journal write failed");
+    expect(request).not.toHaveBeenCalled();
+    expect(observeUsage).not.toHaveBeenCalled();
+  });
+
   it("preserves measured totals when the provider omits the reasoning subtotal", async () => {
     const adapter = adapterFor("https://provider.example/v1", async () => new Response(
       'data: {"choices":[{"delta":{"reasoning_content":"Private thought","content":"Done."},"finish_reason":"stop"}],"usage":{"prompt_tokens":13,"completion_tokens":7}}\n\ndata: [DONE]\n\n'));
@@ -151,7 +174,7 @@ describe("OpenAI-compatible Pi adapter", () => {
     const adapter = adapterFor("https://provider.example/v1", async (_url, init) => {
       body = String(init?.body);
       return new Response('data: {"choices":[{"delta":{"content":"Done."},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
-    }, { observeRequest: value => evidence.push(value) });
+    }, { observeRequest: value => { evidence.push(value); } });
     const context = normalizeContext({ systemPrompt: "Pinned Soul", tools: [{ name: "old_tool", description: "Old", parameters: { type: "object" } }], messages: [] });
     const result = await adapter.stream([...context.messages, {
       role: "system", content: "Runtime guidance", sections: { state: "Current state" }, timestamp: 1,
@@ -258,7 +281,7 @@ describe("OpenAI-compatible Pi adapter", () => {
     const adapter = adapterFor("https://provider.example/v1", async (_url, init) => {
       bodies.push(JSON.parse(String(init?.body)));
       return new Response('data: {"choices":[{"delta":{"content":"{\\\"changes\\\":[]}"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
-    }, { responseFormat, observeRequest: value => evidence.push(value) });
+    }, { responseFormat, observeRequest: value => { evidence.push(value); } });
     await drain(adapter);
     expect(bodies[0]?.response_format).toEqual(responseFormat);
     expect(bodies[0]?.chat_template_kwargs).toEqual({ enable_thinking: false });
@@ -447,7 +470,7 @@ describe("OpenAI-compatible Pi adapter", () => {
         delta: { tool_calls: [{ index: 0, id: "image-1", function: { name: "generate_image_async", arguments: args } }] },
         finish_reason: "tool_calls",
       }] })}\n\ndata: [DONE]\n\n`);
-    }, { maxInputTokens: 1_000, observeRequest: value => evidence.push(value) });
+    }, { maxInputTokens: 1_000, observeRequest: value => { evidence.push(value); } });
     const drainRequest = async () => {
     for await (const _chunk of streamRequest(adapter, { systemPrompt: "Pinned Soul.",
       messages: [
@@ -494,7 +517,7 @@ describe("OpenAI-compatible Pi adapter", () => {
     const adapter = adapterFor("https://provider.example/v1", async (_input, init) => {
       body = String(init?.body);
       return new Response('data: {"choices":[{"delta":{"content":"Okay"},"finish_reason":"stop"}]}\n\n');
-    }, { maxInputTokens: 2_000, observeRequest: value => observed.push(value) });
+    }, { maxInputTokens: 2_000, observeRequest: value => { observed.push(value); } });
     for await (const _chunk of streamRequest(adapter, { messages: [],
       systemPrompt: "Product rules\nPi memory guidance\nResident profile" })) {}
     expect(observed).toEqual([expect.objectContaining({

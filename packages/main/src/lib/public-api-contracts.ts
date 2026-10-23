@@ -1431,6 +1431,7 @@ const chatMessageSchema = z
     memoryEnabled: z.boolean().optional(),
     status: z.string().optional(),
     replyLimitReached: z.boolean().optional(),
+    replyInterrupted: z.boolean().optional(),
     replyToMessageId: nonEmptyString.nullable().optional(),
     attachments: z.array(chatAttachmentSchema).optional(),
     sceneVersion: z.number().int().nonnegative().optional(),

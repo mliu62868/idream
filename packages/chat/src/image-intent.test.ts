@@ -31,6 +31,10 @@ describe("Turn image authorization", () => {
   it.each([
     ["a message that names no image", "How are you?"],
     ["a cancelled request", "don't send me any photos, I just want to talk"],
+    ["a Chinese bare negation", "不生成图片"],
+    ["a text-only instruction", "这是一段测试对话。图书室里我的绿色笔记本封面写着 ASTER-CUTOVER-827，请用中文一句话复述这个标签，不生成图片。"],
+    ["a declined photo", "我们只聊天，不拍照片。"],
+    ["a declined edit", "保持原样，不修改这张图片。"],
   ])("never asks the judge about %s", async (_case, userText) => {
     const fetchStub = judge("PHOTO");
     expect((await resolveImageIntent({ ...base(userText), fetch: fetchStub })).kind).toBe("none");
@@ -303,6 +307,9 @@ describe("multilingual image envelope", () => {
   it.each([
     "don't send me any photos, I just want to talk",
     "不要给我发照片，我们聊天就好",
+    "不生成图片",
+    "不发照片，只用文字描述。",
+    "不看图片，先聊聊今天的安排。",
   ])("still reads a cancelled request as cancelled, image noun and all: %s", (userText) => {
     expect(mentionsImageSubject(userText)).toBe(true);
     expect(imageIntentForUserRequest({ userText })).toMatchObject({ kind: "none", reason: "negated" });

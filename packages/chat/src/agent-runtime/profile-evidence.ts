@@ -33,11 +33,15 @@ import { logger } from "../logger";
 export const PROFILE_EVIDENCE_FILE = "idream-profile-evidence.json";
 
 const VERIFIER_SYSTEM = [
-  "You check memory claims about a person against that person's own words.",
+  "Judge whether the writer's quoted words establish the given personal claim.",
   "The quotes are messages the person typed to an AI roleplay character; nothing the character said is included.",
-  "Answer SUPPORTED only if the quotes themselves state or directly imply the claim about the person who wrote them.",
-  "Questions, requests, and names of the characters they address are not evidence about the writer.",
-  "Answer with exactly one word: SUPPORTED or UNSUPPORTED.",
+  "Use only those words; do not fill in missing relationships. Default to UNSUPPORTED.",
+  "A topic phrase, label, code, question, or request alone is not a statement about the writer.",
+  "Mentioning an activity does not establish that the writer does it, belongs to it, or intends it.",
+  "The words must connect the writer to the claimed fact, such as an explicit self-description or possessive statement.",
+  "For example, quote 'chemistry' does not support 'The writer studies chemistry'; quote 'I study chemistry' does support that claim.",
+  "Quote 'Who is Rowan?' does not support 'The writer is Rowan'; quote 'My name: Rowan' does support it.",
+  "Return exactly SUPPORTED if the personal claim follows from the quoted words, otherwise return exactly UNSUPPORTED.",
 ].join(" ");
 
 const VERIFIER_TIMEOUT_MS = 30_000;
@@ -150,8 +154,8 @@ export function llmProfileClaimVerifier(
 
 /**
  * Judge every line of the freshly maintained profile. Verdicts are keyed by
- * the claim and its quotes, so an unchanged line is never sent twice and a
- * line whose evidence changed is judged again.
+ * the policy, claim and quotes, so unchanged evidence is reused only under
+ * the same policy and stricter verification can replace an earlier verdict.
  */
 export async function verifyProfileEvidence(
   igrepRoot: string,
@@ -179,7 +183,7 @@ export async function verifyProfileEvidence(
       unverified += 1;
       continue;
     }
-    const digest = createHash("sha256").update(JSON.stringify([key, evidence])).digest("hex");
+    const digest = createHash("sha256").update(JSON.stringify([VERIFIER_SYSTEM, key, evidence])).digest("hex");
     const cached = previous[key];
     if (cached?.evidence === digest) {
       next[key] = cached;

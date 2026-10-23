@@ -283,6 +283,19 @@ describe("ChatSessionClient streaming composer", () => {
     expect(container.querySelector('[data-message-id="user-1"] [data-testid="chat-private-turn"]')).toBeNull();
   });
 
+  it("keeps the saved interrupted-reply notice after remount without restarting generation", async () => {
+    sessionMessages = [opening, userTurn, { ...streamingReply, status: "failed", content: "", replyInterrupted: true }];
+    await mountSession();
+    const notice = "Reply interrupted. Your message is saved. Regenerate to try again.";
+    expect(replyBubble()?.textContent).toContain(notice);
+    expect(container.querySelector('[aria-label="Regenerate reply"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Assistant is typing"]')).toBeNull();
+    await act(async () => root.render(null));
+    await mountSession();
+    expect(replyBubble()?.textContent).toContain(notice);
+    expect(FakeEventSource.instances).toHaveLength(0);
+  });
+
   it("explains a Main-confirmed length limit on history and after remount without marking normal, legacy or cancelled replies", async () => {
     sessionMessages = [opening, userTurn,
       { ...streamingReply, content: "The unfinished story", status: "sent", replyLimitReached: true },

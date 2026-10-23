@@ -70,7 +70,7 @@ export async function probeCompanionRetrieval(
     adapter: (profile, policy) => new OpenAiCompatibleAdapter({
       profile, ...policy, apiKey: "readiness-controlled-adapter",
       openRouterProviderOnly: config.openRouterProviderOnly,
-      observeRequest: evidence => { purpose = evidence.purpose; policy.observeRequest?.(evidence); },
+      observeRequest: evidence => { purpose = evidence.purpose; return policy.observeRequest?.(evidence); },
       fetch: async (_url, init) => {
         requests++;
         const body = JSON.parse(String(init?.body)) as { messages: { role: string; content: string; tool_call_id?: string }[]; tools: { function: { name: string } }[] };

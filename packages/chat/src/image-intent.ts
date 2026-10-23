@@ -192,7 +192,7 @@ function negatesImageAction(value: string): boolean {
   // an image noun from a later sentence or independent semicolon clause.
   // Genuine image cancellation in any clause still vetoes the whole request.
   return new RegExp(
-      `(?:不要|别|不用|不必)(?:再)?(?:给我|给|发给我|发|拍|生成|创建|做|改|换|看)[^.!?;。！？；]{0,12}${CHINESE_NON_NUDE_IMAGE_NOUN}`,
+      `(?:不要|别|不用|不必|不)(?:再)?(?:给我|给|发给我|发|拍|生成|创建|做|修改|改|换|看)[^.!?;。！？；]{0,12}${CHINESE_NON_NUDE_IMAGE_NOUN}`,
     "u",
   ).test(value) ||
     new RegExp(`(?:不要|别|不用|不必|不想)(?:看|要)[^.!?;。！？；]{0,8}${CHINESE_NON_NUDE_IMAGE_NOUN}`, "u")

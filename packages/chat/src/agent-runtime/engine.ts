@@ -516,6 +516,10 @@ export class CompanionEngine {
       const bridge = new ToolBridge(port.executeTool, payload => { void event(payload); });
       const adapter = this.options.adapter(invocation.preparedTurn.profile, {
         maxInputTokens: invocation.preparedTurn.budget.maxInputTokens,
+        observeRequest: evidence => event({ type: "model_request_started", request: {
+          ...evidence, provider: invocation.preparedTurn.profile.provider,
+          model: invocation.preparedTurn.profile.model, usage: null,
+        } }),
         observeUsage: (receipt, evidence) => {
           const request = { ...evidence, provider: invocation.preparedTurn.profile.provider,
             model: invocation.preparedTurn.profile.model, usage: receipt ?? null };

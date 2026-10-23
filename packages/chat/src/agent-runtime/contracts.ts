@@ -266,6 +266,7 @@ export const companionEventSchema = z.discriminatedUnion("type", [
   z.object({ ...eventIdentity, type: z.literal("tool_finished"), callId: nonEmptyString, name: toolName, outcome: z.enum(["succeeded", "failed", "unknown"]), durationMs: nonNegativeInteger }).strict(),
   z.object({ ...eventIdentity, type: z.literal("usage"), usage: companionUsage }).strict(),
   z.object({ ...eventIdentity, type: z.literal("model_request"), request: companionModelRequestEvidenceSchema.required({ provider: true, model: true, usage: true }) }).strict(),
+  z.object({ ...eventIdentity, type: z.literal("model_request_started"), request: companionModelRequestEvidenceSchema.required({ provider: true, model: true }).extend({ usage: z.null() }) }).strict(),
   z.object({ ...eventIdentity, type: z.literal("igrep_observation"), operation: z.enum(["wake", "search", "memory", "web", "session", "compaction"]), outcome: z.enum(["hit", "empty", "failure"]), resultCount: nonNegativeInteger.optional(), evidenceMatches: nonNegativeInteger.max(8).optional(), durationMs: nonNegativeInteger }).strict(),
   z.object({ ...eventIdentity, type: z.literal("heartbeat") }).strict(),
   z.object({ ...eventIdentity, type: z.literal("terminal_candidate"), candidate: companionTerminalCandidateSchema }).strict(),

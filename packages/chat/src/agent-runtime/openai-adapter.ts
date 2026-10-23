@@ -19,7 +19,7 @@ export interface OpenAiCompatibleAdapterOptions {
   maxInputTokens?: number;
   samplingTemperature?: number;
   responseFormat?: { type: "json_schema"; json_schema: { name: string; strict: true; schema: Record<string, unknown> } };
-  observeRequest?: (evidence: CompanionModelRequestEvidence) => void;
+  observeRequest?: (evidence: CompanionModelRequestEvidence) => void | Promise<void>;
   observeUsage?: (usage: TokenUsage | undefined, request: CompanionModelRequestEvidence) => void;
   fetch?: typeof globalThis.fetch;
 }
@@ -380,7 +380,10 @@ export class OpenAiCompatibleAdapter {
         systemPromptDigest: createHash("sha256").update(getCurrentSystemPrompt(messages)).digest("hex"),
         estimatedInputTokens, ...(compacting ? { purpose: "compaction" } : maxInputTokens === undefined ? {} : { maxInputTokens }),
       };
-      observeRequest?.(requestEvidence);
+      // Persist dispatch intent before crossing the external request boundary.
+      // A process crash after this point must never silently resend it.
+      await observeRequest?.(requestEvidence);
+      timeout.signal.throwIfAborted();
       requestStarted = true;
       const response = await this.request(chatCompletionsUrl(profile.baseUrl), {
         method: "POST", headers: { "user-agent": "idream-chat/pi-provider", authorization: `Bearer ${this.apiKey}`,

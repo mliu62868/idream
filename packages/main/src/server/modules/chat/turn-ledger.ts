@@ -1802,6 +1802,8 @@ function publicAssistantMessage(turn: {
     status: turn.assistantStatus,
     ...(turn.assistantStatus === "sent" && jsonRecord(turn.terminalEvidence ?? null).finishReason === "length"
       ? { replyLimitReached: true } : {}),
+    ...(turn.assistantStatus === "failed" && jsonRecord(turn.terminalEvidence ?? null).failureCode === "agent_run_interrupted"
+      ? { replyInterrupted: true } : {}),
     attempt: turn.attempt,
     replyToMessageId: turn.userMessageId,
     sceneVersion: turn.sceneVersion,

@@ -14,6 +14,7 @@ const store = vi.hoisted(() => ({
     async () => ({ runs: [], failures: [] }),
   ),
   readAgentRunCompletion: vi.fn(async () => null),
+  readAgentRunRecoveryEvidence: vi.fn(async () => ({ started: false, modelRequests: [] as import("./agent-runtime/contracts.js").CompanionModelRequestEvidence[] })),
   readAgentRunInput: vi.fn(),
   readAgentRunProposal: vi.fn<() => Promise<AgentRunProposal | null>>(async () => null),
   writeAgentRunProposal: vi.fn<typeof import("./agent-run-store.js").writeAgentRunProposal>(async () => undefined),
@@ -200,9 +201,11 @@ const unchangedProjection: typeof import("./scene.js").projectSceneForReply = as
 describe("AgentRun account-erasure drain", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    runtime.runCompanion.mockReset();
     store.appendAgentRunEvent.mockReset().mockResolvedValue(undefined);
     stream.appendStreamEvent.mockReset().mockResolvedValue(undefined);
     store.readAgentRunProposal.mockReset().mockResolvedValue(null);
+    store.readAgentRunRecoveryEvidence.mockReset().mockResolvedValue({ started: false, modelRequests: [] });
     productContext.imageToolEnabled = true;
     productContext.userLocale = "en";
     projection.projectSceneForReply.mockImplementation(unchangedProjection);
@@ -237,6 +240,25 @@ describe("AgentRun account-erasure drain", () => {
     await aborted.promise;
     await cancelAgentRunsForUser("user-1");
     expect(store.writeAgentRunProposal).not.toHaveBeenCalled();
+  });
+
+  it("does not repeat a model request after a pre-proposal process crash", async () => {
+    const request = { bodyDigest: "a".repeat(64), systemPromptDigest: "b".repeat(64), estimatedInputTokens: 20,
+      provider: "openai", model: "test-model", usage: null };
+    store.readAgentRunRecoveryEvidence.mockResolvedValueOnce({ started: true, modelRequests: [request] });
+    store.listIncompleteAgentRuns.mockResolvedValueOnce({ runs: [{ turnId: "turn-1", attempt: 1, userId: "user-1" }], failures: [] });
+    runtime.runCompanion.mockImplementationOnce(async (invocation, port) => {
+      await port.commit(terminalCandidate(invocation.attemptId));
+    });
+
+    await recoverIncompleteAgentRuns();
+    await vi.waitFor(() => expect(store.completeAgentRun).toHaveBeenCalled());
+
+    expect(runtime.runCompanion).not.toHaveBeenCalled();
+    expect(store.writeAgentRunProposal).toHaveBeenCalledWith("turn-1", 1, expect.objectContaining({
+      terminal: expect.objectContaining({ status: "failed", content: "", promptTokens: null, completionTokens: null,
+        terminalEvidence: expect.objectContaining({ failureCode: "agent_run_interrupted", modelRequests: [request] }) }),
+    }));
   });
 
   it.each(["start", "delta", "replace", "done"])("commits and cleans up the exact reply when Redis rejects %s", async failedType => {

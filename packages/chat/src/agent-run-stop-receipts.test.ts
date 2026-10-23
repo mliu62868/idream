@@ -14,6 +14,7 @@ import {
   readAgentRunCompletion,
   readAgentRunInput,
   readAgentRunProposal,
+  readAgentRunRecoveryEvidence,
   recordAgentRunCancellation,
   writeAgentRunProposal,
   type AgentRunEvent,
@@ -76,6 +77,41 @@ function receipt(usage: CompanionModelRequestEvidence["usage"] = { inputTokens: 
     purpose: "compaction", provider: "local", model: "model-stop", usage,
   };
 }
+
+describe("crash recovery request evidence", () => {
+  it("only resumes a runtime that proves no physical dispatch was started", async () => {
+    await admitAgentRun(input());
+    expect(await readAgentRunRecoveryEvidence("turn-stop", 1)).toEqual({ started: false, modelRequests: [] });
+    await appendAgentRunEvent("turn-stop", 1, "pi.started", { modelRequestJournalVersion: 1 });
+    expect(await readAgentRunRecoveryEvidence("turn-stop", 1)).toEqual({ started: false, modelRequests: [] });
+    await appendAgentRunEvent("turn-stop", 1, "pi.model_request_started", { request: receipt(null) });
+    expect(await readAgentRunRecoveryEvidence("turn-stop", 1)).toEqual({ started: true, modelRequests: [receipt(null)] });
+  });
+
+  it("keeps historical runtime starts uncertain when no request receipt survived", async () => {
+    await admitAgentRun(input());
+    await appendAgentRunEvent("turn-stop", 1, "pi.started", { instance: { id: "legacy" } });
+    expect(await readAgentRunRecoveryEvidence("turn-stop", 1)).toEqual({ started: true, modelRequests: [] });
+  });
+
+  it("pairs each identical dispatch with one receipt without treating missing usage as zero", async () => {
+    await admitAgentRun(input());
+    await appendAgentRunEvent("turn-stop", 1, "pi.model_request_started", { request: receipt(null) });
+    await appendAgentRunModelRequest("turn-stop", 1, receipt());
+    await appendAgentRunEvent("turn-stop", 1, "pi.model_request_started", { request: receipt(null) });
+    expect(await readAgentRunRecoveryEvidence("turn-stop", 1)).toEqual({ started: true, modelRequests: [receipt(), receipt(null)] });
+    await appendAgentRunModelRequest("turn-stop", 1, receipt({ inputTokens: 0, outputTokens: 0 }));
+    expect(await readAgentRunRecoveryEvidence("turn-stop", 1)).toEqual({ started: true, modelRequests: [receipt(), receipt({ inputTokens: 0, outputTokens: 0 })] });
+  });
+
+  it("does not discard legacy measured receipts or accept a corrupt journal as safe to rerun", async () => {
+    await admitAgentRun(input());
+    await appendAgentRunModelRequest("turn-stop", 1, receipt());
+    expect(await readAgentRunRecoveryEvidence("turn-stop", 1)).toEqual({ started: true, modelRequests: [receipt()] });
+    await writeFile(join(root, "runs", "turn-stop", "1", "events.jsonl"), '{"kind":');
+    await expect(readAgentRunRecoveryEvidence("turn-stop", 1)).rejects.toThrow();
+  });
+});
 
 function proposal(attempt = 1): AgentRunProposal {
   return {

@@ -24,6 +24,9 @@ describe("chat stream recovery", () => {
     expect(
       chatStreamTerminalErrorMessage({ code: "provider_output_limit" }),
     ).toBe("Reply was cut short. Regenerate to try again.");
+    expect(chatStreamErrorDisposition({ code: "agent_run_interrupted" })).toBe("terminal");
+    expect(chatStreamTerminalErrorMessage({ code: "agent_run_interrupted" }))
+      .toBe("Reply interrupted. Your message is saved. Regenerate to try again.");
   });
 
   it("closes a recovered stream once session authority is terminal", () => {

@@ -29,6 +29,7 @@ import {
   readAgentRunInput,
   readAgentRunCompletion,
   readAgentRunProposal,
+  readAgentRunRecoveryEvidence,
   writeAgentRunProposal,
   type AgentRunInput,
   type AgentRunProposal,
@@ -175,6 +176,15 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
     soulFingerprint: null,
   };
   try {
+    const recovery = await readAgentRunRecoveryEvidence(turnId, attempt);
+    if (recovery.started) {
+      modelRequests.push(...recovery.modelRequests);
+      runtimeFailure = { code: "agent_run_interrupted", message: "Agent runtime exited before a durable terminal proposal", retryable: false };
+      // Main keeps the user message and releases an unconsumed allowance.
+      // A new generation requires an explicit new product attempt; replaying
+      // an unknown model request cannot recover the original reply safely.
+      throw new Error(runtimeFailure.message);
+    }
     await publish({ type: "start", attempt: snapshot.attempt });
     await appendAgentRunEvent(turnId, attempt, "admitted", {
       attemptId,
@@ -227,7 +237,7 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
           // event arrives before its physical request's final usage receipt.
           sequence = await projectStreamEvent(publish, snapshot.attempt, sequence, event);
         } catch (error) {
-          if (error instanceof ChatFenceError) return;
+          if (error instanceof ChatFenceError && event.type !== "model_request_started") return;
           throw error;
         }
         if (event.type === "started") runtimeInstance = event.instance;
@@ -594,7 +604,7 @@ export function agentRunTraceEvent(
     case "started":
       return {
         kind: "pi.started",
-        payload: { instance: event.instance, profileDigest: event.profileDigest },
+        payload: { instance: event.instance, profileDigest: event.profileDigest, modelRequestJournalVersion: 1 },
       };
     case "tool_started":
       return {
@@ -624,6 +634,8 @@ export function agentRunTraceEvent(
       };
     case "model_request":
       return { kind: "pi.model_request", payload: { request: event.request } };
+    case "model_request_started":
+      return { kind: "pi.model_request_started", payload: { request: event.request } };
     case "usage":
       return { kind: "pi.usage", payload: { usage: event.usage } };
     case "failed":

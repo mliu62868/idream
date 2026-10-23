@@ -1,10 +1,12 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { profileLineKey } from "./resident-profile";
 import {
   llmProfileClaimVerifier,
+  PROFILE_EVIDENCE_FILE,
   readSupportedProfileLines,
   verifyProfileEvidence,
   type ProfileClaimVerifier,
@@ -55,6 +57,24 @@ describe("profile evidence gate", () => {
     await writeFile(join(root, "mem/.state/facts.jsonl"), `${fact("Owns a cat named Pickles", ["I have a cat called Pickles", "Pickles is three"])}\n`);
     await verifyProfileEvidence(root, verify);
     expect(verify).toHaveBeenCalledTimes(2);
+  });
+
+  it("rechecks a verdict cached before the evidence policy was bound to it", async () => {
+    const claim = "The user participates in mountain rescue training.";
+    const quotes = ["mountain rescue training"];
+    const key = profileLineKey(claim);
+    await seed([claim], [fact(claim, quotes)]);
+    // The previous cache could preserve a mistaken participation claim even
+    // after the verifier learned to reject bare topic mentions.
+    const evidence = createHash("sha256").update(JSON.stringify([key, quotes])).digest("hex");
+    await writeFile(join(root, PROFILE_EVIDENCE_FILE), JSON.stringify({
+      schema: 1, lines: { [key]: { evidence, supported: true } },
+    }));
+    const verify = vi.fn<ProfileClaimVerifier>(async () => false);
+
+    await expect(verifyProfileEvidence(root, verify)).resolves.toEqual({ lines: 1, supported: 0, unverified: 0 });
+    expect(verify).toHaveBeenCalledTimes(1);
+    expect(await readSupportedProfileLines(root)).toEqual(new Set());
   });
 
   // INVARIANT: fail closed —— 无事实、校验器不可用、预算用尽的行都不渲染。

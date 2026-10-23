@@ -404,6 +404,43 @@ export async function readAgentRunCompletion(
   }
 }
 
+/** A started runtime without a proposal has an uncertain external outcome. */
+export async function readAgentRunRecoveryEvidence(turnId: string, attempt: number): Promise<{
+  started: boolean;
+  modelRequests: CompanionModelRequestEvidence[];
+}> {
+  let raw: string;
+  try {
+    raw = await readFile(eventsFile(turnId, attempt), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { started: false, modelRequests: [] };
+    throw error;
+  }
+  let started = false;
+  const requests: Array<{ request: CompanionModelRequestEvidence; received: boolean }> = [];
+  for (const line of raw.split("\n").filter(Boolean)) {
+    const event = JSON.parse(line) as AgentRunEvent;
+    if (event.schemaVersion !== 1 || typeof event.kind !== "string") throw new Error("invalid AgentRun recovery event");
+    // Only the new runtime can prove an absent dispatch means no request was
+    // sent. Historical pi.started traces had no awaited request journal.
+    if (event.kind === "pi.started" && (!isRecord(event.payload) || event.payload.modelRequestJournalVersion !== 1)) started = true;
+    if (event.kind !== "pi.model_request_started" && event.kind !== "pi.model_request") continue;
+    started = true;
+    const request = companionModelRequestEvidenceSchema.required({ provider: true, model: true, usage: true })
+      .parse((event.payload as { request?: unknown } | null)?.request);
+    if (event.kind === "pi.model_request_started") {
+      requests.push({ request: { ...request, usage: null }, received: false });
+    } else {
+      // Identical consecutive requests are separate physical attempts. Match
+      // each receipt to one outstanding dispatch, never deduplicate by digest.
+      const pending = requests.find(entry => !entry.received && entry.request.bodyDigest === request.bodyDigest);
+      if (pending) { pending.request = request; pending.received = true; }
+      else requests.push({ request, received: true });
+    }
+  }
+  return { started, modelRequests: requests.map(entry => entry.request) };
+}
+
 /** Startup repair input: complete input + no accepted or rejected completion. */
 export async function listIncompleteAgentRuns(): Promise<AgentRunRecoveryScan> {
   const failures = await cleanupExpiredAgentRuns();

@@ -35,6 +35,9 @@ export function chatStreamTerminalErrorMessage(payload: unknown): string {
   if (record.code === "reply_cancelled") {
     return "Reply stopped. Regenerate for a new one.";
   }
+  if (record.code === "agent_run_interrupted") {
+    return "Reply interrupted. Your message is saved. Regenerate to try again.";
+  }
   if (record.code === "igrep_memory_failed") {
     return "Memory is temporarily unavailable. Please try again.";
   }

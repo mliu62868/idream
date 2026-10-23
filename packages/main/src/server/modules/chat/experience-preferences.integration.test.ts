@@ -51,6 +51,34 @@ async function finish(snapshot: NonNullable<Awaited<ReturnType<typeof beginChatT
 }
 
 describe("versioned conversation preferences", () => {
+  it("persists an interrupted reply as a retryable user choice without consuming another allowance", async () => {
+    const f = await fixture();
+    await setChatMemory(f.userId, f.sessionId, false);
+    const original = await f.begin();
+    const snapshot = original.snapshot!;
+    await commitChatTerminal({
+      version: 1, turnId: snapshot.turnId, sessionId: snapshot.sessionId, assistantMessageId: snapshot.assistantMessageId,
+      attempt: snapshot.attempt, status: "failed", content: "", model: "fixture", promptTokens: null, completionTokens: null,
+      sceneVersion: snapshot.sceneVersion, scene: snapshot.scene,
+      terminalEvidence: {
+        authority: "chat_agent_run", failureCode: "agent_run_interrupted", modelRequests: [], replyUsage: null,
+        prompt: { productPromptVersion: "companion-product-1", preparedTurnVersion: 4, systemPromptDigest: "a".repeat(64), soulFingerprint: "b".repeat(64) },
+      },
+    });
+    const messages = (await getChatSession(f.userId, f.sessionId)).messages;
+    expect(messages.find(message => message.id === original.userMessage.id)).toMatchObject({ content: snapshot.userContent, status: "sent" });
+    expect(messages.find(message => message.id === original.assistant.id)).toMatchObject({ status: "failed", replyInterrupted: true });
+    expect(messages.find(message => message.id === original.assistant.id)).not.toHaveProperty("terminalEvidence");
+    const quota = await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: snapshot.turnId } });
+    expect(quota.consumedAt).toBeNull();
+    expect(quota.voidedAt).not.toBeNull();
+    const regenerated = await regenerateChatTurn(f.userId, original.assistant.id);
+    expect(regenerated.attempt).toBe(2);
+    const pending = (await getChatSession(f.userId, f.sessionId)).messages.find(message => message.id === original.assistant.id);
+    expect(pending).not.toHaveProperty("replyInterrupted");
+    expect(await prisma.chatTurnUsageFact.count({ where: { turnId: snapshot.turnId } })).toBe(1);
+  });
+
   it("projects a persisted length limit without exposing terminal internals or changing the frozen budget and usage", async () => {
     const f = await fixture();
     await f.call("PUT", { responseLength: "short", interactionIntensity: "gentle", sceneGeneration: "follow", version: 0 });

@@ -50,7 +50,7 @@ provider 的工具名分片先累计为完整当前名称，再交给 Pi；参�
 
 2026-10-17 执行内核决策：`@earendil-works/pi-ai`、`pi-durable`、`chord` 固定 `1.3.0`，igrep CLI 固定 `0.1.161`。Pi 只负责单次 Agent 运行的 model/tool loop、公共事件和上下文压缩，igrep 通过 provider-neutral CLI 承接记忆与检索；删除 DSH/Cordis 服务注册、插件 bundle、peer 与 profile bootstrap。setup/check 核验精确包版本、公共 MemoryStorage API 与 CLI surface，不能替代 full readiness 或真实产品旅程资格。
 
-每个 attempt 创建独立 Pi `Harness`/`MemoryStorage`，工具串行，关闭自动模型重试和后台压缩。`MemoryStorage` 不跨进程持久化，不承担产品恢复：Chat 重启读取 Main 固定快照与 AgentRun 输入，已写入的不可变 proposal 只能原样重放 Main ACK，包含旧 `embedded_dsh`/plugin 字段的历史 proposal 也不改写。无 proposal 的运行按现有 attempt、deadline、取消与 ToolEffect 幂等协议恢复；不新增持久 Pi inbox、session log 或第二个状态机。
+每个 attempt 创建独立 Pi `Harness`/`MemoryStorage`，工具串行，关闭自动模型重试和后台压缩。`MemoryStorage` 不跨进程持久化，不承担产品恢复：Chat 重启读取 Main 固定快照与 AgentRun 输入，已写入的不可变 proposal 只能原样重放 Main ACK，包含旧 `embedded_dsh`/plugin 字段的历史 proposal 也不改写。2026-10-23 的真实 SIGKILL 实验发现，无 proposal 时重跑同一 attempt 会再次调用模型，并丢失第一次请求的用量证据，因此收紧原恢复规则：每次物理请求前先等待无正文请求意图写盘；只有可证明尚未发出请求的运行才能自动继续。已发出请求但没有 proposal 的运行提交 `agent_run_interrupted` 失败，保留 Main 用户消息、释放尚未消费的额度，由用户显式重新生成新 attempt。存活回执保留实测用量，未确认请求保持 null；历史未记录请求意图的 `pi.started` 运行也按未知结果处理。当前模型接口没有原请求结果重取契约，故不承诺恢复尚未持久化的原回复。不新增持久 Pi inbox、session log 或第二个状态机，取消、删除、deadline 与 ToolEffect 幂等边界不变。
 
 Main 投影独占长期记忆 ingest/maintain，普通 attempt 首轮前只执行一次可观测的官方 wake，并按当前消息执行 fast recall。normal 开放只读 `memory_search`，normal/private 都开放本 attempt 授权快照的 `igrep_search` 和 `session_recall`，显式配置 web provider 时保留 `igrep_web_search`；private 不读写跨会话记忆。每个 CLI 子进程只接收明确绑定的 LLM/ASK/final-sort、embedding、rerank 路由和必要进程环境，未配置能力显式禁用，`IGREP_NO_CACHE=1` 禁用共享结果缓存，不借用个人默认配置或临时更换 HOME。
 
