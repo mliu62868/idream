@@ -18,6 +18,8 @@ SSE 入口以 Main 的所有者、消息存在性与当前 attempt 为交付权�
 
 Stop 命令携带用户点击时观察到的 attempt，Main 在 Turn 锁内校验并回显该身份；迟到命令不得取消新 attempt，迟到回执不得停止或清空新回复。编辑或重新生成成功后的浏览器读取栅栏使在途旧快照失效，已观察 attempt 不因流缓存清理而丢失。周期性过期清理也在同一 Turn 锁内重读索引，避免扫描旧版本后删除新索引。
 
+Stop 禁止继续执行、发布文本和提交终态，但允许已开始的模型请求向原 AgentRun 追加无正文的用量回执；未知用量仍为 null。该专用入口只写现存且身份匹配的运行轨迹，不改 Main 的 cancelled 终态、额度或新 attempt。取消与擦除分别推进执行禁区和回执禁区；历史未区分两者的 tombstone 按擦除保守处理。Turn 删除、旧 attempt 清理及账号擦除不可被迟到 Stop 解禁，关系维护期间也拒绝回执。首次 Stop 固定本地诊断七天到期时间，重投或迟到回执不得续期；追加与过期清理使用相同锁，禁止重新创建已删目录。
+
 `PreparedTurn` 是 Chat 内唯一执行输入：编译时直接生成带稳定消息 id、source kind、Soul/Scene trace、预算与模型 profile 的对象，不再先造产品对象、再经 WeakMap/`*Wire` 转换。Invocation、event、tool 与 commit ACK schema 只存在于 `packages/chat/src/agent-runtime`；Shared 保留 Main↔Chat 的产品执行快照、接纳回执、工具效果、终态提交、记忆重建、readiness 与无内容运营证据契约。本地 AgentRun event 文件只记录 content-free lifecycle/tool/failure 事实；文本 delta 与终态正文分别属于 Redis 流和未决 `proposal.json`。
 
 2026-10-07 决策调整：图片动作由 Companion Agent 根据当前请求和完整上下文选择，取代词表意图识别、独立分类模型和 required-action 强制调用。`PreparedTurn` 按产品权限与模型工具能力暴露图片工具；有 Main 固定的已交付图片时才暴露编辑工具。所有请求沿用原生 user/assistant 对话与 `tool_choice=auto`，保留消息 ID、来源和跨说话者先后顺序。历史、Scene、召回和保存偏好提供上下文，不单独触发新付费动作；Agent 理解拒绝、讨论、短确认和本次衣着要求。预算包含同一原生传输的完整消息及工具 schema。这证明传递保真，不证明模型语义判断永远正确。

@@ -375,7 +375,7 @@ export function JobsView({ permissions }: { readonly permissions: JobsViewPermis
         <datalist id="job-source-facets">{jobs.data?.facets.sourceTypes.map((facet) => <option key={facet.value} value={facet.value}>{facet.count}</option>)}</datalist>
       </FilterBar>
 
-      {jobs.error && jobs.data ? <AuthorityRequestError message={jobs.error} onRetry={reload} snapshotAt={jobs.refreshedAt} /> : null}
+      {jobs.error && jobs.data ? <AuthorityRequestError requestKind="read" message={jobs.error} onRetry={reload} snapshotAt={jobs.refreshedAt} /> : null}
       {jobs.data ? (
         <section aria-label={t("Generation Job totals")} className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
           {[

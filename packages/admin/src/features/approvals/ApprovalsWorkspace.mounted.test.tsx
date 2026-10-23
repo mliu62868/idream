@@ -15,6 +15,8 @@ const { apiGet, apiWrite } = vi.hoisted(() => ({
     ) => Promise<unknown>
   >(),
 }));
+const navigation = vi.hoisted(() => ({ search: "" }));
+vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams(navigation.search) }));
 
 vi.mock("@/components/admin/api", () => ({ apiGet, apiWrite }));
 
@@ -22,6 +24,7 @@ import { ToastProvider } from "@/components/admin/ui/Toast";
 import { AdminI18nProvider } from "@/components/admin/i18n";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { ApprovalsWorkspace } from "./ApprovalsWorkspace";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
   .IS_REACT_ACT_ENVIRONMENT = true;
@@ -50,6 +53,7 @@ describe("ApprovalsWorkspace decision evidence", () => {
 
   beforeEach(() => {
     window.history.replaceState(null, "", "/admin/system/approvals");
+    navigation.search = "";
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -215,6 +219,64 @@ describe("ApprovalsWorkspace decision evidence", () => {
     expect(apiGet.mock.calls.at(-1)?.[0]).toContain("status=pending");
   });
 
+  it("does not offer decisions from an older filter while the new query loads or fails", async () => {
+    await mount([pendingApproval]);
+    let rejectRead!: (error: Error) => void;
+    apiGet.mockImplementation(() => new Promise((_, reject) => { rejectRead = reject; }));
+    await enter(container.querySelector<HTMLInputElement>('input'), "different customer");
+    await act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(container.textContent).not.toContain(approvalId);
+    expect(findButton("Approve", container)).toBeNull();
+    await act(async () => rejectRead(new Error("Approval query unavailable")));
+    expect(container.textContent).toContain("Approval query unavailable");
+    expect(container.textContent).not.toContain(approvalId);
+    expect(findButton("Approve", container)).toBeNull();
+    expect(apiWrite).not.toHaveBeenCalled();
+  });
+
+  it("keeps the last good snapshot when refreshing the same approval query fails", async () => {
+    await mount([pendingApproval]);
+    apiGet.mockRejectedValue(new Error("Refresh unavailable"));
+    await act(async () => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)));
+    expect(container.textContent).toContain("Refresh unavailable");
+    expect(container.textContent).toContain(approvalId);
+  });
+
+  it("restores the pending queue after a same-page sidebar navigation clears the URL filters", async () => {
+    window.history.replaceState(null, "", "/admin/system/approvals?approvalSearch=missing");
+    navigation.search = window.location.search;
+    await mount([]);
+    expect(container.querySelector<HTMLInputElement>('input')?.value).toBe("missing");
+    apiGet.mockResolvedValue({ items: [pendingApproval], pageInfo: { hasNextPage: false, endCursor: null } });
+    window.history.pushState(null, "", "/admin/system/approvals");
+    navigation.search = "";
+    await act(async () => root.render(
+      <AdminI18nProvider locale="en"><ToastProvider><ApprovalsWorkspace canReview /></ToastProvider></AdminI18nProvider>,
+    ));
+    expect(container.querySelector<HTMLInputElement>('input')?.value).toBe("");
+    expect(apiGet.mock.calls.at(-1)?.[0]).not.toContain("search=");
+    expect(container.textContent).toContain(approvalId);
+  });
+
+  it("does not let a completed decision restore the filter the operator already left", async () => {
+    await mount([pendingApproval]);
+    let completeDecision!: (result: unknown) => void;
+    apiWrite.mockImplementation(() => new Promise(resolve => { completeDecision = resolve; }));
+    await click(findButton("Approve", container));
+    const dialog = await waitForDialog();
+    await enter(dialog.querySelector<HTMLInputElement>('input[aria-label="Reason"]'), "Checked the exact requested adjustment");
+    await enter(dialog.querySelector<HTMLInputElement>('input[aria-label="Confirmation"]'), approvalId);
+    await click(findButton("Confirm", dialog));
+    await act(async () => {
+      window.history.pushState(null, "", "/admin/system/approvals?approvalStatus=rejected");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    await act(async () => completeDecision({ request: { id: approvalId } }));
+    expect(window.location.search).toBe("?approvalStatus=rejected");
+    expect(apiGet.mock.calls.at(-1)?.[0]).toContain("status=rejected");
+  });
+
   // SPEC: dual_approval_enforced 不在库里时，审批台是唯一能打开它的地方（PATCH upsert）。
   it("turns dual approval on through the feature flag upsert with confirmation", async () => {
     await mount([], { canToggleEnforcement: true, enforcementEnabled: false });
@@ -235,6 +297,29 @@ describe("ApprovalsWorkspace decision evidence", () => {
   it("hides the dual approval switch without feature flag write access", async () => {
     await mount([], { enforcementEnabled: false });
     expect(findButton("Turn on dual approval", container)).toBeNull();
+  });
+
+  it("refreshes the current query when an approval request finishes after navigation", async () => {
+    await mount([pendingApproval], { canToggleEnforcement: true, enforcementEnabled: true });
+    let completeRequest!: (result: unknown) => void;
+    apiWrite.mockImplementation(async path => {
+      if (path.includes("feature-flags")) throw new AdminV2RequestError("Dual approval required: no approved request for this action", 403, "forbidden");
+      return new Promise(resolve => { completeRequest = resolve; });
+    });
+    await click(findButton("Turn off dual approval", container));
+    const dialog = await waitForDialog();
+    await enter(dialog.querySelector<HTMLInputElement>('input[aria-label="Reason"]'), "Controlled approval request test");
+    await enter(dialog.querySelector<HTMLInputElement>('input[aria-label="Confirmation"]'), "dual_approval_enforced");
+    await click(findButton("Confirm", dialog));
+    await click(findButton("Request approval", container));
+    apiGet.mockImplementation(async path => ({ items: path.includes("search=current") ? [{ ...pendingApproval, id: "current-request" }] : [pendingApproval] }));
+    await enter(container.querySelector<HTMLInputElement>('input'), "current");
+    await act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(container.textContent).toContain("current-request");
+    await act(async () => completeRequest({ request: { id: "created-request" } }));
+    expect(apiGet.mock.calls.at(-1)?.[0]).toContain("search=current");
+    expect(container.textContent).toContain("current-request");
+    expect(window.location.search).toBe("?approvalSearch=current");
   });
 
   it("sends the decision with its confirmation and reports success", async () => {

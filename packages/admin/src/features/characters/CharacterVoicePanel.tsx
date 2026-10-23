@@ -19,7 +19,7 @@ import {
   Settings2,
   Upload,
 } from "lucide-react";
-import { useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { RequestErrorDetails } from "@/components/admin/ui/RequestErrorDetails";
@@ -72,6 +72,8 @@ export function CharacterVoicePanel({
   runCommittedMutation,
   takeIdempotencyKey,
   releaseIdempotencyKey,
+  bindVoiceProfile,
+  releaseVoiceProfileKeys,
 }: {
   data: CharacterWorkspaceDetail;
   canWrite: boolean;
@@ -86,6 +88,8 @@ export function CharacterVoicePanel({
    */
   takeIdempotencyKey: (signature: string) => string;
   releaseIdempotencyKey: (signature: string) => void;
+  bindVoiceProfile: (signature: string, key: string, profileId: string) => void;
+  releaseVoiceProfileKeys: (profileId: string) => void;
 }) {
   const { t, locale } = useAdminI18n();
   const voice = data.voice;
@@ -147,7 +151,20 @@ export function CharacterVoicePanel({
   );
   // One-click apply creates a candidate and then activates it. If activation fails
   // after the candidate committed, a retry of the same apply resumes at activation.
+  // The create key stays in the workspace journal until activation is confirmed,
+  // so remounting this panel can also recover the same candidate by receipt replay.
   const preparedPreset = useRef<{ signature: string; profileId: string } | null>(null);
+
+  useEffect(() => {
+    // Exact authority IDs settle both completed activation and replaced candidates.
+    // A still-candidate or unknown profile keeps its original recovery identity.
+    const terminal = [active, ...voice.history.filter((profile) => profile.status === "archived")];
+    for (const profile of terminal) {
+      if (!profile) continue;
+      releaseVoiceProfileKeys(profile.id);
+      if (preparedPreset.current?.profileId === profile.id) preparedPreset.current = null;
+    }
+  }, [active, voice.history, releaseVoiceProfileKeys]);
 
   const authorityReviewKey = JSON.stringify([
     data.character.id,
@@ -172,7 +189,12 @@ export function CharacterVoicePanel({
   const [busyAction, setBusyAction] = useState<"clone" | "preset" | "activate" | "defaults" | "reset" | null>(null);
   const busy = busyAction !== null;
   const [message, setMessage] = useState<string | null>(null);
-  const [error, setError] = useState<{ scope: "live" | "draft" | "audition"; text: string } | null>(null);
+  const [error, setError] = useState<{
+    scope: "live" | "draft" | "audition";
+    voiceId: SystemVoiceCatalogVoiceId;
+    signature: string;
+    text: string;
+  } | null>(null);
   const [actionError, setActionError] = useState<{ action: DirectAction; copy: OperatorErrorCopy } | null>(null);
 
   const archivedProfiles = voice.history.filter(
@@ -227,7 +249,13 @@ export function CharacterVoicePanel({
     setError(null);
     try {
       const preview = await adminV2Operation("POST /api/v2/admin/voice-defaults/preview", {
-        body: { provider: voice.systemDefaults.provider, voiceId, text, delivery },
+        body: {
+          ...(scope === "audition" ? { scope: "character_preset" as const } : {}),
+          provider: scope === "audition" ? "pocket_tts" : voice.systemDefaults.provider,
+          voiceId,
+          text,
+          delivery,
+        },
       });
       setCatalogPreview({
         voiceId,
@@ -238,6 +266,8 @@ export function CharacterVoicePanel({
     } catch (cause) {
       setError({
         scope,
+        voiceId,
+        signature,
         text: cause instanceof Error ? cause.message : "The system voice preview could not be rendered",
       });
     } finally {
@@ -281,16 +311,33 @@ export function CharacterVoicePanel({
       if (!profileId) {
         const created = await runCommittedMutation({
           action: "Create Pocket TTS voice candidate",
-          commit: () =>
-            adminV2Operation("POST /api/v2/admin/characters/:id/voice-presets", {
+          commit: async () => {
+            const key = takeIdempotencyKey(createSignature);
+            const result = await adminV2Operation("POST /api/v2/admin/characters/:id/voice-presets", {
               path: { id: data.character.id },
-              replayIdempotencyKey: takeIdempotencyKey(createSignature),
+              replayIdempotencyKey: key,
               body,
-            }),
-          afterRefresh: () => releaseIdempotencyKey(createSignature),
+            });
+            bindVoiceProfile(createSignature, key, result.profile.id);
+            profileId = result.profile.id;
+            preparedPreset.current = { signature: createSignature, profileId: result.profile.id };
+            // A lost creation acknowledgement may be replayed after another action
+            // already archived that exact profile. Resolve it before a new apply.
+            if (active?.id === result.profile.id || voice.history.some((profile) =>
+              profile.id === result.profile.id && profile.status === "archived")) {
+              releaseVoiceProfileKeys(result.profile.id);
+              preparedPreset.current = null;
+            }
+            return result;
+          },
+          afterRefresh: activate ? undefined : () => {
+            if (profileId) releaseVoiceProfileKeys(profileId);
+          },
         });
         profileId = created.result.profile.id;
-        preparedPreset.current = { signature: createSignature, profileId };
+        // A recovered terminal profile is settled; a new generation requires a
+        // fresh apply, not an implicit second write inside the original recovery.
+        if (preparedPreset.current === null) return;
       }
       if (!activate) {
         preparedPreset.current = null;
@@ -302,13 +349,16 @@ export function CharacterVoicePanel({
       const createdProfileId = profileId;
       await runCommittedMutation({
         action: "Activate Pocket TTS voice",
-        commit: () =>
-          adminV2Operation("POST /api/v2/admin/characters/:id/voice-profiles/:profileId/activate", {
+        commit: () => {
+          const key = takeIdempotencyKey(activateSignature);
+          bindVoiceProfile(activateSignature, key, createdProfileId);
+          return adminV2Operation("POST /api/v2/admin/characters/:id/voice-profiles/:profileId/activate", {
             path: { id: data.character.id, profileId: createdProfileId },
-            replayIdempotencyKey: takeIdempotencyKey(activateSignature),
+            replayIdempotencyKey: key,
             body: expectedAuthority,
-          }),
-        afterRefresh: () => releaseIdempotencyKey(activateSignature),
+          });
+        },
+        afterRefresh: () => releaseVoiceProfileKeys(createdProfileId),
       });
       preparedPreset.current = null;
       setPresetChoice(null);
@@ -603,7 +653,7 @@ export function CharacterVoicePanel({
             ) : null}
           </div>
         </div>
-        {error?.scope === "live" ? <InlineAlert tone="error">{t(error.text)}</InlineAlert> : null}
+        {error?.scope === "live" && error.signature === livePreviewSignature ? <InlineAlert tone="error">{t(error.text)}</InlineAlert> : null}
       </section>
 
       {message ? (
@@ -787,7 +837,7 @@ export function CharacterVoicePanel({
                 <InlineAlert tone="warn">{t(officialStatusDetail(officialStatus) ?? "")}</InlineAlert>
               </div>
             ) : null}
-            {error?.scope === "audition" ? (
+            {error?.scope === "audition" && error.signature === previewSignature(selectedPresetVoiceId, voice.systemDefaults.delivery, auditionText) ? (
               <div className="px-5 sm:px-6">
                 <InlineAlert tone="error">{t(error.text)}</InlineAlert>
               </div>
@@ -1099,7 +1149,7 @@ export function CharacterVoicePanel({
               <audio aria-label={t("System voice preview")} autoPlay className="w-full sm:w-72" controls src={catalogPreview.src} />
             </div>
           ) : null}
-          {error?.scope === "draft" ? <InlineAlert tone="error">{t(error.text)}</InlineAlert> : null}
+          {error?.scope === "draft" && error.signature === previewSignature(error.voiceId, defaultDraft.delivery, "draft") ? <InlineAlert tone="error">{t(error.text)}</InlineAlert> : null}
           {defaultDraftStale ? (
             <div role="alert" className="mt-4 space-y-3 rounded-lg bg-[var(--ad-yellow-bg)] p-4 text-sm">
               <p>{t("System defaults changed while you were editing. Your draft is preserved; load the current defaults before editing again.")}</p>

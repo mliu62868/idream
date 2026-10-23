@@ -335,18 +335,29 @@ function browserCharacterCommandStorage(): CharacterCommandStorage | null {
   };
 }
 
-function readStoredStringRecord(storage: CharacterCommandStorage, key: string) {
+type CharacterIdempotencyEntry = { key: string; voiceProfileId?: string };
+
+function readStoredIdempotencyEntries(storage: CharacterCommandStorage, key: string) {
   try {
     const raw = storage.getItem(key);
-    if (!raw) return {} as Record<string, string>;
+    if (!raw) return {} as Record<string, CharacterIdempotencyEntry>;
     const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-      return {};
-    return Object.fromEntries(
-      Object.entries(parsed).filter(
-        (entry): entry is [string, string] => typeof entry[1] === "string",
-      ),
-    );
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const entries: Record<string, CharacterIdempotencyEntry> = {};
+    for (const [signature, value] of Object.entries(parsed)) {
+      // Existing browser journals stored only the key. Keep those retry identities
+      // until a response establishes the exact profile they belong to.
+      if (typeof value === "string") entries[signature] = { key: value };
+      else if (value && typeof value === "object" && !Array.isArray(value) &&
+        "key" in value && typeof value.key === "string") {
+        entries[signature] = {
+          key: value.key,
+          ...("voiceProfileId" in value && typeof value.voiceProfileId === "string"
+            ? { voiceProfileId: value.voiceProfileId } : {}),
+        };
+      }
+    }
+    return entries;
   } catch {
     return {};
   }
@@ -613,6 +624,10 @@ export type CharacterCommandJournal = {
    */
   readonly takeIdempotencyKey: (signature: string) => string;
   readonly releaseIdempotencyKey: (signature: string) => void;
+  /** Bind only a profile ID confirmed by the create response, never a voice label. */
+  readonly bindVoiceProfile: (signature: string, key: string, profileId: string) => void;
+  /** Release the chain once authority proves that exact profile active or archived. */
+  readonly releaseVoiceProfileKeys: (profileId: string) => void;
 };
 
 /**
@@ -645,7 +660,7 @@ export function createCharacterCommandJournal(options: {
 
   // INTENT: 浏览器存储不可用（无痕 / 配额满）时仍要保证同一次会话内幂等键稳定，否则
   //         一次重试就会变成第二条命令。
-  const memoryIdempotencyKeys: Record<string, string> = {};
+  const memoryIdempotencyKeys: Record<string, CharacterIdempotencyEntry> = {};
 
   let generation = 0;
   let command: PendingCharacterCommand | null = null;
@@ -755,32 +770,35 @@ export function createCharacterCommandJournal(options: {
     const inMemory = memoryIdempotencyKeys[signature];
     const storage = openStorage();
     if (!storage) {
-      const key = inMemory ?? createKey();
-      memoryIdempotencyKeys[signature] = key;
-      return key;
+      const entry = inMemory ?? { key: createKey() };
+      memoryIdempotencyKeys[signature] = entry;
+      return entry.key;
     }
-    const identities = readStoredStringRecord(storage, idempotencyStorageKey);
+    const identities = readStoredIdempotencyEntries(storage, idempotencyStorageKey);
     const existing = identities[signature];
-    const key = existing ?? inMemory ?? createKey();
-    memoryIdempotencyKeys[signature] = key;
-    if (existing) return key;
+    const entry = existing ?? inMemory ?? { key: createKey() };
+    memoryIdempotencyKeys[signature] = entry;
+    if (existing) return entry.key;
     try {
       storage.setItem(
         idempotencyStorageKey,
-        JSON.stringify({ ...identities, [signature]: key }),
+        JSON.stringify({ ...identities, [signature]: entry }),
       );
     } catch {
       // The in-memory key still protects the current page.
     }
-    return key;
+    return entry.key;
   };
 
-  const releaseIdempotencyKey = (signature: string) => {
-    delete memoryIdempotencyKeys[signature];
+  const releaseIdempotencyKey = (signature: string, expectedKey?: string) => {
+    if (!expectedKey || memoryIdempotencyKeys[signature]?.key === expectedKey) {
+      delete memoryIdempotencyKeys[signature];
+    }
     const storage = openStorage();
     if (!storage) return;
-    const identities = readStoredStringRecord(storage, idempotencyStorageKey);
-    if (!Object.hasOwn(identities, signature)) return;
+    const identities = readStoredIdempotencyEntries(storage, idempotencyStorageKey);
+    if (!Object.hasOwn(identities, signature) ||
+      (expectedKey && identities[signature]?.key !== expectedKey)) return;
     delete identities[signature];
     try {
       if (Object.keys(identities).length === 0)
@@ -789,6 +807,42 @@ export function createCharacterCommandJournal(options: {
         storage.setItem(idempotencyStorageKey, JSON.stringify(identities));
     } catch {
       // A storage failure must not turn a terminal command into a UI failure.
+    }
+  };
+
+  const bindVoiceProfile = (signature: string, key: string, profileId: string) => {
+    const storage = openStorage();
+    const persisted = storage ? readStoredIdempotencyEntries(storage, idempotencyStorageKey) : {};
+    const current = persisted[signature] ?? memoryIdempotencyKeys[signature];
+    // A late response from another tab must not attach its profile to a newer
+    // intent that now occupies this signature.
+    if (!current || current.key !== key) return;
+    const entry = { ...current, voiceProfileId: profileId };
+    memoryIdempotencyKeys[signature] = entry;
+    if (storage) {
+      try {
+        storage.setItem(idempotencyStorageKey, JSON.stringify({ ...persisted, [signature]: entry }));
+      } catch {
+        // The current workspace still keeps the confirmed profile association.
+      }
+    }
+  };
+
+  const releaseVoiceProfileKeys = (profileId: string) => {
+    const storage = openStorage();
+    const persisted = storage ? readStoredIdempotencyEntries(storage, idempotencyStorageKey) : {};
+    for (const signature of new Set([...Object.keys(persisted), ...Object.keys(memoryIdempotencyKeys)])) {
+      const stored = persisted[signature];
+      const memory = memoryIdempotencyKeys[signature];
+      // Storage may hold another tab's newer intent. Only a matching key may
+      // inherit the in-memory profile association when its storage write failed.
+      const entry = stored
+        ? { ...stored, voiceProfileId: stored.voiceProfileId ?? (memory?.key === stored.key ? memory.voiceProfileId : undefined) }
+        : memory;
+      if (memory?.voiceProfileId === profileId && stored && stored.key !== memory.key) {
+        delete memoryIdempotencyKeys[signature];
+      }
+      if (entry?.voiceProfileId === profileId) releaseIdempotencyKey(signature, entry.key);
     }
   };
 
@@ -1260,5 +1314,7 @@ export function createCharacterCommandJournal(options: {
     setRecoveryError,
     takeIdempotencyKey,
     releaseIdempotencyKey,
+    bindVoiceProfile,
+    releaseVoiceProfileKeys,
   };
 }

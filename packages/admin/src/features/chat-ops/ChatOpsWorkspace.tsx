@@ -846,7 +846,7 @@ function MainToChatFailedOutboxPanel({
         </div>
       </div>
       {error !== null && error !== undefined && data ? (
-        <AuthorityRequestError
+        <AuthorityRequestError requestKind="read"
           cause={error}
           message={authorityMessage(error, "Main → Chat failed delivery")}
           onRetry={() => void load()}
@@ -1339,7 +1339,7 @@ function AuthorityError({
 }) {
   if (state.error === null || state.error === undefined) return null;
   return (
-    <AuthorityRequestError
+    <AuthorityRequestError requestKind="read"
       cause={state.error}
       message={authorityMessage(state.error, authority)}
       onRetry={() => void retry(query, authority)}

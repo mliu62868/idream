@@ -185,6 +185,14 @@ const companionUsage = z.object({
   reasoningTokens: nonNegativeInteger.nullable(),
 }).strict();
 export const COMPANION_TERMINAL_CONTENT_MAX_BYTES = 2_097_152;
+const companionModelTokenUsage = z.object({
+  inputTokens: nonNegativeInteger,
+  outputTokens: nonNegativeInteger,
+  cacheReadTokens: nonNegativeInteger.optional(),
+  cacheWriteTokens: nonNegativeInteger.optional(),
+  reasoningTokens: nonNegativeInteger.optional(),
+}).strict();
+export type CompanionModelTokenUsage = z.infer<typeof companionModelTokenUsage>;
 export const companionModelRequestEvidenceSchema = z.object({
   bodyDigest: sha256,
   systemPromptDigest: sha256,
@@ -192,6 +200,11 @@ export const companionModelRequestEvidenceSchema = z.object({
   maxInputTokens: positiveInteger.optional(),
   purpose: z.literal("compaction").optional(),
   droppedReplayMessageIds: z.array(nonEmptyString).optional(),
+  // Older immutable proposals contain request digests only. New receipts retain
+  // physical usage independently of whether a terminal answer was accepted.
+  provider: nonEmptyString.optional(),
+  model: nonEmptyString.optional(),
+  usage: companionModelTokenUsage.nullable().optional(),
 }).strict();
 export type CompanionModelRequestEvidence = z.infer<typeof companionModelRequestEvidenceSchema>;
 
@@ -252,6 +265,7 @@ export const companionEventSchema = z.discriminatedUnion("type", [
   z.object({ ...eventIdentity, type: z.literal("tool_started"), callId: nonEmptyString, name: toolName }).strict(),
   z.object({ ...eventIdentity, type: z.literal("tool_finished"), callId: nonEmptyString, name: toolName, outcome: z.enum(["succeeded", "failed", "unknown"]), durationMs: nonNegativeInteger }).strict(),
   z.object({ ...eventIdentity, type: z.literal("usage"), usage: companionUsage }).strict(),
+  z.object({ ...eventIdentity, type: z.literal("model_request"), request: companionModelRequestEvidenceSchema.required({ provider: true, model: true, usage: true }) }).strict(),
   z.object({ ...eventIdentity, type: z.literal("igrep_observation"), operation: z.enum(["wake", "search", "memory", "web", "session", "compaction"]), outcome: z.enum(["hit", "empty", "failure"]), resultCount: nonNegativeInteger.optional(), evidenceMatches: nonNegativeInteger.max(8).optional(), durationMs: nonNegativeInteger }).strict(),
   z.object({ ...eventIdentity, type: z.literal("heartbeat") }).strict(),
   z.object({ ...eventIdentity, type: z.literal("terminal_candidate"), candidate: companionTerminalCandidateSchema }).strict(),

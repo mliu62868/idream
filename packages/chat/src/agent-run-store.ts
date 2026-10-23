@@ -5,14 +5,18 @@ import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "nod
 import path from "node:path";
 import type { ChatAuthoritySnapshot } from "@idream/shared/bff";
 import type { ChatExecutionSnapshot, ChatTerminalCommit } from "@idream/shared/contracts";
+import { companionModelRequestEvidenceSchema, type CompanionModelRequestEvidence } from "./agent-runtime/contracts.js";
 import { env } from "./env.js";
 import {
+  ChatFenceError,
   assertNotFenced,
+  fenceCancelledAttempt,
   fenceAttemptsThrough,
   fenceKey,
   fenceTurn,
   fenceUser,
   isFenced,
+  isAttemptReceiptFenced,
   withFenceLock,
   writeTurnFence,
 } from "./fence.js";
@@ -231,14 +235,72 @@ export async function appendAgentRunEvent(
   });
 }
 
+/** A Stop may finish an already-started physical request after execution froze. */
+export async function appendAgentRunModelRequest(
+  turnId: string,
+  attempt: number,
+  request: CompanionModelRequestEvidence,
+): Promise<AgentRunEvent> {
+  const receipt = companionModelRequestEvidenceSchema.required({ provider: true, model: true, usage: true }).parse(request);
+  const owner = await readAgentRunInput(turnId, attempt);
+  if (!owner) throw new ChatFenceError({ scope: "attempt", turnId, attempt });
+  return withFenceLock(fenceKey({ scope: "user", userId: owner.snapshot.userId }), () =>
+    withFenceLock(fenceKey({ scope: "turn", turnId }), async () => {
+      const input = await readAgentRunInput(turnId, attempt);
+      if (!input || input.snapshot.userId !== owner.snapshot.userId
+        || input.snapshot.turnId !== turnId || input.snapshot.attempt !== attempt) {
+        throw new ChatFenceError({ scope: "attempt", turnId, attempt });
+      }
+      await assertNotFenced([
+        { scope: "user", userId: input.snapshot.userId },
+        { scope: "relationship", userId: input.snapshot.userId, characterId: input.snapshot.characterId },
+      ]);
+      if (await isAttemptReceiptFenced(turnId, attempt)) throw new ChatFenceError({ scope: "attempt", turnId, attempt });
+      const completion = await readAgentRunCompletion(turnId, attempt);
+      if (completion && Date.parse(completion.expiresAt) <= Date.now()) throw new ChatFenceError({ scope: "attempt", turnId, attempt });
+      // No mkdir: a receipt is never authority to recreate erased execution.
+      return appendAgentRunEventUnlocked(turnId, attempt, "pi.model_request", { request: receipt }, false);
+    }));
+}
+
+/** Main already selected cancellation; this only bounds the local diagnostics. */
+export async function recordAgentRunCancellation(turnId: string, attempt: number): Promise<void> {
+  await fenceCancelledAttempt(turnId, attempt);
+  const owner = await readAgentRunInput(turnId, attempt);
+  if (!owner) return;
+  await withFenceLock(fenceKey({ scope: "user", userId: owner.snapshot.userId }), () =>
+    withFenceLock(fenceKey({ scope: "turn", turnId }), async () => {
+      const input = await readAgentRunInput(turnId, attempt);
+      if (!input || input.snapshot.userId !== owner.snapshot.userId
+        || input.snapshot.turnId !== turnId || input.snapshot.attempt !== attempt
+        || await isFenced({ scope: "user", userId: input.snapshot.userId })
+        || await isFenced({ scope: "relationship", userId: input.snapshot.userId, characterId: input.snapshot.characterId })
+        || await isAttemptReceiptFenced(turnId, attempt)) return;
+      // Repeated Stop never extends retention or replaces prior completion.
+      let completion = await readAgentRunCompletion(turnId, attempt);
+      if (!completion) {
+        const completedAt = new Date().toISOString();
+        completion = {
+          schemaVersion: 1, attemptId: `${input.snapshot.assistantMessageId}:${attempt}`,
+          outcome: "cancelled", evidence: { authority: "main_cancel" }, completedAt,
+          expiresAt: new Date(Date.parse(completedAt) + FAILED_TRACE_RETENTION_MS).toISOString(),
+        };
+        await atomicWrite(completionFile(turnId, attempt), `${JSON.stringify(completion)}\n`);
+      }
+      await writeAgentRunIndex(input, true, completion.expiresAt);
+      await rm(proposalFile(turnId, attempt), { force: true });
+    }));
+}
+
 async function appendAgentRunEventUnlocked(
   turnId: string,
   attempt: number,
   kind: string,
   payload: unknown,
+  createDirectory = true,
 ): Promise<AgentRunEvent> {
   const file = eventsFile(turnId, attempt);
-  await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  if (createDirectory) await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const sequence = await nextSequence(file);
   const event: AgentRunEvent = {
     schemaVersion: 1,
@@ -396,9 +458,11 @@ async function cleanupExpiredAgentRuns(now = Date.now()): Promise<AgentRunRecove
       const attempt = Number(attemptName);
       if (!Number.isSafeInteger(attempt) || attempt < 1) continue;
       try {
-        const completion = await readAgentRunCompletion(turnId, attempt);
-        if (!completion || Date.parse(completion.expiresAt) > now) continue;
-        await rm(runDir(turnId, attempt), { recursive: true, force: true });
+        await withFenceLock(fenceKey({ scope: "turn", turnId }), async () => {
+          const completion = await readAgentRunCompletion(turnId, attempt);
+          if (!completion || Date.parse(completion.expiresAt) > now) return;
+          await rm(runDir(turnId, attempt), { recursive: true, force: true });
+        });
       } catch (error) {
         // INVARIANT: cleanup never destroys evidence it cannot decode, and a
         // single bad trace never blocks later recovery candidates.

@@ -177,7 +177,7 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
 
       {/* SPEC: 读取失败走统一横幅 —— 人话 + 下一步 + 可复制的技术详情，并且原地能重试。 */}
       {listError ? (
-        <AuthorityRequestError
+        <AuthorityRequestError requestKind="read"
           cause={listError}
           message="Customer workspace request failed"
           onRetry={() => void loadList(history.current.current().query)}
@@ -202,7 +202,7 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
 
       <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(420px,0.9fr)]">
         {selectedId ? (
-          detailError || (detailLoading && !detail) ? <aside className="space-y-3"><WorkspaceButton onClick={() => selectCustomer(null)}><ArrowLeft className="h-4 w-4" />{t("Close customer detail")}</WorkspaceButton>{detailError ? <AuthorityRequestError cause={detailError} message="Customer detail request failed" onRetry={() => void loadDetail(selectedId)} /> : <LoadingWorkspace label="Loading Customer 360…" />}</aside> : detail ? <CustomerInspector detail={detail} onClose={() => selectCustomer(null)} /> : null
+          detailError || (detailLoading && !detail) ? <aside className="space-y-3"><WorkspaceButton onClick={() => selectCustomer(null)}><ArrowLeft className="h-4 w-4" />{t("Close customer detail")}</WorkspaceButton>{detailError ? <AuthorityRequestError requestKind="read" cause={detailError} message="Customer detail request failed" onRetry={() => void loadDetail(selectedId)} /> : <LoadingWorkspace label="Loading Customer 360…" />}</aside> : detail ? <CustomerInspector detail={detail} onClose={() => selectCustomer(null)} /> : null
         ) : <aside className="hidden rounded-xl bg-[var(--ad-surface-subtle)] p-8 text-sm text-[var(--ad-text-muted)] lg:block">{t("Select a customer to inspect their complete operational context.")}</aside>}
 
         <section aria-label={t("Customer results")} className="overflow-hidden rounded-xl bg-[var(--ad-surface)] lg:order-first">

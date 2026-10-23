@@ -6,10 +6,12 @@ import type {
   CompanionCommitAck,
   CompanionEvent,
   CompanionInvocation,
+  CompanionModelRequestEvidence,
   CompanionTerminalCandidate,
   CompanionToolCall,
   CompanionToolResult,
 } from "./agent-runtime/contracts.js";
+import { aggregateModelRequestUsage } from "./agent-runtime/model-request-evidence.js";
 import { CompanionCapacityError, type CompanionRuntimePort } from "./agent-runtime/engine.js";
 import {
   agentRuntimeProfileDigest,
@@ -20,6 +22,8 @@ import {
   agentRunDeadlineAt,
   admitAgentRun,
   appendAgentRunEvent,
+  appendAgentRunModelRequest,
+  recordAgentRunCancellation,
   completeAgentRun,
   listIncompleteAgentRuns,
   readAgentRunInput,
@@ -31,7 +35,7 @@ import {
   type AgentRunRecoveryCandidate,
 } from "./agent-run-store.js";
 import { env } from "./env.js";
-import { ChatFenceError, fenceAttemptsThrough, isFenced } from "./fence.js";
+import { assertNotFenced, ChatFenceError, isFenced } from "./fence.js";
 import { logger } from "./logger.js";
 import {
   prepareCompanionTurn,
@@ -114,12 +118,17 @@ function startAgentRun(run: AgentRunRecoveryCandidate): boolean {
 }
 
 export async function cancelAgentRun(turnId: string, attempt: number): Promise<boolean> {
-  await fenceAttemptsThrough(turnId, attempt);
   const key = runKey(turnId, attempt);
-  const active = activeRuns.get(key);
-  if (!active) return false;
-  active.controller.abort(new Error("cancelled by Main"));
-  return true;
+  let active: ActiveAgentRun | undefined;
+  try {
+    await recordAgentRunCancellation(turnId, attempt);
+  } finally {
+    // Admission may register the run while cancellation waits for its Turn
+    // lock. Look it up after the durable fence, never from an earlier snapshot.
+    active = activeRuns.get(key);
+    active?.controller.abort(new Error("cancelled by Main"));
+  }
+  return Boolean(active);
 }
 
 /** Account erasure waits until no in-process run can recreate purged files. */
@@ -157,6 +166,7 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
   let committedAck: Extract<CompanionCommitAck, { accepted: true }> | null = null;
   let runtimeFailure: Extract<CompanionEvent, { type: "failed" }>["error"] | undefined;
   let runtimeCancellation: Extract<CompanionEvent, { type: "cancelled" }>["reason"] | undefined;
+  const modelRequests: CompanionModelRequestEvidence[] = [];
   let completedReply: Pick<CompanionTerminalCandidate, "provider" | "model" | "usage" | "modelRequests"> | undefined;
   let promptAttribution: TerminalPromptAttribution = {
     productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION,
@@ -200,8 +210,26 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
     let sequence = 0;
     const port: CompanionRuntimePort = {
       emit: async (event) => {
-        const trace = agentRunTraceEvent(event);
-        if (trace) await appendAgentRunEvent(turnId, attempt, trace.kind, trace.payload);
+        if (event.type === "model_request") modelRequests.push(event.request);
+        try {
+          if (event.type === "model_request") {
+            await appendAgentRunModelRequest(turnId, attempt, event.request);
+            return;
+          }
+          await assertNotFenced([
+            { scope: "attempt", turnId, attempt },
+            { scope: "user", userId: snapshot.userId },
+            { scope: "relationship", userId: snapshot.userId, characterId: snapshot.characterId },
+          ]);
+          const trace = agentRunTraceEvent(event);
+          if (trace) await appendAgentRunEvent(turnId, attempt, trace.kind, trace.payload);
+          // Do not poison the ordered event queue when a stopped text/tool
+          // event arrives before its physical request's final usage receipt.
+          sequence = await projectStreamEvent(publish, snapshot.attempt, sequence, event);
+        } catch (error) {
+          if (error instanceof ChatFenceError) return;
+          throw error;
+        }
         if (event.type === "started") runtimeInstance = event.instance;
         if (event.type === "failed") runtimeFailure = event.error;
         if (event.type === "cancelled") runtimeCancellation = event.reason;
@@ -212,7 +240,6 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
           if (event.outcome === "failure") metric.failures += 1;
           metric.evidenceMatches += event.evidenceMatches ?? 0;
         }
-        sequence = await projectStreamEvent(publish, snapshot.attempt, sequence, event);
       },
       executeTool: (call) => executeMainTool(call, snapshot.turnId, snapshot.attempt),
       commit: async (candidate, commitSignal) => {
@@ -300,6 +327,7 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
     const cancellation = classifyAgentRunCancellation(signal.aborted, runtimeCancellation);
     const cancelled = cancellation.cancelled;
     const reason = error instanceof Error ? error.message : "AgentRun failed";
+    const replyUsage = modelRequests.length > 0 ? aggregateModelRequestUsage(modelRequests) : completedReply?.usage ?? null;
     const terminal: ChatTerminalCommit = {
       version: 1,
       turnId: snapshot.turnId,
@@ -308,9 +336,9 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
       attempt: snapshot.attempt,
       status: cancelled ? "cancelled" : "failed",
       content: "",
-      model: null,
-      promptTokens: null,
-      completionTokens: null,
+      model: modelRequests.at(-1)?.model ?? completedReply?.model ?? null,
+      promptTokens: replyUsage?.promptTokens ?? null,
+      completionTokens: replyUsage?.completionTokens ?? null,
       sceneVersion: snapshot.sceneVersion,
       scene: snapshot.scene,
       terminalEvidence: { ...agentRunFailureEvidence({
@@ -319,7 +347,8 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
         runtimeCancellation: cancellation.reason,
         runtimeFailure,
         reason,
-      }), ...(completedReply ? { reply: completedReply } : {}) },
+      }), modelRequests, replyUsage,
+        ...(completedReply ? { reply: completedReply } : {}) },
     };
     const proposal: AgentRunProposal = {
       schemaVersion: 1,
@@ -593,6 +622,8 @@ export function agentRunTraceEvent(
           durationMs: event.durationMs,
         },
       };
+    case "model_request":
+      return { kind: "pi.model_request", payload: { request: event.request } };
     case "usage":
       return { kind: "pi.usage", payload: { usage: event.usage } };
     case "failed":

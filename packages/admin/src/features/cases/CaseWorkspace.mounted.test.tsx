@@ -517,8 +517,10 @@ describe("CaseWorkspace browser URL interactions", () => {
 describe("CaseWorkspace decision loop", () => {
   let container: HTMLDivElement;
   let root: Root | null;
+  let originalNavigation: PropertyDescriptor | undefined;
 
   beforeEach(() => {
+    originalNavigation = Object.getOwnPropertyDescriptor(window, "navigation");
     adminV2Request.mockReset();
     adminV2Request.mockImplementation(async (path) => {
       if (path.startsWith("/api/v2/admin/collaboration/case/case-1/activity?")) {
@@ -538,6 +540,8 @@ describe("CaseWorkspace decision loop", () => {
     await act(async () => root?.unmount());
     container.remove();
     document.querySelectorAll('[role="dialog"]').forEach((node) => node.parentElement?.remove());
+    if (originalNavigation) Object.defineProperty(window, "navigation", originalNavigation);
+    else Reflect.deleteProperty(window, "navigation");
     vi.restoreAllMocks();
   });
 
@@ -550,6 +554,80 @@ describe("CaseWorkspace decision loop", () => {
     });
     await waitUntil(() => container.querySelector("#case-detail-title") !== null);
   }
+
+  it("opens the returned recurrence even when the closed queue excludes its new status", async () => {
+    const read = adminV2Request.getMockImplementation()!;
+    const closed = { ...resolvedCase, status: "closed", updatedAt: "2026-07-01T00:00:00.000Z" };
+    const recurrence = { ...adminCase, id: "case-recurrence", target: { type: "user", id: "recurrence-customer" }, ownerId: "operator-1" };
+    window.history.replaceState(null, "", "/admin/cases/case-1?view=all&status=closed&priority=high");
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path.endsWith("/commands/reopen")) return { mode: "recurrence", caseId: recurrence.id, status: "new", verificationState: "pending", version: 1 };
+      if (path.startsWith("/api/v2/admin/collaboration/case/case-recurrence/")) return { items: [], actors: [], watching: false, watcherIds: [], pageInfo: { endCursor: null, hasNextPage: false } };
+      if (path === "/api/v2/admin/cases/case-1") return { ...resolvedDetail, case: closed };
+      if (path === `/api/v2/admin/cases/${recurrence.id}`) return { ...resolvedDetail, case: recurrence };
+      if (path.startsWith("/api/v2/admin/cases?")) return { ...listResponse("all"), items: [closed] };
+      return read(path, options);
+    });
+    await mount({ canAssign: true, canDecide: true });
+    await act(async () => setReactValue(container.querySelector<HTMLTextAreaElement>('[aria-labelledby="case-decision-title"] textarea')!, "Unsubmitted notes before reopening"));
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Reopen / create recurrence")!.click());
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Discard unsaved changes?");
+    await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(button => button.textContent === "Discard changes")!.click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    await act(async () => {
+      setReactValue(dialog.querySelector<HTMLInputElement>('input[aria-label="Reason (≥3)"]')!, "Customer reported the same issue again");
+      setReactValue(dialog.querySelector<HTMLInputElement>('input[aria-label="Type confirmation"]')!, "case-1:reopen");
+    });
+    await act(async () => [...dialog.querySelectorAll("button")].find(button => button.textContent === "Reopen / create recurrence")!.click());
+    await waitUntil(() => document.querySelector('[role="dialog"]') === null);
+    expect(window.location.pathname).toBe("/admin/cases/case-recurrence");
+    expect(new URLSearchParams(window.location.search).get("status")).toBe("closed");
+    expect(new URLSearchParams(window.location.search).get("priority")).toBe("high");
+    await waitUntil(() => container.querySelector("#case-detail-title")?.textContent === "recurrence-customer");
+    await act(async () => setReactValue(container.querySelector<HTMLTextAreaElement>('[aria-labelledby="case-decision-title"] textarea')!, "Investigating the recurring customer issue"));
+    expect([...container.querySelectorAll("button")].find(button => button.textContent === "Record action")?.disabled).toBe(false);
+    expect(adminV2Request.mock.calls.filter(([path]) => path.endsWith("/commands/reopen"))).toHaveLength(1);
+  });
+
+  it.each(["close", "switch", "history"])("protects an unsaved resolution summary before %s and preserves it on cancel", async (navigationKind) => {
+    const read = adminV2Request.getMockImplementation()!;
+    const second = { ...adminCase, id: "case-2", target: { type: "user", id: "second-customer" } };
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path.startsWith("/api/v2/admin/collaboration/case/case-2/")) return { items: [], actors: [], watching: false, watcherIds: [], pageInfo: { endCursor: null, hasNextPage: false } };
+      if (path === "/api/v2/admin/cases/case-2") return { ...resolvedDetail, case: second };
+      if (path.startsWith("/api/v2/admin/cases?")) return { ...listResponse("all"), items: [resolvedCase, second] };
+      return read(path, options);
+    });
+    const navigation = new EventTarget();
+    const targetPath = navigationKind === "switch" ? "/admin/cases/case-2" : "/admin/cases";
+    const traverseTo = vi.fn(() => {
+      window.history.replaceState(null, "", targetPath);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+      return { committed: Promise.resolve(), finished: Promise.resolve() };
+    });
+    Object.defineProperty(window, "navigation", { configurable: true, value: Object.assign(navigation, { traverseTo }) });
+    await mount({ canAssign: false, canDecide: true });
+    const summary = () => [...container.querySelectorAll("label")].find(label => label.textContent?.startsWith("Resolution summary"))!.querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => setReactValue(summary(), "Unfinished customer resolution with supporting details"));
+    const leave = async () => act(async () => {
+      if (navigationKind === "close") container.querySelector<HTMLButtonElement>('[aria-label="Close case detail"]')!.click();
+      else if (navigationKind === "switch") [...container.querySelectorAll<HTMLButtonElement>('[aria-label="Case results"] button')].find(button => button.textContent?.includes("second-customer"))!.click();
+      else {
+        const event = Object.assign(new Event("navigate", { cancelable: true }), { navigationType: "traverse", destination: { key: "case-list", url: new URL(targetPath, window.location.href).href } });
+        navigation.dispatchEvent(event);
+        if (!event.defaultPrevented) traverseTo();
+      }
+    });
+    await leave();
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Discard unsaved changes?");
+    await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(button => button.textContent === "Cancel")!.click());
+    expect(window.location.pathname).toBe("/admin/cases/case-1");
+    expect(summary().value).toBe("Unfinished customer resolution with supporting details");
+    await leave();
+    await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(button => button.textContent === "Discard changes")!.click());
+    expect(window.location.pathname).toBe(targetPath);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
 
   it("renders the recorded decisions and audit trail that ship with the detail payload", async () => {
     await mount({ canAssign: true, canDecide: true });
@@ -710,6 +788,51 @@ describe("CaseWorkspace decision loop", () => {
     expect([...container.querySelectorAll("button")].some((button) => button.textContent === "Assign to me")).toBe(false);
     expect(adminV2Request.mock.calls.filter(([path]) => path.endsWith("/assignment"))).toHaveLength(1);
     expect(collaboration().querySelector("form")).not.toBeNull();
+  });
+
+  it("keeps claimed and refreshed ownership in later assignment writes without replacing an edited priority", async () => {
+    const read = adminV2Request.getMockImplementation()!;
+    let ownerId: string | null = null;
+    let priority = "normal";
+    let version = 1;
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path.endsWith("/assignment")) {
+        ownerId ??= "operator-7";
+        if (version > 1) priority = "high";
+        version += 1;
+        return { caseId: "case-1", version };
+      }
+      if (path === "/api/v2/admin/cases/case-1") return { ...resolvedDetail, case: { ...adminCase, ownerId, priority, version } };
+      return read(path, options);
+    });
+    await mount({ canAssign: true, canDecide: false, actorId: "operator-7" });
+    const owner = () => [...container.querySelectorAll("label")].find(label => label.textContent === "Owner ID")!.querySelector<HTMLInputElement>("input")!;
+    const priorityField = () => [...container.querySelectorAll("label")].find(label => label.textContent?.startsWith("Priority"))!.querySelector<HTMLSelectElement>("select")!;
+    const save = () => [...container.querySelectorAll("button")].find(button => button.textContent === "Save assignment")!;
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Assign to me")!.click());
+    await waitUntil(() => ![...container.querySelectorAll("button")].some(button => button.textContent === "Assign to me"));
+    expect(owner().value).toBe("operator-7");
+
+    await act(async () => {
+      priorityField().value = "high";
+      priorityField().dispatchEvent(new Event("change", { bubbles: true }));
+      setReactValue([...container.querySelectorAll("label")].find(label => label.textContent === "Audit reason")!.querySelector<HTMLInputElement>("input")!, "Raise follow-up priority");
+    });
+    ownerId = "operator-8";
+    version += 1;
+    await act(async () => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)));
+    expect(owner().value).toBe("operator-8");
+    expect(priorityField().value).toBe("high");
+    await act(async () => save().click());
+    await waitUntil(() => adminV2Request.mock.calls.filter(([path]) => path.endsWith("/assignment")).length === 2 && !save().disabled);
+    expect(adminV2Request.mock.calls.filter(([path]) => path.endsWith("/assignment")).at(-1)?.[1]).toMatchObject({
+      body: { entityVersion: 3, ownerId: "operator-8", priority: "high", reason: "Raise follow-up priority" },
+    });
+
+    priority = "urgent";
+    version += 1;
+    await act(async () => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)));
+    expect(priorityField().value).toBe("urgent");
   });
 
   it.each([false, true])("keeps Support navigation when a Case assignment finishes late (unmounted: %s)", async (unmountBeforeCompletion) => {

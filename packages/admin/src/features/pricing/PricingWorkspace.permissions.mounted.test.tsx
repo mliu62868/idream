@@ -111,7 +111,7 @@ describe("Pricing write permission and intent lifecycle", () => {
     await fill("Reason (≥3)", "Fresh price decision", fresh);
     await fill("Type the name to confirm", name, fresh);
     await click(action, fresh);
-    expect(writes).toEqual([expect.objectContaining({ path: `/api/v2/admin/pricing/rules/${id}/${action.toLowerCase()}`, body: { reason: "Fresh price decision", confirmation: id } })]);
+    expect(writes).toEqual([expect.objectContaining({ path: `/api/v2/admin/pricing/rules/${id}/${action.toLowerCase()}`, body: { reason: "Fresh price decision", confirmation: id, ...(action === "Publish" ? { expectedVersion: 2, expectedBaseCost: 5, expectedMultiplier: 1 } : {}) } })]);
   });
 
   it("keeps a fresh edit when the pre-revocation save finishes later", async () => {

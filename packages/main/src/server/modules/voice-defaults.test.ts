@@ -5,6 +5,7 @@ const voiceProfileState = vi.hoisted(() => ({
   voiceId: null as string | null,
   gender: "female",
   systemProvider: "mock",
+  previewVoice: vi.fn(),
   setting: null as unknown,
   profile: null as {
     provider: string;
@@ -46,9 +47,20 @@ vi.mock("@/server/providers", () => ({
   },
 }));
 
+vi.mock("@/server/providers/voice/factory", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/server/providers/voice/factory")>(),
+  createVoicePortsForKey: (providerKey: string) => ({
+    identity: {
+      providerKey,
+      previewVoice: (input: unknown) => voiceProfileState.previewVoice(providerKey, input),
+    },
+  }),
+}));
+
 import {
   FISH_AUDIO_CATALOG,
   POCKET_TTS_CATALOG,
+  previewVoiceDefault,
   resolveCharacterVoiceAuthority,
   voiceDefaultSettingsDto,
   voiceIdForGender,
@@ -61,6 +73,73 @@ describe("system voice defaults", () => {
     voiceProfileState.gender = "female";
     voiceProfileState.systemProvider = "mock";
     voiceProfileState.setting = null;
+    voiceProfileState.previewVoice.mockReset().mockResolvedValue({
+      ok: true,
+      data: { body: new Uint8Array([1, 2, 3]), contentType: "audio/wav", durationMs: 1_200 },
+    });
+  });
+
+  it("previews an official Pocket preset when Ming owns the system default", async () => {
+    voiceProfileState.systemProvider = "fish_audio";
+    await expect(previewVoiceDefault({
+      scope: "character_preset",
+      provider: "pocket_tts",
+      voiceId: "cosette",
+      text: "Hello, it is good to meet you.",
+      delivery: DEFAULT_FISH_AUDIO_DELIVERY,
+    })).resolves.toEqual({
+      voiceId: "cosette", contentType: "audio/wav", audioBase64: "AQID", durationMs: 1_200,
+    });
+    expect(voiceProfileState.previewVoice).toHaveBeenCalledExactlyOnceWith("pocket_tts", {
+      providerKey: "pocket_tts", voiceId: "cosette", text: "Hello, it is good to meet you.",
+      delivery: DEFAULT_FISH_AUDIO_DELIVERY,
+    });
+  });
+
+  it("keeps inherited Ming voice previews on the current system provider", async () => {
+    voiceProfileState.systemProvider = "fish_audio";
+    const voiceId = voiceDefaultSettingsDto(null, "fish_audio").defaultVoiceId;
+    await expect(previewVoiceDefault({
+      provider: "fish_audio", voiceId, text: "Hello, it is good to meet you.",
+      delivery: DEFAULT_FISH_AUDIO_DELIVERY,
+    })).resolves.toMatchObject({ voiceId, audioBase64: "AQID" });
+    expect(voiceProfileState.previewVoice).toHaveBeenCalledWith("fish_audio", expect.objectContaining({ voiceId }));
+  });
+
+  it("still rejects a system preview after the system provider changes", async () => {
+    voiceProfileState.systemProvider = "fish_audio";
+    await expect(previewVoiceDefault({
+      provider: "pocket_tts", voiceId: "cosette", text: "Hello, it is good to meet you.",
+      delivery: DEFAULT_FISH_AUDIO_DELIVERY,
+    })).rejects.toMatchObject({ status: 409, message: "System voice provider changed before this preview" });
+    expect(voiceProfileState.previewVoice).not.toHaveBeenCalled();
+  });
+
+  it("still rejects a Pocket voice submitted as a Ming system default", async () => {
+    voiceProfileState.systemProvider = "fish_audio";
+    await expect(previewVoiceDefault({
+      provider: "fish_audio", voiceId: "cosette", text: "Hello, it is good to meet you.",
+      delivery: DEFAULT_FISH_AUDIO_DELIVERY,
+    })).rejects.toMatchObject({ status: 400, message: "System voice defaults must use the active provider catalog" });
+    expect(voiceProfileState.previewVoice).not.toHaveBeenCalled();
+  });
+
+  it.each(["idream-private-alias", "alba"])("rejects non-product Pocket preset %s before synthesis", async (voiceId) => {
+    voiceProfileState.systemProvider = "fish_audio";
+    await expect(previewVoiceDefault({
+      scope: "character_preset", provider: "pocket_tts", voiceId,
+      text: "Hello, it is good to meet you.", delivery: DEFAULT_FISH_AUDIO_DELIVERY,
+    })).rejects.toThrow();
+    expect(voiceProfileState.previewVoice).not.toHaveBeenCalled();
+  });
+
+  it("does not allow a character preset preview to select the Ming identity provider", async () => {
+    voiceProfileState.systemProvider = "fish_audio";
+    await expect(previewVoiceDefault({
+      scope: "character_preset", provider: "fish_audio", voiceId: "fish-female-default",
+      text: "Hello, it is good to meet you.", delivery: DEFAULT_FISH_AUDIO_DELIVERY,
+    })).rejects.toThrow();
+    expect(voiceProfileState.previewVoice).not.toHaveBeenCalled();
   });
   it("uses the official English Pocket catalog for the Pocket system provider", () => {
     const settings = voiceDefaultSettingsDto(null, "pocket_tts");

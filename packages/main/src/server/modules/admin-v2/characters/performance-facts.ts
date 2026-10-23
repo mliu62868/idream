@@ -1,7 +1,7 @@
 import {
   characterPerformanceReconciliationSchema,
 } from "@idream/shared/admin";
-import type { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
@@ -16,6 +16,78 @@ export interface CharacterPerformanceBackfillOptions {
 }
 
 type BackfillDb = PrismaClient | Prisma.TransactionClient;
+
+export async function readCharacterVariableCostCoverage(
+  db: BackfillDb,
+  scope?: {
+    readonly characterId: string;
+    readonly releaseId: string;
+    readonly windowStart: Date;
+    readonly windowEnd: Date;
+  },
+) {
+  const sourceScope = scope ? Prisma.sql`
+    AND usage."characterId" = ${scope.characterId}
+    AND usage."releaseId" = ${scope.releaseId}
+    AND usage."occurredAt" >= ${scope.windowStart}
+    AND usage."occurredAt" < ${scope.windowEnd}
+  ` : Prisma.empty;
+  const projectionScope = scope ? Prisma.sql`
+    AND fact."characterId" = ${scope.characterId}
+    AND fact."characterReleaseId" = ${scope.releaseId}
+    AND fact."occurredAt" >= ${scope.windowStart}
+    AND fact."occurredAt" < ${scope.windowEnd}
+  ` : Prisma.empty;
+  // Invocation facts include real failed/retried calls. Pricing and projection
+  // completeness must not filter them, or unpriced calls disappear from coverage.
+  // Match both sides by authority: an orphan projection cannot cancel a missing one.
+  const [counts] = await db.$queryRaw<Array<{
+    relevant: bigint;
+    projected: bigint;
+    missing: bigint;
+    unmatchedProjections: bigint;
+  }>>(Prisma.sql`
+    WITH sources AS (
+      SELECT usage.*, release."characterContentVersionId" AS "contentVersionId",
+        project."characterId" AS "releaseCharacterId"
+      FROM ai_usage_facts usage
+      LEFT JOIN character_releases release ON release.id = usage."releaseId"
+      LEFT JOIN character_projects project ON project.id = release."projectId"
+      WHERE usage.environment = 'production' AND usage."dataClass" = 'customer'
+        AND usage."trustClass" = 'canonical' AND usage."actorIsInternal" = false
+        AND usage."characterId" IS NOT NULL AND usage."releaseId" IS NOT NULL
+        ${sourceScope}
+    ), projections AS (
+      SELECT fact.* FROM character_economics_facts fact
+      WHERE fact."authorityType" = 'ai_usage_fact' AND fact.kind = 'variable_cost'
+        ${projectionScope}
+    ), matches AS (
+      SELECT source.id AS "sourceId", fact.id AS "projectionId", COALESCE(
+        source.id IS NOT NULL AND fact.id IS NOT NULL
+        AND source."costMicros" >= 0 AND NULLIF(BTRIM(source."pricingVersion"), '') IS NOT NULL
+        AND source."releaseCharacterId" = source."characterId"
+        AND fact."characterId" = source."characterId"
+        AND fact."characterReleaseId" = source."releaseId"
+        AND fact."characterContentVersionId" = source."contentVersionId"
+        AND fact."placementId" IS NULL AND fact."amountMicros" = source."costMicros"
+        AND UPPER(fact.currency) = 'USD' AND fact."occurredAt" = source."occurredAt"
+        AND fact."auditState" = 'audited' AND fact."coverageState" = 'exact', false
+      ) AS matched
+      FROM sources source FULL JOIN projections fact ON fact."authorityId" = source.id
+    )
+    SELECT COUNT("sourceId") AS relevant,
+      COUNT(*) FILTER (WHERE matched) AS projected,
+      COUNT(*) FILTER (WHERE "sourceId" IS NOT NULL AND NOT matched) AS missing,
+      COUNT(*) FILTER (WHERE "projectionId" IS NOT NULL AND NOT matched) AS "unmatchedProjections"
+    FROM matches
+  `);
+  return {
+    relevantCostAuthorities: Number(counts.relevant),
+    projectedCostAuthorities: Number(counts.projected),
+    missingVariableCostFacts: Number(counts.missing),
+    complete: counts.missing === BigInt(0) && counts.unmatchedProjections === BigInt(0),
+  };
+}
 
 function nextDay(day: Date) {
   return new Date(day.getTime() + 24 * 60 * 60 * 1_000);
@@ -274,7 +346,7 @@ export async function backfillCharacterVariableCostFacts(
 }
 
 export async function reconcileCharacterPerformanceFacts(db: PrismaClient) {
-  const [funnelRows, relevantCosts, projectedCosts, unauditedEconomics, partialEconomics] = await Promise.all([
+  const [funnelRows, costCoverage, unauditedEconomics, partialEconomics] = await Promise.all([
     db.characterFunnelDaily.findMany({
       select: {
         characterReleaseId: true,
@@ -288,19 +360,7 @@ export async function reconcileCharacterPerformanceFacts(db: PrismaClient) {
         coverageState: true,
       },
     }),
-    db.aiUsageFact.count({
-      where: {
-        characterId: { not: null },
-        releaseId: { not: null },
-        costMicros: { not: null },
-        pricingVersion: { not: null },
-        environment: "production",
-        dataClass: "customer",
-        trustClass: "canonical",
-        actorIsInternal: false,
-      },
-    }),
-    db.characterEconomicsFact.count({ where: { authorityType: "ai_usage_fact", kind: "variable_cost" } }),
+    readCharacterVariableCostCoverage(db),
     db.characterEconomicsFact.count({ where: { auditState: { not: "audited" } } }),
     db.characterEconomicsFact.count({ where: { coverageState: { not: "exact" } } }),
   ]);
@@ -313,21 +373,20 @@ export async function reconcileCharacterPerformanceFacts(db: PrismaClient) {
     )).length;
   const missingReleaseRows = funnelRows.filter((row) => row.characterReleaseId === null).length;
   const nonExactFunnelRows = funnelRows.filter((row) => row.coverageState !== "exact").length;
-  const missingVariableCostFacts = Math.max(0, relevantCosts - projectedCosts);
   return {
     scannedFunnelRows: funnelRows.length,
     impossibleFunnelRows,
     missingReleaseRows,
     nonExactFunnelRows,
-    relevantCostAuthorities: relevantCosts,
-    projectedCostAuthorities: projectedCosts,
-    missingVariableCostFacts,
+    relevantCostAuthorities: costCoverage.relevantCostAuthorities,
+    projectedCostAuthorities: costCoverage.projectedCostAuthorities,
+    missingVariableCostFacts: costCoverage.missingVariableCostFacts,
     unauditedEconomicsFacts: unauditedEconomics,
     partialEconomicsFacts: partialEconomics,
     cashRevenueAuthorityState: "unavailable" as const,
     refundAuthorityState: "unavailable" as const,
     creditAuthorityState: "unavailable" as const,
-    qualityState: impossibleFunnelRows === 0 && missingVariableCostFacts === 0 &&
+    qualityState: impossibleFunnelRows === 0 && costCoverage.complete &&
       unauditedEconomics === 0 && partialEconomics === 0
       ? "directional" as const
       : "invalid" as const,

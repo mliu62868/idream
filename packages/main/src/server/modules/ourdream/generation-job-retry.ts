@@ -565,8 +565,16 @@ export async function retryGenerationJobForUser(input: {
           provider: profile.runner,
           // sourceId uniquely identifies the original request, not every retry.
           // derivedFromJobId keeps lineage; the attachment's exact Job pointer
-          // is the delivery authority for the replacement.
-          ...(job.sourceType === "media_enhance" || job.sourceType === "chat_image" || job.sourceType === "chat_video" || (job.sourceType === "chat_handoff" || job.sourceType === "comic_remix") ? { sourceType: job.sourceType, sourceMeta: job.sourceMeta === null ? undefined : job.sourceMeta } : {}),
+          // is the delivery authority for the replacement. Customer remix origins
+          // still identify delivered media; internal production origins do not
+          // grant their dispatch authority to a user retry.
+          ...([
+            "media_enhance", "media_variation", "feed_remix",
+            "chat_image", "chat_video", "chat_handoff", "comic_remix",
+          ].includes(job.sourceType) ? {
+            sourceType: job.sourceType,
+            sourceMeta: job.sourceMeta === null ? undefined : job.sourceMeta,
+          } : {}),
         },
       };
     },

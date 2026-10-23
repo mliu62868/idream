@@ -45,6 +45,48 @@ async function caseCommand(caseId: string, command: "wait" | "reopen" | "close",
 }
 
 describe("linked Support and Case lifecycle", () => {
+  it.each(["case", "support"] as const)("uses the current recurrence episode for SLA changes through %s", async (source) => {
+    const { request, caseId } = await fileRequest();
+    const historicalStart = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    await prisma.supportRequest.update({ where: { id: request.id }, data: { createdAt: historicalStart } });
+    await prisma.adminCase.update({ where: { id: caseId }, data: {
+      createdAt: historicalStart, slaDueAt: new Date(historicalStart.getTime() + 24 * 60 * 60 * 1000),
+    } });
+    await resolveRequest(request.ticketId);
+    const historicalCase = await prisma.adminCase.update({ where: { id: caseId }, data: { updatedAt: historicalStart } });
+    const reopened = await caseCommand(caseId, "reopen");
+    expectOk(reopened);
+    expect(reopened.data.mode).toBe("recurrence");
+    const recurrence = await prisma.adminCase.findUniqueOrThrow({ where: { id: reopened.data.caseId } });
+
+    if (source === "case") {
+      // Assign to me submits the unchanged priority as well as the new owner.
+      expectOk(await adminV2("POST", `cases/${recurrence.id}/assignment`, {
+        userId: ADMIN, role: "admin",
+        body: { entityVersion: recurrence.version, ownerId: ADMIN, priority: "normal", reason: "Own the recurring issue" },
+      }));
+      const assigned = await prisma.adminCase.findUniqueOrThrow({ where: { id: recurrence.id } });
+      expect(assigned.slaDueAt).toEqual(new Date(recurrence.createdAt.getTime() + 24 * 60 * 60 * 1000));
+      expectOk(await adminV2("POST", `cases/${recurrence.id}/assignment`, {
+        userId: ADMIN, role: "admin",
+        body: { entityVersion: assigned.version, ownerId: ADMIN, priority: "high", reason: "Prioritize the recurring issue" },
+      }));
+      await expect(prisma.adminCase.findUniqueOrThrow({ where: { id: recurrence.id } })).resolves.toMatchObject({
+        ownerId: ADMIN, slaDueAt: new Date(recurrence.createdAt.getTime() + 12 * 60 * 60 * 1000),
+      });
+    } else {
+      const ticket = await prisma.supportRequest.findUniqueOrThrow({ where: { id: request.id } });
+      expectOk(await adminV2("PATCH", `support/requests/${request.ticketId}`, {
+        userId: ADMIN, role: "admin",
+        body: { expectedUpdatedAt: ticket.updatedAt.toISOString(), priority: 1, reason: "Prioritize the recurring issue", confirmation: request.ticketId },
+      }));
+      await expect(prisma.adminCase.findUniqueOrThrow({ where: { id: recurrence.id } })).resolves.toMatchObject({
+        slaDueAt: new Date(recurrence.createdAt.getTime() + 4 * 60 * 60 * 1000),
+      });
+    }
+    await expect(prisma.adminCase.findUniqueOrThrow({ where: { id: caseId } })).resolves.toEqual(historicalCase);
+  });
+
   it("keeps dependency waiting open to customers, reopens replies, and closes the ticket with the Case", async () => {
     const { request, caseId } = await fileRequest();
     const initialCase = await prisma.adminCase.findUniqueOrThrow({ where: { id: caseId } });

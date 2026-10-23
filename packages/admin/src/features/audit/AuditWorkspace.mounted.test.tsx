@@ -76,6 +76,84 @@ describe("audit repeat collapsing and row selection", () => {
     await waitUntil(() => checkboxes().length > 0);
   }
 
+  function paginationText() {
+    return container.querySelector('[data-testid="admin-pagination"]')?.textContent;
+  }
+
+  async function restoreUrl(href: string) {
+    await act(async () => {
+      window.history.replaceState(null, "", href);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+  }
+
+  it("restores the page position on back and forward without retaining another page's selection", async () => {
+    apiGet.mockImplementation(async (path) => ({
+      items: [{ ...batchRun[0], id: path.includes("cursor=") ? "audit-page-two" : "audit-page-one" }],
+      pageInfo: { endCursor: path.includes("cursor=") ? null : "page-two", hasNextPage: !path.includes("cursor=") },
+    }));
+    await mounted();
+    const firstUrl = window.location.href;
+    await clickButton("Next page");
+    const secondUrl = window.location.href;
+    expect(paginationText()).toContain("Page 2");
+    await act(async () => checkboxes()[0].click());
+    expect(container.textContent).toContain("1 selected");
+
+    await restoreUrl(firstUrl);
+    expect(paginationText()).toContain("Page 1");
+    expect(container.textContent).not.toContain("1 selected");
+    expect(checkboxes()[0].getAttribute("aria-label")).toBe("Select row audit-page-one");
+    const previous = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Previous page");
+    expect(previous?.disabled).toBe(true);
+
+    await restoreUrl(secondUrl);
+    expect(paginationText()).toContain("Page 2");
+    expect(checkboxes()[0].getAttribute("aria-label")).toBe("Select row audit-page-two");
+  });
+
+  it("does not invent a page number for a copied cursor and provides a way back to the first page", async () => {
+    window.history.replaceState(null, "", "/admin/system/audit?auditCursor=shared-cursor");
+    await mounted();
+    expect(paginationText()).toContain("Page position unknown");
+    expect(paginationText()).not.toContain("Page 1");
+    await clickButton("Back to first page");
+    expect(window.location.search).not.toContain("auditCursor");
+    expect(paginationText()).toContain("Page 1");
+  });
+
+  it("removes old rows, command evidence, selection and pagination when a different query fails", async () => {
+    window.history.replaceState(null, "", "/admin/system/audit?commandId=old-command");
+    apiGet.mockImplementation(async (path) => path.includes("/commands/") ? {
+      commandId: "old-command", commandType: "character.serving.resume", target: { type: "character_serving", id: "old-target" },
+      status: "failed", verificationState: "failed", needsReconciliation: false, updatedAt: "2026-10-22T00:00:00.000Z",
+    } : { items: batchRun, pageInfo: { endCursor: "old-cursor", hasNextPage: true } });
+    await mounted();
+    expect(container.querySelector('[title="old-command"]')).not.toBeNull();
+    await act(async () => checkboxes()[0].click());
+    apiGet.mockRejectedValue(new Error("New scope failed"));
+
+    await restoreUrl("/admin/system/audit?auditSearch=new-scope");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("New scope failed");
+    expect(checkboxes()).toHaveLength(0);
+    expect(container.querySelector('[title="old-command"]')).toBeNull();
+    expect(container.querySelector('[data-testid="admin-pagination"]')).toBeNull();
+    expect(container.textContent).not.toContain("1 selected");
+    expect(container.textContent).not.toContain("No audit events match");
+  });
+
+  it("retains the known page and selected evidence when refreshing that same query fails", async () => {
+    await mounted();
+    await act(async () => checkboxes()[0].click());
+    apiGet.mockRejectedValue(new Error("Refresh temporarily failed"));
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Refresh temporarily failed");
+    expect(checkboxes()).toHaveLength(1);
+    expect(checkboxes()[0].checked).toBe(true);
+    expect(paginationText()).toContain("Page 1");
+    expect(container.textContent).toContain("1 selected");
+  });
+
   it("reloads the applied audit scope through shell refresh and retains its unfinished search", async () => {
     await mounted();
     const input = container.querySelector<HTMLInputElement>('input[placeholder="action, target, reason, or request"]')!;

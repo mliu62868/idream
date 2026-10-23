@@ -4,6 +4,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { prisma } from "@/server/lib/db";
+import { jobQueue } from "@/server/jobs/queue";
 import { providers } from "@/server/providers";
 import {
   AGE_GATE_COOKIE_HEADER,
@@ -1390,7 +1391,7 @@ describe("feed share and remix provenance", () => {
     expect(unqualifiedCharacters).toEqual([]);
   });
 
-  it("focuses shared feed items and records generation provenance from remix", async () => {
+  it("focuses shared feed items and retains remix provenance after failed-job retry", async () => {
     const owner = `${P}feed-owner`;
     const userId = `${P}feed-remixer`;
     const characterId = `${P}feed-char`;
@@ -1560,6 +1561,44 @@ describe("feed share and remix provenance", () => {
     ).find((item) => item.id === asset.id);
     expect(remixedMedia?.provenance).toMatchObject(expectedProvenance);
     expect(completedAsset?.provenance).toEqual(remixedMedia?.provenance);
+
+    const failed = await api("POST", "generation/jobs", {
+      userId,
+      ageGate: true,
+      headers: { "Idempotency-Key": `${P}feed-remix-failed` },
+      body: generationBody,
+    });
+    expectOk(failed, 202);
+    const failedJobId = failed.data.job.id as string;
+    await jobQueue.removeByDedupePrefix(`generation:${failedJobId}`, ["ai.image.generate"]);
+    await prisma.generationJob.update({
+      where: { id: failedJobId },
+      data: { status: "failed", errorCode: "feed_remix_retry_fixture" },
+    });
+    const retried = await api("POST", `generation/jobs/${failedJobId}/retry`, {
+      userId,
+      ageGate: true,
+      headers: { "Idempotency-Key": `${P}feed-remix-retry` },
+    });
+    expectOk(retried, 202);
+    await runQueuedGenerationJobs(32);
+    const delivered = await api("GET", `generation/jobs/${retried.data.job.id as string}`, { userId, ageGate: true });
+    expectOk(delivered);
+    expect(delivered.data.job.status).toBe("completed");
+    expect(delivered.data.assets).toHaveLength(1);
+    expect(delivered.data.assets[0].provenance).toMatchObject(expectedProvenance);
+    expect(delivered.data.job).toMatchObject({
+      derivedFromJobId: failedJobId,
+      sourceId: null,
+      sourceMeta: stored.sourceMeta,
+      controls: { workflowKey: (stored.controls as Record<string, unknown>).workflowKey },
+    });
+    await expect(prisma.generationJob.findUniqueOrThrow({ where: { id: failedJobId } })).resolves.toMatchObject({
+      sourceType: "feed_remix",
+      sourceId: failed.data.job.sourceId,
+      sourceMeta: stored.sourceMeta,
+      status: "failed",
+    });
 
     const balanceAfterCreate = await prisma.dreamcoinLedger.findFirstOrThrow({
       where: { userId },

@@ -64,7 +64,7 @@ export function MentionsInbox() {
     <section aria-label={t("Mentions inbox")} className="absolute right-0 z-30 mt-2 max-h-[70vh] w-[min(24rem,calc(100vw-2rem))] overflow-auto rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 shadow-lg">
       <div className="flex items-center justify-between gap-3"><h2 className="font-semibold">{t("Mentions inbox")}</h2><WorkspaceButton disabled={loading} onClick={() => void load()}>{t("Refresh")}</WorkspaceButton></div>
       <p className="mt-2 text-xs text-[var(--ad-text-muted)]">{t("People can mention you in comments, handoffs, and checklists.")}</p>
-      {error ? <AuthorityRequestError cause={error} message="Mentions could not be loaded" onRetry={() => void load(retryCursor.current)} /> : null}
+      {error ? <AuthorityRequestError requestKind="read" cause={error} message="Mentions could not be loaded" onRetry={() => void load(retryCursor.current)} /> : null}
       {loading ? <p className="mt-3 text-sm" role="status">{t("Loading mentions…")}</p> : null}
       {data?.items.length === 0 && !loading && !error ? <p className="mt-3 text-sm">{t("No mentions on this page.")}</p> : null}
       <ol className="mt-3 space-y-3">{data?.items.map((activity) => <li className="border-t border-[var(--ad-border)] pt-3" key={activity.id}>

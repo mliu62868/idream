@@ -4,6 +4,7 @@ import { prisma } from "@/server/lib/db";
 import {
   backfillCharacterFunnelFacts,
   backfillCharacterVariableCostFacts,
+  readCharacterVariableCostCoverage,
   reconcileCharacterPerformanceFacts,
 } from "./performance-facts";
 
@@ -179,5 +180,157 @@ describe("Character Performance resumable fact backfills", () => {
       refundAuthorityState: "unavailable",
       creditAuthorityState: "unavailable",
     });
+  });
+
+  it("does not omit an eligible unpriced invocation from cost coverage", async () => {
+    const before = await reconcileCharacterPerformanceFacts(prisma);
+    const usageId = `${sourcePrefix}:unpriced`;
+    await prisma.aiUsageFact.create({ data: {
+      id: usageId,
+      source: usageId,
+      sourceService: "gen",
+      sourceEventId: usageId,
+      characterId,
+      releaseId,
+      provider: "comfyui",
+      model: "unpriced-model",
+      usage: { images: 1 },
+      costMicros: null,
+      pricingVersion: null,
+      environment: "production",
+      dataClass: "customer",
+      trustClass: "canonical",
+      actorIsInternal: false,
+      occurredAt: new Date("2026-07-02T00:11:00.000Z"),
+    } });
+    try {
+      const report = await reconcileCharacterPerformanceFacts(prisma);
+      expect(report).toMatchObject({
+        relevantCostAuthorities: before.relevantCostAuthorities + 1,
+        projectedCostAuthorities: before.projectedCostAuthorities,
+        missingVariableCostFacts: before.missingVariableCostFacts + 1,
+        qualityState: "invalid",
+        cashRevenueAuthorityState: "unavailable",
+        refundAuthorityState: "unavailable",
+        creditAuthorityState: "unavailable",
+      });
+    } finally {
+      await prisma.aiUsageFact.delete({ where: { id: usageId } });
+    }
+  });
+
+  it("does not let an unrelated projection hide a missing cost authority", async () => {
+    const before = await reconcileCharacterPerformanceFacts(prisma);
+    const usageId = `${sourcePrefix}:missing-projection`;
+    const projectionId = `${sourcePrefix}:unrelated-projection`;
+    await prisma.aiUsageFact.create({ data: {
+      id: usageId,
+      source: usageId,
+      sourceService: "gen",
+      sourceEventId: usageId,
+      characterId,
+      releaseId,
+      provider: "comfyui",
+      model: "priced-model",
+      usage: { images: 1 },
+      costMicros: BigInt(222),
+      pricingVersion: "verified-pricing-v1",
+      environment: "production",
+      dataClass: "customer",
+      trustClass: "canonical",
+      actorIsInternal: false,
+      occurredAt: new Date("2026-07-02T00:12:00.000Z"),
+    } });
+    await prisma.characterEconomicsFact.create({ data: {
+      id: projectionId,
+      characterId,
+      characterContentVersionId: contentId,
+      characterReleaseId: releaseId,
+      placementId: null,
+      kind: "variable_cost",
+      amountMicros: BigInt(222),
+      currency: "USD",
+      authorityType: "ai_usage_fact",
+      authorityId: `${usageId}:different-authority`,
+      attributionMethod: "exact_character_release_no_placement",
+      auditState: "audited",
+      coverageState: "exact",
+      occurredAt: new Date("2026-07-02T00:12:00.000Z"),
+    } });
+    try {
+      const report = await reconcileCharacterPerformanceFacts(prisma);
+      expect(report).toMatchObject({
+        relevantCostAuthorities: before.relevantCostAuthorities + 1,
+        projectedCostAuthorities: before.projectedCostAuthorities,
+        missingVariableCostFacts: before.missingVariableCostFacts + 1,
+        qualityState: "invalid",
+      });
+    } finally {
+      await prisma.characterEconomicsFact.delete({ where: { id: projectionId } });
+      await prisma.aiUsageFact.delete({ where: { id: usageId } });
+    }
+  });
+
+  it.each([
+    { name: "amount", change: { amountMicros: BigInt(222) } },
+    { name: "character", change: { characterId: "different-character" } },
+    { name: "release", change: { characterReleaseId: "different-release" } },
+    { name: "content", change: { characterContentVersionId: "different-content" } },
+    { name: "currency", change: { currency: "EUR" } },
+    { name: "time", change: { occurredAt: new Date("2026-07-03T00:00:00.000Z") } },
+    { name: "audit", change: { auditState: "pending" } },
+    { name: "coverage", change: { coverageState: "partial" } },
+  ])("rejects a $name mismatch in both global and portfolio cost coverage", async ({ change }) => {
+    const fact = await prisma.characterEconomicsFact.findFirstOrThrow({ where: {
+      authorityType: "ai_usage_fact", authorityId: `performance-backfill-usage-${suffix}`, kind: "variable_cost",
+    } });
+    const scope = {
+      characterId, releaseId,
+      windowStart: new Date("2026-07-02T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-03T00:00:00.000Z"),
+    };
+    expect(await readCharacterVariableCostCoverage(prisma, scope)).toMatchObject({
+      relevantCostAuthorities: 1, projectedCostAuthorities: 1, missingVariableCostFacts: 0, complete: true,
+    });
+    await prisma.characterEconomicsFact.update({ where: { id: fact.id }, data: change });
+    try {
+      expect(await readCharacterVariableCostCoverage(prisma, scope)).toMatchObject({
+        relevantCostAuthorities: 1, projectedCostAuthorities: 0, missingVariableCostFacts: 1, complete: false,
+      });
+      expect(await reconcileCharacterPerformanceFacts(prisma)).toMatchObject({
+        missingVariableCostFacts: 1, qualityState: "invalid",
+      });
+    } finally {
+      await prisma.characterEconomicsFact.update({ where: { id: fact.id }, data: {
+        characterId: fact.characterId,
+        characterReleaseId: fact.characterReleaseId,
+        characterContentVersionId: fact.characterContentVersionId,
+        amountMicros: fact.amountMicros,
+        currency: fact.currency,
+        occurredAt: fact.occurredAt,
+        auditState: fact.auditState,
+        coverageState: fact.coverageState,
+      } });
+    }
+  });
+
+  it("rejects orphan costs even when every real invocation has its matching projection", async () => {
+    const id = `${sourcePrefix}:orphan-cost`;
+    const fact = await prisma.characterEconomicsFact.findFirstOrThrow({ where: { characterId } });
+    await prisma.characterEconomicsFact.create({ data: {
+      ...fact, id, authorityId: id,
+    } });
+    try {
+      expect(await readCharacterVariableCostCoverage(prisma, {
+        characterId, releaseId,
+        windowStart: new Date("2026-07-02T00:00:00.000Z"),
+        windowEnd: new Date("2026-07-03T00:00:00.000Z"),
+      })).toMatchObject({
+        relevantCostAuthorities: 1, projectedCostAuthorities: 1, missingVariableCostFacts: 0, complete: false,
+      });
+      expect(await reconcileCharacterPerformanceFacts(prisma)).toMatchObject({ qualityState: "invalid" });
+    } finally {
+      await prisma.characterEconomicsFact.delete({ where: { id } });
+    }
   });
 });

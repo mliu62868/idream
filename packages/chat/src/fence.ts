@@ -44,6 +44,9 @@ interface TurnFenceRecord {
   schemaVersion: 1;
   /** null 表示整个 Turn；数字表示「含该 attempt 及更早」被 fence。 */
   throughAttempt: number | null;
+  // Stop only forbids execution. Erasure also forbids late, content-free
+  // receipts. Legacy records cannot prove Stop, so absence keeps the old ban.
+  receiptThroughAttempt?: number | null;
   updatedAt: string;
 }
 
@@ -124,21 +127,50 @@ export async function fenceAttemptsThrough(turnId: string, attempt: number): Pro
   await withFenceLock(fenceKey({ scope: "turn", turnId }), () => writeTurnFence(turnId, attempt));
 }
 
+/** Stop preserves receipts from the existing attempt, never its execution. */
+export async function fenceCancelledAttempt(turnId: string, attempt: number): Promise<void> {
+  if (!Number.isSafeInteger(attempt) || attempt < 1) {
+    throw new Error("AgentRun fence requires a positive attempt");
+  }
+  await withFenceLock(fenceKey({ scope: "turn", turnId }), () => writeTurnFence(turnId, attempt, true));
+}
+
 /** Callers already holding the fence lock for this Turn. */
 export async function writeTurnFence(
   turnId: string,
   throughAttempt: number | null,
+  retainReceipts = false,
 ): Promise<void> {
   const prior = await readTurnFence(turnId);
   const next = prior?.throughAttempt === null || throughAttempt === null
     ? null
     : Math.max(prior?.throughAttempt ?? 0, throughAttempt);
-  if (prior && prior.throughAttempt === next) return;
+  const priorReceipt = prior ? receiptFence(prior) : 0;
+  const receiptThroughAttempt = priorReceipt === null || (!retainReceipts && throughAttempt === null)
+    ? null
+    : retainReceipts ? priorReceipt : Math.max(priorReceipt, throughAttempt!);
+  // Stop N followed by erase N must upgrade the receipt fence even though
+  // the execution fence did not move. A delayed Stop can never undo erasure.
+  if (prior && prior.throughAttempt === next && receiptFence(prior) === receiptThroughAttempt) return;
   await atomicWriteJson(turnFenceFile(turnId), {
     schemaVersion: 1,
     throughAttempt: next,
+    receiptThroughAttempt,
     updatedAt: new Date().toISOString(),
   } satisfies TurnFenceRecord);
+}
+
+/** Only the dedicated model-receipt writer may use this narrower permission. */
+export async function isAttemptReceiptFenced(turnId: string, attempt: number): Promise<boolean> {
+  if ((draining.get(fenceKey({ scope: "turn", turnId })) ?? 0) > 0) return true;
+  const fence = await readTurnFence(turnId);
+  if (!fence) return false;
+  const through = receiptFence(fence);
+  return through === null || attempt <= through;
+}
+
+function receiptFence(record: TurnFenceRecord): number | null {
+  return record.receiptThroughAttempt === undefined ? record.throughAttempt : record.receiptThroughAttempt;
 }
 
 export async function isFenced(scope: FenceScope): Promise<boolean> {
@@ -197,7 +229,16 @@ function describe(scope: FenceScope): string {
 
 async function readTurnFence(turnId: string): Promise<TurnFenceRecord | null> {
   try {
-    return JSON.parse(await readFile(turnFenceFile(turnId), "utf8")) as TurnFenceRecord;
+    const value = JSON.parse(await readFile(turnFenceFile(turnId), "utf8")) as TurnFenceRecord;
+    const validThrough = (through: unknown, minimum: number) => through === null ||
+      (typeof through === "number" && Number.isSafeInteger(through) && through >= minimum);
+    if (!value || value.schemaVersion !== 1 || !validThrough(value.throughAttempt, 1)
+      || (value.receiptThroughAttempt !== undefined && (!validThrough(value.receiptThroughAttempt, 0)
+        || (value.throughAttempt === null && value.receiptThroughAttempt !== null)
+        || (value.throughAttempt !== null && (value.receiptThroughAttempt === null || value.receiptThroughAttempt > value.throughAttempt))))) {
+      throw new Error("invalid AgentRun fence record");
+    }
+    return value;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;

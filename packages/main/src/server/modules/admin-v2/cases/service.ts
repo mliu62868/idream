@@ -1,5 +1,5 @@
 import { effectiveSubscriptionStatus } from "@/server/modules/ourdream/subscription-lifecycle";
-import type { Appeal, ContentReport, Prisma, PrismaClient, SupportRequest } from "@prisma/client";
+import type { AdminCase, Appeal, ContentReport, Prisma, PrismaClient, SupportRequest } from "@prisma/client";
 import {
   APPEAL_CASE_DECISIONS,
   BILLING_CASE_ACTIONS,
@@ -119,6 +119,16 @@ export async function assertCaseOwner(db: Db, ownerId: string, caseType: string)
 function slaFor(priority: string, createdAt: Date) {
   const hours = priority === "urgent" ? 1 : priority === "high" ? 4 : priority === "low" ? 72 : 24;
   return new Date(createdAt.getTime() + hours * 60 * 60 * 1_000);
+}
+
+function supportCaseSlaStart(adminCase: Pick<AdminCase, "createdAt" | "resolution">, requestCreatedAt: Date) {
+  const resolution = adminCase.resolution;
+  // Recurrences share a ticket but start a new SLA window. Initial episodes,
+  // including backfilled Cases, retain the original Support intake timestamp.
+  return resolution && typeof resolution === "object" && !Array.isArray(resolution)
+    && typeof resolution.recurrenceOfCaseId === "string"
+    ? adminCase.createdAt
+    : requestCreatedAt;
 }
 
 export function transformCustomerCaseBackfill(request: SupportRequest) {
@@ -315,7 +325,7 @@ export async function synchronizeSupportCaseFromRequest(
     ownerId: request.assignedToId,
     slaDueAt: terminal
       ? current.slaDueAt ?? request.resolvedAt ?? request.updatedAt
-      : input.priorityChanged ? supportSlaDueAt(request.priority, request.createdAt) : current.slaDueAt,
+      : input.priorityChanged ? supportSlaDueAt(request.priority, supportCaseSlaStart(current, request.createdAt)) : current.slaDueAt,
     verificationState: input.statusChanged ? terminal ? "overridden" : "pending" : current.verificationState,
     resolution: terminal && input.statusChanged
       ? toInputJson({
@@ -771,7 +781,7 @@ export async function assignReviewCaseInTransaction(
         },
       });
       if (slaDueAt === undefined && input.priority !== undefined) {
-        slaDueAt = supportSlaDueAt(ticket.priority, ticket.createdAt);
+        slaDueAt = supportSlaDueAt(ticket.priority, supportCaseSlaStart(current, ticket.createdAt));
       }
     }
   }

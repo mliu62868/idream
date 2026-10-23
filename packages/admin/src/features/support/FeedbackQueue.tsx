@@ -95,7 +95,7 @@ export function FeedbackQueue({ canWrite }: { canWrite: boolean }) {
           <GhostButton type="submit">{t("Search")}</GhostButton>
           <GhostButton disabled={loading} onClick={() => void load()}>{t("Refresh")}</GhostButton>
         </form>
-        {error !== null && <AuthorityRequestError cause={error} message={t("Product feedback could not load")} onRetry={() => void load()} />}
+        {error !== null && <AuthorityRequestError requestKind="read" cause={error} message={t("Product feedback could not load")} onRetry={() => void load()} />}
         {loading && <p role="status">{t("Loading product feedback…")}</p>}
         {data && !loading && <>
           <DataTable caption={t("Product feedback")} headers={[t("Title"), t("Category"), t("Votes"), t("Status")]} rows={data.items.map((item) => ({

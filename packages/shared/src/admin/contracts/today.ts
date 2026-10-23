@@ -84,6 +84,8 @@ export const todayWorkItemSchema = z
     lastChangedAt: adminIsoDateTimeSchema,
     environment: adminEnvironmentSchema,
     dataClass: adminDataClassSchema,
+    // Actor-scoped preference; queue membership may be truncated and cannot supply this state.
+    watching: z.boolean(),
     pinned: z.boolean(),
     snoozedUntil: adminIsoDateTimeSchema.nullable().optional(),
     preferenceVersion: z.number().int().nonnegative(),

@@ -289,4 +289,30 @@ describe("canonical Character Performance", () => {
       },
     })).toMatchObject({ valueMicros: 650, qualityState: "certified" });
   });
+
+  it("fails closed when safe monetary components produce an unsafe margin total", () => {
+    const common = { currency: "USD", auditState: "audited", coverageState: "exact" };
+    const result = evaluateContributionMargin({
+      facts: [
+        { ...common, kind: "cash_revenue", amountMicros: BigInt(1), authorityType: "payment_capture_v2", authorityId: "pay-1" },
+        { ...common, kind: "refund", amountMicros: BigInt(Number.MAX_SAFE_INTEGER), authorityType: "payment_refund_v2", authorityId: "refund-1" },
+        { ...common, kind: "credit", amountMicros: BigInt(Number.MAX_SAFE_INTEGER), authorityType: "cash_credit_v2", authorityId: "credit-1" },
+      ],
+      authority: {
+        cashCaptureComplete: true,
+        refundsComplete: true,
+        creditsComplete: true,
+        variableCostsComplete: true,
+      },
+    });
+    expect(result).toMatchObject({
+      valueMicros: null,
+      qualityState: "invalid",
+      attributedRevenueMicros: 1,
+      refundMicros: Number.MAX_SAFE_INTEGER,
+      creditMicros: Number.MAX_SAFE_INTEGER,
+      variableCostMicros: 0,
+    });
+    expect(result.evidence).toContain("contribution_margin_exceeds_safe_numeric_range");
+  });
 });

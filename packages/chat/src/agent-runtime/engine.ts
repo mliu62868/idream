@@ -19,6 +19,7 @@ import type { CompanionWorkspaceRebuildPromotion, CompanionWorkspaceRebuildSourc
 import { assertNotFenced, withDrainFence, type FenceScope } from "../fence.js";
 import { stableJson } from "../stable-json";
 import { ProviderError, type OpenAiCompatibleAdapter, type TokenUsage } from "./openai-adapter";
+import { aggregateModelRequestUsage } from "./model-request-evidence";
 import { buildReplaySeed, finishReason, messageText } from "./pi-context";
 import { executePiConversation, toolSignal, withToolCancellation } from "./pi-runtime";
 import { projectRecall } from "./session-recall";
@@ -30,8 +31,8 @@ export interface CompanionEngineOptions {
   workspaces: AttemptWorkspaceStore;
   adapter(profile: PreparedTurnProfile, policy: {
     maxInputTokens: number;
-    observeRequest(evidence: CompanionModelRequestEvidence): void;
-    observeUsage(usage: TokenUsage | undefined): void;
+    observeRequest?(evidence: CompanionModelRequestEvidence): void;
+    observeUsage(usage: TokenUsage | undefined, request: CompanionModelRequestEvidence): void;
     samplingTemperature?: number;
   }): OpenAiCompatibleAdapter;
   igrep: IgrepCommand;
@@ -511,14 +512,16 @@ export class CompanionEngine {
       }
 
       const modelRequests: CompanionModelRequestEvidence[] = [];
-      const physicalUsages: Array<ReturnType<typeof wireUsage>> = [];
       let currentText = "";
       const bridge = new ToolBridge(port.executeTool, payload => { void event(payload); });
       const adapter = this.options.adapter(invocation.preparedTurn.profile, {
         maxInputTokens: invocation.preparedTurn.budget.maxInputTokens,
-        observeRequest: evidence => { modelRequests.push(evidence); },
-        observeUsage: receipt => {
-          const usage = wireUsage(receipt); physicalUsages.push(usage);
+        observeUsage: (receipt, evidence) => {
+          const request = { ...evidence, provider: invocation.preparedTurn.profile.provider,
+            model: invocation.preparedTurn.profile.model, usage: receipt ?? null };
+          modelRequests.push(request);
+          void event({ type: "model_request", request });
+          const usage = wireUsage(receipt);
           if (usage) { void event({ type: "usage", usage }); if (usage.reasoningTokens !== null && usage.reasoningTokens > 0) void event({ type: "reasoning_usage", reasoningTokens: usage.reasoningTokens }); }
         },
         ...(needsFactualSampling(current.content) ? { samplingTemperature: Math.min(invocation.preparedTurn.profile.sampling.temperature, 0.2) } : {}),
@@ -604,12 +607,7 @@ export class CompanionEngine {
         }
         if (result.outcome === "unknown") { unconfirmedImageEffect = true; throw new Error("host image request acceptance is unknown"); }
       }
-      let usage: CompanionTerminalCandidate["usage"] = physicalUsages.length ? { promptTokens: 0, completionTokens: 0, reasoningTokens: 0 } : null;
-      for (const receipt of physicalUsages) {
-        if (!usage || !receipt) { usage = null; break; }
-        usage.promptTokens += receipt.promptTokens; usage.completionTokens += receipt.completionTokens;
-        usage.reasoningTokens = usage.reasoningTokens === null || receipt.reasoningTokens === null ? null : usage.reasoningTokens + receipt.reasoningTokens;
-      }
+      const usage = aggregateModelRequestUsage(modelRequests);
       const attribution = adapter.getAttribution(latestAssistant);
       const decision = evaluateTerminalCandidate({ attemptId: invocation.attemptId, assistantContent: messageText(latestAssistant), finishReasonKind: finishReason(latestAssistant),
         currentUserText: current.content, tools: invocation.preparedTurn.tools, toolCalls: bridge.callCount, reservations: bridge.reservations,

@@ -787,7 +787,7 @@ function AuthorityError({
   onRetry: () => void;
 }) {
   if (!error) return null;
-  return <AuthorityRequestError cause={error} message={error.message} onRetry={onRetry} />;
+  return <AuthorityRequestError requestKind="read" cause={error} message={error.message} onRetry={onRetry} />;
 }
 
 function NoPermission({

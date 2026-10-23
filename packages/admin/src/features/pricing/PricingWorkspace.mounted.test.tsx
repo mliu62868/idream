@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminI18nProvider } from "@/components/admin/i18n";
 import { PricingWorkspace } from "./PricingWorkspace";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -77,6 +78,39 @@ function button(label: string) {
 }
 
 describe("Pricing draft creation inputs", () => {
+  it("does not expose another price query's rows or cursors while its replacement fails", async () => {
+    let finish!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input), window.location.origin);
+      if (!url.pathname.endsWith("/pricing/rules")) return Response.json({ ok: true, data: { items: [] } });
+      if (url.searchParams.get("search") === "replacement") return new Promise<Response>((resolve) => { finish = resolve; });
+      return Response.json({ ok: true, data: { items: [pricingRule], pageInfo: { endCursor: "old-price-cursor", hasNextPage: true } } });
+    }));
+    await mountWorkspace();
+    expect(container.textContent).toContain(pricingRule.label);
+    await fill("Search prices", "replacement");
+    await act(async () => button("Apply").click());
+    expect(container.textContent).not.toContain(pricingRule.label);
+    expect([...container.querySelectorAll("button")].some((node) => node.textContent === "Publish")).toBe(false);
+    await act(async () => finish(Response.json({ ok: false, error: { code: "unavailable", message: "Controlled read failure" } }, { status: 503 })));
+    expect(container.textContent).not.toContain(pricingRule.label);
+    expect(container.querySelector('time')).toBeNull();
+    expect([...container.querySelectorAll("button")].some((node) => node.textContent?.trim() === "Publish")).toBe(false);
+    expect(container.querySelector('[data-testid="admin-pagination"]')).toBeNull();
+    expect(new URLSearchParams(window.location.search).get("pricingSearch")).toBe("replacement");
+  });
+
+  it("keeps the same price query's last good rows and timestamp when refreshing fails", async () => {
+    items = [pricingRule];
+    await mountWorkspace();
+    const refreshedAt = container.querySelector("time")?.dateTime;
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: false, error: { code: "unavailable", message: "Controlled refresh failure" } }, { status: 503 })));
+    await act(async () => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)));
+    expect(container.textContent).toContain(pricingRule.label);
+    expect(container.querySelector("time")?.dateTime).toBe(refreshedAt);
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+  });
+
   it.each([
     ["Base Cost (coins)", "7.5"],
     ["Base Cost (coins)", "abc"],

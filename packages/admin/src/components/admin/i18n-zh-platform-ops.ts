@@ -597,6 +597,8 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Platform route evidence controls": "平台路线证据控制",
   "Policy code": "策略代码",
   "Postmortem and close": "复盘并关闭",
+  "The latest incident status is {status}. Your unsaved postmortem is read-only; copy it before leaving.":
+    "事故最新状态为{status}。未提交的复盘草稿已保留为只读，请在离开前复制需要保留的内容。",
   "Preset ID": "预设 ID",
   "Preset details": "预设详情",
   "Preset not found.": "未找到该预设。",

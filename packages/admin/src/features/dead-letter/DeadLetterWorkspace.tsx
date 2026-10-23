@@ -284,13 +284,13 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
 
       {/* 还有上一份快照时把失败压成横幅，表格继续显示旧数据；没有快照时交给 DataTable 自己报错。 */}
       {error !== null && data ? (
-        <AuthorityRequestError cause={error} message={authorityMessage(error)} onRetry={() => void load(query)} snapshotAt={refreshedAt} />
+        <AuthorityRequestError requestKind="read" cause={error} message={authorityMessage(error)} onRetry={() => void load(query)} snapshotAt={refreshedAt} />
       ) : null}
 
       {/* 手机上危险动作改用完整判断卡片；桌面保留高密度表格与批量命令。 */}
       <div aria-label={t("Dead-letter Queue")} className="space-y-3 sm:hidden">
         {!data && errorMessage ? (
-          <AuthorityRequestError cause={error} message={errorMessage} onRetry={() => void load(query)} />
+          <AuthorityRequestError requestKind="read" cause={error} message={errorMessage} onRetry={() => void load(query)} />
         ) : !data && loading ? (
           <div aria-busy="true" className="space-y-3" role="status">
             <span className="sr-only">{t("Loading {caption}…", { caption: t("Dead-letter Queue") })}</span>

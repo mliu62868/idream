@@ -148,6 +148,93 @@ describe("starter detail version protection", () => {
     expect(apiWrite).toHaveBeenLastCalledWith(`${STARTERS_LIST}/${starter.id}`, "PATCH", expect.objectContaining({ expectedUpdatedAt: saved.updatedAt }));
   });
 
+  it.each(["retry", "shell refresh"])("retains a committed edit after readback fails and recovers through %s without writing again", async (recovery) => {
+    await render();
+    await act(async () => button("Edit profile").click());
+    await act(async () => input(field("Name (≥1)"), "Saved starter draft"));
+    await act(async () => button("Save changes").click());
+    apiGet.mockRejectedValue(new Error("Starter readback unavailable"));
+
+    await confirm("Save changes");
+
+    expect(container.textContent).toContain("Changes were saved, but the latest details could not be loaded.");
+    expect(container.textContent).not.toContain("now shows the edited values");
+    expect(field("Name (≥1)").value).toBe("Saved starter draft");
+    expect(field("Name (≥1)").closest("fieldset")?.disabled).toBe(true);
+    expect(button("Save changes").disabled).toBe(true);
+    expect(button("Cancel").disabled).toBe(true);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(apiWrite).toHaveBeenCalledTimes(1);
+
+    await act(async () => button("Retry").click());
+    expect(apiWrite).toHaveBeenCalledTimes(1);
+    expect(field("Name (≥1)").value).toBe("Saved starter draft");
+    const saved = { ...starter, name: "Saved starter draft", updatedAt: "2026-10-01T00:00:00.002Z" };
+    apiGet.mockResolvedValue({ template: saved });
+    await act(async () => {
+      if (recovery === "retry") button("Retry").click();
+      else window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT));
+    });
+
+    expect(apiWrite).toHaveBeenCalledTimes(1);
+    expect(container.querySelector("h2")?.textContent).toBe(saved.name);
+    expect(container.querySelector("input")).toBeNull();
+    expect(container.textContent).not.toContain("latest details could not be loaded");
+    expect(button("Edit profile").disabled).toBe(false);
+  });
+
+  it.each([true, false])("blocks stale actions after an active=%s starter mutation commits but readback fails", async (isActive) => {
+    apiGet.mockResolvedValue({ template: { ...starter, isActive } });
+    await render();
+    const action = isActive ? "Offline" : "Publish";
+    await act(async () => button(action).click());
+    apiGet.mockRejectedValue(new Error("Starter readback unavailable"));
+
+    await confirm(action, starter.name);
+
+    expect(container.textContent).toContain("Changes were saved, but the latest details could not be loaded.");
+    expect(container.textContent).not.toContain("is published and offered");
+    expect(container.textContent).not.toContain("is offline and no longer offered");
+    expect(button(action).disabled).toBe(true);
+    expect(button("Edit profile").disabled).toBe(true);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    const updated = { ...starter, isActive: !isActive, updatedAt: "2026-10-01T00:00:00.002Z" };
+    apiGet.mockResolvedValue({ template: updated });
+
+    await act(async () => button("Retry").click());
+
+    expect(apiWrite).toHaveBeenCalledTimes(1);
+    expect(button(isActive ? "Publish" : "Offline").disabled).toBe(false);
+    expect(container.textContent).not.toContain("latest details could not be loaded");
+  });
+
+  it("ignores an older committed readback after a newer read has unlocked another draft and confirmation", async () => {
+    await render();
+    await act(async () => button("Edit profile").click());
+    await act(async () => input(field("Name (≥1)"), "First saved draft"));
+    await act(async () => button("Save changes").click());
+    let finishFirst!: (value: { template: Starter }) => void;
+    let finishRefresh!: (value: { template: Starter }) => void;
+    apiGet.mockImplementationOnce(() => new Promise(resolve => { finishFirst = resolve; }));
+    apiGet.mockImplementationOnce(() => new Promise(resolve => { finishRefresh = resolve; }));
+    await confirm("Save changes");
+    await act(async () => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)));
+    const saved = { ...starter, name: "First saved draft", updatedAt: "2026-10-01T00:00:00.002Z" };
+    await act(async () => finishRefresh({ template: saved }));
+    await act(async () => button("Edit profile").click());
+    await act(async () => input(field("Name (≥1)"), "Second unsaved draft"));
+    await act(async () => button("Save changes").click());
+    await act(async () => input(dialog().querySelector<HTMLInputElement>('[aria-label="Reason (≥3)"]')!, "Keep the new confirmation"));
+    const newConfirmation = dialog();
+
+    await act(async () => finishFirst({ template: saved }));
+
+    expect(container.querySelector('input')?.value).toBe("Second unsaved draft");
+    expect(dialog()).toBe(newConfirmation);
+    expect(dialog().querySelector<HTMLInputElement>('[aria-label="Reason (≥3)"]')!.value).toBe("Keep the new confirmation");
+    expect(apiWrite).toHaveBeenCalledTimes(1);
+  });
+
   it("does not replace the draft version when a language change reloads the current starter", async () => {
     await render();
     await act(async () => button("Edit profile").click());

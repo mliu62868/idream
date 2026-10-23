@@ -15,6 +15,12 @@ import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
+import {
+  authorityRequestFailed,
+  authorityRequestStarted,
+  authorityRequestSucceeded,
+  createAuthorityState,
+} from "@/lib/authority-state";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { ApprovalRequiredNotice, isDualApprovalRequired, type BlockedApproval } from "@/features/approvals/ApprovalRequired";
 import { CoinOffersPanel } from "./CoinOffersPanel";
@@ -47,15 +53,10 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
   const [query, setQuery] = useState<PricingQuery>(defaultPricingQuery);
   const [queryDraft, setQueryDraft] = useState<PricingQuery>(defaultPricingQuery);
   const [pricingDraft, setPricingDraft] = useState<PricingDraft>(defaultPricingDraft);
-  const [rows, setRows] = useState<PricingRecord[] | null>(null);
-  const [pageInfo, setPageInfo] = useState<PageInfo>(emptyPageInfo);
+  const [list, setList] = useState(() => createAuthorityState<PricingListResponse>());
   // 游标轨迹保留上一页；只有从首页空游标起算时，轨迹长度才能证明页码。
   const [cursorTrail, setCursorTrail] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
   const [writing, setWriting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [errorCause, setErrorCause] = useState<unknown>(undefined);
-  const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const [coinOffersOpen, setCoinOffersOpen] = useState(false);
   const coinOffersRef = useRef<HTMLDetailsElement>(null);
@@ -66,6 +67,9 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
   const writeAuthority = useRef({ canWrite });
   const editIntent = useRef<PricingEdit | null>(null);
   const confirmationIntent = useRef<ConfirmSpec | null>(null);
+  const rows = list.data?.items ?? null;
+  const pageInfo = list.data?.pageInfo ?? emptyPageInfo;
+  const { loading, error, cause: errorCause, refreshedAt } = list;
 
   if (previousCanWrite !== canWrite) {
     setPreviousCanWrite(canWrite);
@@ -88,22 +92,17 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
 
   const load = useCallback(async (next: PricingQuery) => {
     const request = requestGate.current.begin();
-    setLoading(true);
-    setError(null);
-    setErrorCause(undefined);
+    const queryKey = pricingListPath(next);
+    // Price actions and pagination must belong to the visible query.
+    setList((current) => authorityRequestStarted(current, queryKey));
     try {
-      const data = await apiGet<PricingListResponse>(pricingListPath(next));
+      const data = await apiGet<PricingListResponse>(queryKey);
       if (!request.isCurrent()) return;
-      setRows(data.items);
-      setPageInfo(data.pageInfo ?? emptyPageInfo);
-      setRefreshedAt(new Date().toISOString());
+      setList(authorityRequestSucceeded(queryKey, data));
     } catch (cause) {
       if (request.isCurrent()) {
-        setError(cause instanceof Error ? cause.message : "Pricing authority request failed");
-        setErrorCause(cause);
+        setList((current) => authorityRequestFailed(current, queryKey, cause instanceof Error ? cause.message : "Pricing authority request failed", cause));
       }
-    } finally {
-      if (request.isCurrent()) setLoading(false);
     }
   }, []);
 
@@ -167,7 +166,7 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
   async function createDraft() {
     if (!canWrite || !canCreatePricingRule(pricingDraft)) return;
     setWriting(true);
-    setError(null);
+    setList((current) => ({ ...current, error: null, cause: undefined }));
     try {
       await apiWrite(
         "/api/v2/admin/pricing/rules",
@@ -225,6 +224,11 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
     const name = text(row.label) || text(row.ruleKey) || id;
     const authority = writeAuthority.current;
     const queryIntent = pricingListPath(query);
+    const confirmedPrice = action === "publish" ? {
+      expectedVersion: Number(row.version),
+      expectedBaseCost: Number(row.baseCost),
+      expectedMultiplier: Number(row.multiplier),
+    } : {};
     const spec: ConfirmSpec = {
       title: action === "publish" ? t("Publish pricing rule") : t("Rollback pricing rule"),
       // INTENT: 这个框原来只写「名字 · 版本 N」——运营点「发布」的时候看不到自己要发布的价格
@@ -259,7 +263,7 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
           await apiWrite(
             `/api/v2/admin/pricing/rules/${encodeURIComponent(id)}/${action}`,
             "POST",
-            { reason, confirmation: id },
+            { reason, confirmation: id, ...confirmedPrice },
           );
         } catch (error) {
           if (!isCurrent()) return;
@@ -308,7 +312,7 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
 
       {canWrite && blockedPublish ? <ApprovalRequiredNotice blocked={blockedPublish.approval} message={t("Publishing {name} at this price needs a second approver. Submit an approval request; once approved, publish it again. Editing the draft afterwards voids the approval.", { name: blockedPublish.name })} onRequested={() => setBlockedPublish(null)} testId="pricing-publish-approval-required" /> : null}
       {canWrite && editing ? <PricingEditForm busy={writing} edit={editing} onCancel={() => changeEdit(null)} onChange={changeEdit} onSave={saveEdit} /> : null}
-      {error ? <AuthorityRequestError cause={errorCause} message={error} onRetry={() => void load(query)} snapshotAt={rows ? refreshedAt : null} /> : null}
+      {error ? <AuthorityRequestError requestKind="read" cause={errorCause} message={error} onRetry={() => void load(query)} snapshotAt={rows ? refreshedAt : null} /> : null}
       {loading && rows === null ? <PricingLoading /> : rows?.length === 0 ? <EmptyState action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={clearFilters} type="button">{t("Clear filters")}</button> : undefined} hint={filtered ? "The complete authority query returned no pricing versions." : "Create a versioned pricing draft before publishing a customer-facing price."} title={filtered ? "No pricing rules match these filters" : "No pricing rules exist yet"} /> : rows ? <PricingTable canWrite={canWrite} onAction={confirmVersionAction} onEdit={(row) => changeEdit(pricingEditFromRow(row))} rows={rows} /> : null}
       {rows ? (
         <Pagination

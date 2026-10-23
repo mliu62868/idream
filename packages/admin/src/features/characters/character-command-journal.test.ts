@@ -656,6 +656,62 @@ describe("character command journal — 落盘身份", () => {
     expect(journal.takeIdempotencyKey("publish:release-1")).toBe("key-3");
   });
 
+  it("retains legacy retry keys and settles only linked profiles after rebuilding the journal", () => {
+    const storage = memoryStorage();
+    let sequence = 0;
+    const options = {
+      actorId: "operator-a", characterId: "character-1", storage,
+      createIdempotencyKey: () => `key-${++sequence}`,
+    };
+    const createSignature = "voice-preset:character-1:anna";
+    const activateSignature = "voice-activate:character-1:profile-1";
+    const unknownSignature = "voice-preset:character-1:vera";
+    storage.setItem("idream:admin:character:operator-a:character-1:command-idempotency", JSON.stringify({
+      [createSignature]: "legacy-create-key", [unknownSignature]: "legacy-unknown-key",
+    }));
+    const before = createCharacterCommandJournal(options);
+    expect(before.takeIdempotencyKey(createSignature)).toBe("legacy-create-key");
+    before.bindVoiceProfile(createSignature, "legacy-create-key", "profile-1");
+    const activationKey = before.takeIdempotencyKey(activateSignature);
+    before.bindVoiceProfile(activateSignature, activationKey, "profile-1");
+    const after = createCharacterCommandJournal(options);
+    expect(after.takeIdempotencyKey(createSignature)).toBe("legacy-create-key");
+    after.releaseVoiceProfileKeys("unrelated-profile");
+    expect(after.takeIdempotencyKey(activateSignature)).toBe(activationKey);
+    after.releaseVoiceProfileKeys("profile-1");
+
+    const reopened = createCharacterCommandJournal(options);
+    expect(reopened.takeIdempotencyKey(unknownSignature)).toBe("legacy-unknown-key");
+    expect(reopened.takeIdempotencyKey(createSignature)).not.toBe("legacy-create-key");
+    expect(reopened.takeIdempotencyKey(activateSignature)).not.toBe(activationKey);
+  });
+
+  it("does not let an older tab settle a new profile using the same operation signature", () => {
+    const storage = memoryStorage();
+    let sequence = 0;
+    const options = {
+      actorId: "operator-a", characterId: "character-1", storage,
+      createIdempotencyKey: () => `key-${++sequence}`,
+    };
+    const signature = "voice-preset:character-1:anna";
+    const older = createCharacterCommandJournal(options);
+    const firstKey = older.takeIdempotencyKey(signature);
+    older.bindVoiceProfile(signature, firstKey, "profile-1");
+    const newer = createCharacterCommandJournal(options);
+    newer.releaseIdempotencyKey(signature);
+    const secondKey = newer.takeIdempotencyKey(signature);
+    newer.bindVoiceProfile(signature, secondKey, "profile-2");
+    expect(secondKey).not.toBe(firstKey);
+
+    // The old response arrives after the other tab claimed a different key.
+    older.bindVoiceProfile(signature, firstKey, "profile-1");
+    older.releaseVoiceProfileKeys("profile-1");
+    const reopened = createCharacterCommandJournal(options);
+    expect(reopened.takeIdempotencyKey(signature)).toBe(secondKey);
+    reopened.releaseVoiceProfileKeys("profile-2");
+    expect(reopened.takeIdempotencyKey(signature)).not.toBe(secondKey);
+  });
+
   it("isolates durable command keys by actor for the same Character and signature", () => {
     const storage = memoryStorage();
     const operatorA = createCharacterCommandJournal({

@@ -433,7 +433,7 @@ describe("Chat embedded companion runtime", () => {
       const runtime = await engine(new OneStepAdapter(), undefined, {
         adapter: (profile, policy) => new FixtureAdapter({
           profile, ...policy, apiKey: "fixture-key",
-          observeRequest: evidence => { purpose = evidence.purpose; policy.observeRequest(evidence); },
+          observeRequest: evidence => { purpose = evidence.purpose; policy.observeRequest?.(evidence); },
           fetch: async () => {
             requests.push(purpose);
             const compacting = purpose === "compaction";
@@ -457,6 +457,12 @@ describe("Chat embedded companion runtime", () => {
       expect(connection.candidates).toHaveLength(0);
       expect(connection.events.at(-1)?.type).toBe("failed");
       expect(connection.events.filter(event => event.type === "usage")).toHaveLength(withUsage ? 1 : 0);
+      expect(connection.events.filter(event => event.type === "model_request")).toEqual([
+        expect.objectContaining({ request: expect.objectContaining({ purpose: "compaction",
+          provider: value.preparedTurn.profile.provider, model: value.preparedTurn.profile.model,
+          usage: withUsage ? { inputTokens: 100, outputTokens: 10 } : null,
+        }) }),
+      ]);
     },
   );
 
@@ -1193,6 +1199,33 @@ describe("Chat embedded companion runtime", () => {
     await run;
 
     expect(connection.events.at(-1)).toMatchObject({ type: "cancelled", reason: "user" });
+  });
+
+  it("retains a known tool request and an unknown interrupted answer when cancelled", async () => {
+    let requests = 0;
+    const value = invocation(true);
+    const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture",
+      fetch: async (_url, init) => {
+        if (++requests === 1) return response({ tool_calls: [{ index: 0, id: "image-1", function: {
+          name: "generate_image_async", arguments: JSON.stringify({ prompt: "Mira by the observatory", subject: "companion", requestedNudity: "none" }),
+        } }] }, "tool_calls", { inputTokens: 25, outputTokens: 6, cacheReadTokens: 4 });
+        return await new Promise<Response>((_resolve, reject) => {
+          const abort = () => reject(init?.signal?.reason);
+          if (init?.signal?.aborted) abort(); else init?.signal?.addEventListener("abort", abort, { once: true });
+        });
+      },
+    });
+    const runtime = await engine(adapter);
+    const connection = port();
+    const run = runtime.run(value, connection.runtimePort);
+    await waitFor(() => requests === 2);
+    runtime.cancel(value.invocationId, "user");
+    await run;
+    expect(connection.candidates).toHaveLength(0);
+    expect(connection.events.at(-1)).toMatchObject({ type: "cancelled", reason: "user" });
+    expect(connection.events.filter(event => event.type === "model_request").map(event => event.request.usage)).toEqual([
+      { inputTokens: 25, outputTokens: 6, cacheReadTokens: 4, reasoningTokens: 0 }, null,
+    ]);
   });
 
   it("passes the active cancellation signal through a pending terminal projection", async () => {

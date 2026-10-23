@@ -66,6 +66,7 @@ afterEach(async () => {
   container?.remove();
   container = null;
   adminV2Request.mockReset();
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
@@ -208,5 +209,62 @@ describe("global admin search as a command palette", () => {
     await type("taxonomy");
     expect(optionLabels().some((label) => label.includes("Amy"))).toBe(false);
     expect(optionLabels().some((label) => label.includes("Taxonomy"))).toBe(true);
+  });
+
+  it.each(["success", "failure"] as const)("keeps a dismissed palette closed when the pending search ends in %s", async (outcome) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let complete: (value: unknown) => void = () => {};
+    let fail: (reason: unknown) => void = () => {};
+    adminV2Request.mockImplementation(() => new Promise((resolve, reject) => {
+      complete = resolve;
+      fail = reject;
+    }));
+    await mountPalette("en");
+    await type("taxonomy");
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(adminV2Request).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      document.body.dispatchEvent(new window.PointerEvent("pointerdown", { bubbles: true }));
+    });
+    expect(input().getAttribute("aria-expanded")).toBe("false");
+
+    await act(async () => {
+      if (outcome === "success") complete({ items: [], query: "taxonomy", asOf: "2026-10-22T00:00:00.000Z" });
+      else fail(new Error("Search unavailable"));
+    });
+    expect(input().getAttribute("aria-expanded")).toBe("false");
+    expect(container?.querySelector("[role='listbox']")).toBeNull();
+
+    // Results are still retained, so explicitly returning to the input can reopen the palette.
+    await act(async () => input().focus());
+    expect(input().getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it.each([
+    { isComposing: true, keyCode: 0 },
+    { isComposing: false, keyCode: 229 },
+  ])("leaves candidate selection keys to the input method (%j)", async (composition) => {
+    adminV2Request.mockImplementation(() => new Promise(() => {}));
+    const navigate = vi.spyOn(window.location, "assign").mockImplementation(() => {});
+    await mountPalette("en");
+    await type("character");
+    const selected = input().getAttribute("aria-activedescendant");
+
+    for (const key of ["ArrowDown", "ArrowUp", "Enter", "Escape"]) {
+      const event = new window.KeyboardEvent("keydown", { bubbles: true, cancelable: true, key, ...composition });
+      await act(async () => input().dispatchEvent(event));
+      expect(event.defaultPrevented).toBe(false);
+      expect(input().getAttribute("aria-activedescendant")).toBe(selected);
+      expect(input().value).toBe("character");
+      expect(input().getAttribute("aria-expanded")).toBe("true");
+    }
+    expect(navigate).not.toHaveBeenCalled();
+
+    // A subsequent, ordinary Enter still activates the selected destination.
+    await act(async () => input().dispatchEvent(new window.KeyboardEvent("keydown", {
+      bubbles: true, cancelable: true, key: "Enter",
+    })));
+    expect(navigate).toHaveBeenCalledOnce();
   });
 });

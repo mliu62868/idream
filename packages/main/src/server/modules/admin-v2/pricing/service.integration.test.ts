@@ -135,6 +135,28 @@ afterAll(async () => {
 });
 
 describe.sequential("Admin v2 pricing control plane", () => {
+  it.each([
+    { baseCost: 400, multiplier: 1 },
+    { baseCost: 4, multiplier: 2 },
+  ])("rejects publication after another operator changes the confirmed price to %j", async (changed) => {
+    const id = `${P}stale-confirmation-${changed.baseCost}-${changed.multiplier}`;
+    const rule = await prisma.pricingRule.create({
+      data: { id, ruleKey: id, label: "Confirmed price", mode: id, baseCost: 4, multiplier: 1, status: "draft", version: 1 },
+    });
+    expectOk(await ruleCommand(patchRoute, {
+      method: "PATCH", suffix: "", id, userId: adminId, role: "admin", body: changed,
+    }));
+    const response = await ruleCommand(publishRoute, {
+      method: "POST", suffix: "/publish", id, userId: adminId, role: "admin",
+      body: { reason: "publish originally confirmed price", confirmation: id, expectedVersion: rule.version, expectedBaseCost: rule.baseCost, expectedMultiplier: rule.multiplier },
+    });
+    expectError(response, 409, "conflict");
+    expect(await prisma.pricingRule.findUnique({ where: { id } })).toMatchObject({ status: "draft", ...changed });
+    expect(await prisma.controlPlaneCommand.count({ where: { targetId: id, commandType: "config.pricing.publish" } })).toBe(0);
+    expect(await prisma.adminAuditLog.count({ where: { targetId: id, action: "config.pricing.publish" } })).toBe(0);
+    expect(await prisma.mainOutboxEvent.count({ where: { aggregateId: id, eventType: "config.pricing.rule.published.v2" } })).toBe(0);
+  });
+
   it("gates pricing reads by billing.read and writes by config.pricing.write", async () => {
     expectOk(await listRules({ userId: supportId, role: "support" }));
     expectOk(await listRules({ userId: adminId, role: "admin" }));
@@ -255,7 +277,7 @@ describe.sequential("Admin v2 pricing control plane", () => {
       id: draftId,
       userId: adminId,
       role: "admin",
-      body: { reason: "promo price drop", confirmation: "PUBLISH" },
+      body: { reason: "promo price drop", confirmation: "PUBLISH", expectedVersion: 2, expectedBaseCost: 75, expectedMultiplier: 1 },
     });
     expectError(publishWrongConfirmation, 400, "bad_request");
 
@@ -268,6 +290,9 @@ describe.sequential("Admin v2 pricing control plane", () => {
       body: {
         reason: "unsupported scheduled price",
         confirmation: draftId,
+        expectedVersion: 2,
+        expectedBaseCost: 75,
+        expectedMultiplier: 1,
         effectiveFrom: new Date(Date.now() + 86_400_000).toISOString(),
       },
     });
@@ -281,7 +306,7 @@ describe.sequential("Admin v2 pricing control plane", () => {
       userId: adminId,
       role: "admin",
       requestId: `${P}publish-request`,
-      body: { reason: "promo price drop", confirmation: draftId },
+      body: { reason: "promo price drop", confirmation: draftId, expectedVersion: 2, expectedBaseCost: 75, expectedMultiplier: 1 },
     });
     expectOk(published);
     // previousActiveId 只报告发布前该 mode 上任意一条 active 规则（v1 起就是 findFirst，
@@ -378,7 +403,7 @@ describe.sequential("Admin v2 pricing control plane", () => {
     }), 400, "bad_request");
     expectOk(await ruleCommand(publishRoute, {
       method: "POST", suffix: "/publish", id: draftId, userId: adminId, role: "admin",
-      body: { reason: "voice promo live", confirmation: draftId },
+      body: { reason: "voice promo live", confirmation: draftId, expectedVersion: 1, expectedBaseCost: 1, expectedMultiplier: 1 },
     }));
     expect(await prisma.pricingRule.findUnique({ where: { id: "seed-pricing-voice-default-v1" } }))
       .toMatchObject({ status: "archived" });
@@ -403,7 +428,7 @@ describe.sequential("Admin v2 pricing control plane", () => {
       });
       expectOk(draft);
       const id = draft.data.rule.id as string;
-      expectOk(await ruleCommand(publishRoute, { method: "POST", suffix: "/publish", id, userId: adminId, role: "admin", body: { reason: "chain live", confirmation: id } }));
+      expectOk(await ruleCommand(publishRoute, { method: "POST", suffix: "/publish", id, userId: adminId, role: "admin", body: { reason: "chain live", confirmation: id, expectedVersion: 1, expectedBaseCost: baseCost, expectedMultiplier: 1 } }));
       return id;
     };
     const rollback = async (id: string) => {
@@ -543,7 +568,7 @@ describe.sequential("Admin v2 pricing control plane", () => {
       userId: adminId,
       role: "admin",
       requestId: `${P}fail-audit-publish`,
-      body: { reason: "verify transactional pricing publish", confirmation: publishId },
+      body: { reason: "verify transactional pricing publish", confirmation: publishId, expectedVersion: 2, expectedBaseCost: 25, expectedMultiplier: 1 },
     })).resolves.toMatchObject({ status: 500, ok: false, error: { code: "internal" } });
     await expect(prisma.pricingRule.findUnique({ where: { id: activeId } }))
       .resolves.toMatchObject({ status: "active" });

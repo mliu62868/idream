@@ -15,6 +15,7 @@ import { INPUT_CLASS } from "@/components/admin/ui/FormPage";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
 import { useWorkspaceRefresh } from "@/features/workspace-refresh";
+import { createLatestRequestGate } from "@/lib/latest-request";
 import { InfoGrid, WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 import {
   PATCH_ACTIONS,
@@ -26,7 +27,22 @@ import {
 } from "./placements-api";
 
 // Publication is a separate byte-verifying command; a status PATCH cannot bypass it.
-type PendingAction = (typeof PATCH_ACTIONS)[number] | "publish" | "copy" | null;
+type CopyFields = Pick<PlacementDraft, "eyebrow" | "title" | "ctaLabel" | "href">;
+type CopyDraft = CopyFields & { version: number; baseline: CopyFields };
+type PendingAction = {
+  kind: (typeof PATCH_ACTIONS)[number] | "publish" | "copy";
+  row: Placement;
+  copy: CopyDraft | null;
+};
+
+function campaignCopy(row: { metadata: unknown }): CopyFields {
+  const metadata = row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+    ? row.metadata as Record<string, unknown> : {};
+  return {
+    eyebrow: String(metadata.eyebrow ?? ""), title: String(metadata.title ?? ""),
+    ctaLabel: String(metadata.ctaLabel ?? ""), href: String(metadata.href ?? ""),
+  };
+}
 
 export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; id: string }) {
   const { t, value } = useAdminI18n();
@@ -35,8 +51,9 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
-  const [pending, setPending] = useState<PendingAction>(null);
-  const [copy, setCopy] = useState<Pick<PlacementDraft, "eyebrow" | "title" | "ctaLabel" | "href"> | null>(null);
+  const [pending, setPending] = useState<PendingAction | null>(null);
+  const [copy, setCopy] = useState<CopyDraft | null>(null);
+  const [requestGate] = useState(createLatestRequestGate);
   const [writePermission, setWritePermission] = useState(canPublish);
   // Revocation discards the write intent itself, so regrant cannot revive an
   // earlier draft or a filled publication confirmation.
@@ -50,19 +67,22 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
   const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
 
   const reload = useCallback(async (propagateError = false) => {
+    const request = requestGate.begin();
     setLoading(true);
     setError(null);
     try {
       const data = await apiGet<{ placement: Placement }>(`${PLACEMENTS_BASE}/${encodeURIComponent(id)}`);
+      if (!request.isCurrent()) return;
       setRows([data.placement]);
       setRefreshWarning(null);
     } catch (loadError) {
+      if (!request.isCurrent()) return;
       setError(requestErrorMessage(loadError, t));
       if (propagateError) throw loadError;
     } finally {
-      setLoading(false);
+      if (request.isCurrent()) setLoading(false);
     }
-  }, [id, t]);
+  }, [id, t, requestGate]);
 
   useWorkspaceRefresh(reload);
 
@@ -70,25 +90,30 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
     const timer = window.setTimeout(() => {
       void reload();
     }, 0);
-    return () => window.clearTimeout(timer);
-  }, [reload]);
+    return () => { window.clearTimeout(timer); requestGate.invalidate(); };
+  }, [reload, requestGate]);
 
   const row = useMemo(() => rows.find((item) => item.id === id), [rows, id]);
   const { guard } = useUnsavedChanges(Boolean(copy &&
-    (["eyebrow", "title", "ctaLabel", "href"] as const).some(key => copy[key] !== String(row?.metadata?.[key] ?? ""))));
+    (["eyebrow", "title", "ctaLabel", "href"] as const).some(key => copy[key] !== copy.baseline[key])));
 
   const confirmSpec: ConfirmSpec | null = useMemo(() => {
-    if (!canPublish || !row || !pending || (pending === "copy" && !copy)) return null;
-    if (pending === "copy" && copy) return {
+    if (!canPublish || !pending || (pending.kind === "copy" && !pending.copy)) return null;
+    // A refresh may replace the visible row, never the version or content approved here.
+    const { row: target, copy: submittedCopy, kind } = pending;
+    if (kind === "copy" && submittedCopy) return {
       title: t("Save changes"), submitLabel: t("Save changes"),
       onSubmit: async (reason) => {
-        await adminV2Operation("PATCH /api/v2/admin/content/placements/:id", {
-          path: { id }, ifMatch: row.version, body: { confirmation: id, reason, metadata: {
-            eyebrow: copy.eyebrow.trim(), title: copy.title.trim(),
-            ctaLabel: copy.ctaLabel.trim() || null, href: copy.href.trim() || null,
+        const result = await adminV2Operation("PATCH /api/v2/admin/content/placements/:id", {
+          path: { id: target.id }, ifMatch: submittedCopy.version, body: { confirmation: target.id, reason, metadata: {
+            eyebrow: submittedCopy.eyebrow.trim(), title: submittedCopy.title.trim(),
+            ctaLabel: submittedCopy.ctaLabel.trim() || null, href: submittedCopy.href.trim() || null,
           } },
         });
-        setCopy(null);
+        setCopy((current) => current === submittedCopy ? null
+          : current?.baseline === submittedCopy.baseline
+            ? { ...current, version: result.placement.version, baseline: campaignCopy(result.placement) }
+            : current);
         reportSuccess(t("Campaign copy saved. Publish to make it visible in Community."));
         try { await reload(true); }
         catch (refreshError) {
@@ -97,12 +122,12 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
         }
       },
     };
-    if (pending === "publish") return {
+    if (kind === "publish") return {
       title: t("Publish"), submitLabel: t("Publish"),
       summary: t("This campaign will become visible in Community. You can pause it from this page."),
       onSubmit: async (reason) => {
         await adminV2Operation("POST /api/v2/admin/content/placements/:id/publish", {
-          path: { id }, ifMatch: row.version, body: { reason, confirmation: id },
+          path: { id: target.id }, ifMatch: target.version, body: { reason, confirmation: target.id },
         });
         reportSuccess(t("Published. This campaign is visible in Community."));
         try { await reload(true); }
@@ -112,17 +137,17 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
         }
       },
     };
-    if (pending === "paused") {
+    if (kind === "paused") {
       return {
         title: t("Pause"),
         submitLabel: t("Pause"),
         onSubmit: async (reason) => {
           await adminV2Operation("PATCH /api/v2/admin/content/placements/:id", {
-            path: { id },
-            ifMatch: row.version,
-            body: placementPatchPayload(id, "paused", reason),
+            path: { id: target.id },
+            ifMatch: target.version,
+            body: placementPatchPayload(target.id, "paused", reason),
           });
-          reportSuccess(t("Paused. {slot} stops serving immediately.", { slot: value(row.slot) }));
+          reportSuccess(t("Paused. {slot} stops serving immediately.", { slot: value(target.slot) }));
           try {
             await reload(true);
           } catch (refreshError) {
@@ -138,15 +163,15 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
     }
     return {
       title: t("Archive"),
-      destructive: { expectedName: row.slot },
+      destructive: { expectedName: target.slot },
       submitLabel: t("Archive"),
       onSubmit: async (reason) => {
         await adminV2Operation("PATCH /api/v2/admin/content/placements/:id", {
-          path: { id },
-          ifMatch: row.version,
-          body: placementPatchPayload(id, "archived", reason),
+          path: { id: target.id },
+          ifMatch: target.version,
+          body: placementPatchPayload(target.id, "archived", reason),
         });
-        reportSuccess(t("Archived. {slot} is retired and will not serve again.", { slot: value(row.slot) }));
+        reportSuccess(t("Archived. {slot} is retired and will not serve again.", { slot: value(target.slot) }));
         try {
           await reload(true);
           } catch (refreshError) {
@@ -159,7 +184,12 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
         }
       },
     };
-  }, [canPublish, pending, row, id, t, value, reload, reportSuccess, copy]);
+  }, [canPublish, pending, t, value, reload, reportSuccess]);
+
+  function startAction(kind: PendingAction["kind"]) {
+    if (!canPublish || !row || refreshWarning || pending) return;
+    setPending({ kind, row, copy });
+  }
 
   if (loading && !row) {
     return <>{guard}<LoadingWorkspace label="Loading…" /></>;
@@ -200,9 +230,9 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
   const actions = canPublishArtwork || canPause || canArchive || refreshWarning ? (
     <>
       {refreshWarning ? <GhostButton onClick={() => void reload()}>{t("Refresh")}</GhostButton> : null}
-      {canPublishArtwork ? <PrimaryButton disabled={Boolean(refreshWarning)} onClick={() => setPending("publish")}>{t("Publish")}</PrimaryButton> : null}
-      {canPause ? <GhostButton disabled={Boolean(refreshWarning)} onClick={() => setPending("paused")}>{t("Pause")}</GhostButton> : null}
-      {canArchive ? <DangerButton disabled={Boolean(refreshWarning)} onClick={() => setPending("archived")}>{t("Archive")}</DangerButton> : null}
+      {canPublishArtwork ? <PrimaryButton disabled={Boolean(refreshWarning)} onClick={() => startAction("publish")}>{t("Publish")}</PrimaryButton> : null}
+      {canPause ? <GhostButton disabled={Boolean(refreshWarning)} onClick={() => startAction("paused")}>{t("Pause")}</GhostButton> : null}
+      {canArchive ? <DangerButton disabled={Boolean(refreshWarning)} onClick={() => startAction("archived")}>{t("Archive")}</DangerButton> : null}
     </>
   ) : null;
 
@@ -255,16 +285,16 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
           ["ctaLabel", "Campaign CTA label", 60], ["href", "Campaign CTA href", 512],
         ] as const).map(([key, label, maxLength]) => <label key={key} className="grid gap-1 text-sm">{t(label)}<input aria-label={t(label)} className={INPUT_CLASS} maxLength={maxLength} value={copy[key]} onChange={event => setCopy({ ...copy, [key]: event.target.value })} /></label>)}
         <p className="text-sm text-[var(--ad-text-muted)]">{t("Add both a CTA label and destination, or leave both blank.")}</p>
-        <div className="flex gap-2"><GhostButton onClick={() => { setCopy(null); setPending(null); }}>{t("Cancel")}</GhostButton><PrimaryButton disabled={Boolean(refreshWarning) || !validCampaignDraft({ ...copy, slot: "campaign", targetType: "campaign" })} onClick={() => setPending("copy")}>{t("Save changes")}</PrimaryButton></div>
+        <div className="flex gap-2"><GhostButton onClick={() => { setCopy(null); setPending(null); }}>{t("Cancel")}</GhostButton><PrimaryButton disabled={Boolean(refreshWarning) || !validCampaignDraft({ ...copy, slot: "campaign", targetType: "campaign" })} onClick={() => startAction("copy")}>{t("Save changes")}</PrimaryButton></div>
       </div> : <><InfoGrid items={[
         { label: t("Campaign eyebrow"), value: String(row.metadata?.eyebrow ?? "—") },
         { label: t("Campaign title"), value: String(row.metadata?.title ?? "—") },
         { label: t("Campaign CTA label"), value: String(row.metadata?.ctaLabel ?? "—") },
         { label: t("Campaign CTA href"), value: String(row.metadata?.href ?? "—") },
-      ]} />{canEditCopy ? <GhostButton disabled={Boolean(refreshWarning)} onClick={() => setCopy({
-        eyebrow: String(row.metadata?.eyebrow ?? ""), title: String(row.metadata?.title ?? ""),
-        ctaLabel: String(row.metadata?.ctaLabel ?? ""), href: String(row.metadata?.href ?? ""),
-      })}>{t("Edit")}</GhostButton> : null}</>}</DetailSection> : null}
+      ]} />{canEditCopy ? <GhostButton disabled={Boolean(refreshWarning)} onClick={() => {
+        const fields = campaignCopy(row);
+        setCopy({ ...fields, baseline: fields, version: row.version });
+      }}>{t("Edit")}</GhostButton> : null}</>}</DetailSection> : null}
 
       <DetailSection title={t("Basic info")}>
         <InfoGrid
@@ -283,7 +313,7 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
         <div>{t("Media asset")}: {row.mediaAssetId}</div>
       </EngineeringDetails>
 
-      {confirmSpec ? <ConfirmDialog onClose={() => setPending(null)} spec={confirmSpec} /> : null}
+      {confirmSpec ? <ConfirmDialog onClose={() => setPending((current) => current === pending ? null : current)} spec={confirmSpec} /> : null}
     </DetailPage>
   );
 }

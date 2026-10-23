@@ -13,6 +13,7 @@ import {
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
+import { useUnsavedChanges } from "@/components/admin/ui/useUnsavedChanges";
 import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 import { setWorkspaceUrl } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
@@ -79,6 +80,8 @@ export function IncidentWorkspace({
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [detailDirty, setDetailDirty] = useState(false);
+  const { confirmDiscard, guard } = useUnsavedChanges(detailDirty);
   // 只装读取失败：写操作的失败走 useFailureToast()（错误码映射 + 复制给工程）。
   const [error, setError] = useState<unknown>(null);
   const [detailError, setDetailError] = useState<unknown>(null);
@@ -196,13 +199,16 @@ export function IncidentWorkspace({
   }
 
   function selectIncident(id: string | null) {
-    activeOperations.current.clear();
-    setBusy(false);
-    detailRequestId.current += 1;
-    setSelectedId(id);
-    setDetail(null);
-    history.current.navigate({ ...history.current.current(), selectedId: id }, writeIncidentUrl);
-    if (id) void loadDetail(id);
+    if (id === selectedId) return;
+    confirmDiscard(() => {
+      activeOperations.current.clear();
+      setBusy(false);
+      detailRequestId.current += 1;
+      setSelectedId(id);
+      setDetail(null);
+      history.current.navigate({ ...history.current.current(), selectedId: id }, writeIncidentUrl);
+      if (id) void loadDetail(id);
+    });
   }
 
   const applySavedView = useCallback((view: SavedViewRecord) => {
@@ -275,6 +281,7 @@ export function IncidentWorkspace({
 
   return (
     <section aria-labelledby="incident-workspace-title" className="space-y-5">
+      {guard}
       <header className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <h2 className="sr-only" id="incident-workspace-title">{t("Incidents")}</h2>
@@ -316,23 +323,22 @@ export function IncidentWorkspace({
 
       {/* 读取失败留在页面上（它带着重试入口）；写操作的成功与失败都走 toast。 */}
       {error !== null ? (
-        <AuthorityRequestError cause={error} message={message(error)} onRetry={reload} snapshotAt={list ? list.asOf : null} />
+        <AuthorityRequestError requestKind="read" cause={error} message={message(error)} onRetry={reload} snapshotAt={list ? list.asOf : null} />
       ) : null}
-      {detailError !== null ? <AuthorityRequestError cause={detailError} message={message(detailError)} onRetry={() => selectedId && void loadDetail(selectedId)} snapshotAt={detail?.incident.updatedAt ?? null} /> : null}
+      {detailError !== null ? <AuthorityRequestError requestKind="read" cause={detailError} message={message(detailError)} onRetry={() => selectedId && void loadDetail(selectedId)} snapshotAt={detail?.incident.updatedAt ?? null} /> : null}
 
-      {loading && !list ? <LoadingWorkspace label="Loading correlated incidents" /> : list && list.items.length === 0 ? (
-        <EmptyWorkspace filtered={filtered} onClear={clearFilters} />
-      ) : (
+      {loading && !list ? <LoadingWorkspace label="Loading correlated incidents" /> : (
         <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,0.92fr)_minmax(440px,1.08fr)]">
           {selectedId ? (
             detailLoading && !detail ? <LoadingWorkspace label="Loading incident detail" /> : detail ? (
-              <IncidentInspector asOf={list?.asOf ?? detail.incident.updatedAt} busy={busy || detailLoading || detailError !== null} canManage={canManage} detail={detail} key={detail.incident.id} onClose={() => selectIncident(null)} onCommand={command} onMutate={mutate} onAuthorityChange={refreshAuthority} />
+              <IncidentInspector asOf={list?.asOf ?? detail.incident.updatedAt} busy={busy || detailLoading || detailError !== null} canManage={canManage} detail={detail} key={detail.incident.id} onClose={() => selectIncident(null)} onCommand={command} onMutate={mutate} onAuthorityChange={refreshAuthority} onDirtyChange={setDetailDirty} />
             ) : null
           ) : (
             <aside className="hidden rounded-xl bg-[var(--ad-surface-subtle)] p-8 text-sm text-[var(--ad-text-muted)] lg:block">{t("Select an incident to inspect occurrences, mitigation scope, and recovery evidence.")}</aside>
           )}
 
           <div className="space-y-2 lg:order-first" aria-label={t("Incident results")}>
+            {list && list.items.length === 0 ? <EmptyWorkspace filtered={filtered} onClear={clearFilters} /> : null}
             {list?.items.map((incident) => (
               <button
                 aria-current={selectedId === incident.id ? "true" : undefined}
@@ -371,7 +377,7 @@ export function IncidentWorkspace({
   );
 }
 
-function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, onMutate, onAuthorityChange }: {
+function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, onMutate, onAuthorityChange, onDirtyChange }: {
   /** 服务端在这次拉取时的时钟——渲染期不许读 Date.now()，冻结计划的过期判断也得有个可信参照。 */
   asOf: string;
   busy: boolean;
@@ -381,8 +387,9 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
   onCommand: (label: string, execute: () => Promise<unknown>) => Promise<void>;
   onMutate: (label: string, execute: () => Promise<unknown>) => Promise<void>;
   onAuthorityChange: () => Promise<void>;
+  onDirtyChange: (dirty: boolean) => void;
 }) {
-  const { locale, t } = useAdminI18n();
+  const { locale, t, value } = useAdminI18n();
   const [trackedCommandId, setTrackedCommandId] = useState<string | null>(null);
   useEffect(() => {
     const restore = () => setTrackedCommandId(new URLSearchParams(window.location.search).get("commandId"));
@@ -393,9 +400,13 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
   const incident = detail.incident;
   const mounted = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-  const [ownerId, setOwnerId] = useState(incident.ownerId ?? "");
-  const [severity, setSeverity] = useState(incident.severity);
-  const [cause, setCause] = useState(incident.suspectedCause ?? "");
+  // Keep edited fields across readbacks; pristine fields always follow the latest authority.
+  const [ownerOverride, setOwnerId] = useState<string | null>(null);
+  const [severityOverride, setSeverity] = useState<OpsIncident["severity"] | null>(null);
+  const [causeOverride, setCause] = useState<string | null>(null);
+  const ownerId = ownerOverride ?? incident.ownerId ?? "";
+  const severity = severityOverride ?? incident.severity;
+  const cause = causeOverride ?? incident.suspectedCause ?? "";
   const [reason, setReason] = useState("");
   const [action, setAction] = useState<PlanAction>("retry_eligible");
   const [targetVersion, setTargetVersion] = useState(incident.rollbackTarget ?? "");
@@ -409,7 +420,18 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
   const [correctiveActions, setCorrectiveActions] = useState("");
   const [closeReason, setCloseReason] = useState("");
   const [closeConfirmation, setCloseConfirmation] = useState("");
+  const [savedPostmortem, setSavedPostmortem] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null);
+
+  const postmortemDraft = JSON.stringify([postmortemSummary, rootCause, contributingFactors, correctiveActions, closeReason, closeConfirmation, evidence]);
+  const postmortemDirty = canManage &&
+    Boolean(postmortemSummary || rootCause || contributingFactors || correctiveActions || closeReason || closeConfirmation) &&
+    postmortemDraft !== savedPostmortem;
+  const postmortemReadOnly = incident.status !== "resolved";
+  useEffect(() => {
+    onDirtyChange(postmortemDirty);
+    return () => onDirtyChange(false);
+  }, [onDirtyChange, postmortemDirty]);
 
   const canVerify = ["mitigating", "monitoring"].includes(incident.status);
   const canResolve = incident.status === "monitoring" && ["passed", "overridden"].includes(incident.recoveryVerification.state);
@@ -430,6 +452,29 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
     closeReason.trim().length < 3 ? "Audit reason needs at least 3 characters" : null,
     closeConfirmation === `${incident.id}:close` ? null : "Type the close confirmation",
   ].filter((item): item is string => item !== null);
+
+  async function saveTriage() {
+    const result = await adminV2Operation("PATCH /api/v2/admin/incidents/:id", {
+      path: { id: incident.id },
+      ifMatch: incident.version,
+      body: { entityVersion: incident.version, ownerId: ownerId.trim() || null, severity, suspectedCause: cause.trim() || undefined, reason: reason.trim() },
+    });
+    // An edit made while the request was in flight still belongs to the operator.
+    setOwnerId(current => current === ownerOverride ? null : current);
+    setSeverity(current => current === severityOverride ? null : current);
+    setCause(current => current === causeOverride ? null : current);
+    return result;
+  }
+
+  async function closeIncident() {
+    const result = await adminV2Operation("POST /api/v2/admin/incidents/:id/commands/close", {
+      path: { id: incident.id },
+      body: { entityVersion: incident.version, summary: postmortemSummary.trim(), rootCause: rootCause.trim(), contributingFactors: contributingFactors.split("\n").map((item) => item.trim()).filter(Boolean), correctiveActions: correctiveActions.split("\n").map((item) => item.trim()).filter(Boolean), evidenceRefs: [evidence.trim()], reason: closeReason.trim(), confirmation: closeConfirmation },
+    });
+    // The postmortem is committed even if its subsequent authoritative read fails.
+    setSavedPostmortem(postmortemDraft);
+    return result;
+  }
 
   function executePlan(plan: IncidentActionPlan) {
     const expected = `${incident.id}:${plan.id}:${plan.action}`;
@@ -616,7 +661,7 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
             {/* INTENT: 这个表单以前手写路由发 PATCH，没带 if-match —— 服务端 requireMatchingIfMatch
                 一律 400，「保存分诊」从来没成功过一次。走 operation id 之后 manifest 的
                 `+if-match` 变成编译期必填，漏传写不出来。 */}
-            <form className="space-y-3 border-t border-[var(--ad-border)] pt-5" onSubmit={(event) => { event.preventDefault(); void onMutate("Incident triage saved", () => adminV2Operation("PATCH /api/v2/admin/incidents/:id", { path: { id: incident.id }, ifMatch: incident.version, body: { entityVersion: incident.version, ownerId: ownerId.trim() || null, severity, suspectedCause: cause.trim() || undefined, reason: reason.trim() } })); }}>
+            <form className="space-y-3 border-t border-[var(--ad-border)] pt-5" onSubmit={(event) => { event.preventDefault(); void onMutate("Incident triage saved", saveTriage); }}>
               <h4 className="text-sm font-semibold">{t("Triage")}</h4>
               <div className="grid gap-3 sm:grid-cols-2"><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Owner ID")}<input className={fieldClass} onChange={(event) => setOwnerId(event.target.value)} value={ownerId} /></label><Select label="Severity" onChange={(value) => setSeverity(value as OpsIncident["severity"])} options={["critical", "high", "medium", "low"]} value={severity} /></div>
               <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Suspected cause")}<textarea className={textAreaClass} onChange={(event) => setCause(event.target.value)} value={cause} /></label>
@@ -685,8 +730,10 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
                 {t("Supplemental evidence reference (optional for authority check)")}
                 <input
                   className={fieldClass}
+                  disabled={busy}
                   onChange={(event) => setEvidence(event.target.value)}
                   placeholder={t("monitor, dashboard, or runbook reference")}
+                  readOnly={postmortemDirty && postmortemReadOnly}
                   value={evidence}
                 />
               </label>
@@ -759,28 +806,31 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
                 </p>
               ) : null}
             </section>
-            {incident.status === "resolved" ? (
+            {incident.status === "resolved" || postmortemDirty ? (
               <section className="space-y-3 border-t border-[var(--ad-border)] pt-5" aria-labelledby="incident-postmortem-title">
                 <h4 className="text-sm font-semibold" id="incident-postmortem-title">{t("Postmortem and close")}</h4>
-                <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Summary")}<textarea className={textAreaClass} onChange={(event) => setPostmortemSummary(event.target.value)} value={postmortemSummary} /></label>
-                <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Root cause")}<textarea className={textAreaClass} onChange={(event) => setRootCause(event.target.value)} value={rootCause} /></label>
-                <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Contributing factors (one per line)")}<textarea className={textAreaClass} onChange={(event) => setContributingFactors(event.target.value)} value={contributingFactors} /></label>
-                <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Corrective actions (one per line)")}<textarea className={textAreaClass} onChange={(event) => setCorrectiveActions(event.target.value)} value={correctiveActions} /></label>
+                {postmortemReadOnly ? <p className="text-xs leading-5 text-[var(--ad-yellow-text)]" role="status">{t("The latest incident status is {status}. Your unsaved postmortem is read-only; copy it before leaving.", { status: value(incident.status) })}</p> : null}
+                <fieldset className="min-w-0 space-y-3" disabled={busy}>
+                <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Summary")}<textarea className={textAreaClass} onChange={(event) => setPostmortemSummary(event.target.value)} readOnly={postmortemReadOnly} value={postmortemSummary} /></label>
+                <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Root cause")}<textarea className={textAreaClass} onChange={(event) => setRootCause(event.target.value)} readOnly={postmortemReadOnly} value={rootCause} /></label>
+                <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Contributing factors (one per line)")}<textarea className={textAreaClass} onChange={(event) => setContributingFactors(event.target.value)} readOnly={postmortemReadOnly} value={contributingFactors} /></label>
+                <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Corrective actions (one per line)")}<textarea className={textAreaClass} onChange={(event) => setCorrectiveActions(event.target.value)} readOnly={postmortemReadOnly} value={correctiveActions} /></label>
                 {/* 关闭有自己的审计原因；之前借用 Triage 那一格，运营在两个 section 之间猜到底填哪。 */}
-                <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Close audit reason")}<input className={fieldClass} onChange={(event) => setCloseReason(event.target.value)} value={closeReason} /></label>
+                <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Close audit reason")}<input className={fieldClass} onChange={(event) => setCloseReason(event.target.value)} readOnly={postmortemReadOnly} value={closeReason} /></label>
                 <code className="block text-xs">{incident.id}{t(":close")}</code>
-                <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Type close confirmation")}<input className={fieldClass} onChange={(event) => setCloseConfirmation(event.target.value)} value={closeConfirmation} /></label>
+                <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Type close confirmation")}<input className={fieldClass} onChange={(event) => setCloseConfirmation(event.target.value)} readOnly={postmortemReadOnly} value={closeConfirmation} /></label>
                 {/* 按钮为什么是灰的，直接列出来——之前 evidence 的输入框在上一节，运营看不出缺什么。 */}
-                {closeBlockers.length > 0 ? (
+                {!postmortemReadOnly && closeBlockers.length > 0 ? (
                   <ul className="space-y-1 text-xs text-[var(--ad-text-muted)]">
                     {closeBlockers.map((blocker) => <li key={blocker}>· {t(blocker)}</li>)}
                   </ul>
                 ) : null}
                 <WorkspaceButton
-                  disabled={busy || closeBlockers.length > 0}
-                  onClick={() => void onMutate("Postmortem recorded and Incident closed", () => adminV2Operation("POST /api/v2/admin/incidents/:id/commands/close", { path: { id: incident.id }, body: { entityVersion: incident.version, summary: postmortemSummary.trim(), rootCause: rootCause.trim(), contributingFactors: contributingFactors.split("\n").map((item) => item.trim()).filter(Boolean), correctiveActions: correctiveActions.split("\n").map((item) => item.trim()).filter(Boolean), evidenceRefs: [evidence.trim()], reason: closeReason.trim(), confirmation: closeConfirmation } }))}
+                  disabled={busy || postmortemReadOnly || closeBlockers.length > 0}
+                  onClick={() => void onMutate("Postmortem recorded and Incident closed", closeIncident)}
                   tone="primary"
                 >{t("Record postmortem and close")}</WorkspaceButton>
+                </fieldset>
               </section>
             ) : null}
           </>

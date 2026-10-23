@@ -175,10 +175,23 @@ describe("OpenAI-compatible Pi adapter", () => {
     const result = await adapter.stream([]).result();
     const expected = usage ? { inputTokens: 13, outputTokens: 7 } : undefined;
     expect(adapter.getError(result)).toMatchObject({ code: "INVALID_RESPONSE" });
-    expect(observeUsage).toHaveBeenCalledExactlyOnceWith(expected);
+    expect(observeUsage).toHaveBeenCalledExactlyOnceWith(expected, expect.objectContaining({
+      bodyDigest: expect.stringMatching(/^[a-f0-9]{64}$/), systemPromptDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      estimatedInputTokens: expect.any(Number),
+    }));
     expect(adapter.getUsage(result)).toEqual(expected);
     // Persisted Pi counters cannot substitute for a measured receipt.
     expect(adapter.getUsage(structuredClone(result))).toBeUndefined();
+  });
+
+  it("retains usage reported in the same frame as a provider failure", async () => {
+    const observeUsage = vi.fn();
+    const adapter = adapterFor("https://provider.example/v1", async () => new Response(
+      `data: ${JSON.stringify({ error: { code: "request_failed" }, usage: { prompt_tokens: 13, completion_tokens: 7 } })}\n\n`,
+    ), { observeUsage });
+    const result = await adapter.stream([]).result();
+    expect(adapter.getError(result)).toMatchObject({ code: "PROVIDER_STREAM_ERROR" });
+    expect(observeUsage).toHaveBeenCalledExactlyOnceWith({ inputTokens: 13, outputTokens: 7 }, expect.any(Object));
   });
 
   it.each([400, 413, 422])("routes a provider HTTP %s context overflow to Pi compaction", async (status) => {

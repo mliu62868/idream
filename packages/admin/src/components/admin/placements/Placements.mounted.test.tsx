@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlacementsNewPage } from "./PlacementsNewPage";
 import { PlacementsDetailPage } from "./PlacementsDetailPage";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const { apiGet, operation } = vi.hoisted(() => ({ apiGet: vi.fn(), operation: vi.fn() }));
@@ -146,6 +147,117 @@ describe("operational artwork publication", () => {
       },
     });
     expect(operation.mock.calls.some(([id]) => id.endsWith("/publish"))).toBe(false);
+  });
+
+  it("keeps a campaign copy bound to the version originally edited after a shell refresh", async () => {
+    apiGet.mockResolvedValueOnce({ placement }).mockResolvedValue({ placement: {
+      ...placement, version: 5,
+      metadata: { eyebrow: "Another operator", title: "Saved by another operator" },
+    } });
+    operation.mockRejectedValue(new Error("Expected version conflict"));
+    await act(async () => root.render(<PlacementsDetailPage canPublish id={placement.id} />));
+    await waitFor(() => container.textContent?.includes("Autumn collection") === true);
+    await act(async () => button(container, "Edit")!.click());
+    await change(container.querySelector<HTMLInputElement>('[aria-label="Campaign title"]')!, "My unfinished copy");
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    expect(apiGet).toHaveBeenCalledTimes(2);
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Campaign title"]')!.value).toBe("My unfinished copy");
+    await act(async () => button(container, "Save changes")!.click());
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    await change(dialog.querySelector<HTMLInputElement>('[aria-label="Reason (≥3)"]')!, "Correct campaign copy");
+    await act(async () => button(dialog, "Save changes")!.click());
+    expect(operation).toHaveBeenCalledWith("PATCH /api/v2/admin/content/placements/:id", {
+      path: { id: placement.id }, ifMatch: 4,
+      body: {
+        reason: "Correct campaign copy", confirmation: placement.id,
+        metadata: { eyebrow: "Featured", title: "My unfinished copy", ctaLabel: null, href: null },
+      },
+    });
+  });
+
+  it("does not silently approve new artwork content when a publication confirmation is open", async () => {
+    apiGet.mockResolvedValueOnce({ placement }).mockResolvedValue({ placement: {
+      ...placement, version: 5,
+      metadata: { eyebrow: "Another operator", title: "Unreviewed new copy" },
+    } });
+    operation.mockRejectedValue(new Error("Expected version conflict"));
+    await act(async () => root.render(<PlacementsDetailPage canPublish id={placement.id} />));
+    await waitFor(() => container.textContent?.includes("Autumn collection") === true);
+    await act(async () => button(container, "Publish")!.click());
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    await change(dialog.querySelector<HTMLInputElement>('[aria-label="Reason (≥3)"]')!, "Publish reviewed campaign");
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    expect(apiGet).toHaveBeenCalledTimes(2);
+    await act(async () => button(dialog, "Publish")!.click());
+    expect(operation).toHaveBeenCalledWith("POST /api/v2/admin/content/placements/:id/publish", {
+      path: { id: placement.id }, ifMatch: 4,
+      body: { reason: "Publish reviewed campaign", confirmation: placement.id },
+    });
+  });
+
+  it("keeps the latest placement projection when refreshes finish out of order", async () => {
+    let finishEarlier!: (value: { placement: typeof placement }) => void;
+    apiGet.mockResolvedValueOnce({ placement })
+      .mockImplementationOnce(() => new Promise(resolve => { finishEarlier = resolve; }))
+      .mockResolvedValueOnce({ placement: { ...placement, version: 6, metadata: { eyebrow: "Current", title: "Latest saved campaign" } } });
+    await act(async () => root.render(<PlacementsDetailPage canPublish id={placement.id} />));
+    await waitFor(() => container.textContent?.includes("Autumn collection") === true);
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    expect(container.textContent).toContain("Latest saved campaign");
+    await act(async () => finishEarlier({ placement }));
+    expect(container.textContent).toContain("Latest saved campaign");
+    expect(container.textContent).not.toContain("Autumn collection");
+  });
+
+  it("bases retained input on its own successful write rather than a later refresh", async () => {
+    let finishWrite!: (value: { placement: typeof placement }) => void;
+    apiGet.mockResolvedValueOnce({ placement }).mockResolvedValue({ placement: {
+      ...placement, version: 6, metadata: { eyebrow: "External", title: "Later external revision" },
+    } });
+    operation.mockImplementationOnce(() => new Promise(resolve => { finishWrite = resolve; }))
+      .mockRejectedValue(new Error("Expected version conflict"));
+    await act(async () => root.render(<PlacementsDetailPage canPublish id={placement.id} />));
+    await waitFor(() => container.textContent?.includes("Autumn collection") === true);
+    await act(async () => button(container, "Edit")!.click());
+    await change(container.querySelector<HTMLInputElement>('[aria-label="Campaign title"]')!, "Submitted copy");
+    await act(async () => button(container, "Save changes")!.click());
+    const firstDialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    await change(firstDialog.querySelector<HTMLInputElement>('[aria-label="Reason (≥3)"]')!, "Correct campaign copy");
+    await act(async () => button(firstDialog, "Save changes")!.click());
+    await change(container.querySelector<HTMLInputElement>('[aria-label="Campaign title"]')!, "New retained copy");
+    await act(async () => finishWrite({ placement: {
+      ...placement, version: 5, metadata: { eyebrow: "Featured", title: "Submitted copy" },
+    } }));
+
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Campaign title"]')!.value).toBe("New retained copy");
+    await act(async () => button(container, "Save changes")!.click());
+    const nextDialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    await change(nextDialog.querySelector<HTMLInputElement>('[aria-label="Reason (≥3)"]')!, "Save retained copy");
+    await act(async () => button(nextDialog, "Save changes")!.click());
+    expect(operation.mock.calls[1][1]).toMatchObject({
+      ifMatch: 5, body: { metadata: { title: "New retained copy" } },
+    });
+  });
+
+  it("does not close a later confirmation when a revoked action finishes", async () => {
+    let finishWrite!: (value: object) => void;
+    apiGet.mockResolvedValue({ placement });
+    operation.mockImplementationOnce(() => new Promise(resolve => { finishWrite = resolve; }));
+    await act(async () => root.render(<PlacementsDetailPage canPublish id={placement.id} />));
+    await waitFor(() => container.textContent?.includes("Autumn collection") === true);
+    await act(async () => button(container, "Publish")!.click());
+    const firstDialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    await change(firstDialog.querySelector<HTMLInputElement>('[aria-label="Reason (≥3)"]')!, "First publication");
+    await act(async () => button(firstDialog, "Publish")!.click());
+    await act(async () => root.render(<PlacementsDetailPage canPublish={false} id={placement.id} />));
+    await act(async () => root.render(<PlacementsDetailPage canPublish id={placement.id} />));
+    await act(async () => button(container, "Publish")!.click());
+    const nextDialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    await change(nextDialog.querySelector<HTMLInputElement>('[aria-label="Reason (≥3)"]')!, "Second publication");
+    await act(async () => finishWrite({}));
+    expect(document.querySelector('[role="dialog"]')).toBe(nextDialog);
+    expect(nextDialog.querySelector<HTMLInputElement>('[aria-label="Reason (≥3)"]')!.value).toBe("Second publication");
   });
 });
 

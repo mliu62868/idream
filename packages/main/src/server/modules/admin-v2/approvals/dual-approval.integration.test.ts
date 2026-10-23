@@ -142,10 +142,10 @@ describe("dual approval", () => {
     const rule = await prisma.pricingRule.create({
       data: { ruleKey: `${P}rule`, label: "Dual approval price", mode, baseCost: 4, multiplier: 1, status: "draft", version: 1 },
     });
-    const publish = () => adminV2("POST", `pricing/rules/${rule.id}/publish`, {
+    const publish = (baseCost = 4) => adminV2("POST", `pricing/rules/${rule.id}/publish`, {
       userId: requester,
       role: "admin",
-      body: { reason: "publish bound price", confirmation: rule.id },
+      body: { reason: "publish bound price", confirmation: rule.id, expectedVersion: rule.version, expectedBaseCost: baseCost, expectedMultiplier: rule.multiplier },
     });
     expectError(await publish(), 403);
 
@@ -168,10 +168,11 @@ describe("dual approval", () => {
 
     await requestAndApprove({ ...pricingApproval, payload: { baseCost: 4, multiplier: 1, version: 1 } });
     expectOk(await adminV2("PATCH", `pricing/rules/${rule.id}`, { userId: requester, role: "admin", body: { baseCost: 400 } }));
-    expectError(await publish(), 403);
+    expectError(await publish(), 409);
+    expectError(await publish(400), 403);
 
     await requestAndApprove({ ...pricingApproval, payload: { baseCost: 400, multiplier: 1, version: 1 } });
-    const published = await publish();
+    const published = await publish(400);
     expectOk(published);
     expect(published.data.rule).toMatchObject({ status: "active", baseCost: 400 });
   });

@@ -239,11 +239,14 @@ export async function updateVoiceDefaultSettings(input: {
 
 export async function previewVoiceDefault(input: unknown) {
   const request = voiceDefaultPreviewRequestSchema.parse(input);
-  const providerKey = providers.voice.clip.providerKey;
-  if (request.provider !== providerKey) {
+  const providerKey = request.provider;
+  const systemProvider = providers.voice.clip.providerKey;
+  // Preset auditions follow the selected official catalog. System previews
+  // retain the provider-change guard that protects saved/default draft inputs.
+  if (request.scope !== "character_preset" && providerKey !== systemProvider) {
     throw Errors.conflict("System voice provider changed before this preview", {
       expectedProvider: request.provider,
-      currentProvider: providerKey,
+      currentProvider: systemProvider,
     });
   }
   if (providerKey !== "pocket_tts" && providerKey !== "fish_audio") {

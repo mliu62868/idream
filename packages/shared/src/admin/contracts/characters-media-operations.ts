@@ -132,12 +132,24 @@ export const voiceDefaultSettingsUpdateResponseSchema = z
 
 export const voiceDefaultPreviewRequestSchema = z
   .object({
+    // Existing callers preview the current system default. Official Character
+    // presets can be auditioned independently without changing that authority.
+    scope: z.enum(["system_default", "character_preset"]).optional(),
     provider: systemVoiceProviderSchema,
     voiceId: systemVoiceCatalogVoiceIdSchema,
     text: z.string().trim().min(3).max(240),
     delivery: fishAudioDeliverySettingsSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((request, ctx) => {
+    if (request.scope !== "character_preset") return;
+    if (request.provider !== "pocket_tts") {
+      ctx.addIssue({ code: "custom", path: ["provider"], message: "Character presets require Pocket TTS" });
+    }
+    if (!(POCKET_TTS_CATALOG_VOICE_IDS as readonly string[]).includes(request.voiceId)) {
+      ctx.addIssue({ code: "custom", path: ["voiceId"], message: "Character presets must use the official Pocket voice catalog" });
+    }
+  });
 
 export const voiceDefaultPreviewResponseSchema = z
   .object({

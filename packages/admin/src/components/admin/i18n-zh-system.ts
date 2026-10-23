@@ -188,6 +188,10 @@ export const adminZhSystem: Record<string, string> = {
   "All resources allowed by these capabilities": "这些能力允许访问的全部资源",
   "Expires {time}": "到期时间：{time}",
   "No expiry": "无到期时间",
+  "Grant expiry (local time; blank means no expiry)": "授权到期时间（本地时间；留空为永久）",
+  "Grant expiry must be in the future.": "授权到期时间必须晚于当前时间。",
+  "Existing scope and expiry are preserved until you edit them. Clear the expiry only to grant permanent access.": "未修改时保留现有范围和到期时间。只有要永久授权时才清空到期时间。",
+  "This replaces the bundle's existing scope and expiry.": "这会替换该授权包现有的范围和到期时间。",
   "Review granted capabilities and scope": "查看已授予的能力和范围",
   // —— 审计日志的重复折叠（features/audit/collapse-runs.ts）——
   // INTENT: 一次批量操作会往审计日志写几十条只有 ID 与毫秒不同的记录，首屏被它吃光。

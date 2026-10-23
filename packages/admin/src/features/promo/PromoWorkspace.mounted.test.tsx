@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminI18nProvider } from "@/components/admin/i18n";
 import { ToastProvider } from "@/components/admin/ui/Toast";
 import { PromoWorkspace } from "./PromoWorkspace";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -33,6 +34,48 @@ describe("Promo table column identity", () => {
     await act(async () => root.unmount());
     container.remove();
     vi.unstubAllGlobals();
+  });
+
+  it("does not expose another promotion query's rows or cursors while its replacement fails", async () => {
+    window.history.replaceState(null, "", "/admin/growth/offers?view=promo");
+    const pending: Array<(response: Response) => void> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input), window.location.origin);
+      if (url.searchParams.get("search") === "replacement") {
+        return new Promise<Response>((resolve) => pending.push(resolve));
+      }
+      const id = url.pathname.endsWith("/redeem-codes") ? "old-code" : "old-referral";
+      return Response.json({ ok: true, data: { items: [{ id, status: "active", reward: { dreamcoins: 100 } }], pageInfo: { endCursor: `${id}-cursor`, hasNextPage: true } } });
+    }));
+    await act(async () => root.render(<AdminI18nProvider locale="en"><PromoWorkspace canWrite /></AdminI18nProvider>));
+    expect(container.textContent).toContain("old-code");
+    expect(container.textContent).toContain("old-referral");
+    await act(async () => {
+      const search = container.querySelector<HTMLInputElement>('input[role="searchbox"]')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "replacement");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => [...container.querySelectorAll("button")].find((node) => node.textContent === "Filter promotions")!.click());
+    expect(pending).toHaveLength(2);
+    expect(container.textContent).not.toContain("old-code");
+    expect(container.textContent).not.toContain("old-referral");
+    expect(container.querySelectorAll("table")).toHaveLength(0);
+    await act(async () => pending.forEach((resolve) => resolve(Response.json({ ok: false, error: { code: "unavailable", message: "Controlled read failure" } }, { status: 503 }))));
+    expect(container.textContent).not.toContain("old-code");
+    expect(container.textContent).not.toContain("old-referral");
+    expect([...container.querySelectorAll("button")].some((node) => node.textContent?.trim() === "Disable")).toBe(false);
+    expect(container.querySelector('[data-testid="admin-pagination"]')).toBeNull();
+    expect(new URLSearchParams(window.location.search).get("promoSearch")).toBe("replacement");
+  });
+
+  it("keeps the same promotion query's last good rows when refreshing fails", async () => {
+    window.history.replaceState(null, "", "/admin/growth/offers?view=promo");
+    await act(async () => root.render(<AdminI18nProvider locale="en"><PromoWorkspace canWrite /></AdminI18nProvider>));
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: false, error: { code: "unavailable", message: "Controlled refresh failure" } }, { status: 503 })));
+    await act(async () => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)));
+    expect(container.textContent).toContain("code-one");
+    expect(container.textContent).toContain("referral-one");
+    expect(container.textContent).toContain("stale · last good");
   });
 
   it("filters completed referrals while keeping granted and ineligible rewards distinct", async () => {

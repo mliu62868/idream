@@ -29,6 +29,7 @@ vi.mock("@/components/admin/i18n", () => ({
 
 import { characterWorkspaceDetail } from "./character-workspace-fixture";
 import { CharacterVoicePanel } from "./CharacterVoicePanel";
+import { createCharacterCommandJournal } from "./character-command-journal";
 
 async function runCommittedMutation<T>(input: {
   commit: () => Promise<T>;
@@ -44,6 +45,7 @@ async function runCommittedMutation<T>(input: {
  */
 function createIdempotencyKeys() {
   const keys = new Map<string, string>();
+  const profiles = new Map<string, string>();
   let sequence = 0;
   return {
     take: (signature: string) =>
@@ -51,6 +53,17 @@ function createIdempotencyKeys() {
       (keys.set(signature, `idem-${++sequence}`), keys.get(signature)!),
     release: (signature: string) => {
       keys.delete(signature);
+      profiles.delete(signature);
+    },
+    bindProfile: (signature: string, key: string, profileId: string) => {
+      if (keys.get(signature) === key) profiles.set(signature, profileId);
+    },
+    releaseProfile: (profileId: string) => {
+      for (const [signature, target] of profiles) {
+        if (target !== profileId) continue;
+        keys.delete(signature);
+        profiles.delete(signature);
+      }
     },
   };
 }
@@ -161,6 +174,20 @@ function pocketWorkspace() {
   });
 }
 
+function mingWorkspace() {
+  const data = pocketWorkspace();
+  const voiceId = "system-anna-reference-v1";
+  data.voice.effectiveVoiceId = voiceId;
+  data.voice.systemDefaults = {
+    ...data.voice.systemDefaults,
+    provider: "fish_audio",
+    defaultVoiceId: voiceId,
+    genderVoiceIds: { female: voiceId, male: voiceId, trans: voiceId },
+    catalog: [{ id: voiceId, label: "System Anna Reference V1", presentation: "female", description: "Configured Ming voice" }],
+  };
+  return data;
+}
+
 const createdPocketProfile = {
   ...candidateProfile,
   id: "voice-pocket-anna",
@@ -228,6 +255,7 @@ describe("CharacterVoicePanel voice identity controls", () => {
       canManageDefaults?: boolean;
       canPreview?: boolean;
     } = {},
+    commitMutation = runCommittedMutation,
   ) {
     await act(async () => root.render(
       <CharacterVoicePanel
@@ -237,7 +265,9 @@ describe("CharacterVoicePanel voice identity controls", () => {
         canWrite={permissions.canWrite ?? true}
         data={data}
         releaseIdempotencyKey={idempotencyKeys.release}
-        runCommittedMutation={runCommittedMutation}
+        bindVoiceProfile={idempotencyKeys.bindProfile}
+        releaseVoiceProfileKeys={idempotencyKeys.releaseProfile}
+        runCommittedMutation={commitMutation}
         takeIdempotencyKey={idempotencyKeys.take}
       />,
     ));
@@ -345,6 +375,7 @@ describe("CharacterVoicePanel voice identity controls", () => {
       "/api/v2/admin/voice-defaults/preview",
       expect.objectContaining({
         body: expect.objectContaining({
+          scope: "character_preset",
           provider: "pocket_tts",
           voiceId: "anna",
           text: expect.stringContaining("Mira"),
@@ -356,14 +387,81 @@ describe("CharacterVoicePanel voice identity controls", () => {
       .toBe("data:audio/wav;base64,AAAA");
   });
 
+  it("auditions Pocket voices independently of the Ming system default", async () => {
+    adminV2Request.mockResolvedValue({ contentType: "audio/wav", audioBase64: "AAAA" });
+    await render(mingWorkspace());
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Preview Anna"]')?.click();
+    });
+    expect(adminV2Request).toHaveBeenCalledWith(
+      "/api/v2/admin/voice-defaults/preview",
+      expect.objectContaining({
+        body: expect.objectContaining({ scope: "character_preset", provider: "pocket_tts", voiceId: "anna" }),
+      }),
+    );
+    expect(container.querySelector('audio[aria-label="Preview Anna"]')?.getAttribute("src"))
+      .toBe("data:audio/wav;base64,AAAA");
+  });
+
+  it("does not show a late audition failure after selecting another voice", async () => {
+    let rejectPreview: (cause: Error) => void = () => {};
+    adminV2Request.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectPreview = reject; }));
+    await render(pocketWorkspace());
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Preview Anna"]')?.click();
+    });
+    await chooseOfficialVoice("vera");
+    await act(async () => rejectPreview(new Error("Anna preview failed after the voice selection changed")));
+
+    expect(container.querySelector<HTMLInputElement>("#character-official-voice-vera")?.checked).toBe(true);
+    expect(container.querySelector('[data-testid="voice-preset-builder"] [role="alert"]')).toBeNull();
+  });
+
+  it("shows an audition failure while its target is still selected", async () => {
+    adminV2Request.mockRejectedValueOnce(new Error("Anna preview is unavailable"));
+    await render(pocketWorkspace());
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Preview Anna"]')?.click();
+    });
+    expect(container.querySelector('[data-testid="voice-preset-builder"] [role="alert"]')?.textContent)
+      .toContain("Anna preview is unavailable");
+  });
+
+  it("does not show a late audition failure after changing the preview script", async () => {
+    let rejectPreview: (cause: Error) => void = () => {};
+    adminV2Request.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectPreview = reject; }));
+    await render(pocketWorkspace());
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Preview Anna"]')?.click();
+    });
+    await typeInto("#character-pocket-preset-preview-script", "This is the new preview script.");
+    await act(async () => rejectPreview(new Error("The previous script failed")));
+    expect(container.querySelector('[data-testid="voice-preset-builder"] [role="alert"]')).toBeNull();
+  });
+
+  it("does not play a late audition response after selecting another voice", async () => {
+    let resolvePreview: (value: unknown) => void = () => {};
+    adminV2Request.mockImplementationOnce(() => new Promise((resolve) => { resolvePreview = resolve; }));
+    await render(pocketWorkspace());
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Preview Anna"]')?.click();
+    });
+    await chooseOfficialVoice("vera");
+    await act(async () => resolvePreview({ contentType: "audio/wav", audioBase64: "AAAA" }));
+
+    expect(container.querySelector<HTMLInputElement>("#character-official-voice-vera")?.checked).toBe(true);
+    expect(container.querySelector('[data-testid="voice-preset-builder"] audio')).toBeNull();
+  });
+
   // SPEC: 官方音色试听即审阅，点一下 = 生成候选 + 启用；后台仍是两条命令、两条审计，都不带原因。
-  it("applies an official voice in one click without asking for a reason", async () => {
+  it.each(["pocket_tts", "fish_audio"])("applies an official voice and reads it back while %s owns system speech", async (systemProvider) => {
     adminV2Request.mockImplementation(async (path: string) =>
       path.endsWith("/voice-presets")
         ? { profile: createdPocketProfile, replacedCandidateProfileId: null, replayed: false }
         : { profile: { ...createdPocketProfile, status: "active" }, replacedActiveProfileId: null, replayed: false },
     );
-    await render(pocketWorkspace());
+    const data = systemProvider === "pocket_tts" ? pocketWorkspace() : mingWorkspace();
+    await render(data);
     await chooseOfficialVoice("anna");
     await act(async () => button("Use as character voice")?.click());
 
@@ -385,6 +483,16 @@ describe("CharacterVoicePanel voice identity controls", () => {
       expectedCurrentVoiceId: null,
     });
     expect(container.textContent).toContain("Voice changed. New chat speech now uses Anna.");
+    data.voice.activeProfile = { ...createdPocketProfile, status: "active" };
+    data.voice.currentVoiceId = createdPocketProfile.providerVoiceId;
+    data.voice.effectiveVoiceId = createdPocketProfile.providerVoiceId;
+    data.voice.authoritySource = "character_clone";
+    await render(data);
+    const room = container.querySelector('[data-testid="voice-control-room"]');
+    expect(room?.textContent).toContain("Anna");
+    expect(room?.textContent).toContain("Pocket TTS");
+    expect(button("Already in use")?.disabled).toBe(true);
+    expect(data.voice.systemDefaults.provider).toBe(systemProvider);
   });
 
   // INTENT: 候选已落库而启用失败时，重试不能再生成一个新候选（会归档刚才那个）。
@@ -416,6 +524,323 @@ describe("CharacterVoicePanel voice identity controls", () => {
     expect(activationKeys[1]).toBe(activationKeys[0]);
     expect(builder?.querySelector('[role="alert"]')).toBeNull();
     expect(container.textContent).toContain("Voice changed. New chat speech now uses Anna.");
+  });
+
+  it("resumes an unknown activation after leaving and reopening the Voice tab without creating another candidate", async () => {
+    const storage = new Map<string, string>();
+    const reopenJournal = () => {
+      const journal = createCharacterCommandJournal({
+        actorId: "operator-a",
+        characterId: "character-pocket-1",
+        storage: {
+          getItem: (key) => storage.get(key) ?? null,
+          setItem: (key, value) => { storage.set(key, value); },
+          removeItem: (key) => { storage.delete(key); },
+        },
+      });
+      idempotencyKeys = {
+        take: journal.takeIdempotencyKey,
+        release: journal.releaseIdempotencyKey,
+        bindProfile: journal.bindVoiceProfile,
+        releaseProfile: journal.releaseVoiceProfileKeys,
+      };
+    };
+    reopenJournal();
+    let activations = 0;
+    const candidatesByKey = new Map<string, Omit<typeof createdPocketProfile, "id"> & { id: string }>();
+    adminV2Request.mockImplementation(async (path: string, options: { idempotencyKey: string }) => {
+      if (path.endsWith("/voice-presets")) {
+        const existing = candidatesByKey.get(options.idempotencyKey);
+        const profile = existing ?? { ...createdPocketProfile, id: `voice-pocket-anna-${candidatesByKey.size + 1}` };
+        candidatesByKey.set(options.idempotencyKey, profile);
+        return { profile, replacedCandidateProfileId: null, replayed: Boolean(existing) };
+      }
+      activations += 1;
+      if (activations === 1) throw new Error("Acknowledgement lost");
+      return { profile: { ...createdPocketProfile, status: "active" }, replacedActiveProfileId: null, replayed: true };
+    });
+    await render(pocketWorkspace());
+    await chooseOfficialVoice("anna");
+    await act(async () => button("Use as character voice")?.click());
+    expect(activations).toBe(1);
+
+    // CharacterWorkspace conditionally mounts Voice; its idempotency journal
+    // survives tab switches while CharacterVoicePanel's local refs do not.
+    await act(async () => root.render(null));
+    reopenJournal();
+    const afterCreate = pocketWorkspace();
+    afterCreate.voice.candidateProfile = [...candidatesByKey.values()][0]!;
+    afterCreate.voice.candidateRuntimeStatus = "ready";
+    await render(afterCreate);
+    await chooseOfficialVoice("anna");
+    await act(async () => button("Use as character voice")?.click());
+
+    expect(activations).toBe(2);
+    // Recovery may replay the transport request. A second authority-side candidate
+    // (and therefore a second generation) must never be created for that intent.
+    expect(candidatesByKey.size).toBe(1);
+    const creates = adminV2Request.mock.calls.filter(([path]) => path.endsWith("/voice-presets"));
+    expect(new Set(creates.map(([, options]) => options.idempotencyKey)).size).toBe(1);
+    const activationsSent = adminV2Request.mock.calls.filter(([path]) => path.endsWith("/activate"));
+    expect(activationsSent[1]?.[0]).toBe(activationsSent[0]?.[0]);
+    expect(activationsSent[1]?.[1]?.idempotencyKey).toBe(activationsSent[0]?.[1]?.idempotencyKey);
+    expect(activationsSent[1]?.[1]?.body).toEqual(activationsSent[0]?.[1]?.body);
+    expect(storage.size).toBe(0);
+  });
+
+  it("recovers a candidate creation with a lost acknowledgement after reopening Voice", async () => {
+    let creates = 0;
+    adminV2Request.mockImplementation(async (path: string) => {
+      if (path.endsWith("/voice-presets")) {
+        creates += 1;
+        if (creates === 1) throw new Error("Candidate acknowledgement lost");
+        return { profile: createdPocketProfile, replacedCandidateProfileId: null, replayed: true };
+      }
+      return { profile: { ...createdPocketProfile, status: "active" }, replacedActiveProfileId: null, replayed: false };
+    });
+    await render(pocketWorkspace());
+    await chooseOfficialVoice("anna");
+    await act(async () => button("Use as character voice")?.click());
+    expect(container.textContent).toContain("Candidate acknowledgement lost");
+    await act(async () => root.render(null));
+    await render(pocketWorkspace());
+    await chooseOfficialVoice("anna");
+    await act(async () => button("Use as character voice")?.click());
+
+    const createCalls = adminV2Request.mock.calls.filter(([path]) => path.endsWith("/voice-presets"));
+    expect(createCalls).toHaveLength(2);
+    expect(createCalls[1]?.[1]?.idempotencyKey).toBe(createCalls[0]?.[1]?.idempotencyKey);
+    expect(createCalls[1]?.[1]?.body).toEqual(createCalls[0]?.[1]?.body);
+    expect(adminV2Request.mock.calls.filter(([path]) => path.endsWith("/activate"))).toHaveLength(1);
+    expect(container.textContent).toContain("Voice changed. New chat speech now uses Anna.");
+  });
+
+  it("settles a replayed creation only after its exact profile is known to be archived", async () => {
+    let creates = 0;
+    const sampleText = "Hello, I’m Mira. It’s good to hear from you.";
+    const archived = { ...createdPocketProfile, id: "anna-archived", sampleText, status: "archived" as const };
+    adminV2Request.mockImplementation(async (path: string) => {
+      if (path.endsWith("/voice-presets")) {
+        creates += 1;
+        if (creates === 1) throw new Error("Candidate acknowledgement lost");
+        return {
+          profile: creates === 2 ? { ...archived, status: "candidate" } : { ...createdPocketProfile, id: "anna-new", sampleText },
+          replacedCandidateProfileId: null, replayed: creates === 2,
+        };
+      }
+      return { profile: { ...createdPocketProfile, id: "anna-new", status: "active" }, replacedActiveProfileId: null, replayed: false };
+    });
+    await render(pocketWorkspace());
+    await chooseOfficialVoice("anna");
+    await act(async () => button("Use as character voice")?.click());
+    await act(async () => root.render(null));
+    const afterReplacement = pocketWorkspace();
+    afterReplacement.voice.history = [archived];
+    await render(afterReplacement);
+    await chooseOfficialVoice("anna");
+    await act(async () => button("Use as character voice")?.click());
+    expect(adminV2Request.mock.calls.filter(([path]) => path.endsWith("/activate"))).toHaveLength(0);
+    // Resolving the old unknown request does not silently issue a new generation.
+    // The next explicit apply receives a new identity and can create a candidate.
+    await act(async () => button("Use as character voice")?.click());
+    const createCalls = adminV2Request.mock.calls.filter(([path]) => path.endsWith("/voice-presets"));
+    expect(createCalls).toHaveLength(3);
+    expect(createCalls[1]?.[1]?.idempotencyKey).toBe(createCalls[0]?.[1]?.idempotencyKey);
+    expect(createCalls[2]?.[1]?.idempotencyKey).not.toBe(createCalls[0]?.[1]?.idempotencyKey);
+    expect(adminV2Request.mock.calls.filter(([path]) => path.endsWith("/activate"))).toHaveLength(1);
+    expect(adminV2Request.mock.calls.at(-1)?.[0]).toContain("/anna-new/activate");
+  });
+
+  it("recognizes an activation that committed before its acknowledgement was lost", async () => {
+    adminV2Request.mockImplementation(async (path: string) => {
+      if (path.endsWith("/voice-presets")) {
+        return { profile: createdPocketProfile, replacedCandidateProfileId: null, replayed: false };
+      }
+      throw new Error("Activation acknowledgement lost");
+    });
+    await render(pocketWorkspace());
+    await chooseOfficialVoice("anna");
+    await act(async () => button("Use as character voice")?.click());
+    expect(container.textContent).toContain("Activation acknowledgement lost");
+
+    // Returning to Voice with a newly read authority must identify the committed
+    // profile as live, instead of using that new authority for a silent retry.
+    await act(async () => root.render(null));
+    const activated = pocketWorkspace();
+    activated.voice.activeProfile = { ...createdPocketProfile, status: "active" };
+    activated.voice.currentVoiceId = createdPocketProfile.providerVoiceId;
+    activated.voice.effectiveVoiceId = createdPocketProfile.providerVoiceId;
+    activated.voice.authoritySource = "character_clone";
+    await render(activated);
+    expect(button("Already in use")?.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="voice-control-room"]')?.textContent).toContain("Anna");
+    expect(container.textContent).not.toContain("Activation acknowledgement lost");
+    await act(async () => button("Already in use")?.click());
+    expect(adminV2Request).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([true, false])("starts a fresh Anna after an unknown activation and replacement by Vera (activation committed: %s)", async (firstActivationCommitted) => {
+    type Profile = NonNullable<ReturnType<typeof pocketWorkspace>["voice"]["activeProfile"]>;
+    const receipts = new Map<string, Profile>();
+    const profiles = new Map<string, Profile>();
+    let live: Profile | null = null;
+    let activationAttempts = 0;
+    const authority = () => {
+      const data = pocketWorkspace();
+      data.voice.activeProfile = live;
+      data.voice.history = [...profiles.values()];
+      data.voice.currentVoiceId = live?.providerVoiceId ?? null;
+      data.voice.effectiveVoiceId = live?.providerVoiceId ?? "vera";
+      data.voice.authoritySource = live ? "character_clone" : "system_default";
+      return data;
+    };
+    adminV2Request.mockImplementation(async (path: string, options: {
+      idempotencyKey: string;
+      body: { presetVoiceId: string; sampleText: string };
+    }) => {
+      if (path.endsWith("/voice-presets")) {
+        const existing = receipts.get(options.idempotencyKey);
+        if (existing) return { profile: existing, replacedCandidateProfileId: null, replayed: true };
+        const profile: Profile = {
+          ...createdPocketProfile,
+          id: `voice-${options.body.presetVoiceId}-${receipts.size + 1}`,
+          providerVoiceId: `provider-voice-${receipts.size + 1}`,
+          presetVoiceId: options.body.presetVoiceId,
+          sampleText: options.body.sampleText,
+        };
+        for (const [id, previous] of profiles) {
+          if (previous.status === "candidate") profiles.set(id, { ...previous, status: "archived" });
+        }
+        receipts.set(options.idempotencyKey, profile);
+        profiles.set(profile.id, profile);
+        return { profile, replacedCandidateProfileId: null, replayed: false };
+      }
+      activationAttempts += 1;
+      if (activationAttempts === 1 && !firstActivationCommitted) throw new Error("Activation acknowledgement lost");
+      const profileId = path.split("/").at(-2)!;
+      const profile = profiles.get(profileId)!;
+      // Match Main's rule: a receipt for a former candidate does not make its
+      // currently archived profile activatable again under a new activation key.
+      if (profile.status !== "candidate") throw new Error("Voice profile is no longer an activatable candidate");
+      if (live) profiles.set(live.id, { ...live, status: "archived" });
+      live = { ...profile, status: "active" };
+      profiles.set(live.id, live);
+      if (activationAttempts === 1) throw new Error("Activation acknowledgement lost");
+      return { profile: live, replacedActiveProfileId: null, replayed: false };
+    });
+    await render(authority());
+    await chooseOfficialVoice("anna");
+    await act(async () => button("Use as character voice")?.click());
+    expect(container.textContent).toContain("Activation acknowledgement lost");
+
+    await act(async () => root.render(null));
+    await render(authority());
+    if (firstActivationCommitted) expect(button("Already in use")?.disabled).toBe(true);
+    await chooseOfficialVoice("vera");
+    await act(async () => button("Use as character voice")?.click());
+
+    await act(async () => root.render(null));
+    await render(authority());
+    await chooseOfficialVoice("anna");
+    await act(async () => button("Use as character voice")?.click());
+    expect(container.textContent).not.toContain("Voice profile is no longer an activatable candidate");
+    expect(receipts.size).toBe(3);
+    expect(authority().voice.activeProfile).toMatchObject({ id: "voice-anna-3", status: "active" });
+    const annaCreates = adminV2Request.mock.calls.filter(([path, options]) =>
+      path.endsWith("/voice-presets") && options.body.presetVoiceId === "anna");
+    expect(annaCreates).toHaveLength(2);
+    expect(annaCreates[1]?.[1]?.idempotencyKey).not.toBe(annaCreates[0]?.[1]?.idempotencyKey);
+  });
+
+  it("forgets the confirmed prepared candidate before resetting and reapplying in the same mounted panel", async () => {
+    let creations = 0;
+    let activations = 0;
+    adminV2Request.mockImplementation(async (path: string, options: { body: { sampleText: string } }) => {
+      if (path.endsWith("/voice-presets")) {
+        creations += 1;
+        return {
+          profile: { ...createdPocketProfile, id: `anna-${creations}`, sampleText: options.body.sampleText },
+          replacedCandidateProfileId: null, replayed: false,
+        };
+      }
+      if (path.endsWith("/voice-defaults/reset")) return { replayed: false };
+      activations += 1;
+      if (activations === 1) throw new Error("Activation acknowledgement lost");
+      if (path.endsWith("/anna-1/activate")) throw new Error("Voice profile is no longer an activatable candidate");
+      return { profile: { ...createdPocketProfile, id: "anna-2", status: "active" }, replacedActiveProfileId: null, replayed: false };
+    });
+    await render(pocketWorkspace());
+    await chooseOfficialVoice("anna");
+    await act(async () => button("Use as character voice")?.click());
+    const confirmed = pocketWorkspace();
+    confirmed.voice.activeProfile = {
+      ...createdPocketProfile, id: "anna-1", status: "active",
+      sampleText: "Hello, I’m Mira. It’s good to hear from you.",
+    };
+    confirmed.voice.currentVoiceId = createdPocketProfile.providerVoiceId;
+    confirmed.voice.effectiveVoiceId = createdPocketProfile.providerVoiceId;
+    confirmed.voice.authoritySource = "character_clone";
+    await render(confirmed);
+    expect(button("Already in use")?.disabled).toBe(true);
+    await act(async () => button("Use system default voice")?.click());
+    await confirmDialog("Use system default voice");
+    await render(pocketWorkspace());
+    await chooseOfficialVoice("anna");
+    await act(async () => button("Use as character voice")?.click());
+
+    expect(creations).toBe(2);
+    expect(container.textContent).not.toContain("Voice profile is no longer an activatable candidate");
+    expect(adminV2Request.mock.calls.at(-1)?.[0]).toContain("/anna-2/activate");
+  });
+
+  it("does not let a late activation refresh clear another tab's new candidate key", async () => {
+    let finishRefresh: () => void = () => {};
+    let mutations = 0;
+    const delayedRefresh: typeof runCommittedMutation = async (input) => {
+      const result = await input.commit();
+      mutations += 1;
+      if (mutations === 2) await new Promise<void>(resolve => { finishRefresh = resolve; });
+      input.afterRefresh?.();
+      return { result, refreshed: true };
+    };
+    adminV2Request.mockImplementation(async (path: string) => path.endsWith("/voice-presets")
+      ? { profile: createdPocketProfile, replacedCandidateProfileId: null, replayed: false }
+      : { profile: { ...createdPocketProfile, status: "active" }, replacedActiveProfileId: null, replayed: false });
+    await render(pocketWorkspace(), {}, delayedRefresh);
+    await chooseOfficialVoice("anna");
+    await act(async () => button("Use as character voice")?.click());
+    expect(mutations).toBe(2);
+    const createBody = adminV2Request.mock.calls[0]?.[1]?.body;
+    const signature = `voice-preset:character-pocket-1:${JSON.stringify(createBody)}`;
+    idempotencyKeys.release(signature);
+    const newerKey = idempotencyKeys.take(signature);
+    idempotencyKeys.bindProfile(signature, newerKey, "another-tabs-new-candidate");
+
+    await act(async () => finishRefresh());
+    expect(idempotencyKeys.take(signature)).toBe(newerKey);
+  });
+
+  it("does not settle an unknown candidate when another profile with the same voice is active", async () => {
+    const body = { presetVoiceId: "anna", sampleText: "Hello, I’m Mira. It’s good to hear from you." };
+    const createSignature = `voice-preset:character-pocket-1:${JSON.stringify(body)}`;
+    const activateSignature = `voice-activate:character-pocket-1:unknown-anna:${JSON.stringify({
+      expectedActiveProfileId: null, expectedCurrentVoiceId: null,
+    })}`;
+    const createKey = idempotencyKeys.take(createSignature);
+    const activateKey = idempotencyKeys.take(activateSignature);
+    idempotencyKeys.bindProfile(createSignature, createKey, "unknown-anna");
+    idempotencyKeys.bindProfile(activateSignature, activateKey, "unknown-anna");
+    const data = pocketWorkspace();
+    data.voice.activeProfile = { ...createdPocketProfile, id: "different-anna", sampleText: body.sampleText, status: "active" };
+    data.voice.currentVoiceId = createdPocketProfile.providerVoiceId;
+    data.voice.effectiveVoiceId = createdPocketProfile.providerVoiceId;
+    data.voice.authoritySource = "character_clone";
+    await render(data);
+
+    expect(button("Already in use")?.disabled).toBe(true);
+    expect(idempotencyKeys.take(createSignature)).toBe(createKey);
+    expect(idempotencyKeys.take(activateSignature)).toBe(activateKey);
+    expect(adminV2Request).not.toHaveBeenCalled();
   });
 
   // INTENT: 工作区在写入期间把所有写权限置为 false（写锁）。实测一键应用时文案中途从

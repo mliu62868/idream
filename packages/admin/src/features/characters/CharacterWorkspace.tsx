@@ -1225,6 +1225,8 @@ function CharacterDetail({
             canWrite={guardedPermissions.writeProject}
             data={data}
             releaseIdempotencyKey={journal.releaseIdempotencyKey}
+            bindVoiceProfile={journal.bindVoiceProfile}
+            releaseVoiceProfileKeys={journal.releaseVoiceProfileKeys}
             runCommittedMutation={runCommittedMutation}
             takeIdempotencyKey={journal.takeIdempotencyKey}
           />

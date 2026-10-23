@@ -12,6 +12,7 @@ import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
 import { useWorkspaceRefresh } from "@/features/workspace-refresh";
+import { createLatestRequestGate } from "@/lib/latest-request";
 import { InfoGrid, WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 import {
   SCOPES,
@@ -60,38 +61,59 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
   const [mode, setMode] = useState<Mode>("view");
   const [draft, setDraft] = useState<EditDraft | null>(null);
   const [pending, setPending] = useState<PendingAction>(null);
+  const [awaitingReadback, setAwaitingReadback] = useState(false);
+  const [requestGate] = useState(createLatestRequestGate);
   const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
 
   const reload = useCallback(async () => {
+    const request = requestGate.begin();
     setLoading(true);
     setError(null);
     try {
       const data = await apiGet<{ template: Starter }>(`${STARTERS_LIST}/${encodeURIComponent(id)}`);
+      if (!request.isCurrent()) return null;
       setRows([data.template]);
+      return data.template;
     } catch (loadError) {
+      if (!request.isCurrent()) return null;
       setError(requestErrorMessage(loadError, t));
+      return null;
     } finally {
-      setLoading(false);
+      if (request.isCurrent()) setLoading(false);
     }
-  }, [id, t]);
+  }, [id, t, requestGate]);
 
-  useWorkspaceRefresh(reload);
+  const readCommittedWrite = useCallback(async () => {
+    const current = await reload();
+    if (!current) return null;
+    setAwaitingReadback(false);
+    setMode("view");
+    setDraft(null);
+    return current;
+  }, [reload]);
+
+  useWorkspaceRefresh(awaitingReadback ? readCommittedWrite : reload);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void reload();
     }, 0);
-    return () => window.clearTimeout(timer);
-  }, [reload]);
+    return () => {
+      window.clearTimeout(timer);
+      requestGate.invalidate();
+    };
+  }, [reload, requestGate]);
 
   const row = useMemo(() => rows.find((item) => item.id === id), [rows, id]);
 
   function startEdit(current: Starter) {
+    if (!canWrite || awaitingReadback) return;
     setDraft(draftFromRow(current));
     setMode("edit");
   }
 
   function cancelEdit() {
+    if (awaitingReadback) return;
     setDraft(null);
     setMode("view");
   }
@@ -102,22 +124,26 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
 
   // INVARIANT: 三个写操作都带幂等键（与 recipes/presets 同一约定），服务端重试不会写两次。
   const confirmSpec: ConfirmSpec | null = useMemo(() => {
-    if (!row || !pending) return null;
+    if (!canWrite || awaitingReadback || !row || !pending) return null;
     if (pending.kind === "save") {
       if (!draft) return null;
       return {
         title: t("Save changes"),
         submitLabel: t("Save changes"),
         onSubmit: async (reason) => {
+          clearFeedback();
           await apiWrite(
             `${STARTERS_LIST}/${id}`,
             "PATCH",
             { ...starterPayload({ ...draft, reason }), expectedUpdatedAt: draft.expectedUpdatedAt },
           );
-          await reload();
-          setMode("view");
-          setDraft(null);
-          reportSuccess(t("Saved. {name} now shows the edited values.", { name: row.name }));
+          // A committed write is never retried because its following GET failed.
+          // Keep the submitted draft visible and lock stale actions until readback.
+          setAwaitingReadback(true);
+          setPending(null);
+          const current = await readCommittedWrite();
+          if (!current) return;
+          reportSuccess(t("Saved. {name} now shows the edited values.", { name: current.name }));
         },
       };
     }
@@ -127,13 +153,17 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
         destructive: { expectedName: pending.name },
         submitLabel: t("Publish"),
         onSubmit: async (reason) => {
+          clearFeedback();
           await apiWrite(
             `${STARTERS_LIST}/${id}/active`,
             "POST",
             { active: true, reason, confirmation: id, expectedUpdatedAt: pending.expectedUpdatedAt },
           );
-          await reload();
-          reportSuccess(t("{name} is published and offered in character creation.", { name: row.name }));
+          setAwaitingReadback(true);
+          setPending(null);
+          const current = await readCommittedWrite();
+          if (!current) return;
+          reportSuccess(t(current.isActive ? "{name} is published and offered in character creation." : "Latest details loaded.", { name: current.name }));
         },
       };
     }
@@ -142,16 +172,20 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
       destructive: { expectedName: pending.name },
       submitLabel: t("Offline"),
       onSubmit: async (reason) => {
+        clearFeedback();
         await apiWrite(
           `${STARTERS_LIST}/${id}/active`,
           "POST",
           { active: false, reason, confirmation: id, expectedUpdatedAt: pending.expectedUpdatedAt },
         );
-        await reload();
-        reportSuccess(t("{name} is offline and no longer offered in character creation.", { name: row.name }));
+        setAwaitingReadback(true);
+        setPending(null);
+        const current = await readCommittedWrite();
+        if (!current) return;
+        reportSuccess(t(!current.isActive ? "{name} is offline and no longer offered in character creation." : "Latest details loaded.", { name: current.name }));
       },
     };
-  }, [pending, draft, row, id, t, reload, reportSuccess]);
+  }, [canWrite, awaitingReadback, pending, draft, row, id, t, readCommittedWrite, reportSuccess, clearFeedback]);
 
   if (loading && !row) {
     return <LoadingWorkspace label="Loading…" />;
@@ -175,16 +209,16 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
       <PermissionNotice permission="content.template.write" />
     ) : mode === "edit" ? (
       <>
-        <GhostButton onClick={cancelEdit}>{t("Cancel")}</GhostButton>
-        <PrimaryButton onClick={() => setPending({ kind: "save" })}>{t("Save changes")}</PrimaryButton>
+        <GhostButton disabled={awaitingReadback} onClick={cancelEdit}>{t("Cancel")}</GhostButton>
+        <PrimaryButton disabled={awaitingReadback} onClick={() => setPending({ kind: "save" })}>{t("Save changes")}</PrimaryButton>
       </>
     ) : (
       <>
-        <GhostButton onClick={() => startEdit(row)}>{t("Edit profile")}</GhostButton>
+        <GhostButton disabled={awaitingReadback} onClick={() => startEdit(row)}>{t("Edit profile")}</GhostButton>
         {row.isActive ? (
-          <DangerButton onClick={() => setPending({ kind: "deactivate", name: row.name, expectedUpdatedAt: row.updatedAt })}>{t("Offline")}</DangerButton>
+          <DangerButton disabled={awaitingReadback} onClick={() => setPending({ kind: "deactivate", name: row.name, expectedUpdatedAt: row.updatedAt })}>{t("Offline")}</DangerButton>
         ) : (
-          <PrimaryButton onClick={() => setPending({ kind: "activate", name: row.name, expectedUpdatedAt: row.updatedAt })}>{t("Publish")}</PrimaryButton>
+          <PrimaryButton disabled={awaitingReadback} onClick={() => setPending({ kind: "activate", name: row.name, expectedUpdatedAt: row.updatedAt })}>{t("Publish")}</PrimaryButton>
         )}
       </>
     );
@@ -199,10 +233,12 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
       title={row.name}
     >
       <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
+      {awaitingReadback ? <p role="status" className="text-sm text-[var(--ad-yellow-text)]">{t("Changes were saved, but the latest details could not be loaded. Retry before making another change.")}</p> : null}
       {error ? <p role="alert" className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
+      {awaitingReadback ? <GhostButton disabled={loading} onClick={() => void readCommittedWrite()}>{t("Retry")}</GhostButton> : null}
 
       {mode === "edit" && draft ? (
-        <>
+        <fieldset disabled={awaitingReadback} className="space-y-6">
           <FormSection title={t("Basic info")}>
             <Field label={t("Name (≥1)")}>
               <input
@@ -277,7 +313,7 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
             <Field full label={t("Appearance anchors")}><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("appearanceNotes", event.target.value)} value={draft.appearanceNotes} /></Field>
             <Field full label={t("Art direction")}><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("visualBrief", event.target.value)} value={draft.visualBrief} /></Field>
           </FormSection>
-        </>
+        </fieldset>
       ) : (
         <>
           <DetailSection title={t("Basic info")}>
@@ -331,7 +367,8 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
         </>
       )}
 
-      {confirmSpec ? <ConfirmDialog onClose={() => setPending(null)} spec={confirmSpec} /> : null}
+      {/* An older submitted dialog may finish after readback unlocked a new confirmation. */}
+      {confirmSpec ? <ConfirmDialog onClose={() => setPending((current) => current === pending ? null : current)} spec={confirmSpec} /> : null}
     </DetailPage>
   );
 }

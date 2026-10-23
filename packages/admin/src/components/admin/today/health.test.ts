@@ -24,6 +24,7 @@ const item = (overrides: Partial<TodayWorkItem> = {}): TodayWorkItem => ({
   dataClass: "customer",
   pinned: false,
   preferenceVersion: 0,
+  watching: false,
   claim: null,
   ...overrides,
 });

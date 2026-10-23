@@ -28,6 +28,7 @@ const item = {
   dataClass: "customer" as const,
   pinned: false,
   preferenceVersion: 0,
+  watching: false,
   claim: null,
 };
 

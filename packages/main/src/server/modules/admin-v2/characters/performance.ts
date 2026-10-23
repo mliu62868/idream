@@ -104,6 +104,7 @@ export function evaluateContributionMargin(input: {
   const refunds = sum("refund");
   const credits = sum("credit");
   const costs = sum("variable_cost");
+  const margin = safeBigIntNumber(revenue - refunds - credits - costs);
   const evidence = [
     ...exactAudited.map((fact) => `${fact.authorityType}:${fact.authorityId}`),
     ...(!input.authority.cashCaptureComplete ? ["cash_capture_attribution_authority_incomplete"] : []),
@@ -112,10 +113,12 @@ export function evaluateContributionMargin(input: {
     ...(!input.authority.variableCostsComplete ? ["variable_cost_authority_incomplete"] : []),
     ...(currencies.size > 1 ? ["mixed_currency_requires_certified_fx"] : []),
     ...(revenue === BigInt(0) ? ["no_audited_attributed_cash_revenue"] : []),
+    ...(margin === null ? ["contribution_margin_exceeds_safe_numeric_range"] : []),
   ];
   const authorityComplete = Object.values(input.authority).every(Boolean);
   const components = [revenue, refunds, credits, costs].map(safeBigIntNumber);
-  const valid = authorityComplete && currencies.size === 1 && revenue > BigInt(0) && components.every((value) => value !== null);
+  const valid = authorityComplete && currencies.size === 1 && revenue > BigInt(0) &&
+    margin !== null && components.every((value) => value !== null);
   if (!valid) {
     return {
       valueMicros: null,
@@ -129,7 +132,7 @@ export function evaluateContributionMargin(input: {
     };
   }
   return {
-    valueMicros: (components[0] as number) - (components[1] as number) - (components[2] as number) - (components[3] as number),
+    valueMicros: margin,
     currency: [...currencies][0],
     attributedRevenueMicros: components[0],
     refundMicros: components[1],

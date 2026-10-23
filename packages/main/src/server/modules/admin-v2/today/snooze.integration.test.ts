@@ -49,11 +49,11 @@ describe("personal snooze recovery", () => {
     const included = await list("&includeSnoozed=true");
     expect(included.totalCount).toBe(2);
     expect(new Set(included.items.map(item => item.sourceId))).toEqual(new Set(caseIds.slice(0, 2)));
-    expect(included.items.find(item => item.sourceId === caseIds[1])).toMatchObject({ pinned: true, preferenceVersion: 3, snoozedUntil: until.toISOString() });
-    expect(included.items.find(item => item.sourceId === caseIds[0])).toMatchObject({ snoozedUntil: null });
+    expect(included.items.find(item => item.sourceId === caseIds[1])).toMatchObject({ watching: true, pinned: true, preferenceVersion: 3, snoozedUntil: until.toISOString() });
+    expect(included.items.find(item => item.sourceId === caseIds[0])).toMatchObject({ watching: false, snoozedUntil: null });
     const other = await list("", otherId);
     expect(other.totalCount).toBe(2);
-    expect(other.items.find(item => item.sourceId === caseIds[1])).toMatchObject({ preferenceVersion: 7, snoozedUntil: null });
+    expect(other.items.find(item => item.sourceId === caseIds[1])).toMatchObject({ watching: true, preferenceVersion: 7, snoozedUntil: null });
     const summary = await todayRoute(new Request("http://localhost/api/v2/admin/today", { headers: headers() }));
     expect(summary.status).toBe(200);
     const projection = (await summary.json()).data as TodayProjection;

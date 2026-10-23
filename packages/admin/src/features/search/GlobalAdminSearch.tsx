@@ -164,12 +164,11 @@ export function GlobalAdminSearch({
               response.items,
             ),
           );
-          setOpen(true);
+          // A response updates the results, not the operator's decision to close the palette.
         })
         .catch(() => {
           if (requestId.current === currentRequest) {
             setAuthority(globalAdminSearchFailed);
-            setOpen(true);
           }
         })
         .finally(() => {
@@ -239,6 +238,8 @@ export function GlobalAdminSearch({
             if (query.trim().length > 0) setOpen(true);
           }}
           onKeyDown={(event) => {
+            // Candidate selection belongs to the IME, including browsers that report only keyCode 229.
+            if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
             // Esc 清空并交还焦点——运营用 ⌘K 进来之后需要一个对称的出口。
             if (event.key === "Escape") {
               dismiss({ blur: true });

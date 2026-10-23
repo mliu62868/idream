@@ -53,6 +53,10 @@ export const adminPricingRulePatchRequestSchema = z.object({
 });
 
 export const adminPricingRulePublishRequestSchema = z.object({
+  // Draft edits keep the release version; bind the price as well as that version.
+  expectedVersion: adminPricingRuleSchema.shape.version,
+  expectedBaseCost: adminPricingRuleSchema.shape.baseCost,
+  expectedMultiplier: adminPricingRuleSchema.shape.multiplier,
   reason: z.string().trim().min(3).max(2_000),
   confirmation: z.string().trim().min(1).max(160),
   effectiveFrom: z.string().datetime().optional(),

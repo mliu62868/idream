@@ -103,8 +103,10 @@ const detail = {
 describe("IncidentWorkspace affected users", () => {
   let container: HTMLDivElement;
   let root: Root;
+  let originalNavigation: PropertyDescriptor | undefined;
 
   beforeEach(() => {
+    originalNavigation = Object.getOwnPropertyDescriptor(window, "navigation");
     window.history.replaceState(null, "", "/admin/ops/incidents");
     container = document.createElement("div");
     document.body.append(container);
@@ -119,6 +121,8 @@ describe("IncidentWorkspace affected users", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    if (originalNavigation) Object.defineProperty(window, "navigation", originalNavigation);
+    else Reflect.deleteProperty(window, "navigation");
     vi.restoreAllMocks();
   });
 
@@ -128,6 +132,51 @@ describe("IncidentWorkspace affected users", () => {
     });
     await waitUntil(() => (container.textContent ?? "").includes("customer-a"));
   }
+
+  it.each(["close", "switch", "history"])("protects an unsaved postmortem before %s and preserves it on cancel", async (navigationKind) => {
+    const resolved = { ...incident, status: "resolved" };
+    const second = { ...incident, id: "incident-2", suspectedCause: "Second Incident" };
+    window.history.replaceState(null, "", "/admin/ops/incidents/incident-1");
+    setWorkspaceUrl.mockImplementation((params: URLSearchParams, options: { pathname: string; mode: "push" | "replace" }) => {
+      window.history[options.mode === "push" ? "pushState" : "replaceState"](null, "", `${options.pathname}?${params}`);
+    });
+    adminV2Request.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/v2/admin/incidents?")) return { ...list, items: [resolved, second] };
+      return { ...detail, incident: path.endsWith("/incident-2") ? second : resolved };
+    });
+    const navigation = new EventTarget();
+    const targetPath = navigationKind === "switch" ? "/admin/ops/incidents/incident-2" : "/admin/ops/incidents";
+    const traverseTo = vi.fn(() => {
+      window.history.replaceState(null, "", targetPath);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+      return { committed: Promise.resolve(), finished: Promise.resolve() };
+    });
+    Object.defineProperty(window, "navigation", { configurable: true, value: Object.assign(navigation, { traverseTo }) });
+    await mountInspector();
+    const summary = () => container.querySelector<HTMLTextAreaElement>('[aria-labelledby="incident-postmortem-title"] textarea')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(summary(), "Unfinished postmortem containing operator investigation");
+      summary().dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const leave = async () => act(async () => {
+      if (navigationKind === "close") findButton("Close incident detail", container)!.click();
+      else if (navigationKind === "switch") [...container.querySelectorAll<HTMLButtonElement>('[aria-label="Incident results"] button')].find(button => button.textContent?.includes("Second Incident"))!.click();
+      else {
+        const event = Object.assign(new Event("navigate", { cancelable: true }), { navigationType: "traverse", destination: { key: "incident-list", url: new URL(targetPath, window.location.href).href } });
+        navigation.dispatchEvent(event);
+        if (!event.defaultPrevented) traverseTo();
+      }
+    });
+    await leave();
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Discard unsaved changes?");
+    await click(findButton("Cancel", document.querySelector('[role="dialog"]')!));
+    expect(window.location.pathname).toBe("/admin/ops/incidents/incident-1");
+    expect(summary().value).toBe("Unfinished postmortem containing operator investigation");
+    await leave();
+    await click(findButton("Discard changes", document.querySelector('[role="dialog"]')!));
+    expect(window.location.pathname).toBe(targetPath);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
 
   it("reloads the applied incident list and selected inspector once through shell refresh without remounting its draft", async () => {
     await mountInspector();
@@ -143,6 +192,143 @@ describe("IncidentWorkspace affected users", () => {
     expect(adminV2Request.mock.calls.slice(before).map(([path]) => path)).toEqual([applied, `/api/v2/admin/incidents/${incident.id}`]);
     expect(container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("Unfinished incident evidence");
     expect(window.location.href).toBe(href);
+  });
+
+  it.each([false, true])("freezes postmortem submission fields and distinguishes committed content from a failed write (saved: %s)", async (saved) => {
+    let finish!: () => void;
+    let committed = false;
+    adminV2Request.mockImplementation(async (path: string) => {
+      if (path.endsWith("/commands/close")) return new Promise((resolve, reject) => {
+        finish = () => {
+          if (!saved) { reject(new Error("Close request failed")); return; }
+          committed = true;
+          resolve({ incidentId: incident.id, status: "closed", version: 8 });
+        };
+      });
+      if (path.startsWith("/api/v2/admin/incidents?")) return list;
+      if (committed) throw new Error("Committed postmortem readback unavailable");
+      return { ...detail, incident: { ...incident, status: "resolved" } };
+    });
+    await mountInspector();
+    const postmortem = container.querySelector<HTMLElement>('[aria-labelledby="incident-postmortem-title"]')!;
+    const field = (label: string) => [...container.querySelectorAll("label")].find(node => node.textContent?.startsWith(label))!.querySelector<HTMLInputElement | HTMLTextAreaElement>("input,textarea")!;
+    await act(async () => {
+      for (const [label, value] of [["Summary", "Investigated and restored affected requests"], ["Root cause", "Provider request timeout"], ["Corrective actions", "Apply request timeout budget"], ["Close audit reason", "Verified recovery evidence"], ["Type close confirmation", "incident-1:close"], ["Supplemental evidence reference", "evidence:recovery-check"]]) {
+        const input = field(label!);
+        Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), "value")!.set!.call(input, value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    });
+    await click(findButton("Record postmortem and close", container));
+    await waitUntil(() => Boolean(finish));
+    expect(postmortem.querySelector<HTMLFieldSetElement>("fieldset")?.disabled).toBe(true);
+    expect(field("Supplemental evidence reference").disabled).toBe(true);
+    await act(async () => finish());
+    await waitUntil(() => saved ? container.querySelector('[role="alert"]') !== null : !findButton("Record postmortem and close", container)!.disabled);
+    expect(field("Summary").value).toBe("Investigated and restored affected requests");
+    await click(findButton("Close incident detail", container));
+    expect(Boolean(document.querySelector('[role="dialog"]'))).toBe(!saved);
+  });
+
+  it("preserves a readable unsaved postmortem when a shell refresh finds the incident closed elsewhere", async () => {
+    let closed = false;
+    adminV2Request.mockImplementation(async (path: string) => {
+      const current = { ...incident, status: closed ? "closed" : "resolved", version: closed ? 8 : 7 };
+      return path.startsWith("/api/v2/admin/incidents?")
+        ? { ...list, items: closed ? [] : [current] }
+        : { ...detail, incident: current };
+    });
+    await mountInspector();
+    const postmortem = () => container.querySelector<HTMLElement>('[aria-labelledby="incident-postmortem-title"]');
+    const summary = () => postmortem()?.querySelector<HTMLTextAreaElement>("textarea");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(summary(), "Unsubmitted investigation from this operator");
+      summary()!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    closed = true;
+    await act(async () => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)));
+    expect(summary()?.value).toBe("Unsubmitted investigation from this operator");
+    expect(summary()?.readOnly).toBe(true);
+    expect(summary()?.matches(":disabled")).toBe(false);
+    expect(postmortem()?.textContent).toContain("The latest incident status is closed.");
+    expect(findButton("Record postmortem and close", container)?.disabled).toBe(true);
+    expect(adminV2Request.mock.calls.some(([path]) => path.endsWith("/commands/close"))).toBe(false);
+    await click(findButton("Close incident detail", container));
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Discard unsaved changes?");
+    await click(findButton("Cancel", document.querySelector('[role="dialog"]')!));
+    expect(summary()?.value).toBe("Unsubmitted investigation from this operator");
+    await click(findButton("Close incident detail", container));
+    await click(findButton("Discard changes", document.querySelector('[role="dialog"]')!));
+    expect(postmortem()).toBeNull();
+  });
+
+  it("refreshes pristine triage fields after handoff while retaining edits and releases saved overrides", async () => {
+    let current = { ...incident, ownerId: null as string | null };
+    adminV2Request.mockImplementation(async (path: string, options?: { method?: string }) => {
+      if (options?.method === "PATCH") {
+        current = { ...current, suspectedCause: "Operator diagnosis", version: current.version + 1 };
+        return { incidentId: incident.id, version: current.version };
+      }
+      return path.startsWith("/api/v2/admin/incidents?") ? { ...list, items: [current] } : { ...detail, incident: current };
+    });
+    await mountInspector();
+    const triage = () => findButton("Save triage", container)!.closest("form")!;
+    const owner = () => triage().querySelector<HTMLInputElement>("input")!;
+    const cause = () => triage().querySelector<HTMLTextAreaElement>("textarea")!;
+    const severity = () => triage().querySelector<HTMLSelectElement>("select")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(cause(), "Operator diagnosis");
+      cause().dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    current = { ...current, ownerId: "operator-8", severity: "low", suspectedCause: "Authority diagnosis", version: 8 };
+    await act(async () => collaborationPanel.mock.calls.at(-1)![0].onAuthorityChange());
+    expect(owner().value).toBe("operator-8");
+    expect(severity().value).toBe("low");
+    expect(cause().value).toBe("Operator diagnosis");
+    await enter(triage().querySelector<HTMLInputElement>('input[required]'), "Record current diagnosis");
+    await click(findButton("Save triage", container));
+    await waitUntil(() => !findButton("Save triage", container)!.disabled);
+    expect(adminV2Request.mock.calls.find(([, options]) => options?.method === "PATCH")?.[1]).toMatchObject({
+      body: { entityVersion: 8, ownerId: "operator-8", severity: "low", suspectedCause: "Operator diagnosis" },
+    });
+
+    current = { ...current, suspectedCause: "Updated authority diagnosis", version: 10 };
+    await act(async () => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)));
+    expect(cause().value).toBe("Updated authority diagnosis");
+  });
+
+  it("keeps edits entered while a triage save is pending and clears only the submitted field values", async () => {
+    let finishSave!: () => void;
+    let current = { ...incident, ownerId: null as string | null };
+    adminV2Request.mockImplementation(async (path: string, options?: { method?: string }) => {
+      if (options?.method === "PATCH") return new Promise(resolve => {
+        finishSave = () => {
+          current = { ...current, ownerId: "operator-8", suspectedCause: "Submitted diagnosis", version: 8 };
+          resolve({ incidentId: incident.id, version: current.version });
+        };
+      });
+      return path.startsWith("/api/v2/admin/incidents?") ? { ...list, items: [current] } : { ...detail, incident: current };
+    });
+    await mountInspector();
+    const triage = () => findButton("Save triage", container)!.closest("form")!;
+    const cause = () => triage().querySelector<HTMLTextAreaElement>("textarea")!;
+    const editCause = async (value: string) => act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(cause(), value);
+      cause().dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await enter(triage().querySelector<HTMLInputElement>("input"), "operator-8");
+    await enter(triage().querySelector<HTMLInputElement>('input[required]'), "Save initial diagnosis");
+    await editCause("Submitted diagnosis");
+    await click(findButton("Save triage", container));
+    await waitUntil(() => Boolean(finishSave));
+    await editCause("Later local evidence");
+    await act(async () => finishSave());
+    await waitUntil(() => !findButton("Save triage", container)!.disabled);
+    expect(cause().value).toBe("Later local evidence");
+    current = { ...current, ownerId: "operator-9", version: 9 };
+    await act(async () => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)));
+    expect(triage().querySelector<HTMLInputElement>("input")!.value).toBe("operator-9");
+    expect(cause().value).toBe("Later local evidence");
   });
 
   it("lists each affected user and says how many occurrences could not be traced", async () => {

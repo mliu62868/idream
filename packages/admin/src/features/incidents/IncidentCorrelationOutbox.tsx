@@ -324,7 +324,7 @@ export function IncidentCorrelationOutbox({
       </div>
 
       {error !== null && data ? (
-        <AuthorityRequestError cause={error} message={authorityMessage(error)} onRetry={() => void load()} />
+        <AuthorityRequestError requestKind="read" cause={error} message={authorityMessage(error)} onRetry={() => void load()} />
       ) : null}
 
       {!canRead ? null : loading && !data ? (

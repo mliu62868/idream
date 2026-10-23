@@ -1,7 +1,7 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanionInvocation } from "./agent-runtime/contracts.js";
 import { AttemptWorkspaceStore } from "./agent-runtime/workspace.js";
 import {
@@ -10,6 +10,10 @@ import {
   completeAgentRun,
   listIncompleteAgentRuns,
   purgeAgentRunsForTurn,
+  purgeAgentRunsThroughAttempt,
+  purgeAgentRunsForUser,
+  readAgentRunInput,
+  readAgentRunProposal,
   writeAgentRunProposal,
   type AgentRunInput,
 } from "./agent-run-store.js";
@@ -22,10 +26,28 @@ import {
   withDrainFence,
 } from "./fence.js";
 
+const runtime = vi.hoisted(() => ({ runCompanion: vi.fn() }));
+const streaming = vi.hoisted(() => ({ appendStreamEvent: vi.fn(async () => undefined) }));
+vi.mock("./agent-runtime/runtime.js", () => ({
+  runCompanion: runtime.runCompanion,
+  agentRuntimeProfileDigest: async () => "d".repeat(64),
+  agentRuntimeVersions: async () => ({ igrepVersion: "igrep-test", piVersion: "1.3.0" }),
+}));
+vi.mock("./prepared-turn.js", () => ({
+  prepareCompanionTurn: async ({ snapshot }: AgentRunInput) => ({
+    ...invocation().preparedTurn, context: { scene: snapshot.scene },
+  }),
+}));
+vi.mock("./stream.js", () => ({ streamKey: (id: string) => id, ...streaming }));
+import { acceptAgentRun, cancelAgentRun, cancelAgentRunsForUser } from "./agent-runner.js";
+import { OpenAiCompatibleAdapter } from "./agent-runtime/openai-adapter.js";
+import type { CompanionRuntimePort } from "./agent-runtime/engine.js";
+
 const temporary: string[] = [];
 let workspaces: AttemptWorkspaceStore;
 
 beforeEach(async () => {
+  streaming.appendStreamEvent.mockClear();
   const root = await mkdtemp(join(tmpdir(), "chat-fence-consistency-"));
   const canonicalRoot = await mkdtemp(join(tmpdir(), "chat-fence-canonical-"));
   const privateRoot = await mkdtemp(join(tmpdir(), "chat-fence-private-"));
@@ -156,6 +178,80 @@ function invocation(userId = "user-1", characterId = "character-1"): CompanionIn
 //   没有一条用例问过四者是否同意。跨 module 的分歧恰恰是危险的那一半：被
 //   workspace 删掉的用户，store 依旧放行 admission。
 describe("Chat fence consistency", () => {
+  it.each(["stop", "turn", "regeneration", "user"] as const)(
+    "does not revive execution state when a provider receipt arrives after Stop and %s purge",
+    async purge => {
+      const blocked = Promise.withResolvers<void>();
+      const releaseProvider = Promise.withResolvers<void>();
+      const observations: Array<unknown> = [];
+      const mainRequest = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("unexpected Main request"));
+      runtime.runCompanion.mockImplementationOnce(async (value: CompanionInvocation, port: CompanionRuntimePort, signal: AbortSignal) => {
+        let calls = 0;
+        let receiptError: unknown;
+        let receiptTask = Promise.resolve();
+        const adapter = new OpenAiCompatibleAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture",
+          observeUsage: (usage, evidence) => {
+            observations.push(usage ?? null);
+            receiptTask = Promise.resolve(port.emit({ invocationId: value.invocationId, attemptId: value.attemptId,
+              sequence: observations.length, occurredAt: new Date().toISOString(), type: "model_request",
+              request: { ...evidence, provider: value.preparedTurn.profile.provider,
+                model: value.preparedTurn.profile.model, usage: usage ?? null },
+            })).catch(error => { receiptError = error; });
+          },
+          fetch: async (_url, init) => {
+            if (++calls === 1) return new Response('data: {"choices":[{"delta":{"content":"Ready."},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":4}}\n\ndata: [DONE]\n\n');
+            blocked.resolve();
+            await new Promise<void>(resolve => {
+              if (init?.signal?.aborted) resolve(); else init?.signal?.addEventListener("abort", () => resolve(), { once: true });
+            });
+            // Exercise cancelAgentRun's actual fence-before-abort ordering.
+            expect(await isFenced({ scope: "attempt", turnId: "turn-1", attempt: 1 })).toBe(true);
+            await releaseProvider.promise;
+            await port.emit({ invocationId: value.invocationId, attemptId: value.attemptId,
+              sequence: 99, occurredAt: new Date().toISOString(), type: "text_delta", delta: "must not escape Stop" });
+            await port.emit({ invocationId: value.invocationId, attemptId: value.attemptId,
+              sequence: 100, occurredAt: new Date().toISOString(), type: "tool_started", callId: "late-tool", name: "generate_image_async" });
+            throw init?.signal?.reason;
+          },
+        });
+        await adapter.stream([], { signal }).result();
+        await receiptTask;
+        await adapter.stream([], { signal }).result();
+        await receiptTask;
+        if (receiptError) throw receiptError;
+      });
+      try {
+        await acceptAgentRun(runInput());
+        await blocked.promise;
+        await expect(cancelAgentRun("turn-1", 1)).resolves.toBe(true);
+        if (purge === "turn") await purgeAgentRunsForTurn("turn-1");
+        if (purge === "regeneration") await purgeAgentRunsThroughAttempt("turn-1", 1);
+        if (purge === "user") await purgeAgentRunsForUser("user-1");
+        releaseProvider.resolve();
+        await cancelAgentRunsForUser("user-1");
+
+        expect(observations).toEqual([{ inputTokens: 12, outputTokens: 4 }, null]);
+        expect(mainRequest).not.toHaveBeenCalled();
+        expect(streaming.appendStreamEvent).toHaveBeenCalledTimes(1);
+        expect(await readAgentRunProposal("turn-1", 1)).toBeNull();
+        if (purge === "stop") {
+          const events = (await readFile(join(process.env.CHAT_FS_ROOT!, "runs", "turn-1", "1", "events.jsonl"), "utf8"))
+            .trim().split("\n").map(line => JSON.parse(line));
+          expect(events.filter(event => event.kind === "pi.model_request")).toHaveLength(2);
+          expect(events.find(event => event.kind === "pi.model_request").payload.request.usage)
+            .toEqual({ inputTokens: 12, outputTokens: 4 });
+          expect(events.filter(event => event.kind === "pi.model_request").at(-1).payload.request.usage).toBeNull();
+        } else {
+          expect(await readAgentRunInput("turn-1", 1)).toBeNull();
+          await expect(stat(join(process.env.CHAT_FS_ROOT!, "runs", "turn-1", "1"))).rejects.toMatchObject({ code: "ENOENT" });
+        }
+      } finally {
+        releaseProvider.resolve();
+        await cancelAgentRunsForUser("user-1");
+        mainRequest.mockRestore();
+      }
+    },
+  );
   it("rejects every writer for a fenced user", async () => {
     await expect(admitAgentRun(runInput())).resolves.toMatchObject({ duplicate: false });
 

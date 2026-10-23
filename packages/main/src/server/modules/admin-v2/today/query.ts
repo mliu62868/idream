@@ -607,9 +607,11 @@ function projectRow(
   preferenceVersions: ReadonlyMap<string, number> = new Map(),
   characterNames: ReadonlyMap<string, string> = new Map(),
   snoozedUntilByKey: ReadonlyMap<string, Date | null> = new Map(),
+  watchingKeys: ReadonlySet<string> = new Set(),
 ): TodayWorkItem {
   const environment = deploymentEnvironment();
   const snoozedUntil = snoozedUntilByKey.get(`${row.sourceType}:${row.row.id}`)?.toISOString() ?? null;
+  const watching = watchingKeys.has(`${row.sourceType}:${row.row.id}`);
   if (row.sourceType === "collaboration_mention") {
     return {
       sourceType: row.sourceType,
@@ -635,6 +637,7 @@ function projectRow(
       lastChangedAt: row.row.createdAt.toISOString(),
       environment,
       dataClass: row.target.dataClass,
+      watching,
       pinned: pinnedKeys.has(`${row.sourceType}:${row.row.id}`),
       snoozedUntil,
       preferenceVersion: preferenceVersions.get(`${row.sourceType}:${row.row.id}`) ?? 0,
@@ -664,6 +667,7 @@ function projectRow(
       pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
       snoozedUntil,
       preferenceVersion: preferenceVersions.get(`${row.sourceType}:${item.id}`) ?? 0,
+      watching,
       claim: item.ownerId === null && permissions.has("case.assign") ? { entityVersion: item.version } : null,
     };
   }
@@ -694,6 +698,7 @@ function projectRow(
       pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
       snoozedUntil,
       preferenceVersion: preferenceVersions.get(`${row.sourceType}:${item.id}`) ?? 0,
+      watching,
       claim: item.ownerId === null && permissions.has("ops.incident.manage") ? { entityVersion: item.version } : null,
     };
   }
@@ -732,6 +737,7 @@ function projectRow(
       pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
       snoozedUntil,
       preferenceVersion: preferenceVersions.get(`${row.sourceType}:${item.id}`) ?? 0,
+      watching,
       claim: null,
     };
   }
@@ -766,6 +772,7 @@ function projectRow(
       pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
       snoozedUntil,
       preferenceVersion: preferenceVersions.get(`${row.sourceType}:${item.id}`) ?? 0,
+      watching,
       claim: item.ownerId === null && permissions.has("creative.run.write") ? { entityVersion: item.version } : null,
     };
   }
@@ -799,6 +806,7 @@ function projectRow(
     pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
     snoozedUntil,
     preferenceVersion: preferenceVersions.get(`${row.sourceType}:${item.id}`) ?? 0,
+    watching,
     claim: null,
   };
 }
@@ -852,10 +860,11 @@ function queue(
   permissions: ReadonlySet<AdminPermissionKey>,
   characterNames: ReadonlyMap<string, string>,
   snoozedUntilByKey: ReadonlyMap<string, Date | null>,
+  watchingKeys: ReadonlySet<string>,
 ) {
   return {
     totalCount: rows.totalCount,
-    items: sortItems(rows.rows.map((row) => projectRow(row, pinnedKeys, permissions, preferenceVersions, characterNames, snoozedUntilByKey)), now, workMode).slice(0, QUEUE_LIMIT),
+    items: sortItems(rows.rows.map((row) => projectRow(row, pinnedKeys, permissions, preferenceVersions, characterNames, snoozedUntilByKey, watchingKeys)), now, workMode).slice(0, QUEUE_LIMIT),
   };
 }
 
@@ -1324,6 +1333,7 @@ export async function buildTodayProjection(input: {
   });
 
   const watchedPreferences = preferences.filter((item) => item.watching);
+  const watchingKeys = new Set(watchedPreferences.map((item) => `${item.sourceType}:${item.sourceId}`));
   const watchedCaseIds = watchedPreferences.filter((item) => item.sourceType === "admin_case").map((item) => item.sourceId);
   const watchedIncidentIds = watchedPreferences.filter((item) => item.sourceType === "ops_incident").map((item) => item.sourceId);
   const watchedCommandIds = watchedPreferences.filter((item) => item.sourceType === "control_plane_command").map((item) => item.sourceId);
@@ -1370,11 +1380,11 @@ export async function buildTodayProjection(input: {
 
   const characterNames = await characterNamesFor([...myShift.rows, ...nextBest.rows, ...unassigned.rows, ...watching.rows, ...recentlyResolved.rows]);
   return todayProjectionSchema.parse({
-    myShift: queue(myShift, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey),
-    nextBestActions: queue(nextBest, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey),
-    unassigned: queue(unassigned, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey),
-    watching: queue(watching, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey),
-    recentlyResolved: queue(recentlyResolved, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey),
+    myShift: queue(myShift, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey, watchingKeys),
+    nextBestActions: queue(nextBest, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey, watchingKeys),
+    unassigned: queue(unassigned, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey, watchingKeys),
+    watching: queue(watching, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey, watchingKeys),
+    recentlyResolved: queue(recentlyResolved, pinnedKeys, preferenceVersions, now, workMode, input.permissions, characterNames, snoozedUntilByKey, watchingKeys),
     asOf: now.toISOString(),
     freshness: "fresh",
     workMode,
@@ -1436,7 +1446,8 @@ function decodeTodayCursor(value: string, input: { workMode: TodayWorkMode; acto
       || decoded.consumedCount < 0
       || decoded.consumedCount > decoded.scanLimit
     ) throw new Error("cursor context changed");
-    return { ...decoded, item: todayWorkItemSchema.parse(decoded.item) };
+    // Existing signed v1 cursors predate watching; it does not participate in ordering.
+    return { ...decoded, item: todayWorkItemSchema.parse(Object.assign({ watching: false }, decoded.item)) };
   } catch {
     throw new AppError("bad_request", "Today All Work cursor is invalid or belongs to another work mode");
   }
@@ -1610,8 +1621,9 @@ export async function buildTodayAllWork(input: {
   const preferenceVersions = new Map(preferences.map((item) => [`${item.sourceType}:${item.sourceId}`, item.version]));
   const snoozedUntilByKey = new Map(preferences.map((item) => [`${item.sourceType}:${item.sourceId}`, item.snoozedUntil]));
   const characterNames = await characterNamesFor(rows.rows);
+  const watchingKeys = new Set(preferences.filter((item) => item.watching).map((item) => `${item.sourceType}:${item.sourceId}`));
   const allItems = sortItems(
-    rows.rows.map((row) => projectRow(row, pinnedKeys, input.permissions, preferenceVersions, characterNames, snoozedUntilByKey)),
+    rows.rows.map((row) => projectRow(row, pinnedKeys, input.permissions, preferenceVersions, characterNames, snoozedUntilByKey, watchingKeys)),
     now,
     workMode,
   ).filter((item) => matchesAllWorkFilters(item, query, input.actor.id, now));

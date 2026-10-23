@@ -188,6 +188,97 @@ describe("ContentMerchandisingWorkspace Featured concurrency", () => {
     expect(container.textContent).toContain("Configuration version 12");
   });
 
+  it("preserves unsaved featured curation when shell refresh returns a newer configuration", async () => {
+    let featuredReads = 0;
+    const writes: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        writes.push(JSON.parse(String(init.body)));
+        return Response.json({ ok: false, error: { code: "FORBIDDEN", message: "Fixture rejected write" } }, { status: 403 });
+      }
+      if (String(input).includes("/api/v2/admin/content/characters")) {
+        return Response.json({ ok: true, data: { items: [], pageInfo: { endCursor: null, hasNextPage: false } } });
+      }
+      featuredReads += 1;
+      const ids = featuredReads === 1 ? ["character-original"] : ["character-saved-elsewhere"];
+      return Response.json({ ok: true, data: {
+        items: [], characterIds: ids, configuredCharacterIds: ids, effectiveCharacterIds: [],
+        settingVersion: featuredReads === 1 ? 3 : 4, settingDiagnostics: [],
+      } });
+    }));
+    await act(async () => root.render(<ContentMerchandisingWorkspace canWrite />));
+    await waitFor(() => featuredReads === 1);
+    const ids = requiredInput('input[placeholder="char_a, char_b"]');
+    const reason = requiredInput('input[placeholder="Reason (≥3 chars)"]');
+    const confirmation = requiredInput('input[aria-label="Featured confirmation"]');
+    await changeInput(ids, "character-my-draft");
+    await changeInput(reason, "My curated ordering");
+    await changeInput(confirmation, "character-my-draft");
+
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+
+    expect(featuredReads).toBe(2);
+    expect(ids.value).toBe("character-my-draft");
+    expect(reason.value).toBe("My curated ordering");
+    expect(confirmation.value).toBe("character-my-draft");
+    const save = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Save featured")!;
+    await act(async () => save.click());
+    expect(writes).toEqual([{
+      characterIds: ["character-my-draft"], expectedVersion: 3,
+      reason: "My curated ordering", confirmation: "character-my-draft",
+    }]);
+  });
+
+  it("keeps new featured input entered while an earlier save is pending", async () => {
+    let finishWrite!: (response: Response) => void;
+    let saved = false;
+    const writes: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).includes("/api/v2/admin/content/characters")) {
+        return Response.json({ ok: true, data: { items: [], pageInfo: { endCursor: null, hasNextPage: false } } });
+      }
+      if (init?.method === "PUT") {
+        writes.push(JSON.parse(String(init.body)));
+        if (writes.length > 1) return Response.json({ ok: false, error: { code: "FORBIDDEN", message: "Fixture rejected second write" } }, { status: 403 });
+        return new Promise<Response>(resolve => { finishWrite = resolve; });
+      }
+      const ids = saved ? ["character-submitted"] : ["character-original"];
+      return Response.json({ ok: true, data: {
+        items: [], characterIds: ids, configuredCharacterIds: ids, effectiveCharacterIds: [],
+        settingVersion: saved ? 4 : 3, settingDiagnostics: [],
+      } });
+    }));
+    await act(async () => root.render(<ContentMerchandisingWorkspace canWrite />));
+    await waitFor(() => container.querySelector('input[placeholder="char_a, char_b"]') !== null);
+    const ids = requiredInput('input[placeholder="char_a, char_b"]');
+    const reason = requiredInput('input[placeholder="Reason (≥3 chars)"]');
+    const confirmation = requiredInput('input[aria-label="Featured confirmation"]');
+    await changeInput(ids, "character-submitted");
+    await changeInput(reason, "First curated ordering");
+    await changeInput(confirmation, "character-submitted");
+    const save = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Save featured")!;
+    await act(async () => save.click());
+    expect(save.disabled).toBe(true);
+    await changeInput(ids, "character-next-draft");
+    await changeInput(reason, "New curated ordering");
+    await changeInput(confirmation, "character-next-draft");
+    saved = true;
+    await act(async () => finishWrite(Response.json({ ok: true, data: {
+      characterIds: ["character-submitted"], configuredCharacterIds: ["character-submitted"],
+      effectiveCharacterIds: [], settingVersion: 4, settingDiagnostics: [], skipped: [], invalid: [],
+    } })));
+
+    expect(ids.value).toBe("character-next-draft");
+    expect(reason.value).toBe("New curated ordering");
+    expect(confirmation.value).toBe("character-next-draft");
+    expect(save.disabled).toBe(false);
+    await act(async () => save.click());
+    expect(writes).toEqual([
+      { characterIds: ["character-submitted"], expectedVersion: 3, reason: "First curated ordering", confirmation: "character-submitted" },
+      { characterIds: ["character-next-draft"], expectedVersion: 4, reason: "New curated ordering", confirmation: "character-next-draft" },
+    ]);
+  });
+
   function requiredInput(selector: string) {
     const input = container.querySelector<HTMLInputElement>(selector);
     if (!input) throw new Error(`Missing input ${selector}`);

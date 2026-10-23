@@ -49,7 +49,7 @@ export function MetricReconciliation() {
       <p className="text-sm text-[var(--ad-text-muted)]">{t("Read-only source checks and the latest 20 backfill runs. A completed backfill does not certify metrics.")}</p>
       <WorkspaceButton disabled={loading} onClick={() => void load()}>{t("Refresh")}</WorkspaceButton>
       {loading ? <p role="status">{t("Loading…")}</p> : null}
-      {error ? <AuthorityRequestError cause={error} message="Metric reconciliation could not be loaded" snapshotAt={data?.asOf} onRetry={() => void load()} /> : null}
+      {error ? <AuthorityRequestError requestKind="read" cause={error} message="Metric reconciliation could not be loaded" snapshotAt={data?.asOf} onRetry={() => void load()} /> : null}
       {data ? <>
         <p className="text-xs text-[var(--ad-text-muted)]">{t("asOf")} <time dateTime={data.asOf}>{format.dateTime(data.asOf)}</time> · {value(data.quality.qualityState)} · {t("Scanned facts")}: {data.quality.scannedFactCount}</p>
         <div className="overflow-x-auto"><table className="w-full text-left text-sm">

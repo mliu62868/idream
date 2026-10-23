@@ -2,7 +2,7 @@
 
 import { useAdminI18n } from "@/components/admin/i18n";
 import { Download, Loader2 } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AdminCommandStatus } from "@idream/shared/admin";
 import { apiGet } from "@/components/admin/api";
 import { CopyableId } from "@/components/admin/ui/CopyableId";
@@ -18,6 +18,7 @@ import { emptyPageInfo, Pagination, type PageInfo } from "@/components/admin/ui/
 import { useUrlFilters } from "@/components/admin/ui/useUrlFilters";
 import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 import { createLatestRequestGate } from "@/lib/latest-request";
+import { authorityRequestFailed, authorityRequestStarted, authorityRequestSucceeded, createAuthorityState } from "@/lib/authority-state";
 import { canonicalListEmptyTitle } from "@/features/compatibility-lists/empty-state";
 import {
   auditCommandPath,
@@ -37,6 +38,7 @@ type AuditListResponse = {
   items: AuditRecord[];
   pageInfo?: PageInfo;
 };
+type AuditSnapshot = { audit: AuditListResponse; command: AdminCommandStatus | null };
 
 // SPEC: 导出走服务端的完整筛选结果，不是屏幕上这 25 行 —— 法务要的是整段证据。
 // INVARIANT: 上限 20 页 × 100 行。够不够都要说清楚导出了多少行，不能悄悄截断。
@@ -64,43 +66,41 @@ const FILTER_LABELS: Record<AuditFilterKey, string> = {
 export function AuditWorkspace() {
   const { t, value } = useAdminI18n();
   const format = useAdminFormat();
-  const [records, setRecords] = useState<AuditRecord[] | null>(null);
+  const [authority, setAuthority] = useState(() => createAuthorityState<AuditSnapshot>());
   // SPEC: 默认折叠 —— 首屏被一次批量操作吃掉是常态，不是例外。
   const [collapseRepeats, setCollapseRepeats] = useState(true);
-  const [pageInfo, setPageInfo] = useState(emptyPageInfo);
-  const [command, setCommand] = useState<AdminCommandStatus | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
+  const records = authority.data?.audit.items ?? null;
+  const pageInfo = authority.data?.audit.pageInfo ?? emptyPageInfo;
+  const command = authority.data?.command ?? null;
+  const { loading, error, refreshedAt } = authority;
   const [selectedRows, setSelectedRows] = useState<string[]>([]);
   // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
   const [cursorTrail, setCursorTrail] = useState<string[]>([]);
+  const visitedTrails = useRef(new Map<string, string[]>());
+  const activeQuery = useRef<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [exportNote, setExportNote] = useState<string | null>(null);
   const requestGate = useRef(createLatestRequestGate());
 
   const load = useCallback(async (next: AuditQuery) => {
+    const queryKey = auditListPath(next);
     const request = requestGate.current.begin();
-    setLoading(true);
-    setError(null);
+    // Evidence belongs to the complete query, including its command and cursor.
+    setAuthority((current) => authorityRequestStarted(current, queryKey));
     try {
       const [audit, commandContext] = await Promise.all([
-        apiGet<AuditListResponse>(auditListPath(next)),
+        apiGet<AuditListResponse>(queryKey),
         next.commandId
           ? apiGet<AdminCommandStatus>(auditCommandPath(next.commandId))
           : Promise.resolve(null),
       ]);
       if (!request.isCurrent()) return;
-      setRecords(audit.items);
-      setPageInfo(audit.pageInfo ?? emptyPageInfo);
-      setCommand(commandContext);
-      setRefreshedAt(new Date().toISOString());
+      setAuthority(authorityRequestSucceeded(queryKey, { audit, command: commandContext }));
     } catch (loadError) {
       if (request.isCurrent()) {
-        setError(loadError instanceof Error ? loadError.message : "Audit authority request failed");
+        setAuthority((current) => authorityRequestFailed(current, queryKey,
+          loadError instanceof Error ? loadError.message : "Audit authority request failed", loadError));
       }
-    } finally {
-      if (request.isCurrent()) setLoading(false);
     }
   }, []);
 
@@ -115,15 +115,30 @@ export function AuditWorkspace() {
       auditCursor: next.cursor || null,
       auditLimit: next.limit === defaultAuditQuery.limit ? null : String(next.limit),
     }),
-    load: (next) => { void load(next); },
+    load: (next) => {
+      const queryKey = auditListPath(next);
+      if (activeQuery.current !== queryKey) {
+        setSelectedRows([]);
+        setExportNote(null);
+        activeQuery.current = queryKey;
+      }
+      if (!next.cursor) visitedTrails.current.set(queryKey, []);
+      setCursorTrail(visitedTrails.current.get(queryKey) ?? []);
+      void load(next);
+    },
   });
   const { apply, draft, query, reload, setDraft } = filters;
 
   useWorkspaceRefresh(reload);
 
+  useEffect(() => {
+    const gate = requestGate.current;
+    return () => gate.invalidate();
+  }, []);
+
   // SPEC: 任何改变结果集的动作都回到第一页并清空勾选 —— 选中的行翻页后已经不在屏幕上了。
   function applyQuery(next: AuditQuery, trail: string[] = []) {
-    setCursorTrail(trail);
+    visitedTrails.current.set(auditListPath(next), trail);
     setSelectedRows([]);
     apply(next);
   }
@@ -298,7 +313,7 @@ export function AuditWorkspace() {
       {records ? (
         <Pagination
           hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
-          hasPrevious={cursorTrail.length > 0}
+          hasPrevious={Boolean(query.cursor)}
           loading={loading}
           onNext={() => {
             if (!pageInfo.endCursor) return;
@@ -306,7 +321,8 @@ export function AuditWorkspace() {
           }}
           onPageSizeChange={(limit) => applyQuery({ ...query, limit, cursor: "" })}
           onPrevious={() => applyQuery({ ...query, cursor: cursorTrail.at(-1) ?? "" }, cursorTrail.slice(0, -1))}
-          page={cursorTrail.length + 1}
+          previousLabel={query.cursor && cursorTrail.length === 0 ? t("Back to first page") : undefined}
+          page={!query.cursor ? 1 : cursorTrail[0] === "" ? cursorTrail.length + 1 : null}
           pageSize={query.limit}
           pageSizeOptions={auditLimitOptions}
           rowCount={records?.length ?? 0}

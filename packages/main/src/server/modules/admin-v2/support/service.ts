@@ -334,7 +334,9 @@ export async function patchSupportRequest(request: Request, ticketId: string) {
 
 export async function getSupportRequestConversation(request: Request, ticketId: string) {
   await actorWithPermission(request, "support.request.read");
-  const ticket = await prisma.supportRequest.findFirst({ where: operationalSupportRequestWhere({ ticketId }) });
+  // Explicit ticket detail follows Case access; audit/fixture exclusion belongs
+  // to operational lists and metrics, not an authorized operator's direct read.
+  const ticket = await prisma.supportRequest.findUnique({ where: { ticketId } });
   if (!ticket) throw Errors.notFound("Support request not found");
   return { request: await supportConversation(prisma, ticket) };
 }

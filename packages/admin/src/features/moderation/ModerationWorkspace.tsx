@@ -884,7 +884,7 @@ function AuthorityError({
 }) {
   if (!state.error) return null;
   return (
-    <AuthorityRequestError
+    <AuthorityRequestError requestKind="read"
       cause={state.cause}
       message={state.error}
       onRetry={onRetry}

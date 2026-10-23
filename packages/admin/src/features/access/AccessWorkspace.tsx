@@ -17,7 +17,7 @@ import {
   type AdminGrantBundleKey,
   type AdminPermissionKey,
 } from "@idream/shared/admin/permissions";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Ban, Check, Loader2, ShieldCheck, UserCog, X } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import {
@@ -131,6 +131,7 @@ type BundleLookup = {
 
 type AccessCommand = {
   title: string;
+  summary?: ReactNode;
   /** 成功后 toast 的正文，调用处已经翻译好。 */
   completed: string;
   endpoint: string;
@@ -164,7 +165,8 @@ export function AccessWorkspace({
   const [bundleLookup, setBundleLookup] = useState<BundleLookup | null>(null);
   const [roleChoice, setRoleChoice] = useState<AccessUserRole>("support");
   const [bundleChoice, setBundleChoice] = useState<AdminGrantBundleKey>(ADMIN_GRANT_BUNDLE_KEYS[0]);
-  const [bundleCharacterIds, setBundleCharacterIds] = useState("");
+  const [bundleCharacterIds, setBundleCharacterIds] = useState<string | null>(null);
+  const [bundleExpiryDraft, setBundleExpiryDraft] = useState<string | null>(null);
   // INVARIANT: 写命令和手动刷新都重新读取权限与授权包，不能用旧权限证明操作结果。
   const [accessRevision, setAccessRevision] = useState(0);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
@@ -174,7 +176,16 @@ export function AccessWorkspace({
   const targetField = useRef<HTMLElement>(null);
   const targetUserId = permissionDraft.userId.trim();
   const needsCharacterScope = bundleNeedsCharacterScope(bundleChoice);
-  const scopedCharacterIds = parseCharacterIds(bundleCharacterIds);
+  const bundleAuthority = bundleLookup?.userId === targetUserId ? bundleLookup.data : null;
+  const existingBundle = bundleAuthority?.items.find((bundle) => bundle.bundleKey === bundleChoice);
+  const characterScopeInput = bundleCharacterIds ?? existingBundle?.scope?.characterIds.join(", ") ?? "";
+  const scopedCharacterIds = parseCharacterIds(characterScopeInput);
+  const originalExpiry = existingBundle?.expiresAt ?? null;
+  const expiryInput = bundleExpiryDraft ?? grantExpiryInput(originalExpiry);
+  // Preserve the authoritative instant, including seconds and DST occurrence, unless the operator edits it.
+  const bundleExpiresAt = expiryInput === grantExpiryInput(originalExpiry)
+    ? originalExpiry : grantExpiryIso(expiryInput);
+  const expiryValid = (!expiryInput || bundleExpiresAt !== null) && grantExpiryIsFuture(bundleExpiresAt);
 
   const refreshTarget = useCallback(() => {
     permissionGate.current.invalidate();
@@ -313,7 +324,8 @@ export function AccessWorkspace({
     refreshTarget();
     setRoleChoice(user?.role ?? "support");
     // INVARIANT: 切换对象时，不能把上一个人的角色授权范围带给下一个人。
-    setBundleCharacterIds("");
+    setBundleCharacterIds(null);
+    setBundleExpiryDraft(null);
     if (user || !userId) {
       window.requestAnimationFrame(() => {
         targetField.current?.scrollIntoView({ block: "start" });
@@ -325,6 +337,7 @@ export function AccessWorkspace({
   function confirmCommand(input: AccessCommand) {
     setConfirmation({
       title: input.title,
+      summary: input.summary,
       destructive: { expectedName: input.expected, inputLabel: t("Confirmation") },
       consequence: input.consequence,
       reasonLabel: t("Reason"),
@@ -481,7 +494,11 @@ export function AccessWorkspace({
           <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
             <Select
               label="Grant bundle"
-              onChange={(bundleKey) => setBundleChoice(bundleKey as AdminGrantBundleKey)}
+              onChange={(bundleKey) => {
+                setBundleChoice(bundleKey as AdminGrantBundleKey);
+                setBundleCharacterIds(null);
+                setBundleExpiryDraft(null);
+              }}
               optionLabel={valueLabel}
               options={ADMIN_GRANT_BUNDLE_KEYS}
               value={bundleChoice}
@@ -489,11 +506,17 @@ export function AccessWorkspace({
             <div className="flex items-end">
               <button
                 className="inline-flex min-h-11 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50"
-                disabled={!targetUserId || (needsCharacterScope && scopedCharacterIds.length === 0)}
+                disabled={!targetUserId || !bundleAuthority || !expiryValid || (needsCharacterScope && scopedCharacterIds.length === 0)}
                 onClick={() => {
-                  if (!targetUserId) return;
+                  if (!targetUserId || !bundleAuthority || !expiryValid) return;
                   confirmCommand({
                     title: t("Grant bundle"),
+                    summary: <div className="space-y-2 break-words [overflow-wrap:anywhere]">
+                      <p>{t("Target user: {userId}", { userId: targetUserId })} · {valueLabel(bundleChoice)}</p>
+                      <p>{needsCharacterScope ? scopedCharacterIds.join(", ") : t("All resources allowed by these capabilities")}</p>
+                      <p>{bundleExpiresAt ? t("Expires {time}", { time: format.dateTime(bundleExpiresAt) }) : t("No expiry")}</p>
+                      {existingBundle ? <p>{t("This replaces the bundle's existing scope and expiry.")}</p> : null}
+                    </div>,
                     completed: t("Granted {bundle}.", { bundle: valueLabel(bundleChoice) }),
                     endpoint: `/api/v2/admin/users/${encodeURIComponent(targetUserId)}/grant-bundles`,
                     expected: accessBundleConfirmation(targetUserId, bundleChoice, "grant"),
@@ -502,9 +525,13 @@ export function AccessWorkspace({
                       reversible: true,
                     },
                     // INVARIANT: 只有需要范围的包才带 scope —— 服务端对其余包收到 scope 会 400。
-                    payload: (reason) => needsCharacterScope
-                      ? { bundleKey: bundleChoice, reason, scope: { characterIds: scopedCharacterIds } }
-                      : { bundleKey: bundleChoice, reason },
+                    payload: (reason) => {
+                      if (!grantExpiryIsFuture(bundleExpiresAt)) throw new Error(t("Grant expiry must be in the future."));
+                      return {
+                        bundleKey: bundleChoice, reason, expiresAt: bundleExpiresAt,
+                        ...(needsCharacterScope ? { scope: { characterIds: scopedCharacterIds } } : {}),
+                      };
+                    },
                   });
                 }}
                 type="button"
@@ -522,7 +549,7 @@ export function AccessWorkspace({
               <Field
                 label="Assigned character IDs"
                 onChange={setBundleCharacterIds}
-                value={bundleCharacterIds}
+                value={characterScopeInput}
               />
               <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
                 {scopedCharacterIds.length > 0
@@ -531,6 +558,18 @@ export function AccessWorkspace({
               </p>
             </div>
           ) : null}
+          <div className="mt-3">
+            <Field
+              label="Grant expiry (local time; blank means no expiry)"
+              onChange={setBundleExpiryDraft}
+              type="datetime-local"
+              value={expiryInput}
+            />
+            <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+              {t("Existing scope and expiry are preserved until you edit them. Clear the expiry only to grant permanent access.")}
+            </p>
+            {!expiryValid ? <p className="mt-1 text-xs text-[var(--ad-red-text)]" role="alert">{t("Grant expiry must be in the future.")}</p> : null}
+          </div>
         </section>
       ) : null}
       {permissions.managePermissions && targetUserId ? (
@@ -1009,6 +1048,22 @@ function currentQuery() {
     ? defaultAccessQuery
     : accessQueryFromSearch(window.location.search);
 }
+
+function grantExpiryInput(value: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
+
+function grantExpiryIso(value: string) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
+function grantExpiryIsFuture(value: string | null) {
+  return value === null || Date.parse(value) > Date.now();
+}
 // INTENT: 这四句原来是裸英文字符串，中文界面里照样印英文；时刻还走裸 toLocaleTimeString()，
 //         跟着浏览器语言漂。两件事一起收：文案过 t()，时刻过 ui/format。
 function freshness(
@@ -1029,10 +1084,12 @@ function freshness(
 function Field({
   label,
   onChange,
+  type = "text",
   value,
 }: {
   label: string;
   onChange: (value: string) => void;
+  type?: "text" | "datetime-local";
   value: string;
 }) {
   // label 在接收方过 t()，一处修好覆盖全部调用点（搜索框、权限用户 ID、权限键…）。
@@ -1043,6 +1100,7 @@ function Field({
       <input
         className="min-h-11 min-w-0 w-full rounded-md border bg-[var(--ad-surface)] px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}
+        type={type}
         value={value}
       />
     </label>

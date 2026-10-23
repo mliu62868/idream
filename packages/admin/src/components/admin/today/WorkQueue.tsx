@@ -80,7 +80,6 @@ export function WorkQueue({
   onPreferenceChanged,
   queue,
   queueName,
-  watchedQueue = false,
 }: {
   actionable?: boolean;
   density: WorkDensity;
@@ -93,7 +92,6 @@ export function WorkQueue({
   queue: TodayProjection["myShift"];
   /** 英文原名：既是 i18n key，也是 data-testid 的来源（testid 不能随语言变）。 */
   queueName: string;
-  watchedQueue?: boolean;
 }) {
   const { locale, t } = useAdminI18n();
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
@@ -170,7 +168,6 @@ export function WorkQueue({
     now,
     onFeedback,
     onPreferenceChanged,
-    watchedQueue,
     onPreview: openPreview,
     previewKey: preview ? workItemKey(preview) : null,
   };
@@ -306,7 +303,6 @@ type WorkItemProps = {
   onPreferenceChanged: () => void | Promise<void>;
   onToggleSelected?: (item: TodayWorkItem, checked: boolean) => void;
   selected: boolean;
-  watchedQueue: boolean;
 };
 
 function RelatedCreativeRuns({
@@ -339,7 +335,7 @@ function RelatedCreativeRuns({
   );
 }
 
-function WorkItem({ density, detail, onPreview, previewKey, item, locale, now, onFeedback, onPreferenceChanged, onToggleSelected, selected, watchedQueue }: WorkItemProps) {
+function WorkItem({ density, detail, onPreview, previewKey, item, locale, now, onFeedback, onPreferenceChanged, onToggleSelected, selected }: WorkItemProps) {
   const { t } = useAdminI18n();
   const title = todayWorkItemTitle(item, t);
   const snoozedUntil = item.snoozedUntil && new Date(item.snoozedUntil) > now ? item.snoozedUntil : null;
@@ -412,8 +408,8 @@ function WorkItem({ density, detail, onPreview, previewKey, item, locale, now, o
           <MenuAction
             disabled={busy}
             icon={Eye}
-            label={watchedQueue ? t("Unwatch") : t("Watch")}
-            onClick={() => void setPreference({ watching: !watchedQueue }, watchedQueue ? "Removed from Watching" : "Added to Watching")}
+            label={item.watching ? t("Unwatch") : t("Watch")}
+            onClick={() => void setPreference({ watching: !item.watching }, item.watching ? "Removed from Watching" : "Added to Watching")}
           />
           <MenuAction
             disabled={busy}
@@ -455,7 +451,7 @@ function WorkItem({ density, detail, onPreview, previewKey, item, locale, now, o
       {snoozeLabel ? <p className="mt-2 text-xs text-[var(--ad-text-muted)]">{snoozeLabel}</p> : null}
       <p className="mt-5 break-words text-sm leading-6 text-[var(--ad-text-muted)]">{todayOperationalText(item.summary, locale)}</p>
       <div className="mt-5 flex flex-wrap items-center gap-3">
-        {onToggleSelected ? <button className="inline-flex min-h-10 items-center gap-2 text-sm disabled:opacity-40" disabled={busy} onClick={() => void setPreference({ watching: !watchedQueue }, watchedQueue ? "Removed from Watching" : "Added to Watching")} type="button"><Eye className="h-4 w-4" />{t(watchedQueue ? "Unwatch" : "Watch")}</button> : null}
+        {onToggleSelected ? <button className="inline-flex min-h-10 items-center gap-2 text-sm disabled:opacity-40" disabled={busy} onClick={() => void setPreference({ watching: !item.watching }, item.watching ? "Removed from Watching" : "Added to Watching")} type="button"><Eye className="h-4 w-4" />{t(item.watching ? "Unwatch" : "Watch")}</button> : null}
         {actions}
       </div>
       <div className="mt-5">

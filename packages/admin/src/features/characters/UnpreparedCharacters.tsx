@@ -43,7 +43,7 @@ export function UnpreparedCharacters() {
         <input aria-label={t("Search characters awaiting preparation")} className={`${fieldClass} min-w-0 flex-1`} value={search} onChange={(event) => setSearch(event.target.value)} />
         <WorkspaceButton disabled={busy} type="submit">{t("Search")}</WorkspaceButton>
       </form>
-      {error ? <AuthorityRequestError cause={error} message={error instanceof Error ? error.message : t("Request failed")} onRetry={() => void load(appliedSearch)} /> : null}
+      {error ? <AuthorityRequestError requestKind="read" cause={error} message={error instanceof Error ? error.message : t("Request failed")} onRetry={() => void load(appliedSearch)} /> : null}
       {!busy && !error && items.length === 0 ? <p className="text-sm text-[var(--ad-text-muted)]">{t("No characters are awaiting preparation.")}</p> : null}
       <ul className="divide-y divide-[var(--ad-border)]">
         {items.map((character) => <li className="flex items-center gap-3 py-3" key={character.id}>

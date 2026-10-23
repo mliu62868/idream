@@ -41,7 +41,7 @@ export function CharacterPerformanceReconciliation() {
       {expanded ? <div className="mt-3 space-y-3">
         <p className="text-sm text-[var(--ad-text-muted)]">{t("Global facts across all characters and dates; independent of portfolio filters.")}</p>
         <WorkspaceButton disabled={report.loading} onClick={() => void report.refresh()}>{t("Refresh")}</WorkspaceButton>
-        {report.error ? <AuthorityRequestError cause={report.cause} message={report.error} onRetry={() => void report.refresh()} snapshotAt={report.data ? report.refreshedAt : null} /> : null}
+        {report.error ? <AuthorityRequestError requestKind="read" cause={report.cause} message={report.error} onRetry={() => void report.refresh()} snapshotAt={report.data ? report.refreshedAt : null} /> : null}
         {report.loading ? <p role="status">{t("Loading…")}</p> : null}
         {report.data ? <CharacterPerformanceReconciliationResult data={report.data} /> : null}
       </div> : null}

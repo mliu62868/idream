@@ -1,8 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { todayAllWorkQuerySchema, type TodayAllWorkQuery } from "@idream/shared/admin";
 import { resolvePermissions } from "@/server/admin/permissions";
 import { prisma } from "@/server/lib/db";
+import { env } from "@/server/lib/env";
 import { updateOperationalWorkPreference } from "./preferences";
 import { claimTodayWorkItem } from "./claim";
 import { buildTodayAllWork, buildTodayProjection, getTodayAllWork, getTodayProjection } from "./query";
@@ -170,6 +171,7 @@ describe("Today authoritative projection", () => {
     expect(projection.unassigned.items[0]).toMatchObject({
       sourceId: caseIds[12],
       ownerId: null,
+      watching: false,
       claim: { entityVersion: 1 },
     });
     expect(projection.watching).toMatchObject({ totalCount: 1 });
@@ -180,11 +182,13 @@ describe("Today authoritative projection", () => {
       ownerId: actorId,
       pinned: true,
       preferenceVersion: 1,
+      watching: true,
       environment: "test",
       dataClass: "customer",
     });
     expect(projection.myShift.items.some((item) => item.sourceId === caseIds[1])).toBe(false);
     expect(projection.watching.items[0]?.deepLink).toBe(`/admin/cases/${caseIds[0]}`);
+    expect(projection.watching.items[0]?.watching).toBe(true);
     expect(sourceQueries.length).toBeGreaterThan(0);
     expect(sourceQueries.every((query) => query.returnedRows <= query.limit && query.limit === 10)).toBe(true);
     expect(sourceQueries.some((query) => query.sourceType === "admin_case" && query.returnedRows === 10)).toBe(true);
@@ -245,6 +249,15 @@ describe("Today authoritative projection", () => {
     if (!cursor) throw new Error("expected a signed Today cursor");
     const [payload, signature] = cursor.split(".");
     const decoded = JSON.parse(Buffer.from(payload ?? "", "base64url").toString("utf8")) as Record<string, unknown>;
+    const legacyItem = { ...(decoded.item as Record<string, unknown>) };
+    delete legacyItem.watching;
+    const legacyPayload = Buffer.from(JSON.stringify({ ...decoded, item: legacyItem })).toString("base64url");
+    const legacySignature = createHmac("sha256", env.INTERNAL_TOKEN).update(legacyPayload).digest("base64url");
+    const legacySecond = await buildTodayAllWork({
+      ...authority,
+      query: allWorkQuery({ limit: 5, cursor: `${legacyPayload}.${legacySignature}` }),
+    });
+    expect(legacySecond.items).toEqual(second.items);
     const forged = `${Buffer.from(JSON.stringify({ ...decoded, scanLimit: 1_000_000 })).toString("base64url")}.${signature}`;
     await expect(buildTodayAllWork({
       ...authority,

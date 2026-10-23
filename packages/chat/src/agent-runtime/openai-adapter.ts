@@ -8,12 +8,10 @@ import {
 
 import { isOpenRouterBaseUrl } from "@idream/shared";
 import { EDIT_LAST_IMAGE_TOOL, GENERATE_IMAGE_ASYNC_TOOL } from "@idream/shared/chat/image-action";
-import type { CompanionModelRequestEvidence, PreparedTurnProfile } from "./contracts";
+import type { CompanionModelRequestEvidence, CompanionModelTokenUsage, PreparedTurnProfile } from "./contracts";
 import { estimateModelRequestInputTokens } from "./model-request-format";
 
-export interface TokenUsage {
-  inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number; reasoningTokens?: number;
-}
+export type TokenUsage = CompanionModelTokenUsage;
 export interface OpenAiCompatibleAdapterOptions {
   profile: PreparedTurnProfile;
   apiKey: string;
@@ -22,7 +20,7 @@ export interface OpenAiCompatibleAdapterOptions {
   samplingTemperature?: number;
   responseFormat?: { type: "json_schema"; json_schema: { name: string; strict: true; schema: Record<string, unknown> } };
   observeRequest?: (evidence: CompanionModelRequestEvidence) => void;
-  observeUsage?: (usage: TokenUsage | undefined) => void;
+  observeUsage?: (usage: TokenUsage | undefined, request: CompanionModelRequestEvidence) => void;
   fetch?: typeof globalThis.fetch;
 }
 export interface InvocationOptions {
@@ -368,6 +366,7 @@ export class OpenAiCompatibleAdapter {
     let firstToken = true;
     const firstTokenTimer = setTimeout(() => timeout.abort(new ProviderError("model first-token timeout", "MODEL_FIRST_TOKEN_TIMEOUT")), profile.timeout.firstTokenMs);
     let requestStarted = false;
+    let requestEvidence: CompanionModelRequestEvidence | undefined;
     let usage: TokenUsage | undefined;
     try {
       const estimatedInputTokens = estimateModelRequestInputTokens(body)
@@ -377,10 +376,11 @@ export class OpenAiCompatibleAdapter {
           responseFormat ? "INPUT_BUDGET_EXCEEDED" : CONTEXT_WINDOW_EXCEEDED_CODE);
       }
       const serializedBody = JSON.stringify(body);
-      observeRequest?.({ bodyDigest: createHash("sha256").update(serializedBody).digest("hex"),
+      requestEvidence = { bodyDigest: createHash("sha256").update(serializedBody).digest("hex"),
         systemPromptDigest: createHash("sha256").update(getCurrentSystemPrompt(messages)).digest("hex"),
         estimatedInputTokens, ...(compacting ? { purpose: "compaction" } : maxInputTokens === undefined ? {} : { maxInputTokens }),
-      });
+      };
+      observeRequest?.(requestEvidence);
       requestStarted = true;
       const response = await this.request(chatCompletionsUrl(profile.baseUrl), {
         method: "POST", headers: { "user-agent": "idream-chat/pi-provider", authorization: `Bearer ${this.apiKey}`,
@@ -425,11 +425,11 @@ export class OpenAiCompatibleAdapter {
         return state;
       };
       const processPayload = (payload: OpenAiStreamPayload): boolean => {
+        if (payload.usage != null) usage = usageOf(payload);
         if (payload.error !== undefined) throw new ProviderError("provider rejected the streamed request",
           isContextWindowExceededError(JSON.stringify(payload.error).slice(0, 8192)) ? CONTEXT_WINDOW_EXCEEDED_CODE : "PROVIDER_STREAM_ERROR");
         responseId ??= payload.id;
         actualProvider ??= payload.provider;
-        if (payload.usage != null) usage = usageOf(payload);
         const choice = payload.choices?.[0];
         nativeFinish = choice?.finish_reason ?? nativeFinish;
         const delta = choice?.delta;
@@ -522,7 +522,7 @@ export class OpenAiCompatibleAdapter {
           reasoning: usage.reasoningTokens, totalTokens: usage.inputTokens + usage.outputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0),
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
       }
-      if (requestStarted) observeUsage?.(usage);
+      if (requestStarted && requestEvidence) observeUsage?.(usage, requestEvidence);
     }
   }
 }

@@ -249,7 +249,7 @@ export function CollaborationPanel({
 
       {loadError ? (
         <div className="mt-3">
-          <AuthorityRequestError
+          <AuthorityRequestError requestKind="read"
             cause={loadError}
             message="Collaboration activity could not be loaded"
             onRetry={() => void load()}

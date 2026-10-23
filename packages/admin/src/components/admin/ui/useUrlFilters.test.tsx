@@ -5,6 +5,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useUrlFilters } from "./useUrlFilters";
 
+const navigation = vi.hoisted(() => ({ search: "" }));
+vi.mock("next/navigation", () => ({
+  useSearchParams: () => new URLSearchParams(navigation.search),
+}));
+
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 type Query = { status: string; cursor: string };
@@ -32,6 +37,7 @@ function Probe() {
       <output data-testid="query">{query.status || "none"}</output>
       <output data-testid="draft">{draft.status || "none"}</output>
       <button onClick={() => setDraft({ status: "blocked" })} type="button">edit</button>
+      <button onClick={() => setDraft({ status: "running" })} type="button">edit another</button>
       <button onClick={() => apply()} type="button">apply</button>
       <button onClick={() => pushUrl(`${urlFor(query)}&row=job-1`)} type="button">open row</button>
     </>
@@ -53,6 +59,7 @@ function read(testid: string) {
 beforeEach(() => {
   load.mockReset();
   window.history.replaceState(null, "", "/admin/system/audit?status=failed&junk=1");
+  navigation.search = window.location.search;
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -98,6 +105,61 @@ describe("useUrlFilters", () => {
 
     expect(read("query")).toBe("failed");
     expect(read("draft")).toBe("failed");
+  });
+
+  it("adopts a same-page router navigation without waiting for popstate", () => {
+    click("edit");
+    load.mockClear();
+    window.history.pushState(null, "", "/admin/system/audit");
+    navigation.search = window.location.search;
+    act(() => root.render(<Probe />));
+
+    expect(read("query")).toBe("none");
+    expect(read("draft")).toBe("none");
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(load.mock.calls[0][0]).toEqual(initial);
+  });
+
+  it("does not reload or overwrite a draft when the router echoes its own URL write", () => {
+    click("edit");
+    click("apply");
+    const callsAfterApply = load.mock.calls.length;
+    navigation.search = window.location.search;
+    act(() => root.render(<Probe />));
+    expect(load).toHaveBeenCalledTimes(callsAfterApply);
+    load.mockClear();
+    click("edit another");
+    click("open row");
+    navigation.search = window.location.search;
+    act(() => root.render(<Probe />));
+
+    expect(read("draft")).toBe("running");
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it("loads back navigation once when both popstate and the router report it", () => {
+    click("edit");
+    click("apply");
+    navigation.search = window.location.search;
+    act(() => root.render(<Probe />));
+    load.mockClear();
+    window.history.replaceState(null, "", "/admin/system/audit?status=failed");
+    act(() => window.dispatchEvent(new PopStateEvent("popstate")));
+    navigation.search = window.location.search;
+    act(() => root.render(<Probe />));
+
+    expect(read("query")).toBe("failed");
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores an unapplied draft on back navigation between identical queries", () => {
+    click("edit");
+    load.mockClear();
+    window.history.pushState(null, "", window.location.href);
+    act(() => window.dispatchEvent(new PopStateEvent("popstate")));
+
+    expect(read("draft")).toBe("failed");
+    expect(load).toHaveBeenCalledTimes(1);
   });
 
   it("writes adjacent URL state without refetching the list", () => {

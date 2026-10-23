@@ -175,7 +175,6 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
         key={summaryQueue}
         queue={activeQueue.queue}
         queueName={activeQueue.name}
-        watchedQueue={summaryQueue === "watching"}
       /> : <section className="space-y-3" data-testid="today-all-work">
         <div className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
           <details>

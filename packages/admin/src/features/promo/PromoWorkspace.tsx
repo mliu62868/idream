@@ -19,6 +19,13 @@ import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
+import {
+  authorityRequestFailed,
+  authorityRequestStarted,
+  authorityRequestSucceeded,
+  createAuthorityState,
+  type AuthorityState,
+} from "@/lib/authority-state";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { ApprovalRequiredNotice, isDualApprovalRequired, type BlockedApproval } from "@/features/approvals/ApprovalRequired";
 import {
@@ -33,26 +40,11 @@ import {
 
 type Row = Record<string, unknown>;
 type ListResponse = { items: Row[]; pageInfo?: PageInfo };
-type AuthorityState = {
-  rows: Row[] | null;
-  pageInfo: PageInfo;
-  loading: boolean;
-  error: string | null;
-  cause: unknown;
-  refreshedAt: string | null;
-};
+type PromoAuthorityState = AuthorityState<ListResponse>;
 
 /** 两张表各自翻页，但一次 navigate 会把两边都重新拉一遍，所以轨迹要一起带着走。 */
 type PromoTrails = Record<PromoScope, string[]>;
 const emptyTrails: PromoTrails = { codes: [], referrals: [] };
-const emptyAuthority = (): AuthorityState => ({
-  rows: null,
-  pageInfo: emptyPageInfo,
-  loading: true,
-  error: null,
-  cause: undefined,
-  refreshedAt: null,
-});
 
 export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
   const { t, value: valueLabel } = useAdminI18n();
@@ -60,8 +52,8 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
   const { toast } = useToast();
   const [query, setQuery] = useState<PromoQuery>(defaultPromoQuery);
   const [draft, setDraft] = useState<PromoQuery>(defaultPromoQuery);
-  const [codes, setCodes] = useState<AuthorityState>(emptyAuthority);
-  const [referrals, setReferrals] = useState<AuthorityState>(emptyAuthority);
+  const [codes, setCodes] = useState(() => createAuthorityState<ListResponse>());
+  const [referrals, setReferrals] = useState(() => createAuthorityState<ListResponse>());
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const [confirmationPermission, setConfirmationPermission] = useState(canWrite);
   const writeAuthority = useRef({ canWrite });
@@ -88,30 +80,22 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
 
   const loadScope = useCallback(async (next: PromoQuery, scope: PromoScope) => {
     const request = gates.current[scope].begin();
+    const queryKey = promoListPath(next, scope);
     const setter = scope === "codes" ? setCodes : setReferrals;
-    setter((state) => ({ ...state, loading: true, error: null }));
+    // Only a refresh of the same query may retain its last good rows and cursor.
+    setter((state) => authorityRequestStarted(state, queryKey));
     try {
-      const response = await apiGet<ListResponse>(promoListPath(next, scope));
+      const response = await apiGet<ListResponse>(queryKey);
       if (!request.isCurrent()) return;
-      setter({
-        rows: response.items,
-        pageInfo: response.pageInfo ?? emptyPageInfo,
-        loading: false,
-        error: null,
-        cause: undefined,
-        refreshedAt: new Date().toISOString(),
-      });
+      setter(authorityRequestSucceeded(queryKey, response));
     } catch (cause) {
       if (!request.isCurrent()) return;
-      setter((state) => ({
-        ...state,
-        loading: false,
-        error:
-          cause instanceof Error
-            ? cause.message
-            : `${scope} authority request failed`,
+      setter((state) => authorityRequestFailed(
+        state,
+        queryKey,
+        cause instanceof Error ? cause.message : `${scope} authority request failed`,
         cause,
-      }));
+      ));
     }
   }, []);
 
@@ -287,7 +271,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
             : "No redeem codes exist yet"
         }
         loadingLabel="Loading redeem codes…"
-        rows={codeRows(codes.rows ?? [], canWrite, confirmDisable, format, codes.refreshedAt)}
+        rows={codeRows(codes.data?.items ?? [], canWrite, confirmDisable, format, codes.refreshedAt)}
         state={codes}
         scope="codes"
       />
@@ -310,7 +294,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
             : "No referrals exist yet"
         }
         loadingLabel="Loading referrals…"
-        rows={referralRows(referrals.rows ?? [], valueLabel, format)}
+        rows={referralRows(referrals.data?.items ?? [], valueLabel, format)}
         state={referrals}
         scope="referrals"
       />
@@ -652,13 +636,13 @@ function AuthoritySection({
   empty: string;
   loadingLabel: string;
   rows: DataTableRow[];
-  state: AuthorityState;
+  state: PromoAuthorityState;
   scope: PromoScope;
 }) {
   // INTENT: loadingLabel 是词典 key，不是成品文案。这里漏了 t()，于是中文后台的促销页
   //         在加载阶段露出 "Loading redeem codes…" / "Loading referrals…" 两句英文。
   const { t } = useAdminI18n();
-  if (!state.rows && state.loading) {
+  if (!state.data && state.loading) {
     return (
       <div className="rounded-lg border p-4" role="status">
         <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
@@ -666,7 +650,7 @@ function AuthoritySection({
       </div>
     );
   }
-  if (!state.rows) return null;
+  if (!state.data) return null;
   if (!rows.length)
     return (
       <EmptyState
@@ -703,38 +687,38 @@ function AuthorityError({
   state,
 }: {
   onRetry: () => void;
-  state: AuthorityState;
+  state: PromoAuthorityState;
 }) {
   if (!state.error) return null;
   return (
-    <AuthorityRequestError
+    <AuthorityRequestError requestKind="read"
       cause={state.cause}
       message={state.error}
       onRetry={onRetry}
-      snapshotAt={state.rows ? state.refreshedAt : null}
+      snapshotAt={state.data ? state.refreshedAt : null}
     />
   );
 }
-function Freshness({ label, state }: { label: string; state: AuthorityState }) {
+function Freshness({ label, state }: { label: string; state: PromoAuthorityState }) {
   const { t } = useAdminI18n();
   const format = useAdminFormat();
   const time = state.refreshedAt ? format.time(state.refreshedAt) : t("unknown");
   // 后缀本来就过 t()，唯独数据源名字（Redeem codes / Referrals）漏了。
   const name = t(label);
-  if (state.loading && state.rows)
+  if (state.loading && state.data)
     return (
       <span>
         {name}{t(": refreshing · as of")} {time}
       </span>
     );
-  if (state.error && state.rows)
+  if (state.error && state.data)
     return (
       <span>
         {name}{t(": stale · last good")} {time}
       </span>
     );
   if (state.error) return <span>{name}{t(": unavailable")}</span>;
-  if (state.rows)
+  if (state.data)
     return (
       <span>
         {name}{t(": as of")} {time}
@@ -752,26 +736,27 @@ function Pager({
 }: {
   cursor: string;
   onNavigate: (cursor: string, trail: string[]) => void;
-  state: AuthorityState;
+  state: PromoAuthorityState;
   trail: string[];
 }) {
   const { t } = useAdminI18n();
   // 还没拿到过任何一页时不画分页条 —— 那时连「有没有下一页」都不知道。
-  if (!state.rows) return null;
+  if (!state.data) return null;
+  const pageInfo = state.data.pageInfo ?? emptyPageInfo;
   return (
     <Pagination
-      hasNext={Boolean(state.pageInfo.hasNextPage && state.pageInfo.endCursor)}
+      hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
       hasPrevious={Boolean(cursor)}
       loading={state.loading}
       onNext={() => {
-        if (!state.pageInfo.endCursor) return;
-        onNavigate(state.pageInfo.endCursor, [...trail, cursor]);
+        if (!pageInfo.endCursor) return;
+        onNavigate(pageInfo.endCursor, [...trail, cursor]);
       }}
       onPrevious={() => onNavigate(trail.at(-1) ?? "", trail.slice(0, -1))}
       previousLabel={cursor && trail.length === 0 ? t("Back to first page") : undefined}
       page={!cursor ? 1 : trail[0] === "" ? trail.length + 1 : null}
       pageSize={PROMO_PAGE_SIZE}
-      rowCount={state.rows.length}
+      rowCount={state.data.items.length}
     />
   );
 }

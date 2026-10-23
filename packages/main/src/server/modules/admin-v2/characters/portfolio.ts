@@ -24,6 +24,7 @@ import {
   paginateAdminKeyset,
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { effectiveCharacterIdsForPermission } from "@/server/admin/effective-permissions";
+import { readCharacterVariableCostCoverage } from "./performance-facts";
 import {
   OPERATIONAL_USER_DATA_CLASS_SQL,
   operationalCharacterWhere,
@@ -118,8 +119,7 @@ async function performanceSummary(
     funnelRows,
     exposureRows,
     economicsRows,
-    relevantCosts,
-    projectedCosts,
+    costCoverage,
   ] = await Promise.all([
     db.characterFunnelDaily.findMany({
       where: {
@@ -158,29 +158,11 @@ async function performanceSummary(
         occurredAt: { gte: reportingWindow.start, lt: reportingWindow.end },
       },
     }),
-    db.aiUsageFact.count({
-      where: {
-        characterId: input.characterId,
-        releaseId: input.release.id,
-        costMicros: { not: null },
-        pricingVersion: { not: null },
-        environment: "production",
-        dataClass: "customer",
-        trustClass: "canonical",
-        actorIsInternal: false,
-        occurredAt: { gte: reportingWindow.start, lt: reportingWindow.end },
-      },
-    }),
-    db.characterEconomicsFact.count({
-      where: {
-        characterId: input.characterId,
-        characterReleaseId: input.release.id,
-        kind: "variable_cost",
-        authorityType: "ai_usage_fact",
-        auditState: "audited",
-        coverageState: "exact",
-        occurredAt: { gte: reportingWindow.start, lt: reportingWindow.end },
-      },
+    readCharacterVariableCostCoverage(db, {
+      characterId: input.characterId,
+      releaseId: input.release.id,
+      windowStart: reportingWindow.start,
+      windowEnd: reportingWindow.end,
     }),
   ]);
   return evaluateCharacterPerformance({
@@ -201,7 +183,7 @@ async function performanceSummary(
       refundsComplete: false,
       creditsComplete: false,
       variableCostsComplete:
-        input.placementId === null && relevantCosts === projectedCosts,
+        input.placementId === null && costCoverage.complete,
     },
   });
 }

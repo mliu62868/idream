@@ -41,6 +41,9 @@ describe("Case and Support assignment authority", () => {
       body: { entityVersion: adminCase.version, ownerId: OWNER, priority: "high", reason: "Investigate failed image download" },
     }));
     await expectAssignment(adminCase.id, request.id, OWNER, "high", 2);
+    await expect(prisma.adminCase.findUniqueOrThrow({ where: { id: adminCase.id } })).resolves.toMatchObject({
+      slaDueAt: new Date(request.createdAt.getTime() + 12 * 60 * 60 * 1000),
+    });
     const detail = await adminV2("GET", "support/requests", { userId: ADMIN, role: "admin", query: { ticketId: request.ticketId } });
     expectOk(detail);
     expect(detail.data.items).toEqual([expect.objectContaining({ assignedToId: OWNER, assignedToEmail: `${OWNER}@idream.internal`, priority: 2 })]);

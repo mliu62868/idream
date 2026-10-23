@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { historyStateForNavigation } from "@/lib/workspace-history";
 
 export type HistoryMode = "push" | "replace";
@@ -9,7 +10,7 @@ export type UrlFilterOptions<Q> = {
   initial: Q;
   parse: (params: URLSearchParams) => Q;
   toUrl: (query: Q, location: { pathname: string; search: string }) => string;
-  /** Runs on mount, on apply, and on browser back/forward. `params` carries adjacent URL state. */
+  /** Runs on mount, on apply, and on external navigation. `params` carries adjacent URL state. */
   load: (query: Q, params: URLSearchParams) => void;
 };
 
@@ -20,6 +21,10 @@ export type UrlFilterOptions<Q> = {
 export function useUrlFilters<Q>({ initial, parse, toUrl, load }: UrlFilterOptions<Q>) {
   const [query, setQuery] = useState<Q>(initial);
   const [draft, setDraftState] = useState<Q>(initial);
+  const locationQuery = useSearchParams()?.toString() ?? "";
+  // Next 同页 Link 导航不派发 popstate。记录自己写出的 URL，既接住外部导航，
+  // 也避免 History API 回流再次取数或冲掉正在编辑的草稿。
+  const stateSearch = useRef<string | null>(null);
 
   // 回调每次渲染都会换引用；放进 ref 才不会把「挂载时读一次地址栏」变成每次渲染重读。
   // 这个同步 effect 必须声明在下面的挂载 effect 之前——同一次提交里 effect 按声明顺序执行。
@@ -39,23 +44,32 @@ export function useUrlFilters<Q>({ initial, parse, toUrl, load }: UrlFilterOptio
       pathname: window.location.pathname,
       search: window.location.search,
     });
+    stateSearch.current = new URL(href, window.location.href).search;
     window.history[mode === "push" ? "pushState" : "replaceState"](historyStateForNavigation(window.history.state), "", href);
     options.current.load(next, new URLSearchParams(href.split("?")[1] ?? ""));
   }, []);
 
+  const restore = useCallback((force = false) => {
+    if (!force && stateSearch.current === window.location.search) return;
+    stateSearch.current = window.location.search;
+    const params = new URLSearchParams(window.location.search);
+    const restored = options.current.parse(params);
+    setQuery(restored);
+    setDraftState(restored);
+    options.current.load(restored, params);
+  }, []);
+
   useEffect(() => {
-    const restore = () => {
-      const params = new URLSearchParams(window.location.search);
-      const restored = options.current.parse(params);
-      setQuery(restored);
-      setDraftState(restored);
-      options.current.load(restored, params);
-    };
     // 挂载时用 replace 归一化地址栏：陈旧或半截的查询串换成这一页真正在用的那一套。
     apply(options.current.parse(new URLSearchParams(window.location.search)), "replace");
-    window.addEventListener("popstate", restore);
-    return () => window.removeEventListener("popstate", restore);
-  }, [apply]);
+    const onPopState = () => restore(true);
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [apply, restore]);
+
+  useEffect(() => {
+    restore();
+  }, [locationQuery, restore]);
 
   return {
     query,
@@ -71,6 +85,7 @@ export function useUrlFilters<Q>({ initial, parse, toUrl, load }: UrlFilterOptio
     }), []),
     /** Escape hatch for URL state that sits next to the filters (an opened row, a tab). */
     pushUrl: useCallback((href: string, mode: HistoryMode = "push") => {
+      stateSearch.current = new URL(href, window.location.href).search;
       window.history[mode === "push" ? "pushState" : "replaceState"](historyStateForNavigation(window.history.state), "", href);
     }, []),
   };

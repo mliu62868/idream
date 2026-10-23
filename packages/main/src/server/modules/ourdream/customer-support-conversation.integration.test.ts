@@ -16,9 +16,9 @@ beforeAll(async () => {
 });
 afterAll(() => purgeTestData(P));
 
-async function fileRequest() {
+async function fileRequest(userId = CUSTOMER) {
   const filed = await api("POST", "support/requests", {
-    userId: CUSTOMER, ageGate: true,
+    userId, ageGate: true,
     body: { category: "bug", subject: "Cannot save my image", description: "The generated image cannot be saved after refresh." },
   });
   expectOk(filed, 201);
@@ -26,6 +26,24 @@ async function fileRequest() {
 }
 
 describe("customer support conversation", () => {
+  it.each(["audit", "fixture"] as const)("reads an explicit %s ticket under support permission without adding it to operational lists", async (dataClass) => {
+    const userId = `${P}${dataClass}`;
+    await createUser({ id: userId, dataClass });
+    const ticketId = await fileRequest(userId);
+    const ticket = await prisma.supportRequest.findUniqueOrThrow({ where: { ticketId } });
+    const intake = await prisma.caseEvidence.findFirstOrThrow({ where: { sourceType: "support_request", sourceId: ticket.id } });
+    expectOk(await adminV2("GET", `cases/${intake.caseId}`, { userId: ADMIN, role: "admin" }));
+
+    const list = await adminV2("GET", "support/requests", { userId: ADMIN, role: "admin", query: { ticketId } });
+    expectOk(list);
+    expect(list.data.items).toEqual([]);
+    expectError(await adminV2("GET", `support/requests/${ticketId}`, { userId: OTHER, role: "user" }), 403, "forbidden");
+
+    const conversation = await adminV2("GET", `support/requests/${ticketId}`, { userId: ADMIN, role: "admin" });
+    expectOk(conversation);
+    expect(conversation.data.request).toMatchObject({ ticketId, subject: ticket.subject, status: "received" });
+  });
+
   it("rejects a retained support form from another user or anonymous scope before creating a ticket", async () => {
     const body = { category: "bug", subject: `${P}retained draft`, description: "This description belongs to the original browser identity." };
     for (const scope of [`user:${CUSTOMER}`, `anonymous:${P}browser`]) {

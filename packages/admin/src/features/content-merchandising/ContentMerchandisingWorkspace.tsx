@@ -31,6 +31,7 @@ import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
+import { useUnsavedChanges } from "@/components/admin/ui/useUnsavedChanges";
 import {
   authorityRequestFailed,
   authorityRequestStarted,
@@ -104,6 +105,22 @@ export type FeaturedVersionConflict = {
   configuredCharacterIds: string[];
 };
 
+type FeaturedDraft = {
+  input: string;
+  reason: string;
+  confirmation: string;
+  baseline: { input: string; version: number };
+};
+
+function featuredDraftFrom(data: Pick<FeaturedResponse, "configuredCharacterIds" | "settingVersion">): FeaturedDraft {
+  const input = data.configuredCharacterIds.join(", ");
+  return { input, reason: "", confirmation: "", baseline: { input, version: data.settingVersion } };
+}
+
+function featuredDraftDirty(draft: FeaturedDraft | null) {
+  return Boolean(draft && (draft.input !== draft.baseline.input || draft.reason || draft.confirmation));
+}
+
 export function ContentMerchandisingWorkspace({
   canWrite,
 }: {
@@ -119,9 +136,12 @@ export function ContentMerchandisingWorkspace({
     useState(() => createAuthorityState<CharacterResponse>());
   const [featured, setFeatured] =
     useState(() => createAuthorityState<FeaturedResponse>());
-  const [featuredInput, setFeaturedInput] = useState("");
-  const [reason, setReason] = useState("");
-  const [confirmation, setConfirmation] = useState("");
+  const [featuredDraft, setFeaturedDraft] = useState<FeaturedDraft | null>(null);
+  const featuredInput = featuredDraft?.input ?? "";
+  const reason = featuredDraft?.reason ?? "";
+  const confirmation = featuredDraft?.confirmation ?? "";
+  const savingRef = useRef(false);
+  const { guard } = useUnsavedChanges(featuredDraftDirty(featuredDraft));
   const [saveConflict, setSaveConflict] =
     useState<FeaturedVersionConflict | null>(null);
   const [saveResult, setSaveResult] = useState<FeaturedWriteResult | null>(
@@ -163,9 +183,11 @@ export function ContentMerchandisingWorkspace({
       const data = await apiGet<FeaturedResponse>(queryKey);
       if (!request.isCurrent()) return;
       setFeatured(authorityRequestSucceeded(queryKey, data));
-      if (!options.preserveInput) {
-        setFeaturedInput(data.configuredCharacterIds.join(", "));
-      }
+      // Read projections can advance while an operator owns a draft. Only a clean
+      // editor adopts them; its original CAS remains paired with the edited copy.
+      setFeaturedDraft((current) => current &&
+        (options.preserveInput || savingRef.current || featuredDraftDirty(current))
+        ? current : featuredDraftFrom(data));
     } catch (cause) {
       if (!request.isCurrent()) return;
       setFeatured((current) => authorityRequestFailed(
@@ -229,7 +251,12 @@ export function ContentMerchandisingWorkspace({
 
   const expectedConfirmation = parseCsv(featuredInput).join(",") || "CLEAR";
   async function saveFeatured() {
-    if (!canWrite) return;
+    if (!canWrite || !featuredDraft || savingRef.current) return;
+    const submitted = featuredDraft;
+    // A conflict explicitly shows the current version and IDs before the operator
+    // retries. Ordinary refreshes never confer that approval on an older draft.
+    const expectedVersion = saveConflict?.settingVersion ?? submitted.baseline.version;
+    savingRef.current = true;
     setSaving(true);
     setSaveConflict(null);
     setSaveResult(null);
@@ -238,15 +265,16 @@ export function ContentMerchandisingWorkspace({
         "/api/v2/admin/content/featured",
         "PUT",
         {
-          characterIds: parseCsv(featuredInput),
-          expectedVersion: featured.data?.settingVersion ?? 0,
-          reason: reason.trim(),
-          confirmation: confirmation.trim(),
+          characterIds: parseCsv(submitted.input),
+          expectedVersion,
+          reason: submitted.reason.trim(),
+          confirmation: submitted.confirmation.trim(),
         },
       );
       setSaveResult(result);
-      setReason("");
-      setConfirmation("");
+      const saved = featuredDraftFrom(result);
+      setFeaturedDraft((current) => current === submitted ? saved : current
+        ? { ...current, baseline: saved.baseline } : saved);
       await loadFeatured();
     } catch (cause) {
       const conflict = featuredVersionConflictFromError(cause);
@@ -257,6 +285,7 @@ export function ContentMerchandisingWorkspace({
         failureToast(cause);
       }
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   }
@@ -326,6 +355,7 @@ export function ContentMerchandisingWorkspace({
     configuredFeaturedCount - effectiveFeaturedCount;
   return (
     <section className="space-y-5">
+      {guard}
       <PageHeader
         purpose={t("Search the catalog, control visibility and lifecycle state, and curate the public featured feed.")}
         title={t("Featured Merchandising")}
@@ -394,7 +424,7 @@ export function ContentMerchandisingWorkspace({
         </div>
       </form>
       {featured.error ? (
-        <AuthorityRequestError
+        <AuthorityRequestError requestKind="read"
           cause={featured.cause}
           message={featured.error}
           onRetry={() => void loadFeatured()}
@@ -477,10 +507,9 @@ export function ContentMerchandisingWorkspace({
             className="w-full min-w-0 h-10 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 font-mono text-sm"
             disabled={!canWrite}
             onChange={(event) => {
-              setFeaturedInput(event.target.value);
-              setConfirmation("");
+              const input = event.target.value;
+              setFeaturedDraft((current) => current ? { ...current, input, confirmation: "" } : current);
               setSaveResult(null);
-              setSaveConflict(null);
             }}
             placeholder={t("char_a, char_b")}
             value={featuredInput}
@@ -489,9 +518,9 @@ export function ContentMerchandisingWorkspace({
             className="w-full min-w-0 h-10 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm"
             disabled={!canWrite}
             onChange={(event) => {
-              setReason(event.target.value);
+              const reason = event.target.value;
+              setFeaturedDraft((current) => current ? { ...current, reason } : current);
               setSaveResult(null);
-              setSaveConflict(null);
             }}
             placeholder={t("Reason (≥3 chars)")}
             value={reason}
@@ -501,9 +530,9 @@ export function ContentMerchandisingWorkspace({
             className="w-full min-w-0 h-10 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 font-mono text-sm"
             disabled={!canWrite}
             onChange={(event) => {
-              setConfirmation(event.target.value);
+              const confirmation = event.target.value;
+              setFeaturedDraft((current) => current ? { ...current, confirmation } : current);
               setSaveResult(null);
-              setSaveConflict(null);
             }}
             placeholder={
               expectedConfirmation === "CLEAR"
@@ -575,7 +604,7 @@ export function ContentMerchandisingWorkspace({
         rows={featuredRows}
       /> : null}
       {characters.error ? (
-        <AuthorityRequestError
+        <AuthorityRequestError requestKind="read"
           cause={characters.cause}
           message={characters.error}
           onRetry={() => void loadCharacters(query)}

@@ -189,12 +189,22 @@ export async function publishPricingRule(
     requestId,
     commandType: "config.pricing.publish",
     target: { type: "pricing_rule", id },
+    expectedVersion: body.expectedVersion,
     payload: body,
     mutate: async (tx) => {
       const rule = await tx.pricingRule.findUnique({ where: { id } });
       if (!rule) throw Errors.notFound("Pricing rule not found");
       assertTargetConfirmation(body.confirmation, rule.id);
       if (rule.status !== "draft") throw Errors.badRequest("Only draft pricing rules can be published");
+      // INVARIANT: serializable retries recheck the operator's confirmed price.
+      // A draft edit does not increment its release version, so version alone is insufficient.
+      if (rule.version !== body.expectedVersion || rule.baseCost !== body.expectedBaseCost || rule.multiplier !== body.expectedMultiplier) {
+        throw Errors.conflict("Pricing changed after confirmation. Refresh and review the current price before publishing.", {
+          reason: "pricing_confirmation_stale",
+          expected: { version: body.expectedVersion, baseCost: body.expectedBaseCost, multiplier: body.expectedMultiplier },
+          current: { version: rule.version, baseCost: rule.baseCost, multiplier: rule.multiplier },
+        });
+      }
       // INVARIANT: 批准绑定价格本身：批准之后再改草稿（baseCost / multiplier）就不再匹配。
       await enforceApproval("config.pricing.publish", id, tx, {
         baseCost: rule.baseCost,

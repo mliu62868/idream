@@ -187,7 +187,7 @@ export function TagsView({ canWrite }: { canWrite: boolean }) {
       />
       <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
       {canWrite ? null : <PermissionNotice permission="content.tag.write" />}
-      {authority.error ? <AuthorityRequestError cause={authority.cause} message={authority.error} onRetry={() => void load()} snapshotAt={authority.data ? authority.refreshedAt : null} /> : null}
+      {authority.error ? <AuthorityRequestError requestKind="read" cause={authority.cause} message={authority.error} onRetry={() => void load()} snapshotAt={authority.data ? authority.refreshedAt : null} /> : null}
 
       {authority.data && canWrite ? <CreateTagSection onCreated={reportSuccess} reload={load} /> : null}
       {authority.data && canWrite ? <MergeSection onMerged={reportSuccess} reload={load} tags={tags} /> : null}

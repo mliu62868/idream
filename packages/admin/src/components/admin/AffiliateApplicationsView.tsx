@@ -138,7 +138,7 @@ export function AffiliateApplicationsView({ canWrite }: { canWrite: boolean }) {
       </FilterBar>
     </form>
     {notice && <p role="status">{notice}</p>}
-    {error !== null && <AuthorityRequestError cause={error} message={t("Affiliate applications could not load")} onRetry={() => void load()} />}
+    {error !== null && <AuthorityRequestError requestKind="read" cause={error} message={t("Affiliate applications could not load")} onRetry={() => void load()} />}
     {loading && <p role="status">{t("Loading…")}</p>}
     {data && !loading && <>
       <DataTable caption={t("Affiliate applications")} empty={<EmptyState title={t("No matching affiliate applications")} />} headers={[t("Application"), t("Terms version"), t("Promotion channels"), t("Status"), t("Actions")]} rows={data.items.map((item) => ({

@@ -38,8 +38,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
   signals.clear();
-  vi.spyOn(process, "on").mockImplementation((event, listener) => {
-    if (event === "SIGTERM" || event === "SIGINT") signals.set(event, () => listener());
+  // Spy on the EventEmitter contract so declaration-merging order cannot narrow
+  // this signal capture to Bun's last process.on overload (memoryPressure).
+  const processEvents: Pick<NodeJS.EventEmitter, "on"> = process;
+  vi.spyOn(processEvents, "on").mockImplementation((event, listener) => {
+    if (event === "SIGTERM" || event === "SIGINT") signals.set(event, () => listener(event));
     return process;
   });
   vi.spyOn(process, "exit").mockImplementation(() => undefined as never);

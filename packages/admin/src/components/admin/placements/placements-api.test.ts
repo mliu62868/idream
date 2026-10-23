@@ -120,8 +120,10 @@ describe("publishableApprovedAssets", () => {
     );
 
     expect(createSource).toContain("publishableApprovedAssets(data.items)");
-    // SPEC: 版本冲突守卫仍然要写出来；幂等键不再由这两页表达（账本管了），所以不在这里断言。
-    expect(detailSource).toContain("ifMatch: row.version");
+    // SPEC: 确认与编辑各自绑定原版本，不能采用刷新后的可见行版本。
+    // 具体并发行为由 Placements.mounted 的跨版本回归验证。
+    expect(detailSource).toContain("ifMatch: target.version");
+    expect(detailSource).toContain("ifMatch: submittedCopy.version");
     expect(createSource).toContain("generation authority is incomplete or untrusted");
     expect(detailSource).toContain("Placement pause was committed, but the latest projection could not be refreshed");
     expect(detailSource).toContain("Placement archival was committed, but the latest projection could not be refreshed");

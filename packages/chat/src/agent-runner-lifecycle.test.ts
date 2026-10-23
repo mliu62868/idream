@@ -7,6 +7,8 @@ import { ChatFenceError } from "./fence.js";
 const store = vi.hoisted(() => ({
   admitAgentRun: vi.fn(async () => ({ duplicate: false, terminal: false })),
   appendAgentRunEvent: vi.fn<(...args: Parameters<typeof import("./agent-run-store.js").appendAgentRunEvent>) => Promise<void>>(async () => undefined),
+  appendAgentRunModelRequest: vi.fn(async () => undefined),
+  recordAgentRunCancellation: vi.fn<typeof import("./agent-run-store.js").recordAgentRunCancellation>(async () => undefined),
   completeAgentRun: vi.fn(async () => undefined),
   listIncompleteAgentRuns: vi.fn<() => Promise<AgentRunRecoveryScan>>(
     async () => ({ runs: [], failures: [] }),
@@ -17,7 +19,7 @@ const store = vi.hoisted(() => ({
   writeAgentRunProposal: vi.fn<typeof import("./agent-run-store.js").writeAgentRunProposal>(async () => undefined),
 }));
 const fence = vi.hoisted(() => ({
-  fenceAttemptsThrough: vi.fn(async () => undefined),
+  assertNotFenced: vi.fn(async () => undefined),
   isFenced: vi.fn(async () => false),
 }));
 const logs = vi.hoisted(() => ({ error: vi.fn(), warn: vi.fn(), debug: vi.fn() }));
@@ -120,6 +122,7 @@ vi.mock("./env.js", () => ({
 
 import {
   acceptAgentRun,
+  cancelAgentRun,
   cancelAgentRunsForUser,
   recoverIncompleteAgentRuns,
 } from "./agent-runner.js";
@@ -211,6 +214,29 @@ describe("AgentRun account-erasure drain", () => {
       committedAt: "2026-08-28T12:00:00.000Z",
     })));
     store.readAgentRunInput.mockResolvedValue(agentRunInput());
+  });
+
+  it("aborts an attempt admitted while Stop is waiting to persist its fence", async () => {
+    const releaseFence = Promise.withResolvers<void>();
+    const started = Promise.withResolvers<void>();
+    const aborted = Promise.withResolvers<void>();
+    store.recordAgentRunCancellation.mockImplementationOnce(async () => releaseFence.promise);
+    runtime.runCompanion.mockImplementationOnce(async (_invocation, _port, signal: AbortSignal) => {
+      started.resolve();
+      await new Promise<void>(resolve => signal.addEventListener("abort", () => {
+        aborted.resolve();
+        resolve();
+      }, { once: true }));
+      throw new ChatFenceError({ scope: "attempt", turnId: "turn-1", attempt: 1 });
+    });
+    const stopping = cancelAgentRun("turn-1", 1);
+    await acceptAgentRun(agentRunInput());
+    await started.promise;
+    releaseFence.resolve();
+    await expect(stopping).resolves.toBe(true);
+    await aborted.promise;
+    await cancelAgentRunsForUser("user-1");
+    expect(store.writeAgentRunProposal).not.toHaveBeenCalled();
   });
 
   it.each(["start", "delta", "replace", "done"])("commits and cleans up the exact reply when Redis rejects %s", async failedType => {
@@ -634,6 +660,43 @@ describe("AgentRun account-erasure drain", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(runtime.runCompanion).toHaveBeenCalledOnce();
   });
+
+  it.each(["failed", "cancelled"].flatMap(status => [true, false].map(known => ({ status, known }))))(
+    "retains every physical request before a $status terminal without a candidate (known=$known)",
+    async ({ status, known }) => {
+      const completed = Promise.withResolvers<void>();
+      store.completeAgentRun.mockImplementationOnce(async () => { completed.resolve(); });
+      const modelRequests = [
+        { bodyDigest: "c".repeat(64), systemPromptDigest: "a".repeat(64), estimatedInputTokens: 100,
+          purpose: "compaction", provider: "openai", model: "test-model",
+          usage: { inputTokens: 20, outputTokens: 4, cacheReadTokens: 5, reasoningTokens: 2 } },
+        { bodyDigest: "d".repeat(64), systemPromptDigest: "a".repeat(64), estimatedInputTokens: 80,
+          provider: "openai", model: "test-model", usage: known ? { inputTokens: 10, outputTokens: 3 } : null },
+      ];
+      runtime.runCompanion.mockImplementation(async (invocation, port) => {
+        const identity = { invocationId: invocation.invocationId, attemptId: invocation.attemptId, occurredAt: "2026-08-28T12:00:00.000Z" };
+        for (const [index, request] of modelRequests.entries()) {
+          await port.emit({ ...identity, sequence: index + 1, type: "model_request", request });
+        }
+        await port.emit({ ...identity, sequence: 3, ...(status === "cancelled"
+          ? { type: "cancelled", reason: "timeout" }
+          : { type: "failed", error: { code: "provider_idle_timeout", message: "provider stopped", retryable: true } }) });
+      });
+
+      await acceptAgentRun(agentRunInput());
+      await completed.promise;
+
+      expect(store.writeAgentRunProposal).toHaveBeenCalledWith("turn-1", 1, expect.objectContaining({
+        terminal: expect.objectContaining({ status, model: "test-model",
+          promptTokens: known ? 35 : null, completionTokens: known ? 7 : null,
+          terminalEvidence: expect.objectContaining({
+          modelRequests,
+          replyUsage: known ? { promptTokens: 35, completionTokens: 7, reasoningTokens: null } : null,
+        }) }),
+      }));
+      expect(store.appendAgentRunModelRequest).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it("does not execute an image action when product policy disables it", async () => {
     const completed = Promise.withResolvers<void>();

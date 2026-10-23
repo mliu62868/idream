@@ -48,6 +48,7 @@ const claimable = (sourceId: string) => ({
   environment: "test" as const,
   dataClass: "customer" as const,
   pinned: false,
+  watching: false,
   preferenceVersion: 0,
   claim: { entityVersion: 4 },
 });
@@ -120,6 +121,42 @@ afterEach(async () => {
 });
 
 describe("Today operator actions", () => {
+  it("can watch and unwatch from the same priority preview using its own preference rather than the truncated Watching queue", async () => {
+    let watching = false;
+    let version = 0;
+    adminV2Request.mockImplementation(async (path: string, options?: { method?: string; body?: { watching?: boolean } }) => {
+      if (path === "/api/v2/admin/today/preferences" && options?.method === "PUT") {
+        watching = options.body?.watching === true;
+        version += 1;
+        return { version };
+      }
+      if (path.startsWith("/api/v2/admin/today?")) {
+        const projection = data([{ ...claimable("priority-watch-target"), watching, preferenceVersion: version }]).projection;
+        // Ten other watched rows fill the queue preview; absence is not proof of an unwatched item.
+        projection.watching = { totalCount: watching ? 11 : 10, items: Array.from({ length: 10 }, (_, index) => ({ ...claimable(`other-watched-${index}`), watching: true })) };
+        return projection;
+      }
+      if (path.startsWith("/api/v2/admin/today/all-work")) return allWorkResponse(0);
+      throw new Error(`Unexpected request ${options?.method ?? "GET"} ${path}`);
+    });
+    await act(async () => root.render(createElement(ToastProvider, null, createElement(TodayWorkspace, { workMode: "support" }))));
+    await settle();
+    const preview = () => container.querySelector('[data-testid="today-preview"]')!;
+    await click(buttons(preview()).find((button) => button.textContent === "Watch"));
+    await settle();
+    expect(preview().textContent).toContain("priority-watch-target");
+    const unwatch = buttons(preview()).find((button) => button.textContent === "Unwatch");
+    expect(unwatch, "A watched priority item must offer Unwatch in its existing preview").toBeDefined();
+    await click(unwatch);
+    await settle();
+    expect(buttons(preview()).some((button) => button.textContent === "Watch")).toBe(true);
+    const writes = adminV2Request.mock.calls.filter(([path, options]) => path === "/api/v2/admin/today/preferences" && options.method === "PUT");
+    expect(writes.map(([, options]) => ({ ifMatch: options.ifMatch, watching: options.body.watching }))).toEqual([
+      { ifMatch: 0, watching: true }, { ifMatch: 1, watching: false },
+    ]);
+    expect(window.location.search).not.toContain("watching");
+  });
+
   it("loads the queue independently and lazily retries background totals without counting the preview rows", async () => {
     let backgroundUnavailable = true;
     adminV2Request.mockImplementation(async (path: string) => {

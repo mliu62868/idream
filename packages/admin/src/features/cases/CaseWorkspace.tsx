@@ -27,6 +27,7 @@ import { useAdminFormat } from "@/components/admin/ui/format";
 import { Pagination } from "@/components/admin/ui/Pagination";
 import { FilterBar, type FilterChip } from "@/components/admin/ui/FilterBar";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
+import { useUnsavedChanges } from "@/components/admin/ui/useUnsavedChanges";
 import { setWorkspaceUrl } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { createWorkspaceHistoryController, observeWorkspacePopState, workspaceDetailId } from "@/lib/workspace-history";
@@ -66,6 +67,7 @@ type CaseMobileStep = "summary" | "evidence" | "decision";
 // INTENT: 手抄的那份漏掉了 decisions/activity 的绝大多数字段，于是"上一步谁做了什么"在类型层面
 // 就已经不存在了；服务端本来就是用同一个 schema parse 后才返回的。
 type CaseDetail = ReturnType<typeof operationsCaseDetailSchema.parse>;
+type CaseCommand = <Result>(label: string, execute: () => Promise<Result>) => Promise<Result | undefined>;
 
 export function CaseWorkspace({ actorId = null, canAssign, canDecide, canReadSupport = false, canReplySupport = false, canViewPlaintext = false, initialCaseId = null }: { actorId?: string | null; canAssign: boolean; canDecide: boolean; canReadSupport?: boolean; canReplySupport?: boolean; canViewPlaintext?: boolean; initialCaseId?: string | null }) {
   const { t, value } = useAdminI18n();
@@ -87,6 +89,8 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, canReadSup
   const [listError, setListError] = useState<unknown>(null);
   const [detailError, setDetailError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
+  const [detailDirty, setDetailDirty] = useState(false);
+  const { confirmDiscard, guard } = useUnsavedChanges(detailDirty);
   const [inspectorExpanded, setInspectorExpanded] = useState(true);
   // INVARIANT: 轨迹从空游标起算才证明页位；恢复非空游标时可回首页，不能把空栈当第一页。
   const [cursorTrail, setCursorTrail] = useState<string[]>([]);
@@ -235,7 +239,7 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, canReadSup
     void loadList(next);
   }
 
-  function selectCase(id: string | null) {
+  function openCase(id: string | null) {
     activeOperations.current.clear();
     setBusy(false);
     detailRequestId.current += 1;
@@ -244,6 +248,11 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, canReadSup
     setDetail(null);
     history.current.navigate({ ...history.current.current(), selectedId: id }, writeCaseUrl);
     if (id) void loadDetail(id);
+  }
+
+  function selectCase(id: string | null) {
+    if (id === selectedId) return;
+    confirmDiscard(() => openCase(id));
   }
 
   const applySavedView = useCallback((view: SavedViewRecord) => {
@@ -280,15 +289,16 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, canReadSup
       : { tone: "info", title: t(label), description: t("The latest data could not be loaded.") });
   }
 
-  async function command(label: string, execute: () => Promise<unknown>) {
+  async function command<Result>(label: string, execute: () => Promise<Result>) {
     if (!workspaceIsCurrent() || activeOperations.current.size > 0 || detailLoading || detailError !== null) return;
     const operation = Symbol("case-mutation");
     activeOperations.current.add(operation);
     const isCurrent = () => workspaceIsCurrent() && activeOperations.current.has(operation);
     setBusy(true);
     try {
-      await execute();
+      const result = await execute();
       await refreshAfterMutation(label, isCurrent);
+      if (isCurrent()) return result;
     } catch (mutationError) {
       if (isCurrent()) throw mutationError;
     } finally {
@@ -321,6 +331,7 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, canReadSup
 
   return (
     <section aria-labelledby="case-workspace-title" className="space-y-5">
+      {guard}
       <header className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div><h2 className="sr-only" id="case-workspace-title">{t("Cases")}</h2><p className="max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">{t("Evidence, decision, downstream verification, and closure stay attached to the customer problem.")}</p></div>
         {list ? <p className="text-xs text-[var(--ad-text-muted)]" role="status">{value(appliedQuery.view)} · {t(list.freshness)}  {t("· data as of")} <time dateTime={list.asOf}>{format.time(list.asOf)}</time></p> : null}
@@ -345,7 +356,7 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, canReadSup
       <div className="grid min-w-0 grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,0.92fr)_minmax(460px,1.08fr)]">
         {selectedId ? <div className={`min-w-0 space-y-3 ${inspectorExpanded ? "" : "md:hidden lg:block"}`}>
           {detailError ? <AuthorityRequestError cause={detailError} message={t("The latest data could not be loaded.")} onRetry={() => void loadDetail(selectedId)} requestKind="read" snapshotAt={detail ? detailSnapshotAt : null} /> : null}
-          {detailLoading && !detail ? <LoadingWorkspace label="Loading case detail" /> : detail ? <CaseInspector actorId={actorId} busy={busy || detailLoading || detailError !== null} canAssign={canAssign} canDecide={canDecide} canReadSupport={canReadSupport} canReplySupport={canReplySupport} canViewPlaintext={canViewPlaintext} detail={detail} key={detail.case.id} onClose={() => selectCase(null)} onCommand={command} onConfirmed={refreshAfterMutation} onAuthorityChange={refreshAfterHandoff} onMutate={mutate} referenceTime={list?.asOf ?? detail.case.updatedAt} /> : null}
+          {detailLoading && !detail ? <LoadingWorkspace label="Loading case detail" /> : detail ? <CaseInspector actorId={actorId} busy={busy || detailLoading || detailError !== null} canAssign={canAssign} canDecide={canDecide} canReadSupport={canReadSupport} canReplySupport={canReplySupport} canViewPlaintext={canViewPlaintext} detail={detail} key={detail.case.id} onClose={() => selectCase(null)} onCommand={command} onConfirmed={refreshAfterMutation} onAuthorityChange={refreshAfterHandoff} onMutate={mutate} onDirtyChange={setDetailDirty} onDiscardChanges={confirmDiscard} onOpenCase={openCase} referenceTime={list?.asOf ?? detail.case.updatedAt} /> : null}
         </div> : <aside className="hidden rounded-xl bg-[var(--ad-surface-subtle)] p-8 text-sm text-[var(--ad-text-muted)] lg:block">{t("Select a case to inspect evidence and complete the decision loop.")}</aside>}
         <div className="min-w-0 space-y-3 lg:order-first" aria-label={t("Case results")}>
           <CaseFilters appliedQuery={appliedQuery} busy={loading} onApply={applyFilters} onChange={updateDraft} onReset={clearFilters} query={query} />
@@ -493,13 +504,16 @@ function withoutContentEffect(decision: string) {
   );
 }
 
-function CaseInspector({ actorId, busy, canAssign, canDecide, canReadSupport, canReplySupport, canViewPlaintext, detail, onClose, onCommand, onConfirmed, onAuthorityChange, onMutate, referenceTime }: { actorId: string | null; busy: boolean; canAssign: boolean; canDecide: boolean; canReadSupport: boolean; canReplySupport: boolean; canViewPlaintext: boolean; detail: CaseDetail; onClose: () => void; onConfirmed: (label: string) => Promise<void>; onCommand: (label: string, execute: () => Promise<unknown>) => Promise<void>; onAuthorityChange: () => Promise<void>; onMutate: (label: string, execute: () => Promise<unknown>) => Promise<void>; referenceTime: string }) {
+function CaseInspector({ actorId, busy, canAssign, canDecide, canReadSupport, canReplySupport, canViewPlaintext, detail, onClose, onCommand, onConfirmed, onAuthorityChange, onMutate, onDirtyChange, onDiscardChanges, onOpenCase, referenceTime }: { actorId: string | null; busy: boolean; canAssign: boolean; canDecide: boolean; canReadSupport: boolean; canReplySupport: boolean; canViewPlaintext: boolean; detail: CaseDetail; onClose: () => void; onConfirmed: (label: string) => Promise<void>; onCommand: CaseCommand; onAuthorityChange: () => Promise<void>; onMutate: (label: string, execute: () => Promise<unknown>) => Promise<void>; onDirtyChange: (dirty: boolean) => void; onDiscardChanges: (run: () => void) => void; onOpenCase: (id: string) => void; referenceTime: string }) {
   const { t, value } = useAdminI18n();
   const format = useAdminFormat();
   const adminCase = detail.case;
   const defaultEvidence = detail.evidence.map((item) => item.id);
-  const [ownerId, setOwnerId] = useState(adminCase.ownerId ?? "");
-  const [priority, setPriority] = useState(adminCase.priority);
+  // Only explicit edits override authority, so claiming or handoff cannot leave an old owner in the form.
+  const [ownerOverride, setOwnerId] = useState<string | null>(null);
+  const [priorityOverride, setPriority] = useState<OperationsCase["priority"] | null>(null);
+  const ownerId = ownerOverride ?? adminCase.ownerId ?? "";
+  const priority = priorityOverride ?? adminCase.priority;
   const [reason, setReason] = useState("");
   const [confirmSpec, setConfirmSpec] = useState<ConfirmSpec | null>(null);
   const customerCase = adminCase.type === "support_request" || adminCase.type === "billing_dispute";
@@ -515,12 +529,18 @@ function CaseInspector({ actorId, busy, canAssign, canDecide, canReadSupport, ca
         ? BILLING_CASE_ACTIONS
         : SUPPORT_CASE_ACTIONS;
   const [decision, setDecision] = useState<string>(operationOptions[0]);
-  const [summary, setSummary] = useState(adminCase.resolutionSummary ?? "");
+  const [summaryOverride, setSummary] = useState<string | null>(null);
+  const summary = summaryOverride ?? adminCase.resolutionSummary ?? "";
   const [outcomeRef, setOutcomeRef] = useState("");
   const [evidenceRefs, setEvidenceRefs] = useState(defaultEvidence);
   const [verificationOverrideReason, setVerificationOverrideReason] = useState("");
   const [resumeAt, setResumeAt] = useState("");
   const [mobileStep, setMobileStep] = useState<CaseMobileStep>("summary");
+  const summaryDirty = canDecide && summaryOverride !== null && summaryOverride.trim() !== (adminCase.resolutionSummary ?? "").trim();
+  useEffect(() => {
+    onDirtyChange(summaryDirty);
+    return () => onDirtyChange(false);
+  }, [onDirtyChange, summaryDirty]);
   const refs = evidenceRefs.filter((id) => detail.evidence.some((item) => item.id === id));
   // SPEC: only actions with a downstream verifier take an outcome reference and offer
   //       "Verify from authority"; the others are operator-attested (audited override).
@@ -562,19 +582,25 @@ function CaseInspector({ actorId, busy, canAssign, canDecide, canReadSupport, ca
   }
 
   // INTENT: 认领是客服最常做的分配 —— 不该要求手敲自己的用户 ID 再编一条原因。
-  function assignToMe() {
+  async function assignToMe() {
     if (!actorId) return Promise.resolve();
-    return adminV2Operation("POST /api/v2/admin/cases/:id/assignment", {
+    const result = await adminV2Operation("POST /api/v2/admin/cases/:id/assignment", {
       path: { id: adminCase.id },
       body: { entityVersion: adminCase.version, ownerId: actorId, priority, reason: "Assigned to self" },
     });
+    setOwnerId(current => current === ownerOverride ? null : current);
+    setPriority(current => current === priorityOverride ? null : current);
+    return result;
   }
 
-  function saveAssignment() {
-    return adminV2Operation("POST /api/v2/admin/cases/:id/assignment", {
+  async function saveAssignment() {
+    const result = await adminV2Operation("POST /api/v2/admin/cases/:id/assignment", {
       path: { id: adminCase.id },
       body: { entityVersion: adminCase.version, ownerId: ownerId.trim() || null, priority, reason: reason.trim() },
     });
+    setOwnerId(current => current === ownerOverride ? null : current);
+    setPriority(current => current === priorityOverride ? null : current);
+    return result;
   }
 
   // SPEC: 生命周期与关闭走全站统一的 ConfirmDialog（确认串 + reason 都在框里收）。
@@ -583,7 +609,9 @@ function CaseInspector({ actorId, busy, canAssign, canDecide, canReadSupport, ca
   // 于是关闭按钮永远是灰的且没有任何提示。ConfirmDialog 自带 reason≥3，一并修掉。
   function confirmCommand(input: { command: "wait" | "reopen" | "close"; title: string; effect: string; submitLabel: string; notice: string; body: (reason: string) => Record<string, unknown> }) {
     const expectedName = `${adminCase.id}:${input.command}`;
-    setConfirmSpec({
+    onDiscardChanges(() => {
+      setSummary(null);
+      setConfirmSpec({
       title: input.title,
       // SPEC: 后果以常驻横幅出现在敲确认串之前，不再混在 summary 里被当成说明文字读过去。
       // close 不可撤销 —— 重开会新开一条生命周期记录，不是把这一条收回来。
@@ -591,13 +619,19 @@ function CaseInspector({ actorId, busy, canAssign, canDecide, canReadSupport, ca
       destructive: { expectedName, inputLabel: t("Type confirmation") },
       submitLabel: input.submitLabel,
       onSubmit: async (confirmationReason) => {
+        const body = { entityVersion: adminCase.version, confirmation: expectedName, ...input.body(confirmationReason) };
+        if (input.command === "reopen") {
+          const result = await onCommand(input.notice, () => adminV2Operation("POST /api/v2/admin/cases/:id/commands/reopen", { path: { id: adminCase.id }, body: caseReopenRequestSchema.parse(body) }));
+          // Discard was already confirmed before submitting; do not replay that old guard closure.
+          if (result?.mode === "recurrence") onOpenCase(result.caseId);
+          return;
+        }
         await onCommand(input.notice, async () => {
-          const body = { entityVersion: adminCase.version, confirmation: expectedName, ...input.body(confirmationReason) };
           if (input.command === "close") return adminV2Operation("POST /api/v2/admin/cases/:id/commands/close", { path: { id: adminCase.id }, body: caseCloseCommandRequestSchema.parse(body) });
-          if (input.command === "wait") return adminV2Operation("POST /api/v2/admin/cases/:id/commands/wait", { path: { id: adminCase.id }, body: caseWaitRequestSchema.parse(body) });
-          return adminV2Operation("POST /api/v2/admin/cases/:id/commands/reopen", { path: { id: adminCase.id }, body: caseReopenRequestSchema.parse(body) });
+          return adminV2Operation("POST /api/v2/admin/cases/:id/commands/wait", { path: { id: adminCase.id }, body: caseWaitRequestSchema.parse(body) });
         });
       },
+      });
     });
   }
 
@@ -605,12 +639,12 @@ function CaseInspector({ actorId, busy, canAssign, canDecide, canReadSupport, ca
     return mobileStep === step ? "" : "max-md:hidden";
   }
 
-  function recordDecision() {
+  async function recordDecision() {
     if (decisionBlocked) return Promise.reject(new Error(t("Reopen this case")));
     if (customerCase) {
       const action = [...SUPPORT_CASE_ACTIONS, ...BILLING_CASE_ACTIONS].find(option => option === decision);
       if (!action) return Promise.reject(new Error("Invalid customer action"));
-      return adminV2Operation("POST /api/v2/admin/cases/:id/actions", {
+      const result = await adminV2Operation("POST /api/v2/admin/cases/:id/actions", {
           path: { id: adminCase.id },
           body: {
             entityVersion: adminCase.version,
@@ -620,10 +654,12 @@ function CaseInspector({ actorId, busy, canAssign, canDecide, canReadSupport, ca
             outcomeRef: needsOutcomeRef ? outcomeRef.trim() : undefined,
           },
         });
+      setSummary(current => current === summaryOverride ? null : current);
+      return result;
     }
     const reviewDecision = REVIEW_CASE_DECISIONS.find(option => option === decision);
     if (!reviewDecision) return Promise.reject(new Error("Invalid review decision"));
-    return adminV2Operation("POST /api/v2/admin/cases/:id/decisions", {
+    const result = await adminV2Operation("POST /api/v2/admin/cases/:id/decisions", {
           path: { id: adminCase.id },
           body: {
             entityVersion: adminCase.version,
@@ -632,6 +668,8 @@ function CaseInspector({ actorId, busy, canAssign, canDecide, canReadSupport, ca
             evidenceRefs: refs,
           },
         });
+    setSummary(current => current === summaryOverride ? null : current);
+    return result;
   }
 
   function verifyOutcome(state: "passed" | "overridden") {

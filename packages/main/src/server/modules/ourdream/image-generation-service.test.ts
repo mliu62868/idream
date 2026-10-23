@@ -6194,7 +6194,7 @@ describe("image generation service contract", () => {
     await runQueuedGenerationJobs(4);
   });
 
-  it("quotes and creates a non-premium source-only variation with the same trusted source intent", async () => {
+  it("keeps a non-premium source-only variation's provenance through failed-job retry and delivery", async () => {
     const userId = `${P}freeplay-variation-user`;
     const mediaId = `${P}freeplay-variation-media`;
     await createUser({ id: userId });
@@ -6256,7 +6256,45 @@ describe("image generation service contract", () => {
       profileVersion: quote.profileVersion,
       costDreamcoins: quote.costs[0]?.costDreamcoins,
     });
-    await runQueuedGenerationJobs(4);
+    const originalJobId = created.data.job.id as string;
+    const original = await prisma.generationJob.findUniqueOrThrow({ where: { id: originalJobId } });
+    await jobQueue.removeByDedupePrefix(`generation:${originalJobId}`, ["ai.image.generate"]);
+    await prisma.generationJob.update({
+      where: { id: originalJobId },
+      data: { status: "failed", errorCode: "variation_retry_fixture" },
+    });
+    const retried = await api("POST", `generation/jobs/${originalJobId}/retry`, {
+      userId,
+      ageGate: true,
+      headers: { "idempotency-key": `${P}freeplay-variation-retry` },
+    });
+    expectOk(retried, 202);
+    // Earlier cases share this queue; include their remaining finalize work.
+    await runQueuedGenerationJobs(32);
+    const delivered = await api("GET", `generation/jobs/${retried.data.job.id as string}`, { userId, ageGate: true });
+    expectOk(delivered);
+    expect(delivered.data.job.status).toBe("completed");
+    expect(delivered.data.assets).toHaveLength(1);
+    expect(delivered.data.assets[0].provenance).toMatchObject({
+      sourceType: "media_variation",
+      label: "Variation",
+      sourceMediaId: mediaId,
+    });
+    expect(delivered.data.job).toMatchObject({
+      derivedFromJobId: originalJobId,
+      sourceId: null,
+      sourceMeta: original.sourceMeta,
+      prompt: original.prompt,
+      negativePrompt: original.negativePrompt,
+      profileId: original.profileId,
+      profileVersion: original.profileVersion,
+    });
+    await expect(prisma.generationJob.findUniqueOrThrow({ where: { id: originalJobId } })).resolves.toMatchObject({
+      sourceType: original.sourceType,
+      sourceId: original.sourceId,
+      sourceMeta: original.sourceMeta,
+      status: "failed",
+    });
   });
 
   it("keeps a no-profile Character variation quote read-only and bootstraps only after exact authority is accepted", async () => {

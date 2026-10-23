@@ -112,7 +112,7 @@ export function BackendsView() {
           {t("Refresh")}
         </button>
       </div>
-      {authority.error ? <AuthorityRequestError cause={authority.cause} message={authority.error} onRetry={() => void load()} snapshotAt={authority.data ? authority.refreshedAt : null} /> : null}
+      {authority.error ? <AuthorityRequestError requestKind="read" cause={authority.cause} message={authority.error} onRetry={() => void load()} snapshotAt={authority.data ? authority.refreshedAt : null} /> : null}
 
       {authority.loading && authority.data === null ? (
         <p className="text-sm text-[var(--ad-text-muted)]" role="status">{t("Loading…")}</p>

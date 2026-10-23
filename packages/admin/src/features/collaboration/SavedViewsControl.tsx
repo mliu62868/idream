@@ -237,7 +237,7 @@ export function SavedViewsControl({
         </div>
         {loadError ? (
           <div className="mt-2">
-            <AuthorityRequestError cause={loadError} message="Saved Views could not be loaded" onRetry={() => void load()} />
+            <AuthorityRequestError requestKind="read" cause={loadError} message="Saved Views could not be loaded" onRetry={() => void load()} />
           </div>
         ) : null}
       </div>

@@ -261,7 +261,7 @@ vi.mock("@/server/providers/voice/factory", () => ({
   },
 }));
 
-import { updateVoiceDefaultSettings, VOICE_DEFAULTS_SETTING_KEY } from "@/server/modules/voice-defaults";
+import { resolveCharacterVoiceAuthority, updateVoiceDefaultSettings, VOICE_DEFAULTS_SETTING_KEY } from "@/server/modules/voice-defaults";
 import { toInputJson } from "../shared/prisma-json";
 import { dispatchPendingVoicePreparationCleanup, recordVoicePreparationCleanup, VOICE_PREPARATION_CLEANUP_EVENT } from "./voice-preparation-cleanup";
 
@@ -1009,6 +1009,13 @@ describe("Character voice identity authority", () => {
         idempotencyKey: `voice-split-activation-${suffix}`, requestId: randomUUID(),
         request: { expectedCurrentVoiceId: current.voiceId, expectedActiveProfileId: active?.id ?? null },
       })).resolves.toMatchObject({ profile: { id: candidate.profile.id, status: "active" } });
+      await expect(resolveCharacterVoiceAuthority({ characterId })).resolves.toMatchObject({
+        providerKey: "pocket_tts",
+        voiceId: candidate.profile.providerVoiceId,
+        source: "character_clone",
+        activeProfile: { id: candidate.profile.id, provider: "pocket_tts", presetVoiceId: "anna" },
+        systemDefaults: { provider: "fish_audio" },
+      });
       providerState.inspectOk = false;
       providerState.providerKey = "mock";
       await expect(createCharacterVoicePreset(presetInput)).resolves.toEqual({ ...candidate, replayed: true });

@@ -13,6 +13,7 @@ vi.mock("@/components/admin/api", () => ({ apiGet, apiWrite }));
 
 import { AccessWorkspace } from "./AccessWorkspace";
 import { AdminI18nProvider } from "@/components/admin/i18n";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -149,6 +150,100 @@ describe("role and grant bundle commands", () => {
     await clickButton("Confirm");
   }
 
+  async function fillField(label: string, value: string) {
+    const input = [...container.querySelectorAll("label")]
+      .find((candidate) => candidate.textContent?.includes(label))?.querySelector("input");
+    if (!input) throw new Error(`Field not found: ${label}`);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set?.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  function existingTemporaryGrant() {
+    const original = apiGet.getMockImplementation();
+    apiGet.mockImplementation(async (path) => path.includes("/grant-bundles") ? {
+      user: { id: "user-9", role: "support", status: "active" },
+      items: [{
+        id: "temporary-production", userId: "user-9", bundleKey: "character_producer",
+        scope: { characterIds: ["char-existing"] }, expiresAt: "2099-05-02T16:45:37.123Z",
+        revokedAt: null, createdAt: "2026-08-01T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z",
+        state: "active", permissions: ["character.project.read"],
+      }],
+    } : original?.(path));
+  }
+
+  it("preserves a temporary grant's exact expiry when changing its character scope", async () => {
+    existingTemporaryGrant();
+    await mountWithTarget();
+    await fillField("Assigned character IDs", "char-existing, char-extra");
+    await clickButton("Grant bundle");
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog?.textContent).toContain("Expires");
+    expect(dialog?.textContent).toContain("char-extra");
+    await confirmDialog("Extend the assignment scope", "user-9:character_producer:grant");
+    expect(apiWrite).toHaveBeenCalledWith("/api/v2/admin/users/user-9/grant-bundles", "POST", expect.objectContaining({
+      expiresAt: "2099-05-02T16:45:37.123Z", scope: { characterIds: ["char-existing", "char-extra"] },
+    }));
+  });
+
+  it("requires an explicit expiry clear before making an existing temporary grant permanent", async () => {
+    existingTemporaryGrant();
+    await mountWithTarget();
+    await fillField("Grant expiry", "");
+    await clickButton("Grant bundle");
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("No expiry");
+    await confirmDialog("Make this assignment permanent", "user-9:character_producer:grant");
+    expect(apiWrite).toHaveBeenCalledWith("/api/v2/admin/users/user-9/grant-bundles", "POST", expect.objectContaining({
+      expiresAt: null, scope: { characterIds: ["char-existing"] },
+    }));
+  });
+
+  it("keeps grant drafts scoped to the selected bundle and waits for refreshed authority", async () => {
+    existingTemporaryGrant();
+    await mountWithTarget();
+    const select = [...container.querySelectorAll("label")]
+      .find((label) => label.textContent?.trim() === "Grant bundleCharacter producerCreative operatorGrowth operator")?.querySelector("select")
+      ?? [...container.querySelectorAll("select")].find((element) => element.value === "character_producer");
+    if (!select) throw new Error("Grant bundle select is missing");
+    const choose = (bundle: string) => act(async () => {
+      select.value = bundle;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await fillField("Grant expiry", "2099-06-01T12:00");
+    await choose("creative_operator");
+    expect(container.querySelector<HTMLInputElement>('input[type="datetime-local"]')?.value).toBe("");
+    await choose("character_producer");
+    const reload = Promise.withResolvers<unknown>();
+    const original = apiGet.getMockImplementation();
+    apiGet.mockImplementation((path) => path.includes("/grant-bundles") ? reload.promise : Promise.resolve(original?.(path)));
+    await clickButton("Refresh access");
+    const grant = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Grant bundle");
+    expect(grant?.disabled).toBe(true);
+    await waitUntil(() => apiGet.mock.calls.filter(([path]) => path.includes("/grant-bundles")).length === 2);
+    await act(async () => reload.resolve(await original?.("/api/v2/admin/users/user-9/grant-bundles")));
+    await clickButton("Grant bundle");
+    await confirmDialog("Keep the existing assignment", "user-9:character_producer:grant");
+    expect(apiWrite).toHaveBeenCalledWith("/api/v2/admin/users/user-9/grant-bundles", "POST", expect.objectContaining({
+      expiresAt: "2099-05-02T16:45:37.123Z", scope: { characterIds: ["char-existing"] },
+    }));
+  });
+
+  it("rejects past grant expiry and sends an explicit future expiry in the local timezone", async () => {
+    await mountWithTarget();
+    await fillField("Assigned character IDs", "char-one");
+    await fillField("Grant expiry", "2000-01-01T10:00");
+    const grant = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Grant bundle");
+    expect(grant?.disabled).toBe(true);
+    expect(container.textContent).toContain("Grant expiry must be in the future.");
+    await fillField("Grant expiry", "2099-05-02T17:45");
+    await clickButton("Grant bundle");
+    await confirmDialog("Cover the temporary production rota", "user-9:character_producer:grant");
+    expect(apiWrite).toHaveBeenCalledWith("/api/v2/admin/users/user-9/grant-bundles", "POST", expect.objectContaining({
+      expiresAt: new Date("2099-05-02T17:45").toISOString(),
+    }));
+  });
+
   it("explains a filtered empty result in Chinese and clears its query without a write", async () => {
     const unfilteredRead = Promise.withResolvers<typeof emptyUserList>();
     apiGet.mockImplementation(async (path) => path.includes("missing-user") ? emptyUserList : unfilteredRead.promise);
@@ -167,6 +262,22 @@ describe("role and grant bundle commands", () => {
     expect(container.textContent).not.toContain("暂无用户");
     await act(async () => unfilteredRead.resolve(emptyUserList));
     expect(container.textContent).toContain("暂无用户");
+    expect(apiWrite).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    new AdminV2RequestError("Authority unavailable", 503),
+    new TypeError("Failed to fetch"),
+  ])("offers read retry without suggesting an unknown mutation when the user list fails: %s", async (cause) => {
+    apiGet.mockRejectedValue(cause);
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<AccessWorkspace permissions={{ changeStatus: false, managePermissions: false }} />);
+    });
+    await waitUntil(() => container.querySelector('[role="alert"]') !== null);
+    expect(container.textContent).toContain("Retry to load the latest data. The technical details identify the failed read.");
+    expect(container.textContent).not.toContain("whether the write landed is unknown");
+    expect(container.textContent).not.toContain("whether the request arrived is unknown");
     expect(apiWrite).not.toHaveBeenCalled();
   });
 
@@ -431,13 +542,17 @@ describe("permission override impact", () => {
     const scope = [...container.querySelectorAll("label")].find((label) => label.textContent?.includes("Assigned character IDs"))?.querySelector("input");
     if (!scope) throw new Error("Missing character scope");
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+    const expiry = container.querySelector<HTMLInputElement>('input[type="datetime-local"]');
     await act(async () => {
       setter?.call(scope, "character-for-user-1");
       scope.dispatchEvent(new Event("input", { bubbles: true }));
+      setter?.call(expiry, "2099-05-02T17:45");
+      expiry?.dispatchEvent(new Event("input", { bubbles: true }));
     });
 
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Manage access for QA 2"]')?.click());
     expect(scope.value).toBe("");
+    expect(expiry?.value).toBe("");
     expect([...container.querySelectorAll("label")].find((label) => label.textContent?.includes("Target user ID"))?.querySelector("input")?.value).toBe("user-2");
     await waitUntil(() => apiGet.mock.calls.some(([path]) => path.includes("/user-2/permissions")));
     expect(apiWrite).not.toHaveBeenCalled();
