@@ -26,10 +26,12 @@ export interface IgrepLlmConfig {
 // Profile extraction/reconciliation emits a strict operation protocol. Creative
 // sampling caused invalid empty-profile operations even after igrep's repairs.
 // These settings are independent of the companion's conversational sampling.
+// Helper routes must not inherit a model server's companion thinking default.
 export const IGREP_MAINTENANCE_SAMPLING = Object.freeze({
   temperature: 0,
   top_p: 1,
   presence_penalty: 0,
+  chat_template_kwargs: Object.freeze({ enable_thinking: false }),
 });
 
 export type IgrepEnvironment = Record<string, string | undefined>;

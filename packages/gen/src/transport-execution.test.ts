@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { recordTransportExecution } from "./transport-execution";
+import { GenerationTransportUnavailableError, recordTransportExecution } from "./transport-execution";
 
 const event = {
   version: 1 as const,
@@ -28,16 +28,25 @@ describe("recordTransportExecution", () => {
     await expect(recordTransportExecution(event)).rejects.toThrow(
       'main generation transport endpoint returned 409: {"error":"conflict","message":"exact dispatch mismatch"}',
     );
+    await expect(recordTransportExecution(event)).rejects.not.toBeInstanceOf(GenerationTransportUnavailableError);
   });
 
   it("bounds non-structured upstream responses", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("x".repeat(1_100), { status: 503 })));
 
     await expect(recordTransportExecution(event)).rejects.toSatisfy((error: unknown) =>
-      error instanceof Error &&
+      error instanceof GenerationTransportUnavailableError &&
       error.message.startsWith("main generation transport endpoint returned 503: ") &&
       error.message.length < 1_100 &&
       error.message.endsWith("..."),
     );
+  });
+
+  it("distinguishes a heartbeat timeout from Main authority rejection", async () => {
+    const timeout = new DOMException("Main heartbeat timed out", "TimeoutError");
+    vi.stubGlobal("fetch", vi.fn(async () => { throw timeout; }));
+    await expect(recordTransportExecution(event)).rejects.toMatchObject({
+      name: "GenerationTransportUnavailableError", message: timeout.message, cause: timeout,
+    });
   });
 });

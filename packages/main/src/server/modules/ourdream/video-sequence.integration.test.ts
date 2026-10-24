@@ -217,14 +217,17 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
     await runQueuedGenerationJobs(10); expect(native).toHaveBeenCalledTimes(1);
     const partial = await read(sequence.id); expect(partial.scenes[0]?.assets).toHaveLength(1); expect(partial.scenes[1]?.job.status).toBe("queued");
     const gallery = async () => { const page = await api("GET", "media", { userId, ageGate: true, query: { type: "video" } }); expectOk(page); return page.data.items as Array<{ id: string; provenance: { label: string } | null }>; };
+    const recentVideos = async () => { const page = await api("GET", "library/recent", { userId, ageGate: true }); expectOk(page); return (page.data.items as Array<{ id: string; type: string }>).filter(item => item.type === "video").map(item => item.id); };
     // Until the composite exists, a paid scene clip is the user's only deliverable.
     expect((await gallery()).map(item => [item.id, item.provenance?.label])).toEqual([[partial.scenes[0]!.assets[0]!.id, "Video scene 1"]]);
+    expect(await recentVideos()).toEqual([partial.scenes[0]!.assets[0]!.id]);
     await advanceVideoSequences(); await runQueuedGenerationJobs(10); expect(native).toHaveBeenCalledTimes(2);
     await Promise.all([advanceVideoSequences(), advanceVideoSequences()]);
     const result = await read(sequence.id); expect(result.status).toBe("completed"); expect(result.asset).toMatchObject({ width: 512, height: 512, metadata: { audio: "generated", narrationIsLipSync: false } });
     expect(await prisma.mediaAsset.count({ where: { ownerId: userId, metadata: { path: ["source"], equals: "video_sequence" } } })).toBe(1);
     // Once delivered, the gallery shows the finished video alone; scenes stay downloadable from the sequence.
     expect((await gallery()).map(item => item.id)).toEqual([result.asset!.id]);
+    expect(await recentVideos()).toEqual([result.asset!.id]);
     expect(await dreamcoinBalance(userId)).toBe(800);
     const content = await api("GET", `media/${result.asset!.id}/content`, { userId, ageGate: true }); expectOk(content); expect(content.bytes!.byteLength).toBeGreaterThan(100);
     const stranger = `${P}user-${randomUUID()}-reader`; await createUser({ id: stranger });
@@ -382,6 +385,8 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
     // The library lists the narrated video, not its scene clip or speech track.
     const library = await api("GET", "media", { userId, ageGate: true }); expectOk(library);
     expect((library.data.items as Array<{ id: string }>).map(item => item.id).filter(id => id !== userId.replace(/-owner$/, "-source"))).toEqual([result.asset!.id]);
+    const recent = await api("GET", "library/recent", { userId, ageGate: true }); expectOk(recent);
+    expect((recent.data.items as Array<{ id: string; type: string }>).filter(item => item.type === "video" || item.type === "voice").map(item => item.id)).toEqual([result.asset!.id]);
   });
 
   it("delivers three complete narration assets and retries only missing speech or packaging without another debit", async () => {

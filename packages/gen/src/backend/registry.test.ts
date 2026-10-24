@@ -246,8 +246,10 @@ describe("buildBackendRegistry", () => {
       seed: 7,
     });
     expect(qwenPrompt["3"].inputs.negative_prompt).toBe("text, watermark, duplicate person");
-    expect(qwenPrompt["2:noise"].inputs.noise_seed).toBe(7);
-    expect(qwenPrompt["2:sigmas"].inputs.steps).toBe(6);
+    expect(qwenPrompt["2"]).toMatchObject({
+      class_type: "KSampler",
+      inputs: { seed: 7, steps: 6, cfg: 1, sampler_name: "er_sde", scheduler: "simple" },
+    });
 
     const multiIdentity = registry.resolveForModel(
       "qwen-image-edit-multi-identity",

@@ -18,6 +18,7 @@ import { env } from "@/server/lib/env";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { providers } from "@/server/providers";
+import { configuredVoiceModel } from "@/server/providers/voice/factory";
 import { characterVoiceProfileDto, previewConfiguredVoiceIdentity } from "@/server/modules/admin-v2/characters/voice-identity";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
@@ -106,6 +107,9 @@ export async function resolveCharacterVoiceAuthority(input: { characterId: strin
       return {
         ...workspace,
         providerKey: activeProfile.provider,
+        // A reviewed identity includes its model. Provider configuration changes
+        // must not silently change the voice of an already activated profile.
+        model: activeProfile.model,
         voiceId: activeProfile.providerVoiceId,
         source: "character_clone" as const,
         settingVersion: null,
@@ -116,6 +120,7 @@ export async function resolveCharacterVoiceAuthority(input: { characterId: strin
     return {
       ...workspace,
       providerKey: defaults.provider,
+      model: configuredVoiceModel(defaults.provider),
       voiceId: voiceIdForGender(defaults, character.gender),
       source: "system_default" as const,
       settingVersion: defaults.settingVersion,

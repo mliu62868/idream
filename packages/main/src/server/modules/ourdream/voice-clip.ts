@@ -23,7 +23,7 @@ import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { resolveCharacterVoiceAuthority } from "@/server/modules/voice-defaults";
 import { providers } from "@/server/providers";
 import type { VoiceClipPort } from "@/server/providers/types";
-import { configuredVoiceModel, createVoiceClipPortForKey } from "@/server/providers/voice/factory";
+import { createVoiceClipPortForKey } from "@/server/providers/voice/factory";
 import { audioFileExtension, voiceArtifactKey, voiceProviderIdempotencyKey } from "@/server/providers/voice/idempotency";
 import { encodeVoiceClipMp3 } from "@/server/providers/voice/transcode";
 import { acceptVoiceClipQuote, signVoiceClipQuote } from "./voice-clip-quote";
@@ -410,7 +410,7 @@ export async function createVoiceClip(request: Request, deps: VoiceClipDependenc
   });
   const proposedProviderPayload = authority?.providerPayload ?? pinnedVoiceProviderPayloadSchema.parse({
     providerKey: voiceAuthority!.providerKey,
-    model: configuredVoiceModel(voiceAuthority!.providerKey),
+    model: voiceAuthority!.model,
     voiceId: voiceAuthority!.voiceId,
     voiceAuthority: voiceAuthority!.source,
     systemVoiceSettingVersion: voiceAuthority!.settingVersion,

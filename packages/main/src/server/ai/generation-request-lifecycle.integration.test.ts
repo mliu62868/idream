@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { EnqueueJobInput } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
+import { createCharacter } from "@/server/test/helpers";
+import { getChatSession } from "@/server/modules/chat/turn-ledger";
 import {
   dispatchGenerationAttemptOutbox,
   reserveInitialGenerationAttempt,
@@ -104,6 +106,52 @@ describe("Generation Request cancellation", () => {
       deliveredAt: null,
     });
     await expect(prisma.generationJob.findUnique({ where: { id: jobId } })).resolves.toMatchObject({ status: "cancelled", deliveredOutputCount: 0, completedAt: null, finishedAt: expect.any(Date) });
+  });
+
+  it.each(["image", "video"] as const)("cancels the chat %s attachment and repairs historical replay without another refund", async (mode) => {
+    const id = `cancel-chat-${mode}-${suffix}`;
+    const character = await createCharacter({ id: `${id}-character`, creatorId: userId, source: "user", visibility: "private" });
+    await prisma.recentChat.create({ data: { sessionId: `${id}-session`, userId, characterId: character.id } });
+    await prisma.chatTurn.create({ data: {
+      id: `${id}-turn`, sessionId: `${id}-session`, idempotencyKey: id, requestHash: id,
+      userMessageId: `${id}-user`, assistantMessageId: `${id}-assistant`, userContent: "Create a picture.",
+      assistantContent: "Your request is being prepared.", assistantStatus: "sent", memoryEnabled: true,
+    } });
+    await prisma.generationJob.create({ data: {
+      id, userId, mode, controls: {}, presetIds: [], costDreamcoins: 5, status: "queued", provider: "mock",
+      sourceType: `chat_${mode}`, sourceId: `${id}-attachment`,
+    } });
+    await prisma.dreamcoinLedger.create({ data: { userId, delta: -5, balanceAfter: 85, reason: "generation_spend", sourceId: id, idempotencyKey: `${id}-spend` } });
+    await prisma.chatTurnAttachment.create({ data: {
+      id: `${id}-attachment`, turnId: `${id}-turn`, kind: `generated_${mode}`, status: "accepted", generationJobId: id,
+      metadata: { attempt: 1, costDreamcoins: 5 },
+    } });
+    const input = { requestId: id, expectedVersion: 1, actor: { id: actorId, role: "admin" }, reason: "Cancelled audit request", idempotencyKey: `${id}-command`, traceId: `${id}-trace` };
+    try {
+      const cancelled = await cancelGenerationRequest(input);
+      expect(cancelled).toMatchObject({ status: "cancelled", refundAmount: 5 });
+      await expect(prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: `${id}-attachment` } })).resolves.toMatchObject({ status: "cancelled", generationJobId: id, errorCode: null });
+      const history = await getChatSession(userId, `${id}-session`);
+      expect(history.messages).toContainEqual(expect.objectContaining({
+        id: `${id}-assistant`, attachments: [expect.objectContaining({ status: "cancelled", generationJobId: id })],
+      }));
+
+      // Reproduce the old operator-cancel residue, including an archived transcript.
+      await prisma.chatTurnAttachment.update({ where: { id: `${id}-attachment` }, data: { status: "accepted" } });
+      await prisma.recentChat.update({ where: { sessionId: `${id}-session` }, data: { status: "deleted" } });
+      await expect(cancelGenerationRequest(input)).resolves.toEqual(cancelled);
+      await expect(prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: `${id}-attachment` } })).resolves.toMatchObject({ status: "cancelled" });
+      await expect(prisma.dreamcoinLedger.count({ where: { sourceId: id, reason: "refund", delta: 5 } })).resolves.toBe(1);
+      await expect(prisma.generationJob.findUniqueOrThrow({ where: { id } })).resolves.toMatchObject({ status: "cancelled", version: 2 });
+    } finally {
+      await prisma.recentChat.deleteMany({ where: { sessionId: `${id}-session` } });
+      await prisma.character.deleteMany({ where: { id: character.id } });
+      await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: id } });
+      await prisma.generationJobEvent.deleteMany({ where: { jobId: id } });
+      await prisma.generationSettlementLink.deleteMany({ where: { requestId: id } });
+      await prisma.dreamcoinLedger.deleteMany({ where: { sourceId: id } });
+      await prisma.generationJob.deleteMany({ where: { id } });
+    }
   });
 
   // INVARIANT: a cancelled request is a terminal failure for its Creative Run item. Without

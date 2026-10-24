@@ -82,8 +82,8 @@ cd packages/gen && bun run preflight
 
 `preflight` hard-checks the node directory (via `COMFYUI_ROOT`, or the legacy
 `COMFYUI_VENV_PYTHON` layout when no root is set), model
-visibility, the REDQW21 V2 editor's BF16 diffusion / ConvRot INT8 encoder / VAE /
-Viggle LoRA SHA-256, and every production video recipe's pinned model SHA-256
+visibility, every RedCraft image route's diffusion / ConvRot INT8 encoder /
+TextureFix VAE SHA-256, and every production video recipe's pinned model SHA-256
 against the bytes under `COMFYUI_MODEL_ROOT`. For Qwen edits it also proves
 that the local image listener resolves each model uniquely from that root;
 run the probe on the ComfyUI host. `smoke:backend` requires an explicit
@@ -101,12 +101,14 @@ reinstall with the venv python: `pip install -r <node dir>/requirements.txt`.
 
 ### Qwen image routes
 
-`redqw21@3` serves text-to-image and optional single-anchor identity input.
-The REDQW21 V2 edit graphs are `qwen-image-edit-img2img@5`,
-`qwen-image-edit-multi-reference@7`, and `qwen-image-edit-multi-identity@6`.
-They use the BF16 diffusion checkpoint, ConvRot INT8 Qwen3-VL encoder,
-Qwen Image 2.1 VAE, and the Viggle six-step adapter. Production profiles must
-pin the matching descriptor key and version.
+All active image-generation profiles use one RedCraft / FineView checkpoint.
+The input contracts remain separate: `redcraft-qw21t@3` handles text and an
+optional reference, `qwen-image-edit-img2img@6` handles one source,
+`qwen-image-edit-multi-identity@7` handles identity plus identity/look, and
+`qwen-image-edit-multi-reference@8` handles identity plus source. Their model
+route IDs are `redcraft-qw21t`, `redcraft-image-edit`, `redcraft-multi-identity`
+and `redcraft-multi-reference`; these identify workflows, not different weights.
+Profiles must pin the matching descriptor key and version.
 
 The dispatch contract preserves published reference weights through 10.
 Current Qwen graphs bind references by their semantic role and frozen order;
@@ -161,61 +163,27 @@ GEN_IMAGE_PROVIDER=backend \
 
 ### Running the backend smoke
 
-Image editing uses REDQW21 UNLOCKED V2 TI2I (Civitai `452459@3370753`,
-file `3258921`), converted from scaled FP8 to BF16 for MPS. The source SHA256
-is `0efb5aeb2b372025042e320c2e35c66ec6681ef54ad5de88a652ab19cc63ad92`.
-The three existing `qwen-image-edit-*` workflow keys preserve their caller
-contracts; their current versions use only REDQW21 V2. Rapid-AIO v19 is retired
-and must not be installed or used as a fallback. Publish existing database
-profiles with `db/sql/2026-09-30-redqw21-v2-image-edit-retire-rapid-aio.sql`
-after installing the verified source and BF16 conversion, with queues drained.
-All four Qwen-Image-2.1 routes (`redqw21` and the three editor workflows) use
-[Comfy-Org Qwen3-VL 8B INT8 ConvRot](https://huggingface.co/Comfy-Org/Qwen-Image-2.1/blob/cb504a4090723e43f17ad01cec0359490e2de613/text_encoders/qwen3vl_8b_int8_convrot.safetensors).
-Install `qwen3vl_8b_int8_convrot.safetensors` in shared `text_encoders`;
-its exact size is 9,350,798,360 bytes and SHA256 is
-`8bfd0f6e12abf2d2d697ecc888e5e90b0d6741d6708f05799f53afa560452e8f`.
-The single-source editor (`qwen-image-edit-img2img@5`) runs this encoder on
-MPS and computes only positive conditioning at CFG 1. The other three routes
-retain CPU conditioning. ConvRot INT8 describes the community checkpoint;
-M4 execution dequantizes for floating-point operations and is not native INT8
-matrix multiplication.
-
-All four graphs load `IDreamQwen21VAELoader` from
-`comfyui_nodes/idream_qwen21`. Its model-scoped temporal padding uses
-`torch.cat` instead of the large 5-D MPS `F.pad` that corrupts Qwen 2.1
-reference latents ([ComfyUI #16433](https://github.com/Comfy-Org/ComfyUI/issues/16433)).
-The correction preserves CPU semantics and leaves video VAE instances alone.
-Large square/portrait FP32/BF16 padding tests match CPU exactly; full BF16
-VAE round trips match the CPU reference within measured numerical tolerance.
-
-Single-source edits use unmerged
-[Viggle v0.3 six-step rank-128 LoRA](https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo/tree/009a44a895ef85f7e643c80fdca9543795248867)
-at strength 1, `BasicGuider` and Euler with the author's shifted six-point
-sigma grid. Install `Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors`
-under shared `loras`, keeping its Qwen Research license. SHA256:
-`0c98591700346f9777051d4e6fa29aa94519abec0d85b1f1f672a2a3db8c94b3`.
-`IDreamQwen21TurboLora` adds residuals without rounding them into the BF16
-base weights and handles Comfy's fused SwiGLU projections. The schedule
-requires exactly six steps; an ordinary simple scheduler is not equivalent.
-Two-reference workflows retain 16 steps / CFG 2 pending their own qualification.
-
-The selected default is the native ComfyUI single-source editor above: BF16
-REDQW21 V2 diffusion, community ConvRot INT8 Qwen3-VL 8B on MPS, corrected
-native VAE, and unmerged Viggle six-step Euler. MFLUX/MLX samplers remain
-research prototypes and are absent from the production graph.
+All four image graphs use the same FineView INT8 diffusion checkpoint,
+ConvRot INT8 Qwen3-VL encoder on MPS and TextureFix BF16 VAE. Their fixed recipe
+is six steps, `er_sde/simple`, CFG 1 and AuraFlow shift 1.31, without a LoRA.
+`IDreamQwen21VAELoader` retains the model-scoped `torch.cat` temporal-padding
+correction for MPS reference latents. Source-image and identity-reference slots
+retain their distinct roles and ordering; references are never silently dropped.
 
 ### Default RedCraft / FineView QW21 Fixed
 
-`redcraft-qw21t@3` is the default for text-to-image, single-reference Character
-generation and source-only image edits through `profile_image_default_v1`.
-The explicit `image-redcraft-qw21t@3` option uses the same six-step recipe.
-Multi-reference, identity-plus-source and look-reference requests retain the
-compatible REDQW21 V2 routes; reference authority is never truncated to fit.
-The default profile keeps its existing cost multiplier, access policy and
-allowed orientations, with a default canvas of 832×1024. Fresh databases use
-seed; existing databases publish immutable new versions with
-[`2026-10-21-redcraft-default-image-profile.sql`](../../db/sql/2026-10-21-redcraft-default-image-profile.sql)
-after quiescing admission and workers through the repository PM2 wrapper.
+`profile_image_default_v1` provides text-to-image, single-reference Character
+generation and source-only edits. Its batch limit is four, preserving capacity
+from the retired Premium image option. The Premium and duplicate
+`image-redcraft-qw21t` choices are archived. Multi-reference and explicit edit
+profiles use the same physical model with their existing pricing and access
+policy. The default canvas remains 832×1024.
+
+Fresh databases use seed; existing databases publish immutable new versions with
+[`2026-10-23-unify-redcraft-image-model.sql`](../../db/sql/2026-10-23-unify-redcraft-image-model.sql)
+after quiescing admission and workers through the repository PM2 wrapper. The
+cutover refuses pending affected jobs and conflicting configuration, and leaves
+historical Jobs, Attempts, delivered assets and ledger entries unchanged.
 
 This binds RedCraft model958009/version3407259/file3299030, the exact INT8
 asset already installed as `fineview_qw21_turbo_fixed_int8.safetensors`:
@@ -239,8 +207,7 @@ The descriptor uses six-step `er_sde/simple`, AuraFlow shift 1.31, CFG1 and
 denoise 1, without an extra Viggle LoRA or second sampler. This is the measured
 six-step variant of the author's eight-step first pass. Workflow v3 and the
 new profile versions archive the earlier parameters without rewriting Jobs or
-Attempts; publication refuses pending affected Jobs. The explicit model option
-retains its existing 832×1024, one-image, 4:5 policy and 1.5 cost multiplier.
+Attempts; publication refuses pending affected Jobs.
 Preflight pins diffusion/encoder/VAE bytes and required runtime nodes. Smoke
 uses the descriptor's six-step default unless `--steps` is supplied:
 
@@ -258,30 +225,10 @@ in eight controlled pairs. The user selected RedCraft/FineView as default on
 NSFW remains untested in that comparison.
 
 The image PM2 definition pins Python from its Qwen21 installation;
-`bun run comfyui:restart` reloads that definition. The latest controlled local
-acceptance on M4 Max 128 GiB / PyTorch 2.14 delivered two real 832×1024 edits in
-58.117 and 48.337 seconds from Job creation to completion. Both verified HTTP
-image readback, terminal relay, persistence, and exactly one 8-Dreamcoin spend;
-idempotent admission replay returned the same Job. These are two single-source
-samples, not a latency distribution or multi-reference quality qualification.
-The user's 16-second M5 Pro result is a separate-machine measurement.
-Execution evidence is bound to source revision
-`idream-worktree-2068f6373b7e0cf026dcac2533da8d8225b9ab590ea1a37af0ba4c7b37561309`;
-this later documentation update does not change the generation recipe.
+`bun run comfyui:restart` reloads that definition. Earlier REDQW21/Viggle
+implementation and timing records remain historical evidence, not current
+runtime configuration. See [the previous implementation record](../../docs/research/QWEN21_MAC_ACCELERATION_IMPLEMENTATION_2026-10-01.md).
 
-Conservative EasyCache skipped no steps and is inactive. The attempted Metal-preference experiment
-lacks proof that its flag reached Python, so its timing cannot establish a
-backend comparison. The active Python process has no Metal-preference override.
-
-Publish existing profiles with `db/sql/2026-10-01-qwen21-mac-acceleration.sql`
-after the prior REDQW21 and community INT8 cutovers, installation verification,
-and queue/admission quiescence. It publishes N+1 and preserves historical
-Job/Attempt pins, pricing, rollout and multi-reference controls. The local
-CPU-encoder dual-reference run exceeded ten minutes; this Mac retains
-`GEN_IMAGE_TIMEOUT_MS=1200000` for those routes.
-See [the implementation and product-delivery record](../../docs/research/QWEN21_MAC_ACCELERATION_IMPLEMENTATION_2026-10-01.md),
-[the original acceleration investigation](../../docs/research/QWEN21_MAC_IMAGE_EDIT_ACCELERATION_2026-10-01.md)
-and [the Mac runtime research](../../docs/research/QWEN21_MAC_RUNTIME_OPTIONS_2026-10-01.md).
 Excluded content is expressed as positive instructions.
 Source edits use the requested output dimensions; identity and look references
 are bounded to approximately 1 MP while preserving their aspect ratios.
@@ -300,7 +247,7 @@ cd packages/gen
 GEN_IMAGE_PROVIDER=backend \
   COMFYUI_IMAGE_API_URL=http://127.0.0.1:8189 \
   bun run smoke:backend -- \
-  --model redqw21-image-edit \
+  --model redcraft-image-edit \
   --ref /absolute/path/to/reference.png \
   --out /tmp/backend-smoke.png
 ```
@@ -438,8 +385,8 @@ in-flight clip after coins were reserved. Main's video stale timeout is 35
 minutes, deliberately longer than this provider timeout.
 
 **Checkpoint format:** use the exact format and bytes pinned by the selected
-workflow descriptor and checked by `preflight`. The current REDQW21 V2 editor
-pins converted BF16 diffusion weights. For a route requiring FP8 runtime
+workflow descriptor and checked by `preflight`. Current image routes pin the
+FineView INT8 checkpoint and materialize exact BF16 resident weights on MPS. For a route requiring FP8 runtime
 handling, follow the MPS patch setup above. Do not convert or rename weights
 outside that artifact contract. For offline conversion, distinguish
 scaled FP8 (`weight * weight_scale`) from plain FP8; see the dated

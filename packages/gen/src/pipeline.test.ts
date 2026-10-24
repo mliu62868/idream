@@ -18,10 +18,11 @@ import {
 } from "./pipeline";
 import type { GenProviders } from "./providers";
 import { env } from "./env";
-import { reserveGenerationInvocation } from "./terminal-record";
+import { persistTerminalRecord, reserveGenerationInvocation } from "./terminal-record";
 import { createVideoMediaProbe } from "./backend/video-media-probe";
 import { BackendImageModel } from "./backend/backend-image-model";
 import { workflowDescriptorSchema } from "./backend/workflow";
+import { recordTransportExecution as recordMainTransportExecution } from "./transport-execution";
 
 const originalFetch = globalThis.fetch;
 const originalImageProvider = process.env.GEN_IMAGE_PROVIDER;
@@ -2515,4 +2516,120 @@ it("settles a resource wait timeout as preparation failure without provider acco
     terminalRecord: expect.objectContaining({ outcome: "failed", providerInvoked: false, error: expect.objectContaining({ code: "preparation_failed", retryability: "retryable" }) }),
   }));
   expect(harness.providers.blob.putPrivateIfAbsent).not.toHaveBeenCalledWith(expect.objectContaining({ key: expect.stringContaining("invocation") }));
+});
+
+it("settles exhausted resource-wait heartbeat failures and replays the terminal without provider entry", async () => {
+  const descriptor = workflowDescriptorSchema.parse({ workflowKey: "waiting-heartbeat", modelId: "waiting-heartbeat", backendKind: "comfyui", comfyWorkflow: { id: "11111111-1111-4111-8111-111111111111", name: "Waiting heartbeat" }, version: 1, capabilities: ["textToImage"], apiPrompt: {}, inputs: [] });
+  const submit = vi.fn(async () => ({ id: "must-not-submit" }));
+  const poll = vi.fn(async () => ({ assets: [] }));
+  const model = new BackendImageModel(
+    { resolveForModel: () => ({ descriptor, backend: { id: "stub", kind: "comfyui", submit, poll, health: async () => ({ ok: true }), capabilities: () => ({ textToImage: true, img2img: false, referenceImages: false, stableSeed: true, edit: false }) } }) },
+    async (run, options) => { await options?.onWait?.(); return run(); },
+  );
+  const providers = makeProviders({ image: model, blob: makeMemoryBlob() });
+  const acknowledgeTerminalRecord = vi.fn(async (_input: GenerationTerminalRecordIngest) => undefined);
+  const heartbeat = vi.fn()
+    .mockRejectedValueOnce(new DOMException("Main heartbeat timed out", "TimeoutError"))
+    .mockRejectedValueOnce(new DOMException("Main heartbeat timed out", "TimeoutError"))
+    .mockResolvedValueOnce(new Response("Main temporarily unavailable", { status: 503 }));
+  globalThis.fetch = heartbeat;
+  const payload = imagePayload({ count: 1, model: descriptor.modelId, controls: { workflowKey: descriptor.workflowKey, workflowVersion: descriptor.version } });
+  const run = (attemptsMade: number) => processImageGenerate(payload, makePipelineDeps(providers, {
+    attemptsMade, maxAttempts: 3, recordTransportExecution: recordMainTransportExecution, acknowledgeTerminalRecord,
+  }));
+
+  await expect(run(0)).rejects.toThrow("Main heartbeat timed out");
+  await expect(run(1)).rejects.toThrow("Main heartbeat timed out");
+  expect(providers.blob.putPrivateIfAbsent).not.toHaveBeenCalled();
+  await expect(run(2)).resolves.toBeUndefined();
+  expect(acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({ terminalRecord: expect.objectContaining({
+    outcome: "failed", providerInvoked: false, transportAttemptNo: 3, providerRequestId: null, usage: {},
+    error: expect.objectContaining({ code: "preparation_failed", retryability: "retryable" }),
+  }) }));
+  expect(vi.mocked(acknowledgeTerminalRecord).mock.calls[0]![0].terminalRecord).not.toHaveProperty("accounting");
+  await expect(run(2)).resolves.toBeUndefined();
+  expect(acknowledgeTerminalRecord).toHaveBeenCalledTimes(2);
+  expect(heartbeat).toHaveBeenCalledTimes(3);
+  expect(heartbeat.mock.calls.map(([, init]) => JSON.parse(String(init.body)).status)).toEqual(["waiting", "waiting", "waiting"]);
+  expect(providers.blob.putPrivateIfAbsent).toHaveBeenCalledTimes(1);
+  expect(submit).not.toHaveBeenCalled();
+  expect(poll).not.toHaveBeenCalled();
+});
+
+it.each(["image", "video"] as const)("keeps a prior %s invocation unknown when the final waiting heartbeat is unavailable", async (mode) => {
+  const harness = lifecycleHarness(mode, "succeeded");
+  const payload = harness.payload;
+  await reserveGenerationInvocation(harness.providers.blob, {
+    version: 1, attemptId: payload.attemptId, attemptNo: payload.attemptNo,
+    transportAttemptNo: 1, providerIdempotencyKey: `generation:${payload.attemptId}:provider`,
+    requestId: payload.requestId, generationJobId: payload.generationJobId,
+    mode, provider: payload.provider, model: payload.model ?? null,
+    reservedAt: new Date().toISOString(),
+  });
+  Object.assign(harness.providers[mode], { managesInvocationBoundary: true, generate: vi.fn(async (input: Parameters<GenProviders["image"]["generate"]>[0] | Parameters<GenProviders["video"]["generate"]>[0]) => {
+    try {
+      await input.executionBoundary!.onResourceWait();
+      throw new Error("waiting heartbeat unexpectedly succeeded");
+    } catch {
+      return { ok: false as const, error: { code: "backend_error", message: "backend classified waiting failure", retryable: true } };
+    }
+  }) });
+  globalThis.fetch = vi.fn(async () => new Response("Main temporarily unavailable", { status: 503 }));
+  const deps = makePipelineDeps(harness.providers, { attemptsMade: 2, maxAttempts: 3, recordTransportExecution: recordMainTransportExecution });
+  await harness.run(deps);
+  expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({ terminalRecord: expect.objectContaining({
+    outcome: "unknown", providerInvoked: true,
+    error: expect.objectContaining({ code: "ambiguous_incomplete_provider_invocation", retryability: "not_retryable" }),
+  }) }));
+  expect(harness.generate).not.toHaveBeenCalled();
+  expect(harness.providers.blob.putPrivateIfAbsent).toHaveBeenCalledTimes(2);
+});
+
+it.each(["wait", "entry"] as const)("keeps a real Main 409 authoritative at the final %s boundary", async (phase) => {
+  const harness = lifecycleHarness("image", "succeeded");
+  Object.assign(harness.providers.image, { managesInvocationBoundary: true });
+  harness.providers.image.generate = vi.fn(async (input) => {
+    try {
+      if (phase === "wait") await input.executionBoundary!.onResourceWait();
+      else await input.executionBoundary!.beforeProviderInvocation();
+      return imageLifecycleResult("succeeded");
+    } catch {
+      return { ok: false as const, error: { code: "backend_error", message: "backend classified authority failure", retryable: true } };
+    }
+  });
+  globalThis.fetch = vi.fn(async () => Response.json({ error: "conflict", message: "Main dispatch revoked" }, { status: 409 }));
+  const deps = makePipelineDeps(harness.providers, { attemptsMade: 2, maxAttempts: 3, recordTransportExecution: recordMainTransportExecution });
+  await expect(harness.run(deps)).rejects.toThrow("Main dispatch revoked");
+  expect(harness.generate).not.toHaveBeenCalled();
+  expect(harness.providers.blob.putPrivateIfAbsent).not.toHaveBeenCalled();
+  expect(deps.acknowledgeTerminalRecord).not.toHaveBeenCalled();
+});
+
+it("relays a terminal that became durable during resource waiting without replacing it", async () => {
+  const completed = lifecycleHarness("image", "succeeded");
+  const completedDeps = makePipelineDeps(completed.providers);
+  await completed.run(completedDeps);
+  const terminal = vi.mocked(completedDeps.acknowledgeTerminalRecord).mock.calls[0]![0].terminalRecord;
+  const waiting = lifecycleHarness("image", "succeeded");
+  Object.assign(waiting.providers.image, { managesInvocationBoundary: true });
+  waiting.providers.image.generate = vi.fn(async (input) => {
+    try {
+      await input.executionBoundary!.onResourceWait();
+      return imageLifecycleResult("succeeded");
+    } catch {
+      return { ok: false as const, error: { code: "backend_error", message: "backend classified waiting failure", retryable: true } };
+    }
+  });
+  globalThis.fetch = vi.fn(async () => new Response("Main temporarily unavailable", { status: 503 }));
+  const deps = makePipelineDeps(waiting.providers, {
+    attemptsMade: 2, maxAttempts: 3,
+    recordTransportExecution: async (input) => {
+      await persistTerminalRecord(waiting.providers.blob, terminal);
+      await recordMainTransportExecution(input);
+    },
+  });
+  await waiting.run(deps);
+  expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ terminalRecord: terminal }));
+  expect(waiting.providers.blob.putPrivateIfAbsent).toHaveBeenCalledTimes(1);
+  expect(waiting.generate).not.toHaveBeenCalled();
 });

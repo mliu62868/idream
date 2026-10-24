@@ -205,6 +205,7 @@ describe("system voice defaults", () => {
       }),
     ).resolves.toMatchObject({
       providerKey: "mock",
+      model: "mock",
       voiceId: "default",
       source: "system_default",
     });
@@ -293,6 +294,7 @@ describe("system voice defaults", () => {
       }),
     ).resolves.toMatchObject({
       providerKey: "pocket_tts",
+      model: "test-model",
       voiceId: "idream-pocket-voice",
       source: "character_clone",
       characterVoiceProfileVersion: 1,
@@ -319,6 +321,7 @@ describe("system voice defaults", () => {
       }),
     ).resolves.toMatchObject({
       providerKey: "fish_audio",
+      model: "test-model",
       voiceId: "idream-fish-voice",
       source: "character_clone",
       settingVersion: null,

@@ -25,7 +25,7 @@ export interface ChatModelProfile {
 type Environment = Record<string, string | undefined>;
 
 const DEFAULT_MODEL =
-  "Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved-mlx-8Bit";
+  "Ornith-1.5-35B-A3B-Abliterated-MLX-8bit";
 const DEFAULT_BASE_URL = "http://127.0.0.1:8061/v1";
 const DEFAULT_TIMEOUT_MS = 45_000;
 

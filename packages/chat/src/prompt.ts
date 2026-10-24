@@ -85,7 +85,7 @@ export function buildTurnPreferencesBlock(context: BuiltContext): string {
     ...(instruction ? [sentence(oneLine(instruction.content))] : []),
     ...(profile?.replyStyle === "concise" ? ["Keep answers direct and compact, one to three sentences."] : []),
     ...(profile?.replyStyle === "story" ? ["Use rich but purposeful scene detail and dialogue, developing the moment without choosing their actions."] : []),
-    ...(experience?.responseLength === "short" ? ["Keep replies to one to three sentences."] : []),
+    ...(experience?.responseLength === "short" && profile?.replyStyle !== "concise" ? ["Keep replies to one to three sentences."] : []),
     ...(experience?.responseLength === "long" ? ["Replies can run longer, with real detail, dialogue and observation; no filler."] : []),
     ...(experience?.sceneGeneration === "follow" ? ["Follow their lead on the scene; leave the next change of setting or plot to them."] : []),
     ...(experience?.sceneGeneration === "advance" ? ["Let the scene move forward a beat when it fits, one detail or action at a time, without deciding their actions."] : []),
@@ -93,7 +93,7 @@ export function buildTurnPreferencesBlock(context: BuiltContext): string {
     ...(experience?.interactionIntensity === "expressive" ? ["Be more vivid, confident and playful, within who you are and the pace they set."] : []),
   ];
   if (lines.length === 0) return "";
-  return `Their preferences for this conversation: ${lines.join(" ")}`;
+  return `Their saved preferences, overridden by their current request: ${lines.join(" ")}`;
 }
 
 /**
@@ -119,16 +119,77 @@ export function describeUserLanguage(userText: string): string {
   return language ? `They are writing in ${language}; answer in ${language}.` : "";
 }
 
-// INTENT: A request for exactly one sentence is a hard per-turn limit. The
-// soft "short" preference and the history's own reply pattern (answer plus a
-// follow-up question) outvote it otherwise: real-model A/B on the failing
-// Turn went 1/12 compliant without this line and 12/12 with it. Naming the
-// forbidden tail matters — "one sentence" alone lets the model splice the
-// question on with a semicolon.
-export function describeRequestedLength(userText: string): string {
-  return /\b(?:exactly\s+|just\s+|only\s+)?(?:one|1|a single)\s+(?:short\s+|brief\s+)?sentence\b|一句话/iu.test(userText)
-    ? "Their message asks for exactly one short sentence. Reply with only that sentence: no question, scene beat or suggestion after it."
-    : "";
+// INTENT: Keep explicit current-request constraints next to the original text.
+// These optional cues abstain on ambiguous/reporting syntax; the unchanged
+// message remains authoritative. A quote is a barrier, never deleted into a
+// new imperative assembled from words on either side.
+export function describeRequestedReplyConstraints(userText: string): string {
+  const unquoted = userText.replace(/```[\s\S]*?```|`[^`]*`|"[^"]*"|“[^”]*”|‘[^’]*’|(?<!\w)'[^'\n]+'(?!\w)/gu, "\uFFFC");
+  if (/\b(?:actually|instead|ignore|forget|retract)\b/iu.test(unquoted)
+    || /[\r\n]/u.test(userText) && /\b(?:said|asked|wrote)\s*:/iu.test(unquoted)) return "";
+  const counts = new Map<string, number>();
+  let ownActions = true;
+  const words = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"];
+  const number = `(?:a single|${words.join("|")}|[1-9]\\d?)`;
+  const pattern = new RegExp(`\\b(?:(?:exactly|just|only)\\s+)?(${number})\\s+(?:(?:short|brief|English|small|spoken)\\s+)*(sentences?|actions?)\\b`, "giu");
+  const range = new RegExp(`\\b${number}\\s*(?:or|to|[-–])\\s*${number}\\b`, "iu");
+  for (const clause of unquoted.split(/[.!?;\n]/u)) {
+    if (range.test(clause) || /\b(?:at least|at most|up to|more than|less than|fewer than|between|or fewer|or less)\b/iu.test(clause)) continue;
+    const requested = /^\s*(?:(?:please|just|only)\s+)?(?:if\b[^,]*,\s*)?(?:(?:in|with)\b[^,]*,\s*)?(?:answer|reply|respond|say|write|tell|describe|give|continue|acknowledge|summari[sz]e|explain|state|use|keep|limit|check|sit|stay|talk|speak)\b/iu.test(clause);
+    for (const match of clause.matchAll(pattern)) {
+      const before = clause.slice(0, match.index);
+      if (/\b(?:not|never|avoid|don['’]t)\b/iu.test(before)) continue;
+      if (!requested && !/^\s*(?:in\s+)?$/iu.test(before)) continue;
+      const raw = match[1]!.toLowerCase();
+      const count = raw === "a single" ? 1 : words.includes(raw) ? words.indexOf(raw) + 1 : Number(raw);
+      const kind = match[2]!.toLowerCase().startsWith("action") ? "action"
+        : /\bspoken\b/iu.test(match[0]) ? "spoken sentence" : "sentence";
+      if (kind === "action") ownActions &&= /^\s+of\s+your\s+own\b/iu.test(clause.slice(match.index + match[0].length))
+        || /\byour\s+own\s*$/iu.test(before);
+      // Repeated counts may describe separate parts, even when equal. Leave
+      // their composition to the original request instead of imposing a total.
+      if (counts.has(kind)) return "";
+      counts.set(kind, count);
+    }
+    if (/一句话/u.test(clause) && /(?:用|请|只|回答|回复)/u.test(clause) && !/(?:不|别|不要|至少|至多)/u.test(clause)) {
+      if (counts.has("sentence") || clause.match(/一句话/gu)!.length > 1) return "";
+      counts.set("sentence", 1);
+    }
+  }
+  const scopes: string[] = [];
+  const reportedOrRevised = /[\r\n]/u.test(userText)
+    || /\b(?:yesterday|earlier|previously|said|asked|wrote|translate(?:d)?|summari[sz]e)\b|\b(?:was|were)\s+(?:(?:his|her|their|my|the|our)\s+)?(?:question|request|instruction)\b|\b(?:do not|don['’]t)\s+answer\s+(?:that|this|the question)\b/iu.test(unquoted);
+  if (!reportedOrRevised) {
+    const clauses = unquoted.split(/[.!?;]/u).map(value => value.trim()).filter(Boolean);
+    const companyRequest = new RegExp(`^(?:please\\s+)?(?:just|only)\\s+(?:(?:sit|stay|be)\\s+(?:here\\s+)?with\\s+me|keep\\s+me\\s+company)(?:\\s+(?:quietly|in silence|as yourself|for a while))*(?:\\s+and\\s+(?:say|speak|use|answer(?:\\s+in)?|reply(?:\\s+in)?|respond(?:\\s+in)?)\\s+(?:exactly\\s+)?${number}\\s+(?:English\\s+)?sentences?)?$`, "iu");
+    if (companyRequest.test(clauses.at(-1) ?? "")
+      && clauses.some(value => /^(?:please\s+)?(?:do not|don['’]t)\s+analy[sz]e\b/iu.test(value))) {
+      // This bounds the companionship component, never the entire message:
+      // the same user may also ask a separate factual question.
+      scopes.push("For the requested companionship, describe only your own immediate actions or sensations; speak about being here with the user. Keep that companionship free of judgments about the event, its significance or the user's abilities.");
+    }
+    if (counts.has("action") && ownActions) {
+      scopes.push("Action narration uses the same viewpoint as your speech: I/me/my/mine for yourself and you/your/yours for the user, in every clause.");
+    }
+    const questions = unquoted.match(/[^.!?;]+\?/gu) ?? [];
+    if (questions.some(value => /^\s*(?:why|what)\s+(?:do|did)\s+you\s+(?:like|love|enjoy|prefer|dislike|hate)\b/iu.test(value))) {
+      scopes.push("For this preference question, any described experience is your own. When using pronouns for that experience, use I/my; any statement about how the user feels needs their stated experience. Keep the requested answer form.");
+    }
+  }
+  if (!counts.size && !scopes.length) return "";
+  const form = [...counts].map(([kind, count]) => `${count} ${kind}${count === 1 ? "" : "s"}${kind === "sentence" ? " in the entire reply, including action descriptions" : ""}`).join(" and ");
+  return [
+    ...(counts.size ? [`Their current request specifies exactly ${form}. Keep all content within that form; end after it.`] : []),
+    // A total multi-sentence form leaves separate prose for reactions; make
+    // clear that incidental movements there also consume the action count.
+    ...(counts.has("action") ? [(counts.get("sentence") ?? 0) > 1
+      ? "Use one physical verb per requested action; describe other reactions through thoughts or sensations, without extra bodily movements."
+      : "The action count covers the entire reply, including physical reactions. Count distinct actions, not sentences; one continuous gesture is one action."] : []),
+    ...(counts.get("spoken sentence") === 1
+      ? ["Keep all speech, including interjections, in one sentence."]
+      : counts.has("spoken sentence") ? ["A standalone interjection counts as a spoken sentence."] : []),
+    ...scopes,
+  ].join(" ");
 }
 
 function describeScene(scene: SceneState): string {

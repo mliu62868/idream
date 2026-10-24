@@ -12,7 +12,7 @@ import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency"
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { resolveCharacterVoiceAuthority } from "@/server/modules/voice-defaults";
 import { providers } from "@/server/providers";
-import { configuredVoiceModel, configuredVoiceProviderKey, englishVoiceRuntimeReady } from "@/server/providers/voice/factory";
+import { configuredVoiceProviderKey, englishVoiceRuntimeReady } from "@/server/providers/voice/factory";
 import { asrReady, requestAsr } from "@/server/providers/asr/parakeet-redux";
 import { readVoiceUpload } from "@/server/providers/asr/upload";
 import { createVoiceClip, characterVoiceTone, pinnedVoiceProviderPayloadSchema, voiceMinutesRemainingMs } from "../ourdream/voice-clip";
@@ -47,12 +47,12 @@ async function callTerms(userId: string, sessionId: string, body: Start) {
   let identity = await resolveCharacterVoiceAuthority({ characterId: session.characterId, systemDefaultOnly: entitlements.voice_enabled !== true });
   // A healthy character identity is used directly, including Ming clones.
   // If its runtime is down, the quoted fallback remains explicit to the caller.
-  const voiceFallback = identity.source === "character_clone" && !await englishVoiceRuntimeReady(identity.providerKey);
+  const voiceFallback = identity.source === "character_clone" && !await englishVoiceRuntimeReady(identity.providerKey, undefined, identity.model);
   if (voiceFallback) identity = await resolveCharacterVoiceAuthority({ characterId: session.characterId, systemDefaultOnly: true });
-  if (!await englishVoiceRuntimeReady(identity.providerKey)) throw Errors.unavailable("This voice is not qualified for English local calls");
+  if (!await englishVoiceRuntimeReady(identity.providerKey, undefined, identity.model)) throw Errors.unavailable("This voice is not qualified for English local calls");
   const character = await readableCharacter(session.characterId, userId);
   const providerPayload = pinnedVoiceProviderPayloadSchema.parse({
-    providerKey: identity.providerKey, model: configuredVoiceModel(identity.providerKey), voiceId: identity.voiceId, voiceAuthority: identity.source,
+    providerKey: identity.providerKey, model: identity.model, voiceId: identity.voiceId, voiceAuthority: identity.source,
     systemVoiceSettingVersion: identity.settingVersion, characterVoiceProfileVersion: identity.characterVoiceProfileVersion,
     tone: characterVoiceTone(character), delivery: identity.delivery,
   });

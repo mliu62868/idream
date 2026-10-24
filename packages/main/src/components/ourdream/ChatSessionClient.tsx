@@ -2338,6 +2338,7 @@ function ChatImageAttachmentCard({
 
   const requiresReview = attachment.errorCode === "provider_outcome_unknown";
   const isWaiting = chatAttachmentIsActive(attachment.status, attachment.errorCode);
+  const cancelled = attachment.status === "cancelled";
   const failed = ["failed", "blocked", "refunded", "rejected"].includes(attachment.status);
   const canRetry = Boolean(attachment.generationJobId) && ["failed", "refunded"].includes(attachment.status);
   const paymentRequired = failed && attachment.errorCode === "payment_required";
@@ -2362,6 +2363,8 @@ function ChatImageAttachmentCard({
           <p className="text-[12px] font-bold text-white">
             {requiresReview
               ? "Image result not confirmed yet"
+              : cancelled
+                ? "Image cancelled"
               : paymentRequired
                 ? "Not enough dreamcoins"
               : tooManyActive
@@ -2384,6 +2387,8 @@ function ChatImageAttachmentCard({
             <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-white/60">
               {requiresReview
                 ? unknownOutcomeCopy(chargedCost)
+                : cancelled
+                ? "This image request was cancelled. Check your Dreamcoin history for refund details."
                 : failed || attachment.status === "proposed"
                 ? paymentRequired
                   ? "Add dreamcoins to generate this image."

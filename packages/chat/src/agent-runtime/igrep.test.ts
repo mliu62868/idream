@@ -456,6 +456,114 @@ describe("official igrep canonical rebuild", () => {
     })).resolves.toEqual({ sessions: 0, messages: 0, sourceReady: true, derivation: "deferred" });
   });
 
+  it.each(["project", "rebuild"] as const)("recovers a maintenance timeout using only unchanged Main sources: %s", async (mode) => {
+    const workspace = await mkdtemp(join(tmpdir(), "chat-igrep-maintain-timeout-"));
+    temporary.push(workspace);
+    await mkdir(join(workspace, ".igrep"));
+    const commands: string[] = [];
+    let dialoguePath = "";
+    const partialProfile = join(workspace, ".igrep/partial-profile.txt");
+    const builder = new IgrepMemoryBuilder(cli(), {
+      status: async () => ({ dialogueFiles: 1, pendingProfileRows: 2, processedProfileRows: 0, lastMaintainAt: null }),
+    }, async (options) => {
+      commands.push(options.args[1]!);
+      if (options.args[1] === "ingest") {
+        const receipt = await fixtureIngest(options);
+        dialoguePath = join(workspace, receipt.dialoguePath);
+        return receipt;
+      }
+      if (options.args[1] === "maintain") {
+        await writeFile(partialProfile, "UNPUBLISHED_DERIVATION");
+        await writeFile(dialoguePath, "PARTIAL_REWRITE\n");
+        throw new BoundedCommandError("timeout", "a".repeat(64));
+      }
+      if (options.args[1] === "wake") {
+        await expect(stat(partialProfile)).rejects.toMatchObject({ code: "ENOENT" });
+        expect(await readFile(dialoguePath, "utf8")).toContain("Remember the observatory.");
+        expect(await readFile(dialoguePath, "utf8")).not.toContain("PARTIAL_REWRITE");
+      }
+      return memoryEnvelope(options);
+    });
+    await expect(builder.build(workspace, {
+      scope: "relationship", userId: "user-1", characterId: "character-1", mode,
+      messages: [
+        { id: "source", sessionId: "session-1", role: "user", content: "Remember the observatory.", createdAt: "2026-08-19T12:00:00.000Z" },
+        { id: "reply", sessionId: "session-1", role: "assistant", content: "Every blue-lit window.", createdAt: "2026-08-19T12:00:01.000Z" },
+      ],
+    })).resolves.toEqual({ sessions: 1, messages: 2, sourceReady: true, derivation: "deferred" });
+    expect(commands).toEqual(["ingest", "maintain", "ingest", "wake", "doctor"]);
+  });
+
+  it.each(["abort", "changed source"])("rejects maintenance timeout recovery after %s", async (fault) => {
+    const workspace = await mkdtemp(join(tmpdir(), "chat-igrep-timeout-fence-"));
+    temporary.push(workspace);
+    await mkdir(join(workspace, ".igrep"));
+    const controller = new AbortController();
+    const abortReason = new Error("caller cancelled rebuild");
+    const commands: string[] = [];
+    let transcript = "";
+    const builder = new IgrepMemoryBuilder(cli(), {
+      status: async () => { throw new Error("must not publish invalid recovery"); },
+    }, async (options) => {
+      commands.push(options.args[1]!);
+      if (options.args[1] === "ingest") {
+        transcript = options.args[options.args.indexOf("--transcript") + 1]!;
+        return fixtureIngest(options);
+      }
+      if (options.args[1] === "maintain") {
+        if (fault === "abort") controller.abort(abortReason);
+        else await writeFile(transcript, (await readFile(transcript, "utf8")).replace("Original fact.", "Changed fact."));
+        throw new BoundedCommandError("timeout", "e".repeat(64));
+      }
+      return memoryEnvelope(options);
+    });
+    const result = builder.build(workspace, {
+      scope: "relationship", userId: "user-1", characterId: "character-1", mode: "rebuild",
+      messages: [
+        { id: "source", sessionId: "session-1", role: "user", content: "Original fact.", createdAt: "2026-08-19T12:00:00.000Z" },
+        { id: "reply", sessionId: "session-1", role: "assistant", content: "Acknowledged.", createdAt: "2026-08-19T12:00:01.000Z" },
+      ],
+    }, controller.signal);
+    if (fault === "abort") await expect(result).rejects.toBe(abortReason);
+    else await expect(result).rejects.toThrow("Main memory transcript changed before source-only recovery");
+    expect(commands).toEqual(["ingest", "maintain"]);
+  });
+
+  it.each(["aborted", "invalid_output", "exit_nonzero", "spawn_failed", "stdout_limit", "stderr_limit"] as const)(
+    "does not treat maintenance %s as a recoverable timeout", async (code) => {
+      const workspace = await mkdtemp(join(tmpdir(), "chat-igrep-maintain-error-"));
+      temporary.push(workspace);
+      await mkdir(join(workspace, ".igrep"));
+      const failure = new BoundedCommandError(code, "b".repeat(64));
+      const builder = new IgrepMemoryBuilder(cli(), {
+        status: async () => { throw new Error("must not publish failed memory"); },
+      }, async (options) => {
+        if (options.args[1] === "maintain") throw failure;
+        return memoryEnvelope(options);
+      });
+      await expect(builder.build(workspace, {
+        scope: "relationship", userId: "user-1", characterId: "character-1", mode: "rebuild", messages: [],
+      })).rejects.toBe(failure);
+    },
+  );
+
+  it.each(["wake", "doctor"])("rejects %s timeout during source-only recovery", async (stage) => {
+    const workspace = await mkdtemp(join(tmpdir(), "chat-igrep-recovery-error-"));
+    temporary.push(workspace);
+    await mkdir(join(workspace, ".igrep"));
+    const failure = new BoundedCommandError("timeout", "c".repeat(64));
+    const builder = new IgrepMemoryBuilder(cli(), {
+      status: async () => { throw new Error("must not publish unverified memory"); },
+    }, async (options) => {
+      if (options.args[1] === "maintain") throw new BoundedCommandError("timeout", "d".repeat(64));
+      if (options.args[1] === stage) throw failure;
+      return memoryEnvelope(options);
+    });
+    await expect(builder.build(workspace, {
+      scope: "relationship", userId: "user-1", characterId: "character-1", mode: "rebuild", messages: [],
+    })).rejects.toBe(failure);
+  });
+
   it("maintains an ordinary projection without re-deriving canonical memory", async () => {
     const root = await mkdtemp(join(tmpdir(), "chat-runtime-igrep-project-"));
     temporary.push(root);
@@ -820,7 +928,7 @@ describe("igrep Main source admission", () => {
     await expectSources(workspace, request);
   });
 
-  it("fails closed after one unsuccessful source-only recovery", async () => {
+  it.each(["source rewrite", "maintenance timeout"])("fails closed after one unsuccessful source-only recovery: %s", async (fault) => {
     const workspace = await fixture();
     const identity = { userId: request.userId, characterId: request.characterId };
     const canonicalRoot = join(workspace, "canonical");
@@ -841,7 +949,10 @@ describe("igrep Main source admission", () => {
         if (++ingests === 2) await rm(join(candidate, result.dialoguePath));
         return result;
       }
-      if (options.args[1] === "maintain") await retract(candidate);
+      if (options.args[1] === "maintain") {
+        if (fault === "maintenance timeout") throw new BoundedCommandError("timeout", "f".repeat(64));
+        await retract(candidate);
+      }
       return memoryEnvelope(options);
     });
     await expect(store.prepareRelationshipRebuild(identity, {

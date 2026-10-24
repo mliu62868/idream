@@ -8,12 +8,14 @@ import { COMPANION_COMPACTION_CONFIG } from "./composition";
 import { formatCompanionMessages, messageText, projectPiMessage, toPiMessage } from "./pi-context";
 import { ProviderError, type OpenAiCompatibleAdapter } from "./openai-adapter";
 import { projectRecall } from "./session-recall";
+import { estimateModelRequestInputTokens } from "./model-request-format";
 
 export interface PiExecutionOptions {
   invocation: CompanionInvocation;
   seed: readonly PreparedTurnMessage[];
   pinned: readonly PreparedTurnMessage[];
   systemPrompt: string;
+  afterRetrievalContext?: { content: string; available(): boolean };
   adapter: OpenAiCompatibleAdapter;
   signal: AbortSignal;
   maxSteps: number;
@@ -109,9 +111,15 @@ export async function executePiConversation(options: PiExecutionOptions): Promis
           // selecting a retrieval on the model's behalf.
           const pinned: readonly PreparedTurnMessage[] = archive.chunks.length ? [...options.pinned, {
             id: `archive-status:${invocation.attemptId}`, sourceKind: "plugin", role: "user",
-            content: "Earlier dialogue is incomplete here: some original messages are available only through session_recall. Summaries and repeated recent lines cannot establish the wording of an omitted passage. For an exact quotation, retrieve the original passage before quoting it.",
+            content: "Earlier dialogue is incomplete here: use session_recall to retrieve the omitted original messages. Summaries and repeated recent lines cannot establish the wording of an omitted passage. For an exact quotation, retrieve the original passage before quoting it.",
           }] : options.pinned;
-          return { messages: formatCompanionMessages(projected, pinned, options.systemPrompt, getCurrentTools(request.messages), invocation.characterId) };
+          const messages = formatCompanionMessages(projected, pinned, options.systemPrompt, getCurrentTools(request.messages), invocation.characterId);
+          // Request-only context never becomes conversation or recall evidence.
+          // Rebuild it after each successful lookup/compaction without duplication.
+          if (options.afterRetrievalContext?.available()) {
+            messages.push({ role: "user", content: options.afterRetrievalContext.content, timestamp: 1 });
+          }
+          return { messages };
         } catch (error) { return fail(error); }
       },
     }),
@@ -151,12 +159,17 @@ export async function executePiConversation(options: PiExecutionOptions): Promis
     }),
   ] }));
   const budget = invocation.preparedTurn.budget.maxInputTokens;
+  // Pi's stored conversation excludes this transient message. Reserve its wire
+  // cost before the lookup so it cannot silently consume compaction headroom.
+  const retrievalContextTokens = options.afterRetrievalContext ? estimateModelRequestInputTokens({
+    messages: [{ role: "user", content: options.afterRetrievalContext.content }],
+  }) : 0;
   const harness = await Harness.open(new MemoryStorage(), { models, registry,
     onReport: error => { fatal ??= error instanceof Error ? error : new Error("Pi reported an execution failure"); },
     settings: {
     retry: { enabled: false }, stream: { maxRetries: 0 }, toolExecution: "sequential",
     compaction: { enabled: true, backgroundTokens: 0,
-      reserveTokens: invocation.preparedTurn.profile.maxOutputTokens + Math.max(COMPANION_COMPACTION_CONFIG.headroomTokens, Math.ceil(budget * (1 - COMPANION_COMPACTION_CONFIG.thresholdRatio))),
+      reserveTokens: invocation.preparedTurn.profile.maxOutputTokens + retrievalContextTokens + Math.max(COMPANION_COMPACTION_CONFIG.headroomTokens, Math.ceil(budget * (1 - COMPANION_COMPACTION_CONFIG.thresholdRatio))),
       keepRecentTokens: Math.max(1, Math.floor(budget * COMPANION_COMPACTION_CONFIG.retainRatio)) },
   } }, context);
   let aborting: Promise<void> | undefined;

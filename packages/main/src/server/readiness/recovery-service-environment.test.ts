@@ -386,7 +386,7 @@ describe("recovery service environment", () => {
         CHAT_MODEL_PROVIDER: "openai",
         CHAT_MODEL_BASE_URL: "http://127.0.0.1:8061/v1",
         CHAT_MODEL_NAME:
-          "Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved-mlx-8Bit",
+          "Ornith-1.5-35B-A3B-Abliterated-MLX-8bit",
         CHAT_MODEL_API_KEY: "",
       });
     } finally {

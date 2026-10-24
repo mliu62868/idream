@@ -4,6 +4,8 @@ import { GENERATION_REQUEST_CANCELLABLE_STATUSES } from "@idream/shared/catalog"
 import { MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES } from "@/server/events/main-outbox-transport";
 import { jsonRecord } from "@/server/modules/ourdream/json-values";
 import { markProductionItemFailed } from "@/server/modules/content-production-state";
+import { transitionToolEffectAttachment } from "@/server/modules/chat/tool-effect-attachment";
+import { lockChatScope } from "@/server/modules/chat/turn-scope";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
@@ -42,7 +44,7 @@ export type GenerationCancellationGuard =
 
 /**
  * 取消一次 Generation Request 的唯一结算路径：锁 User → Request → 判前置 → 状态迁移 →
- * Attempt 终态事件 → 撤销 dispatch outbox → 退款。
+ * Attempt 终态事件 → 撤销 dispatch outbox → 退款 → 聊天附件终态。
  *
  * INVARIANT: users 和 generation_jobs 的行锁在本函数内部依次取。ADR-13 §2.1.4 记录过「调用方
  * 必须先上锁」这类约定的代价（6 个退款调用点漏了 1 个，40 币退回 80），所以锁跟着
@@ -115,7 +117,32 @@ export async function settleGenerationRequestCancellation(
     userId: job.userId,
     cause: { kind: "cancel" },
   });
+  await reconcileCancelledChatAttachments(tx, cancelled);
   return { job, attempt, cancelled, refundAmount };
+}
+
+async function reconcileCancelledChatAttachments(tx: Prisma.TransactionClient, job: GenerationJob) {
+  if (job.status !== "cancelled" || !["chat_image", "chat_video"].includes(job.sourceType)) return;
+  const pointers = await tx.chatTurnAttachment.findMany({
+    where: {
+      generationJobId: job.id,
+      kind: job.sourceType === "chat_image" ? "generated_image" : "generated_video",
+      status: "accepted",
+    },
+    select: { id: true },
+  });
+  for (const pointer of pointers) {
+    // Settlement already owns user → Request locks. Preserve the Chat lock
+    // order and finish hidden/old-attempt attachments as well as visible ones.
+    const scope = await lockChatScope(tx, {
+      userId: job.userId,
+      at: { attachment: pointer.id },
+      allowDeletedSession: true,
+    });
+    if (scope.attachment?.generationJobId === job.id && scope.attachment.status === "accepted") {
+      await transitionToolEffectAttachment(tx, scope.attachment, { to: "cancelled", errorCode: null });
+    }
+  }
 }
 
 // 派发超时之后供应商可能已经接单，所以「未被触碰的 dispatch」是唯一能证明
@@ -168,6 +195,12 @@ export async function cancelGenerationRequest(input: {
   const existing = await prisma.controlPlaneCommand.findUnique({ where: { scope_idempotencyKey: { scope, idempotencyKey: input.idempotencyKey } } });
   if (existing) {
     if (existing.requestHash !== requestHash) throw Errors.conflict("Idempotency key is bound to another Generation Request cancellation");
+    // Older operator cancellations settled the Request but left its attachment
+    // accepted. An exact replay repairs that residue without repeating money writes.
+    await prisma.$transaction(async (tx) => {
+      const job = await lockGenerationRequestForSettlement(tx, input.requestId);
+      await reconcileCancelledChatAttachments(tx, job);
+    });
     await removeLatestGenerationAttemptQueueJob(input.requestId);
     return existing.result;
   }

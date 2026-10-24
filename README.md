@@ -188,10 +188,13 @@ Every physical model request, including compaction, contributes its raw provider
 usage receipt. Missing receipts keep usage unknown; a missing reasoning subtotal
 stays null while known prompt/completion totals remain usable. Reasoning is already
 included in completion totals and is never added again.
-Companion generation, compaction, structured Scene extraction and warmup disable
-hidden reasoning. The pinned model must qualify in that mode: Quick's 256-token
-answer budget must not be consumed by an invisible planning phase. Native image
-arguments retain their existing model budget; tool choice remains automatic.
+Companion generation enables hidden reasoning on the configured Ornith 8-bit model.
+Its reasoning and answer share the prepared model output budget; Quick's 256-token
+answer setting must not cap that combined request. Reply length remains a product
+preference: this provider has no independent hard cap for visible tokens while
+thinking is enabled. Compaction, structured extraction, warmup and igrep helpers
+keep reasoning disabled. Tool choice remains automatic; unfinished reasoning is
+never force-closed into a user reply.
 The responding Character's history stays in the assistant role; other Characters'
 ordinary lines use the incoming user role with their speaker name. Original Main
 roles and speaker identities remain unchanged in the recall archive. Per-turn context ends at an
@@ -253,6 +256,12 @@ available through `bun run voice:fish:install` and the explicit
 `FISH_AUDIO_MODEL=breeze-tts-2-mlx-8bit` setting. A gateway runs one model at a
 time; old-model idempotency requests may replay exact cached audio but cannot
 silently regenerate with the current model.
+
+Active Character voice versions pin both the reference identity and model.
+When changing the runtime model, prepare a new version from the same reference,
+verify its preview, then activate it. Keep the archived profile, original registry
+reference, cached audio and VoiceClipRequest facts for historical playback.
+Retired Fish S2 Pro requests can only replay their exact completed cache entry.
 
 ## Chat Voice Input
 
@@ -319,11 +328,10 @@ main-web / packages/gen
   -> BackendRegistry (workflow descriptors under GEN_WORKFLOW_DIR)
   -> ComfyUIBackend -> COMFYUI_IMAGE_API_URL / COMFYUI_VIDEO_API_URL
      -> isolated ComfyUI runners -> shared model files
-  -> SdcppBackend   -> SDCPP_CLI       -> sd-cli process -> model files
   -> DrawThingsBackend -> DRAWTHINGS_CLI -> draw-things-cli -> model files
 ```
 
-Each workflow descriptor (`packages/gen/workflows/*.json`) declares its `backendKind` (`comfyui`, `sdcpp`, or `drawthings`), the model files it binds, and its input slots — adding a model is "drop a descriptor," not new wiring code. For a local end-to-end smoke against a selected live backend, run `bun run --filter @idream/gen smoke:backend`.
+Each workflow descriptor (`packages/gen/workflows/*.json`) declares its `backendKind` (`comfyui` or `drawthings`), the model files it binds, and its input slots — adding a model is "drop a descriptor," not new wiring code. For a local end-to-end smoke against a selected live backend, run `bun run --filter @idream/gen smoke:backend`.
 
 The retired `pipeline`, `mlx`, and `external` runner values are invalid. Use `GEN_IMAGE_PROVIDER=backend` with a workflow-native backend.
 

@@ -30,9 +30,9 @@ describe("companion composition identity", () => {
 
     expect(manifest).toMatchObject({
       schemaVersion: 3, piVersion: "1.3.0", igrepVersion: "0.1.161", storage: "memory", builtInTools: [],
-      igrepMaintenance: { sampling: { temperature: 0, top_p: 1, presence_penalty: 0 } },
-      reasoning: { generation: false, compaction: false, structured: false, totalLimit: "profile" },
-      execution: { version: 42, maxSteps: 8, maxParallelToolCalls: 1, toolExecution: "sequential", retry: false,
+      igrepMaintenance: { sampling: { temperature: 0, top_p: 1, presence_penalty: 0, chat_template_kwargs: { enable_thinking: false } } },
+      reasoning: { generation: true, compaction: false, structured: false, totalLimit: "profile" },
+      execution: { version: 60, maxSteps: 8, maxParallelToolCalls: 1, toolExecution: "sequential", retry: false,
         deadlineSource: "invocation.deadlineAt", commitBeforeProjection: true },
     });
     expect(manifest.corePackages).toEqual(COMPANION_CORE_PACKAGES);

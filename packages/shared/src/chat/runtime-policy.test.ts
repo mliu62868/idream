@@ -22,9 +22,9 @@ describe("buildCompanionRuntimeAuthority", () => {
 
   it("limits private execution tools without inferring conversation retention", () => {
     const policy = buildCompanionRuntimeAuthority({ memoryEnabled: false });
-    expect(policy).toContain("Long-term memory tools are unavailable for this reply");
     expect(policy).toContain("Use only the conversation context provided");
-    expect(policy).toContain("These tool limits establish no fact about retention across sessions");
+    expect(policy).toContain("a plain admission that you do not know is a complete answer");
+    expect(policy).toContain("Missing evidence establishes no fact about retention across sessions");
     expect(policy).toContain("never say it is saved or will be remembered");
     expect(policy).not.toContain("Memory is off for this conversation");
     expect(policy).not.toContain("nothing is kept between sessions");

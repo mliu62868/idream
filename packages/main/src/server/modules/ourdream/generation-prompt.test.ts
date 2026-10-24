@@ -292,6 +292,125 @@ describe("image generation prompt", () => {
     expect(compiled).toContain("observatory in blue light");
   });
 
+  it("makes an explicit fully clothed request require opaque covering layers", () => {
+    const scene = "A soft blue cardigan over casual clothes, arranging books in a sunny apartment. Fully clothed, modest.";
+    const compiled = compileChatImagePrompt(scene, "none");
+
+    expect(compiled).toContain("opaque top covering the chest and torso");
+    expect(compiled).toContain("opaque trousers, skirt or dress covering the lower body");
+    expect(compiled).toContain("If an inner layer under a cardigan or open jacket is unspecified, use an opaque crew-neck top");
+    expect(compiled).toContain(`Requested scene: ${scene}`);
+  });
+
+  it.each([
+    "Fully clothed in a blue cardigan over an ivory turtleneck and navy trousers, arranging books beside the window.",
+    "Fully clothed in an emerald maxi dress beneath a beige open cardigan, standing beside the bookshelf.",
+  ])("keeps explicit outfits while describing missing layers positively: %s", scene => {
+    const compiled = compileChatImagePrompt(scene, "none", { userInstruction: `Please generate an image: ${scene}` });
+    const requirement = compiled.slice(0, compiled.indexOf("Requested scene:"));
+
+    expect(requirement).toContain("Preserve the explicitly requested outfit.");
+    expect(requirement).toContain("Complete unspecified clothing with an opaque top covering the chest and torso");
+    expect(requirement).toContain("opaque trousers, skirt or dress covering the lower body");
+    expect(requirement).toContain("If an inner layer under a cardigan or open jacket is unspecified, use an opaque crew-neck top.");
+    expect(requirement).not.toMatch(/\b(?:nude|nudity|naked|breasts?|cleavage|underwear|see-through)\b/i);
+    expect(compiled).toContain(`Requested scene: ${scene}`);
+  });
+
+  it("preserves the user's fully clothed requirement when the Agent omits it from the scene", () => {
+    // Captured failure: the user requested full clothing, but the Agent kept only the cardigan.
+    const userInstruction = "Please generate one safe, fully clothed image of you in a blue cardigan, arranging books on a wooden shelf in the sunny apartment.";
+    const scene = "A warm, sunlit apartment interior. A woman in a soft blue knit cardigan gently arranging hardcover and paperback books on a light wooden bookshelf. Golden afternoon light streaming through a window, casting soft shadows. Cozy living space with a few cardboard moving boxes nearby. Candid, friendly, everyday domestic moment. Natural color palette, realistic photography style.";
+    const compiled = compileChatImagePrompt(scene, "none", { userInstruction });
+
+    expect(compiled).toContain("opaque top covering the chest and torso");
+    expect(compiled).toContain("opaque trousers, skirt or dress covering the lower body");
+    expect(compiled).toContain(`Requested scene: ${scene}`);
+    expect(compiled).not.toContain(userInstruction);
+    expect(compiled.length).toBeLessThanOrEqual(900);
+  });
+
+  it("preserves original full clothing when the tool leaves wardrobe intent unspecified", () => {
+    const userInstruction = "Please generate one safe, fully clothed image of you in a blue cardigan, arranging books on a wooden shelf in the sunny apartment.";
+    const scene = `The photo they asked for in this message: ${userInstruction}`;
+    const compiled = compileChatImagePrompt(scene, "unspecified", { userInstruction });
+
+    expect(compiled).toContain("Wardrobe requirement: fully clothed adult character");
+    expect(compiled).toContain("opaque top covering the chest and torso");
+    expect(compiled).toContain("opaque trousers, skirt or dress covering the lower body");
+    expect(compiled).toContain(`Requested scene: ${scene}`);
+  });
+
+  it.each([
+    "Wearing a blue bikini beside the pool.",
+    "Not fully dressed, wearing a blue bikini beside the pool.",
+  ])("keeps no-nudity swimwear distinct from full clothing: %s", scene => {
+    const compiled = compileChatImagePrompt(scene, "none");
+
+    expect(compiled).toContain(scene);
+    expect(compiled).toContain("keep the adult character clothed; no nudity");
+    expect(compiled).not.toContain("Wardrobe requirement: fully clothed adult character");
+    expect(compiled).not.toContain("opaque crew-neck top");
+  });
+
+  it.each([
+    { requestedNudity: "none", userInstruction: "Please generate an image of you in a blue bikini beside the pool, with no nudity." },
+    { requestedNudity: "none", userInstruction: "Not fully dressed; wear a blue bikini beside the pool, with no nudity." },
+    { requestedNudity: "unspecified", userInstruction: "Please generate an image of you in a blue bikini beside the pool." },
+    { requestedNudity: "unspecified", userInstruction: "Not fully dressed; wear a blue bikini beside the pool." },
+  ] as const)("uses original wardrobe intent when the Agent incorrectly adds full clothing: $requestedNudity, $userInstruction", ({ requestedNudity, userInstruction }) => {
+    const compiled = compileChatImagePrompt("Fully clothed beside the pool.", requestedNudity, { userInstruction });
+
+    expect(compiled).not.toContain("Wardrobe requirement: fully clothed adult character");
+    expect(compiled).not.toContain("opaque crew-neck top");
+  });
+
+  it.each(["none", "unspecified"] as const)("includes original full-clothing constraints in the complete direction budget: %s", requestedNudity => {
+    const scene = `Beside the sunny bookshelf. ${"Warm afternoon light. ".repeat(30)}`;
+    expect(compileChatImagePrompt(scene, requestedNudity).length).toBeLessThanOrEqual(900);
+    expect(() => compileChatImagePrompt(scene, requestedNudity, {
+      userInstruction: "Please generate a fully clothed image of you beside the bookshelf.",
+    })).toThrow(/900-character/);
+  });
+
+  it("does not add covering layers when the structural intent explicitly requests nudity", () => {
+    const compiled = compileChatImagePrompt("Fully clothed in a silk robe beside the window.", "full", {
+      userInstruction: "Please show yourself fully nude by the window.",
+    });
+
+    expect(compiled).toContain("depict the adult character fully nude, with no clothing or robe");
+    expect(compiled).not.toContain("Wardrobe requirement: fully clothed adult character");
+    expect(compiled).not.toContain("opaque crew-neck top");
+    expect(compiled).not.toContain("silk robe");
+  });
+
+  it.each([
+    { requestedNudity: "none" as const, scene: "Fully clothed in a blue cardigan and trousers, arranging books on a wooden shelf in a sunny apartment." },
+    { requestedNudity: "full" as const, scene: "Fully nude beside a rain-streaked window." },
+  ])("gives a Chat scene wardrobe authority over its reference without a saved Look: $requestedNudity", ({ requestedNudity, scene }) => {
+    const identityPrompt = "The same adult face, dark brown eyes and shoulder-length black hair shown in the canonical portrait wearing a red dress.";
+    const visualProfile = { identityPrompt } as GenerationVisualProfile;
+    const text = buildGenerationPrompt({
+      mode: "image", character, visualProfile, consistencyMode: "strict",
+      userPrompt: compileChatImagePrompt(scene, requestedNudity),
+      presetFragment: "", lookFragment: "", sourceType: "chat_image",
+    });
+
+    expect(text).toContain("Requested scene overrides baseline clothing, pose and background in identity descriptions and reference images");
+    expect(text).toContain("Preserve the same adult face, age, hair, eye color, skin and body proportions");
+    expect(text).toContain(`Locked identity: ${identityPrompt}`);
+    expect(visualProfile.identityPrompt).toBe(identityPrompt);
+    if (requestedNudity === "none") {
+      expect(text).toContain(scene);
+      expect(text).toContain("Wardrobe requirement: fully clothed adult character");
+    } else {
+      expect(text).toContain("depict the adult character fully nude, with no clothing or robe");
+      expect(text).toContain("rain-streaked window");
+      expect(text).not.toContain("keep the adult character clothed");
+    }
+    expect(text.length).toBeLessThanOrEqual(2_000);
+  });
+
   it("honours Identity variation for a character with no pinned Visual Profile", () => {
     // 这个控件在 Advanced settings 里对所有角色都点得到。此前只有 pin 了 Visual Profile
     // 的角色才会真的把它写进提示词 —— 16 个公开角色里的 15 个点了等于没点。

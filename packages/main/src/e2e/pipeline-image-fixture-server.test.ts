@@ -28,11 +28,14 @@ it("serves Main's ComfyUI bootstrap readiness probe through the owned fixture", 
   }
 });
 
-it("returns real OpenAI SSE and a single required native image call before a conversational reply", async () => {
+it.each([
+  { text: "Send a portrait.", status: "accepted", reply: "Your image request is on its way. We can keep chatting while it finishes." },
+  { text: "please make an image from this chat 1720000000000", status: "completed", reply: "Your image is ready." },
+])("serves an auto native image call and replies from its $status receipt", async ({ text, status, reply }) => {
   const tools = [{ type: "function", function: { name: "generate_image_async" } }];
+  const messages = [{ role: "user", content: text }];
   const first = await completion({ model: "playwright-chat", stream: true, tools,
-    tool_choice: { type: "function", function: { name: "generate_image_async" } },
-    messages: [{ role: "user", content: "Send a portrait." }],
+    tool_choice: "auto", messages,
   });
   expect(first.headers.get("content-type")).toBe("text/event-stream");
   const stream = await first.text();
@@ -42,10 +45,15 @@ it("returns real OpenAI SSE and a single required native image call before a con
     tool_calls: [{ index: 0, type: "function", function: { name: "generate_image_async" } }],
   } });
   expect(JSON.parse(event.choices[0].delta.tool_calls[0].function.arguments)).toMatchObject({ outputCount: 1, orientation: "4:5" });
-  const followup = await completion({ stream: true, tools, tool_choice: "auto", messages: [{ role: "tool", content: "accepted" }] });
+  const call = event.choices[0].delta.tool_calls[0];
+  const followup = await completion({ stream: true, tools, tool_choice: "auto", messages: [
+    ...messages, { role: "assistant", content: null, tool_calls: [call] },
+    { role: "tool", tool_call_id: call.id, content: JSON.stringify({ outcome: "succeeded", output: { accepted: true, status, generationJobId: "fixture-image" } }) },
+  ] });
   const finished = await followup.text();
   expect(finished).toContain('"finish_reason":"stop"');
   expect(finished).not.toContain('"tool_calls"');
+  expect(JSON.parse(finished.split("\n")[0]!.slice(6)).choices[0].delta.content).toBe(reply);
 });
 
 it("does not invent image actions from an offered tool or an unoffered forced name", async () => {

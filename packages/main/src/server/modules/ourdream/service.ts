@@ -2656,6 +2656,7 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
   const prompt = compileChatImagePrompt(
     payload.promptHint ?? "candid in-character photo",
     sceneOnly ? "unspecified" : payload.intent.requestedNudity,
+    { userInstruction: sceneOnly ? undefined : payload.conversationContext ?? undefined },
   );
   const orientation = normalizeImageOrientation(payload.controls.orientation, "4:5");
   const sourceImageAssetId = payload.controls.sourceImageAssetId;
@@ -4323,6 +4324,13 @@ async function library(request: Request, tab: string) {
           OR: [
             { contentType: null },
             { contentType: { not: "application/vnd.idream.pocket-tts-preset+json" } },
+          ],
+          // Match the gallery before taking the Recent page: composed videos
+          // replace their intermediate clips and speech tracks. Until then,
+          // paid scene assets remain available as the delivered result.
+          AND: [
+            { NOT: { sourceJob: { videoScene: { sequence: { mediaAssetId: { not: null } } } } } },
+            { NOT: { videoNarrationScenes: { some: { sequence: { mediaAssetId: { not: null } } } } } },
           ],
         },
         include: { character: { select: { name: true } } },

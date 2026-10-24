@@ -5,6 +5,7 @@ import importlib
 import io
 import json
 import os
+import struct
 import sys
 import tempfile
 import threading
@@ -305,6 +306,41 @@ class FishAudioGatewayTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Unsupported FISH_AUDIO_MODEL"):
                 importlib.import_module("scripts.fish_audio_gateway")
 
+    def test_retired_fish_s2_only_replays_exact_cached_audio(self):
+        gateway = self.gateway
+        gateway.MODEL_ID = gateway.MING_MODEL_ID
+        gateway.load_runtime_model = lambda: object()
+        gateway.render_wav = lambda _request: self.fail("Retired Fish must never synthesize again")
+        model = "fish-audio-s2-pro-8bit"
+        payload = {"model": model, "input": "A historical reply.", "voice": "historical-character"}
+        headers = {"Idempotency-Key": "fish-s2:attempt:1",
+                   "X-Idream-Request-Id": "fish-s2", "X-Idream-Attempt-No": "1"}
+        request = gateway.SpeechRequest(**payload)
+        manifest = json.dumps({"format": gateway.IDEMPOTENCY_MANIFEST_FORMAT,
+                               "request_fingerprint": gateway.speech_request_fingerprint(request),
+                               "request_id": "fish-s2", "attempt_no": 1, "owner_hash": None}).encode()
+        audio = b"RIFF-original-Fish-S2-WAVE"
+        cache = gateway.idempotency_cache_path(headers["Idempotency-Key"])
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_bytes(gateway.IDEMPOTENCY_CACHE_MAGIC + struct.pack(">I", len(manifest)) + manifest + audio)
+        with TestClient(gateway.app) as client:
+            replay = client.post("/v1/audio/speech", json=payload, headers=headers)
+            self.assertEqual(replay.status_code, 200)
+            self.assertEqual(replay.content, audio)
+            self.assertEqual(replay.headers["x-idream-idempotency-replayed"], "true")
+            self.assertEqual(replay.headers["x-idream-voice-model"], model)
+            self.assertEqual(client.post("/v1/audio/speech", json={**payload, "input": "Changed"}, headers=headers).status_code, 409)
+            self.assertEqual(client.post("/v1/audio/speech", json=payload,
+                                         headers={**headers, "Idempotency-Key": "fish-s2:missing"}).status_code, 409)
+            self.assertEqual(client.post("/v1/audio/speech", json=payload).status_code, 409)
+        self.assertEqual(cache.read_bytes(), gateway.IDEMPOTENCY_CACHE_MAGIC + struct.pack(">I", len(manifest)) + manifest + audio)
+
+    def test_retired_fish_cannot_be_configured_as_a_generation_model(self):
+        sys.modules.pop("scripts.fish_audio_gateway", None)
+        with patch.dict(os.environ, {"FISH_AUDIO_MODEL": "fish-audio-s2-pro-8bit"}):
+            with self.assertRaisesRegex(RuntimeError, "Unsupported FISH_AUDIO_MODEL"):
+                importlib.import_module("scripts.fish_audio_gateway")
+
     def test_health_distinguishes_current_generation_from_previous_model_replay(self):
         gateway = self.gateway
         gateway.MODEL_ID = gateway.MING_MODEL_ID
@@ -314,7 +350,7 @@ class FishAudioGatewayTests(unittest.TestCase):
         payload = json.loads(response.body)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(payload["supported_models"], [gateway.MING_MODEL_ID])
-        self.assertEqual(payload["replay_only_models"], [gateway.BREEZE_MODEL_ID])
+        self.assertEqual(payload["replay_only_models"], [gateway.BREEZE_MODEL_ID, "fish-audio-s2-pro-8bit"])
         self.assertEqual(payload["model"], gateway.MING_MODEL_ID)
         self.assertIn("en", payload["languages"])
 

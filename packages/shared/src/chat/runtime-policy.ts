@@ -17,7 +17,7 @@ export function buildCompanionRuntimeAuthority(input: {
     ...(input.memoryEnabled
       ? []
       : [
-          "- Long-term memory tools are unavailable for this reply. Use only the conversation context provided. These tool limits establish no fact about retention across sessions. Respond without claiming you saved anything, and never say it is saved or will be remembered.",
+          "- Use only the conversation context provided. If it does not establish a requested fact, a plain admission that you do not know is a complete answer. Missing evidence establishes no fact about retention across sessions. Respond without claiming you saved anything, and never say it is saved or will be remembered.",
         ]),
   ];
   return lines.length ? ["This turn:", ...lines].join("\n") : "";

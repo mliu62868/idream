@@ -103,12 +103,12 @@ type ProbeReport = {
 
 export const generationModelCandidateDefinitions: CandidateDefinition[] = [
   {
-    key: "redqw21_default",
+    key: "redcraft_default",
     profileKey: "profile_image_default_v1",
     expectedRunner: "comfyui",
-    expectedPipelineModel: "redqw21",
-    expectedWorkflowKey: "redqw21",
-    expectedSourceSha256: "9830a9925759a4b69ea1346133d08917ec2390b8495ea7f0eb613f37e7c46647",
+    expectedPipelineModel: "redcraft-qw21t",
+    expectedWorkflowKey: "redcraft-qw21t",
+    expectedSourceSha256: "712b44d2a79b30ed1aa11f19fc4e2cd0f1f46a43dc3bde5d6fe2a07e36b68f0f",
     minSampleCount: 1,
     requireActive: true,
     requireConsistency: false,

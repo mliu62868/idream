@@ -169,9 +169,11 @@ export class BackendImageModel implements ImageModel {
       const lookReference = input.referenceImages?.some((reference) => reference.role === "look_reference");
       prompt = `The person in <image1> is the subject: preserve their face, facial features, hair and skin details. ${lookReference ? "<image2> is a look reference for the requested clothing and styling; preserve the identity from <image1>." : "<image2> is a supporting reference of the same person, not a second subject."} The references do not define the new scene, pose or background.\n\n${prompt}`;
     } else if (
-      (descriptor.workflowKey === "redqw21" || descriptor.workflowKey === "qwen-image-edit-img2img") &&
+      (descriptor.workflowKey === "redcraft-qw21t" || descriptor.workflowKey === "qwen-image-edit-img2img") &&
       (input.referenceImages?.length ?? 0) > 0
     ) {
+      // Qwen's image slot carries pixels, not the role supplied by Main. Preserve
+      // that role in text so an identity anchor does not also pin its outfit.
       prompt = input.referenceImages?.[0]?.role === "source_image"
         ? `Edit <image1>, the source image. Preserve its subject's identity, framing, pose, clothes, background and lighting except for the requested changes.\n\n${prompt}`
         : `The person in <image1> is the subject: keep the exact face, facial features, hair and skin details of the person from <image1>. <image1> is an identity reference only; do not copy its framing, pose, clothing or background. Replace the entire background with the scene described below; nothing from <image1>'s setting remains.\n\n${prompt}`;

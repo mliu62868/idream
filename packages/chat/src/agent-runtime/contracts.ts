@@ -104,21 +104,10 @@ export const preparedTurnSchema = z.object({
   messages: z.array(preparedTurnMessageSchema).min(1),
   omittedMessages: z.array(preparedTurnMessageSchema).optional(),
   tools: z.array(preparedToolDefinition),
-  // SPEC: this Turn's user message clearly asks for a photo now (resolveImageIntent).
-  // INTENT: the Agent still chooses tools; when it ends without calling the image
-  // tool anyway, the engine keeps the promise with the user's own words as direction.
-  imageRequest: z.object({
-    name: z.enum(["generate_image_async", "edit_last_image"]),
-    requestedNudity: z.enum(["unspecified", "none", "full"]),
-    userText: z.string().trim().min(1).max(4_000),
-  }).strict().nullable().optional(),
   profile: preparedTurnProfileSchema,
   budget: preparedBudget,
   trace: preparedTrace,
 }).strict().superRefine((turn, context) => {
-  if (turn.imageRequest && !turn.tools.some(({ name }) => name === turn.imageRequest!.name)) {
-    context.addIssue({ code: "custom", path: ["imageRequest"], message: "an image request needs its tool in this Turn" });
-  }
   const ids = new Set(turn.messages.map(message => message.id));
   for (const [index, message] of (turn.omittedMessages ?? []).entries()) {
     if (message.sourceKind !== "replay" || (message.role !== "user" && message.role !== "assistant") || ids.has(message.id)) {

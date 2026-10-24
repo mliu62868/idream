@@ -283,18 +283,17 @@ describe("seed data provenance", () => {
         profileKey: "character-image-multi-identity",
         workflowKey: "qwen-image-edit-multi-identity",
         steps: 6,
-        sampler: "euler",
-        scheduler: "viggle_turbo",
+        sampler: "er_sde",
+        scheduler: "simple",
         cfgScale: 1,
-        version: 6,
+        version: 7,
         runnerConfig: expect.objectContaining({
-          workflowVersion: 6,
+          workflowVersion: 7,
           vaeTemporalPadding: "torch_cat",
           textEncoderPrecision: "int8_convrot",
           textEncoderDevice: "mps",
           conditioningPasses: 1,
-          turboLora: expect.objectContaining({ rank: 128, alpha: 128, strength: 1, unmerged: true }),
-          capabilities: expect.objectContaining({ referenceImages: true, lora: true }),
+          capabilities: expect.objectContaining({ referenceImages: true, lora: false }),
           textEncoderSha256: "8bfd0f6e12abf2d2d697ecc888e5e90b0d6741d6708f05799f53afa560452e8f",
         }),
         enabled: true,
@@ -305,18 +304,17 @@ describe("seed data provenance", () => {
         profileKey: "character-image-variation",
         workflowKey: "qwen-image-edit-multi-reference",
         steps: 6,
-        sampler: "euler",
-        scheduler: "viggle_turbo",
+        sampler: "er_sde",
+        scheduler: "simple",
         cfgScale: 1,
-        version: 7,
+        version: 8,
         runnerConfig: expect.objectContaining({
-          workflowVersion: 7,
+          workflowVersion: 8,
           vaeTemporalPadding: "torch_cat",
           textEncoderPrecision: "int8_convrot",
           textEncoderDevice: "mps",
           conditioningPasses: 1,
-          turboLora: expect.objectContaining({ rank: 128, alpha: 128, strength: 1, unmerged: true }),
-          capabilities: expect.objectContaining({ referenceImages: true, lora: true }),
+          capabilities: expect.objectContaining({ referenceImages: true, lora: false }),
           textEncoderSha256: "8bfd0f6e12abf2d2d697ecc888e5e90b0d6741d6708f05799f53afa560452e8f",
           publicSelection: { surface: "generator_image_edit" },
         }),
@@ -328,17 +326,16 @@ describe("seed data provenance", () => {
         profileKey: "chat-image-edit",
         workflowKey: "qwen-image-edit-img2img",
         steps: 6,
-        sampler: "euler",
-        scheduler: "viggle_turbo",
+        sampler: "er_sde",
+        scheduler: "simple",
         cfgScale: 1,
-        version: 5,
+        version: 6,
         runnerConfig: expect.objectContaining({
-          workflowVersion: 5,
+          workflowVersion: 6,
           vaeTemporalPadding: "torch_cat",
           textEncoderPrecision: "int8_convrot",
           textEncoderDevice: "mps",
           conditioningPasses: 1,
-          turboLora: expect.objectContaining({ rank: 128, alpha: 128, strength: 1, unmerged: true }),
           textEncoderSha256: "8bfd0f6e12abf2d2d697ecc888e5e90b0d6741d6708f05799f53afa560452e8f",
           publicSelection: { surface: "generator_image_edit" },
         }),
@@ -374,7 +371,7 @@ describe("seed data provenance", () => {
     ).toBe(true);
   });
 
-  it("retires executable Krea routes and preserves the single-identity profile contract on REDQW21 V2", async () => {
+  it("retires executable Krea routes and preserves the single-identity profile contract on RedCraft / FineView", async () => {
     const retiredActive = await prisma.generationModelProfile.count({
       where: {
         status: "active",
@@ -392,31 +389,31 @@ describe("seed data provenance", () => {
       where: { profileKey: "character-image-single-identity-redcraft", status: "active" },
     });
     expect(profile).toMatchObject({
-      pipelineModel: "redqw21-image-edit",
+      pipelineModel: "redcraft-image-edit",
       workflowKey: "qwen-image-edit-img2img",
-      sourceModelPath: expect.stringMatching(/redqw21_unlocked_v2_fp8\.safetensors$/),
-      convertedModelPath: expect.stringMatching(/redqw21_unlocked_v2_bf16\.safetensors$/),
+      sourceModelPath: expect.stringMatching(/fineview_qw21_turbo_fixed_int8\.safetensors$/),
+      convertedModelPath: null,
       steps: 6,
-      scheduler: "viggle_turbo",
-      version: 6,
+      scheduler: "simple",
+      sampler: "er_sde",
+      version: 8,
       costMultiplier: 1.3,
       requiredEntitlement: null,
       enabled: true,
       rolloutPercent: 100,
       runnerConfig: {
-        apiModelId: "redqw21-image-edit",
-        workflowVersion: 5,
-        precisionPolicy: "bf16_resident_mps",
+        apiModelId: "redcraft-image-edit",
+        workflowVersion: 6,
+        precisionPolicy: "int8_exact_bf16_resident_mps",
         textEncoderPrecision: "int8_convrot",
         textEncoderDevice: "mps",
         publicSelection: { explicitOnly: true },
-        turboLora: { unmerged: true, strength: 1 },
         capabilities: {
           textToImage: false,
           stableSeed: true,
           referenceImages: true,
           initImage: true,
-          lora: true,
+          lora: false,
         },
       },
       dryRunSummary: { status: "not_run", source: "seed_configuration_state" },
@@ -424,54 +421,34 @@ describe("seed data provenance", () => {
     expect(JSON.stringify(profile.runnerConfig)).not.toMatch(/krea|redmix3/i);
   });
 
-  it("seeds RedCraft as default while preserving the existing Premium model, pricing and access", async () => {
+  it("seeds one image checkpoint, preserves task contracts and retires duplicate model choices", async () => {
     const profiles = await prisma.generationModelProfile.findMany({
-      where: {
-        profileKey: { in: ["profile_image_default_v1", "profile_image_premium_v1"] },
-        status: "active",
-      },
-      orderBy: { profileKey: "asc" },
+      where: { mode: "image", status: "active", runner: "comfyui", profileKey: { not: "image-enhance-2x" } },
     });
-
-    expect(profiles).toHaveLength(2);
-    for (const profile of profiles.filter((p) => p.profileKey === "profile_image_premium_v1")) {
-      expect(profile).toMatchObject({
-        pipelineModel: "redqw21",
-        workflowKey: "redqw21",
-        runner: "comfyui",
-        sourceModelPath: expect.stringMatching(/redqw21_bf16\.safetensors$/),
-        convertedModelPath: null,
-        defaultWidth: 512,
-        defaultHeight: 512,
-        steps: 10,
-        scheduler: "simple",
-        version: 4,
-        runnerConfig: {
-          workflowVersion: 3,
-          vaeTemporalPadding: "torch_cat",
-          textEncoderPrecision: "int8_convrot",
-          textEncoderDevice: "cpu",
-          textEncoderSha256: "8bfd0f6e12abf2d2d697ecc888e5e90b0d6741d6708f05799f53afa560452e8f",
-          capabilities: { textToImage: true, referenceImages: true, initImage: false },
-        },
-        enabled: true,
-        rolloutPercent: 100,
+    expect(profiles).toHaveLength(5);
+    expect(profiles.map(p => p.profileKey)).not.toEqual(expect.arrayContaining(["profile_image_premium_v1", "image-redcraft-qw21t"]));
+    for (const profile of profiles) {
+      expect(profile.sourceModelPath).toMatch(/fineview_qw21_turbo_fixed_int8\.safetensors$/);
+      expect(profile.convertedModelPath).toBeNull();
+      expect(profile).toMatchObject({ steps: 6, sampler: "er_sde", scheduler: "simple", cfgScale: 1 });
+      expect(profile.runnerConfig).toMatchObject({
+        diffusionModelSha256: "712b44d2a79b30ed1aa11f19fc4e2cd0f1f46a43dc3bde5d6fe2a07e36b68f0f",
+        textEncoderDevice: "mps", capabilities: { lora: false },
       });
+      expect(profile.runnerConfig).not.toHaveProperty("turboLora");
     }
-    expect(profiles[0]).toMatchObject({
-      profileKey: "profile_image_default_v1", costMultiplier: 1, requiredEntitlement: null, maxCount: 1,
+    expect(profiles.find(p => p.profileKey === "profile_image_default_v1")).toMatchObject({
+      pipelineModel: "redcraft-qw21t", workflowKey: "redcraft-qw21t", version: 8,
+      costMultiplier: 1, requiredEntitlement: null, maxCount: 4,
+      runnerConfig: { workflowVersion: 3, publicSelection: { surface: "generator_image_edit" } },
     });
-    expect(profiles[1]).toMatchObject({
-      profileKey: "profile_image_premium_v1", costMultiplier: 1.5, requiredEntitlement: "premium_models", maxCount: 4,
-      dryRunSummary: { status: "not_run", source: "seed_configuration_state" },
+    expect(profiles.find(p => p.profileKey === "character-image-multi-identity")).toMatchObject({
+      pipelineModel: "redcraft-multi-identity", costMultiplier: 1.4,
+      runnerConfig: { workflowVersion: 7, capabilities: { initImage: false } },
     });
-    expect(profiles[0]).toMatchObject({
-      pipelineModel: "redcraft-qw21t", workflowKey: "redcraft-qw21t", steps: 6,
-      sampler: "er_sde", scheduler: "simple", defaultWidth: 832, defaultHeight: 1024,
-      runnerConfig: { workflowVersion: 3, textEncoderDevice: "mps",
-        capabilities: { textToImage: true, referenceImages: true, initImage: true },
-        publicSelection: { surface: "generator_image_edit" },
-      },
+    expect(profiles.find(p => p.profileKey === "character-image-variation")).toMatchObject({
+      pipelineModel: "redcraft-multi-reference", costMultiplier: 1.5,
+      runnerConfig: { workflowVersion: 8, publicSelection: { surface: "generator_image_edit" } },
     });
   });
 

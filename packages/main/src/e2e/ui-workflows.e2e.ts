@@ -3751,24 +3751,23 @@ test("chat UI opens Generate with character context and renders chat image attac
   await testInfo.attach("chat-image-first-terminal-accounting", {
     body: JSON.stringify(firstTerminal, null, 2), contentType: "application/json",
   });
-  // The fixture answers in one model step. Main's prepared image request is
-  // then reserved by the runtime's host fallback, with no second model call.
-  // It reports token totals without a reasoning subtotal; unknown stays null.
+  // The fixture uses a native image call, then reads Main's receipt before
+  // replying. Both physical requests report totals without reasoning subtotals.
   expect(firstTerminal).toMatchObject({
     attempt: 1,
     assistantStatus: "sent",
     terminalEvidence: {
-      replyUsage: { promptTokens: 12, completionTokens: 8, reasoningTokens: null },
-      execution: { steps: 1, toolCalls: 1 },
+      replyUsage: { promptTokens: 24, completionTokens: 16, reasoningTokens: null },
+      execution: { steps: 2, toolCalls: 1 },
       tools: [{
         name: "generate_image_async",
-        callId: expect.stringMatching(/^host-image-request:.+:1$/),
+        callId: expect.stringMatching(/^call_/),
         effectScope: "turn_action",
         intent: { requestedNudity: "unspecified" },
       }],
     },
   });
-  expect(firstTerminal.terminalEvidence).toHaveProperty("modelRequests.length", 1);
+  expect(firstTerminal.terminalEvidence).toHaveProperty("modelRequests.length", 2);
 
   const attachment = await prisma.chatTurnAttachment.findFirstOrThrow({
     where: { turn: { assistantMessageId: assistantMessageId! }, kind: "generated_image" },
@@ -3816,17 +3815,18 @@ test("chat UI opens Generate with character context and renders chat image attac
     attempt: 2,
     assistantStatus: "sent",
     terminalEvidence: {
-      replyUsage: { promptTokens: 12, completionTokens: 8, reasoningTokens: null },
-      execution: { steps: 1, toolCalls: 1 },
+      replyUsage: { promptTokens: 24, completionTokens: 16, reasoningTokens: null },
+      execution: { steps: 2, toolCalls: 1 },
       tools: [{
         name: "generate_image_async",
-        callId: expect.stringMatching(/^host-image-request:.+:2$/),
+        callId: expect.stringMatching(/^call_/),
         effectScope: "turn_action",
         intent: { requestedNudity: "unspecified" },
       }],
     },
   });
-  expect(regeneratedTerminal.terminalEvidence).toHaveProperty("modelRequests.length", 1);
+  expect(regeneratedTerminal.terminalEvidence).toHaveProperty("modelRequests.length", 2);
+  await expect(assistantBubble).toContainText("Your image is ready.");
   expect(await prisma.chatTurnAttachment.findMany({
     where: { turn: { assistantMessageId: assistantMessageId! } },
     select: { id: true, generationJobId: true, mediaAssetId: true, status: true },

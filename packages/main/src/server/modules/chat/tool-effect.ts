@@ -143,9 +143,14 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
   } else {
     // A valid 1200-character argument may exceed the generation direction
     // budget after wardrobe constraints. Reject before a paid reservation
-    // rather than silently dropping the Agent's final constraint.
+    // rather than silently dropping required scene or clothing constraints.
     try {
-      compileChatImagePrompt(promptHint(call), call.name === "generate_image_async" && call.arguments.subject === "scene" ? "unspecified" : effect.intent.requestedNudity);
+      const sceneOnly = call.name === "generate_image_async" && call.arguments.subject === "scene";
+      compileChatImagePrompt(
+        promptHint(call),
+        sceneOnly ? "unspecified" : effect.intent.requestedNudity,
+        { userInstruction: sceneOnly ? undefined : turn.userContent },
+      );
     } catch (error) {
       if (error instanceof RangeError) throw Errors.badRequest(error.message);
       throw error;
@@ -209,7 +214,7 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
       subject,
       ...(turn.characterReleaseId ? { characterReleaseId: turn.characterReleaseId } : {}),
       promptHint: promptHint(call),
-      conversationContext: turn.userContent.slice(0, 1_200),
+      conversationContext: turn.userContent,
       intent: effect.intent,
       controls: {
         orientation: call.name === "generate_image_async" ? call.arguments.orientation : "4:5",
@@ -475,15 +480,16 @@ function existingEffect(
     // ACK to replay. The caller must retry the same action identity.
     throw Errors.unavailable("The image action has not been reserved yet");
   }
-  if (attachment.status === "failed") {
+  // A prior reservation is not a pending photo after its attachment has settled.
+  if (["failed", "blocked", "refunded", "cancelled"].includes(attachment.status)) {
     return {
       accepted: false,
       duplicate: true,
       attachmentId: attachment.id,
       error: {
-        code: attachment.errorCode ?? "tool_effect_failed",
-        message: "The image request was not accepted",
-        retryable: true,
+        code: attachment.errorCode ?? `tool_effect_${attachment.status}`,
+        message: attachment.status === "failed" ? "The image request failed" : `The image request was ${attachment.status}`,
+        retryable: attachment.status === "failed" || attachment.status === "refunded",
       },
     };
   }

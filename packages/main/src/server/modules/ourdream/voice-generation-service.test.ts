@@ -688,7 +688,7 @@ describe("voice generation service contract", () => {
     expect(await prisma.mediaAsset.count({ where: { ownerId: userId, type: "voice" } })).toBe(1);
   });
 
-  it("pins an activated Pocket Character profile instead of the system Fish provider", async () => {
+  it("keeps the activated Character model and voice when the configured provider model changes", async () => {
     const userId = `${P}character-clone-user`;
     const messageId = `${P}character-clone-message`;
     const referenceAssetId = `${P}character-clone-reference`;
@@ -731,6 +731,8 @@ describe("voice generation service contract", () => {
     });
 
     const configuredVoice = providers.voice;
+    const configuredModel = env.POCKET_TTS_MODEL;
+    env.POCKET_TTS_MODEL = "replacement-model-must-not-repin-the-character";
     providers.voice = {
       clip: {
         providerKey: "pocket_tts",
@@ -758,6 +760,7 @@ describe("voice generation service contract", () => {
       ).toMatchObject({
         providerPayload: {
           providerKey: "pocket_tts",
+          model: "pocket-tts",
           voiceId: providerVoiceId,
           voiceAuthority: "character_clone",
           characterVoiceProfileVersion: 1,
@@ -779,6 +782,7 @@ describe("voice generation service contract", () => {
         },
       });
     } finally {
+      env.POCKET_TTS_MODEL = configuredModel;
       providers.voice = configuredVoice;
       await prisma.character.update({
         where: { id: CHAR },

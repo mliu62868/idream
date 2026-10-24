@@ -104,26 +104,31 @@ describe("OpenAI-compatible Pi adapter", () => {
     expect(adapter.getUsage(terminal(chunks))).toEqual({ inputTokens: 13, outputTokens: 7 });
   });
 
-  it.each([1, 32, 128, 256, 384])("reserves the unchanged %s-token reply cap for the answer", async limit => {
+  it.each([
+    { requestLimit: undefined, thinkingLimit: 1_024 },
+    { requestLimit: 512, thinkingLimit: 512 },
+    { requestLimit: 128, thinkingLimit: 128 },
+    { requestLimit: 2_048, thinkingLimit: 1_024 },
+  ])("uses the shared thinking budget and explicit request cap: $requestLimit", async ({ requestLimit, thinkingLimit }) => {
     const bodies: Array<Record<string, unknown>> = [];
     const adapter = adapterFor("https://provider.example/v1", async (_url, init) => {
       bodies.push(JSON.parse(String(init?.body)));
       return new Response('data: {"choices":[{"delta":{"content":"Done."},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
     }, { profile: {
       tier: "test", adapter: "openai-compatible-v1", provider: "local", baseUrl: "https://provider.example/v1",
-      model: "fixture", supportsTools: true, maxOutputTokens: 1_024, answerMaxOutputTokens: limit,
+      model: "fixture", supportsTools: true, maxOutputTokens: 1_024, answerMaxOutputTokens: 256,
       timeout: { firstTokenMs: 1_000, idleMs: 1_000 }, sampling: { temperature: 0.9, topP: 0.95, repetitionPenalty: 1.05 },
     } });
     const messages = [{ id: "now", sourceKind: "current_user" as const, role: "user" as const, content: "Current question" }];
-    for await (const _event of streamRequest(adapter, { messages })) { /* drain */ }
-    expect(bodies[0]).toMatchObject({ max_tokens: limit, chat_template_kwargs: { enable_thinking: false } });
+    for await (const _event of streamRequest(adapter, { messages, maxTokens: requestLimit })) { /* drain */ }
+    expect(bodies[0]).toMatchObject({ max_tokens: thinkingLimit, chat_template_kwargs: { enable_thinking: true } });
     expect(bodies[0]).not.toHaveProperty("thinking_budget");
-    for await (const _event of streamRequest(adapter, { messages, purpose: "compaction", maxTokens: limit })) { /* drain */ }
-    expect(bodies[1]).toMatchObject({ max_tokens: limit, chat_template_kwargs: { enable_thinking: false } });
+    for await (const _event of streamRequest(adapter, { messages, purpose: "compaction", maxTokens: requestLimit })) { /* drain */ }
+    expect(bodies[1]).toMatchObject({ max_tokens: requestLimit ?? 1_024, chat_template_kwargs: { enable_thinking: false } });
     expect(bodies[1]).not.toHaveProperty("thinking_budget");
   });
 
-  it.each([false, true])("keeps tool evidence without enabling hidden reasoning (%s)", async currentResult => {
+  it.each([false, true])("keeps tool evidence with companion thinking enabled (%s)", async currentResult => {
     const bodies: Array<Record<string, unknown>> = [];
     const adapter = adapterFor("https://provider.example/v1", async (_url, init) => {
       bodies.push(JSON.parse(String(init?.body)));
@@ -137,7 +142,7 @@ describe("OpenAI-compatible Pi adapter", () => {
     ];
     const current: ModelInputMessage = { id: "current", sourceKind: "current_user", role: "user", content: "Quote the original wording." };
     for await (const _event of streamRequest(adapter, { messages: currentResult ? [current, ...roundTrip] : [...roundTrip, current] })) { /* drain */ }
-    expect(bodies[0]).toMatchObject({ max_tokens: 16, chat_template_kwargs: { enable_thinking: false } });
+    expect(bodies[0]).toMatchObject({ max_tokens: 16, chat_template_kwargs: { enable_thinking: true } });
     expect(bodies[0]).not.toHaveProperty("thinking_budget");
     expect(bodies[0]!.messages).toContainEqual({ role: "tool", tool_call_id: "read-1", content: "The original wording." });
   });
@@ -271,7 +276,11 @@ describe("OpenAI-compatible Pi adapter", () => {
     expect(chunks.some(chunk => chunk.type === "toolcall_delta")).toBe(false);
   });
 
-  it("sends the structured projection schema in the observed physical request", async () => {
+  it.each([
+    { requestLimit: undefined, expectedLimit: 256 },
+    { requestLimit: 128, expectedLimit: 128 },
+    { requestLimit: 2_048, expectedLimit: 256 },
+  ])("keeps structured projection non-thinking and bounded: $requestLimit", async ({ requestLimit, expectedLimit }) => {
     const responseFormat = { type: "json_schema" as const, json_schema: {
       name: "scene_changes", strict: true as const,
       schema: { type: "object", properties: { changes: { type: "array" } }, required: ["changes"] },
@@ -281,9 +290,14 @@ describe("OpenAI-compatible Pi adapter", () => {
     const adapter = adapterFor("https://provider.example/v1", async (_url, init) => {
       bodies.push(JSON.parse(String(init?.body)));
       return new Response('data: {"choices":[{"delta":{"content":"{\\\"changes\\\":[]}"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
-    }, { responseFormat, observeRequest: value => { evidence.push(value); } });
-    await drain(adapter);
+    }, { responseFormat, observeRequest: value => { evidence.push(value); }, profile: {
+      tier: "test", adapter: "openai-compatible-v1", provider: "local", baseUrl: "https://provider.example/v1",
+      model: "fixture", supportsTools: true, maxOutputTokens: 1_024, answerMaxOutputTokens: 256,
+      timeout: { firstTokenMs: 1_000, idleMs: 1_000 }, sampling: { temperature: 0.9, topP: 0.95, repetitionPenalty: 1.05 },
+    } });
+    for await (const _event of streamRequest(adapter, { messages: [], maxTokens: requestLimit })) { /* drain */ }
     expect(bodies[0]?.response_format).toEqual(responseFormat);
+    expect(bodies[0]?.max_tokens).toBe(expectedLimit);
     expect(bodies[0]?.chat_template_kwargs).toEqual({ enable_thinking: false });
     expect(bodies[0]).not.toHaveProperty("thinking_budget");
     expect(evidence[0]?.bodyDigest).toBe(createHash("sha256").update(JSON.stringify(bodies[0])).digest("hex"));
@@ -527,7 +541,7 @@ describe("OpenAI-compatible Pi adapter", () => {
     })]);
   });
 
-  it("lets the Agent choose tools while preserving image arguments from a short-reply limit", async () => {
+  it("keeps the shared thinking budget before and after an image tool call", async () => {
     const choices: unknown[] = [];
     const tokenLimits: unknown[] = [];
     const thinkingBudgets: unknown[] = [];
@@ -600,7 +614,7 @@ describe("OpenAI-compatible Pi adapter", () => {
       "auto",
       "auto",
     ]);
-    expect(tokenLimits).toEqual([256, 32]);
+    expect(tokenLimits).toEqual([256, 256]);
     expect(thinkingBudgets).toEqual([undefined, undefined]);
   });
 
@@ -847,7 +861,7 @@ describe("OpenAI-compatible Pi adapter", () => {
       temperature: 0.9,
       top_p: 0.95,
       repetition_penalty: 1.05,
-      chat_template_kwargs: { enable_thinking: false },
+      chat_template_kwargs: { enable_thinking: true },
       tool_choice: "auto",
       provider: { only: ["DeepSeek"], allow_fallbacks: false },
     });

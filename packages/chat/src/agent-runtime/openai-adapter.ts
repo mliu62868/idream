@@ -7,7 +7,6 @@ import {
 } from "@earendil-works/pi-ai";
 
 import { isOpenRouterBaseUrl } from "@idream/shared";
-import { EDIT_LAST_IMAGE_TOOL, GENERATE_IMAGE_ASYNC_TOOL } from "@idream/shared/chat/image-action";
 import type { CompanionModelRequestEvidence, CompanionModelTokenUsage, PreparedTurnProfile } from "./contracts";
 import { estimateModelRequestInputTokens } from "./model-request-format";
 
@@ -25,7 +24,7 @@ export interface OpenAiCompatibleAdapterOptions {
 }
 export interface InvocationOptions {
   signal?: AbortSignal;
-  purpose?: "compaction";
+  purpose?: "compaction" | "warmup";
   maxTokens?: number;
   stop?: readonly string[];
 }
@@ -334,27 +333,23 @@ export class OpenAiCompatibleAdapter {
     stream: AssistantMessageEventStream, output: AssistantMessage): Promise<void> {
     const { profile, maxInputTokens, responseFormat, observeRequest, observeUsage } = this.config;
     const compacting = options.purpose === "compaction";
+    const thinking = !options.purpose && !responseFormat;
     const tools = getCurrentTools(messages);
-    const isImageTool = (name: string) => name === GENERATE_IMAGE_ASYNC_TOOL || name === EDIT_LAST_IMAGE_TOOL;
-    const imageToolsAvailable = tools.some(tool => isImageTool(tool.name));
-    const currentUserIndex = messages.findLastIndex(message => message.role === "user");
-    const currentToolTail = messages.slice(currentUserIndex + 1);
-    const imageToolAlreadyCalled = currentToolTail.some(message => message.role === "assistant"
-      && message.content.some(block => block.type === "toolCall" && isImageTool(block.name)));
+    // The provider's output cap covers reasoning and visible text together.
+    // Answer preferences cannot cap that shared budget for thinking requests.
     const maxTokens = compacting ? options.maxTokens ?? profile.maxOutputTokens : Math.min(
       options.maxTokens ?? profile.maxOutputTokens, profile.maxOutputTokens,
-      imageToolsAvailable && !imageToolAlreadyCalled ? profile.maxOutputTokens : profile.answerMaxOutputTokens ?? profile.maxOutputTokens);
+      thinking ? profile.maxOutputTokens : profile.answerMaxOutputTokens ?? profile.maxOutputTokens);
     const body = {
       model: profile.model, messages: wireMessages(messages), stream: true,
       stream_options: { include_usage: true },
       temperature: compacting ? 0 : this.config.samplingTemperature ?? profile.sampling.temperature,
       top_p: profile.sampling.topP, repetition_penalty: profile.sampling.repetitionPenalty,
       max_tokens: maxTokens,
-      // Prepared reply caps belong to the answer. Hidden reasoning shares the
-      // provider's total cap and can exhaust Quick without producing any text.
-      // Qualify the pinned model in non-thinking mode; never borrow reply tokens
-      // for planning or force-close an unfinished analysis into the visible reply.
-      chat_template_kwargs: { enable_thinking: false },
+      // Companion replies use the selected model's private reasoning. It shares
+      // the request's total output budget; never force-close it into visible text.
+      // Bounded summaries and structured extraction keep their non-thinking mode.
+      chat_template_kwargs: { enable_thinking: thinking },
       ...(responseFormat ? { response_format: responseFormat } : {}),
       ...(options.stop?.length ? { stop: options.stop } : {}),
       ...(tools.length ? { tools: tools.map(tool => ({ type: "function", function: {

@@ -84,16 +84,14 @@ The external image/video pipeline adapter and `pipeline`/`mlx`/`external` media 
 | `PIPELINE_CHAT_MODEL_DEFAULT` | Main text adapter alias；split Chat runtime 使用 `CHAT_MODEL_*`，不以该值为模型权威 |
 | `PIPELINE_VIDEO_MODEL_DEFAULT` | Retained Gen video/probe fallback model id; not a legacy runner selection |
 | `PIPELINE_TIMEOUT_MS` | Main text/probe and asset-download timeout budget; Gen workflow execution uses its own image/video budgets |
-| `PIPELINE_VOICE_API_URL` | Explicit rollback voice gateway only |
-| `PIPELINE_VOICE_API_TOKEN` | Explicit rollback voice gateway token only |
-| `PIPELINE_VOICE_MODEL_DEFAULT` | Explicit rollback voice model alias only |
 | `FISH_AUDIO_API_URL` | Fish Audio gateway, normally `http://127.0.0.1:8062/v1` |
 | `FISH_AUDIO_API_TOKEN` | Shared internal token used by Main and the Fish gateway |
-| `FISH_AUDIO_MODEL` | Exact voice model id, currently `breeze-tts-2-mlx-8bit` |
-| `FISH_AUDIO_MODEL_PATH` | Deployed Breeze TTS 2 MLX 8-bit model directory |
+| `FISH_AUDIO_MODEL` | Exact voice model id, currently `ming-3.0-tts-0.5b-8bit` |
+| `FISH_AUDIO_MODEL_PATH` | Deployed Ming 3.0 0.5B MLX 8-bit model directory |
+| `FISH_AUDIO_CAMPLUS_MODEL_PATH` | Pinned CAM++ speaker encoder for the reference identity |
 | `FISH_AUDIO_SYSTEM_REFERENCE_AUDIO` | Reviewed system-voice reference WAV |
 | `FISH_AUDIO_SYSTEM_REFERENCE_MANIFEST` | Exact transcript/identity manifest for that WAV |
-| `POCKET_TTS_API_URL` / `POCKET_TTS_API_TOKEN` | Official preset-voice runtime URL/token used by the current default Voice provider |
+| `POCKET_TTS_API_URL` / `POCKET_TTS_API_TOKEN` | Official preset-voice runtime URL/token retained for Character catalog identities |
 | `POCKET_TTS_MODEL` / `POCKET_TTS_DEFAULT_VOICE_ID` | Exact deployed model and system voice; character active profiles and old requests keep their own pins |
 
 ## Generation Worker Values

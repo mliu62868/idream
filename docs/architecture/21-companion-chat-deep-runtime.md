@@ -36,7 +36,7 @@ Agent 自己编写生成或编辑方向及 `requestedNudity`，Main 不再次解
 
 精确编号问答沿用结构化采样上限 0.2；编号名词前的短修饰语不应把同一事实请求误路由到表达性采样，普通角色扮演保留配置值。
 
-普通生成、摘要、结构化 Scene 和预热均关闭隐藏推理，固定模型必须在此模式下完成资格验证。自然推理曾耗尽 Quick 的 256-token 回答预算；强制提前闭合 thinking 标记又曾将未结束的分析续文交付给用户，因此撤回这两种策略，保持现有回答档位与图片参数预算。工具选择仍为 auto，不强制工具或补写答案。即使上游意外返回推理，也不将其交付或写入记忆；上游不报告 reasoning 子计数时保持未知，已报告的 completion 总数不重复加算推理。
+2026-10-23 决策调整：按用户选择，Ornith 8-bit 的普通 Companion 生成开启隐藏推理，取代此前全部关闭的策略；摘要、结构化提取、预热和 igrep 辅助模型保持关闭。推理和正文共同受 PreparedTurn 的模型总输出预算及请求显式上限约束，不再把 Quick 的 256-token 回答设置误作二者的共享总预算。回答档位仍通过原产品偏好约束长度；当前 provider 不支持同时硬保证独立的可见 token 上限，不能声称已实现此能力，也不以输出后裁剪补救。工具选择仍为 auto，不强制工具或补写答案。强制提前闭合 thinking 曾将未结束的分析续文交付给用户，该做法继续禁止；推理不交付或写入记忆。上游不报告 reasoning 子计数时保持未知，已报告的 completion 总数不重复加算推理。
 
 legacy 图片动作收据只有在用户原文未变时可跨 attempt 重放；编辑在同一事务持久标记旧身份失效，包括没有 Job 的旧收据。已有 Job 的旧编辑清除证据也使该收据失效。Gen 完成、失败、取消与运营退款都先取得与 Chat 相同的 user 锁，再取得 Request 和附件锁；批量结算先按 userId 排序取得全部用户锁，避免钱包与附件的反向等待。金额与资格仍由锁内事实和现有幂等账本决定。
 
@@ -52,11 +52,13 @@ provider 的工具名分片先累计为完整当前名称，再交给 Pi；参�
 
 每个 attempt 创建独立 Pi `Harness`/`MemoryStorage`，工具串行，关闭自动模型重试和后台压缩。`MemoryStorage` 不跨进程持久化，不承担产品恢复：Chat 重启读取 Main 固定快照与 AgentRun 输入，已写入的不可变 proposal 只能原样重放 Main ACK，包含旧 `embedded_dsh`/plugin 字段的历史 proposal 也不改写。2026-10-23 的真实 SIGKILL 实验发现，无 proposal 时重跑同一 attempt 会再次调用模型，并丢失第一次请求的用量证据，因此收紧原恢复规则：每次物理请求前先等待无正文请求意图写盘；只有可证明尚未发出请求的运行才能自动继续。已发出请求但没有 proposal 的运行提交 `agent_run_interrupted` 失败，保留 Main 用户消息、释放尚未消费的额度，由用户显式重新生成新 attempt。存活回执保留实测用量，未确认请求保持 null；历史未记录请求意图的 `pi.started` 运行也按未知结果处理。当前模型接口没有原请求结果重取契约，故不承诺恢复尚未持久化的原回复。不新增持久 Pi inbox、session log 或第二个状态机，取消、删除、deadline 与 ToolEffect 幂等边界不变。
 
-Main 投影独占长期记忆 ingest/maintain，普通 attempt 首轮前只执行一次可观测的官方 wake，并按当前消息执行 fast recall。normal 开放只读 `memory_search`，normal/private 都开放本 attempt 授权快照的 `igrep_search` 和 `session_recall`，显式配置 web provider 时保留 `igrep_web_search`；private 不读写跨会话记忆。每个 CLI 子进程只接收明确绑定的 LLM/ASK/final-sort、embedding、rerank 路由和必要进程环境，未配置能力显式禁用，`IGREP_NO_CACHE=1` 禁用共享结果缓存，不借用个人默认配置或临时更换 HOME。
+Main 投影独占长期记忆 ingest/maintain，普通 attempt 首轮前只执行一次可观测的官方 wake，并按当前消息执行 fast recall。normal 开放只读 `memory_search`，normal/private 都开放本 attempt 授权快照的 `igrep_search` 和 `session_recall`，显式配置 web provider 时保留 `igrep_web_search`；private 不读写跨会话记忆。`igrep_search` 只索引保留的对话，不重复索引 system 契约或已省略原文；已省略原文经 `session_recall` 的来源绑定返回。可用工具提示与真实注册保持一致，显式要求的只读查询不能被自动预召回取代，检索成功也不产生保存或未来记忆承诺。每个 CLI 子进程只接收明确绑定的 LLM/ASK/final-sort、embedding、rerank 路由和必要进程环境，未配置能力显式禁用，`IGREP_NO_CACHE=1` 禁用共享结果缓存，不借用个人默认配置或临时更换 HOME。
 
 上下文压力与 provider overflow 由 Pi 公共 compaction 生命周期处理。宿主的 companion 摘要仅压缩既有观察，不把历史用户请求变成当前任务；指令要求至多 200 words 的最终笔记、合并重复信息，保留明确事实与归属，不从条目序号或重复次数推断事件和时间。既有 1024-token 硬上限不变，截断摘要仍判失败。任何必要 hook 失败先锁住后续模型与工具派发。Main 的 seed/omitted 原文与 Pi 公共 `Conversation.entries()`、context contributions 共同构成只读会话召回投影。每块按 attempt/source/block/byte 稳定标识并保留 UTF-8 字节、原角色和 speaker；query 走公共 igrep `search --stdin-format jsonl --mode ultra`，结果 ID 必须回查当前 attempt 的不可变原文，不能信任搜索摘要冒充原文。system、plugin 上下文、reasoning、压缩摘要和 recall 自身输出不进入原文档案。
 
 当前 Scene、偏好、预召回和当前用户请求在每个实际模型请求边界重新投影，保持原有来源与固定授权，不能被摘要替代。每次物理模型请求独立进入 usage 和 modelRequests 证据，包括工具后的回复和被拒绝的摘要；不能用 Pi 默认的数字 usage 把未知上游回执当成零。attempt 结束后释放内存对话和临时 workspace；保留的历史 DSH archive 清理仅处理已证明本机 owner 退出的旧目录，不更改既有 canonical `deepseek-harness` intake/backup 格式。
+
+原生只读检索工具成功后，后续生成请求末尾附带一条静态回复上下文，提醒模型按原请求回答、保留事实归属并在完成后结束；空结果也属于成功检索。normal/private 均适用，工具本身的权限与来源边界不变。该上下文不改写当前用户原文，不进入 Pi conversation、压缩材料或召回档案，也不新增修复模型调用。成功标记仅在当前 attempt 内有效，自动预召回和失败查询不触发。Pi 提前预留该上下文的输入成本；因此临界上下文可能更早压缩，实际请求与用量仍逐次记录。
 
 普通投影只合并尚未尝试的 pending 事件，并在同一接纳事务通过 event 行 CAS 与领取互斥。尝试过的事件可能已经发布指针但丢失 ACK，后来的产品事实必须取得新 authority。记忆导出明文 spool 归入 Chat 用户擦除目录；每段短文件写入重查用户 tombstone，网络等待不持用户锁。启动在开放 HTTP 前清理崩溃遗留的新目录和已退役 OS 临时目录，账号擦除清理当前用户 spool，迟到 staging 不得重新创建它。
 

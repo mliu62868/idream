@@ -1287,6 +1287,23 @@ describe("ChatSessionClient streaming composer", () => {
     expect(sessionReads).toBe(before);
   });
 
+  it("shows cancellation without treating the original price as the refund amount", async () => {
+    sessionMessages = [{ ...opening, attachments: [{
+      id: "attachment-cancelled", kind: "generated_image", status: "cancelled",
+      generationJobId: "cancelled-image", costDreamcoins: 5, errorCode: null,
+    }] }];
+    await mountSession();
+    const card = container.querySelector('[data-testid="chat-image-attachment-card"]');
+    expect(card?.textContent).toContain("Image cancelled");
+    expect(card?.textContent).toContain("Dreamcoin history");
+    expect(card?.textContent).not.toMatch(/Generating image|being prepared|Retry image|5 coins|were returned/);
+    expect(card?.querySelector(".animate-spin")).toBeNull();
+    expect(card?.querySelector('[data-testid="chat-image-attachment-cost"]')).toBeNull();
+    const before = sessionReads;
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    expect(sessionReads).toBe(before);
+  });
+
   it("keeps polling an accepted image until its completed preview arrives", async () => {
     sessionMessages = [{
       ...opening,

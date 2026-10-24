@@ -1,67 +1,30 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { parseEnv } from "node:util";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
 
-const provider = process.env.VOICE_PROVIDER ?? "pocket-tts";
-const pocketTts = provider === "pocket-tts";
-const fishAudio = provider === "fish-audio";
-const voiceUrl = trimTrailingSlash(
-  pocketTts
-    ? process.env.POCKET_TTS_API_URL ?? "http://127.0.0.1:8063/v1"
-    : fishAudio
-    ? process.env.FISH_AUDIO_API_URL ?? "http://127.0.0.1:8062/v1"
-    : process.env.PIPELINE_VOICE_API_URL ??
-      process.env.MOSS_TTS_API_URL ??
-      "http://127.0.0.1:8000/v1",
-);
-const voiceToken = pocketTts
-  ? process.env.POCKET_TTS_API_TOKEN ?? ""
-  : fishAudio
-  ? process.env.FISH_AUDIO_API_TOKEN ?? ""
-  : process.env.PIPELINE_VOICE_API_TOKEN ??
-    process.env.MOSS_TTS_API_TOKEN ??
-    process.env.PIPELINE_API_TOKEN ??
-    "";
-const voiceModel = pocketTts
-  ? process.env.POCKET_TTS_MODEL ?? "pocket-tts"
-  : fishAudio
-  ? process.env.FISH_AUDIO_MODEL ?? "breeze-tts-2-mlx-8bit"
-  : process.env.PIPELINE_VOICE_MODEL_DEFAULT ??
-    process.env.MOSS_TTS_MODEL ??
-    "OpenMOSS/MOSS-TTS-Local-Transformer-v1.5";
-const report = process.env.VOICE_MODEL_PROBE_REPORT ?? ".tmp/launch-voice-probe.json";
-const text =
-  process.env.VOICE_MODEL_PROBE_TEXT ??
-  "Internal beta voice probe. The configured voice runtimes should return short audio samples.";
-const voice = process.env.VOICE_MODEL_PROBE_VOICE_ID ?? defaultVoiceForModel(voiceModel);
-
-mkdirSync(path.join(repoRoot, ".tmp"), { recursive: true });
-
-if (voiceModel.toLowerCase().includes("kokoro")) {
-  const prepare = spawnSync(
-    process.execPath,
-    [
-      path.join(repoRoot, "scripts", "prepare-omlx-kokoro.mjs"),
-      "--model",
-      voiceModel,
-      "--fail-if-changed",
-    ],
-    {
-      cwd: repoRoot,
-      env: process.env,
-      stdio: "inherit",
-    },
-  );
-  if ((prepare.status ?? 1) !== 0) {
-    process.exitCode = prepare.status ?? 1;
-    process.exit();
-  }
+// Match Main's non-overriding environment load, including calls from repo root.
+const envPath = path.join(repoRoot, "packages/main/.env");
+const configuredEnv = {
+  ...(existsSync(envPath) ? parseEnv(readFileSync(envPath, "utf8")) : {}),
+  ...process.env,
+};
+const provider = configuredEnv.VOICE_PROVIDER ?? "mock";
+if (provider !== "pocket-tts" && provider !== "fish-audio") {
+  throw new Error(`Local voice probes require VOICE_PROVIDER=pocket-tts or fish-audio; received ${provider}`);
 }
+const report = configuredEnv.VOICE_MODEL_PROBE_REPORT ?? ".tmp/launch-voice-probe.json";
+const text = configuredEnv.VOICE_MODEL_PROBE_TEXT ??
+  "Internal beta voice probe. The configured voice runtimes should return short audio samples.";
+const voice = configuredEnv.VOICE_MODEL_PROBE_VOICE_ID ?? (provider === "pocket-tts"
+  ? configuredEnv.POCKET_TTS_DEFAULT_VOICE_ID ?? "anna"
+  : configuredEnv.FISH_AUDIO_DEFAULT_VOICE_ID ?? "fish-female-default");
+mkdirSync(path.join(repoRoot, ".tmp"), { recursive: true });
 
 const passthrough = process.argv.slice(2);
 const probeArgs = [
@@ -78,31 +41,7 @@ const probeArgs = [
 
 const result = spawnSync("bun", probeArgs, {
   cwd: repoRoot,
-  env: {
-    ...process.env,
-    VOICE_PROVIDER: provider,
-    ...(process.env.VOICE_IDENTITY_PROVIDER
-      ? { VOICE_IDENTITY_PROVIDER: process.env.VOICE_IDENTITY_PROVIDER }
-      : {}),
-    ...(pocketTts
-      ? {
-          POCKET_TTS_API_URL: voiceUrl,
-          POCKET_TTS_API_TOKEN: voiceToken,
-          POCKET_TTS_MODEL: voiceModel,
-        }
-      : fishAudio
-      ? {
-          FISH_AUDIO_API_URL: voiceUrl,
-          FISH_AUDIO_API_TOKEN: voiceToken,
-          FISH_AUDIO_MODEL: voiceModel,
-        }
-      : {
-          PIPELINE_VOICE_API_URL: voiceUrl,
-          PIPELINE_VOICE_API_TOKEN: voiceToken,
-          PIPELINE_API_TOKEN: voiceToken,
-          PIPELINE_VOICE_MODEL_DEFAULT: voiceModel,
-        }),
-  },
+  env: { ...configuredEnv, VOICE_PROVIDER: provider },
   stdio: "inherit",
 });
 
@@ -120,17 +59,4 @@ function hasArg(args, name) {
       arg.startsWith(`--${name}=`) ||
       args[index - 1] === `--${name}`,
   );
-}
-
-function trimTrailingSlash(value) {
-  return value.replace(/\/+$/, "");
-}
-
-function defaultVoiceForModel(model) {
-  const normalized = model.toLowerCase();
-  if (normalized.includes("qwen3-tts")) return "serena";
-  if (normalized.includes("kokoro")) return "af_heart";
-  if (normalized.includes("pocket-tts")) return "anna";
-  if (normalized.includes("breeze-tts")) return "fish-female-default";
-  return "default";
 }

@@ -21,15 +21,15 @@ vi.mock("@/server/lib/db", () => ({ prisma: probeDb }));
 afterEach(() => vi.resetAllMocks());
 
 describe("generation model candidate authority", () => {
-  it("pins the active default to the exact REDQW21 ComfyUI route and source hash", () => {
+  it("pins the active default to the exact RedCraft ComfyUI route and source hash", () => {
     expect(generationModelCandidateDefinitions).toEqual([
       {
-        key: "redqw21_default",
+        key: "redcraft_default",
         profileKey: "profile_image_default_v1",
         expectedRunner: "comfyui",
-        expectedPipelineModel: "redqw21",
-        expectedWorkflowKey: "redqw21",
-        expectedSourceSha256: "9830a9925759a4b69ea1346133d08917ec2390b8495ea7f0eb613f37e7c46647",
+        expectedPipelineModel: "redcraft-qw21t",
+        expectedWorkflowKey: "redcraft-qw21t",
+        expectedSourceSha256: "712b44d2a79b30ed1aa11f19fc4e2cd0f1f46a43dc3bde5d6fe2a07e36b68f0f",
         minSampleCount: 1,
         requireActive: true,
         requireConsistency: false,
@@ -41,12 +41,12 @@ describe("generation model candidate authority", () => {
   it("queries the active profile by key and reports its published row ID", async () => {
     probeDb.generationModelProfile.findMany.mockResolvedValue([
       {
-        id: "published-redqw21-default-v4",
+        id: "published-redcraft-default-v8",
         profileKey: "profile_image_default_v1",
-        label: "Default REDQW21",
+        label: "Default RedCraft",
         runner: "comfyui",
-        pipelineModel: "redqw21",
-        workflowKey: "redqw21",
+        pipelineModel: "redcraft-qw21t",
+        workflowKey: "redcraft-qw21t",
         sourceModelPath: null,
         convertedModelPath: null,
         status: "active",
@@ -60,7 +60,7 @@ describe("generation model candidate authority", () => {
       },
     ]);
     const report = await runGenerationModelCandidateProbe({
-      candidateKeys: ["redqw21_default"], report: null, requireReady: false,
+      candidateKeys: ["redcraft_default"], report: null, requireReady: false,
     });
     expect(probeDb.generationModelProfile.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -69,9 +69,9 @@ describe("generation model candidate authority", () => {
     );
     expect(report.candidates[0]).toMatchObject({
       profileKey: "profile_image_default_v1",
-      profileId: "published-redqw21-default-v4",
+      profileId: "published-redcraft-default-v8",
       found: true,
-      pipelineModel: "redqw21",
+      pipelineModel: "redcraft-qw21t",
     });
     expect(report.candidates[0].blockedReasons).not.toContain("configured source SHA-256 is missing");
   });
@@ -79,7 +79,7 @@ describe("generation model candidate authority", () => {
   it("reports a missing active profile without inventing a seed row ID", async () => {
     probeDb.generationModelProfile.findMany.mockResolvedValue([]);
     const report = await runGenerationModelCandidateProbe({
-      candidateKeys: ["redqw21_default"], report: null, requireReady: false,
+      candidateKeys: ["redcraft_default"], report: null, requireReady: false,
     });
     expect(report).toMatchObject({ ok: false });
     expect(report.candidates[0]).toMatchObject({

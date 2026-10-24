@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { REFERRAL_REWARD } from "@idream/shared/coins";
+import { triggerDownload } from "@/lib/browser-download";
 import { UserPersonaPanel } from "./UserPersonaPanel";
 import { RecoveryCodeCard } from "./AccountRecovery";
 import { AccountAgeVerification } from "./AccountAgeVerification";
@@ -2431,14 +2432,4 @@ function characterAppealHref(characterId: string, title: string) {
     appealText: `Please review this character decision again. Character: ${safeTitle}.`,
   });
   return `/helpdesk?${params.toString()}#appeals`;
-}
-
-function triggerDownload(url: string) {
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = "";
-  link.rel = "noopener noreferrer";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
 }

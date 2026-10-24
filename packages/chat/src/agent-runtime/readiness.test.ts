@@ -92,7 +92,7 @@ describe("fail-closed Pi companion readiness", () => {
       return new Response(`data: ${JSON.stringify(payload)}\n\ndata: [DONE]\n\n`);
     });
     await expect(warmProvider(config, readinessProfile(config.modelProfile))).resolves.toBeUndefined();
-    expect(requests[0]).toMatchObject({ model: "deepseek/test", max_tokens: 1, tools: [{ type: "function", function: { name: "idream_readiness_probe" } }] });
+    expect(requests[0]).toMatchObject({ model: "deepseek/test", max_tokens: 1, chat_template_kwargs: { enable_thinking: false }, tools: [{ type: "function", function: { name: "idream_readiness_probe" } }] });
     supplyUsage = false;
     await expect(warmProvider(config, readinessProfile(config.modelProfile))).rejects.toThrow("usage is unknown");
   });

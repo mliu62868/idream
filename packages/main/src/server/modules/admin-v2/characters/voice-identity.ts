@@ -341,6 +341,7 @@ export async function createCharacterVoiceClone(input: {
           throw Errors.unavailable("Voice provider returned a different clone identity");
         }
         const preview = await voice.previewVoice({
+          model: cloned.data.model,
           text: input.form.sampleText,
           voiceId: cloned.data.voiceId,
           delivery: input.form.delivery,
@@ -618,6 +619,7 @@ export async function createCharacterVoicePreset(input: {
           throw Errors.unavailable("Voice provider returned a different catalog identity");
         }
         const preview = await voice.previewVoice({
+          model: created.data.model,
           text: input.request.sampleText,
           voiceId: created.data.voiceId,
           delivery: DEFAULT_FISH_AUDIO_DELIVERY,
@@ -877,6 +879,7 @@ export async function activateCharacterVoiceProfile(input: {
         select: {
           provider: true,
           providerVoiceId: true,
+          model: true,
           sampleText: true,
           deliverySettings: true,
         },
@@ -894,8 +897,15 @@ export async function activateCharacterVoiceProfile(input: {
           runtime,
         );
       }
+      if (runtime.runtimeModel !== candidate.model) {
+        throw Errors.conflict("The candidate voice model has changed; prepare and review a new voice version", {
+          candidateModel: candidate.model,
+          runtimeModel: runtime.runtimeModel,
+        });
+      }
       const voice = voiceIdentityPortForKey(candidate.provider);
       const preview = await voice.previewVoice({
+        model: candidate.model,
         text: candidate.sampleText,
         voiceId: candidate.providerVoiceId,
         delivery: deliverySettings(candidate.deliverySettings),
@@ -909,6 +919,7 @@ export async function activateCharacterVoiceProfile(input: {
       return {
         provider: candidate.provider,
         providerVoiceId: candidate.providerVoiceId,
+        model: candidate.model,
       };
     },
     mutate: async (tx, prepared) => {
@@ -924,6 +935,7 @@ export async function activateCharacterVoiceProfile(input: {
           characterId: input.characterId,
           provider: prepared.provider,
           providerVoiceId: prepared.providerVoiceId,
+          model: prepared.model,
           status: "candidate",
         },
         include: {

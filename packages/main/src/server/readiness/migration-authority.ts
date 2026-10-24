@@ -36,6 +36,7 @@ export type MigrationPostconditionSnapshot = {
     readonly activeCount: number;
     readonly archivedCount: number;
     readonly canonicalActiveCount: number;
+    readonly unifiedDefaultCount: number;
   };
   readonly runtime: {
     readonly retiredRunnerCount: number;
@@ -276,13 +277,16 @@ export function evaluateMigrationPostconditions(
   }
   const failures: string[] = [];
   const premium = snapshot.premium;
-  // INTENT: immutable archived revisions may remain, but the current Premium
-  // route must be the fully published REDQW21 configuration after retirement.
+  // Archived Premium revisions remain valid after the single-model cutover
+  // only when a fully published RedCraft default replaces their batch capacity.
   const premiumShapeIsExact =
     premium.totalCount === 0 ||
     (premium.activeCount === 1 &&
       premium.canonicalActiveCount === 1 &&
-      premium.archivedCount === premium.totalCount - 1);
+      premium.archivedCount === premium.totalCount - 1) ||
+    (premium.activeCount === 0 &&
+      premium.archivedCount === premium.totalCount &&
+      premium.unifiedDefaultCount === 1);
   if (!premiumShapeIsExact) {
     failures.push("qwen-image-premium: terminal profile shape drifted");
   }
@@ -412,7 +416,30 @@ WITH premium AS (
       AND "runnerConfig" #>> '{capabilities,textToImage}' = 'true'
       AND ("runnerConfig" ->> 'workflowPath' = 'redqw21.json'
         OR "runnerConfig" ->> 'workflowPath' LIKE '%/redqw21.json')
-    )::int AS "canonicalActiveCount"
+    )::int AS "canonicalActiveCount",
+    (SELECT count(*)::int FROM public.generation_model_profiles replacement
+      WHERE replacement."profileKey" = 'profile_image_default_v1'
+        AND replacement.status = 'active' AND replacement.enabled
+        AND replacement."publishedAt" IS NOT NULL AND replacement."archivedAt" IS NULL
+        AND replacement."rolloutPercent" = 100 AND replacement.mode = 'image'
+        AND replacement.runner = 'comfyui' AND replacement."requiredEntitlement" IS NULL
+        AND replacement."pipelineModel" = 'redcraft-qw21t'
+        AND replacement."workflowKey" = 'redcraft-qw21t'
+        AND replacement."maxCount" = 4 AND replacement.steps = 6
+        AND replacement.sampler = 'er_sde' AND replacement.scheduler = 'simple'
+        AND replacement."cfgScale" = 1 AND replacement."modelFormat" = 'safetensors'
+        AND replacement."convertedModelPath" IS NULL
+        AND replacement."runnerConfig" ->> 'apiModelId' = 'redcraft-qw21t'
+        AND replacement."runnerConfig" ->> 'workflowVersion' = '3'
+        AND replacement."runnerConfig" ->> 'diffusionModelPath' = replacement."sourceModelPath"
+        AND replacement."runnerConfig" ->> 'diffusionModelSha256' = '712b44d2a79b30ed1aa11f19fc4e2cd0f1f46a43dc3bde5d6fe2a07e36b68f0f'
+        AND replacement."runnerConfig" ->> 'textEncoderSha256' = '8bfd0f6e12abf2d2d697ecc888e5e90b0d6741d6708f05799f53afa560452e8f'
+        AND replacement."runnerConfig" ->> 'vaeSha256' = '36f56608b02077a50a08ea3dbcdb88351298ceba49948f41f9f87186378e6908'
+        AND replacement."runnerConfig" #>> '{capabilities,textToImage}' = 'true'
+        AND replacement."runnerConfig" #>> '{capabilities,lora}' = 'false'
+        AND (replacement."runnerConfig" ->> 'workflowPath' = 'redcraft-qw21t.json'
+          OR replacement."runnerConfig" ->> 'workflowPath' LIKE '%/redcraft-qw21t.json')
+    ) AS "unifiedDefaultCount"
   FROM public.generation_model_profiles
   WHERE "profileKey" = 'profile_image_premium_v1'
 ), account_tables AS (

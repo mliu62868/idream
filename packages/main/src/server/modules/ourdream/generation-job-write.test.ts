@@ -34,7 +34,7 @@ const P = "zt-genwrite-";
 const PINNED_RETRY_JOB_AUTHORITY = {
   model: "redcraft-qw21t",
   profileId: "profile_image_default_v1",
-  profileVersion: 7,
+  profileVersion: 8,
   orientation: "1:1",
   outputCount: 1,
   provider: "comfyui",

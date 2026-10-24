@@ -94,7 +94,7 @@ describe("Agent runtime configuration", () => {
       IGREP_LLM_URL: "https://maintenance.example/v1",
       IGREP_LLM_MODEL: "maintenance-model",
       IGREP_LLM_API_KEY: "maintenance-secret",
-      IGREP_LLM_EXTRA_BODY: JSON.stringify({ temperature: 0, top_p: 1, presence_penalty: 0 }),
+      IGREP_LLM_EXTRA_BODY: JSON.stringify({ temperature: 0, top_p: 1, presence_penalty: 0, chat_template_kwargs: { enable_thinking: false } }),
     });
     expect(config.modelProfile.temperature).toBe(0.9);
   });
@@ -133,6 +133,10 @@ describe("explicit igrep child environment", () => {
       expect(env[`IGREP_${prefix}_URL`]).toBe("http://127.0.0.1:8061/v1");
       expect(env[`IGREP_${prefix}_MODEL`]).toBe("maintenance-model");
       expect(env[`IGREP_${prefix}_API_KEY`]).toBe("maintenance-secret");
+      expect(JSON.parse(env[`IGREP_${prefix}_EXTRA_BODY`]!)).toEqual({
+        temperature: 0, top_p: 1, presence_penalty: 0,
+        chat_template_kwargs: { enable_thinking: false },
+      });
     }
     for (const name of ["IGREP_EMBEDDING_URL","IGREP_EMBED_MODEL","IGREP_RERANK_URL","IGREP_WEB_SEARCH_URL","IGREP_OCR_URL","OPENAI_API_KEY","REDIS_URL","HTTP_PROXY"]) expect(env[name]).toBe("");
     expect(env.IGREP_NO_CACHE).toBe("1");

@@ -435,15 +435,10 @@ function configuredVoiceProbeTarget(
       provider,
       providerKey: provider,
       baseUrl: null,
-      model: process.env.PIPELINE_VOICE_MODEL_DEFAULT ?? "mock-voice-probe",
+      model: "mock-voice-probe",
     };
   }
-  return {
-    provider,
-    providerKey: provider,
-    baseUrl: env.PIPELINE_VOICE_API_URL ?? env.PIPELINE_API_URL ?? null,
-    model: env.PIPELINE_VOICE_MODEL_DEFAULT,
-  };
+  throw new Error(`Unsupported voice provider: ${provider}`);
 }
 
 function hasText(value: string | null | undefined) {

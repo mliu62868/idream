@@ -146,7 +146,7 @@ describe("BackendImageModel", () => {
     if (workflow.backendKind !== "comfyui") throw new Error("Qwen edit must use its ComfyUI graph");
     expect(workflow.apiPrompt["3"].inputs).toMatchObject({ "images.image_1": ["9", 0], "images.image_2": ["8:scale", 0] });
     expect(workflow.apiPrompt["9"].inputs.image).toEqual(["12", 0]);
-    expect(workflow.version).toBe(7);
+    expect(workflow.version).toBe(8);
     const backend = makeStubBackend();
     const result = await modelWithDescriptor(backend, workflow).generate({
       prompt: "Add a red scarf; keep the source framing.", count: 1, model: workflow.modelId,
@@ -206,28 +206,49 @@ describe("BackendImageModel", () => {
     expect(submittedSlots(backend).prompt).toContain("unless the requested edit explicitly changes them");
   });
 
-  it("addresses the REDQW21 identity reference as <image1> only when one is bound", async () => {
+  it.each([undefined, "identity_anchor", "identity_reference", "source_image"] as const)("preserves the semantic role of the optional RedCraft reference: %s", async (role) => {
     const workflow = workflowDescriptorSchema.parse(JSON.parse(readFileSync(
-      new URL("../../workflows/redqw21.json", import.meta.url), "utf8",
+      new URL("../../workflows/redcraft-qw21t.json", import.meta.url), "utf8",
     )));
     const controls = { workflowKey: workflow.workflowKey, workflowVersion: workflow.version };
-    const withIdentity = makeStubBackend();
-    expect((await modelWithDescriptor(withIdentity, workflow).generate({
+    const backend = makeStubBackend();
+    const referenceImages = role
+      ? [{ assetId: "reference", role, b64Json: Buffer.from(PNG).toString("base64") }]
+      : [];
+    expect((await modelWithDescriptor(backend, workflow).generate({
       prompt: "She reads on a beach at sunset.", count: 1, model: workflow.modelId, controls,
-      referenceImages: [{ assetId: "anchor", role: "identity_anchor", b64Json: Buffer.from(PNG).toString("base64") }],
+      referenceImages,
     })).ok).toBe(true);
-    expect(submittedSlots(withIdentity).prompt).toContain("person from <image1>");
-    expect(submittedSlots(withIdentity).prompt).toContain("Replace the entire background");
-    expect(submittedSlots(withIdentity).prompt).toContain("She reads on a beach at sunset.");
-
-    const textOnly = makeStubBackend();
-    expect((await modelWithDescriptor(textOnly, workflow).generate({
-      prompt: "She reads on a beach at sunset.", count: 1, model: workflow.modelId, controls,
-    })).ok).toBe(true);
-    expect(submittedSlots(textOnly).prompt).toBe("She reads on a beach at sunset.");
+    expect(backend.submit).toHaveBeenCalledWith(expect.objectContaining({ descriptor: workflow, referenceImages }));
+    const prompt = submittedSlots(backend).prompt;
+    expect(prompt).toContain("She reads on a beach at sunset.");
+    if (role === undefined) {
+      expect(prompt).toBe("She reads on a beach at sunset.");
+    } else if (role === "source_image") {
+      expect(prompt).toContain("Edit <image1>, the source image");
+      expect(prompt).toContain("except for the requested changes");
+      expect(prompt).not.toContain("Replace the entire background");
+    } else {
+      expect(prompt).toContain("<image1> is an identity reference only");
+      expect(prompt).toContain("do not copy its framing, pose, clothing or background");
+      expect(prompt).not.toContain("Edit <image1>, the source image");
+    }
   });
 
-  it("preserves a source scene but restages an identity reference on the V2 single-image route", async () => {
+  it("rejects a missing required single-image reference before submitting the RedCraft edit route", async () => {
+    const workflow = workflowDescriptorSchema.parse(JSON.parse(readFileSync(
+      new URL("../../workflows/qwen-image-edit-img2img.json", import.meta.url), "utf8",
+    )));
+    const backend = makeStubBackend();
+    const result = await modelWithDescriptor(backend, workflow).generate({
+      prompt: "Add a red scarf.", count: 1, model: workflow.modelId,
+      controls: { workflowKey: workflow.workflowKey, workflowVersion: workflow.version },
+    });
+    expect(result).toMatchObject({ ok: false, error: { code: "unsupported_identity_workflow", retryable: false } });
+    expect(backend.submit).not.toHaveBeenCalled();
+  });
+
+  it("preserves a source scene but restages an identity reference on the RedCraft single-image route", async () => {
     const workflow = workflowDescriptorSchema.parse(JSON.parse(readFileSync(
       new URL("../../workflows/qwen-image-edit-img2img.json", import.meta.url), "utf8",
     )));
@@ -250,7 +271,7 @@ describe("BackendImageModel", () => {
     }
   });
 
-  it("keeps the primary identity when the V2 supporting image is a look reference", async () => {
+  it("keeps the primary identity when the RedCraft supporting image is a look reference", async () => {
     const workflow = workflowDescriptorSchema.parse(JSON.parse(readFileSync(
       new URL("../../workflows/qwen-image-edit-multi-identity.json", import.meta.url), "utf8",
     )));

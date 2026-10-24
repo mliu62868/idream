@@ -93,9 +93,55 @@ describe("Chat video confirmation and history", () => {
     expect(container.querySelector('a[href*="/download"]')).toBeNull();
     expect(requests).toHaveLength(0);
     const assign = vi.spyOn(window.location, "assign").mockImplementation(() => {});
+    const downloads: Array<{ href: string | null; download: string | null; target: string; rel: string }> = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      downloads.push({ href: this.getAttribute("href"), download: this.getAttribute("download"), target: this.target, rel: this.rel });
+    });
     await click("Download video");
     expect(requests.map(item => item.url)).toEqual(["/api/v1/media/video-asset/download"]);
-    expect(assign).toHaveBeenCalledExactlyOnceWith("/signed/video-asset.mp4");
+    expect(assign).not.toHaveBeenCalled();
+    expect(downloads).toEqual([{ href: "/signed/video-asset.mp4", download: "", target: "_blank", rel: "noopener noreferrer" }]);
+    expect(document.querySelector('a[href="/signed/video-asset.mp4"]')).toBeNull();
+    expect(container.querySelector("video")).not.toBeNull();
+  });
+
+  it.each(["owner", "asset"])("ignores a delayed download after the %s changes", async (changed) => {
+    let resolveDownload!: (value: Response) => void;
+    const response = new Promise<Response>(resolve => { resolveDownload = resolve; });
+    vi.stubGlobal("fetch", vi.fn((_url: RequestInfo | URL, _init?: RequestInit) => response));
+    const assign = vi.spyOn(window.location, "assign").mockImplementation(() => {});
+    const download = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const props = {
+      attachment: { id: "video-attachment", kind: "generated_video" as const, status: "completed", generationJobId: "video-job", mediaAssetId: "video-asset", mediaUrl: "/video.mp4" },
+      ownerScope: "user:old", retryPending: false, onRetry: vi.fn(), onCancelled: vi.fn(),
+    };
+    await render(createElement(ChatVideoAttachmentCard, props));
+    await click("Download video");
+    expect(new Headers(vi.mocked(fetch).mock.calls[0]![1]?.headers).get("x-idream-viewer-scope")).toBe("user:old");
+    await render(createElement(ChatVideoAttachmentCard, {
+      ...props,
+      ...(changed === "owner" ? { ownerScope: "user:new" } : { attachment: { ...props.attachment, mediaAssetId: "new-asset" } }),
+    }));
+    await act(async () => resolveDownload(json({ url: "/private-old-video.mp4" })));
+    expect(assign).not.toHaveBeenCalled();
+    expect(download).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it.each(["authorization", "dispatch"])("shows a visible error for a download %s failure without leaving chat", async (failure) => {
+    if (failure === "authorization") vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: false, error: { message: "This download is no longer available." } }, { status: 403 })));
+    const assign = vi.spyOn(window.location, "assign").mockImplementation(() => {});
+    const download = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => { throw new Error("This download is no longer available."); });
+    await render(createElement(ChatVideoAttachmentCard, {
+      attachment: { id: "video-attachment", kind: "generated_video", status: "completed", mediaAssetId: "video-asset", mediaUrl: "/video.mp4" },
+      ownerScope: "user:viewer", retryPending: false, onRetry: vi.fn(), onCancelled: vi.fn(),
+    }));
+    await click("Download video");
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("This download is no longer available.");
+    expect(assign).not.toHaveBeenCalled();
+    if (failure === "authorization") expect(download).not.toHaveBeenCalled();
+    expect(document.querySelector('a[href="/signed/video-asset.mp4"]')).toBeNull();
+    expect(container.querySelector("video")).not.toBeNull();
   });
 
   it("does not start a video retry until its quoted price is confirmed", async () => {

@@ -113,7 +113,7 @@ describe("PreparedTurn budget", () => {
     expect(system).not.toContain("Memory is off for this conversation");
     expect(system).not.toContain("nothing is kept between sessions");
     expect(system).not.toContain("cannot keep it across sessions");
-    expect(system).toContain("Long-term memory tools are unavailable for this reply");
+    expect(system).toContain("Use only the conversation context provided");
     expect(system).toContain("Use only the conversation context provided");
     expect(system).toContain("never say it is saved or will be remembered");
   });
@@ -204,27 +204,23 @@ describe("PreparedTurn budget", () => {
     expect(compilePreparedTurn(source, "current").messages.find(message => message.id === "state:current")!.content).not.toContain("open differently");
   });
 
-  // A clear photo request records the action; its result owns delivery status.
-  it("records a clear photo request without treating photo discussion as an action", () => {
+  it("exposes image capability without classifying the current message into a host action", () => {
     const withImages = (text: string, enabled = true) => {
       const source = context();
       source.policy = { ...source.policy, imageToolEnabled: enabled, modelProfile: { ...source.policy.modelProfile, supportsTools: true } };
       source.recentMessages = [{ id: "current", role: "user", content: text }];
       return compilePreparedTurn(source, "current");
     };
-    const asked = withImages("Send me a selfie.");
-    expect(asked.imageRequest).toEqual({ name: "generate_image_async", requestedNudity: "unspecified", userText: "Send me a selfie." });
-    expect(asked.messages.find(message => message.id === "state:current")?.content).toContain("asks you for a photo now");
-
-    const chatting = withImages("Do you like taking photos when you travel?");
-    expect(chatting.imageRequest).toBeNull();
-    expect(chatting.messages.find(message => message.id === "state:current")?.content).not.toContain("asks you for a photo now");
-
-    const textOnly = withImages("这是一段测试对话。图书室里我的绿色笔记本封面写着 ASTER-CUTOVER-827，请用中文一句话复述这个标签，不生成图片。");
-    expect(textOnly.imageRequest).toBeNull();
-    expect(textOnly.messages.find(message => message.id === "state:current")?.content).not.toContain("asks you for a photo now");
-
-    expect(withImages("Send me a selfie.", false).imageRequest).toBeNull();
+    for (const text of ["Send me a selfie.", "Do you like taking photos when you travel?",
+      "这是一段测试对话。图书室里我的绿色笔记本封面写着 ASTER-CUTOVER-827，请用中文一句话复述这个标签，不生成图片。",
+    ]) {
+      const prepared = withImages(text);
+      expect(prepared).not.toHaveProperty("imageRequest");
+      expect(prepared.tools.map(tool => tool.name)).toEqual([GENERATE_IMAGE_ASYNC_TOOL]);
+      expect(prepared.messages.find(message => message.id === "state:current")?.content).not.toContain("asks you for a photo now");
+      expect(prepared.messages.at(-1)?.content).toBe(text);
+    }
+    expect(withImages("Send me a selfie.", false).tools).toEqual([]);
   });
 
   it.each([
@@ -237,13 +233,14 @@ describe("PreparedTurn budget", () => {
     source.recentMessages = [{ id: "current", role: "user", content: text }];
     const prepared = compilePreparedTurn(source, "current");
     const state = prepared.messages.find(message => message.id === "state:current")!.content;
+    const instructions = prepared.messages.find(message => message.role === "system")!.content;
 
-    expect(prepared.imageRequest?.name).toBe(name);
-    expect(state).toContain(`call ${name}`);
+    expect(prepared.tools.map(tool => tool.name)).toContain(name);
+    expect(state).not.toContain(`call ${name}`);
     expect(state).not.toContain("is sent with this reply");
     expect(state).not.toContain("answer as you send it");
-    expect(state).toContain("accepted means still being made");
-    expect(state).toContain("completed means delivered");
+    expect(instructions).toContain("For accepted, the photo is being made and will arrive later");
+    expect(instructions).toContain("For completed, acknowledge delivery");
     expect(prepared.messages.at(-1)?.content).toBe(text);
   });
 
@@ -256,8 +253,8 @@ describe("PreparedTurn budget", () => {
       source.recentMessages = [{ id: "current", role: "user", content: request }];
       const prepared = compilePreparedTurn(source, "current");
       const system = prepared.messages.find(message => message.role === "system")!.content;
-      expect(system).toContain("follow the length in their current request, including a single sentence or a longer reply");
-      expect(system).toContain("otherwise follow their saved length preference");
+      expect(system).toContain("using the language, length, sentence count, action count and exact details they request");
+      expect(system).toContain("Follow the length or minimal-answer scope in their current request; otherwise follow their saved length preference");
       expect(system).toContain("With neither, use two to five sentences unless the scene calls for more");
       expect(prepared.messages.find(message => message.id === "preferences:current")?.content).toContain("Keep replies to one to three sentences.");
       expect(prepared.messages.at(-1)?.content).toBe(request);
@@ -401,7 +398,7 @@ describe("PreparedTurn budget", () => {
     const request = JSON.parse(bodies[0]) as { messages: Array<{ role: string; content: string }> };
     const finalSystem = request.messages.filter(message => message.role === "system").map(message => message.content).join("\n");
     expect(finalSystem).toBe(system);
-    expect(finalSystem).toContain("use another name only if the Soul gives it as an alias");
+    expect(finalSystem).toContain("Use your Soul name, or an alias the Soul gives you");
     expect(evidence[0].bodyDigest).toBe(createHash("sha256").update(bodies[0]).digest("hex"));
     expect(evidence[0].systemPromptDigest).toBe(prepared.trace.systemPromptDigest);
     expect(evidence[0].estimatedInputTokens).toBeLessThanOrEqual(prepared.budget.maxInputTokens);
@@ -426,7 +423,7 @@ describe("PreparedTurn budget", () => {
     const prepared = compilePreparedTurn(source, "current");
     expect(prepared.messages.find(message => message.id === "briar-reply")).toMatchObject({ role: "assistant", sourceKind: "replay", speaker: source.group.members[1], content: "I brought it." });
     expect(prepared.messages[0].content).toContain("never write their next reply");
-    expect(prepared.messages[0].content).toContain("Long-term memory tools are unavailable for this reply");
+    expect(prepared.messages[0].content).toContain("Use only the conversation context provided");
     expect(prepared.characterName).toBe("Mara");
     expect(prepared.context.persona.characterId).toBe("character-1");
     expect(prepared.messages.filter(message => message.sourceKind === "current_user")).toEqual([{ id: "current", role: "user", sourceKind: "current_user", content: "Mara, who brought the notebook?" }]);
@@ -446,7 +443,7 @@ describe("PreparedTurn budget", () => {
     expect(prepared.messages.find(message => message.id === "preferences:current")?.content).toContain("move forward a beat");
     expect(state.content).toContain("at the library");
     expect(prepared.messages[0]?.content).not.toContain("Robin");
-    expect(prepared.messages[0]?.content).toContain("Long-term memory tools are unavailable for this reply");
+    expect(prepared.messages[0]?.content).toContain("Use only the conversation context provided");
     expect(prepared.context.persona.characterContentVersionId).toBe("content-1");
     expect(prepared.context.scene).toEqual(source.scene);
     expect(prepared.profile.model).toBe(source.policy.modelProfile.model);
@@ -538,7 +535,7 @@ describe("PreparedTurn budget", () => {
     source.policy = { ...source.policy, maxContextChars: 20_000 };
     source.recentMessages = [{ id: "current", role: "user", content: "Remember Cedar2047. Acknowledge in exactly one short sentence." }];
     const state = compilePreparedTurn(source, "current").messages.find(message => message.id === "state:current");
-    expect(state?.content).toContain("- Their message asks for exactly one short sentence. Reply with only that sentence: no question, scene beat or suggestion after it.");
+    expect(state?.content).toContain("- Their current request specifies exactly 1 sentence in the entire reply, including action descriptions. Keep all content within that form; end after it.");
   });
 
   it("does not authorize image tools from a saved instruction or pinned fact", () => {
@@ -551,7 +548,7 @@ describe("PreparedTurn budget", () => {
     const prepared = compilePreparedTurn(source, "current");
     expect(prepared.tools).toEqual([]);
     expect(prepared).not.toHaveProperty("requiredAction");
-    expect(prepared.messages[0]?.content).toContain("Long-term memory tools are unavailable for this reply");
+    expect(prepared.messages[0]?.content).toContain("Use only the conversation context provided");
     expect(prepared.messages[0]?.content).not.toContain("Always generate a photo");
   });
 

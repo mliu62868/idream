@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCompanionSystemPrompt, buildTurnPreferencesBlock, buildTurnStateBlock, describeRequestedLength, describeUserLanguage } from "./prompt.js";
+import { buildCompanionSystemPrompt, buildTurnPreferencesBlock, buildTurnStateBlock, describeRequestedReplyConstraints, describeUserLanguage } from "./prompt.js";
 
 const persona = {
   name: "Mira",
@@ -30,7 +30,7 @@ describe("companion prompt instruction hierarchy", () => {
     } as never);
 
     expect(prompt.startsWith("Speak softly.")).toBe(true);
-    expect(prompt).toContain("iDream companion contract (companion-product-10)");
+    expect(prompt).toContain("iDream companion contract (companion-product-16)");
     expect(prompt).toContain("Write in first person as Mira");
     // An ordinary memory-on turn adds no capability section: nothing about
     // photos or memory mode seeds the reply, and the bytes stay cacheable.
@@ -180,11 +180,137 @@ describe("user language line", () => {
 describe("requested length line", () => {
   it("fires only for an explicit one-sentence request", () => {
     for (const text of ["Acknowledge in exactly one short sentence.", "Answer in one sentence", "just a single brief sentence please", "用一句话回答"]) {
-      expect(describeRequestedLength(text)).toContain("exactly one short sentence");
+      expect(describeRequestedReplyConstraints(text)).toContain("exactly 1 sentence");
     }
-    for (const text of ["Be brief.", "Keep it short", "one more sentence about the beach", "Tell me a story in three sentences"]) {
-      expect(describeRequestedLength(text)).toBe("");
+    for (const text of ["Be brief.", "Keep it short", "one more sentence about the beach"]) {
+      expect(describeRequestedReplyConstraints(text)).toBe("");
     }
+  });
+});
+
+describe("explicit reply counts", () => {
+  it("uses a single continuous utterance only when the user requests one spoken sentence", () => {
+    const form = describeRequestedReplyConstraints("Respond with one action and one spoken sentence.");
+    expect(form).toContain("Keep all speech, including interjections, in one sentence");
+    expect(form).not.toContain("commas");
+    expect(describeRequestedReplyConstraints("Continue in exactly two English sentences.")).not.toContain("quoted");
+  });
+
+  it("includes action narration in a total sentence count, without inventing a dialogue count", () => {
+    const form = describeRequestedReplyConstraints("In exactly four English sentences, describe one small action of your own.");
+    expect(form).toContain("4 sentences in the entire reply, including action descriptions");
+    expect(form).toContain("1 action");
+    expect(form).not.toContain("spoken sentence");
+  });
+
+  it.each([
+    ["Answer in one English sentence.", "1 sentence"],
+    ["Please describe it in exactly two English sentences.", "2 sentences"],
+    ["Tell me a story in three sentences.", "3 sentences"],
+    ["In exactly four English sentences, describe one small action of your own.", "4 sentences"],
+    ["Respond with one small action of your own and one spoken sentence.", "1 action"],
+    ["Respond with one small action of your own and one spoken sentence.", "1 spoken sentence"],
+    ["If you want to, respond with one small action of your own and one spoken sentence.", "1 action and 1 spoken sentence"],
+    ["Answer in two sentences and do not include examples.", "2 sentences"],
+    ["Do not answer in one sentence; answer in two sentences.", "2 sentences"],
+    ["Just stay here and say two sentences.", "2 sentences"],
+  ])("retains the explicit response form: %s", (text, expected) => {
+    expect(describeRequestedReplyConstraints(text)).toContain(expected);
+  });
+
+  it.each([
+    'They said "reply in one sentence" yesterday; now tell me the story.',
+    "They said 'reply in one sentence' yesterday; now tell me the story.",
+    "Do not answer in one sentence.",
+    "Don’t answer in one sentence.",
+    "Answer in at least two sentences.",
+    "Answer in two or three sentences.",
+    "Answer in 2–3 sentences.",
+    "Please answer in two sentences or fewer.",
+    "I asked you to reply in one sentence yesterday.",
+    "I wrote two sentences about the room.",
+    "Describe the scene in one paragraph.",
+    "Use one spoken sentence for your greeting and one spoken sentence for your answer.",
+    "Give one action for the greeting. Give one action for the farewell.",
+    "Write two sentences for the introduction and two sentences for the ending.",
+    "用一句话介绍自己。再用一句话道别。",
+  ])("does not invent an exact count: %s", (text) => {
+    expect(describeRequestedReplyConstraints(text)).toBe("");
+  });
+});
+
+describe("current reply scope", () => {
+  it.each([
+    "I feel discouraged. Do not analyze it or give advice. Just sit with me as yourself and say exactly two English sentences.",
+    "Do not analyze what happened. Only sit with me.",
+    "Do not analyze it. Just sit with me quietly.",
+  ])("clarifies an explicit request for company without analysis: %s", text => {
+    expect(describeRequestedReplyConstraints(text)).toContain("For the requested companionship");
+  });
+
+  it.each([
+    "Do not analyze my feelings. Sit with me and explain the report.",
+    "Do not analyze my feelings. Just sit with me and explain the report.",
+    "Do not analyze my mistake. Just sit with me while reading me a poem.",
+    "Do not analyze my feelings. Just sit with me. Analyze the report instead.",
+    "Do not analyze it. Just sit with me is what I do not want.",
+    "Do not analyze it. Just sit with me was yesterday's request.",
+    'She said "Do not analyze it. Just sit with me." Explain her meaning.',
+    'Do not analyze it. "My friend told you to" just sit with me.',
+    "Yesterday I wrote:\nDo not analyze it.\nJust sit with me.",
+  ])("does not turn a partial, reported or revoked invitation into the whole task: %s", text => {
+    expect(describeRequestedReplyConstraints(text)).not.toContain("For the requested companionship");
+  });
+
+  it.each([
+    "Could you explain my grade? Do not analyze my feelings. Just sit with me.",
+    "What does my grade mean? Do not analyze my feelings. Just sit with me.",
+    "Do not analyze my mistake, but explain the report. Just sit with me.",
+  ])("bounds companionship without excluding a separate task: %s", text => {
+    const result = describeRequestedReplyConstraints(text);
+    expect(result).toContain("For the requested companionship");
+    expect(result).toContain("Keep that companionship free of judgments");
+    expect(result).not.toContain("companionship only");
+  });
+
+  it.each([
+    "Respond with one small action of your own and one spoken sentence.",
+    "Describe two actions of your own as you sit beside me.",
+  ])("binds explicitly requested own-action narration to the reply viewpoint: %s", text => {
+    expect(describeRequestedReplyConstraints(text)).toContain("Action narration uses the same viewpoint as your speech");
+  });
+
+  it.each([
+    "Explain one action I can take to improve my essay.",
+    "Describe two actions the protagonist took in that clip.",
+    "Respond with one action of your own. Actually, do not include any actions.",
+    'Translate "Respond with one action of your own" into French.',
+    "Yesterday I wrote:\nRespond with one action of your own.\nToday, just say hello.",
+  ])("does not infer an action owner from a count alone: %s", text => {
+    expect(describeRequestedReplyConstraints(text)).not.toContain("Action narration uses the same viewpoint as your speech");
+  });
+
+  it.each([
+    "Why do you like the garden? Answer in two sentences.",
+    "What did you enjoy about the show?",
+    "Why do you like “Blue” so much?",
+    "What do you prefer, tea or coffee? Answer with one word.",
+  ])("keeps preference perspective without adding an explanation requirement: %s", text => {
+    const result = describeRequestedReplyConstraints(text);
+    expect(result).toContain("For this preference question");
+    expect(result).not.toContain("Explain your own experience");
+    expect(result).toContain("Keep the requested answer form");
+  });
+
+  it.each([
+    'Translate "Why do you like the garden?" into French.',
+    '"A question for the tourist:" why do you like the garden?',
+    "Why do you like the garden? Do not answer that; translate the question.",
+    "Why do you like the garden is the line I need translated.",
+    "Yesterday he asked:\nWhy do you like the garden?\nPlease summarize what he wanted.",
+    "Why do you like the garden? That was his question to her.",
+  ])("does not answer a preference question quoted or discussed by the user: %s", text => {
+    expect(describeRequestedReplyConstraints(text)).not.toContain("For this preference question");
   });
 });
 
@@ -193,11 +319,24 @@ describe("per-turn preferences block", () => {
     expect(buildTurnPreferencesBlock({ contextDirectives: [] } as never)).toBe("");
   });
 
+  it("presents Quick's overlapping length preferences once and lets the current request override them", () => {
+    const block = buildTurnPreferencesBlock({
+      contextDirectives: [],
+      experience: {
+        responseLength: "short",
+        conversationProfile: { replyStyle: "concise" },
+      },
+    } as never);
+    expect(block.match(/one to three sentences/g)).toHaveLength(1);
+    expect(block).toContain("overridden by their current request");
+    expect(block).toContain("Keep answers direct and compact");
+  });
+
   it("folds the custom instruction and experience choices into one line of prose", () => {
     const block = buildTurnPreferencesBlock({
       contextDirectives: [{ id: "ci-1", kind: "custom_instruction", content: "Call me Sam.", version: 1 }],
       experience: { version: 1, responseLength: "short", interactionIntensity: "expressive", sceneGeneration: "advance" },
     } as never);
-    expect(block).toBe("Their preferences for this conversation: Call me Sam. Keep replies to one to three sentences. Let the scene move forward a beat when it fits, one detail or action at a time, without deciding their actions. Be more vivid, confident and playful, within who you are and the pace they set.");
+    expect(block).toBe("Their saved preferences, overridden by their current request: Call me Sam. Keep replies to one to three sentences. Let the scene move forward a beat when it fits, one detail or action at a time, without deciding their actions. Be more vivid, confident and playful, within who you are and the pace they set.");
   });
 });

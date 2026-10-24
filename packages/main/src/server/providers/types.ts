@@ -25,7 +25,7 @@ export interface ChatModel {
     characterName?: string;
     maxTokens?: number;
     requestId?: string;
-    /** Admin drafts renew the wait budget only on model output, with a fixed total bound. */
+    /** Draft generation renews the wait budget only on model output, with a fixed total bound. */
     timeoutMode?: "progress";
   }): AsyncIterable<ChatChunk>;
 }
@@ -110,6 +110,7 @@ export function voiceSceneInstructions(
 export interface VoiceIdentityPort {
   readonly providerKey: VoiceProviderKey;
   previewVoice(input: {
+    model?: string;
     text: string;
     voiceId: string;
     delivery?: FishAudioDeliverySettings;

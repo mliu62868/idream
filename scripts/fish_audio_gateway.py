@@ -50,6 +50,10 @@ MODEL_PATHS = {
     MING_MODEL_ID: "~/.idream/models/mlx-community/Ming-3.0-tts-0.5B-8bit",
     BREEZE_MODEL_ID: "~/.idream/models/mlx-community/Breeze-TTS-2-mlx-8bit",
 }
+# These models have durable cached requests, but no generation runtime remains.
+# Keep their exact-result replay contract without allowing a new synthesis.
+RETIRED_MODEL_IDS = ("fish-audio-s2-pro-8bit",)
+RECOGNIZED_MODEL_IDS = (*MODEL_PATHS, *RETIRED_MODEL_IDS)
 MODEL_ID = os.getenv("FISH_AUDIO_MODEL", MING_MODEL_ID).strip()
 if MODEL_ID not in MODEL_PATHS:
     raise RuntimeError(f"Unsupported FISH_AUDIO_MODEL: {MODEL_ID!r}")
@@ -462,7 +466,7 @@ def render_idempotent_wav(
     attempt_no: int,
     owner_hash: str | None = None,
 ) -> tuple[bytes, bool]:
-    if request.model not in MODEL_PATHS:
+    if request.model not in RECOGNIZED_MODEL_IDS:
         raise HTTPException(status_code=409, detail=f"Unrecognized speech model: '{request.model}'")
     if not request_id.strip() or attempt_no < 1:
         raise HTTPException(
@@ -643,8 +647,8 @@ async def health() -> JSONResponse:
         "model": MODEL_ID,
         "configured_model": MODEL_ID,
         "supported_models": [MODEL_ID],
-        "recognized_models": list(MODEL_PATHS),
-        "replay_only_models": [value for value in MODEL_PATHS if value != MODEL_ID],
+        "recognized_models": list(RECOGNIZED_MODEL_IDS),
+        "replay_only_models": [value for value in RECOGNIZED_MODEL_IDS if value != MODEL_ID],
         "languages": ["en"],
         "model_path": str(MODEL_PATH),
         "model_loaded": model is not None,
@@ -677,7 +681,7 @@ async def synthesize(
     erasure_registry.check(owner_hash, idempotency_key, request.voice)
     if request.response_format != "wav":
         raise HTTPException(status_code=400, detail="Only WAV output is supported")
-    if request.model not in MODEL_PATHS:
+    if request.model not in RECOGNIZED_MODEL_IDS:
         raise HTTPException(
             status_code=409,
             detail=f"Unrecognized speech model: '{request.model}'",

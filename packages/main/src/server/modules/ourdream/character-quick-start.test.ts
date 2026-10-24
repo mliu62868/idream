@@ -1,10 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { PipelineChatModel } from "@/server/providers/chat/pipeline";
 import {
   generateCharacterQuickStart,
   mapQuickStartOutput,
   parseQuickStartJson,
   type CharacterQuickStartRuntime,
 } from "./character-quick-start";
+
+afterEach(() => vi.useRealTimers());
 
 function runtime(reply: string | Error, overrides: Partial<CharacterQuickStartRuntime> = {}) {
   return {
@@ -78,6 +81,54 @@ describe("parseQuickStartJson", () => {
 });
 
 describe("generateCharacterQuickStart", () => {
+  it("finishes a progressing JSON draft beyond the initial wait while bounding model output", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const signal = init?.signal;
+      return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+        const encoder = new TextEncoder();
+        signal?.addEventListener("abort", () => controller.error(new DOMException("Aborted", "AbortError")), { once: true });
+        for (const [delay, content] of [[200, '{"name":"Mira",'], [400, '"age":28}']] as const) {
+          setTimeout(() => {
+            if (!signal?.aborted) {
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`));
+            }
+          }, delay);
+        }
+        setTimeout(() => {
+          if (!signal?.aborted) {
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.close();
+          }
+        }, 600);
+      } }), { headers: { "content-type": "text/event-stream" } });
+    });
+    const model = new PipelineChatModel({ baseUrl: "http://model.test/v1", model: "local-model", timeoutMs: 250, fetchImpl });
+    const deps = runtime("", { stream: model.stream.bind(model) });
+    const result = generateCharacterQuickStart("Mira, a 28-year-old librarian", deps).then(
+      draft => ({ draft }), error => ({ error }),
+    );
+    await vi.advanceTimersByTimeAsync(600);
+    expect(await result).toEqual({ draft: { name: "Mira", age: 28 } });
+    const request = JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body));
+    expect(request.max_tokens).toBeGreaterThan(0);
+    expect(request.max_tokens).toBeLessThanOrEqual(2_048);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("refuses a length-limited model reply even when its JSON can be parsed", async () => {
+    const deps = runtime("", {
+      stream: vi.fn(async function* () {
+        yield { delta: '{"name":"Mira","age":28}', done: false };
+        yield { delta: "", done: true, finishReason: "length" };
+      }),
+    });
+    await expect(generateCharacterQuickStart("Mira, a 28-year-old librarian", deps)).rejects.toMatchObject({
+      status: 503, details: { retryable: true },
+    });
+    expect(deps.moderate).toHaveBeenCalledTimes(1);
+  });
+
   it("returns the mapped draft and moderates both the brief and the generated text", async () => {
     const deps = runtime('{"name":"Mira","age":24,"occupation":"Illustrator"}');
     await expect(generateCharacterQuickStart("A café illustrator", deps)).resolves.toEqual({

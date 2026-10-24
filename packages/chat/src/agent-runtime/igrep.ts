@@ -556,30 +556,44 @@ export class IgrepMemoryBuilder {
     let deferred: { reason: string; digest: string } | undefined;
     try {
       const before = await verifyMemorySourceCorpus(workspace, sessions, signal);
-      const maintenance = assertMemoryEnvelope(await this.run({
-        ...this.cli,
-        args: ["mem", "maintain", "--workspace", workspace, ...(mode === "rebuild" ? ["--rebuild"] : [])],
-        timeoutMs: 300_000,
-        signal,
-      }), "maintain");
-      if (maintenance.outcome === "deferred") {
-        deferred = {
-          reason: maintenance.reason === "provider_error" || maintenance.reason === "llm_not_configured"
-            ? maintenance.reason : "unknown",
-          digest: createHash("sha256").update(JSON.stringify(maintenance)).digest("hex"),
-        };
+      let maintenanceOutput: unknown;
+      try {
+        maintenanceOutput = await this.run({
+          ...this.cli,
+          args: ["mem", "maintain", "--workspace", workspace, ...(mode === "rebuild" ? ["--rebuild"] : [])],
+          timeoutMs: 300_000,
+          signal,
+        });
+      } catch (error) {
+        if (!(error instanceof BoundedCommandError) || error.code !== "timeout") throw error;
+        throwIfAborted(signal);
+        // Optional derivation must not block Main-authoritative source recovery.
+        // Its partial files are discarded by the source-only rebuild below.
+        deferred = { reason: "command_timeout", digest: error.digest };
       }
-      if (!deferred && maintenance.outcome !== "success" && maintenance.outcome !== "no_evidence") {
-        throw new IgrepEvidenceError("invalid_envelope");
+      if (!deferred) {
+        const maintenance = assertMemoryEnvelope(maintenanceOutput, "maintain");
+        if (maintenance.outcome === "deferred") {
+          deferred = {
+            reason: maintenance.reason === "provider_error" || maintenance.reason === "llm_not_configured"
+              ? maintenance.reason : "unknown",
+            digest: createHash("sha256").update(JSON.stringify(maintenance)).digest("hex"),
+          };
+        }
+        if (!deferred && maintenance.outcome !== "success" && maintenance.outcome !== "no_evidence") {
+          throw new IgrepEvidenceError("invalid_envelope");
+        }
+        // igrep reports the initial batch size here. Only the post-maintenance
+        // status below reports how many profile rows remain.
+        if (!deferred && (typeof maintenance.pendingRows !== "number" || !Number.isInteger(maintenance.pendingRows) || maintenance.pendingRows < 0)) {
+          throw new IgrepEvidenceError("invalid_envelope");
+        }
       }
-      // igrep reports the initial batch size here. Only the post-maintenance
-      // status below reports how many profile rows remain.
-      if (!deferred && (typeof maintenance.pendingRows !== "number" || !Number.isInteger(maintenance.pendingRows) || maintenance.pendingRows < 0)) {
-        throw new IgrepEvidenceError("invalid_envelope");
-      }
-      const after = await verifyMemorySourceCorpus(workspace, sessions, signal);
-      if (JSON.stringify(before) !== JSON.stringify(after)) {
-        throw new MemorySourceIntegrityError("dialogue_changed_during_maintenance");
+      if (!deferred) {
+        const after = await verifyMemorySourceCorpus(workspace, sessions, signal);
+        if (JSON.stringify(before) !== JSON.stringify(after)) {
+          throw new MemorySourceIntegrityError("dialogue_changed_during_maintenance");
+        }
       }
     } catch (error) {
       if (!(error instanceof MemorySourceIntegrityError)) throw error;
@@ -1135,7 +1149,7 @@ export function createIgrepTools(options: {
   const queryParameters = { type: "object", properties: { query: { type: "string", minLength: 1, maxLength: 2000 } }, required: ["query"], additionalProperties: false };
   const tools: IgrepTool[] = [{
     name: "igrep_search",
-    description: "Search the current turn's authorized knowledge snapshot. Query text only; paths and search policy are fixed by the host.",
+    description: "Search retained conversation and turn context. For omitted original dialogue, use session_recall. Query text only; paths and search policy are fixed by the host.",
     parameters: queryParameters,
     execute: (args, signal) => observed("search", async () => {
       const result = objectRecord(await run({ ...options.cli,

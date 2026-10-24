@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { z } from "zod";
 
 const INTERVAL_CHOICES = [
   { hours: 6, label: "Every 6 hours" },
@@ -11,32 +12,32 @@ const INTERVAL_CHOICES = [
   { hours: 168, label: "Once a week" },
 ] as const;
 
-type Settings = {
-  enabled: boolean;
-  intervalHours: number;
-  nextAt: string | null;
-};
-
-function parseSettings(value: unknown): Settings {
-  const record = (value ?? {}) as Record<string, unknown>;
-  return {
-    enabled: record.enabled === true,
-    intervalHours:
-      typeof record.intervalHours === "number" ? record.intervalHours : 24,
-    nextAt: typeof record.nextAt === "string" ? record.nextAt : null,
-  };
-}
+const settingsSchema = z.object({
+  enabled: z.boolean(),
+  intervalHours: z.number().int().min(6).max(168),
+  nextAt: z.iso.datetime({ offset: true }).nullable(),
+});
+type Settings = z.infer<typeof settingsSchema>;
+type ProactiveSettingsProps = Readonly<{
+  sessionId: string;
+  onEnabledChange?: (enabled: boolean) => void;
+}>;
 
 // SPEC: 角色主动来消息的节奏，默认关闭，用户随时可关。
 // INTENT: 开启后第一条在一个完整周期之后到达，所以这里直接把下一次时间显示出来 ——
 //         用户对"它什么时候会打扰我"应当有确定答案，而不是只看到一个开关。
-export function ProactiveSettings({
+export function ProactiveSettings(props: ProactiveSettingsProps) {
+  return <ProactiveSettingsContent key={props.sessionId} {...props} />;
+}
+
+function ProactiveSettingsContent({
   sessionId,
   onEnabledChange,
-}: Readonly<{ sessionId: string; onEnabledChange?: (enabled: boolean) => void }>) {
+}: ProactiveSettingsProps) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
   const scope = useRef(0);
   const base = `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/proactive`;
 
@@ -52,7 +53,11 @@ export function ProactiveSettings({
         if (!response.ok) throw new Error("unavailable");
         const body = (await response.json()) as unknown;
         if (scope.current !== epoch) return;
-        setSettings(parseSettings(body));
+        const loaded = settingsSchema.parse(body);
+        setSettings(loaded);
+        // Reopening after an unreadable save is also a recovery read. Keep
+        // the chat's polling state in sync with every confirmed snapshot.
+        onEnabledChange?.(loaded.enabled);
       } catch (cause) {
         if (scope.current !== epoch) return;
         if (cause instanceof DOMException && cause.name === "AbortError") return;
@@ -63,7 +68,7 @@ export function ProactiveSettings({
       scope.current += 1;
       controller.abort();
     };
-  }, [base]);
+  }, [base, onEnabledChange, reload]);
 
   async function save(next: { enabled: boolean; intervalHours: number }) {
     const epoch = ++scope.current;
@@ -78,14 +83,17 @@ export function ProactiveSettings({
       if (!response.ok) throw new Error("rejected");
       const body = (await response.json()) as unknown;
       if (scope.current !== epoch) return;
-      const saved = parseSettings(body);
+      const saved = settingsSchema.parse(body);
       setSettings(saved);
       // The open chat polls for check-ins only while they are on; tell it now
       // instead of on its next session reload.
       onEnabledChange?.(saved.enabled);
     } catch {
       if (scope.current === epoch) {
-        setError("Couldn't save that. Try again.");
+        // A lost or invalid receipt can follow an accepted write. Read it back
+        // before offering another change instead of claiming the old state.
+        setSettings(null);
+        setError("Couldn't confirm check-in settings. Retry to check the saved state.");
       }
     } finally {
       if (scope.current === epoch) setPending(false);
@@ -94,10 +102,15 @@ export function ProactiveSettings({
 
   if (!settings) {
     return error ? (
-      <p className="mt-4 text-[12px] leading-4 text-[rgb(255,138,128)]" role="status">
-        {error}
-      </p>
-    ) : null;
+      <div className="mt-4 text-[12px] leading-4 text-[rgb(255,138,128)]" role="alert">
+        <p>{error}</p>
+        <button
+          className="mt-2 min-h-11 rounded-full border border-white/10 px-4 font-semibold text-white"
+          onClick={() => { setError(null); setReload(value => value + 1); }}
+          type="button"
+        >Retry</button>
+      </div>
+    ) : <p className="mt-4 text-[12px] text-white/70" role="status">Loading check-in settings…</p>;
   }
 
   const nextAt = settings.nextAt ? new Date(settings.nextAt) : null;
@@ -157,15 +170,6 @@ export function ProactiveSettings({
             </p>
           ) : null}
         </>
-      ) : null}
-
-      {error ? (
-        <p
-          className="mt-2 text-[12px] leading-4 text-[rgb(255,138,128)]"
-          role="status"
-        >
-          {error}
-        </p>
       ) : null}
     </section>
   );

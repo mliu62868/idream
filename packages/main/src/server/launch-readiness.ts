@@ -172,7 +172,7 @@ export interface LaunchReadinessCliOptions {
 export const currentLaunchCapabilities: LaunchReadinessCapabilities = {
   mainProviderImplementations: {
     CHAT_PROVIDER: ["mock", "pipeline"],
-    VOICE_PROVIDER: ["mock", "pipeline", "pocket-tts", "fish-audio"],
+    VOICE_PROVIDER: ["mock", "pocket-tts", "fish-audio"],
     MODERATION_PROVIDER: ["mock", "safety-gateway"],
     PAYMENT_PROVIDER: ["mock", "btcpay"],
     BLOB_PROVIDER: ["mock", "r2", "s3"],
@@ -870,13 +870,13 @@ function addVoiceModelProbeCheck(
       ? env.POCKET_TTS_API_URL
       : configuredProvider === "fish-audio"
       ? env.FISH_AUDIO_API_URL
-      : (env.PIPELINE_VOICE_API_URL ?? env.PIPELINE_API_URL);
+      : undefined;
   const configuredModel =
     configuredProvider === "pocket-tts"
       ? env.POCKET_TTS_MODEL
       : configuredProvider === "fish-audio"
       ? env.FISH_AUDIO_MODEL
-      : env.PIPELINE_VOICE_MODEL_DEFAULT;
+      : undefined;
 
   addMissingProbeReportProblem(problems, env, probeName);
   if (!probe) {
@@ -889,18 +889,6 @@ function addVoiceModelProbeCheck(
       problems.push(
         `probe provider is ${probe.provider ?? "unknown"}, not ${configuredProvider}`,
       );
-    }
-    if (configuredProvider === "pipeline") {
-      if (!sameUrl(probe.baseUrl, configuredBaseUrl)) {
-        problems.push(
-          "probe base URL does not match PIPELINE_VOICE_API_URL or PIPELINE_API_URL",
-        );
-      }
-      if (hasMinLength(configuredModel, 1) && probe.model !== configuredModel) {
-        problems.push(
-          "probe model does not match PIPELINE_VOICE_MODEL_DEFAULT",
-        );
-      }
     }
     if (configuredProvider === "fish-audio") {
       if (!sameUrl(probe.baseUrl, configuredBaseUrl)) {
@@ -2766,7 +2754,7 @@ function addRuntimeProbeConfigurationCheck(checks: LaunchReadinessCheck[], env: 
   const voiceProvider = env.VOICE_PROVIDER ?? "mock";
   const voiceUrl = voiceProvider === "pocket-tts" ? env.POCKET_TTS_API_URL
     : voiceProvider === "fish-audio" ? env.FISH_AUDIO_API_URL
-    : env.PIPELINE_VOICE_API_URL ?? env.PIPELINE_API_URL;
+    : undefined;
   if (voiceProvider !== "mock" && !isUrl(voiceUrl)) {
     problems.push("The configured voice provider URL is missing or invalid");
   }

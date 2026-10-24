@@ -60,7 +60,7 @@ describe("Pi execution boundaries", () => {
       signal: AbortSignal.timeout(2_000), maxSteps: 8, tools: () => [], assertContinuation() {}, text() {}, reset() {}, compaction() {},
     });
     const current = body!.messages.at(-1)!.content;
-    expect(body!.messages.at(-2)!.content.includes("some original messages are available only through session_recall")).toBe(omitted);
+    expect(body!.messages.at(-2)!.content.includes("use session_recall to retrieve the omitted original messages")).toBe(omitted);
     expect(current).toBe("Current question: what happened?");
     expect(JSON.stringify(body)).not.toContain("Original wording exists only in the authorized archive.");
     expect(body!.messages).toContainEqual({ role: "user", content: `Briar: Main original 1: ${"a".repeat(100)}` });
@@ -96,9 +96,9 @@ describe("Pi execution boundaries", () => {
       { inputTokens: 100, outputTokens: 10 },
     ]);
     expect(JSON.stringify(requests[0]!.body)).toContain("Main original 0:");
-    expect(JSON.stringify(requests[0]!.body)).not.toContain("some original messages are available only through session_recall");
+    expect(JSON.stringify(requests[0]!.body)).not.toContain("use session_recall to retrieve the omitted original messages");
     expect(JSON.stringify(requests[2]!.body)).not.toContain("Main original 0:");
-    expect(JSON.stringify(requests[2]!.body)).toContain("some original messages are available only through session_recall");
+    expect(JSON.stringify(requests[2]!.body)).toContain("use session_recall to retrieve the omitted original messages");
     expect(JSON.stringify(requests[2]!.body)).toContain("We are in the library now.");
     expect(JSON.stringify(requests[2]!.body)).toContain("Current question: what happened?");
   });
@@ -110,6 +110,8 @@ describe("Pi execution boundaries", () => {
     const longResult = `Tool original. ${"b".repeat(19_000)}`;
     let purpose: string | undefined;
     let generation = 0;
+    let recalled = false;
+    const replyContext = "Use the available records for the current reply.";
     const adapter = new OpenAiCompatibleAdapter({
       profile: value.preparedTurn.profile, apiKey: "fixture", maxInputTokens: value.preparedTurn.budget.maxInputTokens,
       observeRequest: evidence => { purpose = evidence.purpose; },
@@ -127,8 +129,9 @@ describe("Pi execution boundaries", () => {
     const output = await executePiConversation({
       invocation: value, seed: buildReplaySeed(value), pinned: pinned(value), systemPrompt: "You are Mara.", adapter,
       signal: AbortSignal.timeout(2_000), maxSteps: 8, assertContinuation() {}, text() {}, reset() {}, compaction() {},
+      afterRetrievalContext: { content: replyContext, available: () => recalled },
       tools: () => [{ name: "large_read", description: "Read a controlled long result", parameters: { type: "object", properties: {} }, replay: "safe",
-        execute: async () => ({ output: [{ type: "text", text: longResult }] }),
+        execute: async () => { recalled = true; return { output: [{ type: "text", text: longResult }] }; },
       }],
     });
 
@@ -145,6 +148,9 @@ describe("Pi execution boundaries", () => {
     expect(previousSummary!.source.id).toBeUndefined();
     expect(summaries[1]!.filter(source => source.kind === "idream.replay").every(source => source.source.owner === value.attemptId)).toBe(true);
     const final = requests.at(-1)!.body.messages;
+    expect(final.at(-1)).toEqual({ role: "user", content: replyContext });
+    expect(final.filter(message => message.content === replyContext)).toHaveLength(1);
+    expect(JSON.stringify(summaries)).not.toContain(replyContext);
     expect(final.some(message => message.role === "assistant" && message.tool_calls?.some(call => call.id === "large-1"))).toBe(true);
     expect(final.find(message => message.role === "tool" && message.tool_call_id === "large-1")?.content).toBe(longResult);
     for (const text of ["We are in the library now.", "Current question: what happened?"]) {

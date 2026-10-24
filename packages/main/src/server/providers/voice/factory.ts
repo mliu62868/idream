@@ -71,14 +71,14 @@ export function configuredVoiceModel(providerKey: VoiceProviderKey): string {
   return "mock";
 }
 
-export async function englishVoiceRuntimeReady(providerKey: VoiceProviderKey, identity = createVoicePortsForKey(providerKey).identity): Promise<boolean> {
+export async function englishVoiceRuntimeReady(providerKey: VoiceProviderKey, identity = createVoicePortsForKey(providerKey).identity, model = configuredVoiceModel(providerKey)): Promise<boolean> {
   if (providerKey === "mock" || !identity || identity.providerKey !== providerKey) return false;
   const capabilities = await identity.inspectCapabilities();
-  return capabilities.ok && voiceRuntimeSupportsEnglish(providerKey, capabilities.data);
+  return capabilities.ok && voiceRuntimeSupportsEnglish(providerKey, capabilities.data, model);
 }
 
-export function voiceRuntimeSupportsEnglish(providerKey: VoiceProviderKey, capabilities: Extract<Awaited<ReturnType<VoiceIdentityPort["inspectCapabilities"]>>, { ok: true }>["data"]): boolean {
+export function voiceRuntimeSupportsEnglish(providerKey: VoiceProviderKey, capabilities: Extract<Awaited<ReturnType<VoiceIdentityPort["inspectCapabilities"]>>, { ok: true }>["data"], model = configuredVoiceModel(providerKey)): boolean {
   return providerKey !== "mock" &&
-    capabilities.supportedModels?.includes(configuredVoiceModel(providerKey)) === true &&
+    capabilities.supportedModels?.includes(model) === true &&
     capabilities.languages?.some(language => ["en", "english"].includes(language.toLowerCase())) === true;
 }

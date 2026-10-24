@@ -453,6 +453,10 @@ describe("ProfileWorkspace media pagination", () => {
   });
 
   it("shows the 41st media after the first 40, permits download, and returns to page one", async () => {
+    const downloads: Array<{ href: string | null; download: string | null; target: string }> = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      downloads.push({ href: this.getAttribute("href"), download: this.getAttribute("download"), target: this.target });
+    });
     await mountMedia();
     expect(container.querySelectorAll("[data-media-id]")).toHaveLength(40);
     await click(button("Next page"));
@@ -462,6 +466,7 @@ describe("ProfileWorkspace media pagination", () => {
     expect(container.textContent).toContain("Page 2");
     await click(button("Download media"));
     expect(requests).toContain("/api/v1/media/image-41/download");
+    expect(downloads).toEqual([{ href: "/user-content/download.png", download: "", target: "_blank" }]);
     expect(button("Next page").disabled).toBe(true);
     await click(button("Previous page"));
     expect(container.querySelectorAll("[data-media-id]")).toHaveLength(40);

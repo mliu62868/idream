@@ -6,6 +6,7 @@ import { z } from "zod";
 import { parseGenerationRetryQuoteResponse, type RuntimeChatAttachment } from "@/lib/public-api-contracts";
 import { apiPayloadErrorMessage, type GenerationQuoteAuthority } from "@/lib/generation-write-client";
 import { unknownOutcomeCopy } from "@/lib/generation-failure-copy";
+import { triggerDownload } from "@/lib/browser-download";
 
 const downloadResponseSchema = z.object({ ok: z.literal(true), data: z.object({ url: z.string().min(1) }) });
 
@@ -36,7 +37,19 @@ export function ChatVideoAttachmentCard({ attachment, ownerScope, retryPending, 
   const jobId = attachment.generationJobId;
   const quote = quoted && quoted.jobId === jobId && quoted.ownerScope === ownerScope ? quoted.authority : null;
   const unplayable = unplayableSource === attachment.mediaUrl;
-  useEffect(() => { epoch.current += 1; return () => { epoch.current += 1; }; }, [ownerScope, jobId]);
+  useEffect(() => { epoch.current += 1; return () => { epoch.current += 1; }; }, [ownerScope, jobId, attachment.mediaAssetId]);
+
+  async function downloadVideo() {
+    if (!attachment.mediaAssetId) return;
+    const current = ++epoch.current;
+    setError("");
+    try {
+      const url = await mediaDownloadUrl(attachment.mediaAssetId, ownerScope);
+      if (current === epoch.current) triggerDownload(url);
+    } catch (failure) {
+      if (current === epoch.current) setError(failure instanceof Error ? failure.message : "The video download could not start. Try again.");
+    }
+  }
 
   async function checkRetry() {
     if (!jobId || !ownerScope || pending) return;
@@ -92,11 +105,7 @@ export function ChatVideoAttachmentCard({ attachment, ownerScope, retryPending, 
       </div>
     </div>}
     <figcaption className="grid gap-2 border-t border-white/10 p-3">
-      {completed && attachment.mediaAssetId ? <button type="button" className={`${classes} bg-white/10`} onClick={() => {
-        const mediaAssetId = attachment.mediaAssetId!;
-        setError("");
-        void mediaDownloadUrl(mediaAssetId, ownerScope).then((url) => window.location.assign(url), (cause: unknown) => setError(cause instanceof Error ? cause.message : "The video download could not start. Try again."));
-      }}><Download className="size-4" />Download video</button> : null}
+      {completed && attachment.mediaAssetId ? <button type="button" className={`${classes} bg-white/10`} onClick={() => void downloadVideo()}><Download className="size-4" />Download video</button> : null}
       {unknown ? null : retryable ? quote ? <>
         <p className="text-xs text-white/75">Retry this video · {quote.costDreamcoins} Dreamcoins</p>
         <button type="button" className={`${classes} bg-white text-black`} disabled={pending || retryPending || !ownerScope} onClick={() => void confirmRetry()}>{pending || retryPending ? "Confirming retry…" : "Confirm video retry"}</button>

@@ -1,7 +1,7 @@
 "use client";
 
 import { RotateCcw, X } from "lucide-react";
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { chatFailureCode } from "@/lib/chat-failure-copy";
 import { parsePublicApiError } from "@/lib/public-api-contracts";
@@ -57,6 +57,19 @@ function MemoryPanelContent({
     error?: string;
   } | null>(null);
   const requestEpoch = useRef(0);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    // Native modality keeps keyboard focus inside and makes the chat inert.
+    if (dialog && !dialog.open) dialog.showModal();
+    closeRef.current?.focus();
+    return () => {
+      if (dialog?.open) dialog.close();
+      if (opener?.isConnected) opener.focus();
+    };
+  }, []);
   useLayoutEffect(() => {
     requestEpoch.current += 1;
     return () => { requestEpoch.current += 1; };
@@ -162,10 +175,12 @@ function MemoryPanelContent({
   }
 
   return (
-    <div
+    <dialog
       aria-label="Memory settings"
       aria-modal="true"
-      className="fixed inset-0 z-50 flex"
+      className="fixed inset-0 z-50 m-0 h-dvh max-h-none w-full max-w-none border-0 bg-transparent p-0 text-white backdrop:bg-transparent open:flex"
+      ref={dialogRef}
+      onCancel={(event) => { event.preventDefault(); closePanel(); }}
       role="dialog"
     >
       <button
@@ -181,6 +196,7 @@ function MemoryPanelContent({
             aria-label="Close memory settings"
             className="grid h-8 w-8 place-items-center rounded-full bg-[rgb(36,36,36)] text-[rgb(170,170,170)] hover:text-white"
             onClick={closePanel}
+            ref={closeRef}
             type="button"
           >
             <X className="h-4 w-4" />
@@ -243,6 +259,6 @@ function MemoryPanelContent({
           ) : null}
         </div>
       </div>
-    </div>
+    </dialog>
   );
 }

@@ -83,7 +83,7 @@ export async function warmProvider(config: AgentRuntimeConfig, profile: Prepared
   for await (const event of adapter.stream([
     { role: "system", content: "", timestamp: 1, toolsAdded: [{ name: "idream_readiness_probe", description: "Readiness-only tool schema; never executes a product effect.", parameters: { type: "object", properties: {}, additionalProperties: false } }] },
     { role: "user", content: "Reply with OK.", timestamp: 1 },
-  ], { maxTokens: 1 })) {
+  ], { maxTokens: 1, purpose: "warmup" })) {
     if (event.type === "error") {
       const failure = adapter.getError(event.error);
       throw new Error(`provider warmup failed: ${failure?.code ?? event.reason}`);

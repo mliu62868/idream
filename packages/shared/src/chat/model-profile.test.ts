@@ -36,6 +36,7 @@ describe("chat model profile", () => {
       PIPELINE_TIMEOUT_MS: "1",
     })).toMatchObject({
       provider: "mock",
+      model: "Ornith-1.5-35B-A3B-Abliterated-MLX-8bit",
       baseUrl: "http://127.0.0.1:8061/v1",
       apiKey: "",
       firstTokenTimeoutMs: 45_000,

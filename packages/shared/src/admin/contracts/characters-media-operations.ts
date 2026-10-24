@@ -170,6 +170,8 @@ export const characterVoiceProfileSchema = z
     // INTENT: providerVoiceId is a per-Character alias (idream-<uuid>), so without this
     // operators could only see "voice version 3", never which official voice is live.
     presetVoiceId: z.string().trim().min(1).nullable(),
+    // The model used to prepare this voice version; activation and new speech
+    // retain it even when the provider's configured default later changes.
     model: z.string().trim().min(1),
     language: z.string().trim().min(1),
     delivery: fishAudioDeliverySettingsSchema,

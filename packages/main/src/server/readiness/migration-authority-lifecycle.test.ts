@@ -58,6 +58,7 @@ describe("migration authority client lifecycle", () => {
             activeCount: 0,
             archivedCount: 0,
             canonicalActiveCount: 0,
+            unifiedDefaultCount: 0,
           },
           runtime: {
             retiredRunnerCount: 0,

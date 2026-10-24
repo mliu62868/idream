@@ -163,12 +163,26 @@ export async function generateCharacterQuickStart(
   }
 
   let output = "";
+  let truncated = false;
   try {
-    for await (const chunk of runtime.stream({ messages: quickStartMessages(brief) })) {
+    for await (const chunk of runtime.stream({
+      messages: quickStartMessages(brief),
+      maxTokens: 2_048,
+      // A progressing draft may outlast the first-token wait on the shared GPU.
+      // The provider still bounds idle waiting and the total request duration.
+      timeoutMode: "progress",
+    })) {
       output += chunk.delta;
+      if (chunk.finishReason === "length") {
+        truncated = true;
+        break;
+      }
     }
   } catch {
     throw retryable("Quick Start could not reach the character model. Try again.");
+  }
+  if (truncated) {
+    throw retryable("Quick Start stopped before completing the draft. Try again.");
   }
 
   const draft = mapQuickStartOutput(parseQuickStartJson(output));

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act, createElement } from "react";
+import { act, createElement, Fragment, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -62,6 +62,35 @@ async function fill(label: string, value: string) {
     textarea.dispatchEvent(new Event("change", { bubbles: true }));
   });
 }
+
+describe("MemoryPanel keyboard access", () => {
+  it("opens as a native modal, moves focus inside, and restores the opener after Escape", async () => {
+    function ControlledPanel() {
+      const [open, setOpen] = useState(false);
+      return createElement(Fragment, {},
+        createElement("button", { onClick: () => setOpen(true) }, "Open memory settings"),
+        createElement(MemoryPanel, {
+          open, onClose: () => setOpen(false), fetchForViewer: fetch,
+          characterId: "raya-reyes", memoryEnabled: true,
+          memoryPending: false, onToggleMemory: () => {},
+        }),
+      );
+    }
+    await act(async () => root.render(createElement(ControlledPanel)));
+    const opener = container.querySelector<HTMLButtonElement>("button")!;
+    await act(async () => { opener.focus(); opener.click(); });
+    const dialog = container.querySelector<HTMLDialogElement>('[aria-label="Memory settings"]')!;
+    const close = container.querySelector<HTMLButtonElement>('[aria-label="Close memory settings"]')!;
+    expect.soft(dialog.tagName).toBe("DIALOG");
+    expect.soft(dialog.open).toBe(true);
+    expect.soft(document.activeElement).toBe(close);
+    // Escape dispatches cancel on a native modal; happy-dom does not synthesize
+    // that browser default from a keydown event.
+    await act(async () => dialog.dispatchEvent(new Event("cancel", { cancelable: true })));
+    expect.soft(container.querySelector('[aria-label="Memory settings"]')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+});
 
 describe("MemoryPanel clear", () => {
   it("loads saved user context and saves custom instructions with the displayed version", async () => {
@@ -272,6 +301,8 @@ describe("MemoryPanel check-ins", () => {
         onProactiveChange,
       }));
     });
+    expect(onProactiveChange).toHaveBeenCalledExactlyOnceWith(false);
+    onProactiveChange.mockClear();
     const checkbox = container.querySelector<HTMLInputElement>("#proactive-enabled-session-1");
     if (!checkbox) throw new Error("check-in toggle missing");
     await click(checkbox as unknown as HTMLButtonElement);

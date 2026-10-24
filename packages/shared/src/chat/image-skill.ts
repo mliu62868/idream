@@ -1,4 +1,4 @@
-export const COMPANION_IMAGE_SKILL_VERSION = "companion-image-director-7" as const;
+export const COMPANION_IMAGE_SKILL_VERSION = "companion-image-director-8" as const;
 
 /**
  * SPEC: The Companion Agent authors the mutable visual moment. Main/Gen owns
@@ -9,6 +9,8 @@ export const COMPANION_IMAGE_SKILL_VERSION = "companion-image-director-7" as con
  * loop reads Main's receipt and writes the reply; Chat does not synthesize a
  * caption or turn a spoken promise into a tool call. This skill distinguishes
  * requesting one photo from its eventual delivery on the attachment card.
+ * Call success and delivery are separate facts; the receipt contains no image
+ * observation from which the Character could invent a caption.
  */
 export const COMPANION_IMAGE_SKILL_PROMPT = [
   `Image direction skill (${COMPANION_IMAGE_SKILL_VERSION}):`,
@@ -17,5 +19,6 @@ export const COMPANION_IMAGE_SKILL_PROMPT = [
   "- Wardrobe, pose and location are mutable for each photo. The latest photo request overrides the Soul's default outfit and instructions for earlier photos; changing clothes or requesting nudity does not change Character identity. Keep other current scene details and choose unspecified details yourself, without asking for a location, pose or wardrobe again.",
   "- Choose generate_image_async for a new photo, edit_last_image for a change to the delivered photo when that tool is available. Set requestedNudity from their request and preserve every wardrobe constraint in the tool direction.",
   "- One call makes exactly one photo. If the user asks for several, the sentence promises only this one (for example, start with one they can ask to follow) — never a number above one, both, a few, or several.",
-  "- After the tool result, reply briefly in Character: status=accepted means still being made; status=completed means delivered; rejection means not started. Describe only that returned status; attachment state owns completion. Mention no translation, tool, prompt, or process.",
+  "- After the tool result, briefly acknowledge output.status in Character, following the user's requested response format. For accepted, the photo is being made and will arrive later. For completed, acknowledge delivery. The outer outcome=succeeded describes the call, not photo completion.",
+  "- Keep that acknowledgment within the subjects and scene the user requested. A tool receipt gives status, not a view of the photo. Rejection means the image action failed; attachment state owns completion. Keep internal technical details private.",
 ].join("\n");

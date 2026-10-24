@@ -207,6 +207,7 @@ function exactPostconditionSnapshot(
       activeCount: 1,
       archivedCount: 1,
       canonicalActiveCount: 1,
+      unifiedDefaultCount: 0,
     },
     runtime: {
       retiredRunnerCount: 0,
@@ -442,6 +443,7 @@ describe("migration schema postconditions", () => {
         activeCount: 2,
         archivedCount: 1,
         canonicalActiveCount: 1,
+        unifiedDefaultCount: 0,
       },
       voice: {
         constraintCount: 1,
@@ -466,7 +468,7 @@ describe("migration schema postconditions", () => {
   });
 
   it("accepts fresh REDQW21 Premium and immutable archived revisions", () => {
-    const premium = { totalCount: 1, activeCount: 1, archivedCount: 0, canonicalActiveCount: 1 };
+    const premium = { totalCount: 1, activeCount: 1, archivedCount: 0, canonicalActiveCount: 1, unifiedDefaultCount: 0 };
     expect(evaluateMigrationPostconditions(exactPostconditionSnapshot({ premium }))).toEqual([]);
     expect(evaluateMigrationPostconditions(exactPostconditionSnapshot({
       premium: { ...premium, totalCount: 5, archivedCount: 4 },
@@ -480,6 +482,16 @@ describe("migration schema postconditions", () => {
       { activeCount: 2 },
       { archivedCount: 0 },
     ]) {
+      expect(evaluateMigrationPostconditions(exactPostconditionSnapshot({
+        premium: { ...premium, ...drift },
+      }))).toContain("qwen-image-premium: terminal profile shape drifted");
+    }
+  });
+
+  it("accepts retired Premium history only with one published unified default", () => {
+    const premium = { totalCount: 5, activeCount: 0, archivedCount: 5, canonicalActiveCount: 0, unifiedDefaultCount: 1 };
+    expect(evaluateMigrationPostconditions(exactPostconditionSnapshot({ premium }))).toEqual([]);
+    for (const drift of [{ unifiedDefaultCount: 0 }, { unifiedDefaultCount: 2 }, { archivedCount: 4 }]) {
       expect(evaluateMigrationPostconditions(exactPostconditionSnapshot({
         premium: { ...premium, ...drift },
       }))).toContain("qwen-image-premium: terminal profile shape drifted");

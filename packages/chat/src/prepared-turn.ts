@@ -7,12 +7,10 @@ import {
   type ChatToolDefinition,
 } from "@idream/shared";
 import { EDIT_LAST_IMAGE_TOOL } from "@idream/shared/chat/image-action";
-import { imageIntentForUserRequest, resolveImageIntent, type ImageIntentDecision } from "./image-intent.js";
-import { logger } from "./logger.js";
 import type { ChatAuthoritySnapshot } from "@idream/shared/bff";
 import type { ChatExecutionSnapshot } from "@idream/shared/contracts";
 import { buildContext, type BuiltContext } from "./context.js";
-import { buildCompanionSystemPrompt, buildTurnPreferencesBlock, buildTurnStateBlock, describeRequestedLength, describeUserLanguage } from "./prompt.js";
+import { buildCompanionSystemPrompt, buildTurnPreferencesBlock, buildTurnStateBlock, describeRequestedReplyConstraints, describeUserLanguage } from "./prompt.js";
 import { registryChatTools } from "./agent-tools.js";
 import { dropOldestReplayExchange, estimateModelRequestInputTokens, formatModelRequestInput } from "./agent-runtime/model-request-format.js";
 import {
@@ -34,14 +32,7 @@ export async function prepareCompanionTurn(
   input: PrepareCompanionTurnInput,
 ): Promise<PreparedTurn> {
   const context = await buildContext(input);
-  const currentUser = context.recentMessages.find((message) => message.id === input.snapshot.userMessageId);
-  const imageIntent = await resolveImageIntent({
-    userText: currentUser?.content ?? "",
-    hasRecentImageContext: context.hasRecentImageContext,
-    imageToolEnabled: context.policy.imageToolEnabled && context.policy.modelProfile.supportsTools,
-    onJudgeUnavailable: (reason: string) => logger.warn({ event: "image_intent_judge" }, reason),
-  });
-  return compilePreparedTurn(context, input.snapshot.userMessageId, new Date(), imageIntent);
+  return compilePreparedTurn(context, input.snapshot.userMessageId);
 }
 
 /** Compile a pure, pinned generation snapshot from an already-authoritative context. */
@@ -49,9 +40,8 @@ export function compilePreparedTurn(
   context: BuiltContext,
   currentUserMessageId: string,
   now: Date = new Date(),
-  imageIntent?: ImageIntentDecision,
 ): PreparedTurn {
-  const fitted = fitPreparedTurnBudget(context, currentUserMessageId, now, imageIntent);
+  const fitted = fitPreparedTurnBudget(context, currentUserMessageId, now);
   const modelProfile = fitted.context.policy.modelProfile;
   const profile: PreparedTurnInput["profile"] = {
     tier: fitted.context.policy.tier,
@@ -87,7 +77,6 @@ export function compilePreparedTurn(
           ? { speaker: message.speaker } : {}),
       })),
     tools: fitted.tools,
-    imageRequest: fitted.imageRequest,
     profile,
     budget: fitted.budget,
     trace: {
@@ -167,12 +156,10 @@ export function fitPreparedTurnBudget(
   context: BuiltContext,
   currentUserMessageId: string,
   now: Date = new Date(),
-  resolvedImageIntent?: ImageIntentDecision,
 ): {
   context: BuiltContext;
   messages: PreparedTurnInput["messages"];
   tools: ChatToolDefinition[];
-  imageRequest: PreparedTurnInput["imageRequest"];
   budget: PreparedTurn["budget"];
 } {
   const fitted: BuiltContext = {
@@ -189,33 +176,17 @@ export function fitPreparedTurnBudget(
   const tools = fitted.policy.imageToolEnabled && fitted.policy.modelProfile.supportsTools
     ? registryChatTools().filter(tool => tool.name !== EDIT_LAST_IMAGE_TOOL || fitted.hasRecentImageContext)
     : [];
-  // Recovery and pure callers re-derive the deterministic decision; only
-  // prepareCompanionTurn also consults the small judge.
-  const imageIntent = resolvedImageIntent ?? imageIntentForUserRequest({
-    userText: currentUser.content,
-    hasRecentImageContext: fitted.hasRecentImageContext,
-  });
-  const imageRequest = imageIntent.kind !== "none" && tools.some((tool) => tool.name === imageIntent.action.name)
-    ? { ...imageIntent.action, userText: currentUser.content.slice(0, 4_000) }
-    : null;
   const maxInputTokens = Math.max(1, Math.ceil(fitted.policy.maxContextChars / 4));
   const dropped = new Set(fitted.dropped);
   const replayMessageIds = new Set(fitted.recentMessages.filter(message => message.id !== currentUserMessageId).map(message => message.id));
   const language = describeUserLanguage(currentUser.content);
-  const length = describeRequestedLength(currentUser.content);
+  const replyConstraints = describeRequestedReplyConstraints(currentUser.content);
   // Rebuilt on every budget pass so it only quotes dialogue that is still retained.
   const turnState = () => [
     buildTurnStateBlock(fitted, now),
     ...(language ? [`- ${language}`] : []),
-    ...(length ? [`- ${length}`] : []),
+    ...(replyConstraints ? [`- ${replyConstraints}`] : []),
     ...recentOpeningsLines(fitted, currentUserMessageId),
-    // The requested action is asynchronous. Its returned status, not this
-    // preparation step, establishes whether the image has been delivered.
-    ...(imageRequest?.name === "generate_image_async"
-      ? ["- Their message asks you for a photo now: call generate_image_async with the scene. After its result, answer in character: status=accepted means still being made; status=completed means delivered."]
-      : imageRequest?.name === "edit_last_image"
-        ? ["- Their message asks you to change the last delivered photo: call edit_last_image. After its result, answer in character: status=accepted means still being made; status=completed means delivered."]
-        : []),
   ].join("\n");
   const turnPreferences = buildTurnPreferencesBlock(fitted);
   const calculate = () => {
@@ -254,7 +225,6 @@ export function fitPreparedTurnBudget(
     context: fitted,
     messages: calculated.messages,
     tools,
-    imageRequest,
     budget: {
       maxInputTokens,
       usedInputTokens: calculated.usedInputTokens,

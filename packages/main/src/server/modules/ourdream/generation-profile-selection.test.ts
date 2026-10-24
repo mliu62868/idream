@@ -107,22 +107,22 @@ describe("public text-to-image generation profiles", () => {
     ).resolves.toEqual([]);
   });
 
-  it("serves the REDQW21 graph as both public text-to-image and Character identity route", async () => {
-    const workflow = JSON.parse(await readFile(path.resolve(process.cwd(), "../gen/workflows/redqw21.json"), "utf8"));
+  it("serves the RedCraft graph as both public text-to-image and Character identity route", async () => {
+    const workflow = JSON.parse(await readFile(path.resolve(process.cwd(), "../gen/workflows/redcraft-qw21t.json"), "utf8"));
     catalog.generationWorkflowDescriptor.mockResolvedValue(workflow);
-    const redqw21 = {
+    const redcraft = {
       ...profile,
-      workflowKey: "redqw21",
-      pipelineModel: "redqw21",
+      workflowKey: "redcraft-qw21t",
+      pipelineModel: "redcraft-qw21t",
       runnerConfig: {
         workflowVersion: workflow.version,
         capabilities: { textToImage: true, referenceImages: true, initImage: false },
       },
     };
 
-    await expect(filterPublicTextToImageGenerationProfiles([redqw21])).resolves.toEqual([redqw21]);
-    await expect(filterPublicCharacterImageGenerationProfiles([redqw21])).resolves.toEqual([redqw21]);
-    await expect(projectPublicImageEditGenerationProfiles([redqw21])).resolves.toEqual([]);
+    await expect(filterPublicTextToImageGenerationProfiles([redcraft])).resolves.toEqual([redcraft]);
+    await expect(filterPublicCharacterImageGenerationProfiles([redcraft])).resolves.toEqual([redcraft]);
+    await expect(projectPublicImageEditGenerationProfiles([redcraft])).resolves.toEqual([]);
   });
 
   it("distinguishes declared text-to-image candidates from internal image profiles", () => {

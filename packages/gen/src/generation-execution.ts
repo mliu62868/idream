@@ -45,6 +45,7 @@ import {
   reserveGenerationInvocation,
 } from "./terminal-record";
 import { env } from "./env";
+import { GenerationTransportUnavailableError } from "./transport-execution";
 
 type GenerationPayload = ImageGeneratePayload | VideoGeneratePayload;
 type GenerationModel = ImageModel | VideoModel;
@@ -231,7 +232,7 @@ class GenerationExecution {
     const providerReplayIsSafe =
       adapter.model.retryCapabilities?.deterministicIdempotencyKey === true;
     let invocationStartedAt: number | undefined;
-    let boundaryError: unknown;
+    let boundaryError: { cause: unknown; phase: "waiting" | "invocation" } | undefined;
     let terminalSettled = false;
     const beforeProviderInvocation = async () => {
       try {
@@ -255,7 +256,7 @@ class GenerationExecution {
         }
         invocationStartedAt = performance.now();
       } catch (error) {
-        boundaryError = error;
+        boundaryError = { cause: error, phase: "invocation" };
         throw error;
       }
     };
@@ -265,7 +266,7 @@ class GenerationExecution {
         try {
           await this.recordTransport("running");
         } catch (error) {
-          boundaryError = error;
+          boundaryError = { cause: error, phase: "invocation" };
           throw error;
         }
       },
@@ -273,7 +274,7 @@ class GenerationExecution {
         try {
           await this.recordTransport("waiting");
         } catch (error) {
-          boundaryError = error;
+          boundaryError = { cause: error, phase: "waiting" };
           throw error;
         }
       },
@@ -291,7 +292,18 @@ class GenerationExecution {
     if (terminalSettled) return;
     // Backend adapters classify ordinary errors, but cannot turn a rejected Main
     // authority check into provider failure or overwrite existing terminal facts.
-    if (boundaryError !== undefined) throw boundaryError;
+    if (boundaryError !== undefined) {
+      if (boundaryError.phase === "waiting" && invocationStartedAt === undefined &&
+          boundaryError.cause instanceof GenerationTransportUnavailableError) {
+        // A waiting heartbeat can exhaust Bull retries before provider entry.
+        // Recover any terminal first; preparation failure still reconciles prior
+        // invocation guards instead of claiming the provider was never called.
+        if (await this.resumeTerminalRecord()) return;
+        await this.failPreparation(boundaryError.cause);
+        return;
+      }
+      throw boundaryError.cause;
+    }
     if (invocationStartedAt === undefined) {
       if (result.ok) throw new Error("Backend returned success without provider invocation authority");
       await this.failPreparation(new Error(result.error.message));

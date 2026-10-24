@@ -3116,11 +3116,17 @@ describe("image generation service contract", () => {
     await expect(dreamcoinBalance(userId)).resolves.toBe(100);
   });
 
-  it.each(["companion", "scene"] as const)("keeps chat image %s subjects separate from the character visual identity", async subject => {
-    const userId = `${P}chat-identity-${subject}-user`;
-    const characterId = `${P}chat-identity-${subject}-char`;
-    const anchorId = `${P}chat-identity-${subject}-anchor`;
-    const visualId = `${P}chat-${subject}-cvp`;
+  it.each([
+    { subject: "companion", requestedNudity: "full" },
+    { subject: "companion", requestedNudity: "none" },
+    { subject: "companion", requestedNudity: "unspecified" },
+    { subject: "scene", requestedNudity: "unspecified" },
+  ] as const)("keeps chat image $subject identity and original wardrobe authority ($requestedNudity)", async ({ subject, requestedNudity }) => {
+    const scenario = `${subject}-${requestedNudity}`;
+    const userId = `${P}chat-identity-${scenario}-user`;
+    const characterId = `${P}chat-identity-${scenario}-char`;
+    const anchorId = `${P}chat-identity-${scenario}-anchor`;
+    const visualId = `${P}chat-${scenario}-cvp`;
     await createUser({ id: userId });
     await createCharacter({
       id: characterId,
@@ -3137,7 +3143,7 @@ describe("image generation service contract", () => {
         characterId,
         type: "image",
         url: "/images/ourdream/card-sarah-mercer.webp",
-        storageKey: `${P}chat-identity-${subject}-anchor.webp`,
+        storageKey: `${P}chat-identity-${scenario}-anchor.webp`,
         visibility: "private",
         safetyStatus: "passed",
         metadata: {},
@@ -3164,7 +3170,7 @@ describe("image generation service contract", () => {
       },
     });
     await createSealedReferenceSet({
-      id: `${P}chat-${subject}-reference-set`,
+      id: `${P}chat-${scenario}-reference-set`,
       visualProfileId: visualId,
       references: [
         {
@@ -3178,7 +3184,10 @@ describe("image generation service contract", () => {
     await grantCoins(userId, 100, "seed");
     // This case verifies identity/scene separation for an accepted direction.
     // Oversized complete directions are rejected, not silently truncated.
-    const agentScene = subject === "scene" ? "A close-up of a basil plant in a terracotta pot on a sunny balcony. No people visible." : [
+    const userInstruction = subject === "companion" && requestedNudity !== "full"
+      ? "Please generate one safe, fully clothed image of you in a blue cardigan, arranging books on a wooden shelf in the sunny apartment."
+      : "The user asked for a quiet photo from the current scene.";
+    const agentScene = subject === "scene" ? "A close-up of a basil plant in a terracotta pot on a sunny balcony. No people visible." : requestedNudity === "none" ? "A woman in a blue cardigan arranging books on a wooden shelf in a sunny apartment." : requestedNudity === "unspecified" ? `The photo they asked for in this message: ${userInstruction}` : [
       "sitting beside a rain-streaked window, soft evening light",
       "soft rain reflections and warm practical light, ".repeat(15),
       "fully clothed in a silk robe",
@@ -3188,16 +3197,16 @@ describe("image generation service contract", () => {
       mod.createChatImageGenerationJob({
         version: 1,
         kind: "chat.image.requested",
-        requestId: `${P}chat-${subject}-req`,
-        attachmentId: `${P}attachment-${subject}`,
-        sessionId: `${P}session-${subject}`,
-        messageId: `${P}message-${subject}`,
+        requestId: `${P}chat-${scenario}-req`,
+        attachmentId: `${P}attachment-${scenario}`,
+        sessionId: `${P}session-${scenario}`,
+        messageId: `${P}message-${scenario}`,
         userId,
         characterId,
         subject,
         promptHint: agentScene,
-        conversationContext: "The user asked for a quiet photo from the current scene.",
-        intent: { requestedNudity: subject === "scene" ? "unspecified" : "full" },
+        conversationContext: userInstruction,
+        intent: { requestedNudity },
         controls: { orientation: "4:5", outputCount: 1 },
       }),
     );
@@ -3216,9 +3225,19 @@ describe("image generation service contract", () => {
     expect(stored.visualProfileId).toBe(visualId);
     expect(stored.prompt).toContain("Locked identity");
     expect(stored.prompt).toContain("copper curly hair");
-    expect(stored.prompt).toContain("rain-streaked window");
-    expect(stored.prompt).toContain("Adult scene requirement: depict the adult character fully nude");
-    expect(stored.prompt).not.toContain("silk robe");
+    if (requestedNudity !== "full") {
+      expect(stored.prompt).toContain(agentScene);
+      expect(stored.prompt).toContain("Preserve the explicitly requested outfit");
+      expect(stored.prompt).toContain("opaque top covering the chest and torso");
+      expect(stored.prompt).toContain("opaque trousers, skirt or dress covering the lower body");
+      expect(stored.prompt).toContain("If an inner layer under a cardigan or open jacket is unspecified, use an opaque crew-neck top");
+      if (requestedNudity === "none") expect(stored.prompt).not.toContain(userInstruction);
+      expect(stored.sourceMeta).toMatchObject({ conversationContext: userInstruction });
+    } else {
+      expect(stored.prompt).toContain("rain-streaked window");
+      expect(stored.prompt).toContain("Adult scene requirement: depict the adult character fully nude");
+      expect(stored.prompt).not.toContain("silk robe");
+    }
     expect(stored.prompt).not.toContain("Recent chat context");
     expect(stored.consistencyMode).toBe("strict");
     expect(stored.controls).toMatchObject({

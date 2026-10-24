@@ -10,7 +10,7 @@ import { IMAGE_AGENT_TOOL_DEFINITIONS } from "./image-action";
 describe("Companion product contract", () => {
   it("states the adult-companion outcome in affirmative, second-person lines", () => {
     const contract = companionProductAgentPrompt("Lena");
-    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-10");
+    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-16");
     expect(contract).toContain("sex, written out in graphic physical detail, is a normal part of this relationship");
     expect(contract).toContain("Fulfill their latest message as the whole reply");
     expect(contract).toContain("Their request, invitation or continued participation is their yes");
@@ -22,26 +22,35 @@ describe("Companion product contract", () => {
     expect((contract.match(/\b(?:never|do not|don't)\b/giu) ?? []).length).toBeLessThanOrEqual(4);
   });
 
-  it("lets the current requested length or saved length override the default minimum", () => {
+  it("keeps the default length behind the current scope and saved preferences", () => {
     const contract = companionProductAgentPrompt("Lena");
-    expect(contract).toContain("using the exact language, length, sentence count and details they request");
+    expect(contract).toContain("using the language, length, sentence count, action count and exact details they request");
     expect(contract).toContain("Keep your voice, feelings and actions within that shape");
     expect(contract).toContain("When that request is complete, end the reply");
     expect(contract).not.toContain("then add your own feeling");
-    expect(contract).toContain("follow the length in their current request, including a single sentence or a longer reply");
-    expect(contract).toContain("otherwise follow their saved length preference");
+    // A special dialogue form belongs only beside a matching current request.
+    // Applying it globally made ordinary two-sentence scenes deliberate over
+    // whether they also needed an action and a quotation until the token cap.
+    expect(contract).not.toContain("one action sentence, then one quoted sentence");
+    expect(contract).not.toContain("have no minimum length");
+    expect(contract).toContain("Follow the length or minimal-answer scope in their current request; otherwise follow their saved length preference");
     expect(contract).toContain("With neither, use two to five sentences unless the scene calls for more");
   });
 
   it("covers the behaviours that break the companion experience", () => {
     const contract = companionProductAgentPrompt("Lena");
     for (const line of [
-      "Keep going until they slow down or stop",
-      "let most replies end on a beat rather than a question or a menu",
-      "Theirs are theirs to write",
+      "Follow their lead until they slow down or stop",
+      "ask only when a wrong guess would derail the scene",
+      "Invent only your own words, actions and feelings",
+      '"we/us/our" requires evidence for both people\'s actions or feelings',
+      'including every clause of a sentence',
       "What they last said about the scene is true",
       "improvise it in character as part of the story",
-      "without claiming to have stored it",
+      "without claiming to have stored anything",
+      "An answer-only reply contains just the requested result",
+      "Omit unrequested explanations, previous values, follow-up questions, suggestions and scene continuation",
+      "Keep searches and access limitations out of the reply",
       "No analysis, planning, talk of rules",
     ]) {
       expect(contract).toContain(line);
@@ -79,8 +88,8 @@ describe("Companion product contract", () => {
 
   it("distinguishes a pending reservation from a completed image replay", () => {
     const prompt = composeCompanionSystemPrompt({ memoryEnabled: true, imageToolEnabled: true, soulPrompt: "" });
-    expect(prompt).toContain("status=accepted means still being made");
-    expect(prompt).toContain("status=completed means delivered");
+    expect(prompt).toContain("For accepted, the photo is being made and will arrive later");
+    expect(prompt).toContain("For completed, acknowledge delivery");
     expect(prompt).not.toContain("Never imply the image has arrived");
   });
 

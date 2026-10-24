@@ -8,6 +8,7 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { jobQueue } from "@/server/jobs/queue";
 import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
+import { cancelGenerationRequest } from "@/server/ai/generation-request-lifecycle";
 import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
 import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
 import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
@@ -159,6 +160,36 @@ describe("Main image action authorization", () => {
     const call = effect(snapshot);
     call.arguments = { subject: "companion", prompt: "Soft light over the wooden windowsill. ".repeat(25) + "The blue notebook must remain to the left of the white cup." };
     await expect(applyChatToolEffect(call)).rejects.toMatchObject({ code: "bad_request", message: expect.stringContaining("Shorten the request") });
+    expect(generated).not.toHaveBeenCalled();
+    expect(await prisma.chatTurnAttachment.count({ where: { turnId: snapshot.turnId } })).toBe(0);
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(0);
+    expect(await dreamcoinBalance(userId)).toBe(40);
+  });
+
+  it("preserves original clothing requirements beyond the former conversation excerpt", async () => {
+    const { begin, generated } = await fixture();
+    const userInstruction = `Please generate an image of you arranging books. ${"Keep the apartment warm and sunny. ".repeat(40)} Keep yourself fully clothed in a blue cardigan.`;
+    expect(userInstruction.indexOf("fully clothed")).toBeGreaterThan(1_200);
+    const { snapshot } = await begin(userInstruction);
+    if (!snapshot) throw new Error("Missing snapshot");
+    const call = effect(snapshot);
+    call.intent = { requestedNudity: "none" };
+    call.arguments = { subject: "companion", prompt: "A woman in a blue cardigan arranging books on a sunny apartment shelf." };
+
+    expect(await applyChatToolEffect(call)).toMatchObject({ accepted: true });
+    expect(generated).toHaveBeenCalledTimes(1);
+    expect(generated.mock.calls[0]?.[0]).toMatchObject({ conversationContext: userInstruction });
+  });
+
+  it.each(["none", "unspecified"] as const)("rejects a direction that cannot fit original full-clothing constraints before attachment or debit: %s", async requestedNudity => {
+    const { begin, generated, userId } = await fixture();
+    const { snapshot } = await begin("Generate one fully clothed image of you in a blue cardigan beside the bookshelf.");
+    if (!snapshot) throw new Error("Missing snapshot");
+    const call = effect(snapshot);
+    call.intent = { requestedNudity };
+    call.arguments = { subject: "companion", prompt: `Beside the sunny bookshelf. ${"Warm afternoon light. ".repeat(30)}` };
+
+    await expect(applyChatToolEffect(call)).rejects.toMatchObject({ code: "bad_request", message: expect.stringContaining("900-character") });
     expect(generated).not.toHaveBeenCalled();
     expect(await prisma.chatTurnAttachment.count({ where: { turnId: snapshot.turnId } })).toBe(0);
     expect(await prisma.generationJob.count({ where: { userId } })).toBe(0);
@@ -421,6 +452,93 @@ describe("Main image action authorization", () => {
     await expect(applyChatToolEffect(effect(snapshot))).rejects.toMatchObject({ code: "forbidden" });
     expect(generated).not.toHaveBeenCalled();
     expect(await dreamcoinBalance(userId)).toBe(40);
+  });
+
+  it("replays a cancelled image as cancelled without reserving or charging it again", async () => {
+    const { userId, begin } = await fixture();
+    const actorId = `${userId}-admin`;
+    await createUser({ id: actorId, role: "admin" });
+    const { snapshot } = await begin("Send me a photo by the cafe window.");
+    if (!snapshot) throw new Error("Missing snapshot");
+    const call = effect(snapshot);
+    const accepted = await applyChatToolEffect(call);
+    if (!accepted.accepted || !accepted.generationJobId) throw new Error("Missing image reservation");
+    const jobId = accepted.generationJobId;
+    await prisma.$transaction(tx => postDreamcoinEntry(tx, {
+      kind: "generation_spend", userId, amount: 8, sourceId: jobId, idempotencyKey: `generation:${jobId}:reserve`,
+    }));
+    await complete(snapshot);
+    await expect(cancelGenerationRequest({
+      requestId: jobId, expectedVersion: 1, actor: { id: actorId, role: "admin" },
+      reason: "Cancel the pending photo", idempotencyKey: `${jobId}:cancel`, traceId: `${jobId}:cancel-trace`,
+    })).resolves.toMatchObject({ status: "cancelled", refundAmount: 8 });
+    const rejection = {
+      accepted: false, duplicate: true, attachmentId: accepted.attachmentId,
+      error: { code: "tool_effect_cancelled", message: "The image request was cancelled", retryable: false },
+    };
+    expect(await applyChatToolEffect(call)).toEqual(rejection);
+    const regenerated = await regenerateChatTurn(userId, snapshot.assistantMessageId);
+    expect(await applyChatToolEffect({ ...call, attempt: regenerated.attempt, callId: randomUUID() })).toEqual(rejection);
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(1);
+    expect(await prisma.dreamcoinLedger.count({ where: { sourceId: jobId, reason: "generation_spend" } })).toBe(1);
+    expect(await prisma.dreamcoinLedger.count({ where: { sourceId: jobId, reason: "refund" } })).toBe(1);
+    expect(await dreamcoinBalance(userId)).toBe(40);
+  });
+
+  it.each(["blocked", "failed", "refunded"] as const)("replays a finalized %s image with its original failure and no new charge", async outcome => {
+    const { userId, begin } = await fixture();
+    const { snapshot } = await begin("Send me a photo by the cafe window.");
+    if (!snapshot) throw new Error("Missing snapshot");
+    const call = effect(snapshot);
+    const accepted = await applyChatToolEffect(call);
+    if (!accepted.accepted || !accepted.generationJobId) throw new Error("Missing image reservation");
+    const jobId = accepted.generationJobId;
+    await prisma.$transaction(tx => postDreamcoinEntry(tx, {
+      kind: "generation_spend", userId, amount: 8, sourceId: jobId, idempotencyKey: `generation:${jobId}:reserve`,
+    }));
+    await complete(snapshot);
+    const attemptId = `${jobId}-attempt`;
+    await prisma.generationAttempt.create({ data: { id: attemptId, requestId: jobId, attemptNo: 1, provider: "mock", status: "running" } });
+    const terminal = {
+      version: 1 as const, requestId: jobId, generationJobId: jobId, attemptId, attemptNo: 1, mode: "image" as const,
+      terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`, terminalRecordChecksum: "a".repeat(64),
+    };
+    const payload = outcome === "blocked"
+      ? { ...terminal, kind: "generation.blocked" as const, layer: "provider" as const, policyCode: "provider_policy_blocked", message: "Provider rejected the image" }
+      : { ...terminal, kind: "generation.failed" as const, error: { code: "provider_unavailable", message: "Provider became unavailable", retryable: true, retryability: "retryable" as const } };
+    await prisma.mainOutboxEvent.create({ data: { id: `generation_terminal_record_${attemptId}`,
+      eventType: "generation.terminal_record.accepted.v1", aggregateType: "generation_attempt", aggregateId: attemptId, payload } });
+    const dedupeKey = `${prefix}replay-terminal:${attemptId}`;
+    await jobQueue.enqueue({ queue: MAIN_QUEUES.aiFinalize, payload, dedupeKey, maxAttempts: 1 });
+    try {
+      expect(await drainLocalAiPipeline({ queues: [MAIN_QUEUES.aiFinalize], limit: 1, workerId: `${prefix}replay-terminal` }))
+        .toMatchObject({ processed: 1, claimed: [expect.objectContaining({ status: "completed" })] });
+      if (outcome === "refunded") {
+        // Current finalization keeps the Job failed and records its refund separately.
+        // Historical attachments can still carry this supported persisted status.
+        await prisma.chatTurnAttachment.update({ where: { id: accepted.attachmentId }, data: { status: "refunded" } });
+      }
+      const session = await getChatSession(userId, snapshot.sessionId);
+      expect(session.messages.find(message => message.id === snapshot.assistantMessageId)?.attachments)
+        .toEqual([expect.objectContaining({ status: outcome, generationJobId: jobId })]);
+      const rejection = {
+        accepted: false, duplicate: true, attachmentId: accepted.attachmentId,
+        error: outcome === "blocked"
+          ? { code: "provider_policy_blocked", message: "The image request was blocked", retryable: false }
+          : outcome === "refunded"
+          ? { code: "provider_unavailable", message: "The image request was refunded", retryable: true }
+          : { code: "provider_unavailable", message: "The image request failed", retryable: true },
+      };
+      expect(await applyChatToolEffect(call)).toEqual(rejection);
+      const regenerated = await regenerateChatTurn(userId, snapshot.assistantMessageId);
+      expect(await applyChatToolEffect({ ...call, attempt: regenerated.attempt, callId: randomUUID() })).toEqual(rejection);
+      expect(await prisma.generationJob.count({ where: { userId } })).toBe(1);
+      expect(await prisma.dreamcoinLedger.count({ where: { sourceId: jobId, reason: "generation_spend" } })).toBe(1);
+      expect(await prisma.dreamcoinLedger.count({ where: { sourceId: jobId, reason: "refund" } })).toBe(1);
+      expect(await dreamcoinBalance(userId)).toBe(40);
+    } finally {
+      await jobQueue.removeByDedupeKey(MAIN_QUEUES.aiFinalize, dedupeKey);
+    }
   });
 
   it("executes an Agent image action once, replays regenerate ACKs and rejects stale attempts", async () => {

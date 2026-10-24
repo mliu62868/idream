@@ -42,37 +42,14 @@ const chatBffSigningSecret =
   mainEnv.CHAT_BFF_SIGNING_SECRET ??
   chatEnv.CHAT_BFF_SIGNING_SECRET ??
   "";
-const imagePipelineUrl =
-  process.env.PIPELINE_IMAGE_API_URL ??
-  process.env.PIPELINE_API_URL ??
-  genEnv.PIPELINE_API_URL ??
-  "http://127.0.0.1:8091";
-const imagePipelineModel =
-  process.env.PIPELINE_IMAGE_MODEL_DEFAULT ??
-  genEnv.PIPELINE_IMAGE_MODEL_DEFAULT ??
-  "redcraft-qw21t";
-const configuredVoicePipelineUrl =
-  process.env.PIPELINE_VOICE_API_URL ??
-  process.env.MOSS_TTS_API_URL ??
-  mainEnv.PIPELINE_VOICE_API_URL;
-const voicePipelineUrl =
-  configuredVoicePipelineUrl ??
-  (includeVoice ? (process.env.PIPELINE_API_URL ?? mainEnv.PIPELINE_API_URL) : undefined);
-const voicePipelineModel =
-  process.env.PIPELINE_VOICE_MODEL_DEFAULT ??
-  process.env.MOSS_TTS_MODEL ??
-  mainEnv.PIPELINE_VOICE_MODEL_DEFAULT ??
-  "OpenMOSS/MOSS-TTS-Local-Transformer-v1.5";
-const voicePipelineToken =
-  process.env.PIPELINE_VOICE_API_TOKEN ??
-  process.env.MOSS_TTS_API_TOKEN ??
-  process.env.PIPELINE_API_TOKEN ??
-  mainEnv.PIPELINE_VOICE_API_TOKEN ??
-  mainEnv.MOSS_TTS_API_TOKEN ??
-  mainEnv.PIPELINE_API_TOKEN ??
-  "";
-const voiceProbeVoiceId =
-  process.env.VOICE_MODEL_PROBE_VOICE_ID ?? defaultVoiceForModel(voicePipelineModel);
+const imageModel = process.env.PIPELINE_IMAGE_MODEL_DEFAULT ?? genEnv.PIPELINE_IMAGE_MODEL_DEFAULT ?? "redcraft-qw21t";
+const voiceProvider = baseEnv.VOICE_PROVIDER ?? "mock";
+const voiceApiUrl = voiceProvider === "pocket-tts" ? baseEnv.POCKET_TTS_API_URL
+  : voiceProvider === "fish-audio" ? baseEnv.FISH_AUDIO_API_URL : undefined;
+const voiceModel = voiceProvider === "pocket-tts" ? baseEnv.POCKET_TTS_MODEL ?? "pocket-tts"
+  : voiceProvider === "fish-audio" ? baseEnv.FISH_AUDIO_MODEL ?? "ming-3.0-tts-0.5b-8bit" : "mock-voice-probe";
+const voiceProbeVoiceId = baseEnv.VOICE_MODEL_PROBE_VOICE_ID ?? (voiceProvider === "pocket-tts"
+  ? baseEnv.POCKET_TTS_DEFAULT_VOICE_ID ?? "anna" : baseEnv.FISH_AUDIO_DEFAULT_VOICE_ID ?? "fish-female-default");
 
 const steps = [
   {
@@ -125,9 +102,9 @@ const steps = [
   },
 ];
 
-if (includeVoice || voicePipelineUrl) {
+if (includeVoice || voiceProvider === "pocket-tts" || voiceProvider === "fish-audio") {
   steps.push({
-    id: "voice-pipeline",
+    id: "voice-model",
     required: includeVoice,
     command: "bun",
     args: [
@@ -139,20 +116,16 @@ if (includeVoice || voicePipelineUrl) {
     ],
     env: {
       ...baseEnv,
-      VOICE_PROVIDER: "pipeline",
-      PIPELINE_API_URL: voicePipelineUrl ?? imagePipelineUrl,
-      PIPELINE_API_TOKEN: voicePipelineToken,
-      PIPELINE_VOICE_API_TOKEN: voicePipelineToken,
-      PIPELINE_VOICE_MODEL_DEFAULT: voicePipelineModel,
+      VOICE_PROVIDER: voiceProvider,
       VOICE_MODEL_PROBE_VOICE_ID: voiceProbeVoiceId,
     },
   });
 } else {
   steps.push({
-    id: "voice-pipeline",
+    id: "voice-model",
     required: false,
     skipped: true,
-    reason: "PIPELINE_VOICE_API_URL is not configured; pass --include-voice to require /audio/speech.",
+    reason: "No real voice provider is configured; pass --include-voice to require voice synthesis.",
   });
 }
 
@@ -216,10 +189,10 @@ const report = {
     adminWebUrl,
     chatServiceUrl,
     chatServiceProbeUserId,
-    imagePipelineUrl,
-    imagePipelineModel,
-    voicePipelineUrl: voicePipelineUrl ?? null,
-    voicePipelineModel,
+    imageModel,
+    voiceProvider,
+    voiceApiUrl: voiceApiUrl ?? null,
+    voiceModel,
     voiceProbeVoiceId,
     includeVoice,
     includeCatalog,
@@ -274,11 +247,4 @@ function stripQuotes(value) {
     return value.slice(1, -1);
   }
   return value;
-}
-
-function defaultVoiceForModel(model) {
-  const normalized = model.toLowerCase();
-  if (normalized.includes("qwen3-tts")) return "serena";
-  if (normalized.includes("kokoro")) return "af_heart";
-  return "default";
 }

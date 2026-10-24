@@ -64,13 +64,26 @@ function fixtureChatMessage(body: Record<string, unknown>) {
       bindings: candidates.map(label => { const index = known.indexOf(label); return index < 0 ? null : index; }),
     }) };
   }
-  const choice = body.tool_choice as { function?: { name?: string } } | undefined;
-  const name = choice?.function?.name;
+  const currentUserIndex = messages.findLastIndex(message => message?.role === "user");
+  const currentUser = messages[currentUserIndex]?.content;
+  const currentTool = messages.slice(currentUserIndex + 1).findLast(message => message?.role === "tool");
+  if (currentTool) {
+    let status: unknown;
+    try {
+      const receipt = JSON.parse(currentTool.content);
+      if (receipt?.outcome === "succeeded") status = receipt.output?.status;
+    } catch { /* A known tool rejection is plain text, not a successful receipt. */ }
+    return { role: "assistant", content: status === "accepted"
+      ? "Your image request is on its way. We can keep chatting while it finishes."
+      : status === "completed" ? "Your image is ready." : "I couldn't start the picture this time." };
+  }
+  // These fixed test messages select a scripted model response; this fixture
+  // does not classify arbitrary user intent or qualify the real model's choice.
+  const name = typeof currentUser === "string" && (currentUser === "Send a portrait." || /^please make an image from this chat \d+$/.test(currentUser))
+    ? "generate_image_async" : currentUser === "Edit the last portrait." ? "edit_last_image" : null;
   const tools = Array.isArray(body.tools) ? body.tools : [];
   const offered = tools.some(tool => tool?.function?.name === name);
-  // Test only the real native-call seam: offered tools alone never authorize a
-  // paid action, and the conversational step after a tool must not call again.
-  if (offered && (name === "generate_image_async" || name === "edit_last_image")) {
+  if (body.tool_choice === "auto" && offered && name) {
     return {
       role: "assistant", content: null,
       tool_calls: [{ id: `call_${randomUUID()}`, type: "function", function: {
@@ -89,9 +102,7 @@ function fixtureChatMessage(body: Record<string, unknown>) {
     ? ""
     : system.includes("Extract core user-profile observations") || system.includes("Extract changes in the user's standing state")
       ? "NONE"
-      : messages.some(message => message?.role === "tool")
-        ? "Your image request is on its way. We can keep chatting while it finishes."
-        : "It's good to hear from you. Tell me more about your day.";
+      : "It's good to hear from you. Tell me more about your day.";
   return { role: "assistant", content };
 }
 

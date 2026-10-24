@@ -82,7 +82,7 @@ export function sanitizeChatImageDirection(
 export function compileChatImagePrompt(
   agentScene: string,
   requestedNudity: "unspecified" | "none" | "full",
-  options: { rejectTruncation?: boolean } = {},
+  options: { rejectTruncation?: boolean; userInstruction?: string } = {},
 ): string {
   options = { rejectTruncation: true, ...options };
   let scene = sanitizeChatImageDirection(agentScene || "candid in-character photo", options);
@@ -101,15 +101,24 @@ export function compileChatImagePrompt(
       options.rejectTruncation,
     );
   }
-  if (requestedNudity === "none") {
+  // "No nudity" also permits swimwear. The original full-clothing request
+  // remains authoritative even when the tool leaves its enum unspecified.
+  const userInstruction = options.userInstruction?.trim();
+  const wardrobeInstruction = userInstruction || scene;
+  const fullyClothed = /\bfully[\s-]+(?:clothed|dressed)\b/i.test(wardrobeInstruction)
+    && !/\b(?:not|never|no longer|less than)\s+fully[\s-]+(?:clothed|dressed)\b/i.test(wardrobeInstruction);
+  if (requestedNudity === "none" || (userInstruction && fullyClothed)) {
     scene = scene
       .replace(/\b(?:fully\s+)?(?:nude|naked|unclothed)\b/gi, "")
       .replace(/\b(?:without (?:any )?clothes|no clothes)\b/gi, "")
       .replace(/(?:裸照|裸体|全裸|赤裸|一丝不挂|脱光)/gu, "")
       .replace(/\s{2,}/g, " ")
       .trim();
+    const wardrobeRequirement = fullyClothed
+      ? "Wardrobe requirement: fully clothed adult character. Preserve the explicitly requested outfit. Complete unspecified clothing with an opaque top covering the chest and torso and opaque trousers, skirt or dress covering the lower body. If an inner layer under a cardigan or open jacket is unspecified, use an opaque crew-neck top."
+      : "Wardrobe requirement: keep the adult character clothed; no nudity.";
     return chatDirectionText(
-      `Wardrobe requirement: keep the adult character clothed; no nudity. Requested scene: ${scene}`,
+      `${wardrobeRequirement} Requested scene: ${scene}`,
       900,
       options.rejectTruncation,
     );
@@ -264,13 +273,16 @@ function buildImageGenerationPrompt(input: {
       `High quality in-character portrait photo of ${cleanPromptText(lookIdentity?.name ?? character.name, 120)}`,
       presentation.length ? `Subject: ${presentation.join(", ")}` : null,
       // Preserve sealed stable facts. A guarded derived cache is projected above;
-      // manual or unknown identities keep their original text and receive the
-      // current Look/Moment priority rules without rewriting sealed storage.
-      ...(input.lookFragment ? [
-        "Active look and Requested scene override baseline clothing, pose and background in identity descriptions and reference images",
-        "Preserve the same adult face, age, hair, eye color, skin and body proportions",
-        "Scene details apply only where they do not conflict with the Active look or Requested scene",
-      ] : []),
+      // manual or unknown identities keep their original text. The current
+      // scene owns clothing, pose and background even without a saved Look;
+      // the reference remains identity authority, not wardrobe authority.
+      input.lookFragment
+        ? "Active look and Requested scene override baseline clothing, pose and background in identity descriptions and reference images"
+        : "Requested scene overrides baseline clothing, pose and background in identity descriptions and reference images",
+      "Preserve the same adult face, age, hair, eye color, skin and body proportions",
+      input.lookFragment
+        ? "Scene details apply only where they do not conflict with the Active look or Requested scene"
+        : "Scene details apply only where they do not conflict with the Requested scene",
       identityPrompt ? `${identityLabel}: ${identityPrompt}` : null,
       direction.anchor ? `Visual identity anchor: ${direction.anchor}` : null,
       direction.stableTraits.length
