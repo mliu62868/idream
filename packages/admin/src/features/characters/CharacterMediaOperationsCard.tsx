@@ -43,7 +43,7 @@ export function characterMediaOperationsNeedAttention(
 }
 
 export function shouldReleaseVoiceReclaimIdempotencyKey(cause: unknown) {
-  if (!(cause instanceof AdminV2RequestError)) return false;
+  if (!(cause instanceof AdminV2RequestError) || cause.outcome !== "answered") return false;
   const details =
     cause.details &&
     typeof cause.details === "object" &&

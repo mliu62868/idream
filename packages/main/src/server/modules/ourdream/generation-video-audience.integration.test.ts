@@ -123,6 +123,16 @@ describe("Character video audience at quote and reservation", () => {
     if (target.kind !== "retryable") throw new Error("Expected a failed video to be retryable");
     const { quote: retryQuote } = await quoteGenerationRetry(retryInput);
     const retryAuthority = quoteAuthorityFor(retryQuote, 1)!;
+    await prisma.mediaAsset.update({ where: { id: sourceAssetId }, data: { storageKey: null } });
+    try {
+      await expect(quoteGenerationRetry(retryInput)).rejects.toMatchObject({ status: 409, details: { sourceImageAssetId: sourceAssetId } });
+      await expect(retryGenerationJobForUser({ ...retryInput, job: target.job, quoteAuthority: retryAuthority }))
+        .rejects.toMatchObject({ status: 409, details: { sourceImageAssetId: sourceAssetId } });
+      expect(await prisma.generationJob.count({ where: { derivedFromJobId: job.id } })).toBe(0);
+      expect(await prisma.dreamcoinLedger.count({ where: { userId: ownerId, reason: "generation_spend" } })).toBe(1);
+    } finally {
+      await prisma.mediaAsset.update({ where: { id: sourceAssetId }, data: { storageKey: `${sourceAssetId}.webp` } });
+    }
     await prisma.character.update({ where: { id: characterId }, data: { imageAssetId: null } });
     try {
       await expect(retryGenerationJobForUser({ ...retryInput, job: target.job, quoteAuthority: retryAuthority }))
@@ -172,12 +182,13 @@ describe("Character video audience at quote and reservation", () => {
       // Execute the real audience query inside the rollback fixture so immutable
       // qualification evidence is verified without leaving a public test record.
       const binding = vi.spyOn(prisma.character, "findFirst").mockImplementation(tx.character.findFirst);
+      const mediaBinding = vi.spyOn(prisma.mediaAsset, "findFirst").mockImplementation(tx.mediaAsset.findFirst);
       try {
         const { plan, quote } = await quoteGeneration({ userId: otherId, body: { ...body, characterId: id }, profileSelectionAuthority: "public_generator" });
         expect(plan.character?.id).toBe(id);
         expect(plan.requestedSourceImageAssetId).toBe(assetId);
         expect(quote.costs).toEqual([{ outputCount: 1, costDreamcoins: 100 }]);
-      } finally { binding.mockRestore(); }
+      } finally { binding.mockRestore(); mediaBinding.mockRestore(); }
       throw rolledBack;
     })).rejects.toBe(rolledBack);
   });

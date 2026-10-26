@@ -3,7 +3,6 @@ import {
   metricCardSchema,
   metricDashboardResponseSchema,
   metricQualityReportSchema,
-  metricReconciliationReportSchema,
   type MetricCard,
   type MetricDefinition,
 } from "@idream/shared/admin";
@@ -706,7 +705,7 @@ export async function getMetricReconciliationReport(request: Request) {
       qualityReport(prisma, asOf),
       prisma.metricBackfillRun.findMany({ orderBy: { startedAt: "desc" }, take: 20 }),
     ]);
-    const data = metricReconciliationReportSchema.parse({
+    const data = {
       asOf: asOf.toISOString(),
       quality,
       recentBackfills: recentBackfills.map((run) => ({
@@ -724,7 +723,7 @@ export async function getMetricReconciliationReport(request: Request) {
         startedAt: run.startedAt.toISOString(),
         completedAt: run.completedAt?.toISOString() ?? null,
       })),
-    });
+    };
     return ok(data, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     if (error instanceof AppError) return fail(error);

@@ -49,7 +49,7 @@ import {
 import { loadLockedGenerationReferenceAuthority } from "./generation-reference-set";
 import {
   acceptGenerationJobForUser,
-  assertGenerationSourceImageAuthorityInTx,
+  assertGenerationSourceImageAuthority,
   findExistingGenerationJob,
   wakeQueuedGenerationDispatch,
 } from "./generation-job-authority";
@@ -410,7 +410,7 @@ export async function createGenerationJobForUser(
       // Re-read the complete grant after all identity and Comic page locks are held.
       if (contextToken) await resolveGenerationContext(userId, contextToken, tx);
       if (sourceImageAssetId) {
-        await assertGenerationSourceImageAuthorityInTx(tx, {
+        await assertGenerationSourceImageAuthority(tx, {
           sourceImageAssetId,
           userId,
           characterId: character?.id ?? null,

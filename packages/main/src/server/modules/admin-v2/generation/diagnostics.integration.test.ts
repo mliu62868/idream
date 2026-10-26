@@ -47,7 +47,8 @@ describe("generation diagnostics (v2, read-only)", () => {
 
     const items = result.data.items as Array<Record<string, unknown>>;
     const keys = items.map((item) => item.workflowKey);
-    expect(keys).toContain("redqw21");
+    expect(keys).toContain("redcraft-qw21t");
+    expect(keys).not.toContain("redqw21");
     expect(keys).toContain("qwen-image-edit-img2img");
     expect(keys).toContain("qwen-image-edit-multi-identity");
     expect(keys).toContain("pornmaster-zimage-drawthings-txt2img");
@@ -98,10 +99,10 @@ describe("generation diagnostics (v2, read-only)", () => {
     }
   });
 
-  it("404s for an unknown workflowKey", async () => {
+  it.each(["does-not-exist", "redqw21"])("404s for an unavailable workflowKey: %s", async (workflowKey) => {
     const result = await adminV2(
       "GET",
-      "/api/v2/admin/generation/workflows/does-not-exist",
+      `/api/v2/admin/generation/workflows/${workflowKey}`,
       admin,
     );
     expect(result.status).toBe(404);

@@ -26,17 +26,15 @@ import {
   fieldClass,
   textAreaClass,
 } from "@/features/operations/WorkspaceUi";
-import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import {
-  claimDurableMutationIntent,
   clearDurableMutationIntent,
+  withDurableMutationIntentLock,
   readActiveDurableMutationIntent,
-  updateDurableMutationIntent,
   type DurableMutationIntent,
 } from "@/lib/durable-mutation-intent";
 import { useAuthorityResource } from "@/lib/authority-resource";
-import { reconcileDurableMutationIntent } from "@/lib/durable-mutation-recovery";
+import { createOrRecoverCharacterRun } from "./creative-run-creation";
 import { cn } from "@/lib/utils";
 
 type CharacterVideoPermissions = {
@@ -147,13 +145,6 @@ export function characterVideoProgress(input: {
   };
 }
 
-function isDefinitiveMutationRejection(
-  cause: unknown,
-): cause is AdminV2RequestError {
-  return cause instanceof AdminV2RequestError &&
-    [400, 401, 403, 404, 409, 422].includes(cause.status);
-}
-
 function createRequestSignature(
   characterId: string,
   body: CharacterVideoCreateRequest,
@@ -162,7 +153,7 @@ function createRequestSignature(
 }
 
 function savedCreateRequest(
-  intent: DurableMutationIntent,
+  intent: Pick<DurableMutationIntent, "requestSnapshot">,
   characterId: string,
 ) {
   const parsed = creativeRunCreateRequestSchema.safeParse(
@@ -283,21 +274,27 @@ export function CharacterVideoStudio({
   const { locale, t, value } = useAdminI18n();
   const createIntentScope =
     `character-video:create:${actorId}:${data.character.id}`;
+  const [createIntent, setCreateIntent] = useState<DurableMutationIntent | null>(
+    () => readActiveDurableMutationIntent({ scope: createIntentScope }),
+  );
+  const createIntentRef = useRef(createIntent);
+  const lockedCreateRequest = createIntent ? savedCreateRequest(createIntent, data.character.id) : null;
+  const [needsRunRefresh, setNeedsRunRefresh] = useState(false);
   const sources = useMemo(() => characterVideoSourceOptions(data), [data]);
   const [preferredSourceAssetId, setPreferredSourceAssetId] = useState(
-    () => sources[0]?.assetId ?? "",
+    () => lockedCreateRequest?.referenceAssetIds[0] ?? sources[0]?.assetId ?? "",
   );
-  const sourceAssetId = sources.some(
+  const sourceAssetId = lockedCreateRequest?.referenceAssetIds[0] ?? (sources.some(
     (source) => source.assetId === preferredSourceAssetId,
   )
     ? preferredSourceAssetId
-    : sources[0]?.assetId ?? "";
+    : sources[0]?.assetId ?? "");
   const [brief, setBrief] = useState(() =>
-    t(
+    lockedCreateRequest?.brief ?? t(
       "Subtle natural breathing, a gentle smile, and direct eye contact. Keep the camera steady and preserve the exact face and background.",
     )
   );
-  const [negativePrompt, setNegativePrompt] = useState("");
+  const [negativePrompt, setNegativePrompt] = useState(lockedCreateRequest?.negativePrompt ?? "");
   // SPEC: 选中哪个 Run 是这一屏唯一的"取数身份"；null 表示跟随列表最新一条。
   // INTENT: 原来 loadRuns 与 loadRun 互写 runs/selectedRun 两份 state——列表取完顺手把
   //         第一条的详情也取了，详情取完又把自己塞回列表。两条路径都能改对方的状态，
@@ -309,15 +306,17 @@ export function CharacterVideoStudio({
   const [message, setMessage] = useState<string | null>(null);
   const [progressNowMs, setProgressNowMs] = useState(0);
   const refreshedTerminalRunIds = useRef(new Set<string>());
-  const [createIntent, setCreateIntent] = useState<DurableMutationIntent | null>(
-    () => readActiveDurableMutationIntent({ scope: createIntentScope }),
-  );
-  const createIntentRef = useRef(createIntent);
   const verifiedMessage = useRef<string | null>(null);
   const rememberCreateIntent = useCallback((intent: DurableMutationIntent | null) => {
     createIntentRef.current = intent;
     setCreateIntent(intent);
-  }, []);
+    const saved = intent ? savedCreateRequest(intent, data.character.id) : null;
+    if (saved) {
+      setPreferredSourceAssetId(saved.referenceAssetIds[0] ?? "");
+      setBrief(saved.brief);
+      setNegativePrompt(saved.negativePrompt ?? "");
+    }
+  }, [data.character.id]);
   const runList = useAuthorityResource({
     key: data.character.id,
     enabled: permissions.read,
@@ -443,12 +442,14 @@ export function CharacterVideoStudio({
     const request = savedCreateRequest(createIntent, data.character.id);
     if (!request || !createdRunProjectionMatches(selectedRun, request)) return;
     const timer = window.setTimeout(() => {
-      if (createIntentRef.current !== createIntent) return;
-      clearDurableMutationIntent(createIntent);
-      rememberCreateIntent(null);
-      setError(null);
-      if (verifiedMessage.current) setMessage(verifiedMessage.current);
-      verifiedMessage.current = null;
+      void withDurableMutationIntentLock(createIntent.scope, () => {
+        if (createIntentRef.current !== createIntent) return;
+        clearDurableMutationIntent(createIntent);
+        rememberCreateIntent(null);
+        setError(null);
+        if (verifiedMessage.current) setMessage(verifiedMessage.current);
+        verifiedMessage.current = null;
+      });
     }, 0);
     return () => window.clearTimeout(timer);
   }, [createIntent, data.character.id, rememberCreateIntent, selectedRun]);
@@ -461,8 +462,16 @@ export function CharacterVideoStudio({
     if (activeRunId === runId) await runDetail.readback();
   };
 
+  const refreshCurrentRun = async () => {
+    const current = await runList.readback();
+    const target = current.find((run) => ["pending", "running"].includes(run.executionOutcome)) ?? current[0];
+    setSelectedRunId(target?.id ?? null);
+    if (target) await fetchRunDetail(target.id);
+    setNeedsRunRefresh(false);
+  };
+
   const createVideo = async () => {
-    if (!createIntent && videoRequestInProgress) return;
+    if (needsRunRefresh || (!createIntent && videoRequestInProgress)) return;
     if (!permissions.create || (!sourceAssetId && !createIntent)) return;
     setError(null);
     setMessage(null);
@@ -495,114 +504,49 @@ export function CharacterVideoStudio({
         : parsed.error.message);
       return;
     }
-    let body = intent
-      ? savedCreateRequest(intent, data.character.id)
-      : parsed?.data ?? null;
     setBusy("create");
     try {
-      if (
-        intent &&
-        (intent.status === "reconciliation_required" || !body)
-      ) {
-        const receipt = await reconcileDurableMutationIntent({
-          intent,
-          commandType: "creative.run.create",
-          expectedCharacterId: data.character.id,
-          expectedPurpose: "character_video",
-        });
-        if (receipt.state === "cancelled") {
-          clearDurableMutationIntent(intent);
-          rememberCreateIntent(null);
-          setMessage(
-            "The old video request had no committed effect. A new request is now safe.",
-          );
-          return;
-        }
-        if (
-          receipt.state !== "committed" ||
-          !receipt.committedTargetId ||
-          receipt.verification?.kind !== "creative_run" ||
-          receipt.verification.runId !== receipt.committedTargetId
-        ) {
-          throw new Error(
-            t("The saved video request is {state}. Keep its exact request locked until a committed receipt is available.", { state: value(receipt.state) }),
-          );
-        }
-        const recoveredBody = creativeRunCreateRequestSchema.safeParse(
-          receipt.verification.requestSnapshot,
-        );
-        if (
-          !recoveredBody.success ||
-          recoveredBody.data.purpose !== "character_video" ||
-          recoveredBody.data.targetType !== "character" ||
-          recoveredBody.data.targetId !== data.character.id
-        ) {
-          throw new Error(
-            "The recovered receipt does not contain this Character's exact video request.",
-          );
-        }
-        body = recoveredBody.data;
-        intent = updateDurableMutationIntent(intent, {
-          status: "committed_projection_pending",
-          committedTargetId: receipt.committedTargetId,
-          requestSnapshot: body,
-        });
-        rememberCreateIntent(intent);
-        await verifyCreatedRun(receipt.committedTargetId,
-          "The committed video request was recovered and verified in its exact Run.");
-        return;
-      }
-      if (!body) {
-        throw new Error(
-          "The saved video request no longer matches the active contract and must be reconciled.",
-        );
-      }
-      if (
-        intent?.status === "committed_projection_pending" &&
-        intent.committedTargetId
-      ) {
-        await verifyCreatedRun(intent.committedTargetId,
-          "The committed video Run is now visible. No duplicate request was submitted.");
-        return;
-      }
-      const signature = createRequestSignature(data.character.id, body);
-      if (!intent) {
-        const claim = await claimDurableMutationIntent({
-          scope: createIntentScope,
-          signature,
-          requestSnapshot: body,
-        });
-        intent = claim.intent;
-        rememberCreateIntent(intent);
-        if (intent.signature !== signature) {
-          setError(
-            "Another tab already started a different video request. Resume its exact saved request first.",
-          );
-          return;
-        }
-      }
-      let currentIntent = intent;
-      const committedBody = body;
-      const mutation = await runCommittedMutation({
-        action: "Create Character video",
-        commit: async () => {
-          const result = await adminV2Operation("POST /api/v2/admin/creative/runs", {
-            replayIdempotencyKey: currentIntent.idempotencyKey,
-            body: committedBody,
-          });
-          currentIntent = updateDurableMutationIntent(currentIntent, {
-            status: "committed_projection_pending",
-            committedTargetId: result.batch.id,
-          });
-          intent = currentIntent;
-          rememberCreateIntent(currentIntent);
-          return result;
+      const result = await createOrRecoverCharacterRun({
+        scope: createIntentScope,
+        characterId: data.character.id,
+        expectedPurpose: "character_video",
+        intent,
+        request: parsed?.success ? parsed.data : null,
+        parseRequest: (requestSnapshot) => savedCreateRequest({ requestSnapshot }, data.character.id),
+        signature: (body) => createRequestSignature(data.character.id, body),
+        onIntentChange: (next) => {
+          intent = next;
+          rememberCreateIntent(next);
         },
+        commit: async (submit) => (await runCommittedMutation({
+          action: "Create Character video",
+          commit: submit,
+        })).result,
       });
-      await verifyCreatedRun(mutation.result.batch.id,
-        mutation.result.replayed
-          ? "The existing video Run was recovered. This page will keep its progress current."
-          : "Video generation started. This page will keep the progress current.",
+      if (result.state === "superseded") {
+        setNeedsRunRefresh(true);
+        await refreshCurrentRun();
+        return;
+      }
+      if (result.state === "cancelled") {
+        setMessage("The old video request had no committed effect. A new request is now safe.");
+        return;
+      }
+      if (result.state === "blocked") {
+        setError("Another tab already started a different video request. Resume its exact saved request first.");
+        return;
+      }
+      if (result.state === "pending") {
+        throw new Error(t("The saved video request is {state}. Keep its exact request locked until a committed receipt is available.", { state: value(result.receipt.state) }));
+      }
+      await verifyCreatedRun(result.runId,
+        result.source === "reconciliation"
+          ? "The committed video request was recovered and verified in its exact Run."
+          : result.source === "projection"
+            ? "The committed video Run is now visible. No duplicate request was submitted."
+            : result.replayed
+              ? "The existing video Run was recovered. This page will keep its progress current."
+              : "Video generation started. This page will keep the progress current.",
       );
     } catch (cause) {
       if (intent?.status === "committed_projection_pending") {
@@ -611,30 +555,10 @@ export function CharacterVideoStudio({
             ? t("The video Run was committed, but exact projection verification is pending: {detail}", { detail: t(cause.message) })
             : "The video Run was committed, but exact projection verification is pending.",
         );
-      } else if (intent?.status === "reconciliation_required") {
-        setError(
-          cause instanceof Error
-            ? cause.message
-            : "The saved video request could not be reconciled.",
-        );
-      } else if (intent && isDefinitiveMutationRejection(cause)) {
-        clearDurableMutationIntent(intent);
-        rememberCreateIntent(null);
-        setError(cause.message);
-      } else if (intent) {
-        const unknown = updateDurableMutationIntent(intent, {
-          status: "outcome_unknown",
-        });
-        rememberCreateIntent(unknown);
-        setError(
-          "Video creation outcome is unknown. Resume video creation to replay the exact request with the same key.",
-        );
+      } else if (intent?.status === "outcome_unknown") {
+        setError("Video creation outcome is unknown. Resume video creation to replay the exact request with the same key.");
       } else {
-        setError(
-          cause instanceof Error
-            ? cause.message
-            : "Video generation could not start",
-        );
+        setError(cause instanceof Error ? cause.message : "Video generation could not start");
       }
     } finally {
       setBusy(null);
@@ -647,7 +571,8 @@ export function CharacterVideoStudio({
     try {
       // The list also owns whether another video is still active, even while
       // the operator is viewing a historical result.
-      await Promise.all([runList.refresh(), ...(activeRunId ? [runDetail.refresh()] : [])]);
+      if (needsRunRefresh) await refreshCurrentRun();
+      else await Promise.all([runList.readback(), ...(activeRunId ? [runDetail.readback()] : [])]);
       await onProjectReload?.();
     } catch {
       setError(VIDEO_LIBRARY_REFRESH_ERROR);
@@ -671,9 +596,6 @@ export function CharacterVideoStudio({
         item: selectedItem,
         nowMs: progressNowMs,
       })
-    : null;
-  const lockedCreateRequest = createIntent
-    ? savedCreateRequest(createIntent, data.character.id)
     : null;
   const createActionLabel = createIntent
     ? createIntent.status === "committed_projection_pending"
@@ -814,6 +736,7 @@ export function CharacterVideoStudio({
                     <img alt={t("{name} video source", { name: data.character.name })} className="h-14 w-14 shrink-0 rounded-md object-cover" src={selectedSource.thumbnailUrl ?? selectedSource.url} />
                   ) : null}
                   <select className={fieldClass} disabled={busy !== null || createIntent !== null} onChange={(event) => setPreferredSourceAssetId(event.target.value)} value={sourceAssetId}>
+                    {lockedCreateRequest && !selectedSource ? <option value={sourceAssetId}>{sourceAssetId}</option> : null}
                     {sources.map((source) => <option key={source.assetId} value={source.assetId}>{t(source.label, source.labelValues)}</option>)}
                   </select>
                 </span>
@@ -868,7 +791,7 @@ export function CharacterVideoStudio({
                   : t("Estimated duration unavailable until this profile has completed health samples")}
               </p>
             </div>
-            <WorkspaceButton className="mt-4 w-full justify-center" disabled={loading || busy !== null || !permissions.create || (!createIntent && (videoRequestInProgress || !sourceAssetId || brief.trim().length === 0))} onClick={() => void createVideo()} tone="primary">
+            <WorkspaceButton className="mt-4 w-full justify-center" disabled={loading || busy !== null || needsRunRefresh || !permissions.create || (!createIntent && (videoRequestInProgress || !sourceAssetId || brief.trim().length === 0))} onClick={() => void createVideo()} tone="primary">
               {busy === "create" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{t(createActionLabel)}
             </WorkspaceButton>
           </div>

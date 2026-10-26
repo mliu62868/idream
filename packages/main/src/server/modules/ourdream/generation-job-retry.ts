@@ -47,7 +47,7 @@ import {
 import type { GenerationQuoteAuthority } from "./generation-quote-contract";
 import {
   acceptGenerationJobForUser,
-  assertGenerationSourceImageAuthorityInTx,
+  assertGenerationSourceImageAuthority,
   generationChatCharacterId,
   wakeQueuedGenerationDispatch,
 } from "./generation-job-authority";
@@ -153,6 +153,13 @@ export async function quoteGenerationRetry(input: {
     }
   }
   const authority = await resolveGenerationRetryAuthority(input.userId, job);
+  if (job.mode === "video" && authority.retrySourceImageAssetId) {
+    await assertGenerationSourceImageAuthority(prisma, {
+      sourceImageAssetId: authority.retrySourceImageAssetId,
+      userId: input.userId,
+      characterId: job.characterId,
+    });
+  }
   const balance = await dreamcoinBalance(input.userId);
   return {
     quote: {
@@ -511,7 +518,7 @@ export async function retryGenerationJobForUser(input: {
       });
       if (contextToken) await resolveGenerationContext(userId, contextToken, tx);
       if (retrySourceImageAssetId) {
-        await assertGenerationSourceImageAuthorityInTx(tx, {
+        await assertGenerationSourceImageAuthority(tx, {
           sourceImageAssetId: retrySourceImageAssetId,
           userId,
           characterId: job.characterId,
@@ -519,7 +526,7 @@ export async function retryGenerationJobForUser(input: {
         });
       }
       if (retryLookReferenceAssetId) {
-        await assertGenerationSourceImageAuthorityInTx(tx, {
+        await assertGenerationSourceImageAuthority(tx, {
           sourceImageAssetId: retryLookReferenceAssetId,
           userId,
           characterId: job.characterId,

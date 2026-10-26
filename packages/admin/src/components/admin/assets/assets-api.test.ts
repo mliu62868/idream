@@ -1,9 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { contentAssetPatchRequestSchema } from "@idream/shared/admin";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import {
-  ASSETS_BULK,
-  ASSETS_BULK_PREFLIGHT,
-  AssetBulkArchiveError,
+  assetArchiveBlocker,
   assetAuthorityDependencyView,
   assetBulkArchivePayload,
   assetPatchPayload,
@@ -140,6 +139,48 @@ describe("assetAuthorityDependencyView", () => {
   });
 });
 
+describe("bulk archive transport authority", () => {
+  it.each(["archive", "preflight"])("preserves the authority status, code and request ID for a failed %s", async (operation) => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      ok: false,
+      error: {
+        code: "admin_upstream_unavailable",
+        message: "Admin authority is temporarily unavailable",
+        requestId: "bulk-upstream-request",
+      },
+    }, { status: 503 })));
+    const failure = await (operation === "archive"
+      ? bulkArchiveAssets({ assetIds: ["asset-upstream"], reason: "Retire unused upload" })
+      : preflightArchiveAssets(["asset-upstream"])).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(AdminV2RequestError);
+    expect(failure).toMatchObject({
+      status: 503,
+      code: "admin_upstream_unavailable",
+      requestId: "bulk-upstream-request",
+    });
+  });
+
+  it("preserves a shared comic publication dependency in a rejected archive", async () => {
+    const dependency: AssetAuthorityDependency = {
+      kind: "comic_publication",
+      comicId: "comic-active",
+      repairPath: "/admin/moderation?tab=comics",
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      ok: false,
+      error: {
+        code: "conflict",
+        message: "Asset remains in use",
+        details: { code: "asset_authority_dependency_active", assetId: "comic-asset", dependencies: [dependency] },
+      },
+    }, { status: 409 })));
+    const failure = await bulkArchiveAssets({ assetIds: ["comic-asset"], reason: "Retire old upload" })
+      .catch((error: unknown) => error);
+    expect(failure).toMatchObject({ details: { dependencies: [dependency] } });
+  });
+});
+
 describe("assetPatchPayload", () => {
   it("preserves an explicit cleared description through JSON and the shared PATCH contract", () => {
     const payload = assetPatchPayload({
@@ -209,12 +250,10 @@ describe("bulk asset archival", () => {
   });
 
   it("sends one atomic POST with exact IDs and returns every updated target", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      json: async () => ({
-        ok: true,
-        data: { updatedIds: ["asset-a", "asset-b"] },
-      }),
-    });
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({
+      ok: true,
+      data: { updatedIds: ["asset-a", "asset-b"] },
+    }));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(bulkArchiveAssets({
@@ -223,19 +262,19 @@ describe("bulk asset archival", () => {
     })).resolves.toEqual({ updatedIds: ["asset-a", "asset-b"] });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledWith(ASSETS_BULK, {
+    expect(fetchMock).toHaveBeenCalledWith("/api/v2/admin/assets/bulk", expect.objectContaining({
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "idempotency-key": expect.any(String),
-      },
       body: JSON.stringify({
         assetIds: ["asset-a", "asset-b"],
         status: "archived",
         reason: "Archive unused set",
         confirmation: "asset-a,asset-b",
       }),
-    });
+    }));
+    const headers = new Headers(fetchMock.mock.calls[0][1]?.headers);
+    expect(headers.get("content-type")).toBe("application/json");
+    expect(headers.get("idempotency-key")).toEqual(expect.any(String));
+    expect(headers.get("x-request-id")).toEqual(expect.any(String));
   });
 
   it("reuses the original bulk key when a 200 response body is interrupted, and settles only the readable replay", async () => {
@@ -251,7 +290,10 @@ describe("bulk asset archival", () => {
     vi.stubGlobal("fetch", fetchMock);
     const intent = { assetIds: ["body-loss-asset"], reason: "Retire body-loss audit upload" };
 
-    await expect(bulkArchiveAssets(intent)).rejects.toThrow("Response body interrupted after headers");
+    await expect(bulkArchiveAssets(intent)).rejects.toMatchObject({
+      outcome: "unknown",
+      details: { cause: "Response body interrupted after headers" },
+    });
     await expect(bulkArchiveAssets(intent)).resolves.toEqual({ updatedIds: ["body-loss-asset"] });
     const firstKey = new Headers(fetchMock.mock.calls[0][1]?.headers).get("idempotency-key");
     expect(firstKey).toBeTruthy();
@@ -262,9 +304,29 @@ describe("bulk asset archival", () => {
     expect(new Headers(fetchMock.mock.calls[2][1]?.headers).get("idempotency-key")).not.toBe(firstKey);
   });
 
+  it.each(["truncated JSON", "invalid receipt"])("retains the original bulk key when a 200 answer contains %s", async (failure) => {
+    const assetId = failure === "truncated JSON" ? "truncated-receipt-asset" : "invalid-receipt-asset";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(failure === "truncated JSON"
+        ? new Response('{"ok":true,"data":', { status: 200 })
+        : Response.json({ ok: true, data: { updatedIds: assetId } }))
+      .mockResolvedValueOnce(Response.json({ ok: true, data: { updatedIds: [assetId] } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const intent = { assetIds: [assetId], reason: "Verify the unreadable receipt before completing" };
+
+    await expect(bulkArchiveAssets(intent)).rejects.toThrow();
+    await expect(bulkArchiveAssets(intent)).resolves.toEqual({ updatedIds: [assetId] });
+    const firstKey = new Headers(fetchMock.mock.calls[0][1]?.headers).get("idempotency-key");
+    expect(firstKey).toBeTruthy();
+    expect(new Headers(fetchMock.mock.calls[1][1]?.headers).get("idempotency-key")).toBe(firstKey);
+    expect(fetchMock.mock.calls[1][1]?.body).toBe(fetchMock.mock.calls[0][1]?.body);
+  });
+
   it.each([503, 409])("keeps the existing unknown-versus-answered key contract for a readable %s rejection", async (status) => {
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(Response.json({ ok: false, error: { message: "Archive rejected" } }, { status }))
+      .mockResolvedValueOnce(Response.json({ ok: false, error: {
+        code: status === 503 ? "unavailable" : "conflict", message: "Archive rejected",
+      } }, { status }))
       .mockResolvedValueOnce(Response.json({ ok: true, data: { updatedIds: [`readable-${status}-asset`] } }));
     vi.stubGlobal("fetch", fetchMock);
     const intent = { assetIds: [`readable-${status}-asset`], reason: "Verify readable rejection semantics" };
@@ -283,15 +345,13 @@ describe("bulk asset archival", () => {
       characterId: "character-1",
       repairPath: "/admin/characters/character-1?tab=assets",
     };
-    const fetchMock = vi.fn().mockResolvedValue({
-      json: async () => ({
-        ok: true,
-        data: {
-          assetIds: ["asset-a", "asset-b"],
-          blockers: [{ assetId: "asset-b", dependencies: [dependency] }],
-        },
-      }),
-    });
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({
+      ok: true,
+      data: {
+        assetIds: ["asset-a", "asset-b"],
+        blockers: [{ assetId: "asset-b", dependencies: [dependency] }],
+      },
+    }));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
@@ -301,11 +361,14 @@ describe("bulk asset archival", () => {
       blockers: [{ assetId: "asset-b", dependencies: [dependency] }],
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledWith(ASSETS_BULK_PREFLIGHT, {
+    expect(fetchMock).toHaveBeenCalledWith("/api/v2/admin/assets/bulk/preflight", expect.objectContaining({
       method: "POST",
-      headers: { "content-type": "application/json" },
       body: JSON.stringify({ assetIds: ["asset-a", "asset-b"] }),
-    });
+    }));
+    const headers = new Headers(fetchMock.mock.calls[0][1]?.headers);
+    expect(headers.get("content-type")).toBe("application/json");
+    expect(headers.get("idempotency-key")).toBeNull();
+    expect(headers.get("x-request-id")).toEqual(expect.any(String));
   });
 
   it("preserves structured authority dependencies for repair links", async () => {
@@ -317,34 +380,37 @@ describe("bulk asset archival", () => {
       slot: "portrait",
       repairPath: "/admin/characters/character-1?tab=release",
     };
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      json: async () => ({
-        ok: false,
-        error: {
-          message: "Asset remains in use",
-          details: {
-            code: "asset_authority_dependency_active",
-            dependencies: [dependency],
-            repairPath: dependency.repairPath,
-          },
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      ok: false,
+      error: {
+        code: "conflict",
+        message: "Asset remains in use",
+        details: {
+          code: "asset_authority_dependency_active",
+          dependencies: [dependency],
+          repairPath: dependency.repairPath,
         },
-      }),
-    }));
+      },
+    }, { status: 409 })));
 
     const error = await bulkArchiveAssets({
       assetIds: ["asset-a"],
       reason: "Archive stale image",
     }).catch((caught: unknown) => caught);
 
-    expect(error).toBeInstanceOf(AssetBulkArchiveError);
+    expect(error).toBeInstanceOf(AdminV2RequestError);
     expect(error).toMatchObject({
       message: "Asset remains in use",
       details: {
         code: "asset_authority_dependency_active",
         dependencies: [dependency],
-        missingAssetIds: [],
         repairPath: dependency.repairPath,
       },
+    });
+    expect(assetArchiveBlocker(error)).toEqual({
+      kind: "dependency",
+      dependencies: [dependency],
+      repairPath: dependency.repairPath,
     });
   });
 });

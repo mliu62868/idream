@@ -854,6 +854,42 @@ test("production refuses a non-production product environment before mutation", 
   assert.deepEqual(calls, []);
 });
 
+test("PM2 entrypoint refuses oversized sockets before discovery or queue mutation", () => {
+  for (const mode of ["development", "current", "production"]) {
+    const calls = [];
+    const status = runPm2Ecosystem({
+      args: [mode, "restart"],
+      env: productionEnv({ PM2_HOME: `/tmp/${"long-home-".repeat(20)}` }),
+      spawnSync: (command, args, options) => {
+        calls.push({ command, args, options });
+        return { status: 91, stdout: "[]" };
+      },
+    });
+    assert.equal(status, 1);
+    assert.deepEqual(calls, []);
+  }
+});
+
+test("PM2 entrypoint accepts explicit valid sockets without changing daemon home", () => {
+  const calls = [];
+  const env = productionEnv({
+    PM2_HOME: `/tmp/${"long-home-".repeat(20)}`,
+    PM2_DAEMON_RPC_PORT: "/tmp/idream-rpc.sock",
+    PM2_DAEMON_PUB_PORT: "/tmp/idream-pub.sock",
+    PM2_INTERACTOR_RPC_PORT: "/tmp/idream-interactor.sock",
+  });
+  const status = runPm2Ecosystem({
+    args: ["current", "restart"],
+    env,
+    spawnSync: scriptedSpawn([{ status: 91 }], calls),
+  });
+  assert.equal(status, 91);
+  assert.deepEqual(commandList(calls), [["pm2", ["jlist"]]]);
+  for (const key of ["PM2_HOME", "PM2_DAEMON_RPC_PORT", "PM2_DAEMON_PUB_PORT", "PM2_INTERACTOR_RPC_PORT"]) {
+    assert.equal(calls[0].options.env[key], env[key]);
+  }
+});
+
 test("production requires one explicit Redis and BullMQ authority before mutation", () => {
   const calls = [];
   const status = runPm2Ecosystem({

@@ -159,6 +159,12 @@ describe("Character media operations card", () => {
     expect(html).toContain("succeeded");
   });
 
+  it.each([200, 400, 503])("keeps the reclaim key when HTTP %s does not prove an outcome", (status) => {
+    expect(shouldReleaseVoiceReclaimIdempotencyKey(new AdminV2RequestError(
+      "Incomplete receipt", status, undefined, undefined, "partial-reclaim", "unknown",
+    ))).toBe(false);
+  });
+
   it("retains the durable key while the accepted reclaim command is in progress", () => {
     expect(
       shouldReleaseVoiceReclaimIdempotencyKey(

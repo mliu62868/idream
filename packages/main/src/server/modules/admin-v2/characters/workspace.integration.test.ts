@@ -22,7 +22,6 @@ import {
   referenceSetSnapshotHash,
 } from "./release-snapshot";
 import { canonicalSha256 } from "../shared/canonical-json";
-import { toInputJson } from "../shared/prisma-json";
 import { characterCommandCoordinationKey } from "./command-coordination";
 import { CHARACTER_IMAGE_IMPORT_REVIEW_EVIDENCE_SCHEMA } from "./image-qualification";
 
@@ -683,18 +682,12 @@ describe("Character operator workspace", () => {
   });
 
   it("projects Release lineage, checks, and every monitor window without lossy remapping", async () => {
+    const lineageReleaseId = `workspace-lineage-release-${suffix}`;
     const validationRunId = `workspace-validation-${suffix}`;
     const reviewDecisionId = `workspace-lineage-review-${suffix}`;
     const generationJobId = `workspace-lineage-job-${suffix}`;
     const runId = `workspace-lineage-run-${suffix}`;
     const itemId = `workspace-lineage-item-${suffix}`;
-    const originalRelease = await prisma.characterRelease.findUniqueOrThrow({
-      where: { id: releaseId },
-      select: {
-        generationProvenance: true,
-        releasePlacementManifest: true,
-      },
-    });
     const generationProvenance = {
       schemaVersion: "character-release-editorial-import-v1",
       dataset: "workspace-fixture",
@@ -727,11 +720,25 @@ describe("Character operator workspace", () => {
         },
       ],
     };
+    const snapshot = {
+      projectId,
+      revisionId,
+      characterContentVersionId: contentId,
+      visualProfileId: null,
+      visualProfileVersion: null,
+      referenceSetRevisionId: null,
+      generationProvenance,
+      releasePlacementManifest,
+    };
+    const snapshotHash = characterReleaseSnapshotHash(snapshot);
+    await prisma.characterRelease.create({
+      data: { ...snapshot, id: lineageReleaseId, snapshotHash, legacy: true, readiness: "blocked", status: "approved" },
+    });
     await prisma.releaseValidationRun.create({
       data: {
         id: validationRunId,
-        releaseId,
-        snapshotHash: `workspace-snapshot-${suffix}`,
+        releaseId: lineageReleaseId,
+        snapshotHash,
         policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
         result: "passed",
         finishedAt: new Date(),
@@ -755,7 +762,7 @@ describe("Character operator workspace", () => {
       data: [
         {
           id: `workspace-monitor-route-${suffix}`,
-          releaseId,
+          releaseId: lineageReleaseId,
           window: "route_qualification",
           status: "action_required",
           baseline: { policyVersion: CHARACTER_RELEASE_POLICY_VERSION },
@@ -768,7 +775,7 @@ describe("Character operator workspace", () => {
         },
         {
           id: `workspace-monitor-24h-${suffix}`,
-          releaseId,
+          releaseId: lineageReleaseId,
           window: "24h",
           status: "monitoring",
           baseline: { conversations: 10 },
@@ -777,7 +784,7 @@ describe("Character operator workspace", () => {
         },
         {
           id: `workspace-monitor-custom-${suffix}`,
-          releaseId,
+          releaseId: lineageReleaseId,
           window: "7d_custom",
           status: "passed",
           baseline: { retention: 0.2 },
@@ -787,16 +794,12 @@ describe("Character operator workspace", () => {
         },
       ],
     });
-    await prisma.characterRelease.update({
-      where: { id: releaseId },
-      data: { generationProvenance, releasePlacementManifest },
-    });
     try {
       const detail = characterWorkspaceDetailSchema.parse(
         await getCharacterWorkspace(characterId),
       );
       const projectedRelease = detail.releases.find(
-        ({ release }) => release.id === releaseId,
+        ({ release }) => release.id === lineageReleaseId,
       );
       expect(projectedRelease?.release).toMatchObject({
         generationProvenance,
@@ -840,24 +843,14 @@ describe("Character operator workspace", () => {
         ]),
       );
     } finally {
-      await prisma.releaseMonitor.deleteMany({ where: { releaseId } });
+      await prisma.releaseMonitor.deleteMany({ where: { releaseId: lineageReleaseId } });
       await prisma.releaseCheckResult.deleteMany({
         where: { validationRunId },
       });
       await prisma.releaseValidationRun.deleteMany({
         where: { id: validationRunId },
       });
-      await prisma.characterRelease.update({
-        where: { id: releaseId },
-        data: {
-          generationProvenance: toInputJson(
-            originalRelease.generationProvenance,
-          ),
-          releasePlacementManifest: toInputJson(
-            originalRelease.releasePlacementManifest,
-          ),
-        },
-      });
+      await prisma.characterRelease.delete({ where: { id: lineageReleaseId } });
     }
   });
 
@@ -878,22 +871,25 @@ describe("Character operator workspace", () => {
       data: { faceTraits: { eyes: "brown" } },
     });
 
-    // 密封漂移是发布级问题，不再拦打磨：生图闸（visual.readiness）放行，
-    // readiness.ts 仍会在发布链上产出 reference_set_unsealed。
-    await prisma.referenceSetRevision.update({
-      where: { id: referenceSetId },
-      data: { snapshotHash: "drifted-reference-hash" },
+    // A malformed imported seal is publication evidence, not a generation blocker.
+    // Create that historical snapshot once; never rewrite a sealed revision.
+    const driftReferenceSetId = `workspace-drift-reference-set-${suffix}`;
+    await prisma.$transaction(async (tx) => {
+      await tx.referenceSetRevision.update({ where: { id: referenceSetId }, data: { status: "superseded" } });
+      await tx.referenceSetRevision.create({ data: {
+        id: driftReferenceSetId, visualProfileId, revision: 2, status: "active",
+        selectorVersion: "workspace-v1", createdFrom: "workspace_drift_test", snapshotHash: "drifted-reference-hash",
+        references: { create: { mediaAssetId: previewAssetId, position: 0, role: "identity_anchor", weight: 1, selectorVersion: "workspace-v1", selectionReason: "Imported seal mismatch fixture" } },
+      } });
     });
-    detail = characterWorkspaceDetailSchema.parse(
-      await getCharacterWorkspace(characterId),
-    );
-    expect(
-      detail.visual.readiness.blockers.map((blocker) => blocker.code),
-    ).not.toContain("reference_set_unsealed");
-    await prisma.referenceSetRevision.update({
-      where: { id: referenceSetId },
-      data: { snapshotHash: referenceSnapshotHash },
-    });
+    try {
+      detail = characterWorkspaceDetailSchema.parse(await getCharacterWorkspace(characterId));
+      expect(detail.visual.activeReferenceSet?.id).toBe(driftReferenceSetId);
+      expect(detail.visual.readiness.blockers.map((blocker) => blocker.code)).not.toContain("reference_set_unsealed");
+    } finally {
+      await prisma.referenceSetRevision.delete({ where: { id: driftReferenceSetId } });
+      await prisma.referenceSetRevision.update({ where: { id: referenceSetId }, data: { status: "active" } });
+    }
 
     const secondaryReferenceAssetId = `workspace-secondary-reference-${suffix}`;
     const secondaryReference = {
@@ -902,10 +898,7 @@ describe("Character operator workspace", () => {
       role: "identity_reference",
       weight: 0.8,
     };
-    const originalProfile =
-      await prisma.characterVisualProfile.findUniqueOrThrow({
-        where: { id: visualProfileId },
-      });
+    const twoReferenceSetId = `workspace-two-reference-set-${suffix}`;
     await prisma.mediaAsset.create({
       data: {
         id: secondaryReferenceAssetId,
@@ -919,7 +912,7 @@ describe("Character operator workspace", () => {
     });
     const twoReferenceSnapshotHash = referenceSetSnapshotHash({
       visualProfileId,
-      revision: 1,
+      revision: 3,
       selectorVersion: "workspace-v1",
       references: [
         {
@@ -932,23 +925,21 @@ describe("Character operator workspace", () => {
       ],
     });
     try {
-      // 参考集的唯一权威是 ReferenceSetRevision：加一张参考图只需建 snapshot + 更新 revision 的
-      // snapshotHash，profile 本身既无副本列可写、密封 hash 也不含参考图，因此完全不用动。
-      await prisma.characterVisualReferenceSnapshot.create({
-        data: {
-          referenceSetRevisionId: referenceSetId,
-          ...secondaryReference,
-          selectorVersion: "workspace-v1",
-          selectionReason: "Partial drift regression fixture",
-        },
-      });
-      await prisma.referenceSetRevision.update({
-        where: { id: referenceSetId },
-        data: { snapshotHash: twoReferenceSnapshotHash },
+      await prisma.$transaction(async (tx) => {
+        await tx.referenceSetRevision.update({ where: { id: referenceSetId }, data: { status: "superseded" } });
+        await tx.referenceSetRevision.create({ data: {
+          id: twoReferenceSetId, visualProfileId, revision: 3, status: "active",
+          selectorVersion: "workspace-v1", createdFrom: "workspace_capacity_test", snapshotHash: twoReferenceSnapshotHash,
+          references: { create: [
+            { mediaAssetId: previewAssetId, position: 0, role: "identity_anchor", weight: 1, selectorVersion: "workspace-v1", selectionReason: "Retained identity anchor" },
+            { ...secondaryReference, selectorVersion: "workspace-v1", selectionReason: "Reference capacity regression fixture" },
+          ] },
+        } });
       });
       detail = characterWorkspaceDetailSchema.parse(
         await getCharacterWorkspace(characterId),
       );
+      expect(detail.visual.activeReferenceSet?.id).toBe(twoReferenceSetId);
       expect(detail.visual.activeReferenceSet?.references).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -1010,21 +1001,10 @@ describe("Character operator workspace", () => {
         detail.visual.readiness.blockers.map((blocker) => blocker.code),
       ).toContain("reference_assets_unavailable");
     } finally {
-      await prisma.characterVisualReferenceSnapshot.deleteMany({
-        where: {
-          referenceSetRevisionId: referenceSetId,
-          mediaAssetId: secondaryReferenceAssetId,
-        },
-      });
+      await prisma.referenceSetRevision.deleteMany({ where: { id: twoReferenceSetId } });
       await prisma.referenceSetRevision.update({
         where: { id: referenceSetId },
-        data: { snapshotHash: referenceSnapshotHash },
-      });
-      await prisma.characterVisualProfile.update({
-        where: { id: visualProfileId },
-        data: {
-          immutableHash: originalProfile.immutableHash,
-        },
+        data: { status: "active" },
       });
       await prisma.mediaAsset.delete({
         where: { id: secondaryReferenceAssetId },
@@ -1123,9 +1103,9 @@ describe("Character operator workspace", () => {
             profileKey: `000-missing-bootstrap-${suffix}`,
             label: "Missing explicit bootstrap capability",
             runner: "comfyui",
-            pipelineModel: "redqw21",
-            workflowKey: "redqw21",
-            runnerConfig: { capabilities: {} },
+            pipelineModel: "redcraft-qw21t",
+            workflowKey: "redcraft-qw21t",
+            runnerConfig: { workflowVersion: 3, capabilities: {} },
             allowedOrientations: ["4:5"],
             status: "active",
             enabled: true,
@@ -1136,9 +1116,9 @@ describe("Character operator workspace", () => {
             profileKey: `001-explicit-bootstrap-${suffix}`,
             label: "Explicit bootstrap capability",
             runner: "comfyui",
-            pipelineModel: "redqw21",
-            workflowKey: "redqw21",
-            runnerConfig: { capabilities: { textToImage: true } },
+            pipelineModel: "redcraft-qw21t",
+            workflowKey: "redcraft-qw21t",
+            runnerConfig: { workflowVersion: 3, capabilities: { textToImage: true } },
             allowedOrientations: ["4:5"],
             status: "active",
             enabled: true,

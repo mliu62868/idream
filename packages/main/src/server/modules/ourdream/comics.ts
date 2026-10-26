@@ -17,7 +17,7 @@ import { moderateText } from "@/server/moderation/text-authority";
 import { lockCharacterMediaAssetAuthorities } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { adminMutationResultValidator } from "@/server/modules/admin-v2/shared/route-handler";
-import { actorWithPermission, jsonBody as adminJsonBody } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, jsonBody as adminJsonBody, type AdminV2RequestBody } from "@/server/modules/admin-v2/shared/authority";
 import { comicInclude as include, comicPageUsable as usableMedia, comicPublishable as publishable, comicPublicAuthor as publicAuthor, comicContentUrl as contentUrl, loadReadableComic as readableComic, type ComicRow } from "./comic-authority";
 import { collectionMediaViewUrl } from "./public-read-model";
 import { canonicalJsonHash, requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
@@ -77,20 +77,22 @@ async function detail(comic: ComicRow, viewerId?: string, admin = false): Promis
 }
 
 
-async function listComics(request: Request, viewerId?: string, admin = false) {
+async function listComics(request: Request, viewerId?: string, adminQuery?: AdminV2RequestBody<"adminComicQuerySchema">) {
+  const admin = adminQuery !== undefined;
   const query = new URL(request.url).searchParams;
   const mine = !admin && query.get("scope") === "mine";
   if (mine && !viewerId) throw Errors.unauthorized();
-  const status = admin ? z.enum(["pending_review", "published", "draft", "withdrawn"]).parse(query.get("status") ?? "pending_review") : null;
-  const creatorId = query.get("creatorId") || null;
+  const status = adminQuery?.status ?? null;
+  const creatorId = admin ? null : query.get("creatorId") || null;
   const scope = canonicalJsonHash({ mine, viewerId: mine ? viewerId : null, creatorId, admin, status });
+  const cursorValue = adminQuery ? adminQuery.cursor : query.get("cursor");
   let cursor: z.infer<typeof cursorSchema> | null = null;
-  if (query.get("cursor")) {
-    try { cursor = cursorSchema.parse(JSON.parse(Buffer.from(query.get("cursor")!, "base64url").toString("utf8"))); }
+  if (cursorValue) {
+    try { cursor = cursorSchema.parse(JSON.parse(Buffer.from(cursorValue, "base64url").toString("utf8"))); }
     catch { throw Errors.badRequest("Invalid Comic cursor. Reload the list."); }
     if (cursor.scope !== scope) throw Errors.badRequest("Comic cursor belongs to another list. Reload the list.");
   }
-  const limit = z.coerce.number().int().min(1).max(24).parse(query.get("limit") ?? "12");
+  const limit = adminQuery ? adminQuery.limit : z.coerce.number().int().min(1).max(24).parse(query.get("limit") ?? "12");
   const rows = await prisma.comic.findMany({
     where: { AND: [
       admin ? { status: status! } : mine ? { creatorId: viewerId } : { status: "published", visibility: "public", creator: activeCustomerUserWhere },
@@ -260,8 +262,8 @@ async function pageContent(id: string, pageId: string, viewerId?: string, admin 
 }
 
 // The Admin v2 route owns the permission check and the manifest query door.
-export function listAdminComics(request: Request) {
-  return listComics(request, undefined, true);
+export function listAdminComics(request: Request, query: AdminV2RequestBody<"adminComicQuerySchema">) {
+  return listComics(request, undefined, query);
 }
 
 export async function getAdminComic(request: Request, id: string) {

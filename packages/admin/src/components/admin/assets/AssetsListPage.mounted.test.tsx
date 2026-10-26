@@ -194,6 +194,96 @@ describe("AssetsSection bulk archive authority", () => {
     expect(container.textContent).toContain("0 selected");
   });
 
+  it("keeps a 503 outcome unknown and retries the confirmed set with the original key", async () => {
+    let attempts = 0;
+    bulkResponse = async () => ++attempts === 1
+      ? Response.json({ ok: false, error: {
+          code: "admin_upstream_unavailable",
+          message: "Admin authority is temporarily unavailable",
+          requestId: "archive-unknown-request",
+        } }, { status: 503 })
+      : ok({ updatedIds: ["asset-a", "asset-b"] });
+    await render();
+    await preflightPage();
+    await confirmDraft();
+    await act(async () => button("Archive selected", dialog()!).click());
+
+    expect(dialog()).not.toBeNull();
+    expect(dialog()!.textContent).toContain("whether the write landed is unknown");
+    expect(dialog()!.textContent).not.toContain("No selected asset was changed.");
+    expect(dialog()!.textContent).toContain("status: 503");
+    expect(dialog()!.textContent).toContain("code: admin_upstream_unavailable");
+    expect(dialog()!.textContent).toContain("requestId: archive-unknown-request");
+    expect(container.textContent).toContain("2 selected");
+    const firstWrite = bulkWrites()[0];
+    const firstKey = new Headers(firstWrite[1]?.headers).get("idempotency-key");
+    expect(firstKey).toBeTruthy();
+
+    await act(async () => button("Archive selected", dialog()!).click());
+    await waitFor(() => dialog() === null);
+    expect(bulkWrites()).toHaveLength(2);
+    expect(new Headers(bulkWrites()[1][1]?.headers).get("idempotency-key")).toBe(firstKey);
+    expect(bulkWrites()[1][1]?.body).toBe(firstWrite[1]?.body);
+    expect(container.textContent).toContain("2 assets archived. The selection was cleared.");
+  });
+
+  it("shows a comic publication blocker and clears it when the next archive outcome is unknown", async () => {
+    let attempts = 0;
+    bulkResponse = async () => ++attempts === 1 ? Response.json({ ok: false, error: {
+      code: "conflict",
+      message: "Asset remains in use",
+      requestId: "comic-archive-conflict",
+      details: {
+        code: "asset_authority_dependency_active",
+        assetId: "asset-b",
+        dependencies: [{ kind: "comic_publication", comicId: "comic-active", repairPath: "/admin/moderation?tab=comics" }],
+      },
+    } }, { status: 409 }) : Response.json({ ok: false, error: {
+      code: "unavailable", message: "Authority did not answer", requestId: "comic-archive-retry-unknown",
+    } }, { status: 503 });
+    await render();
+    await preflightPage();
+    await confirmDraft();
+    await act(async () => button("Archive selected", dialog()!).click());
+
+    expect(dialog()!.textContent).toContain("Submitted or published Comic");
+    expect(dialog()!.textContent).toContain("comic-active");
+    expect(dialog()!.textContent).toContain("No selected asset was changed.");
+    expect(dialog()!.querySelector('a[href="/admin/moderation?tab=comics"]')).not.toBeNull();
+    expect(container.textContent).toContain("2 selected");
+    expect(bulkWrites()).toHaveLength(1);
+
+    await act(async () => button("Archive selected", dialog()!).click());
+    expect(dialog()!.textContent).toContain("whether the write landed is unknown");
+    expect(dialog()!.textContent).not.toContain("No selected asset was changed.");
+    expect(dialog()!.textContent).not.toContain("Submitted or published Comic");
+    expect(dialog()!.textContent).toContain("requestId: comic-archive-retry-unknown");
+    expect(container.textContent).toContain("2 selected");
+    expect(bulkWrites()).toHaveLength(2);
+  });
+
+  it("keeps a failed preflight as a retryable read with its request identity", async () => {
+    let attempts = 0;
+    preflightResponse = async (init) => ++attempts === 1
+      ? Response.json({ ok: false, error: {
+          code: "admin_upstream_unavailable", message: "Authority did not answer", requestId: "preflight-retry-request",
+        } }, { status: 503 })
+      : ok({ assetIds: JSON.parse(String(init?.body)).assetIds, blockers: [] });
+    await render();
+    await preflightPage();
+
+    expect(dialog()).toBeNull();
+    expect(container.textContent).toContain("Retry to load the latest data.");
+    expect(container.textContent).toContain("requestId: preflight-retry-request");
+    expect(container.textContent).not.toContain("whether the write landed is unknown");
+    expect(bulkWrites()).toHaveLength(0);
+
+    await act(async () => button("Retry", container).click());
+    await waitFor(() => dialog() !== null);
+    expect(dialog()!.textContent).toContain("asset-a,asset-b");
+    expect(bulkWrites()).toHaveLength(0);
+  });
+
   it("keeps an active authority dependency as a whole-batch blocker without opening confirmation", async () => {
     preflightResponse = async () => ok({
       assetIds: ["asset-a", "asset-b"],

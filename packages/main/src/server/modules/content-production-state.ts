@@ -321,6 +321,51 @@ export async function markProductionItemGenerated(
   await refreshContentProductionBatchStats(db, current.batchId, recovery);
 }
 
+// Every Generation retry reopens its owning Creative item in the reservation
+// transaction. Finalization must never need to turn a failed item into generated.
+export async function markProductionItemRetryRequested(
+  db: DbClient,
+  input: {
+    readonly jobId: string;
+    readonly expectedItemId?: string | null;
+    readonly run?: { readonly expectedVersion: number; readonly verificationState: "verifying" };
+  },
+) {
+  const item = await db.contentProductionItem.findUnique({ where: { jobId: input.jobId } });
+  if (input.expectedItemId && item?.id !== input.expectedItemId) {
+    throw Errors.conflict("Generation retry Creative item does not belong to its Request");
+  }
+  if (!item) return null;
+  const run = await db.contentProductionBatch.findUniqueOrThrow({ where: { id: item.batchId } });
+  // A still-verifying Creative command owns its frozen result; generic retry
+  // admission must not clear that evidence while reopening generation.
+  const verificationState = input.run?.verificationState ??
+    (run.verificationState === "verifying" ? "verifying" : "pending");
+  if (
+    item.mediaAssetId !== null ||
+    !isCreativeRunItemTransitionAllowed(item.status, "regenerate_requested") ||
+    !isCreativeRunLifecycleTransitionAllowed(run.lifecycleState, "active") ||
+    !isCreativeRunWorkflowTransitionAllowed(run.workflowStage, "generation") ||
+    !isCreativeRunVerificationTransitionAllowed(run.verificationState, verificationState) ||
+    (input.run && input.run.expectedVersion !== run.version)
+  ) throw Errors.conflict("Creative item or Run cannot enter generation retry", { itemId: item.id, runId: run.id });
+  const changed = await db.contentProductionItem.updateMany({
+    where: { id: item.id, jobId: input.jobId, version: item.version, status: item.status, mediaAssetId: null },
+    data: { status: "regenerate_requested", version: { increment: 1 } },
+  });
+  if (changed.count !== 1) throw Errors.conflict("Creative item changed during retry reservation");
+  const runChanged = await db.contentProductionBatch.updateMany({
+    where: { id: run.id, version: run.version, lifecycleState: run.lifecycleState, workflowStage: run.workflowStage, verificationState: run.verificationState },
+    data: {
+      lifecycleState: "active", workflowStage: "generation", verificationState,
+      status: "queued", version: { increment: 1 },
+      failedItems: await db.contentProductionItem.count({ where: { batchId: run.id, status: "failed" } }),
+    },
+  });
+  if (runChanged.count !== 1) throw Errors.conflict("Creative Run changed during retry reservation");
+  return { itemId: item.id, runId: run.id, runVersion: run.version + 1 };
+}
+
 export async function markProductionItemFailed(db: DbClient, jobId: string) {
   const current = await db.contentProductionItem.findUnique({ where: { jobId } });
   if (!current) return;

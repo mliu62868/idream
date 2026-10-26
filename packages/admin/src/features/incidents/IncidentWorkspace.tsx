@@ -327,8 +327,9 @@ export function IncidentWorkspace({
       ) : null}
       {detailError !== null ? <AuthorityRequestError requestKind="read" cause={detailError} message={message(detailError)} onRetry={() => selectedId && void loadDetail(selectedId)} snapshotAt={detail?.incident.updatedAt ?? null} /> : null}
 
+      {/* INVARIANT: 移动端用可收缩的单列，长事故标识不能把关闭按钮挤出视口。 */}
       {loading && !list ? <LoadingWorkspace label="Loading correlated incidents" /> : (
-        <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,0.92fr)_minmax(440px,1.08fr)]">
+        <div className="grid min-w-0 grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,0.92fr)_minmax(440px,1.08fr)]">
           {selectedId ? (
             detailLoading && !detail ? <LoadingWorkspace label="Loading incident detail" /> : detail ? (
               <IncidentInspector asOf={list?.asOf ?? detail.incident.updatedAt} busy={busy || detailLoading || detailError !== null} canManage={canManage} detail={detail} key={detail.incident.id} onClose={() => selectIncident(null)} onCommand={command} onMutate={mutate} onAuthorityChange={refreshAuthority} onDirtyChange={setDetailDirty} />
@@ -337,7 +338,7 @@ export function IncidentWorkspace({
             <aside className="hidden rounded-xl bg-[var(--ad-surface-subtle)] p-8 text-sm text-[var(--ad-text-muted)] lg:block">{t("Select an incident to inspect occurrences, mitigation scope, and recovery evidence.")}</aside>
           )}
 
-          <div className="space-y-2 lg:order-first" aria-label={t("Incident results")}>
+          <div className="min-w-0 space-y-2 lg:order-first" aria-label={t("Incident results")}>
             {list && list.items.length === 0 ? <EmptyWorkspace filtered={filtered} onClear={clearFilters} /> : null}
             {list?.items.map((incident) => (
               <button
@@ -547,10 +548,10 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
   }
 
   return (
-    <aside aria-labelledby="incident-detail-title" className="rounded-xl bg-[var(--ad-surface)] shadow-[0_18px_50px_rgb(45_42_34/0.08)] lg:sticky lg:top-40">
+    <aside aria-labelledby="incident-detail-title" className="min-w-0 rounded-xl bg-[var(--ad-surface)] shadow-[0_18px_50px_rgb(45_42_34/0.08)] lg:sticky lg:top-40">
       <header className="flex items-start justify-between gap-4 border-b border-[var(--ad-border)] p-5">
-        <div className="min-w-0"><p className="font-mono text-xs text-[var(--ad-text-muted)]">{incident.id}</p><h3 className="mt-1 text-lg font-semibold" id="incident-detail-title">{incident.suspectedCause ?? t("Incident under investigation")}</h3><div className="mt-3 flex flex-wrap gap-2"><StatusBadge value={incident.severity} /><StatusBadge value={incident.status} /></div></div>
-        <button aria-label={t("Close incident detail")} className="grid min-h-11 min-w-11 place-items-center rounded-md hover:bg-black/[0.04]" onClick={onClose} type="button"><X className="h-4 w-4" /></button>
+        <div className="min-w-0"><p className="break-all font-mono text-xs text-[var(--ad-text-muted)]">{incident.id}</p><h3 className="mt-1 break-words text-lg font-semibold" id="incident-detail-title">{incident.suspectedCause ?? t("Incident under investigation")}</h3><div className="mt-3 flex flex-wrap gap-2"><StatusBadge value={incident.severity} /><StatusBadge value={incident.status} /></div></div>
+        <button aria-label={t("Close incident detail")} className="grid min-h-11 min-w-11 shrink-0 place-items-center rounded-md hover:bg-black/[0.04]" onClick={onClose} type="button"><X className="h-4 w-4" /></button>
       </header>
 
       <div className="space-y-5 p-5">

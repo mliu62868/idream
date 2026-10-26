@@ -108,6 +108,8 @@ describe("Incident and P0 Review Case authority loops", () => {
           status: "failed",
           errorClass: "gateway_timeout",
           errorSignature: "provider_timeout",
+          // The missing route identity makes this evidence incomplete; terminal attempts still require a finish time.
+          finishedAt: new Date("2026-07-11T10:00:00.500Z"),
         },
         {
           id: boundaryAttemptA,

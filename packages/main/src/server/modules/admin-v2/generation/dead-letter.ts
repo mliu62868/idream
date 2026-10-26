@@ -21,6 +21,7 @@ import {
 import type { ExistingGenerationJob } from "@/server/modules/generation/attempt-dispatch";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import { reserveRetryGenerationAttempt } from "@/server/modules/generation/generation-attempt-authority";
+import { readGenerationSettlements } from "@/server/modules/ourdream/generation-job-read-model";
 import {
   actorWithPermission,
   jsonBody,
@@ -83,7 +84,7 @@ export async function listGenerationDeadLetter(request: Request) {
       }),
     count: () => prisma.generationJob.count({ where }),
   });
-  const refundedIds = await refundedJobIds(prisma, page.map((job) => job.id));
+  const settlements = await readGenerationSettlements(page.map((job) => job.id));
   const retiredPins = await retiredWorkflowPins(page.map((job) => job.id));
   return {
     items: page.map((job) => ({
@@ -94,9 +95,9 @@ export async function listGenerationDeadLetter(request: Request) {
       provider: job.provider,
       errorCode: job.errorCode,
       costDreamcoins: job.costDreamcoins,
-      ledgerState: refundedIds.has(job.id) ? ("refunded" as const) : ("reserved" as const),
+      ledgerState: ledgerState(settlements.get(job.id)),
       retryEligibility: retryEligibilityWithPin(
-        retryEligibilityOf(job, refundedIds.has(job.id)),
+        retryEligibilityOf(job, (settlements.get(job.id)?.refunded ?? 0) > 0),
         retiredPins.has(job.id),
       ),
       createdAt: job.createdAt.toISOString(),
@@ -107,6 +108,13 @@ export async function listGenerationDeadLetter(request: Request) {
     asOf: new Date().toISOString(),
     freshness: "fresh" as const,
   };
+}
+
+function ledgerState(settlement: { charged: number; refunded: number } | undefined) {
+  // Quotes describe admission cost; only linked ledger facts prove a charge.
+  if (!settlement || settlement.charged === 0) return "not_charged" as const;
+  if (settlement.refunded === 0) return "reserved" as const;
+  return settlement.refunded < settlement.charged ? "partially_refunded" as const : "refunded" as const;
 }
 
 export async function requeueGenerationDeadLetterBatch(request: Request) {

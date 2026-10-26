@@ -161,7 +161,7 @@ describe("Character Voice reclaim confirmation", () => {
             actionHref: null,
             actionConfirmation: null,
           },
-          operationsHref: "/admin/ops/jobs?view=dead-letter&search=image-job-1",
+          operationsHref: "/admin/ops/jobs?view=dead-letter&deadSearch=image-job-1",
         },
         projection.operations[1],
         projection.operations[2],
@@ -176,7 +176,7 @@ describe("Character Voice reclaim confirmation", () => {
       link.textContent?.includes("Requeue in operations")
     );
     expect(requeue?.getAttribute("href")).toBe(
-      "/admin/ops/jobs?view=dead-letter&search=image-job-1",
+      "/admin/ops/jobs?view=dead-letter&deadSearch=image-job-1",
     );
   });
 });

@@ -20,6 +20,7 @@ import { jobQueue, type EnqueueJobInput } from "@/server/jobs/queue";
 import { Errors } from "@/server/lib/errors";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
+import { markProductionItemRetryRequested } from "@/server/modules/content-production-state";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import {
   buildGenerationAttemptQueueInput,
@@ -75,6 +76,7 @@ export type RetryGenerationAttemptIntent = {
   readonly eligibleLatestStatuses?: readonly ("failed" | "unknown")[];
   readonly sourceCommandId?: string | null;
   readonly creativeRunItemId?: string | null;
+  readonly creativeRun?: { readonly expectedVersion: number; readonly verificationState: "verifying" };
   readonly dispatch: GenerationDispatchIntent;
 };
 
@@ -701,13 +703,18 @@ export async function reserveRetryGenerationAttempt(
   });
   const attemptNo = (latest?.attemptNo ?? 0) + 1;
   const pins = await generationAttemptPins(tx, job, latest);
+  const creativeRun = await markProductionItemRetryRequested(tx, {
+    jobId: job.id,
+    expectedItemId: input.creativeRunItemId ?? latest?.creativeRunItemId,
+    run: input.creativeRun,
+  });
   const reservation = await persistGenerationAttemptDispatchReservation(tx, {
     attempt: {
       requestId: job.id,
       attemptNo,
       ...pins,
       sourceCommandId: input.sourceCommandId,
-      creativeRunItemId: input.creativeRunItemId,
+      creativeRunItemId: creativeRun?.itemId ?? input.creativeRunItemId,
     },
     dispatch: {
       ...input.dispatch,
@@ -722,6 +729,7 @@ export async function reserveRetryGenerationAttempt(
     request,
     previousRequest: job,
     previousAttempt: latest,
+    creativeRun,
   };
 }
 

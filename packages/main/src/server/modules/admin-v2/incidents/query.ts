@@ -1,4 +1,4 @@
-import { incidentDetailSchema, incidentRecoveryChecksSchema } from "@idream/shared/admin";
+import { incidentRecoveryChecksSchema } from "@idream/shared/admin";
 import {
   eligibleOccurrenceIds,
   incidentCanCreateActionPlan,
@@ -202,7 +202,7 @@ export async function getIncidentDetail(request: Request, incidentId: string) {
     }
   }
 
-  return ok(incidentDetailSchema.parse({
+  return ok({
     incident: { ...dto, recommendedActions: actionable },
     occurrences: occurrences.map((row) => ({
       id: row.id,
@@ -235,7 +235,7 @@ export async function getIncidentDetail(request: Request, incidentId: string) {
       createdAt: postmortem.createdAt.toISOString(),
     } : null,
     activity: activity.map(adminAuditDto),
-  }));
+  });
 }
 
 // SPEC: 行动方案的对外形状。表列名和契约字段名对不上（eligibleIds→eligibleOccurrenceIds、

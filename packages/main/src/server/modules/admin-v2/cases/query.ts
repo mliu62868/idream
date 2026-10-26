@@ -1,5 +1,5 @@
 import { caseEvidenceSummary } from "./evidence-summary";
-import { operationsCaseDetailSchema, type OperationsCaseQuery } from "@idream/shared/admin";
+import type { OperationsCaseQuery } from "@idream/shared/admin";
 import { Prisma, type AdminCase } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
@@ -316,7 +316,7 @@ export async function getCaseDetail(request: Request, caseId: string) {
       take: 100,
     }),
   ]);
-  return ok(operationsCaseDetailSchema.parse({
+  return ok({
     case: await caseDto(adminCase),
     evidence: evidence.map((row) => {
       const snapshot = record(row.snapshot);
@@ -337,5 +337,5 @@ export async function getCaseDetail(request: Request, caseId: string) {
       updatedAt: row.updatedAt.toISOString(),
     })),
     activity: activity.map(adminAuditDto),
-  }));
+  });
 }

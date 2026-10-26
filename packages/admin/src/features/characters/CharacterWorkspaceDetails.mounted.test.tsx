@@ -638,6 +638,53 @@ describe("Character workspace details", () => {
     expect(container.textContent).not.toContain(VOICE_DEFAULTS_READ_ONLY);
   });
 
+  it("opens the Video Studio from Recent media operations without leaving the Visual identity panel selected", async () => {
+    window.history.replaceState(null, "", "/admin/characters/character-detail?tab=visual");
+    const mediaWorkspace = withCharacterWorkspaceDetail(workspace, {
+      mediaOperations: {
+        ...workspace.mediaOperations,
+        operations: [
+          workspace.mediaOperations.operations[0],
+          {
+            ...workspace.mediaOperations.operations[1],
+            studioHref: "/admin/characters/character-detail?tab=video",
+          },
+          workspace.mediaOperations.operations[2],
+        ],
+      },
+    });
+    const original = adminV2Request.getMockImplementation()!;
+    adminV2Request.mockImplementation(async (path: string, ...args: unknown[]) =>
+      path === "/api/v2/admin/characters/character-detail" ? mediaWorkspace : original(path, ...args),
+    );
+    const render = () => root.render(
+      <AdminI18nProvider locale="en">
+        <CharacterWorkspace actorId="operator-a" permissions={permissions}
+          view={{ kind: "detail", id: "character-detail" }} />
+      </AdminI18nProvider>,
+    );
+    await act(async () => render());
+    await waitUntil(() => container.querySelector("#character-panel-visual") !== null, "Visual identity panel");
+    const mediaCard = container.querySelector("#character-media-operations-title")!.closest("details")!;
+    const videoLink = mediaCard.querySelector<HTMLAnchorElement>('a[href$="?tab=video"]')!;
+    expect(videoLink.textContent).toBe("Open Studio");
+    await act(async () => {
+      const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+      videoLink.dispatchEvent(event);
+      // Next Link updates the URL and preserves the same Character component on a query-only navigation.
+      if (!event.defaultPrevented) window.history.pushState(null, "", videoLink.href);
+      render();
+    });
+
+    expect(window.location.search).toBe("?tab=video");
+    expect(container.querySelector("#character-panel-video")).not.toBeNull();
+    expect(container.querySelector("#character-panel-visual")).toBeNull();
+    expect(container.querySelector('#character-tab-video[aria-selected="true"]')).not.toBeNull();
+    expect([...container.querySelectorAll('[aria-label="Character workspace area"] button')].find(
+      (button) => button.textContent === "Character assets",
+    )?.getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("keeps the visible panel synchronized with same-Character tab links", async () => {
     await act(async () => {
       root.render(

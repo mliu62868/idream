@@ -85,6 +85,48 @@ describe("DeadLetterWorkspace retry authority", () => {
     expect(container.textContent).toContain("Safe to requeue");
   });
 
+  it("restores the Character recovery link into the filter and list request", async () => {
+    window.history.replaceState(null, "", `/admin/ops/jobs?view=dead-letter&deadSearch=${retryable.id}`);
+    apiGet.mockResolvedValue({ items: [retryable] });
+    await render({ discard: false, requeue: true });
+    await waitUntil(() => container.textContent?.includes(retryable.id) ?? false);
+    expect(container.querySelector<HTMLInputElement>('input[role="searchbox"]')?.value).toBe(retryable.id);
+    expect(apiGet).toHaveBeenCalledWith(expect.stringContaining(`search=${retryable.id}`));
+  });
+
+  it("labels the quote as an estimate and does not promise a new charge for operator retry", async () => {
+    apiGet.mockResolvedValue({ items: [retryable] });
+    await render({ discard: false, requeue: true });
+    await waitUntil(() => container.textContent?.includes(retryable.id) ?? false);
+    expect.soft(container.textContent).toContain("Estimated cost");
+    await click(findButton("Requeue", container));
+    const dialog = await waitForDialog();
+    expect(dialog.textContent).toContain("without a new Dreamcoin charge");
+    expect(dialog.textContent).toContain("Existing charges remain unchanged");
+    expect(dialog.textContent).not.toContain("are charged for a new attempt");
+  });
+
+  it("shows an uncharged Admin request without treating its nonzero quote as a reservation", async () => {
+    apiGet.mockResolvedValue({ items: [{ ...retryable, costDreamcoins: 100, ledgerState: "not_charged" }] });
+    await render({ discard: false, requeue: true });
+    await waitUntil(() => container.textContent?.includes(retryable.id) ?? false);
+    const mobile = container.querySelector<HTMLElement>('.sm\\:hidden[aria-label="Dead-letter Queue"]');
+    expect(mobile?.textContent).toContain("Not charged");
+    expect(mobile?.textContent).toContain("Estimated cost100");
+    expect(mobile?.textContent).not.toContain("reserved");
+  });
+
+  it("describes discard settlement without promising a refund for an uncharged request", async () => {
+    apiGet.mockResolvedValue({ items: [{ ...retryable, ledgerState: "not_charged" }] });
+    await render({ discard: true, requeue: false });
+    await waitUntil(() => container.textContent?.includes(retryable.id) ?? false);
+    await click(findButton("Discard", container));
+    const dialog = await waitForDialog();
+    expect(dialog.textContent).toContain("remaining refundable Dreamcoin charge");
+    expect(dialog.textContent).toContain("Uncharged or fully refunded requests receive no additional refund");
+    expect(apiWrite).not.toHaveBeenCalled();
+  });
+
   it("rejects a list without an authoritative retry verdict instead of inferring from failed status", async () => {
     apiGet.mockResolvedValue({ items: [{ ...retryable, retryEligibility: undefined }] });
     await render({ discard: true, requeue: true });
@@ -153,8 +195,8 @@ describe("DeadLetterWorkspace retry authority", () => {
     expect(mobileList?.textContent).toContain("Failure reason");
     expect(mobileList?.textContent).toContain("Replay authority");
     expect(mobileList?.textContent).toContain("Ledger");
-    expect(mobileList?.textContent).toContain("Cost");
-    expect(mobileList?.textContent?.indexOf("Cost")).toBeLessThan(
+    expect(mobileList?.textContent).toContain("Estimated cost");
+    expect(mobileList?.textContent?.indexOf("Estimated cost")).toBeLessThan(
       mobileList?.textContent?.indexOf("Requeue") ?? -1,
     );
   });

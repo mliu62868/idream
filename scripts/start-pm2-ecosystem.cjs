@@ -5,6 +5,7 @@ const { createRequire } = require("node:module");
 const { homedir } = require("node:os");
 const path = require("node:path");
 const {
+  assertPm2SocketPaths,
   loadGenEnvironment,
 } = require("./check-gen-image-worker-ownership.cjs");
 const { computeSourceRevision } = require("./source-revision.cjs");
@@ -657,6 +658,13 @@ function runPm2Ecosystem(options = {}) {
   }
   if (!supportedActions.has(action)) {
     throw new Error(`Unsupported PM2 ecosystem action: ${action}`);
+  }
+  try {
+    assertPm2SocketPaths(env);
+  } catch (error) {
+    if (error?.code !== "PM2_SOCKET_PATH_TOO_LONG") throw error;
+    process.stderr.write(`${error.message}\n`);
+    return 1;
   }
 
   let mode = requestedMode;

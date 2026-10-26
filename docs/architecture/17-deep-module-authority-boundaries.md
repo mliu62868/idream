@@ -195,6 +195,43 @@ authenticate
 
 守卫的禁用名单**从 manifest 推导**而非硬编码符号名（非 GET 操作的 request ref 去掉 transport 后缀即为 body 契约集合），并断言扫到的 route 文件数等于 manifest 去重路由数。
 
+#### 2.3.2 Creative Run 的前端提交恢复只编排一次
+
+角色图片、视频和视觉实验共用 `features/characters/creative-run-creation` 的 `createOrRecoverCharacterRun`。它拥有认领意图、原请求重放、回执对账和提交结果持久化；页面保留创作输入、不同 purpose/profile 的资格判断，以及已显示投影与原请求的精确核验。异步 Character command journal 继续独立。
+
+- 只有新认领且尚无任何重放参与的请求，才能因首发明确拒绝而释放。`submitting` 不等于首发；保存的同 key 意图仍可能指向已经提交的请求。
+- 认领、同 key 的重放标记 `replayStarted`、响应结算及投影释放共享 scope 级 Web Lock，读取/判断/写入在一个短临界区内完成；HTTP 不占锁。旧快照的迟到更新不能擦掉重放证据。A 首发被拒绝时，只要 B 的重放已参与，即使 B 尚未收到回执，也不得删除 active intent。
+- 结果未知后的 401/403/409 或“本次 preflight 未创建 Run”，都不能证明原请求没有提交。保留原 key、原请求及工作台锁定；服务器封存的无效果取消才能解锁。另一标签页已清理的旧内存副本先恢复 active 指针，再对账，不重新提交。响应结算必须重新检查 active key；已经释放或被下一笔请求替换的响应不再写回旧意图。
+- 提交回执在工作台刷新之前持久化。已提交请求只读取/核验精确 Run；投影加载失败不触发第二次提交，也不提前清理意图。
+
+持久意图继续使用 version 1；旧记录缺少 `replayStarted` 时，在首次恢复/再次认领前补充重放证据，不丢弃旧 key 或请求快照。跨标签页互斥依赖 Web Locks；浏览器存储不可用时仅保留现有的页面内恢复能力，不声明跨刷新保证。
+
+#### 2.3.3 资产归档复用 transport，HTTP 状态不等于可信回执
+
+批量归档与预检通过 `adminV2Operation` 使用 manifest 契约、请求身份和幂等结算，不再维护私有 fetch、错误类或依赖类型。页面仅解释 shared 契约中的归档阻塞事实，包含 `comic_publication` 及其修复入口。
+
+`AdminV2RequestError.outcome` 区分 `answered` 与 `unknown`，同时保留实际 HTTP status、code 和 requestId。读体中断、JSON/信封不合法、成功响应不符合契约时，即使已经收到 200 或 400 状态行，仍属未知结果；transport 账本和业务 journal 不能据此释放 key。只有明确的 404 缺失或 409 依赖拒绝才能显示“没有修改”的阻塞结论；后续未知结果须清除先前的确定拒绝横幅。
+
+#### 2.3.4 输入错误与服务端契约错误按边界分类
+
+`jsonBody`、查询解析和 `parseRequestInput` 将调用方输入的校验失败转换为 400。路径参数、multipart 字段和业务输入也必须在该边界显式解析，不能依赖 route handler 把任意 `ZodError` 都当作用户错误。
+
+裸 `ZodError` 代表服务端内部或输出契约不满足，统一返回 500；服务端日志仅记录有限数量的 issue code/path，响应不泄露内部校验细节。返回原始对象、预先 parse 的对象或 `Response` 必须得到相同的输出契约判定。全局搜索、工单详情、事故详情与指标对账出口不再重复执行 response parse；事务内不变量校验仍保留在领域模块。
+
+#### 2.3.5 Durable command 的准入顺序由一个入口拥有
+
+manifest 显式声明现有 12 个 durable command 的历史 `commandType` 与 `retryMode`，不从 URL 推导持久身份。`shared/durable-command-admission` 校验 operation 与路由匹配，并统一身份、权限、必需 header、If-Match 与 body 的解析。
+
+标准命令经 `commands/authoritative` 的单一编排，固定为准入 → 确认 → 重放 → 可变领域 preflight → 持久受理。精确请求重放与 Creative 冻结资格 payload 重放保留各自语义；已受理请求不因当前资格变化而重新选择执行对象。领域 callback 继续拥有业务条件，Billing refund 继续按 atomic 契约执行。
+
+Incident action-plan 复用相同 transport 准入，但保留其历史 scope/hash、HTTP 200 回执，以及命令受理与 mitigation 更新的同事务要求。统一接口不得改变已有 receipt 身份或拆开该事务。
+
+#### 2.3.6 读取编排复用，导航与业务刷新仍由页面表达
+
+审批和账单工作台使用 `useAuthorityResource` 管理读取状态、最新请求门控和卸载失效；页面保留 URL、游标历史、写权限与提交后业务刷新。
+
+普通列表读取失败保留最后成功快照；对账结果以 `retainDataOnError: false` 清空，后续重试期间也不能复活旧结果。隐藏资源的显式刷新同样绑定本次查询访问，离开后即失效；A → B → A 不能接受第一次访问 A 的迟到响应。写权限撤销会关闭确认动作并使旧提交回调失效，不额外剥夺原有读取能力。写入成功与后续读取失败分别呈现，不能把刷新失败显示成提交失败。
+
 ### 2.4 每个聚合拥有唯一 transition Interface
 
 共享层保留状态集合、允许边和小型纯函数，不建立万能工作流引擎。
@@ -312,6 +349,8 @@ type CharacterProductionJourney = {
 | 图片/视频 provider execution | Gen execution Module | Attempt identity 与 pinned recipe |
 | Dreamcoin entry | Ledger Module | 类型化业务 intent |
 | Admin mutation admission | Admin Write Execution Module | operation id、target、领域 callback |
+| Admin durable transport admission | `admin-v2/shared/durable-command-admission` | manifest operation id、request 与资源范围 |
+| 角色创作提交与恢复 | `features/characters/creative-run-creation` | 冻结请求、scope 与领域资格解析 |
 | Creative Run 创建 | `admin-v2/creative/run-create` | manifest 声明的 run brief + actor |
 | Creative Run item 评审结论 | `admin-v2/creative/review-decision` | 决定 + 质量清单 + 期望版本 |
 | Creative 投放位状态与验证 | `admin-v2/creative/placement` | 投放位标识 + 期望版本 |

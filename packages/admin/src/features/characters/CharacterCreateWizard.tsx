@@ -521,7 +521,7 @@ export function CharacterCreateWizard({
         setLastSavedKey(key);
         setSaveState("Saved");
       } catch (cause) {
-        if (cause instanceof AdminV2RequestError && cause.status === 409)
+        if (cause instanceof AdminV2RequestError && cause.outcome === "answered" && cause.status === 409)
           setSaveState("Conflict");
         else setSaveState("Failed to save");
         if (
@@ -539,6 +539,7 @@ export function CharacterCreateWizard({
           pendingCreateIntent &&
           !(
             cause instanceof AdminV2RequestError &&
+            cause.outcome === "answered" &&
             [400, 401, 403, 404, 409, 422].includes(cause.status)
           )
         ) {
@@ -554,6 +555,7 @@ export function CharacterCreateWizard({
             !authorityRef.current &&
             pendingCreateIntent &&
             cause instanceof AdminV2RequestError &&
+            cause.outcome === "answered" &&
             [400, 401, 403, 404, 409, 422].includes(cause.status)
           ) {
             clearDurableMutationIntent(pendingCreateIntent);

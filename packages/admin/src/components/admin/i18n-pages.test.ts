@@ -100,7 +100,7 @@ export const CREATIVE_WORKFLOW_KEYS = [
   "What are you making?",
   "Creative brief",
   "Advanced creation details",
-  "Image route",
+  "Generation route",
   "Canvas",
   "Create and launch",
   "Review against the brief",

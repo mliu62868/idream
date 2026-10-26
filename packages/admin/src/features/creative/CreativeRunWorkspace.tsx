@@ -208,6 +208,7 @@ function isDefinitiveAdminMutationRejection(
   cause: unknown,
 ): cause is AdminV2RequestError {
   return cause instanceof AdminV2RequestError &&
+    cause.outcome === "answered" &&
     [400, 401, 403, 404, 409, 422].includes(cause.status);
 }
 
@@ -368,12 +369,15 @@ function AssetViewer({ run, selected, onSelect }: { run: CreativeRunDetail; sele
   const { t } = useAdminI18n();
   const item = run.items[selected];
   const move = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.target instanceof HTMLVideoElement) return;
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
     event.preventDefault();
     onSelect((selected + (event.key === "ArrowRight" ? 1 : -1) + run.items.length) % run.items.length);
   };
   if (!item) return <EmptyWorkspace filtered={false} onClear={() => undefined} />;
-  return <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]" onKeyDown={move} tabIndex={0} aria-label={t("Creative asset viewer. Use left and right arrow keys to move between items.")}><div className="min-h-80 overflow-hidden rounded-xl border border-[var(--ad-border)] bg-black/[0.04]">{item.asset ? (
+  return <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]" onKeyDown={move} tabIndex={0} aria-label={t("Creative asset viewer. Use left and right arrow keys to move between items.")}><div className="min-h-80 overflow-hidden rounded-xl border border-[var(--ad-border)] bg-black/[0.04]">{item.asset ? run.purpose === "character_video" ? (
+    <video aria-label={t("Creative item {ordinal}", { ordinal: item.ordinal + 1 })} className="max-h-[70vh] w-full object-contain" controls playsInline preload="metadata" src={item.asset.url} />
+  ) : (
     // eslint-disable-next-line @next/next/no-img-element -- operator blob URLs are not compatible with Next image optimization
     <img alt={t("Creative item {ordinal}", { ordinal: item.ordinal + 1 })} className="max-h-[70vh] w-full object-contain" src={item.asset.url} />
   ) : <div className="grid min-h-80 place-items-center text-[var(--ad-text-muted)]"><ImageIcon className="h-8 w-8" /><span>{t(item.executionState === "unknown" ? "Generation outcome needs confirmation" : "No valid artifact")}</span></div>}</div><aside className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"><div className="flex flex-wrap gap-2"><StatusBadge value={item.executionState === "unknown" ? "Needs confirmation" : item.executionState} tone={item.executionState === "unknown" ? "warn" : undefined} />{item.executionState === "unknown" ? <StatusBadge value="Retry unavailable" tone="warn" /> : <><StatusBadge value={item.status} /><StatusBadge value={item.retryability} /></>}</div>{item.executionState === "unknown" ? <div className="mt-4 text-sm" role="status"><p>{t("The provider outcome is unknown. Confirm the result in Generation Jobs before retrying or using this item.")}</p>{item.lineage.requestId ? <Link className="mt-3 inline-flex min-h-11 items-center font-semibold underline" href={`/admin/ops/jobs?job=${encodeURIComponent(item.lineage.requestId)}`}>{t("Open generation recovery")}</Link> : null}</div> : null}<dl className="mt-4 space-y-3 text-xs"><div><dt className="text-[var(--ad-text-muted)]">{t("Request / attempt")}</dt><dd className="mt-1 break-all">{item.lineage.requestId ?? t("Unavailable")}<br />{item.lineage.attemptId ?? t("Unavailable")}</dd></div><div><dt className="text-[var(--ad-text-muted)]">{t("Provider request / Comfy prompt")}</dt><dd className="mt-1 break-all">{item.lineage.providerRequestId ?? t("Pending")}</dd></div><div><dt className="text-[var(--ad-text-muted)]">{t("Asset")}</dt><dd className="mt-1 break-all">{item.asset?.id ?? t("Unavailable")}</dd></div><div><dt className="text-[var(--ad-text-muted)]">{t("Placement")}</dt><dd className="mt-1">{item.placement ? t("{slot} · {verification}", { slot: t(item.placement.slot), verification: t(item.placement.verificationState) }) : t("Unplaced")}</dd></div></dl></aside></div>;
@@ -401,7 +405,7 @@ function ReviewContext({ run, itemIndex }: { run: CreativeRunDetail; itemIndex: 
       <dl className="mt-4 grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-5">
         <div><dt className="text-[var(--ad-text-muted)]">{t("Intended use")}</dt><dd className="mt-1 font-medium">{t(run.purpose.replaceAll("_", " "))}</dd></div>
         <div><dt className="text-[var(--ad-text-muted)]">{t("Canvas")}</dt><dd className="mt-1 font-medium">{run.reviewContext.orientation ?? t("Unavailable")}</dd></div>
-        <div><dt className="text-[var(--ad-text-muted)]">{t("Image route")}</dt><dd className="mt-1 font-medium">{t(run.reviewContext.profile.label ?? run.reviewContext.profile.key ?? "Unavailable")}{run.reviewContext.profile.version ? ` · v${run.reviewContext.profile.version}` : ""}</dd></div>
+        <div><dt className="text-[var(--ad-text-muted)]">{t("Generation route")}</dt><dd className="mt-1 font-medium">{t(run.reviewContext.profile.label ?? run.reviewContext.profile.key ?? "Unavailable")}{run.reviewContext.profile.version ? ` · v${run.reviewContext.profile.version}` : ""}</dd></div>
         <div><dt className="text-[var(--ad-text-muted)]">{t("Recipe")}</dt><dd className="mt-1 font-medium">{t(run.reviewContext.recipe.label ?? run.reviewContext.recipe.key ?? "Unavailable")}{run.reviewContext.recipe.version ? ` · v${run.reviewContext.recipe.version}` : ""}</dd></div>
         <div><dt className="text-[var(--ad-text-muted)]">{t("Reference images")}</dt><dd className="mt-1 font-medium">{run.reviewContext.referenceAssetCount}</dd></div>
       </dl>

@@ -70,7 +70,7 @@ export function usePollingTask(
 }
 
 export type AuthorityPollContext<T> = {
-  /** 最近一份完好数据；本轮失败时仍是上一份，不会被抹成 null。 */
+  /** 最近一份完好数据；默认在失败后保留，retainDataOnError 为 false 时清空。 */
   readonly data: T | null;
   /** 上一轮的失败原因；成功或尚未开始为 null。 */
   readonly error: string | null;
@@ -92,12 +92,14 @@ export type AuthorityResourceQuery<T> = {
 export type UseAuthorityResourceOptions<T> = {
   /** 每轮轮询前后都会问一次；返回 null 表示当前数据已到终态，停止轮询。 */
   readonly pollWhile?: (context: AuthorityPollContext<T>) => PollDecision;
+  /** 对账等不能展示过期结果的资源在失败后清空数据；普通列表默认保留最后成功快照。 */
+  readonly retainDataOnError?: boolean;
 };
 
 export type AuthorityResource<T> = AuthorityState<T> & {
   /**
-   * 后台轮询的失败原因。与 error 分开：主数据仍是最后一份完好数据，运营台要的是
-   * "自动刷新延迟了"的旁注，而不是把整块内容换成报错。
+   * 保留快照时的后台轮询失败原因。与 error 分开：主数据仍是最后一份完好数据，
+   * 运营台要的是"自动刷新延迟了"的旁注；清空快照的资源则使用 error。
    */
   readonly refreshError: string | null;
   /** 前台刷新，会进入 loading。 */
@@ -116,6 +118,7 @@ export function useAuthorityResource<T>(
   options: UseAuthorityResourceOptions<T> = {},
 ): AuthorityResource<T> {
   const { key, enabled = true, load } = query;
+  const { retainDataOnError = true } = options;
 
   type Snapshot = { key: string; state: AuthorityState<T>; refreshError: string | null };
   const [snapshot, setSnapshot] = useState<Snapshot>(() => ({
@@ -163,15 +166,19 @@ export function useAuthorityResource<T>(
           : "The authoritative projection could not be loaded";
         if (!token.isCurrent()) throw cause;
         const latest = snapshotRef.current;
-        if (mode === "foreground") {
-          commit({ key, state: authorityRequestFailed(latest.state, key, message, cause), refreshError: null });
+        if (mode === "foreground" || !retainDataOnError) {
+          commit({
+            key,
+            state: authorityRequestFailed(retainDataOnError ? latest.state : createAuthorityState<T>(), key, message, cause),
+            refreshError: null,
+          });
         } else {
           commit({ key, state: latest.key === key ? latest.state : createAuthorityState<T>(), refreshError: message });
         }
         throw cause;
       }
     },
-    [commit, gate, key, load],
+    [commit, gate, key, load, retainDataOnError],
   );
 
   const foreground = useCallback(async () => {
@@ -190,7 +197,9 @@ export function useAuthorityResource<T>(
       commit({ key, state: createAuthorityState<T>(), refreshError: null });
       cadenceRef.current = { attempt: 0, consecutiveFailures: 0, error: null };
     }
-    if (!enabled) return;
+    // A hidden resource can still be explicitly refreshed (for example after
+    // a billing write). Its pending read belongs to this query visit too.
+    if (!enabled) return () => gate.invalidate();
     // SPEC: 首次取数推迟到挂载提交之后。
     // INTENT: 28 个调用点各自手写这段 setTimeout(…, 0) "挂载仪式"。它真正的作用是让
     //         StrictMode 的双次挂载在 cleanup 里把第一次取消掉，只发一个请求。

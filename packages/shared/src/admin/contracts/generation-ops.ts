@@ -553,7 +553,7 @@ export const generationDeadLetterItemSchema = z
     provider: z.string().min(1).nullable(),
     errorCode: z.string().min(1).nullable(),
     costDreamcoins: z.number().int().nonnegative(),
-    ledgerState: z.enum(["refunded", "reserved"]),
+    ledgerState: z.enum(["not_charged", "reserved", "partially_refunded", "refunded"]),
     retryEligibility: generationRetryEligibilitySchema,
     createdAt: adminIsoDateTimeSchema,
     updatedAt: adminIsoDateTimeSchema,

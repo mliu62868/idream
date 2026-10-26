@@ -295,8 +295,8 @@ describe("Character media operations projection", () => {
           reason: "Inspect capacity before an operator retry.",
         },
       });
-      expect(projection.operations[0].operationsHref).toContain("view=dead-letter");
-      expect(projection.operations[1].operationsHref).toContain("view=dead-letter");
+      expect(projection.operations[0].operationsHref).toBe(`/admin/ops/jobs?view=dead-letter&deadSearch=${encodeURIComponent(imageJobId)}`);
+      expect(projection.operations[1].operationsHref).toBe(`/admin/ops/jobs?view=dead-letter&deadSearch=${encodeURIComponent(videoJobId)}`);
     } finally {
       await prisma.mediaAsset.deleteMany({ where: { id: videoAssetId } });
       await prisma.dreamcoinLedger.deleteMany({ where: { id: { in: ledgerIds } } });

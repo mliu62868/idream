@@ -27,6 +27,7 @@ import {
 import {
   actorWithPermission,
   jsonBody,
+  parseRequestInput,
   queryParams,
   type AdminActor,
 } from "@/server/modules/admin-v2/shared/authority";
@@ -86,11 +87,11 @@ function assertPathConfirmation(value: string, path: string) {
 
 /** The wire contract only bounds the string; CMS path ownership lives in the domain contract. */
 function ownedCmsPath(value: string) {
-  return cmsPathSchema.parse(value);
+  return parseRequestInput(cmsPathSchema, value);
 }
 
 function ownedCmsCanonical(value: string | null | undefined) {
-  return value === undefined ? undefined : cmsCanonicalSchema.parse(value);
+  return value === undefined ? undefined : parseRequestInput(cmsCanonicalSchema, value);
 }
 
 function revalidateCmsPage(path: string) {

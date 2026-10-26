@@ -15,6 +15,8 @@
 // service -> generation-quote -> 各权威模块，避免报价协议再次退回路由分发文件。
 import { createHash } from "node:crypto";
 import { Errors } from "@/server/lib/errors";
+import { prisma } from "@/server/lib/db";
+import { assertGenerationSourceImageAuthority } from "./generation-job-authority";
 import {
   generationCostFromAuthority,
   resolveGenerationPricingAuthority,
@@ -470,6 +472,13 @@ export async function quoteGeneration(input: {
     // 报价绝不产生副作用：不给遗留 Character 补建 visual profile。
     bootstrapVisualProfile: false,
   });
+  if (input.body.mode === "video" && plan.requestedSourceImageAssetId) {
+    await assertGenerationSourceImageAuthority(prisma, {
+      sourceImageAssetId: plan.requestedSourceImageAssetId,
+      userId: input.userId,
+      characterId: plan.character?.id ?? null,
+    });
+  }
   const routeFingerprint = generationPlanRouteFingerprint(plan);
   const pricingAuthority = await resolveGenerationPricingAuthority(
     input.body.mode,

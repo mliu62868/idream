@@ -23,6 +23,7 @@ import {
 } from "@/features/operations/WorkspaceUi";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
+import { createOrRecoverCharacterRun } from "./creative-run-creation";
 import {
   claimDurableMutationIntent,
   clearDurableMutationIntent,
@@ -75,6 +76,13 @@ import {
   ImageProductionReadinessCard,
 } from "./CharacterAssetStudioStage";
 
+function savedAssetRunRequest(intent: DurableMutationIntent | null, characterId: string) {
+  const saved = creativeRunCreateRequestSchema.safeParse(intent?.requestSnapshot);
+  return saved.success && saved.data.targetType === "character" &&
+    saved.data.targetId === characterId && isCharacterAssetPurpose(saved.data.purpose)
+    ? { ...saved.data, purpose: saved.data.purpose } : null;
+}
+
 export function CharacterAssetStudio({
   actorId = "anonymous",
   data,
@@ -125,8 +133,17 @@ export function CharacterAssetStudio({
         ? "library"
         : "review",
   );
+  const [runCreationIntent, setRunCreationIntent] =
+    useState<DurableMutationIntent | null>(() =>
+      readActiveDurableMutationIntent({
+        scope: `character-asset:create:${actorId}:${data.character.id}`,
+      }),
+    );
+  const runCreationIntentRef = useRef(runCreationIntent);
+  const savedCreateRequest = savedAssetRunRequest(runCreationIntent, data.character.id);
   const [activePurpose, setActivePurpose] = useState<CharacterAssetPurpose>(
     () =>
+      savedCreateRequest?.purpose ??
       data.project.draftAssetRouteAuthority?.recoveryPurpose ??
       nextIncompleteCharacterAssetPurpose(data.journey) ??
       "character_chat",
@@ -149,15 +166,17 @@ export function CharacterAssetStudio({
         : `Head-and-shoulders portrait of ${subject.name} facing the camera, soft even studio light, plain neutral backdrop, relaxed confident smile, sharp focus on the face.`,
       character_hero: `Full-body shot of ${subject.name} alone in a stylish city apartment at golden hour, warm window light, relaxed confident pose, wide cinematic framing, no other people anywhere in the scene.`,
       character_chat: `Candid close-up selfie of ${subject.name} alone, curled up on a cozy sofa at home in the evening, warm lamp light, casual comfortable clothes, playful smile at the camera, no other people.`,
+      ...(savedCreateRequest ? { [savedCreateRequest.purpose]: savedCreateRequest.brief } : {}),
     }),
   );
   const [negativePrompts, setNegativePrompts] = useState<
     Record<CharacterAssetPurpose, string>
-  >({
+  >(() => ({
     character_cover: "",
     character_hero: "",
     character_chat: "",
-  });
+    ...(savedCreateRequest ? { [savedCreateRequest.purpose]: savedCreateRequest.negativePrompt ?? "" } : {}),
+  }));
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<
     "generate" | "review" | "select" | "prepare" | null
@@ -165,13 +184,6 @@ export function CharacterAssetStudio({
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | { readonly runId: string } | null>(null);
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
-  const [runCreationIntent, setRunCreationIntent] =
-    useState<DurableMutationIntent | null>(() =>
-      readActiveDurableMutationIntent({
-        scope: `character-asset:create:${actorId}:${data.character.id}`,
-      }),
-    );
-  const runCreationIntentRef = useRef(runCreationIntent);
   const [reviewMutationIntent, setReviewMutationIntent] =
     useState<DurableMutationIntent | null>(() =>
       readActiveDurableMutationIntent({
@@ -197,8 +209,14 @@ export function CharacterAssetStudio({
     (intent: DurableMutationIntent | null) => {
       runCreationIntentRef.current = intent;
       setRunCreationIntent(intent);
+      const saved = savedAssetRunRequest(intent, data.character.id);
+      if (saved) {
+        setActivePurpose(saved.purpose);
+        setBriefs((current) => ({ ...current, [saved.purpose]: saved.brief }));
+        setNegativePrompts((current) => ({ ...current, [saved.purpose]: saved.negativePrompt ?? "" }));
+      }
     },
-    [],
+    [data.character.id],
   );
   const identityBootstrap = data.visual.identityBootstrap;
   const bootstrapMode = identityBootstrap.allowed;
@@ -215,6 +233,7 @@ export function CharacterAssetStudio({
       profile.workflowVersion === qualifiedRoute.workflowVersion,
   );
   const orientationForPurpose = (purpose: CharacterAssetPurpose) => {
+    if (savedCreateRequest?.purpose === purpose) return savedCreateRequest.orientation;
     if (bootstrapMode) return bootstrapProfile?.orientation;
     const preferred = purposeConfig[purpose].orientation;
     const allowed = qualifiedImageProfile?.allowedOrientations;
@@ -640,12 +659,13 @@ export function CharacterAssetStudio({
     } catch (cause) {
       // INTENT: 只有服务端明确拒绝（4xx）才能断言线上图片没变；超时或 5xx 时提交可能已经落地，
       //         这时让运营先刷新核对，而不是保证「什么都没发生」再诱导重试。
-      if (cause instanceof AdminV2RequestError && cause.status === 409) {
+      if (cause instanceof AdminV2RequestError && cause.outcome === "answered" && cause.status === 409) {
         setError(
           "Image production was not enabled because this Character changed elsewhere. Refresh the page and try again.",
         );
       } else if (
         cause instanceof AdminV2RequestError &&
+        cause.outcome === "answered" &&
         [400, 401, 403, 404, 422].includes(cause.status)
       ) {
         setError(cause.message);
@@ -699,304 +719,139 @@ export function CharacterAssetStudio({
         selectedRun?.id === run.id ? selectedRun.executionOutcome : run.executionOutcome,
       )) || (selectedRun?.purpose === purpose && ["pending", "running"].includes(selectedRun.executionOutcome))
     )) return;
-    if (
-      runCreationIntent?.status === "committed_projection_pending" &&
-      runCreationIntent.committedTargetId
-    ) {
-      const committedTargetId = runCreationIntent.committedTargetId;
-      setBusy("generate");
-      setError(null);
-      try {
-        runLoader.invalidate();
-        selectRunId(committedTargetId);
-        setSelectedRun(null);
-        await Promise.all([
-          loadRuns(),
-          loadRun(committedTargetId),
-        ]);
-      } catch (cause) {
-        // INTENT: 这条路径的目标必然就是已提交的那一条，出口固定是旁注——不走 routeFailure，
-        //         因为并发的 loadRuns 失败也应留在旁注里，不该因为 intent 恰好刚被释放
-        //         就升级成主错误。
-        if (!isProjectionRequestCancellation(cause)) {
-          setRefreshWarning(
-            committedRunProjectionUnavailable(
-              cause instanceof Error ? cause.message : null,
-              t,
-            ),
-          );
-        }
-      } finally {
-        setBusy(null);
-      }
-      return;
-    }
-    const recovered = runCreationIntent
-      ? creativeRunCreateRequestSchema.safeParse(
-          runCreationIntent.requestSnapshot,
-        )
-      : null;
-    if (
-      runCreationIntent &&
-      (runCreationIntent.status === "reconciliation_required" ||
-        (recovered !== null && !recovered.success))
-    ) {
-      setBusy("generate");
-      setError(null);
-      setMessage(null);
-      try {
-        const receipt = await reconcileDurableMutationIntent({
-          intent: runCreationIntent,
-          commandType: "creative.run.create",
-          expectedCharacterId: data.character.id,
-          ...(recovered?.success &&
-          isCharacterAssetPurpose(recovered.data.purpose)
-            ? { expectedPurpose: recovered.data.purpose }
-            : {}),
-        });
-        if (receipt.state === "committed") {
-          if (
-            !receipt.committedTargetId ||
-            receipt.verification?.kind !== "creative_run" ||
-            receipt.verification.runId !== receipt.committedTargetId
-          ) {
-            throw new Error(
-              "The committed Run receipt is missing exact projection evidence. The workspace remains locked.",
-            );
-          }
-          const trustedRequest = creativeRunCreateRequestSchema.safeParse(
-            receipt.verification.requestSnapshot,
-          );
-          if (
-            !trustedRequest.success ||
-            trustedRequest.data.targetType !== "character" ||
-            trustedRequest.data.targetId !== data.character.id ||
-            !isCharacterAssetPurpose(trustedRequest.data.purpose)
-          ) {
-            throw new Error(
-              "The committed Run receipt does not contain the exact Character image request. The workspace remains locked.",
-            );
-          }
-          const committed = updateDurableMutationIntent(runCreationIntent, {
-            status: "committed_projection_pending",
-            committedTargetId: receipt.committedTargetId,
-            requestSnapshot: trustedRequest.data,
-          });
-          updateRunCreationIntentState(committed);
-          runLoader.invalidate();
-          selectRunId(receipt.committedTargetId);
-          setSelectedRun(null);
-          await Promise.all([
-            loadRuns(),
-            loadRun(receipt.committedTargetId),
-          ]);
-          setMessage(
-            "The committed generation receipt was recovered from the server.",
-          );
-          return;
-        }
-        if (receipt.state === "cancelled") {
-          clearDurableMutationIntent(runCreationIntent);
-          updateRunCreationIntentState(null);
-          setMessage(
-            "The old generation request had no committed effect. Its key was sealed, so a new request is safe.",
-          );
-          return;
-        }
-        setError(
-          receipt.state === "failed"
-            ? t("The saved generation command {commandId} is terminally failed. Its key remains locked for operator investigation; do not submit a replacement Run.", { commandId: receipt.commandId ?? "—" })
-            : t("The saved generation request is {state}. Keep this workspace locked and reconcile again after the server reaches a terminal receipt.", { state: value(receipt.state) }),
-        );
-      } catch (cause) {
-        setError(
-          cause instanceof Error
-            ? cause.message
-            : "The saved generation request could not be reconciled.",
-        );
-      } finally {
-        setBusy(null);
-      }
-      return;
-    }
+    const intent = runCreationIntentRef.current;
+    const recovered = intent ? creativeRunCreateRequestSchema.safeParse(intent.requestSnapshot) : null;
     const profileId = bootstrapMode
       ? bootstrapProfile?.profileKey
       : qualifiedRoute?.generationProfileKey;
     const orientation = orientationForPurpose(purpose);
-    if (
-      !recovered?.success &&
-      (!profileId ||
-        (bootstrapMode && (!orientation || purpose !== "character_cover")))
-    )
-      return;
-    const count = 1;
-    const brief = briefs[purpose].trim();
-    // SPEC: 这个 title 会写进生成请求并存到后端，不是纯 UI 文案 —— 所以不翻译。
-    // INTENT: Today 页上出现的英文「… · Primary portrait」来自历史数据里存着的这个字段。
-    //         翻译它只影响新数据，旧数据仍是英文，同一列会变成两种语言并存，更糟。
-    //         要改得连同后端已有数据一起迁移，属另一件事。
+    if (!intent && (!profileId || (bootstrapMode && (!orientation || purpose !== "character_cover")))) return;
+    // This title is persisted creative input, not translated interface copy.
     const title = `${subject.name} · ${purposeConfig[purpose].label}`;
-    const body = recovered?.success
-      ? recovered.data
-      : {
-          title,
-          purpose,
-          targetType: "character" as const,
-          targetId: data.character.id,
-          profileId: profileId ?? "",
-          presetIds: [],
-          referenceAssetIds,
-          bootstrapIdentity: bootstrapMode,
-          orientation,
-          count,
-          brief,
-          ...(negativePrompts[purpose].trim()
-            ? { negativePrompt: negativePrompts[purpose].trim() }
-            : {}),
-          consistencyMode: "strict" as const,
-          priority: "normal" as const,
-          reason: bootstrapMode
-            ? "Create the first identity portrait"
-            : referenceAssetIds.length
-              ? "Create identity-preserving variations from the selected character asset"
-              : "Create a customer-facing character asset pack candidate",
-        };
-    if (
-      body.targetType !== "character" ||
-      body.targetId !== data.character.id ||
-      !isCharacterAssetPurpose(body.purpose)
-    ) {
-      setError(
-        "The saved generation intent does not belong to this Character Asset Studio.",
-      );
-      return;
-    }
-    const requestKey = characterAssetRunRequestKey({
-      characterId: data.character.id,
-      title: body.title ?? title,
-      purpose: body.purpose,
-      profileId: body.profileId,
-      referenceAssetIds: body.referenceAssetIds,
-      bootstrapIdentity: body.bootstrapIdentity,
-      orientation: body.orientation ?? "",
-      count: body.count,
-      brief: body.brief,
-      negativePrompt: body.negativePrompt,
-    });
-    let intent = runCreationIntent;
-    if (!intent) {
-      const claim = await claimDurableMutationIntent({
-        scope: `character-asset:create:${actorId}:${data.character.id}`,
-        signature: requestKey,
-        requestSnapshot: body,
-      });
-      intent = claim.intent;
-      if (
-        intent.signature !== requestKey ||
-        ["committed_projection_pending", "reconciliation_required"].includes(
-          intent.status,
-        )
-      ) {
-        const saved = creativeRunCreateRequestSchema.safeParse(
-          intent.requestSnapshot,
-        );
-        if (
-          saved.success &&
-          saved.data.targetType === "character" &&
-          saved.data.targetId === data.character.id &&
-          isCharacterAssetPurpose(saved.data.purpose)
-        ) {
-          setActivePurpose(saved.data.purpose);
-          setBriefs((current) => ({
-            ...current,
-            [saved.data.purpose]: saved.data.brief,
-          }));
-          setNegativePrompts((current) => ({
-            ...current,
-            [saved.data.purpose]: saved.data.negativePrompt ?? "",
-          }));
-        }
-        updateRunCreationIntentState(intent);
-        setError(
-          intent.status === "committed_projection_pending"
-            ? "Another tab already has a committed Character Run receipt. Verify it before creating again."
-            : intent.status === "reconciliation_required"
-              ? "Another tab has an aged Character Run receipt. Reconcile it with the server before creating again."
-              : "Another tab already started a different Character image request. Its exact context is locked for safe resume.",
-        );
-        return;
-      }
-    }
-    updateRunCreationIntentState(intent);
+    const draft = {
+      title,
+      purpose,
+      targetType: "character" as const,
+      targetId: data.character.id,
+      profileId: profileId ?? "",
+      presetIds: [],
+      referenceAssetIds,
+      bootstrapIdentity: bootstrapMode,
+      orientation,
+      count: 1,
+      brief: briefs[purpose].trim(),
+      ...(negativePrompts[purpose].trim() ? { negativePrompt: negativePrompts[purpose].trim() } : {}),
+      consistencyMode: "strict" as const,
+      priority: "normal" as const,
+      reason: bootstrapMode
+        ? "Create the first identity portrait"
+        : referenceAssetIds.length
+          ? "Create identity-preserving variations from the selected character asset"
+          : "Create a customer-facing character asset pack candidate",
+    };
+    let committedRun = false;
     setBusy("generate");
     setError(null);
     setMessage(null);
     setRefreshWarning(null);
-    let result: {
-      readonly batch: { readonly id: string };
-      readonly replayed: boolean;
-    };
     try {
-      result = await adminV2Operation("POST /api/v2/admin/creative/runs", {
-        replayIdempotencyKey: intent.idempotencyKey,
-        body,
+      const result = await createOrRecoverCharacterRun({
+        scope: `character-asset:create:${actorId}:${data.character.id}`,
+        characterId: data.character.id,
+        ...(recovered?.success && isCharacterAssetPurpose(recovered.data.purpose)
+          ? { expectedPurpose: recovered.data.purpose } : {}),
+        intent,
+        request: draft,
+        parseRequest: (snapshot) => {
+          const parsed = creativeRunCreateRequestSchema.safeParse(snapshot);
+          return parsed.success && parsed.data.targetType === "character" &&
+            parsed.data.targetId === data.character.id && isCharacterAssetPurpose(parsed.data.purpose)
+            ? parsed.data : null;
+        },
+        signature: (body) => characterAssetRunRequestKey({
+          characterId: data.character.id,
+          title: body.title ?? title,
+          purpose: body.purpose as CharacterAssetPurpose,
+          profileId: body.profileId,
+          referenceAssetIds: body.referenceAssetIds,
+          bootstrapIdentity: body.bootstrapIdentity,
+          orientation: body.orientation ?? "",
+          count: body.count,
+          brief: body.brief,
+          negativePrompt: body.negativePrompt,
+        }),
+        onIntentChange: (next) => {
+          updateRunCreationIntentState(next);
+          if (next?.status === "committed_projection_pending" && next.committedTargetId) {
+            // The visible receipt and its exact read target change together, even
+            // before the shared creation promise returns to this handler.
+            runLoader.invalidate();
+            selectRunId(next.committedTargetId);
+            setSelectedRun(null);
+          }
+        },
       });
-    } catch (cause) {
-      const rejectedByRuntimePreflight =
-        cause instanceof AdminV2RequestError &&
-        cause.status === 503 &&
-        cause.code === "unavailable" &&
-        cause.message.includes("No Run was created");
-      if (
-        cause instanceof AdminV2RequestError &&
-        ([400, 401, 403, 404, 409, 422].includes(cause.status) ||
-          rejectedByRuntimePreflight)
-      ) {
-        clearDurableMutationIntent(intent);
-        updateRunCreationIntentState(null);
-        setError(
-          rejectedByRuntimePreflight
-            ? "Image generation is offline. Restore backend health, then generate again. No Run was created."
-            : cause.message,
-        );
-      } else {
-        const unknown = updateDurableMutationIntent(intent, {
-          status: "outcome_unknown",
-        });
-        updateRunCreationIntentState(unknown);
-        setError(
-          "Generation outcome is unknown. Choose Resume generation to replay the same intent without creating a duplicate Run.",
-        );
+      if (result.state === "superseded") {
+        // Another instance verified and released this intent. Its Run must replace
+        // our stale selection before the composer can become available again.
+        setRefreshWarning("Refresh the workspace before starting another generation.");
+        runLoader.invalidate();
+        selectRunId(null);
+        setSelectedRun(null);
+        await loadRuns();
+        if (selectedRunIdRef.current) await loadRun(selectedRunIdRef.current);
+        setRefreshWarning(null);
+        return;
       }
-      setBusy(null);
-      return;
-    }
-    const committed = updateDurableMutationIntent(intent, {
-      status: "committed_projection_pending",
-      committedTargetId: result.batch.id,
-    });
-    updateRunCreationIntentState(committed);
-    setActivePurpose(body.purpose);
-    setSelectedIndex(0);
-    setMessage(
-      body.bootstrapIdentity
-        ? "First-portrait generation was committed. Results will appear here automatically."
-        : body.referenceAssetIds.length
-          ? "Variation run was committed from this candidate."
-          : "Generation was committed. Results will appear here automatically.",
-    );
-    try {
-      runLoader.invalidate();
-      selectRunId(result.batch.id);
-      setSelectedRun(null);
-      await loadRuns();
-    } catch (refreshCause) {
-      if (!isProjectionRequestCancellation(refreshCause)) {
-        setRefreshWarning(
-          refreshCause instanceof Error
-            ? t("The Run was created, but the latest projection could not be refreshed: {detail}. Choose Verify created Run to retry safely.", { detail: t(refreshCause.message) })
-            : "The Run was created, but the latest projection could not be refreshed. Choose Verify created Run to retry safely.",
-        );
+      if (result.state === "cancelled") {
+        setMessage("The old generation request had no committed effect. Its key was sealed, so a new request is safe.");
+        return;
+      }
+      if (result.state === "pending") {
+        const receipt = result.receipt;
+        setError(receipt.state === "failed"
+          ? t("The saved generation command {commandId} is terminally failed. Its key remains locked for operator investigation; do not submit a replacement Run.", { commandId: receipt.commandId ?? "—" })
+          : t("The saved generation request is {state}. Keep this workspace locked and reconcile again after the server reaches a terminal receipt.", { state: value(receipt.state) }));
+        return;
+      }
+      if (result.state === "blocked") {
+        setError(result.intent.status === "committed_projection_pending"
+          ? "Another tab already has a committed Character Run receipt. Verify it before creating again."
+          : result.intent.status === "reconciliation_required"
+            ? "Another tab has an aged Character Run receipt. Reconcile it with the server before creating again."
+            : "Another tab already started a different Character image request. Its exact context is locked for safe resume.");
+        return;
+      }
+      committedRun = true;
+      const body = result.request;
+      if (!isCharacterAssetPurpose(body.purpose)) throw new Error("The saved generation intent does not belong to this Character Asset Studio.");
+      setActivePurpose(body.purpose);
+      setSelectedIndex(0);
+      if (result.source === "submission") {
+        setMessage(body.bootstrapIdentity
+          ? "First-portrait generation was committed. Results will appear here automatically."
+          : body.referenceAssetIds.length
+            ? "Variation run was committed from this candidate."
+            : "Generation was committed. Results will appear here automatically.");
+      }
+      if (result.source === "submission") {
+        await loadRuns();
+      } else {
+        await Promise.all([loadRuns(), loadRun(result.runId)]);
+        if (result.source === "reconciliation") setMessage("The committed generation receipt was recovered from the server.");
+      }
+    } catch (cause) {
+      if (committedRun || runCreationIntentRef.current?.status === "committed_projection_pending") {
+        if (!isProjectionRequestCancellation(cause)) {
+          setRefreshWarning(committedRunProjectionUnavailable(cause instanceof Error ? cause.message : null, t));
+        }
+      } else if (runCreationIntentRef.current?.status === "outcome_unknown") {
+        setError("Generation outcome is unknown. Choose Resume generation to replay the same intent without creating a duplicate Run.");
+      } else {
+        setError(cause instanceof AdminV2RequestError && cause.status === 503 &&
+          cause.code === "unavailable" && cause.message.includes("No Run was created")
+          ? "Image generation is offline. Restore backend health, then generate again. No Run was created."
+          : cause instanceof Error ? cause.message : "The saved generation request could not be reconciled.");
       }
     } finally {
       setBusy(null);
@@ -1025,11 +880,8 @@ export function CharacterAssetStudio({
   const refreshWorkspace = async () => {
     setError(null);
     try {
-      await Promise.all([
-        onProjectReload(),
-        loadRuns(),
-        selectedRunId ? loadRun(selectedRunId) : Promise.resolve(),
-      ]);
+      await Promise.all([onProjectReload(), loadRuns()]);
+      if (selectedRunIdRef.current) await loadRun(selectedRunIdRef.current);
       setRefreshWarning(null);
     } catch (cause) {
       if (isProjectionRequestCancellation(cause)) return;
@@ -1167,6 +1019,7 @@ export function CharacterAssetStudio({
         );
       } else if (
         cause instanceof AdminV2RequestError &&
+        cause.outcome === "answered" &&
         [400, 401, 403, 404, 409, 422].includes(cause.status)
       ) {
         clearDurableMutationIntent(currentIntent);
@@ -1446,6 +1299,7 @@ export function CharacterAssetStudio({
         );
       } else if (
         cause instanceof AdminV2RequestError &&
+        cause.outcome === "answered" &&
         [400, 401, 403, 404, 409, 422].includes(cause.status)
       ) {
         clearDurableMutationIntent(currentIntent);
@@ -1617,6 +1471,7 @@ export function CharacterAssetStudio({
       if (
         intent &&
         cause instanceof AdminV2RequestError &&
+        cause.outcome === "answered" &&
         [400, 401, 403, 404, 409, 422].includes(cause.status)
       ) {
         clearDurableMutationIntent(intent);
@@ -1988,12 +1843,15 @@ export function CharacterAssetStudio({
         </div>
       ) : null}
       {refreshWarning ? (
-        <p
-          className="rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]"
+        <div
+          className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]"
           role="status"
         >
-          {t(refreshWarning)}
-        </p>
+          <span>{t(refreshWarning)}</span>
+          <WorkspaceButton disabled={busy !== null} onClick={() => void refreshWorkspace()}>
+            <RefreshCcw className="h-4 w-4" /> {t("Refresh")}
+          </WorkspaceButton>
+        </div>
       ) : null}
       <div className={characterAssetStudioLayoutClass}>
         <section aria-labelledby="candidate-title" className="min-w-0">

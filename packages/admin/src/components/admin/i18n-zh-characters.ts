@@ -2008,5 +2008,8 @@ export const adminZhCharacters: Record<string, string> = {
   "Reconcile saved video request": "核对已保存的视频请求",
   "Resume video creation": "继续生成视频",
   "The saved request must be reconciled before these controls can be edited.": "请先核对已保存的请求，再编辑这些设置。",
+  "The recovered Run receipt does not contain this Character workspace's exact request.": "恢复的任务回执不包含此角色工作台的原始请求。",
+  "The generation request does not match this Character workspace.": "生成请求与此角色工作台不符。",
+  "The generation request has no durable intent.": "生成请求缺少可恢复的原始记录。",
 
 };

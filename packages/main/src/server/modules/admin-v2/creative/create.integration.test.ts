@@ -43,10 +43,10 @@ describe("Creative Run v2 brief and launch", () => {
         label: "Creative create integration",
         mode: "image",
         runner: "comfyui",
-        pipelineModel: "redqw21",
-        workflowKey: "redqw21",
+        pipelineModel: "redcraft-qw21t",
+        workflowKey: "redcraft-qw21t",
         runnerConfig: {
-          workflowVersion: 1,
+          workflowVersion: 3,
           capabilities: { textToImage: true },
         },
         allowedOrientations: ["1:1", "16:9"],
@@ -144,9 +144,10 @@ describe("Creative Run v2 brief and launch", () => {
     expect(await prisma.generationAttempt.findMany({
       where: { requestId: { in: jobIds } },
       select: { workflowKey: true, workflowVersion: true },
-    })).toEqual(expect.arrayContaining([
-      expect.objectContaining({ workflowKey: expect.any(String), workflowVersion: expect.any(Number) }),
-    ]));
+    })).toEqual([
+      { workflowKey: "redcraft-qw21t", workflowVersion: 3 },
+      { workflowKey: "redcraft-qw21t", workflowVersion: 3 },
+    ]);
     expect(await prisma.mainOutboxEvent.count({
       where: {
         aggregateType: "generation_request",

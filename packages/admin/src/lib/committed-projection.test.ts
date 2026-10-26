@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   committedProjectionTargetId,
   createCommittedProjectionLoader,
@@ -273,6 +273,35 @@ describe("committed projection protocol", () => {
     ]);
     expect(harness.state.releases).toBe(1);
     expect(readActiveDurableMutationIntent({ scope })).toBeNull();
+  });
+
+  it("rechecks the selected target after waiting for the journal lock", async () => {
+    const previousLocks = Object.getOwnPropertyDescriptor(navigator, "locks");
+    const released = deferred<void>();
+    const requested: string[] = [];
+    Object.defineProperty(navigator, "locks", { configurable: true, value: {
+      request: async <T>(name: string, transition: () => T) => {
+        requested.push(name);
+        await released.promise;
+        return transition();
+      },
+    } });
+    try {
+      const harness = createHarness();
+      harness.state.intent = intentFixture();
+      const load = harness.loader.load("run-1");
+      harness.pending[0].deferred.resolve({ id: "run-1", stamp: "old" });
+      await vi.waitFor(() => expect(requested).toEqual(["idream:admin:mutation-intent:v1:claim:test-scope"]));
+      expect(harness.commits).toHaveLength(0);
+      harness.state.target = "run-2";
+      released.resolve();
+      await expect(load).rejects.toBeInstanceOf(SupersededProjectionError);
+      expect(harness.commits).toHaveLength(0);
+      expect(harness.state.releases).toBe(0);
+    } finally {
+      if (previousLocks) Object.defineProperty(navigator, "locks", previousLocks);
+      else Reflect.deleteProperty(navigator, "locks");
+    }
   });
 
   it("reports an unrelated read as unrelated and leaves the key alone", async () => {

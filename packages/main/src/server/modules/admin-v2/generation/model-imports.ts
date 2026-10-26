@@ -18,6 +18,7 @@ import { Errors } from "@/server/lib/errors";
 import {
   actorWithPermission,
   jsonBody,
+  parseRequestInput,
   type AdminActor,
 } from "@/server/modules/admin-v2/shared/authority";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
@@ -116,7 +117,7 @@ export async function uploadGenerationModelImport(request: Request) {
   // multipart/form-data has no JSON body for the manifest to narrow, so the manifest declares
   // `none` and the only field that decides anything is validated right here.
   const form = await request.formData();
-  const kind = modelImportKindSchema.parse(String(form.get("kind") ?? "model"));
+  const kind = parseRequestInput(modelImportKindSchema, String(form.get("kind") ?? "model"));
   const file = form.get("file");
   if (!(file instanceof File)) throw Errors.badRequest("Upload requires a file field");
   if (file.size <= 0) throw Errors.badRequest("Uploaded file is empty");

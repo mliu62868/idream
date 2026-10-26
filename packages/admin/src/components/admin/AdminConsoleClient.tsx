@@ -48,6 +48,8 @@ import {
 import { MentionsInbox } from "@/features/collaboration/MentionsInbox";
 import { GlobalAdminSearch } from "@/features/search/GlobalAdminSearch";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
+import { useAdminAuthority } from "./use-admin-authority";
+import { AuthorityRequestError } from "./ui/AuthorityRequestError";
 
 type Actor = {
   id: string;
@@ -156,8 +158,8 @@ function SoulDraftNavigationGuard({ actorId }: { actorId: string }) {
 }
 
 function AdminConsoleContent({
-  actor,
-  canCreateCharacters = false,
+  actor: initialActor,
+  canCreateCharacters: initialCanCreateCharacters = false,
   initialAccess,
   initialPermissions,
   path,
@@ -176,14 +178,21 @@ function AdminConsoleContent({
   const mobileNavTriggerRef = useRef<HTMLButtonElement | null>(null);
   const activeItem = path.item;
   const sectionId = activeItem.id;
-  const permissions = useMemo(() => new Set(initialPermissions), [initialPermissions]);
+  const authority = useAdminAuthority({ actor: initialActor, permissions: initialPermissions, canCreateCharacters: initialCanCreateCharacters });
+  const { actor, canCreateCharacters } = authority;
+  const permissions = useMemo(() => new Set(authority.permissions), [authority.permissions]);
+  useEffect(() => {
+    // Broadcast only after the fresh permission props have committed to the workspace.
+    if (authority.dataRefreshVersion > 0) window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT));
+  }, [authority.dataRefreshVersion]);
   const canAccessActiveSection = canReadWorkspace(activeItem, permissions);
   // 只有 admin 能改工作模式，所以也只有 admin 的 cookie 值算数——被降权的账号不该继续按
   // 上一次的模式排列导航。
   const canChooseWorkMode = actor?.role === "admin";
-  const [workMode, setWorkMode] = useState<WorkMode>(
+  const [preferredWorkMode, setWorkMode] = useState<WorkMode>(
     () => (canChooseWorkMode && preferences.workMode) || defaultWorkModeForRole(actor?.role),
   );
+  const workMode = canChooseWorkMode ? preferredWorkMode : defaultWorkModeForRole(actor?.role);
   const navGroups = useMemo(
     () => navGroupsForPermissions(permissions, workMode),
     [permissions, workMode],
@@ -392,11 +401,10 @@ function AdminConsoleContent({
               <div className="relative flex w-full items-center gap-2 md:w-auto">
                 <div className="min-w-0 flex-1 md:flex-none"><GlobalAdminSearch permissions={permissions} /></div>
                 {permissions.has("dashboard.read") ? <MentionsInbox /> : null}
-                {/* SPEC: 刷新只广播事件；各工作台自取数、自报加载态。 */}
                 <button
                   aria-label={t("Refresh")}
                   className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-sm text-[var(--ad-text)] hover:bg-black/[0.04]"
-                  onClick={() => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT))}
+                  onClick={() => void authority.refresh()}
                   type="button"
                 >
                   <RefreshCcw className="h-4 w-4" />
@@ -416,7 +424,10 @@ function AdminConsoleContent({
           </header>
 
           <div className="p-4 md:p-6">
-            {!canAccessActiveSection ? (
+            {authority.error ? (
+              <AuthorityRequestError cause={authority.error} message="Admin permissions could not be refreshed"
+                onRetry={() => void authority.refresh()} requestKind="read" />
+            ) : !canAccessActiveSection ? (
               <PermissionDenied
                 canReachTeamAccess={permissions.has("user.read")}
                 missing={missingWorkspacePermissions(activeItem, permissions)}

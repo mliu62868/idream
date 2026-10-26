@@ -29,15 +29,11 @@ import {
 } from "@/components/admin/i18n";
 import { ImagePackResetNotice } from "./ImagePackResetNotice";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
-import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import {
-  claimDurableMutationIntent,
-  clearDurableMutationIntent,
   readActiveDurableMutationIntent,
-  updateDurableMutationIntent,
   type DurableMutationIntent,
 } from "@/lib/durable-mutation-intent";
-import { reconcileDurableMutationIntent } from "@/lib/durable-mutation-recovery";
+import { createOrRecoverCharacterRun } from "./creative-run-creation";
 import { useCommittedProjectionLoader } from "@/lib/committed-projection";
 import {
   useAuthorityResource,
@@ -126,7 +122,7 @@ function runSettled(run: CreativeRunDetail) {
 
 type ExperimentRequest = ReturnType<typeof creativeRunCreateRequestSchema.parse>;
 
-function savedExperimentRequest(intent: DurableMutationIntent, characterId: string) {
+function savedExperimentRequest(intent: Pick<DurableMutationIntent, "requestSnapshot">, characterId: string) {
   const parsed = creativeRunCreateRequestSchema.safeParse(intent.requestSnapshot);
   return parsed.success && parsed.data.purpose === "identity_calibration" &&
       parsed.data.targetType === "character" && parsed.data.targetId === characterId
@@ -249,14 +245,31 @@ export function VisualIdentityExperimentWorkbench({
   const rememberIntent = (intent: DurableMutationIntent | null) => {
     createIntentRef.current = intent;
     setCreateIntent(intent);
+    const saved = intent ? savedExperimentRequest(intent, data.character.id) : null;
+    if (saved?.identityExperiment) {
+      setMode(saved.identityExperiment.mode);
+      setProfileKey(saved.profileId);
+      setOrientation(saved.orientation ?? "4:5");
+      setPositivePrompt(saved.brief);
+      setNegativePrompt(saved.identityExperiment.negativePrompt);
+      setSeedStrategy(saved.identityExperiment.seedStrategy);
+      setBaseSeed(saved.identityExperiment.baseSeed ?? "");
+      setConsistencyMode(saved.consistencyMode);
+      setStrength(saved.identityExperiment.strength);
+      setSourceAssetId(saved.identityExperiment.sourceAssetId ?? null);
+    }
   };
+  const lockedCreateRequest = createIntent ? savedExperimentRequest(createIntent, data.character.id) : null;
+  const lockedExperiment = lockedCreateRequest?.identityExperiment;
+  const [needsRunRefresh, setNeedsRunRefresh] = useState(false);
+  const composerLocked = createIntent !== null;
   const identity = data.visual.activeIdentity;
   const calibration = data.visual.identityCalibration ?? {
     profiles: [],
     blocker: t("This response does not include a visual identity experiment route yet."),
   };
   const profiles = calibration.profiles;
-  const [mode, setMode] = useState<ExperimentMode>("text_to_image");
+  const [mode, setMode] = useState<ExperimentMode>(lockedExperiment?.mode ?? "text_to_image");
   const compatibleProfiles = useMemo(
     () => profiles.filter((profile) => profile.modes.includes(mode)),
     [mode, profiles],
@@ -266,7 +279,7 @@ export function VisualIdentityExperimentWorkbench({
     compatibleProfiles[0] ??
     null;
   const [profileKey, setProfileKey] = useState(
-    preferredProfile?.profileKey ?? "",
+    lockedCreateRequest?.profileId ?? preferredProfile?.profileKey ?? "",
   );
   const selectedProfile =
     compatibleProfiles.find((profile) => profile.profileKey === profileKey) ??
@@ -280,23 +293,23 @@ export function VisualIdentityExperimentWorkbench({
     (profile) => profile.modelId === selectedModelId,
   );
   const [orientation, setOrientation] = useState(
-    selectedProfile?.orientation ?? "4:5",
+    lockedCreateRequest?.orientation ?? selectedProfile?.orientation ?? "4:5",
   );
-  const [positivePrompt, setPositivePrompt] = useState("");
+  const [positivePrompt, setPositivePrompt] = useState(lockedCreateRequest?.brief ?? "");
   const [negativePrompt, setNegativePrompt] = useState(
-    identity?.negativeIdentityPrompt ??
+    lockedExperiment?.negativePrompt ?? identity?.negativeIdentityPrompt ??
       "different person, inconsistent face, duplicate person, extra limbs, text, watermark",
   );
-  const [seedStrategy, setSeedStrategy] = useState<SeedStrategy>("locked");
+  const [seedStrategy, setSeedStrategy] = useState<SeedStrategy>(lockedExperiment?.seedStrategy ?? "locked");
   const [baseSeed, setBaseSeed] = useState(() =>
-    numericComposerSeed(identity?.defaultSeed),
+    lockedExperiment ? lockedExperiment.baseSeed ?? "" : numericComposerSeed(identity?.defaultSeed),
   );
   const count = 1;
   const [consistencyMode, setConsistencyMode] = useState<
     "strict" | "balanced" | "creative"
-  >("balanced");
-  const [strength, setStrength] = useState(0.65);
-  const [sourceAssetId, setSourceAssetId] = useState<string | null>(null);
+  >(lockedCreateRequest?.consistencyMode ?? "balanced");
+  const [strength, setStrength] = useState(lockedExperiment?.strength ?? 0.65);
+  const [sourceAssetId, setSourceAssetId] = useState<string | null>(lockedExperiment?.sourceAssetId ?? null);
   const [sourceUploadBusy, setSourceUploadBusy] = useState(false);
   const [pendingSource, setPendingSource] = useState<{
     filename: string;
@@ -330,11 +343,11 @@ export function VisualIdentityExperimentWorkbench({
   const [activationReason, setActivationReason] = useState("");
   const [activationConfirmed, setActivationConfirmed] = useState(false);
   const sourceFileInput = useRef<HTMLInputElement>(null);
-  const resolvedOrientation = selectedProfile?.allowedOrientations.includes(
+  const resolvedOrientation = lockedCreateRequest?.orientation ?? (selectedProfile?.allowedOrientations.includes(
     orientation,
   )
     ? orientation
-    : (selectedProfile?.orientation ?? orientation);
+    : (selectedProfile?.orientation ?? orientation));
 
   const loadRun = useCallback(
     async (runId: string) => {
@@ -448,11 +461,25 @@ export function VisualIdentityExperimentWorkbench({
   const uploadedSources = useMemo(() => uploadedSourceReceipt && !listedSources.some((source) => source.id === uploadedSourceReceipt.id)
     ? [uploadedSourceReceipt, ...listedSources] : listedSources, [listedSources, uploadedSourceReceipt]);
 
+  const refreshCurrentRun = async () => {
+    const current = await loadRuns();
+    const target = current.find((run) => ["pending", "running"].includes(run.executionOutcome)) ?? current[0];
+    if (target) await loadRun(target.id);
+    setSelectedRunId(target?.id ?? null);
+    setSelectedItemId(null);
+    setResultOpen(Boolean(target));
+    setNeedsRunRefresh(false);
+  };
+
   useWorkspaceRefresh(async () => {
     void uploadedSourcesResource.refresh();
     try {
-      await loadRuns();
-      if (selectedRun) await loadRun(selectedRun.id);
+      if (needsRunRefresh) await refreshCurrentRun();
+      else {
+        await loadRuns();
+        if (selectedRun) await loadRun(selectedRun.id);
+      }
+      setError(null);
     } catch (cause) {
       setError(cause instanceof Error
         ? cause.message
@@ -515,12 +542,11 @@ export function VisualIdentityExperimentWorkbench({
           )
       : experimentNoticeText(t, notice);
   const experiment = selectedRun?.reviewContext.experiment ?? null;
-  const baselineUrl =
-    data.character.imageUrl ??
-    data.visual.anchors.find((asset) => asset.available)?.url ??
-    data.visual.activeReferenceSet?.references.find((asset) => asset.available)
-      ?.url ??
-    null;
+  // Current look follows the active identity's sealed reference set. The
+  // selectable anchor pool and the published portrait are different authority.
+  const baselineUrl = identity && data.visual.activeReferenceSet?.status === "active"
+    ? data.visual.activeReferenceSet.references.find((asset) => asset.available)?.url ?? null
+    : null;
   const visualSources = useMemo<SourceOption[]>(() => {
     const byId = new Map<string, SourceOption>();
     for (const source of uploadedSources) {
@@ -564,20 +590,20 @@ export function VisualIdentityExperimentWorkbench({
     uploadedSources,
     selectedRun?.items,
   ]);
-  const resolvedSourceAssetId =
+  const resolvedSourceAssetId = lockedExperiment?.sourceAssetId ?? (
     sourceAssetId && visualSources.some((source) => source.id === sourceAssetId)
       ? sourceAssetId
-      : (visualSources[0]?.id ?? null);
+      : (visualSources[0]?.id ?? null));
   const selectedSource =
     visualSources.find((source) => source.id === resolvedSourceAssetId) ?? null;
-  const resolvedSeedStrategy =
+  const resolvedSeedStrategy = lockedExperiment?.seedStrategy ?? (
     seedStrategy === "reuse_source" && !selectedSource?.seed
       ? "random"
-      : seedStrategy;
+      : seedStrategy);
 
   const uploadSource = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] ?? null;
-    if (!file || sourceUploadBusy || !canUploadSource) return;
+    if (!file || sourceUploadBusy || !canUploadSource || composerLocked) return;
     event.target.value = "";
     if (file.size > 15 * 1024 * 1024) {
       setError(t("Image must be 15 MB or smaller"));
@@ -631,7 +657,7 @@ export function VisualIdentityExperimentWorkbench({
   };
 
   const generate = async () => {
-    if (!canCreate || generationLock.current) return;
+    if (!canCreate || generationLock.current || needsRunRefresh) return;
     let intent = createIntentRef.current ?? readActiveDurableMutationIntent({ scope: createIntentScope });
     if (!selectedProfile && !intent) return;
     const payload = {
@@ -667,59 +693,34 @@ export function VisualIdentityExperimentWorkbench({
       return;
     }
     generationLock.current = true;
-    let submitted = false;
     setBusy("generate");
     setError(null);
     setNotice(null);
     try {
-      let request = intent ? savedExperimentRequest(intent, data.character.id) : parsed.success ? parsed.data : null;
-      if (intent && (intent.status === "reconciliation_required" || !request)) {
-        const receipt = await reconcileDurableMutationIntent({
-          intent, commandType: "creative.run.create", expectedCharacterId: data.character.id,
-          expectedPurpose: "identity_calibration",
-        });
-        if (receipt.state === "cancelled") {
-          clearDurableMutationIntent(intent);
-          rememberIntent(null);
-          return;
-        }
-        if (receipt.state !== "committed" || !receipt.committedTargetId ||
-          receipt.verification?.kind !== "creative_run" || receipt.verification.runId !== receipt.committedTargetId) {
-          throw new Error("The saved experiment still requires reconciliation.");
-        }
-        const recovered = { ...intent, requestSnapshot: receipt.verification.requestSnapshot };
-        request = savedExperimentRequest(recovered, data.character.id);
-        if (!request) throw new Error("The experiment receipt belongs to another request.");
-        intent = updateDurableMutationIntent(intent, {
-          status: "committed_projection_pending", committedTargetId: receipt.committedTargetId,
-          requestSnapshot: request,
-        });
-        rememberIntent(intent);
+      const result = await createOrRecoverCharacterRun({
+        scope: createIntentScope,
+        characterId: data.character.id,
+        expectedPurpose: "identity_calibration",
+        intent,
+        request: parsed.success ? parsed.data : null,
+        parseRequest: (requestSnapshot) => savedExperimentRequest({ requestSnapshot }, data.character.id),
+        signature: JSON.stringify,
+        onIntentChange: (next) => {
+          intent = next;
+          rememberIntent(next);
+        },
+      });
+      if (result.state === "superseded") {
+        setNeedsRunRefresh(true);
+        await refreshCurrentRun();
+        return null;
       }
-      if (!request) throw new Error("The saved experiment requires reconciliation.");
-      if (!intent) {
-        const signature = JSON.stringify(request);
-        const claim = await claimDurableMutationIntent({ scope: createIntentScope, signature, requestSnapshot: request });
-        intent = claim.intent;
-        rememberIntent(intent);
-        if (intent.signature !== signature || intent.status === "reconciliation_required") {
-          throw new Error(t("Another tab has an unfinished experiment. Resume its saved request first."));
-        }
+      if (result.state === "cancelled") return null;
+      if (result.state === "blocked") {
+        throw new Error(t("Another tab has an unfinished experiment. Resume its saved request first."));
       }
-      let replayed = true;
-      if (intent.status !== "committed_projection_pending" || !intent.committedTargetId) {
-        submitted = true;
-        const result = await adminV2Operation("POST /api/v2/admin/creative/runs", {
-          replayIdempotencyKey: intent.idempotencyKey, body: request,
-        });
-        replayed = result.replayed;
-        intent = updateDurableMutationIntent(intent, {
-          status: "committed_projection_pending", committedTargetId: result.batch.id,
-        });
-        rememberIntent(intent);
-      }
-      const targetId = intent.committedTargetId;
-      if (!targetId) throw new Error("The experiment receipt has no committed Run.");
+      if (result.state === "pending") throw new Error("The saved experiment still requires reconciliation.");
+      const { runId: targetId, request, replayed } = result;
       setSelectedRunId(targetId);
       setSelectedItemId(null);
       const detail = await createdRunLoader.load(targetId);
@@ -733,12 +734,6 @@ export function VisualIdentityExperimentWorkbench({
       if (intent?.status === "committed_projection_pending") {
         setError(t("The experiment was committed. Resume to verify its saved Run before generating again."));
       } else {
-        if (submitted && intent && cause instanceof AdminV2RequestError && [400, 401, 403, 404, 409, 422].includes(cause.status)) {
-          clearDurableMutationIntent(intent);
-          rememberIntent(null);
-        } else if (submitted && intent && intent.status !== "reconciliation_required") {
-          rememberIntent(updateDurableMutationIntent(intent, { status: "outcome_unknown" }));
-        }
         setError(
         cause instanceof Error
           ? cause.message
@@ -753,7 +748,7 @@ export function VisualIdentityExperimentWorkbench({
   };
 
   const continueFromSelected = () => {
-    if (!selectedItem?.asset) return;
+    if (composerLocked || !selectedItem?.asset) return;
     setMode("image_to_image");
     setSourceAssetId(selectedItem.asset.id);
     setSeedStrategy(selectedItem.lineage.seed ? "reuse_source" : "random");
@@ -773,7 +768,7 @@ export function VisualIdentityExperimentWorkbench({
   };
 
   const reuseRunParameters = () => {
-    if (!experiment) return;
+    if (composerLocked || !experiment) return;
     setMode(experiment.mode);
     setPositivePrompt(experiment.positivePrompt);
     setNegativePrompt(experiment.negativePrompt);
@@ -906,7 +901,7 @@ export function VisualIdentityExperimentWorkbench({
       (resolvedSourceAssetId !== null &&
         (resolvedSeedStrategy !== "reuse_source" ||
           selectedSource?.seed !== null)));
-  const canGenerate = canCreate && (createIntent !== null || composerReady);
+  const canGenerate = canCreate && !needsRunRefresh && (createIntent !== null || composerReady);
   const selectedApproved =
     selectedItem?.review?.decision === "approved" &&
     selectedItem.review.identityConsistency === "unscored" &&
@@ -983,6 +978,7 @@ export function VisualIdentityExperimentWorkbench({
             <textarea
               aria-label={t("Describe the look you want")}
               className={`${textAreaClass} min-h-48 resize-y px-4 py-4 text-base leading-7`}
+              disabled={composerLocked}
               onChange={(event) => setPositivePrompt(event.target.value)}
               placeholder={t(
                 "For example: make her look more mature, with long hair and more refined makeup.",
@@ -994,7 +990,7 @@ export function VisualIdentityExperimentWorkbench({
           <input
             accept="image/jpeg,image/png,image/webp"
             className="hidden"
-            disabled={!canUploadSource || sourceUploadBusy}
+            disabled={composerLocked || !canUploadSource || sourceUploadBusy}
             onChange={(event) => void uploadSource(event)}
             ref={sourceFileInput}
             tabIndex={-1}
@@ -1011,7 +1007,7 @@ export function VisualIdentityExperimentWorkbench({
           <div className="mt-5 grid items-center gap-4 sm:grid-cols-[190px_minmax(220px,1fr)]">
             <button
               className="justify-self-start text-sm font-medium underline decoration-[var(--ad-border)] underline-offset-4 disabled:opacity-40"
-              disabled={!canUploadSource || sourceUploadBusy}
+              disabled={composerLocked || !canUploadSource || sourceUploadBusy}
               onClick={() => {
                 setMode("image_to_image");
                 window.requestAnimationFrame(() =>
@@ -1059,7 +1055,7 @@ export function VisualIdentityExperimentWorkbench({
             <summary className="cursor-pointer text-sm font-medium">
               {t("Advanced settings")}
             </summary>
-            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <fieldset disabled={composerLocked} className="mt-4 grid gap-4 sm:grid-cols-2">
               {/* INTENT: negative prompt and seed are reproduction knobs; most looks are
                   described in the prompt above, so they stay out of the first screen. */}
               <label className="text-xs font-medium text-[var(--ad-text-muted)] sm:col-span-2">
@@ -1237,10 +1233,10 @@ export function VisualIdentityExperimentWorkbench({
                   />
                 </label>
               ) : null}
-            </div>
+            </fieldset>
 
             {mode === "image_to_image" ? (
-              <fieldset className="mt-5 border-t border-[var(--ad-border)] pt-4">
+              <fieldset disabled={composerLocked} className="mt-5 border-t border-[var(--ad-border)] pt-4">
                 <legend className="text-sm font-medium">
                   {t("Reference images")}
                 </legend>
@@ -1454,13 +1450,13 @@ export function VisualIdentityExperimentWorkbench({
 
               <div className="mt-6 flex flex-wrap gap-2">
                 <WorkspaceButton
-                  disabled={!selectedItem.asset || busy !== null}
+                  disabled={composerLocked || !selectedItem.asset || busy !== null}
                   onClick={continueFromSelected}
                 >
                   {t("Keep adjusting from this one")}
                 </WorkspaceButton>
                 <WorkspaceButton
-                  disabled={!experiment || busy !== null}
+                  disabled={composerLocked || !experiment || busy !== null}
                   onClick={reuseRunParameters}
                 >
                   {t("Reuse these parameters")}

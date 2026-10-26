@@ -60,6 +60,7 @@ export const adminZhShell: Record<string, string> = {
   "Mentions:": "提及：",
   "Missing asset": "资产缺失",
   "Missing permission keys": "缺少的权限键",
+  "Admin permissions could not be refreshed": "无法刷新后台权限",
   "Moderator": "审核员",
   "Workspaces": "工作区",
   "No activity yet. The first comment or handoff will appear here.": "暂无协作动态；第一条评论或交接会显示在这里。",

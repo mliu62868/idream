@@ -133,4 +133,51 @@ describe("legacy admin write transport", () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it.each([200, 400])("keeps the original write key when the %s response body is unreadable", async (status) => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('{"ok":', { status }))
+      .mockResolvedValueOnce(Response.json({ ok: true, data: {} }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const path = `/api/v2/admin/content/tags/tag-incomplete-${status}`;
+      await expect(apiWrite(path, "PATCH", { label: "Draft" })).rejects.toMatchObject({ status, outcome: "unknown" });
+      await expect(apiWrite(path, "PATCH", { label: "Draft" })).resolves.toEqual({});
+      const firstKey = new Headers(fetchMock.mock.calls[0][1]?.headers).get("idempotency-key");
+      expect(firstKey).toBeTruthy();
+      expect(new Headers(fetchMock.mock.calls[1][1]?.headers).get("idempotency-key")).toBe(firstKey);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
+    ["empty object", {}],
+    ["array", []],
+    ["numeric fields", { code: 123, message: 456 }],
+    ["numeric request ID", { code: "bad_request", message: "Rejected", requestId: 123 }],
+    ["object request ID", { code: "bad_request", message: "Rejected", requestId: {} }],
+    ["null request ID", { code: "bad_request", message: "Rejected", requestId: null }],
+  ])("reuses the write key after a 400 error with %s", async (label, error) => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({ ok: false, error }, { status: 400 }))
+      .mockResolvedValueOnce(Response.json({ ok: true, data: {} }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const path = `/api/v2/admin/content/tags/malformed-${label}`;
+      const failure = await apiWrite(path, "PATCH", { label: "Draft" }).catch((cause: unknown) => cause);
+      await expect(apiWrite(path, "PATCH", { label: "Draft" })).resolves.toEqual({});
+      const firstKey = new Headers(fetchMock.mock.calls[0][1]?.headers).get("idempotency-key");
+      expect(firstKey).toBeTruthy();
+      expect(new Headers(fetchMock.mock.calls[1][1]?.headers).get("idempotency-key")).toBe(firstKey);
+      expect(failure).toBeInstanceOf(AdminV2RequestError);
+      expect(failure).toMatchObject({
+        status: 400,
+        code: "admin_v2_response_contract_violation",
+        outcome: "unknown",
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

@@ -68,6 +68,29 @@ async function block(pack: PackDetail, body: Record<string, unknown> = {}, optio
 }
 
 describe("independent free Packs and exact-version persistent grants", () => {
+  it("uses the manifest query values for repeated Admin list parameters", async () => {
+    await draft("admin-query-first");
+    await draft("admin-query-second");
+    const first = await adminV2Route(adminList, { path: "packs?status=draft&limit=1", userId: moderator });
+    expectOk(first);
+    expect(first.data.items).toHaveLength(1);
+    expect(first.data.nextCursor).toEqual(expect.any(String));
+    for (const query of ["status=invalid&status=draft&limit=1", "status=draft&limit=invalid&limit=1"]) {
+      const repeated = await adminV2Route(adminList, { path: `packs?${query}`, userId: moderator });
+      expectOk(repeated);
+      expect(repeated.data).toEqual(first.data);
+    }
+    const nextCursor = encodeURIComponent(first.data.nextCursor);
+    const next = await adminV2Route(adminList, { path: `packs?status=draft&limit=1&cursor=${nextCursor}`, userId: moderator });
+    expectOk(next);
+    const repeatedCursor = await adminV2Route(adminList, { path: `packs?status=draft&limit=1&cursor=invalid&cursor=${nextCursor}`, userId: moderator });
+    expectOk(repeatedCursor);
+    expect(repeatedCursor.data).toEqual(next.data);
+    for (const query of ["status=draft&status=invalid", "limit=1&limit=invalid", `cursor=${nextCursor}&cursor=invalid`]) {
+      expectError(await adminV2Route(adminList, { path: `packs?${query}`, userId: moderator }), 400);
+    }
+  });
+
   it("creates explicit owner-only drafts and a dedicated My AI Pack entry", async () => {
     const { pack, ids } = await draft("draft-owner", { visibility: "private" });
     expect(pack).toMatchObject({ status: "draft", visibility: "private", canManage: true, version: 1, priceCents: 0 });

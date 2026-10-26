@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
+import { ADMIN_V2_API_OPERATIONS } from "@idream/shared/admin";
 
 const mocks = vi.hoisted(() => ({
   claim: vi.fn().mockResolvedValue(null),
@@ -15,6 +16,14 @@ import { ADMIN_COMMAND_TYPES, executeAcceptedAdminCommand } from "./executor";
 
 describe("shared Admin command dispatcher", () => {
   beforeEach(() => vi.clearAllMocks());
+  it("has exactly one executor for every durable command identity declared by the manifest", () => {
+    const declared = ADMIN_V2_API_OPERATIONS.flatMap((operation) =>
+      operation.mutation?.executionMode === "durable" ? [operation.mutation.commandType] : [],
+    );
+    expect(declared).toHaveLength(12);
+    expect(new Set(declared).size).toBe(declared.length);
+    expect([...ADMIN_COMMAND_TYPES].sort()).toEqual(declared.sort());
+  });
   it.each(["unknown.command", "constructor"])("rejects unregistered command type %s", async commandType => {
     const db = { controlPlaneCommand: { findUnique: vi.fn().mockResolvedValue({ id: "cmd-1", commandType, status: "accepted" }) } } as unknown as PrismaClient;
     await expect(executeAcceptedAdminCommand("cmd-1", { db, workerId: "worker" })).rejects.toMatchObject({ code: "bad_request" });

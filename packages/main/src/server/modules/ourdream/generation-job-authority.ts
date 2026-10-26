@@ -366,8 +366,10 @@ export function isUniqueConstraintError(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
 }
 
-export async function assertGenerationSourceImageAuthorityInTx(
-  tx: Prisma.TransactionClient,
+// Quotes preflight the same source conditions that admission rechecks after
+// locking the media row. A successful quote never replaces that locked check.
+export async function assertGenerationSourceImageAuthority(
+  db: Pick<Prisma.TransactionClient, "mediaAsset">,
   input: {
     readonly sourceImageAssetId: string;
     readonly userId: string;
@@ -376,7 +378,7 @@ export async function assertGenerationSourceImageAuthorityInTx(
     readonly authorizedComicSourceMediaId?: string;
   },
 ) {
-  const source = await tx.mediaAsset.findFirst({
+  const source = await db.mediaAsset.findFirst({
     where: {
       id: input.sourceImageAssetId,
       type: "image",
@@ -401,7 +403,7 @@ export async function assertGenerationSourceImageAuthorityInTx(
     !hasHydratableMediaBlobAuthority(source)
   ) {
     throw Errors.conflict(
-      "Source image changed or became unavailable before generation was pinned",
+      "This source image is unavailable for generation. Choose another image or generate a new image first.",
       { sourceImageAssetId: input.sourceImageAssetId },
     );
   }

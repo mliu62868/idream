@@ -108,18 +108,22 @@ describe("useAuthorityResource", () => {
 
   function Harness({
     queryKey,
+    enabled,
     load,
     pollWhile,
+    retainDataOnError,
     onState,
   }: {
     queryKey: string;
+    enabled?: boolean;
     load: () => Promise<Row>;
     pollWhile?: (context: AuthorityPollContext<Row>) => PollDecision;
+    retainDataOnError?: boolean;
     onState: (resource: AuthorityResource<Row>) => void;
   }) {
     const resource = useAuthorityResource(
-      { key: queryKey, load: useCallback(load, [load]) },
-      { pollWhile },
+      { key: queryKey, enabled, load: useCallback(load, [load]) },
+      { pollWhile, retainDataOnError },
     );
     onState(resource);
     return null;
@@ -144,6 +148,31 @@ describe("useAuthorityResource", () => {
       loading: false,
       error: null,
     });
+  });
+
+  it("invalidates an explicitly refreshed hidden resource across A to B to A visits", async () => {
+    let completeOld!: (row: Row) => void;
+    const load = vi.fn<() => Promise<Row>>()
+      .mockImplementationOnce(() => new Promise((resolve) => { completeOld = resolve; }))
+      .mockResolvedValue({ id: "new-a", state: "current" });
+    let latest: AuthorityResource<Row> | null = null;
+    const render = (queryKey: string, enabled: boolean) => act(async () => root.render(
+      <Harness queryKey={queryKey} enabled={enabled} load={load} onState={(resource) => { latest = resource; }} />,
+    ));
+    await render("a", false);
+    await advance(1);
+    expect(load).not.toHaveBeenCalled();
+    let hiddenRefresh: Promise<void> | undefined;
+    await act(async () => { hiddenRefresh = latest!.refresh(); });
+    expect(load).toHaveBeenCalledTimes(1);
+    await render("b", false);
+    await render("a", false);
+    await act(async () => { completeOld({ id: "old-a", state: "obsolete" }); await hiddenRefresh; });
+    expect(latest!.data).toBeNull();
+    await render("a", true);
+    await advance(1);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(latest!.data).toEqual({ id: "new-a", state: "current" });
   });
 
   it("preserves the authority failure for permission guidance and request tracing, then clears it on recovery", async () => {
@@ -199,6 +228,27 @@ describe("useAuthorityResource", () => {
     expect(latest!.data).toMatchObject({ state: "running" });
     expect(latest!.error).toBeNull();
     expect(latest!.refreshError).toBe("Projection unavailable");
+  });
+
+  it.each(["refresh", "readback"] as const)("clears an expired authority snapshot after failed %s without reviving it during retry", async (mode) => {
+    let completeRetry!: (row: Row) => void;
+    const cause = new AdminV2RequestError("Reconciliation unavailable", 503, "unavailable");
+    const load = vi.fn<() => Promise<Row>>()
+      .mockResolvedValueOnce({ id: "receipt", state: "unresolved" })
+      .mockRejectedValueOnce(cause)
+      .mockImplementationOnce(() => new Promise((resolve) => { completeRetry = resolve; }));
+    let latest: AuthorityResource<Row> | null = null;
+    await act(async () => root.render(<Harness queryKey="reconciliation" load={load}
+      retainDataOnError={false} onState={(resource) => { latest = resource; }} />));
+    await advance(1);
+    expect(latest!.data?.state).toBe("unresolved");
+    await act(async () => { await latest![mode]().catch(() => undefined); });
+    expect(latest!).toMatchObject({ data: null, loading: false, error: cause.message, cause });
+    let retry: Promise<void> | undefined;
+    await act(async () => { retry = latest!.refresh(); });
+    expect(latest!).toMatchObject({ data: null, loading: true, error: null });
+    await act(async () => { completeRetry({ id: "receipt", state: "resolved" }); await retry; });
+    expect(latest!).toMatchObject({ data: { id: "receipt", state: "resolved" }, loading: false, error: null });
   });
 
   it("continues polling when a newer manual refresh supersedes a poll and then fails", async () => {

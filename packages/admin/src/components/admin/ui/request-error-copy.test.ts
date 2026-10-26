@@ -119,6 +119,26 @@ describe("operatorErrorCopy", () => {
     expect(copy.technical.code).toBeNull();
   });
 
+  it("uses the 503 explanation for an unrecognized proxy code without replacing its technical facts", () => {
+    const copy = operatorErrorCopy(new AdminV2RequestError(
+      "Admin authority is temporarily unavailable", 503, "admin_upstream_unavailable", undefined, "proxy-request",
+    ));
+
+    expect(copy.headline).toBe("The authority did not answer.");
+    expect(copy.nextStep).toContain("whether the write landed is unknown");
+    expect(copy.technical).toMatchObject({ status: 503, code: "admin_upstream_unavailable", requestId: "proxy-request" });
+  });
+
+  it("does not claim a rejected write when only the 400 headers arrived", () => {
+    const copy = operatorErrorCopy(new AdminV2RequestError(
+      "The response body was interrupted", 400, undefined, undefined, "lost-rejection-request", "unknown",
+    ));
+    expect(copy.nextStep).toContain("whether the write landed is unknown");
+    expect(copy.nextStep).not.toContain("nothing was written");
+    expect(copy.technical.status).toBe(400);
+    expect(copy.technical.requestId).toBe("lost-rejection-request");
+  });
+
   it("explains a terminal Case assignment conflict without inventing a version race", () => {
     const copy = operatorErrorCopy(new AdminV2RequestError(
       "Case cannot be assigned from its present state", 409, "conflict", { status: "resolved" }, "req-case-state",

@@ -269,18 +269,16 @@ describe("AssetsListPage request authority", () => {
         repairPath: "/admin/characters/character-1?tab=release",
     };
     apiGet.mockResolvedValue(listResponse(free, blocked));
-    const fetchMock = vi.fn().mockResolvedValue({
-      json: async () => ({
-        ok: true,
-        data: {
-          assetIds: ["asset-blocked", "asset-free"],
-          blockers: [{
-            assetId: "asset-blocked",
-            dependencies: [dependency],
-          }],
-        },
-      }),
-    });
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({
+      ok: true,
+      data: {
+        assetIds: ["asset-blocked", "asset-free"],
+        blockers: [{
+          assetId: "asset-blocked",
+          dependencies: [dependency],
+        }],
+      },
+    }));
     vi.stubGlobal("fetch", fetchMock);
 
     await act(async () => root.render(<AssetsListPage />));
@@ -303,21 +301,17 @@ describe("AssetsListPage request authority", () => {
     const assetA = asset("asset-a", "generated");
     apiGet.mockResolvedValue(listResponse(assetB, assetA));
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce({
-        json: async () => ({
-          ok: true,
-          data: {
-            assetIds: ["asset-a", "asset-b"],
-            blockers: [],
-          },
-        }),
-      })
-      .mockResolvedValueOnce({
-        json: async () => ({
-          ok: true,
-          data: { updatedIds: ["asset-a", "asset-b"] },
-        }),
-      });
+      .mockResolvedValueOnce(Response.json({
+        ok: true,
+        data: {
+          assetIds: ["asset-a", "asset-b"],
+          blockers: [],
+        },
+      }))
+      .mockResolvedValueOnce(Response.json({
+        ok: true,
+        data: { updatedIds: ["asset-a", "asset-b"] },
+      }));
     vi.stubGlobal("fetch", fetchMock);
 
     await act(async () => root.render(<AssetsListPage />));
@@ -362,33 +356,30 @@ describe("AssetsListPage request authority", () => {
     const selected = asset("asset-race", "approved");
     apiGet.mockResolvedValue(listResponse(selected));
     vi.stubGlobal("fetch", vi.fn()
-      .mockResolvedValueOnce({
-        json: async () => ({
-          ok: true,
-          data: { assetIds: ["asset-race"], blockers: [] },
-        }),
-      })
-      .mockResolvedValueOnce({
-        json: async () => ({
-          ok: false,
-          error: {
-            message: "Asset remains in use",
-            details: {
-              code: "asset_authority_dependency_active",
-              assetId: "asset-race",
-              dependencies: [{
-                kind: "creative_run_asset",
-                characterId: "character-1",
-                itemId: "item-1",
-                runId: "run-1",
-                status: "approved",
-                repairPath: "/admin/creative/runs/run-1",
-              }],
+      .mockResolvedValueOnce(Response.json({
+        ok: true,
+        data: { assetIds: ["asset-race"], blockers: [] },
+      }))
+      .mockResolvedValueOnce(Response.json({
+        ok: false,
+        error: {
+          code: "conflict",
+          message: "Asset remains in use",
+          details: {
+            code: "asset_authority_dependency_active",
+            assetId: "asset-race",
+            dependencies: [{
+              kind: "creative_run_asset",
+              characterId: "character-1",
+              itemId: "item-1",
+              runId: "run-1",
+              status: "approved",
               repairPath: "/admin/creative/runs/run-1",
-            },
+            }],
+            repairPath: "/admin/creative/runs/run-1",
           },
-        }),
-      }));
+        },
+      }, { status: 409 })));
 
     await act(async () => root.render(<AssetsListPage />));
     await waitUntil(() => container.querySelector('a[href="/admin/content/assets/asset-race"]') !== null);
@@ -414,15 +405,14 @@ describe("AssetsListPage request authority", () => {
   it("names the exact asset when the batch preflight finds a stale selection", async () => {
     const selected = asset("asset-stale", "approved");
     apiGet.mockResolvedValue(listResponse(selected));
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      json: async () => ({
-        ok: false,
-        error: {
-          message: "One or more content assets were not found",
-          details: { missingAssetIds: ["asset-stale"] },
-        },
-      }),
-    }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      ok: false,
+      error: {
+        code: "not_found",
+        message: "One or more content assets were not found",
+        details: { missingAssetIds: ["asset-stale"] },
+      },
+    }, { status: 404 })));
 
     await act(async () => root.render(<AssetsListPage />));
     await waitUntil(() => container.querySelector('a[href="/admin/content/assets/asset-stale"]') !== null);
@@ -430,11 +420,10 @@ describe("AssetsListPage request authority", () => {
     await click(findButton("Archive selected", container));
 
     await waitUntil(() =>
-      container.textContent?.includes("Dependency preflight failed for asset(s)") === true,
+      container.textContent?.includes("Missing selected assets: asset-stale") === true,
     );
-    expect(container.textContent).toContain(
-      "Dependency preflight failed for asset(s) asset-stale: One or more content assets were not found",
-    );
+    expect(container.textContent).toContain("This record no longer exists in the authority.");
+    expect(container.textContent).toContain("One or more content assets were not found");
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 });

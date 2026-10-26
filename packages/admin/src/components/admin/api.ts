@@ -2,10 +2,7 @@
 // INTENT: 这里曾经是第二套 transport（自己的解码 + 自己的错误类）。保留这三个签名是因为
 //         19 个后台 surface 在用它们，而它们本身除了「method 是哪一个」以外没有别的判断。
 import { AdminV2RequestError, adminV2Request } from "@/lib/admin-v2-api";
-import {
-  adminIdempotencyKeyLedger,
-  idempotencyOutcomeOfStatus,
-} from "@/lib/idempotency-key-lifecycle";
+import { adminIdempotencyKeyLedger } from "@/lib/idempotency-key-lifecycle";
 
 export {
   AdminV2RequestError,
@@ -54,9 +51,7 @@ async function idempotentWrite<T>(
     adminIdempotencyKeyLedger.settle(
       scope,
       key,
-      idempotencyOutcomeOfStatus(
-        error instanceof AdminV2RequestError ? error.status : undefined,
-      ),
+      error instanceof AdminV2RequestError ? error.outcome : "unknown",
     );
     throw error;
   }

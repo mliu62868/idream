@@ -99,12 +99,19 @@ function generationJobDTO(
 export async function readGenerationJobs(jobs: readonly GenerationJobWithRelations[]) {
   if (jobs.length === 0) return [];
   const requestIds = jobs.map(job => job.id);
+  const [statuses, costs] = await Promise.all([
+    latestGenerationAttemptStatuses(requestIds),
+    readGenerationSettlements(requestIds),
+  ]);
+  return jobs.map(job => generationJobDTO(job, statuses.get(job.id) ?? null, costs.get(job.id) ?? { charged: 0, refunded: 0 }));
+}
+
+export async function readGenerationSettlements(requestIds: readonly string[]) {
+  if (requestIds.length === 0) return new Map<string, { charged: number; refunded: number }>();
   // INVARIANT: the quote and timeline are not financial authority. Every
   // production ledger write links its Request in the same transaction. Reads
   // join that immutable authority in one batch; they never repair or refund.
-  const [statuses, settlements] = await Promise.all([
-    latestGenerationAttemptStatuses(requestIds),
-    prisma.$queryRaw<Array<{ id: string; charged: bigint; refunded: bigint }>>(Prisma.sql`
+  const settlements = await prisma.$queryRaw<Array<{ id: string; charged: bigint; refunded: bigint }>>(Prisma.sql`
       SELECT j.id,
         coalesce(sum(CASE WHEN l.kind = 'generation_spend' AND d.delta < 0 THEN -d.delta ELSE 0 END), 0)::bigint AS charged,
         coalesce(sum(CASE WHEN l.kind = 'refund' AND d.delta > 0 THEN d.delta ELSE 0 END), 0)::bigint AS refunded
@@ -114,10 +121,8 @@ export async function readGenerationJobs(jobs: readonly GenerationJobWithRelatio
         AND d."sourceId" = j.id AND d."userId" = j."userId" AND d.reason = l.kind
       WHERE j.id IN (${Prisma.join(requestIds)})
       GROUP BY j.id
-    `),
-  ]);
-  const costs = new Map(settlements.map(row => [row.id, { charged: Number(row.charged), refunded: Number(row.refunded) }]));
-  return jobs.map(job => generationJobDTO(job, statuses.get(job.id) ?? null, costs.get(job.id) ?? { charged: 0, refunded: 0 }));
+    `);
+  return new Map(settlements.map(row => [row.id, { charged: Number(row.charged), refunded: Number(row.refunded) }]));
 }
 
 export async function latestGenerationAttemptStatuses(requestIds: string[]) {

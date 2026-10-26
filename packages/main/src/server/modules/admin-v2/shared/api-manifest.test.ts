@@ -94,9 +94,7 @@ const MODULE_FORM_CONTRACT_PARSERS: ReadonlyMap<string, string> = new Map([
  * headers a command arrives on is neither, so it cannot be derived either way. One entry with a
  * self-check beats loosening the guard until it stops seeing a whole class of drift.
  */
-const NON_RESPONSE_CONTRACT_PARSERS: ReadonlyMap<string, string> = new Map([
-  ["commands/authoritative.ts", "adminCommandHeadersSchema"],
-]);
+const NON_RESPONSE_CONTRACT_PARSERS: ReadonlyMap<string, string> = new Map();
 
 async function routeFiles(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });

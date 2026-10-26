@@ -958,6 +958,7 @@ describe("Visual Passport (character visual profiles)", () => {
     const itemId = `${P}item-candidate-promotion`;
     const jobId = `${P}job-candidate-promotion`;
     const decisionId = `${P}decision-candidate-promotion`;
+    const completeDecisionId = `${P}decision-candidate-promotion-complete`;
     await createMedia({ id: originalAssetId, ownerId: admin });
     await createMedia({ id: candidateAssetId, ownerId: admin });
     await createCharacter({
@@ -1043,7 +1044,7 @@ describe("Visual Passport (character visual profiles)", () => {
       where: { id: candidateAssetId },
       data: { sourceJobId: jobId },
     });
-    await prisma.creativeReviewDecision.create({
+    const legacyDecision = await prisma.creativeReviewDecision.create({
       data: {
         id: decisionId,
         runItemId: itemId,
@@ -1110,9 +1111,15 @@ describe("Visual Passport (character visual profiles)", () => {
       where: { id: candidateAssetId },
       data: { metadata: { quality: automaticComposition } },
     });
-    await prisma.creativeReviewDecision.update({
-      where: { id: decisionId },
+    await prisma.creativeReviewDecision.create({
       data: {
+        id: completeDecisionId,
+        runItemId: itemId,
+        artifactId: candidateAssetId,
+        supersedesDecisionId: decisionId,
+        decision: "approved",
+        identityConsistency: "unscored",
+        score: 97,
         evidence: {
           quality: {
             artifactFree: true,
@@ -1122,6 +1129,9 @@ describe("Visual Passport (character visual profiles)", () => {
           },
           automaticComposition,
         },
+        reason: "This candidate is the chosen identity definition with complete evidence",
+        reviewerId: admin,
+        createdAt: new Date(legacyDecision.createdAt.getTime() + 1),
       },
     });
 
@@ -1142,7 +1152,10 @@ describe("Visual Passport (character visual profiles)", () => {
           bodyTraits: { stableTraits: ["balanced adult proportions"] },
           reason: "Activate the reviewed calibration candidate",
           confirmation: confirmationFor(characterId),
-          candidateAuthority,
+          candidateAuthority: {
+            ...candidateAuthority,
+            reviewDecisionId: completeDecisionId,
+          },
         },
       }),
       characterId,

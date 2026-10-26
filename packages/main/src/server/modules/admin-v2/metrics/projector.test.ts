@@ -704,7 +704,7 @@ describe("canonical metric fact projector", () => {
       },
     });
     await prisma.generationAttempt.create({
-      data: { id: attemptId, requestId, attemptNo: 1, status: "succeeded" },
+      data: { id: attemptId, requestId, attemptNo: 1, status: "succeeded", finishedAt: new Date("2026-07-02T01:00:00Z") },
     });
     await prisma.generationArtifact.create({
       data: {

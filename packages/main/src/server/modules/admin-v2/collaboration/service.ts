@@ -10,7 +10,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { actorWithPermission, jsonBody, queryParams, type AdminActor } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, jsonBody, parseRequestInput, queryParams, type AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { canonicalJsonHash, requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { effectivePermissions } from "@/server/admin/effective-permissions";
 import { assignReviewCaseInTransaction } from "../cases/service";
@@ -191,7 +191,7 @@ async function resolveCollaborationActors(actorIds: readonly string[]) {
 }
 
 export async function listActivity(request: Request, rawTargetType: string, targetId: string) {
-  const targetType = collaborationTargetTypeSchema.parse(rawTargetType);
+  const targetType = parseRequestInput(collaborationTargetTypeSchema, rawTargetType);
   const actor = await actorWithPermission(request, targetDescriptors[targetType].read);
   await assertTarget(actor, targetType, targetId);
   const query = queryParams(
@@ -234,7 +234,7 @@ export async function listActivity(request: Request, rawTargetType: string, targ
 }
 
 export async function createActivity(request: Request, rawTargetType: string, targetId: string) {
-  const targetType = collaborationTargetTypeSchema.parse(rawTargetType);
+  const targetType = parseRequestInput(collaborationTargetTypeSchema, rawTargetType);
   const actor = await actorWithPermission(request, targetDescriptors[targetType].write);
   const input = await jsonBody(
     request,
@@ -365,7 +365,7 @@ export async function createActivity(request: Request, rawTargetType: string, ta
 }
 
 export async function setWatching(request: Request, rawTargetType: string, targetId: string) {
-  const targetType = collaborationTargetTypeSchema.parse(rawTargetType);
+  const targetType = parseRequestInput(collaborationTargetTypeSchema, rawTargetType);
   const actor = await actorWithPermission(request, targetDescriptors[targetType].read);
   await assertTarget(actor, targetType, targetId);
   const input = await jsonBody(

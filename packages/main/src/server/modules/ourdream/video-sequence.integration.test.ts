@@ -6,6 +6,7 @@ import { providers } from "@/server/providers";
 import type { VoiceClipPort } from "@/server/providers/types";
 import { env } from "@/server/lib/env";
 import { logger } from "@/server/lib/logger";
+import { SHARED_IMMUTABLE_BLOB_LOCATOR_SCHEMA } from "@/server/lib/media-asset-authority";
 import { createVoicePortsForKey } from "@/server/providers/voice/factory";
 import { getVoiceDefaultSettings } from "@/server/modules/voice-defaults";
 import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
@@ -105,6 +106,74 @@ async function acknowledgeSequenceAccountDeletion() {
 }
 
 describe("ordered video Requests, ledger settlement and packaging", () => {
+  it("refuses to quote a display-only primary image before accepting any video price", async () => {
+    const request = body(1);
+    const validQuote = await quote(request);
+    const character = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
+    const sourceImageAssetId = character.imageAssetId!;
+    await prisma.mediaAsset.update({ where: { id: sourceImageAssetId }, data: {
+      storageKey: null, url: `/images/characters/${sourceImageAssetId}.png`, metadata: {},
+    } });
+    const balance = await dreamcoinBalance(userId);
+    const result = await api("POST", "generation/video-sequences/quote", { userId, ageGate: true, body: request });
+    expect.soft(result.status).toBe(409);
+    expect.soft(result.error).toMatchObject({ code: "conflict", details: { sourceImageAssetId } });
+    const nativeQuote = await api("POST", "generation/quote", { userId, ageGate: true, body: {
+      mode: "video", characterId, freeplay: false, outputCount: 1, controls: {},
+    } });
+    expectError(nativeQuote, 409, "conflict");
+    expect(nativeQuote.error?.message).toContain("Choose another image or generate a new image first");
+    // A previously accepted quote must still fail when its source loses authority.
+    const submit = await api("POST", "generation/video-sequences", {
+      userId, ageGate: true, headers: { "idempotency-key": randomUUID() },
+      body: { ...request, quoteFingerprint: validQuote.fingerprint },
+    });
+    expectError(submit, 409, "conflict");
+    expect(await prisma.videoSequence.count({ where: { userId } })).toBe(0);
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(0);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(0);
+    expect(await dreamcoinBalance(userId)).toBe(balance);
+  });
+
+  it.each(["archived", "deleted", "unsafe", "invalid_shared_locator"] as const)("does not quote an %s primary image", async state => {
+    const character = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
+    const sourceImageAssetId = character.imageAssetId!;
+    await prisma.mediaAsset.update({ where: { id: sourceImageAssetId }, data:
+      state === "deleted" ? { deletedAt: new Date() }
+        : state === "unsafe" ? { safetyStatus: "blocked" }
+          : state === "archived" ? { metadata: { platformAsset: { status: "archived" } } }
+            : { storageKey: null, url: `/images/${sourceImageAssetId}.png`, metadata: {
+                blobLocator: { schemaVersion: SHARED_IMMUTABLE_BLOB_LOCATOR_SCHEMA, kind: "shared_immutable", key: "untrusted-key", sourceAssetId: "source-a" },
+                duplicateLineage: { sourceAssetId: "source-b" },
+              } },
+    });
+    const result = await api("POST", "generation/video-sequences/quote", { userId, ageGate: true, body: body(1) });
+    expectError(result, 409, "conflict");
+    expect(result.error?.details).toMatchObject({ sourceImageAssetId });
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(0);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(0);
+  });
+
+  it("quotes and admits a valid shared immutable source without inventing another blob", async () => {
+    const character = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
+    const original = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: character.imageAssetId! } });
+    const duplicateId = `${original.id}-duplicate`;
+    await prisma.mediaAsset.create({ data: {
+      id: duplicateId, ownerId: userId, characterId, type: "image", url: original.url,
+      contentType: original.contentType, visibility: "private", safetyStatus: "passed",
+      metadata: {
+        blobLocator: { schemaVersion: SHARED_IMMUTABLE_BLOB_LOCATOR_SCHEMA, kind: "shared_immutable", key: original.storageKey, sourceAssetId: original.id },
+        duplicateLineage: { sourceAssetId: original.id },
+      },
+    } });
+    await prisma.character.update({ where: { id: characterId }, data: { imageAssetId: duplicateId } });
+    const { sequence } = await create(body(1));
+    const accepted = await prisma.generationJob.findUniqueOrThrow({ where: { id: sequence.scenes[0]!.job.id } });
+    expect(accepted.controls).toMatchObject({ sourceImageAssetId: duplicateId });
+    expect(await prisma.mediaAsset.findUniqueOrThrow({ where: { id: duplicateId } })).toMatchObject({ storageKey: null });
+    expect(await prisma.dreamcoinLedger.findMany({ where: { userId, reason: "generation_spend" }, select: { delta: true } })).toEqual([{ delta: -100 }]);
+  });
+
   it("quotes and pins the 448x768 portrait when a new request omits ratio and quality", async () => {
     const request = { characterId, scenes: [{ prompt: "A controlled friendly wave", seconds: 5 }] };
     const price = await quote(request);

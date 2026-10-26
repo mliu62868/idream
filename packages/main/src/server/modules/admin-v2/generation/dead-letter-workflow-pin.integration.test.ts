@@ -5,6 +5,8 @@ import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-eve
 import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import { listWorkflowDescriptors } from "@/server/modules/generation/generation-catalog";
 import { adminV2 } from "@/server/test/admin-v2-http";
+import { jobQueue } from "@/server/jobs/queue";
+import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
 
 // SPEC: 死信队列不能把一条 worker 一定会拒的请求标成「可安全重新排队」。
 // INTENT: worker 的 validateWorkflowPin 是 fail-closed 的 —— 上一轮尝试钉死的
@@ -88,6 +90,10 @@ describe("dead-letter retry eligibility honours the workflow pin", () => {
     await prisma.dreamcoinLedger.deleteMany({ where: { userId: customerId } });
     await prisma.generationJobEvent.deleteMany({ where: { jobId: { in: jobIds } } });
     await prisma.generationAttemptEvent.deleteMany({ where: { attemptId: { in: attempts.map(attempt => attempt.id) } } });
+    await prisma.generationDelivery.deleteMany({ where: { requestId: { in: jobIds } } });
+    await prisma.generationArtifact.deleteMany({ where: { attemptId: { in: attempts.map(attempt => attempt.id) } } });
+    await prisma.contentProductionBatch.deleteMany({ where: { createdById: adminId } });
+    await prisma.mediaAsset.deleteMany({ where: { sourceJobId: { in: jobIds } } });
     await prisma.generationAttempt.deleteMany({ where: { requestId: { in: jobIds } } });
     await prisma.generationJob.deleteMany({ where: { id: { in: jobIds } } });
     await prisma.user.deleteMany({ where: { id: { in: [adminId, customerId] } } });
@@ -164,6 +170,53 @@ describe("dead-letter retry eligibility honours the workflow pin", () => {
     expect(await prisma.generationAttempt.count({ where: { requestId: fixture.jobId } })).toBe(1);
     expect(await prisma.generationAttempt.findUniqueOrThrow({ where: { id: fixture.attemptId } })).toEqual(oldAttempt);
     expect(await prisma.mainOutboxEvent.count({ where: { aggregateId: fixture.jobId, eventType: "generation.retry.dispatch.v2" } })).toBe(0);
+  });
+
+  it.each(["single", "batch"] as const)("delivers a failed Creative item after %s dead-letter retry", async kind => {
+    const fixture = await retryFixture("failed");
+    const runId = `${fixture.jobId}:run`;
+    const itemId = `${fixture.jobId}:item`;
+    await prisma.contentProductionBatch.create({ data: {
+      id: runId, title: "Dead-letter Creative delivery", purpose: "identity_calibration", targetType: "none",
+      presetIds: [], count: 1, totalItems: 1, failedItems: 1, status: "failed",
+      lifecycleState: "closed", workflowStage: "generation", verificationState: kind === "batch" ? "verifying" : "pending", createdById: adminId,
+      items: { create: { id: itemId, itemIndex: 0, jobId: fixture.jobId, status: "failed", tags: [] } },
+    } });
+    await prisma.generationJob.update({ where: { id: fixture.jobId }, data: { sourceId: itemId } });
+    await prisma.generationAttempt.update({ where: { id: fixture.attemptId }, data: { creativeRunItemId: itemId } });
+    const oldAttempt = await prisma.generationAttempt.findUniqueOrThrow({ where: { id: fixture.attemptId } });
+    const response = await requeue([fixture.jobId], kind, `${fixture.jobId}:creative-retry`);
+    expect(response.status, JSON.stringify(response.error)).toBe(200);
+    expect(await prisma.contentProductionItem.findUniqueOrThrow({ where: { id: itemId } })).toMatchObject({ status: "regenerate_requested", version: 2 });
+    expect(await prisma.contentProductionBatch.findUniqueOrThrow({ where: { id: runId } })).toMatchObject({ lifecycleState: "active", workflowStage: "generation", status: "queued", failedItems: 0, verificationState: kind === "batch" ? "verifying" : "pending" });
+    const attempt = await prisma.generationAttempt.findFirstOrThrow({ where: { requestId: fixture.jobId, attemptNo: 2 } });
+    const payload = {
+      version: 1, kind: "generation.completed", requestId: `generation_dispatch_${attempt.id}`,
+      generationJobId: fixture.jobId, attemptId: attempt.id, attemptNo: 2, mode: "image", provider: "mock",
+      terminalRecordRef: `gen/terminal-records/${attempt.id}/terminal.json`, terminalRecordChecksum: "a".repeat(64),
+      assets: [{ key: `gen/${fixture.jobId}/attempts/${attempt.id}/image.png`, contentType: "image/png", width: 64, height: 64 }], usage: {},
+    };
+    await prisma.generationArtifact.create({ data: { attemptId: attempt.id, ordinal: 0, terminalRecordChecksum: payload.terminalRecordChecksum, validationState: "produced" } });
+    await prisma.mainOutboxEvent.create({ data: {
+      id: `generation_terminal_record_${attempt.id}`, eventType: "generation.terminal_record.accepted.v1",
+      aggregateType: "generation_attempt", aggregateId: attempt.id, payload,
+    } });
+    const dedupeKey = `${fixture.jobId}:finalize`;
+    await jobQueue.enqueue({ queue: "app.ai.finalize", dedupeKey, payload });
+    try {
+      const finalized = await drainLocalAiPipeline({ limit: 1, queues: ["app.ai.finalize"] });
+      expect(finalized, JSON.stringify(finalized)).toMatchObject({ processed: 1 });
+      expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: fixture.jobId } })).toMatchObject({ status: "completed", deliveredOutputCount: 1 });
+      expect(await prisma.generationDelivery.count({ where: { requestId: fixture.jobId, status: "delivered" } })).toBe(1);
+      expect(await prisma.contentProductionItem.findUniqueOrThrow({ where: { id: itemId } })).toMatchObject({ status: "generated", mediaAssetId: expect.any(String) });
+      expect(await prisma.contentProductionBatch.findUniqueOrThrow({ where: { id: runId } })).toMatchObject({ status: "completed", completedItems: 1, failedItems: 0 });
+      if (kind === "batch") expect(await prisma.contentProductionBatch.findUniqueOrThrow({ where: { id: runId } })).toMatchObject({ verificationState: "verifying" });
+      expect(attempt.creativeRunItemId).toBe(itemId);
+      expect(await prisma.generationAttempt.findUniqueOrThrow({ where: { id: fixture.attemptId } })).toEqual(oldAttempt);
+      expect(await prisma.dreamcoinLedger.count({ where: { sourceId: fixture.jobId } })).toBe(0);
+    } finally {
+      await jobQueue.removeByDedupeKey("app.ai.finalize", dedupeKey);
+    }
   });
 
   it("retains the dead-letter refund guard after a paid unknown is confirmed failed", async () => {

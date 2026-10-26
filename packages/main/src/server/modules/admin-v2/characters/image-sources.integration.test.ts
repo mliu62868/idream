@@ -74,6 +74,13 @@ describe("Character local image source authority", () => {
     await prisma.$disconnect();
   });
 
+  it("classifies an invalid image-purpose field as a client error", async () => {
+    const form = new FormData();
+    form.set("purpose", "invalid-purpose");
+    await expect(parseCharacterImageSourceForm(new Request("http://localhost", { method: "POST", body: form })))
+      .rejects.toMatchObject({ status: 400, code: "bad_request" });
+  });
+
   it("rejects files that are not decodable images", async () => {
     const form = new FormData();
     form.set("purpose", "identity_experiment_source");

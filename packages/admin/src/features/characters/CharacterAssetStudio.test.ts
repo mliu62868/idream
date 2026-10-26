@@ -640,26 +640,11 @@ describe("Character Asset Studio flow", () => {
     expect(selectionFlow).not.toContain("await onProjectReload()");
   });
 
-  it("keeps generation and review commands replayable until their projections refresh", () => {
+  it("keeps review commands replayable until their projections refresh", () => {
     const source = readFileSync(new URL("./CharacterAssetStudio.tsx", import.meta.url), "utf8");
-    const createFlow = source.slice(
-      source.indexOf("const createRun = async"),
-      source.indexOf("const refreshWorkspace"),
-    );
     const reviewFlow = source.slice(
       source.indexOf("const verifyReviewIntentProjection"),
       source.indexOf("const approveAndContinue"),
-    );
-    const createCommitIndex = createFlow.indexOf(
-      "updateRunCreationIntentState(committed)",
-    );
-    const createSelectionIndex = createFlow.indexOf(
-      "selectRunId(result.batch.id)",
-      createCommitIndex,
-    );
-    const createListReloadIndex = createFlow.indexOf(
-      "await loadRuns()",
-      createSelectionIndex,
     );
     const reviewReloadIndex = reviewFlow.indexOf(
       "const detail = await loadRun(snapshot.runId)",
@@ -672,16 +657,9 @@ describe("Character Asset Studio flow", () => {
       "clearDurableMutationIntent(intent)",
     );
 
-    expect(createCommitIndex).toBeGreaterThan(-1);
-    expect(createSelectionIndex).toBeGreaterThan(createCommitIndex);
-    expect(createListReloadIndex).toBeGreaterThan(createSelectionIndex);
-    expect(createFlow).not.toContain(
-      "clearDurableMutationIntent(committed)",
-    );
     expect(reviewReloadIndex).toBeGreaterThan(-1);
     expect(reviewListReloadIndex).toBeGreaterThan(reviewReloadIndex);
     expect(reviewKeyReleaseIndex).toBeGreaterThan(reviewListReloadIndex);
-    expect(createFlow).toContain("Choose Verify created Run to retry safely");
     expect(reviewFlow).toContain(
       "item.review?.id === intent.committedTargetId",
     );

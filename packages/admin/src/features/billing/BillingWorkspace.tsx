@@ -8,9 +8,7 @@ import { apiGet, apiWrite } from "@/components/admin/api";
 import { ApprovalRequiredNotice, isDualApprovalRequired } from "@/features/approvals/ApprovalRequired";
 import {
   adminBillingSubscriptionListResponseSchema,
-  adminSubscriptionRefundCommandResponseSchema,
   type AdminBillingSubscriptionListItem,
-  type AdminBillingSubscriptionListResponse,
   type AdminSubscriptionRefundCommandResponse,
 } from "@idream/shared/admin";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
@@ -22,8 +20,10 @@ import { emptyPageInfo, Pagination, type PageInfo } from "@/components/admin/ui/
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useToast } from "@/components/admin/ui/Toast";
-import { createLatestRequestGate } from "@/lib/latest-request";
-import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
+import { useAuthorityResource } from "@/lib/authority-resource";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
+import type { AuthorityState } from "@/lib/authority-state";
+import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 import { canonicalListEmptyTitle } from "@/features/compatibility-lists/empty-state";
 import {
   BILLING_PAGE_SIZE,
@@ -64,15 +64,6 @@ type BillingReconciliation = {
 };
 type AdjustmentDraft = { userId: string; delta: string };
 type BlockedAdjustment = { userId: string; delta: number; reason: string };
-type AuthorityState<T> = {
-  queryKey: string | null;
-  data: T | null;
-  error: string | null;
-  /** 原始异常——运营文案按错误码挑，光有 message 挑不出来。 */
-  cause: unknown;
-  loading: boolean;
-  refreshedAt: string | null;
-};
 
 type BillingView = "pending" | "subscriptions" | "ledger";
 function currentView(): BillingView {
@@ -84,14 +75,6 @@ const emptyAdjustment: AdjustmentDraft = { userId: "", delta: "" };
 /** 两张表各自保留已经走过的游标，切换视图不改变另一张表的位置。 */
 type BillingTrails = { ledger: string[]; subscription: string[] };
 const emptyTrails: BillingTrails = { ledger: [], subscription: [] };
-const emptyAuthorityState = <T,>(): AuthorityState<T> => ({
-  queryKey: null,
-  data: null,
-  error: null,
-  cause: undefined,
-  loading: true,
-  refreshedAt: null,
-});
 
 export function BillingWorkspace({
   canAdjust,
@@ -105,150 +88,100 @@ export function BillingWorkspace({
   const { t, value: valueLabel } = useAdminI18n();
   const format = useAdminFormat();
   const { toast } = useToast();
+  const permissionKey = `${canAdjust}:${canReconcile}:${canRefund}`;
   // INVARIANT: server and first browser render use identical state. URL-owned
   // filters are restored after hydration so bookmarked operator views stay safe.
   const [query, setQuery] = useState<BillingQuery>(defaultBillingQuery);
   const [queryDraft, setQueryDraft] = useState<BillingQuery>(defaultBillingQuery);
-  const [loadedLedger, setLedgerState] = useState<AuthorityState<BillingListResponse>>(emptyAuthorityState);
-  const [loadedSubscriptions, setSubscriptionState] = useState<AuthorityState<AdminBillingSubscriptionListResponse>>(emptyAuthorityState);
-  const [reconciliationState, setReconciliationState] = useState<AuthorityState<BillingReconciliation>>(emptyAuthorityState);
+  const [ready, setReady] = useState(false);
   const [adjustment, setAdjustment] = useState<AdjustmentDraft>(emptyAdjustment);
   const [blockedAdjustment, setBlockedAdjustment] = useState<BlockedAdjustment | null>(null);
   const [refundReferences, setRefundReferences] = useState<Record<string, string>>({});
   const [view, setView] = useState<BillingView>("pending");
   const ledgerKey = billingLedgerPath(query);
   const subscriptionsKey = billingSubscriptionsPath(query);
-  // Last-good rows belong to the exact request represented by the visible filters.
-  const ledgerState = loadedLedger.queryKey === ledgerKey ? loadedLedger : emptyAuthorityState<BillingListResponse>();
-  const subscriptionState = loadedSubscriptions.queryKey === subscriptionsKey ? loadedSubscriptions : emptyAuthorityState<AdminBillingSubscriptionListResponse>();
   const scopeKey = view === "ledger" ? ledgerKey : view === "subscriptions" ? subscriptionsKey : "/api/v2/admin/billing/reconciliation";
   // A → B → A is still a new visit; URL equality cannot authorize a late command.
   const navigation = useRef(0);
   const adjustmentPanel = useRef<HTMLDetailsElement>(null);
-  const [confirmation, setConfirmation] = useState<(ConfirmSpec & { scopeKey: string }) | null>(null);
+  const [confirmation, setConfirmation] = useState<(ConfirmSpec & {
+    scopeKey: string;
+    permissionKey: string;
+  }) | null>(null);
   // INTENT: 退款结算数字（冲销多少、余额落到哪、有没有还回来）只在 toast 里闪一下就没了，
   //         而这正是财务事后要核对的那几个数。留在页面上直到运营自己关掉。
   const [refundOutcome, setRefundOutcome] = useState<AdminSubscriptionRefundCommandResponse | null>(null);
   // 游标轨迹保留上一页；只有从首页空游标起算时，轨迹长度才能证明页码。
   const [trails, setTrails] = useState<BillingTrails>(emptyTrails);
-  const requestGates = useRef({
-    ledger: createLatestRequestGate(),
-    subscriptions: createLatestRequestGate(),
-    reconciliation: createLatestRequestGate(),
+  const ledgerState = useAuthorityResource({
+    key: ledgerKey,
+    enabled: ready && view === "ledger",
+    load: useCallback(() => apiGet<BillingListResponse>(ledgerKey), [ledgerKey]),
   });
+  const subscriptionState = useAuthorityResource({
+    key: subscriptionsKey,
+    enabled: ready && view === "subscriptions",
+    load: useCallback(async () => adminBillingSubscriptionListResponseSchema.parse(
+      await apiGet<unknown>(subscriptionsKey),
+    ), [subscriptionsKey]),
+  });
+  const reconciliationState = useAuthorityResource({
+    key: "/api/v2/admin/billing/reconciliation",
+    enabled: ready && view === "pending",
+    load: useCallback(() => apiGet<BillingReconciliation>("/api/v2/admin/billing/reconciliation"), []),
+  }, { retainDataOnError: false });
+  const { refresh: refreshLedger } = ledgerState;
+  const { refresh: refreshSubscriptions } = subscriptionState;
+  const { refresh: refreshReconciliation } = reconciliationState;
+  const refreshAll = useCallback(() => Promise.all([
+    refreshLedger(), refreshSubscriptions(), refreshReconciliation(),
+  ]), [refreshLedger, refreshSubscriptions, refreshReconciliation]);
+  const refreshVisible = view === "ledger" ? refreshLedger
+    : view === "subscriptions" ? refreshSubscriptions : refreshReconciliation;
 
-  const loadLedger = useCallback(async (next: BillingQuery) => {
-    const queryKey = billingLedgerPath(next);
-    if (queryKey !== billingLedgerPath(currentQuery())) return;
-    const request = requestGates.current.ledger.begin();
-    const isCurrent = () => request.isCurrent() && queryKey === billingLedgerPath(currentQuery());
-    setLedgerState((current) => ({ ...(current.queryKey === queryKey ? current : emptyAuthorityState<BillingListResponse>()), queryKey, error: null, loading: true }));
-    try {
-      const data = await apiGet<BillingListResponse>(queryKey);
-      if (!isCurrent()) return;
-      setLedgerState({ queryKey, data, error: null, cause: undefined, loading: false, refreshedAt: new Date().toISOString() });
-    } catch (cause) {
-      if (isCurrent()) {
-        setLedgerState((current) => ({
-          ...current,
-          error: cause instanceof Error ? cause.message : "Ledger authority request failed",
-          cause,
-          loading: false,
-        }));
-      }
-    }
-  }, []);
-
-  const loadSubscriptions = useCallback(async (next: BillingQuery) => {
-    const queryKey = billingSubscriptionsPath(next);
-    if (queryKey !== billingSubscriptionsPath(currentQuery())) return;
-    const request = requestGates.current.subscriptions.begin();
-    const isCurrent = () => request.isCurrent() && queryKey === billingSubscriptionsPath(currentQuery());
-    setSubscriptionState((current) => ({ ...(current.queryKey === queryKey ? current : emptyAuthorityState<AdminBillingSubscriptionListResponse>()), queryKey, error: null, loading: true }));
-    try {
-      const data = adminBillingSubscriptionListResponseSchema.parse(
-        await apiGet<unknown>(queryKey),
-      );
-      if (!isCurrent()) return;
-      setSubscriptionState({ queryKey, data, error: null, cause: undefined, loading: false, refreshedAt: new Date().toISOString() });
-    } catch (cause) {
-      if (isCurrent()) {
-        setSubscriptionState((current) => ({
-          ...current,
-          error: cause instanceof Error ? cause.message : "Subscription authority request failed",
-          cause,
-          loading: false,
-        }));
-      }
-    }
-  }, []);
-
-  const loadReconciliation = useCallback(async () => {
-    const request = requestGates.current.reconciliation.begin();
-    setReconciliationState((current) => ({ ...current, error: null, loading: true }));
-    try {
-      const data = await apiGet<BillingReconciliation>("/api/v2/admin/billing/reconciliation");
-      if (!request.isCurrent()) return;
-      setReconciliationState({ queryKey: "/api/v2/admin/billing/reconciliation", data, error: null, cause: undefined, loading: false, refreshedAt: new Date().toISOString() });
-    } catch (cause) {
-      if (request.isCurrent()) {
-        setReconciliationState((current) => ({
-          ...current,
-          data: null,
-          error: cause instanceof Error ? cause.message : "Reconciliation authority request failed",
-          cause,
-          loading: false,
-        }));
-      }
-    }
-  }, []);
-
-  const load = useCallback((next: BillingQuery) => {
-    void loadLedger(next);
-    void loadSubscriptions(next);
-    void loadReconciliation();
-  }, [loadLedger, loadReconciliation, loadSubscriptions]);
-
-  const loadVisible = useCallback((next: BillingQuery, activeView: BillingView) => {
-    if (activeView === "ledger") void loadLedger(next);
-    else if (activeView === "subscriptions") void loadSubscriptions(next);
-    else void loadReconciliation();
-  }, [loadLedger, loadReconciliation, loadSubscriptions]);
-
+  // URL restoration only selects a resource. The resource owns loading,
+  // last-good snapshots, errors and rejection of late reads.
   useEffect(() => {
-    const gates = requestGates.current;
+    const timer = window.setTimeout(() => {
+      const restored = currentQuery();
+      setView(currentView());
+      setQuery(restored);
+      setQueryDraft(restored);
+      setReady(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+  useEffect(() => {
     // 回退到的那一页是哪一页，历史条目里没记；不知道就说不知道，把「上一页」置灰。
     const restore = () => {
       navigation.current += 1;
       setConfirmation(null);
       const restored = currentQuery();
-      setView(currentView());
+      const restoredView = currentView();
+      setView(restoredView);
       setQuery(restored);
       setQueryDraft(restored);
       setTrails(emptyTrails);
-      loadVisible(restored, currentView());
+      // Re-visiting the same URL is still a new read. Changed keys/views load
+      // automatically and must not send a request through an old closure.
+      if (ready && restoredView === view &&
+        (view === "pending" || (view === "ledger" ? billingLedgerPath(restored) === ledgerKey
+          : billingSubscriptionsPath(restored) === subscriptionsKey))) void refreshVisible();
     };
-    const refresh = () => {
-      const refreshed = currentQuery();
-      setView(currentView());
-      setQuery(refreshed);
-      setQueryDraft(refreshed);
-      setTrails(emptyTrails);
-      load(refreshed);
-    };
-    const timer = window.setTimeout(restore, 0);
     window.addEventListener("popstate", restore);
-    window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
-    return () => {
-      navigation.current += 1;
-      window.clearTimeout(timer);
-      gates.ledger.invalidate();
-      gates.subscriptions.invalidate();
-      gates.reconciliation.invalidate();
-      window.removeEventListener("popstate", restore);
-      window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
-    };
-  }, [load, loadVisible]);
+    return () => window.removeEventListener("popstate", restore);
+  }, [ledgerKey, ready, refreshVisible, subscriptionsKey, view]);
+  useWorkspaceRefresh(useCallback(() => {
+    const refreshed = currentQuery();
+    setView(currentView());
+    setQuery(refreshed);
+    setQueryDraft(refreshed);
+    setTrails(emptyTrails);
+    return refreshAll();
+  }, [refreshAll]), ready);
+  useEffect(() => () => { navigation.current += 1; }, [canAdjust, canReconcile, canRefund]);
+  // Keep the visible confirmation and its callback in the same permission generation.
+  if (confirmation && confirmation.permissionKey !== permissionKey) setConfirmation(null);
 
   // SPEC: 任何改变结果集的动作都回到第一页 —— 所以 trails 默认清空，只有翻页自己传轨迹。
   function navigate(next: BillingQuery, mode: "push" | "replace" = "push", nextTrails: BillingTrails = emptyTrails) {
@@ -265,7 +198,8 @@ export function BillingWorkspace({
     setQuery(next);
     setQueryDraft(next);
     setTrails(nextTrails);
-    loadVisible(next, view);
+    if (view === "pending" || (view === "ledger" ? billingLedgerPath(next) === ledgerKey
+      : billingSubscriptionsPath(next) === subscriptionsKey)) void refreshVisible();
   }
 
   function changeView(next: BillingView) {
@@ -273,7 +207,7 @@ export function BillingWorkspace({
     setConfirmation(null);
     window.history.pushState(null, "", billingWorkspaceUrl(window.location.pathname, window.location.search, { billingView: next }));
     setView(next);
-    loadVisible(query, next);
+    if (next === view) void refreshVisible();
   }
 
   function selectAdjustmentUser(userId: string) {
@@ -307,6 +241,7 @@ export function BillingWorkspace({
     const origin = navigation.current;
     setConfirmation({
       scopeKey,
+      permissionKey,
       title: t("Adjust ledger for {user}", { user: userId }),
       summary: <span>{t("User")} {userId}  {t("· signed delta")} {delta}</span>,
       destructive: { expectedName: confirmationTarget, inputLabel: t("Confirmation") },
@@ -356,6 +291,7 @@ export function BillingWorkspace({
     const origin = navigation.current;
     setConfirmation({
       scopeKey,
+      permissionKey,
       title: t("Acknowledge provider refund for {id}", { id: checkoutId }),
       summary: (
         <span>
@@ -391,7 +327,7 @@ export function BillingWorkspace({
           tone: "success",
           title: t("Refund acknowledgement recorded for {id}", { id: checkoutId }),
         });
-        await loadReconciliation();
+        await reconciliationState.refresh();
       },
     });
   }
@@ -408,6 +344,7 @@ export function BillingWorkspace({
     const origin = navigation.current;
     setConfirmation({
       scopeKey,
+      permissionKey,
       title: t("Refund subscription {id}", { id: subscriptionId }),
       summary: (
         <span>
@@ -437,13 +374,10 @@ export function BillingWorkspace({
       submitLabel: t("Issue full refund"),
       onSubmit: async (reason) => {
         if (navigation.current !== origin) return;
-        const result = adminSubscriptionRefundCommandResponseSchema.parse(
-          await apiWrite<unknown>(
-            `/api/v2/admin/billing/subscriptions/${encodeURIComponent(subscriptionId)}/refund`,
-            "POST",
-            { reason, confirmation: confirmationTarget },
-          ),
-        );
+        const result = await adminV2Operation("POST /api/v2/admin/billing/subscriptions/:id/refund", {
+          path: { id: subscriptionId },
+          body: { reason, confirmation: confirmationTarget },
+        });
         if (navigation.current !== origin) return;
         setRefundOutcome(result);
         toast({
@@ -453,7 +387,7 @@ export function BillingWorkspace({
             state: t(REFUND_STATE_LABEL[result.refund.state]),
           }),
         });
-        load(query);
+        void refreshAll();
       },
     });
   }
@@ -469,6 +403,7 @@ export function BillingWorkspace({
     const origin = navigation.current;
     setConfirmation({
       scopeKey,
+      permissionKey,
       title: t("Reconcile refund {id}", { id: subscriptionId }),
       summary: (
         <span>
@@ -488,13 +423,10 @@ export function BillingWorkspace({
       submitLabel: t("Reconcile provider state"),
       onSubmit: async (reason) => {
         if (navigation.current !== origin) return;
-        const result = adminSubscriptionRefundCommandResponseSchema.parse(
-          await apiWrite<unknown>(
-            `/api/v2/admin/billing/subscriptions/${encodeURIComponent(subscriptionId)}/refund/reconcile`,
-            "POST",
-            { reason, confirmation: confirmationTarget },
-          ),
-        );
+        const result = await adminV2Operation("POST /api/v2/admin/billing/subscriptions/:id/refund/reconcile", {
+          path: { id: subscriptionId },
+          body: { reason, confirmation: confirmationTarget },
+        });
         if (navigation.current !== origin) return;
         setRefundOutcome(result);
         toast({
@@ -504,7 +436,7 @@ export function BillingWorkspace({
             state: t(REFUND_STATE_LABEL[result.refund.state]),
           }),
         });
-        load(query);
+        void refreshAll();
       },
     });
   }
@@ -617,7 +549,7 @@ export function BillingWorkspace({
         <RefundSettlementNotice onDismiss={() => setRefundOutcome(null)} result={refundOutcome} />
       ) : null}
 
-      {view === "ledger" ? <AuthorityError onRetry={() => void loadLedger(query)} state={ledgerState} /> : view === "subscriptions" ? <AuthorityError onRetry={() => void loadSubscriptions(query)} state={subscriptionState} /> : <AuthorityError onRetry={() => void loadReconciliation()} state={reconciliationState} />}
+      {view === "ledger" ? <AuthorityError onRetry={() => void ledgerState.refresh()} state={ledgerState} /> : view === "subscriptions" ? <AuthorityError onRetry={() => void subscriptionState.refresh()} state={subscriptionState} /> : <AuthorityError onRetry={() => void reconciliationState.refresh()} state={reconciliationState} />}
       {initiallyLoading ? <BillingLoading /> : (
         <>
           {view === "pending" && reconciliation ? <>

@@ -203,6 +203,17 @@ describe("character command journal — 开始一个命令", () => {
     });
   });
 
+  it("keeps a first submission locked when a 400 response body is incomplete", async () => {
+    const { journal, server, storage } = createJournal();
+    server.rejectWith(new AdminV2RequestError("Incomplete response", 400, undefined, undefined, "partial-request", "unknown"));
+    expect(await journal.submit(releaseIntent)).toMatchObject({ kind: "unknown" });
+    expect(journal.getSnapshot().writesLocked).toBe(true);
+    expect(persistedJournal(storage)).toMatchObject({ idempotencyKey: "key-1" });
+    server.resolveWith({ commandId: "command-1" });
+    await journal.replay(journal.getSnapshot().command!);
+    expect(server.calls.at(-1)?.options).toMatchObject({ idempotencyKey: "key-1" });
+  });
+
   it("refuses a second submission while a command is still locked", async () => {
     const { journal, server } = createJournal();
     server.resolveWith({ commandId: "command-1" });
@@ -385,6 +396,14 @@ describe("character command journal — 命令回来了", () => {
       expect(journal.getSnapshot().writesLocked).toBe(true);
     },
   );
+
+  it("does not treat an undecodable 404 status receipt as missing evidence", async () => {
+    const { journal, server, command } = await acceptedCommand();
+    server.rejectWith(new AdminV2RequestError("Invalid response", 404, undefined, undefined, "partial-poll", "unknown"));
+    expect(await journal.pollStatus(command)).toMatchObject({ kind: "unavailable" });
+    expect(journal.getSnapshot().command?.terminal).toBe(false);
+    expect(journal.getSnapshot().writesLocked).toBe(true);
+  });
 
   it("asks for command evidence by the accepted command id", async () => {
     const { journal, server, command } = await acceptedCommand();

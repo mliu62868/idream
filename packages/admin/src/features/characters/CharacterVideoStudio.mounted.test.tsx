@@ -34,6 +34,7 @@ import {
   videoPlaybackIssueMessage,
 } from "./CharacterVideoStudio";
 import { readActiveDurableMutationIntent, updateDurableMutationIntent } from "@/lib/durable-mutation-intent";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
 
 async function waitUntil(predicate: () => boolean) {
   const deadline = Date.now() + 2_000;
@@ -681,6 +682,78 @@ describe("Character Video Studio", () => {
     );
   });
 
+  it.each([false, true])("restores another instance's frozen video form and refreshes after a late failure (readback fails: %s)", async (readbackFails) => {
+    const brief = "Turn gently toward the museum window.";
+    const negative = "No camera movement or extra people";
+    const current = { ...pendingRun, reviewContext: { ...pendingRun.reviewContext, brief } };
+    const historical = { ...readyRun, id: "old-video-run", title: "Historical video" };
+    const creates: Array<{ key: unknown; body: unknown }> = [];
+    let failFirst!: () => void;
+    let failReadback = false;
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+        creates.push({ key: options.idempotencyKey, body: options.body });
+        if (creates.length === 1) return new Promise((_resolve, reject) => { failFirst = () => reject(new TypeError("First response lost")); });
+        return { batch: { id: current.id }, replayed: true };
+      }
+      if (path.includes("/creative/runs?")) {
+        if (failReadback) throw new Error("Current video list unavailable");
+        return { items: creates.length ? [current, historical] : [historical], pageInfo: { endCursor: null, hasNextPage: false } };
+      }
+      if (path.endsWith(`/${current.id}`)) return current;
+      if (path.endsWith(`/${historical.id}`)) return historical;
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const other = document.createElement("div");
+    document.body.append(other);
+    const otherRoot = createRoot(other);
+    const button = (host: HTMLElement, label: string) => [...host.querySelectorAll("button")].find((candidate) => candidate.textContent?.trim() === label);
+    const render = (target: Root) => target.render(<CharacterVideoStudio actorId="shared-video" data={data}
+      onCreateImage={vi.fn()} permissions={{ create: true, read: true }} runCommittedMutation={runCommittedMutation} />);
+    try {
+      await act(async () => render(root));
+      await waitUntil(() => button(container, "Create video")?.disabled === false);
+      await act(async () => {
+        const source = container.querySelector("select")!;
+        source.value = "source-hero";
+        source.dispatchEvent(new Event("change", { bubbles: true }));
+        for (const [input, value] of [[container.querySelector("textarea")!, brief], [container.querySelector('textarea[aria-label="Negative prompt"]')!, negative]] as const) {
+          Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(input, value);
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+      });
+      await act(async () => button(container, "Create video")!.click());
+      await waitUntil(() => creates.length === 1);
+      await act(async () => render(otherRoot));
+      await waitUntil(() => button(other, "Resume video creation")?.disabled === false);
+      expect.soft(other.querySelector("textarea")?.value).toBe(brief);
+      expect.soft(other.querySelector<HTMLTextAreaElement>('textarea[aria-label="Negative prompt"]')?.value).toBe(negative);
+      expect.soft(other.querySelector("select")?.value).toBe("source-hero");
+      expect.soft(other.querySelector("textarea")?.disabled).toBe(true);
+      await act(async () => button(other, "Resume video creation")!.click());
+      const scope = "character-video:create:shared-video:character-video-1";
+      await waitUntil(() => readActiveDurableMutationIntent({ scope }) === null);
+      expect(creates[1]).toEqual(creates[0]);
+      failReadback = readbackFails;
+      await act(async () => failFirst());
+      await waitUntil(() => button(container, "Refresh")?.disabled === false);
+      if (readbackFails) {
+        expect.soft(button(container, "Create video")?.disabled).toBe(true);
+        expect.soft(container.textContent).toContain("Current video list unavailable");
+        failReadback = false;
+        await act(async () => button(container, "Refresh")!.click());
+      }
+      await waitUntil(() => button(container, "Refresh")?.disabled === false);
+      expect.soft(button(container, "Video request in progress")?.disabled).toBe(true);
+      expect.soft(container.textContent).toContain(current.title);
+      expect(readActiveDurableMutationIntent({ scope })).toBeNull();
+      expect(creates).toHaveLength(2);
+    } finally {
+      await act(async () => otherRoot.unmount());
+      other.remove();
+    }
+  });
+
   it.each([false, true])("recovers a lost create response after remount (server reconciliation: %s)", async (reconcile) => {
     let createAttempts = 0;
     let submittedBody: unknown;
@@ -777,6 +850,93 @@ describe("Character Video Studio", () => {
       scope: "character-video:create:actor-1:character-video-1",
     })).toBeNull();
     expect(runCommittedMutationSpy).toHaveBeenCalledTimes(reconcile ? 1 : 2);
+  });
+
+  it("keeps an unknown video intent after an unauthorized replay and recovers the original request", async () => {
+    const scope = "character-video:create:actor-1:character-video-1";
+    const creates: Array<{ key: string; body: Record<string, unknown> }> = [];
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+        creates.push({ key: options.idempotencyKey, body: options.body });
+        if (creates.length === 1) throw new TypeError("Response ended after server commit");
+        if (creates.length === 2) throw new AdminV2RequestError("Session expired before replay", 401, "unauthorized");
+        return { batch: { id: pendingRun.id }, replayed: true };
+      }
+      if (path === `/api/v2/admin/creative/runs/${pendingRun.id}`) {
+        const request = creates[0].body;
+        return { ...pendingRun, title: request.title,
+          reviewContext: { ...pendingRun.reviewContext, brief: request.brief, orientation: request.orientation } };
+      }
+      return { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
+    });
+    const render = async () => {
+      await act(async () => root.render(
+        <CharacterVideoStudio actorId="actor-1" data={data} onCreateImage={vi.fn()}
+          permissions={{ create: true, read: true }} runCommittedMutation={runCommittedMutation} />,
+      ));
+      await waitUntil(() => container.textContent?.includes("New video") === true);
+    };
+    const button = (label: string) => [...container.querySelectorAll("button")]
+      .find((candidate) => candidate.textContent?.includes(label));
+    await render();
+    await waitUntil(() => button("Create video")?.disabled === false);
+    await act(async () => button("Create video")!.click());
+    expect(readActiveDurableMutationIntent({ scope })).toMatchObject({ status: "outcome_unknown", idempotencyKey: creates[0].key });
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render();
+    await waitUntil(() => button("Resume video creation")?.disabled === false);
+    await act(async () => button("Resume video creation")!.click());
+    expect(creates).toHaveLength(2);
+    expect(creates[1]).toEqual(creates[0]);
+    expect(readActiveDurableMutationIntent({ scope })?.idempotencyKey).toBe(creates[0].key);
+    expect(button("Resume video creation")).toBeDefined();
+    expect(container.querySelector<HTMLTextAreaElement>("textarea")?.disabled).toBe(true);
+
+    await act(async () => button("Resume video creation")!.click());
+    await waitUntil(() => readActiveDurableMutationIntent({ scope }) === null);
+    expect(creates).toHaveLength(3);
+    expect(creates[2]).toEqual(creates[0]);
+    expect(container.textContent).toContain("Video request in progress");
+  });
+
+  it("releases a definitively rejected first video submission so a new intent can succeed", async () => {
+    const scope = "character-video:create:actor-1:character-video-1";
+    const creates: Array<{ key: string; body: Record<string, unknown> }> = [];
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+        creates.push({ key: options.idempotencyKey, body: options.body });
+        if (creates.length === 1) throw new AdminV2RequestError("Request rejected before acceptance", 403, "forbidden");
+        return { batch: { id: pendingRun.id }, replayed: false };
+      }
+      if (path === `/api/v2/admin/creative/runs/${pendingRun.id}`) {
+        const request = creates[1].body;
+        return { ...pendingRun, title: request.title,
+          reviewContext: { ...pendingRun.reviewContext, brief: request.brief, orientation: request.orientation } };
+      }
+      return { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
+    });
+    await act(async () => root.render(
+      <CharacterVideoStudio actorId="actor-1" data={data} onCreateImage={vi.fn()}
+        permissions={{ create: true, read: true }} runCommittedMutation={runCommittedMutation} />,
+    ));
+    const create = () => [...container.querySelectorAll("button")]
+      .find((candidate) => candidate.textContent?.includes("Create video"));
+    await waitUntil(() => create()?.disabled === false);
+    await act(async () => create()!.click());
+    expect(creates).toHaveLength(1);
+    expect(readActiveDurableMutationIntent({ scope })).toBeNull();
+    expect(container.querySelector<HTMLTextAreaElement>("textarea")?.disabled).toBe(false);
+
+    await act(async () => create()!.click());
+    await waitUntil(() => container.textContent?.includes("Video request in progress") === true);
+    expect(creates).toHaveLength(2);
+    expect(creates[0].key).toBeTruthy();
+    expect(creates[1].key).toBeTruthy();
+    expect(creates[1].key).not.toBe(creates[0].key);
+    expect(creates[1].body).toEqual(creates[0].body);
+    expect(readActiveDurableMutationIntent({ scope })).toBeNull();
   });
 
   it("delivers playable video without a manual review step", async () => {

@@ -5,6 +5,7 @@ import { Errors } from "@/server/lib/errors";
 import { canonicalSha256 } from "../shared/canonical-json";
 import { toInputJson } from "../shared/prisma-json";
 import { isIncidentTransitionAllowed } from "../shared/state-transition-authority";
+import { requireDurableAdminCommandOperation } from "../shared/durable-command-admission";
 import { transitionIncident } from "./transition";
 import {
   eligibleOccurrenceIds,
@@ -520,6 +521,11 @@ export async function executeIncidentActionPlan(input: {
   readonly idempotencyKey: string;
   readonly requestId?: string;
 }) {
+  const definition = requireDurableAdminCommandOperation(
+    "POST /api/v2/admin/incidents/:id/action-plans/:planId/execute",
+  );
+  // Existing receipts use this domain scope and hash. Keep them replayable while
+  // the manifest owns the persisted command identity and retry policy.
   const scope = `incident-action:${input.actor.id}`;
   const requestHash = canonicalSha256({
     incidentId: input.incidentId,
@@ -568,7 +574,7 @@ export async function executeIncidentActionPlan(input: {
         data: {
           scope,
           idempotencyKey: input.idempotencyKey,
-          commandType: "incident.action_plan.execute",
+          commandType: definition.commandType,
           targetType: "incident_action_plan",
           targetId: plan.id,
           actorId: input.actor.id,
@@ -581,7 +587,7 @@ export async function executeIncidentActionPlan(input: {
             confirmation: input.confirmation,
           }),
           expectedVersion: input.expectedVersion,
-          retryMode: "idempotent",
+          retryMode: definition.retryMode,
           status: "accepted",
           attemptCount: 0,
           result: toInputJson({ action: plan.action, eligibleIds, skippedIds, executionState: "accepted" }),

@@ -68,19 +68,26 @@ describe("Cursor workspaces never invent page positions after reload or shared l
     if (workspace.entry === "shared link") initial.searchParams.set(workspace.cursorKey, "cursor-two");
     window.history.replaceState(null, "", initial.href);
     const pager = () => container.querySelectorAll<HTMLElement>('[data-testid="admin-pagination"]')[workspace.pager]!;
+    const pageReady = (marker: string) => {
+      const currentPager = pager();
+      // Changing an authority query removes the old page until the new one is
+      // loaded. Absence is a pending state, never proof that paging settled.
+      return Boolean(currentPager) && container.textContent?.includes(marker) === true &&
+        !currentPager.querySelector(".animate-spin");
+    };
     const button = (label: string) => [...pager().querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent?.trim() === label)!;
     const lastRequestedCursor = () => [...vi.mocked(fetch).mock.calls].reverse()
       .map(([input]) => new URL(String(input), window.location.origin))
       .find(url => url.pathname === workspace.apiPath)?.searchParams.get("cursor") ?? null;
     const mount = async (marker: string) => {
       await act(async () => root.render(workspace.node()));
-      await waitFor(() => container.textContent?.includes(marker) === true && Boolean(pager()) && !pager().querySelector(".animate-spin"));
+      await waitFor(() => pageReady(marker));
     };
     if (workspace.entry === "reload") {
       await mount("page-first");
       expect(pager().textContent).toContain("Page 1");
       await act(async () => button("Next page").click());
-      await waitFor(() => container.textContent?.includes("page-cursor-two") === true && !pager().querySelector(".animate-spin"));
+      await waitFor(() => pageReady("page-cursor-two"));
       expect(pager().textContent).toContain("Page 2");
       await act(async () => root.unmount());
       root = createRoot(container);
@@ -93,16 +100,16 @@ describe("Cursor workspaces never invent page positions after reload or shared l
     expect(pager().textContent).not.toMatch(/Page \d|Showing \d+–\d+/);
     expect(button("Back to first page").disabled).toBe(false);
     await act(async () => button("Next page").click());
-    await waitFor(() => container.textContent?.includes("page-cursor-three") === true && !pager().querySelector(".animate-spin"));
+    await waitFor(() => pageReady("page-cursor-three"));
     expect(lastRequestedCursor()).toBe("cursor-three");
     expect(pager().textContent).toContain("Page position unknown");
     expect(pager().textContent).not.toMatch(/Page \d/);
     await act(async () => button("Previous page").click());
-    await waitFor(() => !pager().querySelector(".animate-spin") && new URLSearchParams(window.location.search).get(workspace.cursorKey) === "cursor-two");
+    await waitFor(() => pageReady("page-cursor-two") && new URLSearchParams(window.location.search).get(workspace.cursorKey) === "cursor-two");
     expect(lastRequestedCursor()).toBe("cursor-two");
     expect(pager().textContent).toContain("Page position unknown");
     await act(async () => button("Back to first page").click());
-    await waitFor(() => !pager().querySelector(".animate-spin") && !new URLSearchParams(window.location.search).has(workspace.cursorKey));
+    await waitFor(() => pageReady("page-first") && !new URLSearchParams(window.location.search).has(workspace.cursorKey));
     expect(lastRequestedCursor()).toBeNull();
     expect(pager().textContent).toContain("Page 1");
     expect(button("Previous page").disabled).toBe(true);

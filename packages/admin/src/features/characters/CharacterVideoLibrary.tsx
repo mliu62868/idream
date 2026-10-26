@@ -8,7 +8,7 @@ import { apiGet } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import {
-  AssetBulkArchiveError,
+  assetArchiveBlocker,
   assetsListPath,
   bulkArchiveAssets,
   type ContentAsset,
@@ -65,6 +65,9 @@ export function CharacterVideoLibrary({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [archiveSpec, setArchiveSpec] = useState<ConfirmSpec | null>(null);
+  const archiveGeneration = useRef(0);
+  useEffect(() => () => { archiveGeneration.current += 1; }, [canArchive]);
+  if (archiveSpec && !canArchive) setArchiveSpec(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const requestGate = useRef(createLatestRequestGate());
 
@@ -145,6 +148,7 @@ export function CharacterVideoLibrary({
   }
 
   function requestArchive(asset: ContentAsset) {
+    const generation = archiveGeneration.current;
     setArchiveSpec({
       title: "Remove video from library?",
       summary: t("Videos used by an active campaign or release must be replaced first."),
@@ -156,16 +160,19 @@ export function CharacterVideoLibrary({
       reasonLabel: "Removal reason",
       submitLabel: "Remove from library",
       onSubmit: async (reason) => {
+        if (generation !== archiveGeneration.current) return;
         try {
           await bulkArchiveAssets({
             assetIds: [asset.id],
             reason,
-            fallbackMessage: t("Video could not be removed"),
           });
+          if (generation !== archiveGeneration.current) return;
           setMessage(t("Video removed from the library"));
           await loadAssets();
         } catch (cause) {
-          if (cause instanceof AssetBulkArchiveError && cause.details.dependencies.length > 0) {
+          if (generation !== archiveGeneration.current) return;
+          const blocker = assetArchiveBlocker(cause);
+          if (blocker?.kind === "dependency" && blocker.dependencies.length > 0) {
             throw new Error(t("Replace this video where it is in use before removing it."));
           }
           throw cause;
@@ -313,7 +320,7 @@ export function CharacterVideoLibrary({
           </div>
         )}
       </section>
-      {archiveSpec ? <ConfirmDialog onClose={() => setArchiveSpec(null)} spec={archiveSpec} /> : null}
+      {archiveSpec ? <ConfirmDialog onClose={() => setArchiveSpec(current => current === archiveSpec ? null : current)} spec={archiveSpec} /> : null}
     </div>
   );
 }

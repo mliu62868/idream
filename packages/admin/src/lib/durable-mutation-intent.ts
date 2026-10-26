@@ -14,6 +14,8 @@ export type DurableMutationIntent = {
   readonly updatedAt: number;
   readonly committedTargetId?: string;
   readonly requestSnapshot?: unknown;
+  /** Monotonic evidence that another submission may be using this same key. */
+  readonly replayStarted?: true;
 };
 
 type MutationIntentStorage = Pick<
@@ -107,6 +109,7 @@ function parseDurableMutationIntent(
       !Number.isFinite(value.createdAt) ||
       typeof value.updatedAt !== "number" ||
       !Number.isFinite(value.updatedAt) ||
+      (value.replayStarted !== undefined && value.replayStarted !== true) ||
       value.createdAt - expected.now > 60_000 ||
       (
         value.committedTargetId !== undefined &&
@@ -133,6 +136,7 @@ function parseDurableMutationIntent(
       status,
       createdAt: value.createdAt,
       updatedAt: value.updatedAt,
+      ...(value.replayStarted === true ? { replayStarted: true as const } : {}),
       ...(typeof value.committedTargetId === "string"
         ? { committedTargetId: value.committedTargetId }
         : {}),
@@ -145,6 +149,8 @@ function parseDurableMutationIntent(
   }
 }
 
+// INVARIANT: Journal readers also run outside the scope lock. Invalid data is
+// ignored, never removed here: another tab may have replaced it after getItem.
 export function readDurableMutationIntent(input: {
   readonly scope: string;
   readonly signature: string;
@@ -160,13 +166,11 @@ export function readDurableMutationIntent(input: {
   try {
     const raw = storage.getItem(key);
     if (!raw) return null;
-    const parsed = parseDurableMutationIntent(raw, {
+    return parseDurableMutationIntent(raw, {
       scope: input.scope,
       signature: input.signature,
       now: input.now ?? Date.now(),
     });
-    if (!parsed) storage.removeItem(key);
-    return parsed;
   } catch {
     return null;
   }
@@ -190,7 +194,6 @@ export function readActiveDurableMutationIntent(input: {
       typeof pointer.signature !== "string" ||
       typeof pointer.idempotencyKey !== "string"
     ) {
-      storage.removeItem(activeKey);
       return null;
     }
     const intent = readDurableMutationIntent({
@@ -203,16 +206,10 @@ export function readActiveDurableMutationIntent(input: {
       !intent ||
       intent.idempotencyKey !== pointer.idempotencyKey
     ) {
-      storage.removeItem(activeKey);
       return null;
     }
     return intent;
   } catch {
-    try {
-      storage.removeItem(activeKey);
-    } catch {
-      // Ignore inaccessible browser storage.
-    }
     return null;
   }
 }
@@ -340,22 +337,23 @@ export async function claimDurableMutationIntent(input: {
       created: true,
     };
   };
-  const browserLocks =
-    typeof navigator === "undefined"
-      ? null
-      : (
-          navigator as Navigator & {
-            readonly locks?: MutationIntentLockManager;
-          }
-        ).locks ?? null;
-  const lockManager =
-    input.lockManager === undefined
-      ? browserLocks
-      : input.lockManager;
-  if (!lockManager) return claim();
-  return lockManager.request(
-    `${mutationIntentPrefix}:claim:${encodeURIComponent(input.scope)}`,
-    claim,
+  return withDurableMutationIntentLock(input.scope, claim, input.lockManager);
+}
+
+/** Serialize short journal transitions across tabs; never hold this lock over HTTP. */
+export function withDurableMutationIntentLock<T>(
+  scope: string,
+  transition: () => T,
+  lockManager?: MutationIntentLockManager | null,
+): Promise<T> {
+  const browserLocks = typeof navigator === "undefined"
+    ? null
+    : (navigator as Navigator & { readonly locks?: MutationIntentLockManager }).locks ?? null;
+  const locks = lockManager === undefined ? browserLocks : lockManager;
+  if (!locks) return Promise.resolve(transition());
+  return locks.request(
+    `${mutationIntentPrefix}:claim:${encodeURIComponent(scope)}`,
+    transition,
   );
 }
 
@@ -365,11 +363,15 @@ export function updateDurableMutationIntent(
     readonly status: DurableMutationIntentStatus;
     readonly committedTargetId?: string;
     readonly requestSnapshot?: unknown;
+    readonly replayStarted?: true;
     readonly storage?: MutationIntentStorage | null;
     readonly now?: number;
   },
 ) {
   const storage = update.storage ?? browserStorage();
+  const current = readDurableMutationIntent({
+    scope: intent.scope, signature: intent.signature, storage, now: update.now,
+  });
   const next: DurableMutationIntent = {
     ...intent,
     status: update.status,
@@ -380,6 +382,11 @@ export function updateDurableMutationIntent(
     ...(update.requestSnapshot === undefined
       ? {}
       : { requestSnapshot: update.requestSnapshot }),
+    // A late response may still hold the pre-replay snapshot. Never erase the
+    // evidence that another caller could have committed this key meanwhile.
+    ...((intent.replayStarted || update.replayStarted ||
+      (current?.idempotencyKey === intent.idempotencyKey && current.replayStarted))
+      ? { replayStarted: true as const } : {}),
   };
   if (storage) {
     try {

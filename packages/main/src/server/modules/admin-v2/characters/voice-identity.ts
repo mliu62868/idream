@@ -24,9 +24,10 @@ import type {
   VoiceIdentityPort,
   VoiceProviderKey,
 } from "@/server/providers/types";
-import type {
-  AdminActor,
-  AdminV2RequestBody,
+import {
+  parseRequestInput,
+  type AdminActor,
+  type AdminV2RequestBody,
 } from "@/server/modules/admin-v2/shared/authority";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
@@ -218,7 +219,7 @@ export type ParsedVoiceCloneForm = {
 
 export async function parseVoiceCloneForm(request: Request): Promise<ParsedVoiceCloneForm> {
   const form = await request.formData();
-  const fields = characterVoiceCloneCreateRequestSchema.parse({
+  const fields = parseRequestInput(characterVoiceCloneCreateRequestSchema, {
     language: stringField(form, "language") || "english",
     referenceText: stringField(form, "referenceText"),
     sampleText: stringField(form, "sampleText"),

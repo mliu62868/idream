@@ -92,7 +92,7 @@ describe("admin source boundary", () => {
     expect(billingFeature).toContain("export function BillingWorkspace");
     expect(billingFeature).toContain("/api/v2/admin/billing/adjustments");
     expect(catchAll).toContain("window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT))");
-    expect(billingFeature).toContain("window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh)");
+    expect(billingFeature).toContain("useWorkspaceRefresh(");
   });
 
   it("keeps migrated generation config and dead-letter domains out of the catch-all client", async () => {

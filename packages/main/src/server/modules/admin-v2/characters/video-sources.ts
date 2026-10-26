@@ -9,7 +9,7 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { operationalCharacterWhere } from "@/server/modules/metric-data-scope";
-import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
+import { parseRequestInput, type AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { providers } from "@/server/providers";
@@ -35,7 +35,7 @@ export async function parseCharacterVideoSourceForm(
   request: Request,
 ): Promise<ParsedCharacterVideoSourceForm> {
   const form = await request.formData();
-  const fields = characterVideoSourceUploadRequestSchema.parse({
+  const fields = parseRequestInput(characterVideoSourceUploadRequestSchema, {
     purpose: stringField(form, "purpose"),
   });
   const video = form.get("video");

@@ -8,7 +8,7 @@ export const runtime = "nodejs";
 export function GET(request: Request) {
   return adminV2Route(request, async () => {
     await actorWithPermission(request, "content.asset.read");
-    queryParams(request, "GET /api/v2/admin/comics");
-    return listAdminComics(request);
+    const query = queryParams(request, "GET /api/v2/admin/comics");
+    return listAdminComics(request, query);
   });
 }

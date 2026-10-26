@@ -908,7 +908,38 @@ describe("Creative Run review and placement authority", () => {
 
     expect(container.textContent).toContain("Recipe");
     expect(container.textContent).toContain("Campaign hero · v2");
-    expect(container.textContent).toContain("Image route");
+    expect(container.textContent).toContain("Generation route");
+    expect(container.textContent).not.toContain("Image route");
+  });
+
+  it.each(["character_video", "character_library"])("previews a successful %s Run with its matching media element", async (purpose) => {
+    const detail = campaignRun();
+    detail.purpose = purpose;
+    detail.target = { type: "character", id: "character-1" };
+    detail.reviewContext.profile = { key: "frozen-route", version: 1, label: "Frozen generation route" };
+    const assetUrl = "/api/media/opaque-delivery-id";
+    detail.items[0]!.asset = { ...detail.items[0]!.asset!, url: assetUrl };
+    adminV2Request.mockImplementation(async () => detail);
+    await mountRun();
+
+    const viewer = container.querySelector('[aria-label="Creative asset viewer. Use left and right arrow keys to move between items."]')!;
+    expect.soft(container.textContent).toContain("Generation route");
+    expect.soft(container.textContent).toContain("Frozen generation route · v1");
+    if (purpose === "character_video") {
+      const video = viewer.querySelector("video");
+      expect(video).not.toBeNull();
+      expect(video?.getAttribute("src")).toBe(assetUrl);
+      expect(video?.hasAttribute("controls")).toBe(true);
+      expect(video?.hasAttribute("playsinline")).toBe(true);
+      expect(video?.getAttribute("preload")).toBe("metadata");
+      expect(viewer.querySelector("img")).toBeNull();
+      const seek = new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true });
+      await act(async () => { video?.dispatchEvent(seek); });
+      expect(seek.defaultPrevented).toBe(false);
+    } else {
+      expect(viewer.querySelector("img")?.getAttribute("src")).toBe(assetUrl);
+      expect(viewer.querySelector("video")).toBeNull();
+    }
   });
 
   it("warns that the review decision was committed but the projection could not be refreshed", async () => {

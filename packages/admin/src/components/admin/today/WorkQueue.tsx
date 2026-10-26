@@ -141,7 +141,7 @@ export function WorkQueue({
           done += 1;
           succeeded.add(workItemKey(item));
         } catch (error) {
-          const isRejected = error instanceof AdminV2RequestError && [400, 401, 402, 403, 404, 409, 410, 429].includes(error.status);
+          const isRejected = error instanceof AdminV2RequestError && error.outcome === "answered" && [400, 401, 402, 403, 404, 409, 410, 429].includes(error.status);
           if (isRejected) rejected += 1;
           else unknown += 1;
           details.push(`${workItemKey(item)} (${isRejected ? "rejected" : "unknown"})\n${failureFeedback(error).detail}`);

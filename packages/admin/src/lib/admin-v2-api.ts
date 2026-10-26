@@ -1,4 +1,15 @@
 import type { AdminV2HttpMethod } from "@idream/shared/admin";
+import { idempotencyOutcomeOfStatus, type IdempotencyOutcome } from "./idempotency-key-lifecycle";
+
+export const ADMIN_AUTHORITY_REJECTED_EVENT = "idream:admin-authority-rejected";
+export type AdminAuthorityRejection = { status: number; permission?: unknown; unverified?: boolean };
+
+function reportAuthorityRejection(path: string, rejection: AdminAuthorityRejection) {
+  // Bootstrap failures are handled by its owner; reporting them would start a retry loop.
+  if (path === "/api/v2/admin/bootstrap" || typeof window === "undefined") return;
+  if (rejection.status !== 401 && rejection.status !== 403) return;
+  window.dispatchEvent(new CustomEvent<AdminAuthorityRejection>(ADMIN_AUTHORITY_REJECTED_EVENT, { detail: rejection }));
+}
 
 export type ApiError = {
   [key: string]: unknown;
@@ -33,6 +44,8 @@ export class AdminV2RequestError extends Error {
      * INTENT: 运营把失败转给工程时，唯一能让工程在日志里定位到这一次调用的东西就是它；
      * 不带上，「技术详情」就只剩一句人人都会说的英文报错。 */
     readonly requestId?: string,
+    // A status line alone is not a receipt: an unreadable or invalid body leaves the outcome unknown.
+    readonly outcome: IdempotencyOutcome = idempotencyOutcomeOfStatus(status),
   ) {
     super(message);
     this.name = "AdminV2RequestError";
@@ -70,11 +83,27 @@ export async function adminV2Request<T>(
     cache: "no-store",
     signal: options.signal,
   });
-  const raw = await response.text();
-  let payload: ApiEnvelope<T>;
+  let raw: string;
   try {
-    payload = JSON.parse(raw) as ApiEnvelope<T>;
+    raw = await response.text();
+  } catch (cause) {
+    // Preserve deliberate cancellation for consumers that discard aborted reads.
+    if (options.signal?.aborted) throw cause;
+    reportAuthorityRejection(path, { status: response.status, unverified: true });
+    throw new AdminV2RequestError(
+      "Authority response body could not be read",
+      response.status,
+      undefined,
+      { cause: cause instanceof Error ? cause.message : String(cause) },
+      requestId,
+      "unknown",
+    );
+  }
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(raw);
   } catch {
+    reportAuthorityRejection(path, { status: response.status, unverified: true });
     // SPEC: 响应不是 JSON（网关 502 页、鉴权跳转、代理超时）也走同一个错误类。
     // INTENT: 这里以前抛一个裸 Error，运营看到的就是 "Admin authority request failed (502)"
     //         ——一个孤零零的状态码。抛成 AdminV2RequestError，状态码就能被文案表接住，
@@ -85,9 +114,32 @@ export async function adminV2Request<T>(
       undefined,
       undefined,
       requestId,
+      "unknown",
     );
   }
+  if (
+    decoded === null || typeof decoded !== "object" || !("ok" in decoded) ||
+    (decoded.ok !== true && decoded.ok !== false) ||
+    (decoded.ok === true && (!("data" in decoded) || response.status >= 400)) ||
+    (decoded.ok === false && (!("error" in decoded) || !isAuthorityError(decoded.error)))
+  ) {
+    reportAuthorityRejection(path, { status: response.status, unverified: true });
+    throw new AdminV2RequestError(
+      "Authority returned an invalid response envelope",
+      response.status,
+      "admin_v2_response_contract_violation",
+      undefined,
+      requestId,
+      "unknown",
+    );
+  }
+  const payload = decoded as ApiEnvelope<T>;
   if (!payload.ok) {
+    const details = payload.error.details;
+    reportAuthorityRejection(path, {
+      status: response.status,
+      permission: details && typeof details === "object" && "permission" in details ? details.permission : undefined,
+    });
     throw new AdminV2RequestError(
       formatApiError(payload.error, "Admin request failed"),
       response.status,
@@ -96,7 +148,28 @@ export async function adminV2Request<T>(
       payload.error.requestId ?? requestId,
     );
   }
-  return options.schema ? options.schema.parse(payload.data) : payload.data;
+  if (!options.schema) return payload.data;
+  try {
+    return options.schema.parse(payload.data);
+  } catch (cause) {
+    throw new AdminV2RequestError(
+      "Authority returned a response outside its declared contract",
+      response.status,
+      "admin_v2_response_contract_violation",
+      { validationError: cause instanceof Error ? cause.message : String(cause) },
+      requestId,
+      "unknown",
+    );
+  }
+}
+
+function isAuthorityError(value: unknown): value is ApiError {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  // Main AppError responses omit requestId and use codes beyond the strict AdminError union.
+  // Validate their shared wire fields without discarding command-specific authority facts.
+  return "code" in value && typeof value.code === "string" && value.code.trim().length > 0
+    && "message" in value && typeof value.message === "string" && value.message.trim().length > 0
+    && (!("requestId" in value) || (typeof value.requestId === "string" && value.requestId.trim().length > 0));
 }
 
 // Command errors also carry blockers/currentSnapshot outside `details`.

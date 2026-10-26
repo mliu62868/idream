@@ -799,7 +799,7 @@ function CharacterDetail({
       mode: "push",
     });
   };
-  const onWorkspacePanelClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+  const onWorkspaceLinkClick = (event: ReactMouseEvent<HTMLElement>) => {
     if (
       event.defaultPrevented ||
       event.button !== 0 ||
@@ -884,7 +884,10 @@ function CharacterDetail({
     writesLocked,
   );
   return (
-    <section aria-labelledby="character-workspace-title">
+    <section
+      aria-labelledby="character-workspace-title"
+      onClickCapture={onWorkspaceLinkClick}
+    >
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex min-w-0 items-center gap-3">
           {workspaceImageUrl ? (
@@ -1032,7 +1035,6 @@ function CharacterDetail({
         <div
           className="mt-4 flex flex-col gap-2 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between"
           data-testid="character-next-step"
-          onClickCapture={onWorkspacePanelClick}
         >
           <p className="min-w-0">
             <span className="mr-2 text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">
@@ -1149,7 +1151,6 @@ function CharacterDetail({
       <div
         className="mt-5 scroll-mt-24"
         id={`character-panel-${tab}`}
-        onClickCapture={onWorkspacePanelClick}
         role="tabpanel"
         aria-labelledby={`character-tab-${tab}`}
       >

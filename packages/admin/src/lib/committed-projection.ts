@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   clearDurableMutationIntent,
+  withDurableMutationIntentLock,
   type DurableMutationIntent,
 } from "./durable-mutation-intent";
 import { createLatestRequestGate } from "./latest-request";
@@ -141,37 +142,45 @@ export function createCommittedProjectionLoader<TProjection>(
     const request = (async () => {
       const token = gate.begin();
       const projection = await readOptions().fetch(targetId, options.signal);
-      const settled = readOptions();
-      // INVARIANT: 两道闸门在响应回来之后都要重问一次——被取代的投影不得覆盖更新的结果。
-      if (!token.isCurrent() || !settled.isCurrentTarget(targetId)) {
-        throw new SupersededProjectionError();
-      }
-      const intent = settled.committed.current();
-      const reflected = intent !== null &&
-        settled.committed.reflects(intent, projection);
-      // SPEC: 目标对得上、内容对不上 = 服务端认了另一笔东西。这不是「还没投影到」，
-      //       所以不能降级成旁注，必须抛出去让调用方锁死。
-      if (
-        intent !== null &&
-        committedProjectionTargetId(intent) === targetId &&
-        !reflected
-      ) {
-        throw new Error(settled.committed.mismatchMessage);
-      }
-      settled.commit(
-        projection,
-        reflected ? { kind: "reflected" } : { kind: "unrelated" },
-      );
-      if (reflected && intent !== null) {
-        clearDurableMutationIntent(intent);
-        // INVARIANT: await 期间意图可能已被换成另一笔提交；只释放确实被本次投影确认的那一笔。
-        const latest = settled.committed.current();
-        if (
-          latest?.idempotencyKey === intent.idempotencyKey &&
-          latest.committedTargetId === intent.committedTargetId
-        ) {
-          settled.committed.onReleased();
+      const pendingIntent = readOptions().committed.current();
+      const commitProjection = () => {
+        const settled = readOptions();
+        // INVARIANT: 两道闸门在响应回来之后都要重问一次——被取代的投影不得覆盖更新的结果。
+        if (!token.isCurrent() || !settled.isCurrentTarget(targetId)) {
+          throw new SupersededProjectionError();
         }
+        const intent = settled.committed.current();
+        const reflected = intent !== null &&
+          settled.committed.reflects(intent, projection);
+        // SPEC: 目标对得上、内容对不上 = 服务端认了另一笔东西。这不是「还没投影到」，
+        //       所以不能降级成旁注，必须抛出去让调用方锁死。
+        if (
+          intent !== null &&
+          committedProjectionTargetId(intent) === targetId &&
+          !reflected
+        ) {
+          throw new Error(settled.committed.mismatchMessage);
+        }
+        settled.commit(
+          projection,
+          reflected ? { kind: "reflected" } : { kind: "unrelated" },
+        );
+        if (reflected && intent !== null) {
+          clearDurableMutationIntent(intent);
+          // INVARIANT: await 期间意图可能已被换成另一笔提交；只释放确实被本次投影确认的那一笔。
+          const latest = settled.committed.current();
+          if (
+            latest?.idempotencyKey === intent.idempotencyKey &&
+            latest.committedTargetId === intent.committedTargetId
+          ) {
+            settled.committed.onReleased();
+          }
+        }
+      };
+      if (pendingIntent) {
+        await withDurableMutationIntentLock(pendingIntent.scope, commitProjection);
+      } else {
+        commitProjection();
       }
       return projection;
     })();

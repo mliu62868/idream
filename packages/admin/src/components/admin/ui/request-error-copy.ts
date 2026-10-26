@@ -158,7 +158,14 @@ const APPROVAL_RENEWAL_REQUIRED: Copy = {
 export function operatorErrorCopy(cause: unknown): OperatorErrorCopy {
   const message = errorText(cause);
   if (cause instanceof AdminV2RequestError) {
-    const code = cause.code ?? CODE_BY_STATUS[cause.status] ?? null;
+    // Unknown proxy codes still carry a meaningful HTTP outcome; keep the raw code below.
+    const inferredCode = cause.code && Object.hasOwn(COPY_BY_CODE, cause.code)
+      ? cause.code
+      : CODE_BY_STATUS[cause.status] ?? cause.code ?? null;
+    // An unverified body cannot justify deterministic rejection copy, even after 4xx headers.
+    const code = cause.outcome === "unknown" && inferredCode !== "internal" && inferredCode !== "unavailable"
+      ? "unavailable"
+      : inferredCode;
     const fields = code === "bad_request" ? apiErrorFieldNames(cause.details) : [];
     const approvalRenewal = code === "forbidden" && cause.details !== null && typeof cause.details === "object" &&
       "recovery" in cause.details && cause.details.recovery === "request_new_approval";

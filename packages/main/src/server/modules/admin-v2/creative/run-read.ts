@@ -86,7 +86,7 @@ function creativeItemFailure(
       attempt?.operatorGuidance?.trim() ||
       (errorCode === "asset_quality_failed"
         ? "The output failed the quality check. Blank, collaged, or corrupt images are excluded from review. Load this Run's settings, adjust the brief, and generate again."
-        : "This Run did not produce a reviewable image. Open the Run details to inspect the failure before deciding whether to retry."),
+        : "This Run did not produce a reviewable output. Open the Run details to inspect the failure before deciding whether to retry."),
   };
 }
 

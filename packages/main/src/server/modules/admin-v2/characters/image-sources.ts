@@ -19,7 +19,7 @@ import {
   operationalCharacterWhere,
   operationalMediaAssetWhere,
 } from "@/server/modules/metric-data-scope";
-import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
+import { parseRequestInput, type AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import {
   parseAdminImageUpload,
@@ -47,7 +47,7 @@ export async function parseCharacterImageSourceForm(
   request: Request,
 ): Promise<ParsedCharacterImageSourceForm> {
   const form = await request.formData();
-  const fields = characterImageSourceUploadRequestSchema.parse({
+  const fields = parseRequestInput(characterImageSourceUploadRequestSchema, {
     purpose: stringField(form, "purpose"),
   });
   return {

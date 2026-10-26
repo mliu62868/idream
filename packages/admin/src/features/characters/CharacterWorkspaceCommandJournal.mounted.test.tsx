@@ -200,7 +200,7 @@ function seedPendingCommand(
 describe("Character workspace — 每个命令出口都接到了运营界面", () => {
   it.each([
     ["internal", "Internal error", "后台发生了内部错误。"],
-    ["future_authority_error", "Unfamiliar provider fault", "这个操作没有完成。"],
+    ["future_authority_error", "Unfamiliar provider fault", "后台发生了内部错误。"],
   ])("renders a real %s response in Chinese and retains request evidence", async (code, message, headline) => {
     const actual = await vi.importActual<typeof import("@/lib/admin-v2-api")>("@/lib/admin-v2-api");
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ ok: false, error: {

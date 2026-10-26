@@ -14,6 +14,36 @@ const transportRegistry: Readonly<Partial<Record<AdminV2OperationId, AdminV2Muta
   ADMIN_V2_MUTATION_TRANSPORT;
 
 describe("Admin v2 mutation transport invariant", () => {
+  it("retains the persisted identity and replay policy of every durable command", () => {
+    // These are receipt/executor identities, not HTTP names. A routing rename must
+    // not strand already accepted commands or change their canonical replay hash.
+    const expected = {
+      "POST /api/v2/admin/cases/:id/commands/close": ["case.close", "non_replayable"],
+      "POST /api/v2/admin/characters/:id/commands/pause": ["character.serving.pause", "idempotent"],
+      "POST /api/v2/admin/characters/:id/commands/resume": ["character.serving.resume", "idempotent"],
+      "POST /api/v2/admin/characters/:id/commands/retire": ["character.serving.retire", "idempotent"],
+      "POST /api/v2/admin/characters/:id/commands/restore": ["character.serving.restore", "idempotent"],
+      "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/publish": ["character.release.publish", "idempotent"],
+      "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/withdraw": ["character.release.withdraw", "idempotent"],
+      "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/rollback": ["character.release.rollback", "idempotent"],
+      "POST /api/v2/admin/chat/sessions/:sessionId/commands/migrate-release": ["chat.session_release.migrate", "idempotent"],
+      "POST /api/v2/admin/creative/runs/:id/commands/retry-failed": ["creative.run.retry_failed", "idempotent"],
+      "POST /api/v2/admin/incidents/:id/action-plans/:planId/execute": ["incident.action_plan.execute", "idempotent"],
+      "POST /api/v2/admin/incidents/:id/commands/resolve": ["incident.resolve", "non_replayable"],
+    };
+    const durable = ADMIN_V2_API_OPERATIONS.filter(
+      (operation) => operation.mutation?.executionMode === "durable",
+    );
+    expect(Object.fromEntries(durable.map((operation) => [operation.id, [
+      operation.mutation?.commandType,
+      operation.mutation?.executionMode === "durable" ? operation.mutation.retryMode : null,
+    ]]))).toEqual(expected);
+    for (const operation of durable) {
+      expect(operation.contract.response).toBe("adminCommandAcceptedSchema");
+      expect(operation.mutation?.transport).toBe("idempotency_key");
+    }
+  });
+
   it("classifies every mutation exactly once and no reads", () => {
     expect(Object.keys(ADMIN_V2_MUTATION_TRANSPORT).sort()).toEqual(
       mutationOperations.map((operation) => operation.id).sort(),

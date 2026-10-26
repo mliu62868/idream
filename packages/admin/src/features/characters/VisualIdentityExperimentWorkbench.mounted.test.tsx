@@ -15,6 +15,7 @@ vi.mock("@/lib/admin-v2-api", async (importOriginal) => ({
 }));
 
 import { readActiveDurableMutationIntent } from "@/lib/durable-mutation-intent";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { AdminI18nProvider } from "@/components/admin/i18n";
 import { VisualIdentityExperimentWorkbench } from "./VisualIdentityExperimentWorkbench";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
@@ -316,6 +317,77 @@ describe("Visual Identity experiment activation", () => {
     expect(query.get("purpose")).toBe("identity_calibration");
   });
 
+  it.each([false, true])("restores another instance's experiment snapshot and refreshes after a late failure (readback fails: %s)", async (readbackFails) => {
+    const brief = "A quiet museum portrait with a blue coat";
+    const negative = "No windows or other people";
+    const creates: Array<{ key: unknown; body: unknown }> = [];
+    let failFirst!: () => void;
+    let failReadback = false;
+    const current = () => ({ ...createdDetail(creates[0].body), executionOutcome: "running", items: [{ ...runDetail.items[0], asset: null, executionState: "generating" }] });
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path.endsWith("/image-sources")) return { items: [] };
+      if (path.includes("/creative/runs?")) {
+        if (failReadback) throw new Error("Current experiment list unavailable");
+        return { items: creates.length ? [current(), run] : [run], pageInfo: { endCursor: null, hasNextPage: false } };
+      }
+      if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+        creates.push({ key: options.idempotencyKey, body: options.body });
+        if (creates.length === 1) return new Promise((_resolve, reject) => { failFirst = () => reject(new TypeError("First response lost")); });
+        return { batch: { id: "identity-run-2" }, replayed: true };
+      }
+      if (path.endsWith("/identity-run-2")) return current();
+      if (path.endsWith(`/${run.id}`)) return runDetail;
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const other = document.createElement("div");
+    document.body.append(other);
+    const otherRoot = createRoot(other);
+    const generate = (host: HTMLElement) => host.querySelector<HTMLButtonElement>('button[aria-label="Generate 1 candidate image"]');
+    const render = (target: Root) => target.render(<VisualIdentityExperimentWorkbench actorId="shared-experiment" canActivate canCreate canReview canUploadSource data={data} />);
+    try {
+      await act(async () => render(root));
+      await waitUntil(() => container.querySelector('button[aria-label^="View candidate"]') !== null);
+      await act(async () => {
+        setTextAreaValue(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe the look you want"]')!, brief);
+        setInputValue(container.querySelector<HTMLInputElement>('input[aria-label="Negative prompt"]')!, negative);
+        setInputValue(container.querySelector<HTMLInputElement>('input[aria-label="Seed"]')!, "12345");
+        setSelectValue(container.querySelector<HTMLSelectElement>('select[aria-label="Advanced identity constraint"]')!, "creative");
+      });
+      await act(async () => generate(container)!.click());
+      await waitUntil(() => creates.length === 1);
+      await act(async () => render(otherRoot));
+      const prompt = other.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe the look you want"]')!;
+      expect.soft(prompt.value).toBe(brief);
+      expect.soft(prompt.disabled).toBe(true);
+      expect.soft(other.querySelector<HTMLInputElement>('input[aria-label="Negative prompt"]')?.value).toBe(negative);
+      expect.soft(other.querySelector<HTMLInputElement>('input[aria-label="Seed"]')?.value).toBe("12345");
+      expect.soft(other.querySelector<HTMLSelectElement>('select[aria-label="Advanced identity constraint"]')?.value).toBe("creative");
+      expect.soft(other.querySelector<HTMLSelectElement>('select[aria-label="Generation mode"]')?.closest("fieldset")?.disabled).toBe(true);
+      await openFirstHistoryItem(other);
+      expect.soft([...other.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Reuse these parameters")?.disabled).toBe(true);
+      expect.soft([...other.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Keep adjusting from this one")?.disabled).toBe(true);
+      await act(async () => other.querySelector<HTMLButtonElement>('button[aria-label="Resume saved experiment"]')!.click());
+      const scope = "identity-experiment:create:shared-experiment:character-1";
+      await waitUntil(() => readActiveDurableMutationIntent({ scope }) === null);
+      expect(creates[1]).toEqual(creates[0]);
+      failReadback = readbackFails;
+      await act(async () => failFirst());
+      await waitUntil(() => generate(container)?.textContent?.includes("Generating") === false);
+      if (readbackFails) {
+        expect.soft(generate(container)?.disabled).toBe(true);
+        expect.soft(container.textContent).toContain("Current experiment list unavailable");
+        failReadback = false;
+        await act(async () => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)));
+      }
+      expect.soft(container.querySelector('article[aria-labelledby="selected-history-candidate-title"]')?.textContent).toContain("A quiet museum portrait with a blue coat");
+      expect(readActiveDurableMutationIntent({ scope })).toBeNull();
+      expect(creates).toHaveLength(2);
+    } finally {
+      await act(async () => otherRoot.unmount());
+      other.remove();
+    }
+  });
+
   it("keeps a committed receipt across remount and verifies the exact run without another POST", async () => {
     let body: unknown;
     let readbackMode: "failed" | "wrong-target" | "correct" = "failed";
@@ -355,6 +427,56 @@ describe("Visual Identity experiment activation", () => {
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Generate 1 candidate image"]')).not.toBeNull();
   });
 
+  it("keeps an unknown experiment intent after a conflicting replay and recovers the original request", async () => {
+    const scope = "identity-experiment:create:operator-replay:character-1";
+    const creates: Array<{ key: string; body: unknown }> = [];
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path.endsWith("/image-sources")) return { items: [] };
+      if (path.includes("/creative/runs?")) return { items: [], pageInfo: { hasNextPage: false, endCursor: null } };
+      if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+        creates.push({ key: options.idempotencyKey, body: options.body });
+        if (creates.length === 1) throw new TypeError("Response ended after server commit");
+        if (creates.length === 2) throw new AdminV2RequestError("Current policy rejects this replay", 409, "conflict");
+        return { batch: { id: "identity-run-2" }, replayed: true };
+      }
+      if (path.endsWith("/identity-run-2")) return createdDetail(creates[0].body);
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const render = async () => {
+      await act(async () => root.render(
+        <VisualIdentityExperimentWorkbench actorId="operator-replay" canActivate canCreate canReview canUploadSource data={data} />,
+      ));
+    };
+    await render();
+    await act(async () => setTextAreaValue(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe the look you want"]')!,
+      "Original experiment request that must remain recoverable",
+    ));
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Generate 1 candidate image"]')!.click());
+    expect(readActiveDurableMutationIntent({ scope })).toMatchObject({ status: "outcome_unknown", idempotencyKey: creates[0].key });
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render();
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Resume saved experiment"]')!.click());
+    expect(creates).toHaveLength(2);
+    expect(creates[1]).toEqual(creates[0]);
+    expect(readActiveDurableMutationIntent({ scope })?.idempotencyKey).toBe(creates[0].key);
+    expect(container.querySelector('button[aria-label="Generate 1 candidate image"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Resume saved experiment"]')).not.toBeNull();
+
+    // Editing the visible draft never replaces an unresolved request's frozen payload.
+    await act(async () => setTextAreaValue(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe the look you want"]')!,
+      "Changed draft must wait for the earlier request",
+    ));
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Resume saved experiment"]')!.click());
+    await waitUntil(() => readActiveDurableMutationIntent({ scope }) === null);
+    expect(creates).toHaveLength(3);
+    expect(creates[2]).toEqual(creates[0]);
+    expect(container.querySelector('button[aria-label="Generate 1 candidate image"]')).not.toBeNull();
+  });
+
   it("gives every generation selector an explicit accessible name", async () => {
     await act(async () =>
       root.render(
@@ -390,6 +512,53 @@ describe("Visual Identity experiment activation", () => {
       ]),
     );
   });
+
+  it.each([null, "/previously-published-portrait.webp"])(
+    "shows the active reference as Current look when the candidate pool changes and the public portrait is %s",
+    async (imageUrl) => {
+      const currentLookData = withCharacterWorkspaceDetail(multiSourceData, {
+        character: { ...multiSourceData.character, imageUrl },
+        visual: {
+          ...multiSourceData.visual,
+          anchors: [{
+            ...data.visual.anchors[0],
+            mediaAssetId: "unadopted-experiment-candidate",
+            url: "/unadopted-experiment-candidate.webp",
+          }, ...data.visual.anchors],
+        },
+      });
+      await act(async () => root.render(
+        <VisualIdentityExperimentWorkbench canActivate canCreate canReview canUploadSource data={currentLookData} />,
+      ));
+
+      expect(container.querySelector('img[alt="Active visual identity baseline"]')?.getAttribute("src"))
+        .toBe("/mira-reference-active.webp");
+    },
+  );
+
+  it.each(["not_activated", "missing_reference_set", "reference_unavailable"])(
+    "does not label a public portrait or candidate as Current look when %s",
+    async (state) => {
+      const currentLookData = withCharacterWorkspaceDetail(multiSourceData, {
+        visual: {
+          ...multiSourceData.visual,
+          activeIdentity: state === "not_activated" ? null : multiSourceData.visual.activeIdentity,
+          activeReferenceSet: state === "reference_unavailable"
+            ? {
+              ...multiSourceData.visual.activeReferenceSet!,
+              references: multiSourceData.visual.activeReferenceSet!.references.map((reference) => ({ ...reference, available: false })),
+            }
+            : null,
+        },
+      });
+      await act(async () => root.render(
+        <VisualIdentityExperimentWorkbench canActivate canCreate canReview canUploadSource data={currentLookData} />,
+      ));
+
+      expect(container.querySelector('img[alt="Active visual identity baseline"]')).toBeNull();
+      expect(container.textContent).toContain("No current look yet");
+    },
+  );
 
   it("keeps the first generation screen limited to prompt, negative prompt, seed, and generate", async () => {
     await act(async () =>

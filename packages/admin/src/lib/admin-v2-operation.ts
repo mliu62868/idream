@@ -11,10 +11,7 @@ import {
   type AdminV2RequestInput,
 } from "@idream/shared/admin";
 import { AdminV2RequestError, adminV2Request } from "./admin-v2-api";
-import {
-  adminIdempotencyKeyLedger,
-  idempotencyOutcomeOfStatus,
-} from "./idempotency-key-lifecycle";
+import { adminIdempotencyKeyLedger } from "./idempotency-key-lifecycle";
 
 // SPEC: 按 manifest 声明的 operation id 寻址一次请求；信封解码仍然只有 admin-v2-api 一份。
 // INTENT: 单独一个模块而不是塞回 admin-v2-api，是因为它必须**经过** `adminV2Request` 的模块
@@ -217,9 +214,7 @@ export async function adminV2Operation<Id extends AdminV2DeclaredOperationId>(
       adminIdempotencyKeyLedger.settle(
         scope,
         key,
-        idempotencyOutcomeOfStatus(
-          error instanceof AdminV2RequestError ? error.status : undefined,
-        ),
+        error instanceof AdminV2RequestError ? error.outcome : "unknown",
       );
     }
     throw error;

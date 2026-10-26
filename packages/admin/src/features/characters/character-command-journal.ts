@@ -463,7 +463,7 @@ function characterCommandActionLabel(commandType: string) {
 }
 
 function activeCommandConflict(cause: unknown) {
-  if (!(cause instanceof AdminV2RequestError) || cause.status !== 409)
+  if (!(cause instanceof AdminV2RequestError) || cause.outcome !== "answered" || cause.status !== 409)
     return null;
   if (
     !cause.details ||
@@ -486,6 +486,7 @@ function activeCommandConflict(cause: unknown) {
 function isDefinitiveCommandRejection(cause: unknown) {
   return (
     cause instanceof AdminV2RequestError &&
+    cause.outcome === "answered" &&
     [400, 401, 403, 404, 409, 422].includes(cause.status)
   );
 }
@@ -957,7 +958,7 @@ export function createCharacterCommandJournal(options: {
     const sent = await sendCommand(target);
     if (sent.kind !== "failed") return sent;
     const disposition = characterCommandReplayFailureDisposition(
-      sent.cause instanceof AdminV2RequestError ? sent.cause.status : null,
+      sent.cause instanceof AdminV2RequestError && sent.cause.outcome === "answered" ? sent.cause.status : null,
     );
     if (disposition === "keep_locked") {
       return {
@@ -996,12 +997,13 @@ export function createCharacterCommandJournal(options: {
         succeeded: status.status === "succeeded",
       };
     } catch (cause) {
-      if (cause instanceof AdminV2RequestError && cause.status === 404) {
+      if (cause instanceof AdminV2RequestError && cause.outcome === "answered" && cause.status === 404) {
         markTerminal(target);
         return { kind: "evidence_missing" };
       }
       if (
         cause instanceof AdminV2RequestError &&
+        cause.outcome === "answered" &&
         [401, 403].includes(cause.status)
       ) {
         return {

@@ -39,6 +39,12 @@ type Skipped = { id: string; reason: string };
 type Translate = (key: string, values?: Record<string, string | number>) => string;
 
 const PAGE_SIZE = 25;
+const LEDGER_LABELS: Record<DeadLetterRecord["ledgerState"], string> = {
+  not_charged: "Not charged",
+  reserved: "Charged",
+  partially_refunded: "Partially refunded",
+  refunded: "Refunded",
+};
 const HEADERS: DataTableHeader[] = [
   "Job",
   "User",
@@ -48,7 +54,7 @@ const HEADERS: DataTableHeader[] = [
   { label: "Failure reason", width: "16rem" },
   { label: "Replay authority", width: "22rem" },
   "Ledger",
-  "Cost",
+  "Estimated cost",
   "Updated",
   "Actions",
 ];
@@ -63,8 +69,8 @@ const RETRY_BLOCKED_LABELS: Record<string, string> = {
   successful_artifact_exists: "A delivered artifact already exists",
   not_failed: "The authority recorded no failure",
   refunded: "The charge was already refunded",
-  // 钉死的 workflow 版本已经没有 worker 在跑；重新入队只会白扣一次尝试，正确出口是丢弃并退款。
-  pinned_workflow_retired: "Its pinned workflow version is no longer served — requeue would fail; discard refunds the customer",
+  // 退休的 workflow 无法执行；丢弃时只退还实际仍可退的扣费。
+  pinned_workflow_retired: "Its pinned workflow version is no longer served — requeue would fail; discard refunds any remaining charge",
 };
 
 // 批量命令跳过某条时后端回的理由；与上面同源，另加两个只在批量路径出现的。
@@ -245,7 +251,7 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
           ? <FailureReason code={text(row.errorCode)} key="failure" />
           : <span className="text-[var(--ad-text-muted)]" key="failure">—</span>,
         <RetryAuthority key="retry" verdict={row.retryEligibility} />,
-        <span className="whitespace-nowrap" key="ledger">{enumOr(row.ledgerState)}</span>,
+        <span className="whitespace-nowrap" key="ledger">{t(LEDGER_LABELS[row.ledgerState])}</span>,
         format.display(row.costDreamcoins),
         format.dateTime(row.updatedAt),
         <div key="actions">{rowActions(row)}</div>,
@@ -320,8 +326,8 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
                   <MobileFact className="col-span-2" label={t("Replay authority")}>
                     <RetryAuthority verdict={row.retryEligibility} />
                   </MobileFact>
-                  <MobileFact label={t("Ledger")}>{enumOr(row.ledgerState)}</MobileFact>
-                  <MobileFact label={t("Cost")}>{format.display(row.costDreamcoins)}</MobileFact>
+                  <MobileFact label={t("Ledger")}>{t(LEDGER_LABELS[row.ledgerState])}</MobileFact>
+                  <MobileFact label={t("Estimated cost")}>{format.display(row.costDreamcoins)}</MobileFact>
                   <MobileFact className="col-span-2" label={t("Updated")}>{format.dateTime(row.updatedAt)}</MobileFact>
                 </dl>
                 <footer className="border-t border-[var(--ad-border)] pt-3">{rowActions(row)}</footer>
@@ -389,14 +395,14 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
 }
 
 function requeueEffect(t: Translate, count: number, skipped: number) {
-  const effect = t("{count} requests re-enter the generation queue and are charged for a new attempt. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.", { count });
+  const effect = t("{count} requests re-enter the generation queue without a new Dreamcoin charge. Existing charges remain unchanged. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.", { count });
   return skipped > 0
     ? `${effect} ${t("{count} selected requests the authority will not retry are excluded.", { count: skipped })}`
     : effect;
 }
 
 function discardEffect(t: Translate, count: number, skipped: number) {
-  const effect = t("Discard settles the customer: any charge that was never refunded is refunded now, and the request leaves the queue for good. {count} requests are affected. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.", { count });
+  const effect = t("Discard refunds any remaining refundable Dreamcoin charge and permanently removes {count} requests from this queue. Uncharged or fully refunded requests receive no additional refund. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.", { count });
   return skipped > 0
     ? `${effect} ${t("{count} selected requests the authority will not discard are excluded.", { count: skipped })}`
     : effect;

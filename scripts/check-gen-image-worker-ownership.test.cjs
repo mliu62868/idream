@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
 const {
   copyFileSync,
   mkdirSync,
@@ -12,6 +13,7 @@ const test = require("node:test");
 const path = require("node:path");
 const { createRuntimeTopology } = require("./runtime-topology.cjs");
 const {
+  assertPm2SocketPaths,
   classifyOwnership,
   mergeGenEnvironment,
   ownershipRedisOptions,
@@ -167,6 +169,174 @@ function videoRedis(runId, slot, pid, db = 0) {
   };
 }
 
+// Run the production collector in a fresh module graph, substituting only its
+// OS/Redis I/O. This keeps env forwarding and snapshot parsing in the regression.
+function collectFixtureOwnership(input) {
+  const result = spawnSync(process.execPath, ["-e", `
+    const assert = require("node:assert/strict");
+    const { readFileSync } = require("node:fs");
+    const Module = require("node:module");
+    const input = JSON.parse(readFileSync(0, "utf8"));
+    const originalLoad = Module._load;
+    Module._load = function (name, ...args) {
+      if (name === "node:child_process") return {
+        spawnSync(command, commandArgs, options) {
+          assert.equal(input.rejectBeforeIO, undefined, "Invalid socket paths must not invoke PM2 or ps");
+          assert.equal(options.env.PM2_HOME, input.env.PM2_HOME);
+          if (command === "pm2") {
+            assert.deepEqual(commandArgs, ["jlist"]);
+            return { status: 0, stdout: JSON.stringify(input.pm2Processes) };
+          }
+          assert.equal(command, "ps");
+          assert.deepEqual(commandArgs, ["-axo", "pid=,ppid=,pgid=,lstart=,command="]);
+          return { status: 0, stdout: input.psRows.map((row) =>
+            [row.pid, row.ppid, row.pgid, row.startedAt, row.command].join(" ")
+          ).join("\\n") };
+        },
+      };
+      if (name === "bullmq") return {
+        Queue: class {
+          constructor(name, options) {
+            this.name = name;
+            assert.equal(options.connection.db, 14);
+            assert.equal(options.prefix, input.env.BULLMQ_PREFIX);
+          }
+          on() {}
+          async getWorkers() {
+            return this.name === "ai.image.generate"
+              ? input.redisWorkers : input.videoRedisWorkers;
+          }
+          async disconnect() {}
+          async close() {}
+        },
+      };
+      return originalLoad.call(this, name, ...args);
+    };
+    const { collectOwnership } = require(input.modulePath);
+    collectOwnership(input.env, 1, 1, "release1", "release1", true, "ready")
+      .then((report) => process.stdout.write(JSON.stringify(report)))
+      .catch((error) => {
+        if (input.rejectBeforeIO && error.code === "PM2_SOCKET_PATH_TOO_LONG") {
+          process.stdout.write(JSON.stringify({ code: error.code, message: error.message }));
+        } else { console.error(error); process.exitCode = 1; }
+      });
+  `], {
+    input: JSON.stringify({
+      modulePath: path.join(__dirname, "check-gen-image-worker-ownership.cjs"),
+      ...input,
+    }),
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
+}
+
+function isolatedCollectorFixture() {
+  return {
+    env: {
+      PM2_HOME: "/tmp/idream audit/.pm2",
+      HOME: "/tmp/other home",
+      GEN_REDIS_URL: "redis://127.0.0.1:6379/14",
+      BULLMQ_PREFIX: "idream:audit:isolated",
+    },
+    pm2Processes: [pm2(200, 0), videoPm2(400)],
+    psRows: [
+      row(900, 1, 900, "PM2 v6.0.14: God Daemon (/tmp/shared runtime/.pm2)"),
+      row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/idream audit/.pm2)"),
+      pm2BunRuntime(200),
+      pm2BunRuntime(400),
+      pm2BunRuntime(901, 900),
+    ],
+    redisWorkers: [redis("release1", 0, 200, 14)],
+    videoRedisWorkers: [videoRedis("release1", 0, 400, 14)],
+  };
+}
+
+test("collector rejects oversized PM2 sockets before any PM2 or queue collection", () => {
+  const input = isolatedCollectorFixture();
+  input.env.PM2_HOME = `/tmp/${"long-home-".repeat(20)}`;
+  input.rejectBeforeIO = true;
+  const report = collectFixtureOwnership(input);
+  assert.equal(report.code, "PM2_SOCKET_PATH_TOO_LONG");
+  assert.match(report.message, /PM2_DAEMON_RPC_PORT.*bytes.*PM2_HOME/su);
+});
+
+test("collector permits explicit valid sockets under a long PM2_HOME", () => {
+  const input = isolatedCollectorFixture();
+  const pm2Home = `/tmp/${"long-home-".repeat(20)}`;
+  Object.assign(input.env, {
+    PM2_HOME: pm2Home,
+    PM2_DAEMON_RPC_PORT: "/tmp/idream-rpc.sock",
+    PM2_DAEMON_PUB_PORT: "/tmp/idream-pub.sock",
+    PM2_INTERACTOR_RPC_PORT: "/tmp/idream-interactor.sock",
+  });
+  input.psRows = input.psRows.map((process) => process.pid === 100
+    ? { ...process, command: `PM2 v6.0.14: God Daemon (${pm2Home})` } : process);
+  assert.equal(collectFixtureOwnership(input).ok, true);
+});
+
+test("PM2 socket validation counts UTF-8 bytes and checks every effective path", () => {
+  const env = {
+    PM2_HOME: "/tmp/.pm2",
+    PM2_DAEMON_RPC_PORT: `/tmp/${"a".repeat(99)}`,
+  };
+  assert.doesNotThrow(() => assertPm2SocketPaths(env, "darwin"));
+  assert.throws(() => assertPm2SocketPaths({ ...env, PM2_DAEMON_RPC_PORT: `${env.PM2_DAEMON_RPC_PORT}a` }, "darwin"), /105 bytes.*104/su);
+  for (const key of ["PM2_DAEMON_RPC_PORT", "PM2_DAEMON_PUB_PORT", "PM2_INTERACTOR_RPC_PORT"]) {
+    assert.throws(() => assertPm2SocketPaths({ ...env, [key]: `/tmp/${"长".repeat(34)}` }, "darwin"), new RegExp(`${key}.*107 bytes`, "su"));
+  }
+});
+
+test("collector accepts its exact PM2_HOME among daemons with spaces and equal basenames", () => {
+  const input = isolatedCollectorFixture();
+  const singleDaemon = collectFixtureOwnership({
+    ...input,
+    psRows: input.psRows.filter((process) => process.pid !== 900),
+  });
+  assert.equal(singleDaemon.ok, true, JSON.stringify(singleDaemon.issues));
+  const report = collectFixtureOwnership(input);
+  assert.equal(report.ok, true, JSON.stringify(report.issues));
+  assert.deepEqual(report.image.groups.map((group) => group.rootPid), [200]);
+  assert.deepEqual(report.video.groups.map((group) => group.rootPid), [400]);
+});
+
+test("collector rejects a registered worker parented by another PM2_HOME", () => {
+  const input = isolatedCollectorFixture();
+  input.psRows = input.psRows.map((process) =>
+    process.pid === 200 ? { ...process, ppid: 900 } : process
+  );
+  const report = collectFixtureOwnership(input);
+  assert.equal(report.ok, false);
+  assert.ok(report.image.issues.includes("registered_runtime_process_identity_mismatch"));
+});
+
+test("collector derives the default home and rejects ambiguous matching daemons", () => {
+  const input = isolatedCollectorFixture();
+  delete input.env.PM2_HOME;
+  input.env.HOME = "/tmp/idream audit";
+  assert.equal(collectFixtureOwnership(input).ok, true);
+
+  input.psRows.push(row(800, 1, 800, "PM2 v6.0.14: God Daemon (/tmp/idream audit/.pm2)"));
+  const ambiguous = collectFixtureOwnership(input);
+  assert.equal(ambiguous.ok, false);
+  assert.ok(ambiguous.image.issues.includes("registered_runtime_process_identity_mismatch"));
+});
+
+test("collector retains orphan and foreign-consumer rejection with multiple PM2 daemons", () => {
+  const orphan = isolatedCollectorFixture();
+  orphan.psRows.push(pm2BunRuntime(500));
+  orphan.redisWorkers.push(redis("release1", 1, 500, 14));
+  const orphanReport = collectFixtureOwnership(orphan);
+  assert.equal(orphanReport.ok, false);
+  assert.ok(orphanReport.image.issues.includes("daemon_orphan"));
+
+  const foreign = isolatedCollectorFixture();
+  foreign.redisWorkers.push(redis("release1", 1, 901, 14));
+  const foreignReport = collectFixtureOwnership(foreign);
+  assert.equal(foreignReport.ok, false);
+  assert.ok(foreignReport.image.issues.includes("external_unmanaged"));
+});
+
 test("parses PM2 warning prefixes and ps process identity", () => {
   const imageScript = generationWorkerDefinition("image").script;
   assert.deepEqual(
@@ -199,6 +369,7 @@ test("deletes the ownership check's duplicate process identity map", () => {
 
 test("accepts exact PM2, OS and Redis ownership", () => {
   const report = classifyOwnership({
+    pm2Home: "/tmp/.pm2",
     expected: 2,
     runId: "release1",
     pm2Processes: [pm2(200, 0), pm2(300, 1)],
@@ -216,6 +387,7 @@ test("accepts exact PM2, OS and Redis ownership", () => {
 
 test("accepts exact image and video PM2, OS and Redis ownership together", () => {
   const ready = classifyOwnership({
+    pm2Home: "/tmp/.pm2",
     mode: "ready",
     expected: 2,
     expectedVideo: 1,
@@ -240,6 +412,7 @@ test("accepts exact image and video PM2, OS and Redis ownership together", () =>
   assert.equal(ready.video.groups.length, 1);
 
   const quiescent = classifyOwnership({
+    pm2Home: "/tmp/.pm2",
     mode: "quiescent",
     expected: 0,
     expectedVideo: 0,
@@ -254,6 +427,7 @@ test("accepts exact image and video PM2, OS and Redis ownership together", () =>
 
 test("accepts production Generation identities from runtime topology", () => {
   const report = classifyOwnership({
+    pm2Home: "/tmp/.pm2",
     mode: "ready",
     expected: 1,
     expectedVideo: 1,
@@ -279,6 +453,7 @@ test("accepts production Generation identities from runtime topology", () => {
 
 test("accepts PM2 ProcessContainerForkBun as the registered Bun runtime", () => {
   const report = classifyOwnership({
+    pm2Home: "/tmp/.pm2",
     mode: "ready",
     expected: 2,
     expectedVideo: 1,
@@ -313,6 +488,7 @@ test("accepts PM2 ProcessContainerForkBun as the registered Bun runtime", () => 
 test("accepts matching PM2 Bun containers from a separate global installation", (t) => {
   const container = separatePm2Container(t);
   const report = classifyOwnership({
+    pm2Home: "/tmp/.pm2",
     mode: "ready",
     expected: 1,
     expectedVideo: 1,
@@ -343,6 +519,7 @@ test("rejects an arbitrary same-name PM2 Bun container and extra arguments", (t)
     redisWorkers: [redis("release1", 0, 200)],
   };
   const reportFor = (command) => classifyOwnership({
+    pm2Home: "/tmp/.pm2",
     ...base,
     psRows: [
       row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"),
@@ -367,6 +544,7 @@ test("registered PM2 Bun containers require daemon parent and their own process 
   };
   for (const [ppid, pgid] of [[999, 200], [100, 999]]) {
     const report = classifyOwnership({
+    pm2Home: "/tmp/.pm2",
       ...base,
       psRows: [
         row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"),
@@ -379,6 +557,7 @@ test("registered PM2 Bun containers require daemon parent and their own process 
 
 test("uses the Redis identity to recover an unregistered PM2 Bun worker", () => {
   const report = classifyOwnership({
+    pm2Home: "/tmp/.pm2",
     mode: "quiescent",
     expected: 0,
     pm2Processes: [],
@@ -405,6 +584,7 @@ test("uses the Redis identity to recover an unregistered PM2 Bun worker", () => 
 
 test("ready accepts a validated zero-video topology while image remains live", () => {
   const report = classifyOwnership({
+    pm2Home: "/tmp/.pm2",
     mode: "ready",
     expected: 1,
     expectedVideo: 0,
@@ -443,6 +623,7 @@ test("video orphan, dormant runtime and Redis identity drift all fail closed", (
   };
 
   const orphan = classifyOwnership({
+    pm2Home: "/tmp/.pm2",
     ...base,
     psRows: [
       ...base.psRows,
@@ -453,6 +634,7 @@ test("video orphan, dormant runtime and Redis identity drift all fail closed", (
   assert.ok(orphan.issues.includes("video:daemon_orphan"));
 
   const dormant = classifyOwnership({
+    pm2Home: "/tmp/.pm2",
     ...base,
     psRows: base.psRows.filter((process) => process.pid !== 400),
   });
@@ -460,6 +642,7 @@ test("video orphan, dormant runtime and Redis identity drift all fail closed", (
   assert.ok(dormant.issues.includes("video:registered_root_missing_runtime"));
 
   const wrongRedis = classifyOwnership({
+    pm2Home: "/tmp/.pm2",
     ...base,
     targetRedisDb: 4,
     redisWorkers: [redis("release1", 0, 200, 4)],
@@ -485,6 +668,7 @@ test("reports daemon orphan groups without counting wrapper and child twice", ()
     redisWorkers.push({ rawname: "idream:development:ai.image.generate" });
   }
   const report = classifyOwnership({
+    pm2Home: "/tmp/.pm2",
     expected: 2,
     runId: "release1",
     pm2Processes: [pm2(200, 0), pm2(300, 1)],
@@ -506,6 +690,7 @@ test("reports daemon orphan groups without counting wrapper and child twice", ()
 
 test("fails closed on a registered Bun worker without an OS runtime", () => {
   const report = classifyOwnership({
+    pm2Home: "/tmp/.pm2",
     expected: 2,
     runId: "release1",
     pm2Processes: [pm2(200, 0), pm2(300, 1)],
@@ -522,6 +707,7 @@ test("fails closed on a registered Bun worker without an OS runtime", () => {
 
 test("steady development ownership maps named workers without a release run id", () => {
   const report = classifyOwnership({
+    pm2Home: "/tmp/.pm2",
     expected: 2,
     runId: undefined,
     pm2Processes: [
@@ -552,6 +738,7 @@ test("rejects workers from a different Redis logical database", () => {
     ],
   };
   const wrong = classifyOwnership({
+    pm2Home: "/tmp/.pm2",
     ...base,
     redisWorkers: [redis("release1", 0, 200, 0), redis("release1", 1, 300, 0)],
   });
@@ -559,6 +746,7 @@ test("rejects workers from a different Redis logical database", () => {
   assert.ok(wrong.issues.includes("redis_database_mismatch"));
 
   const exact = classifyOwnership({
+    pm2Home: "/tmp/.pm2",
     ...base,
     redisWorkers: [redis("release1", 0, 200, 4), redis("release1", 1, 300, 4)],
   });
@@ -567,6 +755,7 @@ test("rejects workers from a different Redis logical database", () => {
 
 test("classifier rejects a contradictory ownership phase even without the CLI", () => {
   const report = classifyOwnership({
+    pm2Home: "/tmp/.pm2",
     mode: "quiescent",
     expected: 2,
     runId: "release1",
@@ -585,6 +774,7 @@ test("classifier rejects a contradictory ownership phase even without the CLI", 
 
 test("quiescent requires zero identity in every source", () => {
   const clean = classifyOwnership({
+    pm2Home: "/tmp/.pm2",
     expected: 0,
     runId: undefined,
     pm2Processes: [pm2(0, 0, "stopped"), pm2(0, 1, "stopped")],
@@ -594,6 +784,7 @@ test("quiescent requires zero identity in every source", () => {
   assert.equal(clean.ok, true);
 
   const dirty = classifyOwnership({
+    pm2Home: "/tmp/.pm2",
     expected: 0,
     runId: undefined,
     pm2Processes: [pm2(0, 0, "stopped")],
@@ -617,6 +808,7 @@ test("quiescent permits stopped stale definitions so gated recreation can repair
   staleVideo.pm2_env.args = ["src/legacy-video.ts"];
 
   const report = classifyOwnership({
+    pm2Home: "/tmp/.pm2",
     mode: "quiescent",
     expected: 0,
     expectedVideo: 0,

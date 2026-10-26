@@ -864,22 +864,32 @@ describe("Image Library and legacy Placement authority", () => {
   });
 
   it("protects legacy raw-array Release manifests through the canonical parser", async () => {
-    const original = await prisma.characterRelease.findUniqueOrThrow({
-      where: { id: releaseId },
-      select: { releasePlacementManifest: true },
-    });
-    await prisma.characterRelease.update({
-      where: { id: releaseId },
+    const legacyReleaseId = `content-authority-legacy-release-${suffix}`;
+    await prisma.characterRelease.create({
       data: {
+        id: legacyReleaseId,
+        projectId,
+        revisionId: `content-authority-legacy-revision-${suffix}`,
+        characterContentVersionId: contentVersionId,
+        generationProvenance: {},
         releasePlacementManifest: [
           {
             placementId: "legacy_character_avatar",
             assetId: releaseAssetId,
           },
         ],
+        snapshotHash: `content-authority-legacy-snapshot-${suffix}`,
+        readiness: "ready",
+        legacy: true,
+        status: "published",
+        publishedAt: new Date(),
       },
     });
     try {
+      await prisma.characterServing.update({
+        where: { characterId },
+        data: { currentReleaseId: legacyReleaseId },
+      });
       const response = await getContentAsset(
         request("GET", `api/v2/admin/assets/${releaseAssetId}`),
         releaseAssetId,
@@ -890,7 +900,8 @@ describe("Image Library and legacy Placement authority", () => {
             authorityDependencies: expect.arrayContaining([
               expect.objectContaining({
                 kind: "character_release",
-                releaseId,
+                releaseId: legacyReleaseId,
+                releaseState: "current",
                 slot: "legacy_character_avatar",
               }),
             ]),
@@ -898,11 +909,12 @@ describe("Image Library and legacy Placement authority", () => {
         },
       });
     } finally {
-      await prisma.characterRelease.update({
-        where: { id: releaseId },
-        data: {
-          releasePlacementManifest: original.releasePlacementManifest as never,
-        },
+      await prisma.characterServing.update({
+        where: { characterId },
+        data: { currentReleaseId: releaseId },
+      });
+      await prisma.characterRelease.delete({
+        where: { id: legacyReleaseId },
       });
     }
   });

@@ -34,11 +34,11 @@ function imageProfile(profileKey: string, workflowKey: string, costMultiplier: n
 describe("operational Character generation route", () => {
   // SPEC: without a qualified route, Admin production uses the same order as
   // public automatic selection — cheapest compatible profile first — so the
-  // default REDQW21 profile, not an alphabetically earlier legacy route, owns
+  // default RedCraft profile, not an alphabetically earlier legacy route, owns
   // single-anchor Character images.
   it("prefers the cheapest compatible profile over profile key order", async () => {
     const workflows = await Promise.all(
-      ["redqw21", "qwen-image-edit-img2img", "qwen-image-edit-multi-identity"].map(workflow),
+      ["redcraft-qw21t", "qwen-image-edit-img2img", "qwen-image-edit-multi-identity"].map(workflow),
     );
     catalog.generationWorkflowDescriptor.mockImplementation(async (key: string) =>
       workflows.find((candidate) => candidate.workflowKey === key) ?? null,
@@ -49,7 +49,7 @@ describe("operational Character generation route", () => {
         findMany: vi.fn(async () => [
           imageProfile("character-image-multi-identity", "qwen-image-edit-multi-identity", 1.4),
           imageProfile("character-image-single-identity-redcraft", "qwen-image-edit-img2img", 1.3),
-          imageProfile("profile_image_default_v1", "redqw21", 1),
+          imageProfile("profile_image_default_v1", "redcraft-qw21t", 1),
         ]),
       },
     };
@@ -65,12 +65,13 @@ describe("operational Character generation route", () => {
 
     expect(route).toMatchObject({
       generationProfileKey: "profile_image_default_v1",
-      workflowKey: "redqw21",
+      workflowKey: "redcraft-qw21t",
+      workflowVersion: 3,
     });
   });
 
   it("does not let a materialized operator route pin production to an older profile", async () => {
-    const workflows = await Promise.all(["redqw21", "qwen-image-edit-img2img"].map(workflow));
+    const workflows = await Promise.all(["redcraft-qw21t", "qwen-image-edit-img2img"].map(workflow));
     catalog.generationWorkflowDescriptor.mockImplementation(async (key: string) =>
       workflows.find((candidate) => candidate.workflowKey === key) ?? null,
     );
@@ -82,7 +83,7 @@ describe("operational Character generation route", () => {
           generationProfileKey: "character-image-single-identity-redcraft",
           generationProfileVersion: 1,
           workflowKey: "qwen-image-edit-img2img",
-          workflowVersion: 5,
+          workflowVersion: 6,
           style: "realistic",
           matrixKey: "operator-single-image-v1",
           sampleCount: 0,
@@ -98,7 +99,7 @@ describe("operational Character generation route", () => {
       generationModelProfile: {
         findMany: vi.fn(async () => [
           imageProfile("character-image-single-identity-redcraft", "qwen-image-edit-img2img", 1.3),
-          imageProfile("profile_image_default_v1", "redqw21", 1),
+          imageProfile("profile_image_default_v1", "redcraft-qw21t", 1),
         ]),
         // The old route is still fully valid: its profile stays active so
         // Releases pinned to it keep serving.

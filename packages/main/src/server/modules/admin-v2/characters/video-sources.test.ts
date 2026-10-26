@@ -27,6 +27,12 @@ describe("Character video library upload form", () => {
     });
   });
 
+  it("classifies an invalid multipart purpose as a client error", async () => {
+    const file = new File([new Uint8Array(1_024)], "portrait.mp4", { type: "video/mp4" });
+    await expect(parseCharacterVideoSourceForm(uploadRequest(file, "invalid-purpose")))
+      .rejects.toMatchObject({ status: 400, code: "bad_request" });
+  });
+
   it("rejects non-video files", async () => {
     const file = new File([new Uint8Array(1_024)], "portrait.png", {
       type: "image/png",

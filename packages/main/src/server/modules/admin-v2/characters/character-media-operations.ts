@@ -339,7 +339,7 @@ export async function loadCharacterMediaOperationsProjection(
       recoverability: recovery,
       studioHref: characterWorkspaceTabLink(characterId, tab),
       operationsHref: ["failed", "blocked"].includes(job.status)
-        ? `/admin/ops/jobs?view=dead-letter&search=${encodeURIComponent(job.id)}`
+        ? `/admin/ops/jobs?view=dead-letter&deadSearch=${encodeURIComponent(job.id)}`
         : `/admin/ops/jobs?job=${encodeURIComponent(job.id)}`,
     };
   };

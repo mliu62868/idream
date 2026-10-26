@@ -1,4 +1,3 @@
-import { globalAdminSearchResponseSchema } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
 import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
@@ -50,7 +49,7 @@ export async function globalAdminSearch(request: Request) {
     incidents.map((row) => ({ kind: "incident", id: row.id, title: row.suspectedCause ?? row.signature, subtitle: row.signature, href: `/admin/ops/incidents/${encodeURIComponent(row.id)}`, status: row.status, updatedAt: row.updatedAt.toISOString() })),
     jobs.map((row) => ({ kind: "generation_job", id: row.id, title: `${row.mode} generation`, subtitle: `${row.userId} · ${row.errorCode ?? row.profileId ?? "no error"}`, href: `/admin/ops/jobs?job=${encodeURIComponent(row.id)}`, status: row.status, updatedAt: row.updatedAt.toISOString() })),
   ], query.limit);
-  return ok(globalAdminSearchResponseSchema.parse({ items, query: query.q, asOf: new Date().toISOString() }), { headers: { "Cache-Control": "no-store" } });
+  return ok({ items, query: query.q, asOf: new Date().toISOString() }, { headers: { "Cache-Control": "no-store" } });
 }
 
 // SPEC: 每类先各取最新的一条，再一轮一轮补齐到 limit；最终仍按新鲜度展示。

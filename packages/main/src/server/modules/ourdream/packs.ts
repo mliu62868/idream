@@ -15,7 +15,7 @@ import { providers } from "@/server/providers";
 import { lockCharacterMediaAssetAuthorities } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { canonicalJsonHash, requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
-import { actorWithPermission, jsonBody as adminJsonBody } from "@/server/modules/admin-v2/shared/authority";
+import { actorWithPermission, jsonBody as adminJsonBody, type AdminV2RequestBody } from "@/server/modules/admin-v2/shared/authority";
 import { activeCustomerUserWhere } from "./public-content-audience";
 import { packCanOffer, packInclude, packItemContentUrl, packPublicCreator, packSnapshotSchema, packSourceUsable, type PackRow, type PackSnapshot } from "./pack-authority";
 
@@ -78,8 +78,7 @@ export async function packDetail(pack: PackRow, viewerId?: string, selectedRelea
   };
 }
 
-function cursor(request: Request, scope: string) {
-  const value = new URL(request.url).searchParams.get("cursor");
+function cursor(value: string | null | undefined, scope: string) {
   if (!value) return null;
   try {
     const parsed = cursorSchema.parse(JSON.parse(Buffer.from(value, "base64url").toString("utf8")));
@@ -88,15 +87,16 @@ function cursor(request: Request, scope: string) {
   } catch { throw Errors.badRequest("Pack cursor belongs to another list. Reload the list."); }
 }
 
-async function listPacks(request: Request, viewerId?: string, admin = false) {
+async function listPacks(request: Request, viewerId?: string, adminQuery?: AdminV2RequestBody<"adminPackQuerySchema">) {
+  const admin = adminQuery !== undefined;
   const query = new URL(request.url).searchParams;
-  const mode = z.enum(["public", "mine", "claimed"]).parse(query.get("scope") ?? "public");
+  const mode = admin ? "public" : z.enum(["public", "mine", "claimed"]).parse(query.get("scope") ?? "public");
   if (mode !== "public" && !viewerId) throw Errors.unauthorized();
-  const creatorId = query.get("creatorId") || null;
-  const status = admin && query.has("status") ? packStatusSchema.parse(query.get("status")) : null;
+  const creatorId = admin ? null : query.get("creatorId") || null;
+  const status = adminQuery?.status ?? null;
   const scope = canonicalJsonHash({ mode, viewerId: mode !== "public" ? viewerId : null, creatorId, status, admin });
-  const after = cursor(request, scope);
-  const limit = z.coerce.number().int().min(1).max(24).parse(query.get("limit") ?? "12");
+  const after = cursor(adminQuery ? adminQuery.cursor : query.get("cursor"), scope);
+  const limit = adminQuery ? adminQuery.limit : z.coerce.number().int().min(1).max(24).parse(query.get("limit") ?? "12");
   if (mode === "claimed") {
     const rows = await prisma.packGrant.findMany({ where: { userId: viewerId!, ...(after ? { OR: [{ createdAt: { lt: new Date(after.at) } }, { createdAt: new Date(after.at), id: { lt: after.id } }] } : {}) },
       include: { release: { include: { pack: { include: packInclude } } } }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: limit + 1 });
@@ -267,7 +267,7 @@ async function packContent(request: Request, packId: string, releaseId: string, 
 
 async function sources(request: Request, viewerId: string) {
   const scope = canonicalJsonHash({ sources: viewerId });
-  const after = cursor(request, scope);
+  const after = cursor(new URL(request.url).searchParams.get("cursor"), scope);
   const rows = await prisma.mediaAsset.findMany({ where: { ownerId: viewerId, deletedAt: null, ...(after ? { OR: [{ createdAt: { lt: new Date(after.at) } }, { createdAt: new Date(after.at), id: { lt: after.id } }] } : {}) }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 41 });
   const selected = rows.slice(0, 40), last = selected.at(-1);
   return ok({ items: selected.filter(asset => packSourceUsable(asset, viewerId)).map(asset => ({ id: asset.id, type: asset.type, url: `/api/v1/media/${encodeURIComponent(asset.id)}/content` })), nextCursor: rows.length > 40 && last ? Buffer.from(JSON.stringify({ scope, id: last.id, at: last.createdAt.toISOString() })).toString("base64url") : null }, { headers: noStore });
@@ -312,7 +312,9 @@ export async function dispatchPacks(request: Request, segments: string[]): Promi
   throw Errors.notFound();
 }
 
-export function listAdminPacks(request: Request) { return listPacks(request, undefined, true); }
+export function listAdminPacks(request: Request, query: AdminV2RequestBody<"adminPackQuerySchema">) {
+  return listPacks(request, undefined, query);
+}
 
 export async function getAdminPack(request: Request, id: string) {
   await actorWithPermission(request, "content.asset.read");

@@ -31,7 +31,8 @@ export function decodeAdminListCursor(value: string, scope: string, queryIdentit
 }
 
 export function parseIsoCursorKey(value: unknown, scope: string) {
-  const date = new Date(z.string().min(1).parse(value));
+  if (typeof value !== "string" || !value) throw Errors.badRequest(`${scope} cursor timestamp is invalid`);
+  const date = new Date(value);
   if (Number.isNaN(date.getTime())) throw Errors.badRequest(`${scope} cursor timestamp is invalid`);
   return date;
 }

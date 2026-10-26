@@ -28,7 +28,7 @@ import {
   ASSET_PURPOSES,
   ASSET_STATUSES,
   ASSET_UPLOAD_PURPOSES,
-  AssetBulkArchiveError,
+  assetArchiveBlocker,
   assetAuthorityDependencyView,
   assetsListPath,
   bulkArchiveAssets,
@@ -36,7 +36,7 @@ import {
   preflightArchiveAssets,
   uploadPlatformAsset,
   type AssetAuthorityDependency,
-  type AssetBulkArchiveErrorDetails,
+  type AssetArchiveBlocker,
   type ContentAsset,
 } from "./assets-api";
 import { MediaAssetAuthorityNotice } from "./MediaAssetAuthority";
@@ -68,9 +68,9 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
   const [previousCanReview, setPreviousCanReview] = useState(canReview);
   const [preflightBusy, setPreflightBusy] = useState(false);
   const [preflightBlockers, setPreflightBlockers] = useState<AssetDependencyFinding[]>([]);
-  const [preflightError, setPreflightError] = useState<string | null>(null);
+  const [preflightError, setPreflightError] = useState<{ cause: unknown; blocker: AssetArchiveBlocker | null } | null>(null);
   const [pendingArchiveIds, setPendingArchiveIds] = useState<string[] | null>(null);
-  const [serverConflict, setServerConflict] = useState<AssetBulkArchiveErrorDetails | null>(null);
+  const [serverConflict, setServerConflict] = useState<AssetArchiveBlocker | null>(null);
   const [bulkStatus, setBulkStatus] = useState<string | null>(null);
   const [uploadPurpose, setUploadPurpose] = useState<(typeof ASSET_UPLOAD_PURPOSES)[number]>("campaign");
   const [uploadBusy, setUploadBusy] = useState(false);
@@ -213,7 +213,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
     setServerConflict(null);
     setBulkStatus(null);
     try {
-      const result = await preflightArchiveAssets(ids, t("Request failed"));
+      const result = await preflightArchiveAssets(ids);
       if (!request.isCurrent()) return;
       const blockers = result.blockers.flatMap((blocker) =>
         blocker.dependencies.map((dependency) => ({
@@ -228,26 +228,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
       }
     } catch (loadError) {
       if (!request.isCurrent()) return;
-      if (loadError instanceof AssetBulkArchiveError) {
-        const affectedAssetIds = [
-          ...(loadError.details.assetId ? [loadError.details.assetId] : []),
-          ...loadError.details.missingAssetIds,
-        ];
-        setPreflightError(
-          affectedAssetIds.length > 0
-            ? t("Dependency preflight failed for asset(s) {ids}: {message}", {
-                ids: affectedAssetIds.join(", "),
-                message: loadError.message,
-              })
-            : loadError.message,
-        );
-        return;
-      }
-      setPreflightError(
-        loadError instanceof Error
-          ? loadError.message
-          : t("Could not check selected asset dependencies."),
-      );
+      setPreflightError({ cause: loadError, blocker: assetArchiveBlocker(loadError) });
     } finally {
       if (request.isCurrent()) setPreflightBusy(false);
     }
@@ -304,8 +285,9 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
     // belongs to the submitted set and must not replace the current workspace.
     const isCurrent = () => reviewPermission.current && archiveIntent.current === assetIds;
     if (!isCurrent()) return;
+    setServerConflict(null);
     try {
-      const result = await bulkArchiveAssets({ assetIds, reason, fallbackMessage: t("Request failed") });
+      const result = await bulkArchiveAssets({ assetIds, reason });
       if (!isCurrent()) return;
       setSelectedIds(new Set());
       setPreflightBlockers([]);
@@ -317,9 +299,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
       );
       await reload(cursor, page);
     } catch (submitError) {
-      if (isCurrent() && submitError instanceof AssetBulkArchiveError) {
-        setServerConflict(submitError.details);
-      }
+      if (isCurrent()) setServerConflict(assetArchiveBlocker(submitError));
       throw submitError;
     }
   }, [cursor, page, reload, t]);
@@ -494,12 +474,15 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
         </div>
       ) : null}
       {preflightError ? (
-        <p
-          className="mb-4 rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
-          role="alert"
-        >
-          {preflightError}
-        </p>
+        <div className="mb-4 space-y-2">
+          <AuthorityRequestError
+            cause={preflightError.cause}
+            message={requestErrorMessage(preflightError.cause, t)}
+            onRetry={() => void preflightSelectedAssets()}
+            requestKind="read"
+          />
+          {preflightError.blocker ? <ServerConflictSummary details={preflightError.blocker} /> : null}
+        </div>
       ) : null}
       {preflightBlockers.length > 0 ? (
         <div
@@ -618,7 +601,7 @@ function BulkArchiveConfirmDialog({
   onSubmit,
 }: {
   assetIds: readonly string[];
-  conflict: AssetBulkArchiveErrorDetails | null;
+  conflict: AssetArchiveBlocker | null;
   onClose: () => void;
   onSubmit: (reason: string) => Promise<void>;
 }) {
@@ -699,8 +682,15 @@ function AssetDependencyList({ findings }: { findings: AssetDependencyFinding[] 
   );
 }
 
-function ServerConflictSummary({ details }: { details: AssetBulkArchiveErrorDetails }) {
+function ServerConflictSummary({ details }: { details: AssetArchiveBlocker }) {
   const { t } = useAdminI18n();
+  if (details.kind === "missing") {
+    return (
+      <p className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">
+        {t("Missing selected assets: {ids}", { ids: details.missingAssetIds.join(", ") })}
+      </p>
+    );
+  }
   const findings = details.dependencies.map((dependency) => ({
     assetId: details.assetId,
     dependency,
@@ -713,13 +703,6 @@ function ServerConflictSummary({ details }: { details: AssetBulkArchiveErrorDeta
       <p className="font-semibold">
         {t("Archive blocked by a newer authority dependency. No selected asset was changed.")}
       </p>
-      {details.missingAssetIds.length > 0 ? (
-        <p className="mt-2 break-all text-xs">
-          {t("Missing selected assets: {ids}", {
-            ids: details.missingAssetIds.join(", "),
-          })}
-        </p>
-      ) : null}
       {findings.length > 0 ? <AssetDependencyList findings={findings} /> : null}
       {findings.length === 0 && details.repairPath ? (
         <Link className="mt-2 inline-block font-semibold underline" href={details.repairPath}>

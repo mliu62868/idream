@@ -11,6 +11,7 @@ import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/share
 import {
   actorWithPermission,
   jsonBody,
+  parseRequestInput,
   queryParams,
   type AdminActor,
 } from "@/server/modules/admin-v2/shared/authority";
@@ -148,9 +149,9 @@ export async function listSupportRequests(request: Request) {
     : null;
   let [scanPriority, scanAt, scanTicketId] = cursorKeys
     ? [
-        z.number().int().parse(cursorKeys[0]),
-        new Date(z.string().parse(cursorKeys[1])),
-        z.string().min(1).parse(cursorKeys[2]),
+        parseRequestInput(z.number().int(), cursorKeys[0]),
+        new Date(parseRequestInput(z.string(), cursorKeys[1])),
+        parseRequestInput(z.string().min(1), cursorKeys[2]),
       ]
     : [null, null, null];
   if (scanAt && Number.isNaN(scanAt.getTime())) {

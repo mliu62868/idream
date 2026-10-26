@@ -2276,6 +2276,112 @@ describe("Character Asset Studio bootstrap route projection", () => {
     expect(container.textContent).toContain(pinnedRunId);
   });
 
+  it.each([false, true])("restores the frozen Hero form in another instance and refreshes the original instance after its late failure (readback fails: %s)", async (readbackFails) => {
+    const readyData = withCharacterWorkspaceDetail(data, {
+      journey: journeyFor(["character_cover"]),
+      project: { draftImageAssetId: "portrait-asset", draftAssetPack: { character_cover: "portrait-asset" } },
+      visual: {
+        activeIdentity: { id: "shared-identity", version: 1, immutableHash: "identity-hash" },
+        identityCalibration: { blocker: null, profiles: [{
+          profileKey: "profile-reference-v1", profileVersion: 1, label: "Identity route",
+          modelId: "qwen-image-edit", workflowKey: "qwen-image-edit-img2img", workflowVersion: 1,
+          orientation: "4:5", allowedOrientations: ["4:5", "16:9"], modes: ["image_to_image"], recommended: true,
+        }] },
+        activeReferenceSet: {
+          id: "shared-references",
+          references: [{ mediaAssetId: "portrait-asset", role: "primary_face", available: true, url: "/portrait.png", thumbnailUrl: null, qualityScore: null, identityScore: null }],
+        },
+        routeQualifications: [routeQualification()],
+        identityBootstrap: { allowed: false, state: "blocked_existing_authority" },
+        readiness: { ready: true, blockers: [] },
+      },
+    });
+    const brief = "Full-body portrait alone in a quiet museum, soft skylight and marble walls.";
+    const negativePrompt = "No apartment, no extra people, no text";
+    const running = {
+      id: "shared-hero-run", purpose: "character_hero", lifecycleState: "active",
+      target: { type: "character", id: data.character.id }, version: 1,
+      executionOutcome: "running", reviewState: "not_ready",
+      counts: { total: 1, generated: 0, reviewed: 0, approved: 0, placed: 0, failed: 0 },
+      updatedAt: "2026-10-25T14:05:24.370Z",
+      items: [{ id: "shared-hero-item", ordinal: 0, version: 1, status: "running", executionState: "generating", asset: null, review: null, lineage: { requestId: "shared-hero-job" } }],
+    };
+    const historical = { ...running, id: "old-hero-run", executionOutcome: "failed", items: [] };
+    const creates: Array<{ key: string | undefined; body: unknown }> = [];
+    let failFirst!: () => void;
+    let failReadback = false;
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+        creates.push({ key: options.idempotencyKey, body: options.body });
+        if (creates.length === 1) return new Promise((_resolve, reject) => {
+          failFirst = () => reject(new TypeError("First response lost after the other instance verified its Run"));
+        });
+        return { batch: { id: running.id }, replayed: true };
+      }
+      if (path.includes("/api/v2/admin/creative/runs?")) {
+        if (failReadback) throw new Error("Current image list unavailable");
+        const outcome = new URL(path, "https://admin.test").searchParams.get("executionOutcome");
+        return {
+          items: outcome ? outcome === "running" && creates.length ? [running] : [] : creates.length ? [running, historical] : [historical],
+          pageInfo: { endCursor: null, hasNextPage: false },
+        };
+      }
+      if (path.endsWith(`/${running.id}`)) return running;
+      if (path.endsWith(`/${historical.id}`)) return historical;
+      throw new Error(`Unexpected Admin request: ${path}`);
+    });
+    const otherContainer = document.createElement("div");
+    document.body.append(otherContainer);
+    const otherRoot = createRoot(otherContainer);
+    const button = (host: HTMLElement, label: string) => [...host.querySelectorAll("button")].find((candidate) => candidate.textContent?.trim() === label);
+    const render = (target: Root) => target.render(<CharacterAssetStudio
+      actorId="operator-shared-hero" data={readyData}
+      permissions={{ read: true, create: true, review: false, selectDraft: true }}
+      onContinue={() => undefined} onProjectReload={async () => undefined}
+      commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
+    />);
+    try {
+      await act(async () => render(root));
+      await waitUntil(() => button(container, "Generate 1 hero image")?.disabled === false);
+      await act(async () => {
+        setTextAreaValue(container.querySelector<HTMLTextAreaElement>('textarea[aria-label*="creative brief"]')!, brief);
+        setTextAreaValue(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Negative prompt"]')!, negativePrompt);
+      });
+      await act(async () => button(container, "Generate 1 hero image")!.click());
+      await waitUntil(() => creates.length === 1);
+      await act(async () => render(otherRoot));
+      await waitUntil(() => button(otherContainer, "Resume generation")?.disabled === false);
+      const restoredBrief = otherContainer.querySelector<HTMLTextAreaElement>('textarea[aria-label*="creative brief"]')!;
+      expect.soft(restoredBrief.value).toBe(brief);
+      expect.soft(restoredBrief.disabled).toBe(true);
+      expect.soft(otherContainer.querySelector<HTMLTextAreaElement>('textarea[aria-label="Negative prompt"]')?.value).toBe(negativePrompt);
+      await act(async () => button(otherContainer, "Resume generation")!.click());
+      const scope = `character-asset:create:operator-shared-hero:${data.character.id}`;
+      await waitUntil(() => readActiveDurableMutationIntent({ scope }) === null);
+      expect(creates).toHaveLength(2);
+      expect(creates[1]).toEqual(creates[0]);
+      expect(button(otherContainer, "Image request in progress")?.disabled).toBe(true);
+      failReadback = readbackFails;
+      await act(async () => failFirst());
+      if (readbackFails) {
+        await waitUntil(() => button(container, "Refresh")?.disabled === false);
+        expect.soft(button(container, "Generate 1 hero image")?.disabled).toBe(true);
+        expect.soft(container.textContent).toContain("Current image list unavailable");
+        failReadback = false;
+        await act(async () => button(container, "Refresh")!.click());
+      }
+      await waitUntil(() => button(container, "Image request in progress") !== undefined);
+      expect.soft(button(container, "Image request in progress")?.disabled).toBe(true);
+      expect.soft(button(container, "Generate 1 hero image")).toBeUndefined();
+      expect.soft(container.textContent).toContain(running.id);
+      expect(readActiveDurableMutationIntent({ scope })).toBeNull();
+      expect(creates).toHaveLength(2);
+    } finally {
+      await act(async () => otherRoot.unmount());
+      otherContainer.remove();
+    }
+  });
+
   it("recovers lost first-portrait creation with the exact actor-scoped request and verifies by GET only", async () => {
     const bootstrapData = withCharacterWorkspaceDetail(data, {
       character: {
@@ -2391,6 +2497,8 @@ describe("Character Asset Studio bootstrap route projection", () => {
     expect(createPosts).toBe(2);
     expect(createKeys[1]).toBe(createKeys[0]);
     expect(createBodies[1]).toEqual(createBodies[0]);
+    // The durable receipt may render before the effect starts its exact Run read.
+    await waitUntil(() => projectionReads === 1);
     expect(projectionReads).toBe(1);
     expect(findButton("Verify created Run")).toBeDefined();
 
@@ -2411,6 +2519,85 @@ describe("Character Asset Studio bootstrap route projection", () => {
     expect(findButton("Verify created Run")).toBeUndefined();
     expect(findButton("Generate 1 portrait")).toBeDefined();
     expect(createPosts).toBe(2);
+  });
+
+  it("keeps an unknown first-portrait intent after a forbidden replay and recovers the original request", async () => {
+    const bootstrapData = withCharacterWorkspaceDetail(data, {
+      visual: {
+        identityBootstrap: {
+          ...data.visual.identityBootstrap,
+          profile: {
+            profileKey: "bootstrap-profile-v1",
+            profileVersion: 1,
+            label: "First portrait profile",
+            workflowKey: "bootstrap-workflow",
+            workflowVersion: 1,
+            orientation: "4:5",
+          },
+        },
+      },
+    });
+    const scope = `character-asset:create:operator-replay:${bootstrapData.character.id}`;
+    const creates: Array<{ key: string; body: unknown }> = [];
+    let detailReads = 0;
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path.includes("/api/v2/admin/creative/runs?")) {
+        return { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
+      }
+      if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+        creates.push({ key: options.idempotencyKey ?? "", body: options.body });
+        if (creates.length === 1) throw new TypeError("Response ended after server commit");
+        if (creates.length === 2) throw new AdminV2RequestError("Permission expired before replay", 403, "forbidden");
+        return { batch: { id: "replayed-portrait-run" }, replayed: true };
+      }
+      if (path === "/api/v2/admin/creative/runs/replayed-portrait-run") {
+        detailReads += 1;
+        return {
+          id: "replayed-portrait-run", purpose: "character_cover", lifecycleState: "active",
+          target: { type: "character", id: bootstrapData.character.id }, version: 1,
+          executionOutcome: "running", reviewState: "not_ready",
+          counts: { total: 1, generated: 0, reviewed: 0, approved: 0, placed: 0, failed: 0 },
+          updatedAt: "2026-10-25T12:00:00.000Z",
+          items: [{ id: "replayed-portrait-item", ordinal: 0, version: 1,
+            status: "running", executionState: "generating", asset: null, review: null,
+            lineage: { requestId: "replayed-portrait-job" },
+          }],
+        };
+      }
+      throw new Error(`Unexpected Admin request: ${path}`);
+    });
+    const render = async () => {
+      await act(async () => root.render(
+        <CharacterAssetStudio actorId="operator-replay" data={bootstrapData}
+          commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
+          onContinue={() => undefined} onProjectReload={async () => undefined}
+          permissions={{ read: true, create: true, review: true, selectDraft: true }} />,
+      ));
+      await waitUntil(() => container.textContent?.includes("Loading character assets") === false);
+    };
+    const button = (label: string) => [...container.querySelectorAll("button")]
+      .find((candidate) => candidate.textContent?.includes(label));
+    await render();
+    await act(async () => button("Generate 1 portrait")!.click());
+    expect(readActiveDurableMutationIntent({ scope })).toMatchObject({ status: "outcome_unknown", idempotencyKey: creates[0].key });
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render();
+    await act(async () => button("Resume generation")!.click());
+    // A refusal of this replay cannot prove that the earlier request did not commit.
+    expect(creates).toHaveLength(2);
+    expect(creates[1]).toEqual(creates[0]);
+    expect(readActiveDurableMutationIntent({ scope })?.idempotencyKey).toBe(creates[0].key);
+    expect(button("Resume generation")).toBeDefined();
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label*="creative brief"]')?.disabled).toBe(true);
+
+    await act(async () => button("Resume generation")!.click());
+    await waitUntil(() => readActiveDurableMutationIntent({ scope }) === null);
+    expect(creates).toHaveLength(3);
+    expect(creates[2]).toEqual(creates[0]);
+    expect(detailReads).toBeGreaterThan(0);
+    expect(container.textContent).toContain("The image request is in progress.");
   });
 
   it("keeps a recovered selection locked until the exact Character projection arrives", async () => {

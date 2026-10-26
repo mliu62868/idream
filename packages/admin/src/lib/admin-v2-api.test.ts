@@ -17,6 +17,53 @@ describe("admin v2 client", () => {
     );
   });
 
+  it.each([
+    ["empty object", {}],
+    ["array", []],
+    ["numeric fields", { code: 123, message: 456 }],
+    ["missing code", { message: "Rejected" }],
+    ["missing message", { code: "bad_request" }],
+    ["blank code", { code: " ", message: "Rejected" }],
+    ["blank message", { code: "bad_request", message: " " }],
+    ["numeric request ID", { code: "bad_request", message: "Rejected", requestId: 123 }],
+    ["object request ID", { code: "bad_request", message: "Rejected", requestId: {} }],
+    ["null request ID", { code: "bad_request", message: "Rejected", requestId: null }],
+    ["blank request ID", { code: "bad_request", message: "Rejected", requestId: " " }],
+  ])("treats a malformed error with %s as an unverified response", async (_, error) => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: false, error }, { status: 400 })));
+
+    await expect(adminV2Request("/api/v2/admin/cases/case-1", {
+      headers: { "x-request-id": "unverified-error-request" },
+    })).rejects.toMatchObject({
+      status: 400,
+      code: "admin_v2_response_contract_violation",
+      outcome: "unknown",
+      requestId: "unverified-error-request",
+    });
+  });
+
+  it("preserves extended authority facts from a valid error", async () => {
+    const error = {
+      code: "conflict",
+      message: "Entity version changed",
+      requestId: "authority-request",
+      details: { blocker: "version_mismatch", expectedVersion: 2 },
+      currentSnapshot: { id: "case-1", version: 3 },
+      differences: ["Expected version 2"],
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: false, error }, { status: 409 })));
+
+    await expect(adminV2Request("/api/v2/admin/cases/case-1")).rejects.toMatchObject({
+      code: "conflict",
+      requestId: "authority-request",
+      details: {
+        ...error.details,
+        currentSnapshot: error.currentSnapshot,
+        differences: error.differences,
+      },
+    });
+  });
+
   // SPEC: 非 JSON 响应也必须是 AdminV2RequestError，且带住状态码。
   // INTENT: 以前抛裸 Error，状态码只存在于那句英文里，运营首屏就只剩 "…failed (500)"；
   //         成了 AdminV2RequestError，状态码才能被 ui/request-error-copy 接住翻成人话。
@@ -42,6 +89,29 @@ describe("admin v2 client", () => {
       parsed: true,
     });
     expect(schema.parse).toHaveBeenCalledWith({ id: "case-1" });
+  });
+
+  it.each(["truncated JSON", "interrupted rejection", "invalid contract"])("retains request identity and an unknown outcome for %s", async (failure) => {
+    const status = failure === "interrupted rejection" ? 400 : 200;
+    const response = failure === "interrupted rejection"
+      ? new Response(new ReadableStream({ start(controller) { controller.error(new Error("Receipt body lost")); } }), { status })
+      : failure === "truncated JSON"
+        ? new Response('{"ok":true,"data":', { status })
+        : Response.json({ ok: true, data: { id: null } });
+    vi.stubGlobal("fetch", vi.fn(async () => response));
+    const schema = { parse: () => { throw new Error("No Run was created; invalid case receipt"); } };
+
+    const error = await adminV2Request("/api/v2/admin/cases/case-1", {
+      headers: { "x-request-id": "unverified-receipt-request" },
+      schema,
+    }).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(AdminV2RequestError);
+    expect(error).toMatchObject({ status, outcome: "unknown", requestId: "unverified-receipt-request" });
+    expect((error as AdminV2RequestError).message).not.toContain("No Run was created");
+    if (failure === "invalid contract") {
+      expect((error as AdminV2RequestError).details).toEqual({ validationError: "No Run was created; invalid case receipt" });
+    }
   });
 
   it("forwards PUT watch mutations through the Admin HTTP BFF with idempotency", async () => {

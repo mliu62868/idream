@@ -181,7 +181,7 @@ describe("Character image Creative Run authority", () => {
   async function cleanupBatches(ids: readonly string[]) {
     const items = await prisma.contentProductionItem.findMany({
       where: { batchId: { in: [...ids] } },
-      select: { jobId: true },
+      select: { id: true, jobId: true },
     });
     const jobIds = items.flatMap((item) => item.jobId ? [item.jobId] : []);
     await purgeQueuedGenerationJobs(jobIds);
@@ -193,6 +193,9 @@ describe("Character image Creative Run authority", () => {
     });
     await prisma.generationAttempt.deleteMany({
       where: { requestId: { in: jobIds } },
+    });
+    await prisma.creativeReviewDecision.deleteMany({
+      where: { runItemId: { in: items.map((item) => item.id) } },
     });
     await prisma.contentProductionBatch.deleteMany({
       where: { id: { in: [...ids] } },
@@ -367,7 +370,7 @@ describe("Character image Creative Run authority", () => {
       },
     });
     await prisma.referenceSetRevision.deleteMany({
-      where: { id: { in: [referenceSetId, archiveRaceReferenceSetId] } },
+      where: { visualProfileId: { in: [visualProfileId, archiveRaceVisualProfileId] } },
     });
     await prisma.mediaAsset.deleteMany({
       where: { id: { in: [variationSourceAssetId, calibrationSourceAssetId] } },
@@ -1811,13 +1814,11 @@ describe("Character image Creative Run authority", () => {
       }),
     ]);
 
-    const canonicalReference =
-      await prisma.characterVisualReferenceSnapshot.findFirstOrThrow({
-        where: { referenceSetRevisionId: referenceSetId },
-      });
+    const overlapCapacityReferenceSetId = `character-image-create-capacity-reference-set-${suffix}`;
+    const overlapSourceReferenceSetId = `character-image-create-overlap-reference-set-${suffix}`;
     const overlapCapacityHash = referenceSetSnapshotHash({
       visualProfileId,
-      revision: 1,
+      revision: 2,
       selectorVersion: "character-image-create-v1",
       references: [{
         mediaAssetId: anchorAssetId,
@@ -1833,25 +1834,23 @@ describe("Character image Creative Run authority", () => {
     });
     await prisma.$transaction(async (tx) => {
       await lockCharacterGenerationAuthority(tx, characterId);
-      await tx.characterVisualReferenceSnapshot.create({
-        data: {
-          referenceSetRevisionId: referenceSetId,
-          mediaAssetId: variationSourceAssetId,
-          position: 1,
-          role: "identity_reference",
-          weight: 1,
-          selectorVersion: "character-image-create-v1",
-          selectionReason: "Canonical-overlap capacity regression",
-        },
-      });
       await tx.referenceSetRevision.update({
         where: { id: referenceSetId },
-        data: { snapshotHash: overlapCapacityHash },
+        data: { status: "superseded" },
       });
-      await tx.characterVisualProfile.update({
-        where: { id: visualProfileId },
+      await tx.referenceSetRevision.create({
         data: {
-          anchorAssetIds: [anchorAssetId],
+          id: overlapCapacityReferenceSetId,
+          visualProfileId,
+          revision: 2,
+          status: "active",
+          selectorVersion: "character-image-create-v1",
+          createdFrom: "character_image_create_capacity_test",
+          snapshotHash: overlapCapacityHash,
+          references: { create: [
+            { mediaAssetId: anchorAssetId, position: 0, role: "primary_face", weight: 1, selectorVersion: "character-image-create-v1", selectionReason: "Retained identity bootstrap anchor" },
+            { mediaAssetId: variationSourceAssetId, position: 1, role: "identity_reference", weight: 1, selectorVersion: "character-image-create-v1", selectionReason: "Canonical-overlap capacity regression" },
+          ] },
         },
       });
     });
@@ -1872,6 +1871,7 @@ describe("Character image Creative Run authority", () => {
     expect(overlapCapacityBlocked.status).toBe(409);
     await expect(overlapCapacityBlocked.json()).resolves.toMatchObject({
       error: {
+        message: "The selected profile is not the current qualified Character identity route",
         details: {
           profileKey: multiReferenceProfileKey,
           workflowKey: multiReferenceWorkflowKey,
@@ -1883,16 +1883,9 @@ describe("Character image Creative Run authority", () => {
       where: { title: "Mara canonical-overlap route blocked" },
     })).resolves.toBe(0);
 
-    const sourceCanonicalReference =
-      await prisma.characterVisualReferenceSnapshot.findFirstOrThrow({
-        where: {
-          referenceSetRevisionId: referenceSetId,
-          mediaAssetId: variationSourceAssetId,
-        },
-      });
     const overlapReferenceHash = referenceSetSnapshotHash({
       visualProfileId,
-      revision: 1,
+      revision: 3,
       selectorVersion: "character-image-create-v1",
       references: [{
         mediaAssetId: variationSourceAssetId,
@@ -1903,21 +1896,28 @@ describe("Character image Creative Run authority", () => {
     });
     await prisma.$transaction(async (tx) => {
       await lockCharacterGenerationAuthority(tx, characterId);
-      await tx.characterVisualReferenceSnapshot.delete({
-        where: { id: canonicalReference.id },
-      });
-      await tx.characterVisualReferenceSnapshot.update({
-        where: { id: sourceCanonicalReference.id },
-        data: {
-          position: 0,
-          role: "primary_face",
-          weight: 1,
-          selectionReason: "Canonical-overlap positive regression",
-        },
-      });
       await tx.referenceSetRevision.update({
-        where: { id: referenceSetId },
-        data: { snapshotHash: overlapReferenceHash },
+        where: { id: overlapCapacityReferenceSetId },
+        data: { status: "superseded" },
+      });
+      await tx.referenceSetRevision.create({
+        data: {
+          id: overlapSourceReferenceSetId,
+          visualProfileId,
+          revision: 3,
+          status: "active",
+          selectorVersion: "character-image-create-v1",
+          createdFrom: "character_image_create_overlap_test",
+          snapshotHash: overlapReferenceHash,
+          references: { create: {
+            mediaAssetId: variationSourceAssetId,
+            position: 0,
+            role: "primary_face",
+            weight: 1,
+            selectorVersion: "character-image-create-v1",
+            selectionReason: "Promoted source becomes the next canonical anchor",
+          } },
+        },
       });
       await tx.characterVisualProfile.update({
         where: { id: visualProfileId },
@@ -1926,8 +1926,8 @@ describe("Character image Creative Run authority", () => {
         },
       });
     });
-    const overlapVariation = await createCreativeRun(request({
-      title: "Mara canonical-overlap source variation",
+    const staleSourceVariation = await createCreativeRun(request({
+      title: "Mara stale-source variation",
       purpose: "character_hero",
       targetType: "character",
       targetId: characterId,
@@ -1935,54 +1935,143 @@ describe("Character image Creative Run authority", () => {
       referenceAssetIds: [variationSourceAssetId],
       orientation: "4:5",
       count: 1,
-      brief: "The canonical anchor is also the explicitly selected More-like source.",
+      brief: "Promoting a candidate to canonical anchor does not rewrite its original generation authority.",
       consistencyMode: "strict",
       priority: "normal",
-      reason: "Prove equal asset identity never erases distinct source intent",
-    }, `character-image-overlap-variation-${suffix}`));
-    expect(overlapVariation.status).toBe(202);
-    const overlapVariationPayload = await overlapVariation.json();
-    const overlapVariationBatchId =
-      overlapVariationPayload.data.batch.id as string;
-    batchIds.push(overlapVariationBatchId);
-    const overlapVariationJob =
-      await prisma.generationJob.findFirstOrThrow({
-        where: {
-          sourceMeta: {
-            path: ["batchId"],
-            equals: overlapVariationBatchId,
-          },
-        },
-      });
-    expect(overlapVariationJob.referenceAssetIds).toEqual([
+      reason: "Prove a source pinned to the previous reference revision remains stale",
+    }, `character-image-stale-source-variation-${suffix}`));
+    expect(staleSourceVariation.status).toBe(409);
+    await expect(staleSourceVariation.json()).resolves.toMatchObject({
+      error: { message: "A variation source must be derived from the active Character identity authority" },
+    });
+    await expect(prisma.contentProductionBatch.count({
+      where: { title: "Mara stale-source variation" },
+    })).resolves.toBe(0);
+
+    // A source for R3 must be generated after R3 exists; the promoted R1 asset
+    // cannot simultaneously claim to have been generated from its own new seal.
+    const currentSource = await createCreativeRun(request({
+      title: "Mara current-authority source candidate",
+      purpose: "character_hero",
+      targetType: "character",
+      targetId: characterId,
+      profileId: profileKey,
+      orientation: "4:5",
+      count: 1,
+      brief: "A fresh candidate generated from the current canonical anchor.",
+      consistencyMode: "strict",
+      priority: "normal",
+      reason: "Establish a causally valid source under the new reference revision",
+    }, `character-image-current-source-${suffix}`));
+    const currentSourcePayload = await currentSource.json();
+    expect(currentSource.status, JSON.stringify(currentSourcePayload)).toBe(202);
+    const currentSourceBatchId = currentSourcePayload.data.batch.id as string;
+    batchIds.push(currentSourceBatchId);
+    const currentSourceItem = await prisma.contentProductionItem.findFirstOrThrow({
+      where: { batchId: currentSourceBatchId },
+    });
+    const currentSourceJob = await prisma.generationJob.findFirstOrThrow({
+      where: { sourceType: "content_production_item", sourceId: currentSourceItem.id },
+    });
+    expect(currentSourceJob.referenceSetRevisionId).toBe(overlapSourceReferenceSetId);
+    const currentSourceAssetId = `character-image-create-current-source-asset-${suffix}`;
+    await prisma.mediaAsset.create({
+      data: {
+        id: currentSourceAssetId,
+        ownerId: actorId,
+        characterId,
+        sourceJobId: currentSourceJob.id,
+        type: "image",
+        url: `/assets/${currentSourceAssetId}.webp`,
+        storageKey: `test-fixtures/${currentSourceAssetId}.webp`,
+        safetyStatus: "passed",
+        metadata: { synthetic: false, provider: "comfyui" },
+      },
+    });
+    await prisma.generationJob.update({
+      where: { id: currentSourceJob.id },
+      data: { status: "completed", provider: "comfyui", deliveredOutputCount: 1 },
+    });
+    await prisma.generationAttempt.update({
+      where: { requestId_attemptNo: { requestId: currentSourceJob.id, attemptNo: 1 } },
+      data: { status: "succeeded", provider: "comfyui", finishedAt: new Date() },
+    });
+    await prisma.contentProductionItem.update({
+      where: { id: currentSourceItem.id },
+      data: { status: "approved", mediaAssetId: currentSourceAssetId },
+    });
+    await prisma.creativeReviewDecision.create({
+      data: {
+        runItemId: currentSourceItem.id,
+        artifactId: currentSourceAssetId,
+        decision: "approved",
+        identityConsistency: "passed",
+        score: 94,
+        reason: "The completed candidate preserves the current reference identity",
+        reviewerId: actorId,
+      },
+    });
+
+    const currentVariation = await createCreativeRun(request({
+      title: "Mara current-authority source variation",
+      purpose: "character_hero",
+      targetType: "character",
+      targetId: characterId,
+      profileId: multiReferenceProfileKey,
+      referenceAssetIds: [currentSourceAssetId],
+      orientation: "4:5",
+      count: 1,
+      brief: "The current canonical anchor and its new approved source retain separate roles.",
+      consistencyMode: "strict",
+      priority: "normal",
+      reason: "Prove a source generated under the active reference revision remains usable",
+    }, `character-image-current-variation-${suffix}`));
+    const currentVariationPayload = await currentVariation.json();
+    expect(currentVariation.status, JSON.stringify(currentVariationPayload)).toBe(202);
+    const currentVariationBatchId = currentVariationPayload.data.batch.id as string;
+    batchIds.push(currentVariationBatchId);
+    const currentVariationJob = await prisma.generationJob.findFirstOrThrow({
+      where: {
+        sourceMeta: { path: ["batchId"], equals: currentVariationBatchId },
+      },
+    });
+    expect(currentVariationJob.referenceSetRevisionId).toBe(overlapSourceReferenceSetId);
+    expect(currentVariationJob.referenceAssetIds).toEqual([
       variationSourceAssetId,
-      variationSourceAssetId,
+      currentSourceAssetId,
     ]);
-    expect(overlapVariationJob.referenceManifest).toEqual([
+    expect(currentVariationJob.referenceManifest).toEqual([
       expect.objectContaining({
         mediaAssetId: variationSourceAssetId,
         role: "primary_face",
       }),
       expect.objectContaining({
-        mediaAssetId: variationSourceAssetId,
+        mediaAssetId: currentSourceAssetId,
         role: "source_image",
       }),
     ]);
-    const overlapQueued = await jobQueue.getByDedupeKey(
+    const currentQueued = await jobQueue.getByDedupeKey(
       "ai.image.generate",
-      `generation:${overlapVariationJob.id}:attempt:1`,
+      `generation:${currentVariationJob.id}:attempt:1`,
     );
-    expect(overlapQueued?.payload).toMatchObject({
+    expect(currentQueued?.payload).toMatchObject({
       referenceImages: [
         expect.objectContaining({
           assetId: variationSourceAssetId,
           role: "identity_anchor",
         }),
         expect.objectContaining({
-          assetId: variationSourceAssetId,
+          assetId: currentSourceAssetId,
           role: "source_image",
         }),
       ],
+    });
+    await expect(prisma.generationJob.findUniqueOrThrow({
+      where: { id: variationSourceJobId },
+    })).resolves.toMatchObject({
+      visualProfileId,
+      visualProfileVersion: 1,
+      referenceSetRevisionId: referenceSetId,
     });
 
     await prisma.generationJob.create({

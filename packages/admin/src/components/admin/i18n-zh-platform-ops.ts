@@ -996,7 +996,7 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Safe to requeue": "可安全重新排队",
   "Customer generations go back to the previously active profile version from now on. This needs an earlier archived version of the same profile key — without one the authority refuses and nothing changes.": "从现在起，用户的生成会回到上一个曾经生效的配置版本。这需要同一 profileKey 下存在更早的已归档版本——没有的话权威会拒绝，什么都不会改。",
   "New requests stop using this profile, and this version can never be enabled again — the authority only accepts enabled:false here. Restoring service means publishing a replacement version or rolling back to an earlier one. Any published Character Release pinned to this version also goes stale at the next monitor pass, and a public Character serving it drops to unlisted — neither comes back on its own; each one needs a new Release.": "新请求不再使用这个配置，而且这个版本再也无法重新启用——权威在这里只接受 enabled:false。要恢复服务只能发布一个替代版本，或回滚到更早的版本。另外，任何绑定在这个版本上的已发布角色 Release 会在下一轮巡检里变成 stale，正在服务它的公开角色会被降为 unlisted——这两件事都不会自己恢复，每个角色都要重新发一个 Release。",
-  "Its pinned workflow version is no longer served — requeue would fail; discard refunds the customer": "它钉死的 workflow 版本已经没有 worker 在跑——重新入队必然失败；丢弃会给用户退款。",
+  "Its pinned workflow version is no longer served — requeue would fail; discard refunds any remaining charge": "它钉死的 workflow 版本已经没有 worker 在跑——重新入队必然失败；丢弃会退还尚未退回的实际扣费。",
   "Not reported": "权威未给出判定",
   "Reason not recognised": "未识别的理由",
   "Dismiss result": "关闭结果提示",
@@ -1004,12 +1004,12 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Discard {count} requests": "丢弃 {count} 条请求",
   "Requeue {id}": "重新排队 {id}",
   "Discard {id}": "丢弃 {id}",
-  "{count} requests re-enter the generation queue and are charged for a new attempt. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
-    "{count} 条请求将重新进入生成队列，并按新的一次尝试计费。在本对话框里重试复用同一个幂等键，不会重复执行。",
+  "{count} requests re-enter the generation queue without a new Dreamcoin charge. Existing charges remain unchanged. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "{count} 条请求将重新进入生成队列，不新增梦币扣费，已有扣费保持不变。在本对话框里重试复用同一个幂等键，不会重复执行。",
   "{count} selected requests the authority will not retry are excluded.":
     "已排除 {count} 条权威判定不可重试的选中请求。",
-  "Discard settles the customer: any charge that was never refunded is refunded now, and the request leaves the queue for good. {count} requests are affected. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
-    "丢弃会同时结清客户：尚未退款的扣费此刻退回，请求也永久离开队列。共影响 {count} 条请求。在本对话框里重试复用同一个幂等键，不会重复执行。",
+  "Discard refunds any remaining refundable Dreamcoin charge and permanently removes {count} requests from this queue. Uncharged or fully refunded requests receive no additional refund. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "丢弃会退还剩余可退的实际梦币扣费，并将 {count} 条请求永久移出本队列。未扣费或已全额退款的请求不会额外退款。在本对话框里重试复用同一个幂等键，不会重复执行。",
   "{count} selected requests the authority will not discard are excluded.":
     "已排除 {count} 条权威判定不可丢弃的选中请求。",
   "Requeued {id} as attempt {attemptNo}.": "已把 {id} 重新排队为第 {attemptNo} 次尝试。",
@@ -1024,6 +1024,9 @@ export const adminZhPlatformOps: Record<string, string> = {
   // Incidents：影响面、权威建议、冻结计划、拆分/合并确认
   "Provider spend": "供应商花费",
   "Started": "开始于",
+  "Not charged": "未扣费",
+  "Charged": "已扣费",
+  "Partially refunded": "部分退款",
   "Refunded": "已退款",
   "{count} DC": "{count} 币",
   "SLA due": "SLA 到期",

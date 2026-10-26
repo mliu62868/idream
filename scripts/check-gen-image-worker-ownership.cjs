@@ -1,6 +1,7 @@
 const { spawnSync } = require("node:child_process");
 const { readFileSync } = require("node:fs");
 const { createRequire } = require("node:module");
+const { homedir } = require("node:os");
 const path = require("node:path");
 const { createRuntimeTopology } = require("./runtime-topology.cjs");
 
@@ -224,9 +225,12 @@ function classifySingleOwnership(input, spec) {
     issues.push("pm2_duplicate_id");
   }
 
-  const daemonRows = input.psRows.filter((row) =>
-    /^PM2 v[^:]*: God Daemon \(/.test(row.command),
-  );
+  // A host may run isolated PM2 daemons. Only the complete home used by the
+  // collector's PM2 client can establish this worker's parent authority.
+  const daemonRows = input.psRows.filter((row) => {
+    const match = row.command.match(/^PM2 v[^:]*: God Daemon \((.+)\)$/);
+    return match !== null && path.resolve(repoRoot, match[1]) === input.pm2Home;
+  });
   const daemonPid = daemonRows.length === 1 ? daemonRows[0].pid : null;
   const registeredRoots = new Map(livePm2.map((row) => [row.pid, row]));
   const redis = input.redisWorkers.map((worker) => redisIdentity(worker, spec));
@@ -566,6 +570,33 @@ function loadGenEnvironment(baseEnv) {
   return mergeGenEnvironment(baseEnv, fileEnv);
 }
 
+function assertPm2SocketPaths(env, platform = process.platform) {
+  const pm2Home = path.resolve(
+    repoRoot,
+    env.PM2_HOME || path.join(env.HOME || homedir(), ".pm2"),
+  );
+  const maxBytes = platform === "darwin" ? 104 : platform === "linux" ? 107 : null;
+  if (maxBytes === null) return pm2Home;
+  // Some Node versions silently truncate an oversized Unix socket pathname;
+  // others reject it and PM2 then tries to spawn another daemon. Never let a
+  // collector or transition mistake this configuration error for absence.
+  for (const [key, filename] of [
+    ["PM2_DAEMON_RPC_PORT", "rpc.sock"],
+    ["PM2_DAEMON_PUB_PORT", "pub.sock"],
+    ["PM2_INTERACTOR_RPC_PORT", "interactor.sock"],
+  ]) {
+    const socketPath = path.resolve(repoRoot, env[key] || path.join(pm2Home, filename));
+    const bytes = Buffer.byteLength(socketPath);
+    if (bytes <= maxBytes) continue;
+    const error = new Error(
+      `${key} resolves to ${bytes} bytes, exceeding the ${platform} Unix socket limit of ${maxBytes}: ${socketPath}. Use a shorter PM2_HOME or explicit valid PM2_DAEMON_RPC_PORT, PM2_DAEMON_PUB_PORT and PM2_INTERACTOR_RPC_PORT paths; for an existing daemon, first verify its actual sockets. No PM2 or queue operation was run.`,
+    );
+    error.code = "PM2_SOCKET_PATH_TOO_LONG";
+    throw error;
+  }
+  return pm2Home;
+}
+
 async function collectOwnership(
   env,
   expected,
@@ -575,6 +606,7 @@ async function collectOwnership(
   requireRunId,
   mode,
 ) {
+  const pm2Home = assertPm2SocketPaths(env);
   const pm2Processes = parseJsonArraySuffix(
     checkedSpawn("pm2", ["jlist"], env),
   );
@@ -587,6 +619,7 @@ async function collectOwnership(
     collectRedisWorkers(redisOptions, workerSpecs.video.queue),
   ]);
   return classifyOwnership({
+    pm2Home,
     expected,
     expectedVideo,
     mode,
@@ -698,6 +731,7 @@ async function main() {
         groups: [],
         redis: [],
         invalidRedisWorkers: 0,
+        ...(error?.code === "PM2_SOCKET_PATH_TOO_LONG" ? { diagnostic: error.message } : {}),
         issues: [
           `collector_failed:${
             error && typeof error === "object" && "code" in error
@@ -708,6 +742,7 @@ async function main() {
           }`,
         ],
       };
+      if (error?.code === "PM2_SOCKET_PATH_TOO_LONG") break;
     }
     if (report.ok) {
       const fingerprint = JSON.stringify(report);
@@ -762,6 +797,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  assertPm2SocketPaths,
   classifyOwnership,
   collectOwnership,
   loadGenEnvironment,

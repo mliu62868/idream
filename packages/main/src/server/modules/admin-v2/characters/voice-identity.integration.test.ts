@@ -522,6 +522,13 @@ describe("Character voice identity authority", () => {
     }))).rejects.toMatchObject({ status: 400 });
   });
 
+  it("classifies missing voice transcript fields as a client error", async () => {
+    const form = new FormData();
+    form.set("language", "english");
+    await expect(parseVoiceCloneForm(new Request("http://localhost", { method: "POST", body: form })))
+      .rejects.toMatchObject({ status: 400, code: "bad_request" });
+  });
+
   it("parses the exact transcript stored with the reference-audio contract", async () => {
     const form = new FormData();
     form.set("language", "english");

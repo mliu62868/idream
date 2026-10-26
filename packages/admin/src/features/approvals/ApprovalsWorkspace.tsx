@@ -21,8 +21,8 @@ import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useUrlFilters } from "@/components/admin/ui/useUrlFilters";
 import { useToast } from "@/components/admin/ui/Toast";
 import { ApprovalRequiredNotice, isDualApprovalRequired, type BlockedApproval } from "./ApprovalRequired";
-import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
-import { createLatestRequestGate } from "@/lib/latest-request";
+import { useWorkspaceRefresh } from "@/features/workspace-refresh";
+import { useAuthorityResource } from "@/lib/authority-resource";
 import { canonicalListEmptyTitle } from "@/features/compatibility-lists/empty-state";
 import {
   APPROVAL_PAGE_SIZE,
@@ -93,44 +93,16 @@ export function ApprovalsWorkspace({ canReview, canToggleEnforcement = false }: 
   const { t } = useAdminI18n();
   const format = useAdminFormat();
   const { toast } = useToast();
-  const [snapshot, setSnapshot] = useState<{ queryKey: string; data: ListResponse } | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [errorCause, setErrorCause] = useState<unknown>(undefined);
-  const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
-  const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
+  const permissionKey = `${canReview}:${canToggleEnforcement}`;
+  const [ready, setReady] = useState(false);
+  const [confirmation, setConfirmation] = useState<(ConfirmSpec & { permissionKey: string }) | null>(null);
   const [blockedDisable, setBlockedDisable] = useState<BlockedApproval | null>(null);
   // SPEC: 「上一页」走自己走过的游标回头，不给后端发 `before`。
   // INTENT: 审批列表还是单向 keyset（响应里没有 startCursor / hasPreviousPage）。
   //         翻页栈是本地的，所以第一页时 hasPrevious 为假 —— 置灰而不是给一个会 400 的按钮。
   const [cursorTrail, setCursorTrail] = useState<string[]>([]);
   const visitedTrails = useRef(new Map<string, string[]>());
-  const gate = useRef(createLatestRequestGate());
   const navigation = useRef(0);
-
-  const load = useCallback(async (next: ApprovalQuery) => {
-    const request = gate.current.begin();
-    setLoading(true);
-    setError(null);
-    setErrorCause(undefined);
-    try {
-      const response = await apiGet<ListResponse>(approvalListPath(next));
-      if (!request.isCurrent()) return;
-      setSnapshot({ queryKey: approvalListPath(next), data: response });
-      setRefreshedAt(new Date().toISOString());
-    } catch (cause) {
-      if (request.isCurrent()) {
-        setError(
-          cause instanceof Error
-            ? cause.message
-            : "Approval authority request failed",
-        );
-        setErrorCause(cause);
-      }
-    } finally {
-      if (request.isCurrent()) setLoading(false);
-    }
-  }, []);
 
   const { query, draft, setDraft, apply: applyFilters } = useUrlFilters<ApprovalQuery>({
     initial: defaultApprovalQuery,
@@ -140,22 +112,25 @@ export function ApprovalsWorkspace({ canReview, canToggleEnforcement = false }: 
       navigation.current += 1;
       setConfirmation(null);
       setCursorTrail(visitedTrails.current.get(approvalListPath(next)) ?? []);
-      void load(next);
+      setReady(true);
     },
   });
-  const queryKey = approvalListPath(query);
-  const data = snapshot?.queryKey === queryKey ? snapshot.data : null;
-
-  useEffect(() => {
-    const requestGate = gate.current;
-    const refresh = () => void load(currentQuery());
-    window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
-    return () => {
-      navigation.current += 1;
-      requestGate.invalidate();
-      window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
-    };
-  }, [load]);
+  const approvals = useAuthorityResource({
+    key: approvalListPath(query),
+    enabled: ready,
+    // A repeated visit to the same URL still starts a new read, while the
+    // resource key keeps same-query last-good data available on failure.
+    load: useCallback(() => apiGet<ListResponse>(approvalListPath(query)), [query]),
+  });
+  const { data, loading, error, cause: errorCause, refreshedAt } = approvals;
+  const refreshApprovals = useRef(approvals.refresh);
+  useEffect(() => { refreshApprovals.current = approvals.refresh; }, [approvals.refresh]);
+  useWorkspaceRefresh(approvals.refresh, ready);
+  useEffect(() => () => { navigation.current += 1; }, [canReview, canToggleEnforcement]);
+  if (confirmation && confirmation.permissionKey !== permissionKey) {
+    // Permission changes retire the same confirmation generation as its callback.
+    setConfirmation(null);
+  }
 
   function navigate(
     next: ApprovalQuery,
@@ -177,6 +152,7 @@ export function ApprovalsWorkspace({ canReview, canToggleEnforcement = false }: 
     const id = entry.id;
     const label = decision === "approve" ? "Approve" : "Reject";
     setConfirmation({
+      permissionKey,
       title: t("{action} request {id}", { action: t(label), id }),
       // INTENT: 审批人点「批准」那一刻必须看到自己在放行什么。以前弹窗里只有一个 ID，
       //         要核对参数得先回列表、再横向翻十列——于是没人核对。现在证据跟着决定走。
@@ -216,9 +192,11 @@ export function ApprovalsWorkspace({ canReview, canToggleEnforcement = false }: 
   // INTENT: 开关以前只能在「功能开关」页翻已存在的行，而 dual_approval_enforced 从未被种下，
   //         运营根本打不开双人复核。开关放在审批台，就是它生效的地方。
   function confirmEnforcement(enabled: boolean) {
+    if (!canToggleEnforcement) return;
     const next = !enabled;
     const origin = navigation.current;
     setConfirmation({
+      permissionKey,
       title: next ? t("Turn on dual approval") : t("Turn off dual approval"),
       destructive: { expectedName: DUAL_APPROVAL_FLAG, inputLabel: t("Confirmation") },
       consequence: {
@@ -249,7 +227,7 @@ export function ApprovalsWorkspace({ canReview, canToggleEnforcement = false }: 
         if (navigation.current !== origin) return;
         setBlockedDisable(null);
         toast({ tone: "success", title: next ? t("Dual approval turned on") : t("Dual approval turned off") });
-        void load(query);
+        void approvals.refresh();
       },
     });
   }
@@ -313,7 +291,7 @@ export function ApprovalsWorkspace({ canReview, canToggleEnforcement = false }: 
         <AuthorityRequestError requestKind="read"
           cause={errorCause}
           message={error}
-          onRetry={() => void load(query)}
+          onRetry={() => void approvals.refresh()}
           snapshotAt={data ? refreshedAt : null}
         />
       ) : null}
@@ -346,7 +324,7 @@ export function ApprovalsWorkspace({ canReview, canToggleEnforcement = false }: 
           message={t("Turning dual approval off needs a second operator's approval.")}
           onRequested={() => {
             setBlockedDisable(current => current === blockedDisable ? null : current);
-            void load(currentQuery());
+            void refreshApprovals.current();
           }}
           testId="approvals-disable-blocked"
         />
@@ -661,12 +639,6 @@ function Select({
       </select>
     </label>
   );
-}
-
-function currentQuery() {
-  return typeof window === "undefined"
-    ? defaultApprovalQuery
-    : approvalQueryFromSearch(window.location.search);
 }
 
 function freshness(

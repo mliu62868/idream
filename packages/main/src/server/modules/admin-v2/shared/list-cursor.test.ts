@@ -142,3 +142,8 @@ describe("paginateAdminKeyset", () => {
     await expect(page(stale)).rejects.toThrow(/invalid/);
   });
 });
+
+
+it.each([null, 42, "", false])("rejects an invalid cursor timestamp type as a client error (%s)", (value) => {
+  expect(() => parseIsoCursorKey(value, "assets")).toThrow(expect.objectContaining({ status: 400, code: "bad_request" }));
+});

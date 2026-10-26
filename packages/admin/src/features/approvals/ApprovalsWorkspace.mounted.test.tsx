@@ -227,6 +227,7 @@ describe("ApprovalsWorkspace decision evidence", () => {
     await act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
     expect(container.textContent).not.toContain(approvalId);
     expect(findButton("Approve", container)).toBeNull();
+    await waitUntil(() => typeof rejectRead === "function");
     await act(async () => rejectRead(new Error("Approval query unavailable")));
     expect(container.textContent).toContain("Approval query unavailable");
     expect(container.textContent).not.toContain(approvalId);
@@ -242,6 +243,112 @@ describe("ApprovalsWorkspace decision evidence", () => {
     expect(container.textContent).toContain(approvalId);
   });
 
+  it("rejects an old A read after navigating A to B to A", async () => {
+    await mount([pendingApproval]);
+    let completeOld!: (response: unknown) => void;
+    apiGet.mockImplementationOnce(() => new Promise(resolve => { completeOld = resolve; }));
+    apiGet.mockImplementation(async path => ({
+      items: [{ ...pendingApproval, id: path.includes("search=b") ? "current-b" : "current-a" }],
+    }));
+    await act(async () => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)));
+    for (const search of ["b", ""]) {
+      await enter(container.querySelector<HTMLInputElement>("input"), search);
+      await act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+      await waitUntil(() => container.textContent?.includes(search ? "current-b" : "current-a") === true);
+    }
+    await act(async () => completeOld({ items: [{ ...pendingApproval, id: "obsolete-a" }] }));
+    expect(container.textContent).toContain("current-a");
+    expect(container.textContent).not.toContain("obsolete-a");
+    expect(window.location.search).toBe("");
+  });
+
+  it("keeps cursor history local while paging forward and back", async () => {
+    await mount([pendingApproval]);
+    apiGet.mockImplementation(async path => {
+      const next = new URL(path, window.location.origin).searchParams.has("cursor");
+      return {
+        items: [{ ...pendingApproval, id: next ? "second-page" : "first-page" }],
+        pageInfo: { endCursor: next ? null : "approval-cursor", hasNextPage: !next },
+      };
+    });
+    await act(async () => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)));
+    const pager = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent?.trim() === label) ?? null;
+    expect(pager("Previous page")?.disabled).toBe(true);
+    await click(pager("Next page"));
+    await waitUntil(() => container.textContent?.includes("second-page") === true);
+    expect(apiGet.mock.calls.at(-1)?.[0]).toContain("cursor=approval-cursor");
+    expect(pager("Previous page")?.disabled).toBe(false);
+    await click(pager("Previous page"));
+    await waitUntil(() => container.textContent?.includes("first-page") === true);
+    expect(apiGet.mock.calls.at(-1)?.[0]).not.toContain("cursor=");
+    expect(apiGet.mock.calls.every(([path]) => !path.includes("before="))).toBe(true);
+    expect(pager("Previous page")?.disabled).toBe(true);
+  });
+
+  it("retires a revoked review confirmation and ignores its late completion", async () => {
+    await mount([pendingApproval]);
+    let completeDecision!: (response: unknown) => void;
+    apiWrite.mockImplementation(() => new Promise(resolve => { completeDecision = resolve; }));
+    await click(findButton("Approve", container));
+    const dialog = await waitForDialog();
+    await enter(dialog.querySelector<HTMLInputElement>('input[aria-label="Reason"]'), "Review the exact request");
+    await enter(dialog.querySelector<HTMLInputElement>('input[aria-label="Confirmation"]'), approvalId);
+    await click(findButton("Confirm", dialog));
+    expect(apiWrite).toHaveBeenCalledTimes(1);
+    await act(async () => root.render(
+      <AdminI18nProvider locale="en"><ToastProvider><ApprovalsWorkspace canReview={false} /></ToastProvider></AdminI18nProvider>,
+    ));
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(container.textContent).toContain(approvalId);
+    expect(findButton("Approve", container)).toBeNull();
+    const readCount = apiGet.mock.calls.length;
+    await act(async () => completeDecision({ request: { id: approvalId } }));
+    expect(apiGet).toHaveBeenCalledTimes(readCount);
+    expect(container.textContent).not.toContain(`Approved ${approvalId}`);
+    expect(window.location.search).toBe("");
+  });
+
+  it("retires an old confirmation after an unrelated permission changes and permits a fresh decision", async () => {
+    await mount([pendingApproval]);
+    await click(findButton("Approve", container));
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    await act(async () => root.render(
+      <AdminI18nProvider locale="en"><ToastProvider><ApprovalsWorkspace canReview canToggleEnforcement /></ToastProvider></AdminI18nProvider>,
+    ));
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(findButton("Approve", container)).not.toBeNull();
+    apiWrite.mockResolvedValue({ request: { id: approvalId } });
+    await click(findButton("Approve", container));
+    const dialog = await waitForDialog();
+    await enter(dialog.querySelector<HTMLInputElement>('input[aria-label="Reason"]'), "Confirm with current authority");
+    await enter(dialog.querySelector<HTMLInputElement>('input[aria-label="Confirmation"]'), approvalId);
+    await click(findButton("Confirm", dialog));
+    expect(apiWrite).toHaveBeenCalledTimes(1);
+    expect(apiWrite).toHaveBeenCalledWith(`/api/v2/admin/approvals/${approvalId}/approve`, "POST", {
+      reason: "Confirm with current authority", confirmation: approvalId,
+    });
+  });
+
+  it("keeps the post-decision projection when an older list refresh finishes later", async () => {
+    await mount([pendingApproval]);
+    let completeOld!: (response: unknown) => void;
+    apiGet.mockImplementationOnce(() => new Promise(resolve => { completeOld = resolve; }));
+    apiGet.mockResolvedValue({ items: [], pageInfo: { endCursor: null, hasNextPage: false } });
+    await act(async () => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)));
+    apiWrite.mockResolvedValue({ request: { id: approvalId } });
+    await click(findButton("Approve", container));
+    const dialog = await waitForDialog();
+    await enter(dialog.querySelector<HTMLInputElement>('input[aria-label="Reason"]'), "Confirmed against current authority");
+    await enter(dialog.querySelector<HTMLInputElement>('input[aria-label="Confirmation"]'), approvalId);
+    await click(findButton("Confirm", dialog));
+    await waitUntil(() => apiGet.mock.calls.length === 3 && container.querySelector("tbody") === null);
+    await act(async () => completeOld({ items: [pendingApproval] }));
+    expect(container.querySelector("tbody")).toBeNull();
+    expect(findButton("Approve", container)).toBeNull();
+    expect(apiWrite).toHaveBeenCalledTimes(1);
+  });
+
   it("restores the pending queue after a same-page sidebar navigation clears the URL filters", async () => {
     window.history.replaceState(null, "", "/admin/system/approvals?approvalSearch=missing");
     navigation.search = window.location.search;
@@ -254,6 +361,7 @@ describe("ApprovalsWorkspace decision evidence", () => {
       <AdminI18nProvider locale="en"><ToastProvider><ApprovalsWorkspace canReview /></ToastProvider></AdminI18nProvider>,
     ));
     expect(container.querySelector<HTMLInputElement>('input')?.value).toBe("");
+    await waitUntil(() => container.textContent?.includes(approvalId) === true);
     expect(apiGet.mock.calls.at(-1)?.[0]).not.toContain("search=");
     expect(container.textContent).toContain(approvalId);
   });
@@ -272,6 +380,7 @@ describe("ApprovalsWorkspace decision evidence", () => {
       window.dispatchEvent(new PopStateEvent("popstate"));
     });
     expect(document.querySelector('[role="dialog"]')).toBeNull();
+    await waitUntil(() => apiGet.mock.calls.at(-1)?.[0].includes("status=rejected") === true);
     await act(async () => completeDecision({ request: { id: approvalId } }));
     expect(window.location.search).toBe("?approvalStatus=rejected");
     expect(apiGet.mock.calls.at(-1)?.[0]).toContain("status=rejected");
@@ -315,6 +424,7 @@ describe("ApprovalsWorkspace decision evidence", () => {
     apiGet.mockImplementation(async path => ({ items: path.includes("search=current") ? [{ ...pendingApproval, id: "current-request" }] : [pendingApproval] }));
     await enter(container.querySelector<HTMLInputElement>('input'), "current");
     await act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    await waitUntil(() => container.textContent?.includes("current-request") === true);
     expect(container.textContent).toContain("current-request");
     await act(async () => completeRequest({ request: { id: "created-request" } }));
     expect(apiGet.mock.calls.at(-1)?.[0]).toContain("search=current");

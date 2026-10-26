@@ -342,5 +342,6 @@ function isDefinitiveMutationRejection(
   cause: unknown,
 ): cause is AdminV2RequestError {
   return cause instanceof AdminV2RequestError &&
+    cause.outcome === "answered" &&
     [400, 401, 403, 404, 409, 422].includes(cause.status);
 }

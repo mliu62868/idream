@@ -45,10 +45,10 @@ describe("Creative Run create options projection", () => {
           label: "Compatible text to image",
           mode: "image",
           runner: "comfyui",
-          pipelineModel: "redqw21",
-          workflowKey: "redqw21",
+          pipelineModel: "redcraft-qw21t",
+          workflowKey: "redcraft-qw21t",
           runnerConfig: {
-            workflowVersion: 1,
+            workflowVersion: 3,
             capabilities: { textToImage: true },
           },
           allowedOrientations: ["1:1", "16:9"],
@@ -64,10 +64,10 @@ describe("Creative Run create options projection", () => {
           label: "Rollout zero",
           mode: "image",
           runner: "comfyui",
-          pipelineModel: "redqw21",
-          workflowKey: "redqw21",
+          pipelineModel: "redcraft-qw21t",
+          workflowKey: "redcraft-qw21t",
           runnerConfig: {
-            workflowVersion: 1,
+            workflowVersion: 3,
             capabilities: { textToImage: true },
           },
           allowedOrientations: ["1:1"],
@@ -83,10 +83,10 @@ describe("Creative Run create options projection", () => {
           label: "Reference only",
           mode: "image",
           runner: "comfyui",
-          pipelineModel: "qwen-image-edit",
+          pipelineModel: "redcraft-image-edit",
           workflowKey: "qwen-image-edit-img2img",
           runnerConfig: {
-            workflowVersion: 1,
+            workflowVersion: 6,
             capabilities: { textToImage: false, referenceImages: true, initImage: true },
           },
           allowedOrientations: ["4:5"],
@@ -131,6 +131,8 @@ describe("Creative Run create options projection", () => {
     expect(payload.data.profiles).toEqual(expect.arrayContaining([
       expect.objectContaining({
         profileKey: `${profilePrefix}-compatible`,
+        workflowKey: "redcraft-qw21t",
+        workflowVersion: 3,
         recommended: expect.any(Boolean),
       }),
     ]));

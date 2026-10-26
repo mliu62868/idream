@@ -1,4 +1,5 @@
 import {
+  contentAssetAuthorityDependencySchema,
   contentAssetReviewStatusSchema,
   creativeRunPurposeSchema,
   platformAssetUploadPurposeSchema,
@@ -9,12 +10,8 @@ import {
   type ContentAssetUploadResponse,
   type PlatformAssetUploadPurpose,
 } from "@idream/shared/admin";
-import type { ApiEnvelope } from "../api";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
-import {
-  adminIdempotencyKeyLedger,
-  idempotencyOutcomeOfStatus,
-} from "@/lib/idempotency-key-lifecycle";
 
 // SPEC: 图片库列表、详情和批量归档只消费 shared manifest 声明的 v2 Asset 契约；
 // 页面本地只保留展示与交互类型，不复制跨包协议。
@@ -96,8 +93,6 @@ export function assetAuthorityDependencyView(
 }
 
 export const ASSETS_LIST = "/api/v2/admin/assets";
-export const ASSETS_BULK = `${ASSETS_LIST}/bulk`;
-export const ASSETS_BULK_PREFLIGHT = `${ASSETS_BULK}/preflight`;
 
 // 图片库筛选只展示已产出资产，但选项本身始终从 shared v2 契约派生。
 export const ASSET_STATUSES = contentAssetReviewStatusSchema.options.filter(
@@ -189,60 +184,36 @@ export function assetPatchPayload(params: {
   };
 }
 
-export type AssetBulkArchiveErrorDetails = {
-  code?: string;
-  assetId?: string;
-  dependencies: AssetAuthorityDependency[];
-  missingAssetIds: string[];
-  repairPath?: string;
-};
+export type AssetArchiveBlocker =
+  | { kind: "missing"; missingAssetIds: string[] }
+  | {
+      kind: "dependency";
+      assetId?: string;
+      dependencies: AssetAuthorityDependency[];
+      repairPath?: string;
+    };
 
 export type AssetArchivePreflight = ContentAssetBulkPreflightResponse;
 export type AssetArchivePreflightBlocker = AssetArchivePreflight["blockers"][number];
 
-export class AssetBulkArchiveError extends Error {
-  readonly details: AssetBulkArchiveErrorDetails;
-
-  constructor(message: string, details?: unknown) {
-    super(message);
-    this.name = "AssetBulkArchiveError";
-    this.details = assetBulkArchiveErrorDetails(details);
+// INVARIANT: only an explicit authority rejection proves the batch was not changed.
+// Transport errors keep their original status/code/requestId and never become a blocker.
+export function assetArchiveBlocker(cause: unknown): AssetArchiveBlocker | null {
+  if (!(cause instanceof AdminV2RequestError) || cause.outcome !== "answered" || typeof cause.details !== "object" || cause.details === null) return null;
+  const record = cause.details as Record<string, unknown>;
+  if (cause.status === 404 && Array.isArray(record.missingAssetIds)) {
+    const missingAssetIds = record.missingAssetIds.filter((id): id is string => typeof id === "string" && id.length > 0);
+    return missingAssetIds.length > 0 ? { kind: "missing", missingAssetIds } : null;
   }
-}
-
-const ASSET_AUTHORITY_DEPENDENCY_KINDS = new Set<AssetAuthorityDependency["kind"]>([
-  "character_primary_image",
-  "character_project_draft",
-  "character_visual_identity",
-  "character_reference_set",
-  "character_generation_job",
-  "character_look",
-  "creative_run_asset",
-  "character_release",
-  "verified_campaign",
-  "placement_verification",
-]);
-
-function isAssetAuthorityDependency(value: unknown): value is AssetAuthorityDependency {
-  if (typeof value !== "object" || value === null) return false;
-  const record = value as Record<string, unknown>;
-  return typeof record.kind === "string"
-    && ASSET_AUTHORITY_DEPENDENCY_KINDS.has(record.kind as AssetAuthorityDependency["kind"])
-    && typeof record.repairPath === "string";
-}
-
-function assetBulkArchiveErrorDetails(value: unknown): AssetBulkArchiveErrorDetails {
-  const record = typeof value === "object" && value !== null
-    ? value as Record<string, unknown>
-    : {};
+  if (cause.status !== 409 || record.code !== "asset_authority_dependency_active") return null;
   return {
-    code: typeof record.code === "string" ? record.code : undefined,
+    kind: "dependency",
     assetId: typeof record.assetId === "string" ? record.assetId : undefined,
     dependencies: Array.isArray(record.dependencies)
-      ? record.dependencies.filter(isAssetAuthorityDependency)
-      : [],
-    missingAssetIds: Array.isArray(record.missingAssetIds)
-      ? record.missingAssetIds.filter((id): id is string => typeof id === "string")
+      ? record.dependencies.flatMap((dependency) => {
+          const parsed = contentAssetAuthorityDependencySchema.safeParse(dependency);
+          return parsed.success ? [parsed.data] : [];
+        })
       : [],
     repairPath: typeof record.repairPath === "string" ? record.repairPath : undefined,
   };
@@ -270,60 +241,19 @@ export function assetBulkArchivePayload(params: {
   };
 }
 
-// INTENT: fallbackMessage 由调用方注入 —— 这是模块级函数，拿不到 t()；服务端连 message 和
-// code 都没给时，硬编码的英文兜底会在中文 locale 直接露馅。
 export async function bulkArchiveAssets(params: {
   assetIds: readonly string[];
   reason: string;
-  fallbackMessage?: string;
-}): Promise<{ updatedIds: string[] }> {
-  // INTENT: 这一条刻意不走 adminV2Request —— 批量归档要把 error.details 原样交给
-  //         AssetBulkArchiveError（调用方按它列出被拒的资产）。键仍然出自同一本账本：
-  //         裸 fetch 不是自己造 UUID 的理由。
-  const payloadBody = assetBulkArchivePayload(params);
-  const bulkScope = `POST ${ASSETS_BULK}`;
-  const bulkKey = adminIdempotencyKeyLedger.claim(bulkScope, JSON.stringify(payloadBody));
-  const response = await fetch(ASSETS_BULK, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "idempotency-key": bulkKey,
-    },
-    body: JSON.stringify(payloadBody),
+}): Promise<ContentAssetBulkMutationResponse> {
+  return adminV2Operation("POST /api/v2/admin/assets/bulk", {
+    body: assetBulkArchivePayload(params),
   });
-  // A successful header does not prove that the receipt was delivered. Keep the
-  // original key if reading or decoding the response body fails.
-  const payload = await response.json() as ApiEnvelope<ContentAssetBulkMutationResponse>;
-  adminIdempotencyKeyLedger.settle(
-    bulkScope,
-    bulkKey,
-    idempotencyOutcomeOfStatus(response.status),
-  );
-  if (!payload.ok) {
-    throw new AssetBulkArchiveError(
-      payload.error.message ?? payload.error.code ?? params.fallbackMessage ?? "Bulk archive failed",
-      payload.error.details,
-    );
-  }
-  return payload.data;
 }
 
 export async function preflightArchiveAssets(
   assetIds: readonly string[],
-  fallbackMessage?: string,
 ): Promise<AssetArchivePreflight> {
-  const canonicalIds = canonicalAssetIds(assetIds);
-  const response = await fetch(ASSETS_BULK_PREFLIGHT, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ assetIds: canonicalIds }),
+  return adminV2Operation("POST /api/v2/admin/assets/bulk/preflight", {
+    body: { assetIds: canonicalAssetIds(assetIds) },
   });
-  const payload = await response.json() as ApiEnvelope<ContentAssetBulkPreflightResponse>;
-  if (!payload.ok) {
-    throw new AssetBulkArchiveError(
-      payload.error.message ?? payload.error.code ?? fallbackMessage ?? "Bulk archive preflight failed",
-      payload.error.details,
-    );
-  }
-  return payload.data;
 }

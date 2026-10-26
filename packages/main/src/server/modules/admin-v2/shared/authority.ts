@@ -262,7 +262,7 @@ export function queryParams<const Id extends AdminV2DeclaredReadOperationId>(
 // SPEC: 只有请求输入不合契约才是 400。
 // INTENT: route-handler 把其余 ZodError 当成服务端契约漂移（500 + 日志）；在这里把输入校验
 //   失败显式转成 AppError，两类错误才不会再被同一个「Validation failed」混为一谈。
-function parseRequestInput(schema: { parse(value: unknown): unknown }, value: unknown) {
+export function parseRequestInput<T>(schema: { parse(value: unknown): T }, value: unknown): T {
   try {
     return schema.parse(value);
   } catch (error) {

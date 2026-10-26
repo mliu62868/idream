@@ -74,6 +74,29 @@ async function content(path: string, userId = other) {
 }
 
 describe("Comic authoring, exact-version review and revocable publication", () => {
+  it("uses the manifest query values for repeated Admin list parameters", async () => {
+    await draft("admin-query-first");
+    await draft("admin-query-second");
+    const first = await adminV2Route(comicListRoute, { path: "comics?status=draft&limit=1", userId: moderator });
+    expectOk(first);
+    expect(first.data.items).toHaveLength(1);
+    expect(first.data.nextCursor).toEqual(expect.any(String));
+    for (const query of ["status=invalid&status=draft&limit=1", "status=draft&limit=invalid&limit=1"]) {
+      const repeated = await adminV2Route(comicListRoute, { path: `comics?${query}`, userId: moderator });
+      expectOk(repeated);
+      expect(repeated.data).toEqual(first.data);
+    }
+    const nextCursor = encodeURIComponent(first.data.nextCursor);
+    const next = await adminV2Route(comicListRoute, { path: `comics?status=draft&limit=1&cursor=${nextCursor}`, userId: moderator });
+    expectOk(next);
+    const repeatedCursor = await adminV2Route(comicListRoute, { path: `comics?status=draft&limit=1&cursor=invalid&cursor=${nextCursor}`, userId: moderator });
+    expectOk(repeatedCursor);
+    expect(repeatedCursor.data).toEqual(next.data);
+    for (const query of ["status=draft&status=invalid", "limit=1&limit=invalid", `cursor=${nextCursor}&cursor=invalid`]) {
+      expectError(await adminV2Route(comicListRoute, { path: `comics?${query}`, userId: moderator }), 400);
+    }
+  });
+
   it("keeps drafts owner-only and never treats visibility alone as a publication grant", async () => {
     const { comic } = await draft("draft-owner");
     expectError(await api("GET", `comics/${comic.id}`, publicRead), 404);

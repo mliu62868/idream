@@ -63,7 +63,18 @@ export type AdminV2MutationTransportKind =
 export type AdminV2MutationMetadata = {
   readonly transport: AdminV2MutationTransportKind;
   readonly commandType: string;
-  readonly executionMode: "atomic" | "durable";
+} & (
+  | { readonly executionMode: "atomic" }
+  | {
+      readonly executionMode: "durable";
+      readonly retryMode: "idempotent" | "non_replayable";
+    }
+);
+
+type AdminV2MutationOverride = {
+  readonly commandType?: string;
+  readonly executionMode?: "atomic" | "durable";
+  readonly retryMode?: "idempotent" | "non_replayable";
 };
 
 export type AdminV2ApiOperation = {
@@ -133,9 +144,7 @@ function operation<
   request: Request,
   response: Response,
   responseProjectionBy?: readonly AdminPermissionKey[],
-  mutationOverride?: Partial<
-    Pick<AdminV2MutationMetadata, "commandType" | "executionMode">
-  >,
+  mutationOverride?: AdminV2MutationOverride,
 ): DeclaredOperation<Method, Route, Request, Response> {
   const operationId = `${method} ${route}` as `${Method} ${Route}`;
   const mutation = mutationMetadata(
@@ -159,9 +168,7 @@ function mutationMetadata(
   operationId: AdminV2OperationId,
   request: AdminV2RequestContractRef,
   response: AdminV2SchemaContractRef,
-  override?: Partial<
-    Pick<AdminV2MutationMetadata, "commandType" | "executionMode">
-  >,
+  override?: AdminV2MutationOverride,
 ): AdminV2MutationMetadata | undefined {
   const requirements = request.split("+");
   const idempotency = requirements.includes("idempotency-key");
@@ -173,17 +180,28 @@ function mutationMetadata(
       : idempotency
         ? "idempotency_key"
         : "if_match";
+  const executionMode = override?.executionMode ??
+    (response === "adminCommandAcceptedSchema" ? "durable" : "atomic");
+  if (executionMode === "durable") {
+    // Durable command names are persisted identities, not names derived from routing.
+    // A new declaration must choose its replay policy and retain historical receipts.
+    if (!override?.commandType || !override.retryMode) {
+      throw new Error(`Durable Admin operation is missing command metadata: ${operationId}`);
+    }
+    return {
+      transport,
+      commandType: override.commandType,
+      executionMode,
+      retryMode: override.retryMode,
+    };
+  }
   return {
     transport,
-    commandType:
-      override?.commandType ??
-      operationId
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, ".")
-        .replace(/^\.|\.$/g, ""),
-    executionMode:
-      override?.executionMode ??
-      (response === "adminCommandAcceptedSchema" ? "durable" : "atomic"),
+    commandType: override?.commandType ?? operationId
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ".")
+      .replace(/^\.|\.$/g, ""),
+    executionMode,
   };
 }
 
@@ -306,6 +324,8 @@ export const ADMIN_V2_API_OPERATIONS = [
     allOf("case.decide"),
     "caseCloseCommandRequestSchema+idempotency-key",
     "adminCommandAcceptedSchema",
+    undefined,
+    { commandType: "case.close", retryMode: "non_replayable" },
   ),
   operation(
     "POST",
@@ -487,6 +507,8 @@ export const ADMIN_V2_API_OPERATIONS = [
     allOf("character.release.publish"),
     "adminCommandRequestSchema+idempotency-key",
     "adminCommandAcceptedSchema",
+    undefined,
+    { commandType: "character.serving.pause", retryMode: "idempotent" },
   ),
   operation(
     "POST",
@@ -494,6 +516,8 @@ export const ADMIN_V2_API_OPERATIONS = [
     allOf("character.release.publish"),
     "adminCommandRequestSchema+idempotency-key",
     "adminCommandAcceptedSchema",
+    undefined,
+    { commandType: "character.serving.resume", retryMode: "idempotent" },
   ),
   operation(
     "POST",
@@ -501,6 +525,8 @@ export const ADMIN_V2_API_OPERATIONS = [
     allOf("character.release.publish"),
     "adminCommandRequestSchema+idempotency-key",
     "adminCommandAcceptedSchema",
+    undefined,
+    { commandType: "character.serving.retire", retryMode: "idempotent" },
   ),
   operation(
     "POST",
@@ -508,6 +534,8 @@ export const ADMIN_V2_API_OPERATIONS = [
     allOf("character.release.publish"),
     "adminCommandRequestSchema+idempotency-key",
     "adminCommandAcceptedSchema",
+    undefined,
+    { commandType: "character.serving.restore", retryMode: "idempotent" },
   ),
   operation(
     "GET",
@@ -575,6 +603,8 @@ export const ADMIN_V2_API_OPERATIONS = [
     allOf("character.release.publish"),
     "characterReleasePublishCommandRequestSchema+idempotency-key",
     "adminCommandAcceptedSchema",
+    undefined,
+    { commandType: "character.release.publish", retryMode: "idempotent" },
   ),
   operation(
     "POST",
@@ -582,6 +612,8 @@ export const ADMIN_V2_API_OPERATIONS = [
     allOf("character.release.publish"),
     "adminCommandRequestSchema+idempotency-key",
     "adminCommandAcceptedSchema",
+    undefined,
+    { commandType: "character.release.withdraw", retryMode: "idempotent" },
   ),
   operation(
     "POST",
@@ -589,6 +621,8 @@ export const ADMIN_V2_API_OPERATIONS = [
     allOf("character.release.publish"),
     "characterReleaseRollbackCommandRequestSchema+idempotency-key",
     "adminCommandAcceptedSchema",
+    undefined,
+    { commandType: "character.release.rollback", retryMode: "idempotent" },
   ),
   operation(
     "POST",
@@ -603,6 +637,8 @@ export const ADMIN_V2_API_OPERATIONS = [
     allOf("character.release.publish"),
     "characterSessionReleaseMigrationCommandRequestSchema+idempotency-key",
     "adminCommandAcceptedSchema",
+    undefined,
+    { commandType: "chat.session_release.migrate", retryMode: "idempotent" },
   ),
   operation(
     "GET",
@@ -722,6 +758,8 @@ export const ADMIN_V2_API_OPERATIONS = [
     allOf("creative.run.write"),
     "creativeRunRetryFailedCommandRequestSchema+idempotency-key",
     "adminCommandAcceptedSchema",
+    undefined,
+    { commandType: "creative.run.retry_failed", retryMode: "idempotent" },
   ),
   operation(
     "POST",
@@ -933,6 +971,8 @@ export const ADMIN_V2_API_OPERATIONS = [
     allOf("ops.incident.manage"),
     "incidentActionPlanExecuteRequestSchema+idempotency-key",
     "adminCommandAcceptedSchema",
+    undefined,
+    { commandType: "incident.action_plan.execute", retryMode: "idempotent" },
   ),
   operation(
     "POST",
@@ -954,6 +994,8 @@ export const ADMIN_V2_API_OPERATIONS = [
     allOf("ops.incident.manage"),
     "incidentResolveCommandRequestSchema+idempotency-key",
     "adminCommandAcceptedSchema",
+    undefined,
+    { commandType: "incident.resolve", retryMode: "non_replayable" },
   ),
   operation(
     "POST",
@@ -2201,6 +2243,11 @@ export const ADMIN_V2_API_OPERATIONS = [
 export type AdminV2DeclaredOperation = (typeof ADMIN_V2_API_OPERATIONS)[number];
 /** Every operation id the manifest actually declares — not the `${Method} ${Route}` template. */
 export type AdminV2DeclaredOperationId = AdminV2DeclaredOperation["id"];
+/** Durable command admission is the subset returning an accepted receipt. */
+export type AdminV2DurableOperationId = Extract<
+  AdminV2DeclaredOperation,
+  { readonly contract: { readonly response: "adminCommandAcceptedSchema" } }
+>["id"];
 /** Every request contract ref the manifest actually declares. */
 export type AdminV2DeclaredRequestRef =
   AdminV2DeclaredOperation["contract"]["request"];

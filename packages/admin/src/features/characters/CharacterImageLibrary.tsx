@@ -11,7 +11,7 @@ import { useAdminI18n } from "@/components/admin/i18n";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import {
-  AssetBulkArchiveError,
+  assetArchiveBlocker,
   bulkArchiveAssets,
 } from "@/components/admin/assets/assets-api";
 import { WorkspaceButton, fieldClass } from "@/features/operations/WorkspaceUi";
@@ -70,6 +70,9 @@ export function CharacterImageLibrary({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [archiveSpec, setArchiveSpec] = useState<ConfirmSpec | null>(null);
+  const archiveGeneration = useRef(0);
+  useEffect(() => () => { archiveGeneration.current += 1; }, [canArchive]);
+  if (archiveSpec && !canArchive) setArchiveSpec(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const loadAssets = useCallback(async (cursor: string | null = null) => {
@@ -150,6 +153,7 @@ export function CharacterImageLibrary({
   }
 
   function requestArchive(asset: CharacterImageSourceAsset) {
+    const generation = archiveGeneration.current;
     setArchiveSpec({
       title: "Remove image from library?",
       summary: t("Images used as the cover, hero or chat image must be replaced first."),
@@ -160,16 +164,19 @@ export function CharacterImageLibrary({
       reasonLabel: "Removal reason",
       submitLabel: "Remove from library",
       onSubmit: async (reason) => {
+        if (generation !== archiveGeneration.current) return;
         try {
           await bulkArchiveAssets({
             assetIds: [asset.id],
             reason,
-            fallbackMessage: t("Image could not be removed"),
           });
+          if (generation !== archiveGeneration.current) return;
           setMessage(t("Image removed from the library"));
           await loadAssets();
         } catch (cause) {
-          if (cause instanceof AssetBulkArchiveError && cause.details.dependencies.length > 0) {
+          if (generation !== archiveGeneration.current) return;
+          const blocker = assetArchiveBlocker(cause);
+          if (blocker?.kind === "dependency" && blocker.dependencies.length > 0) {
             throw new Error(t("Replace this image in its placement above before removing it."));
           }
           throw cause;
@@ -346,7 +353,7 @@ export function CharacterImageLibrary({
           </WorkspaceButton>
         ) : null}
       </section>
-      {archiveSpec ? <ConfirmDialog onClose={() => setArchiveSpec(null)} spec={archiveSpec} /> : null}
+      {archiveSpec ? <ConfirmDialog onClose={() => setArchiveSpec(current => current === archiveSpec ? null : current)} spec={archiveSpec} /> : null}
     </div>
   );
 }

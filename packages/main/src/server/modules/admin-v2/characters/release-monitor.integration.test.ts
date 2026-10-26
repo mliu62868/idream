@@ -4,6 +4,8 @@ import { resolvePermissions } from "@/server/admin/permissions";
 import { drainAdminCommands } from "@/processes/admin-command-worker";
 import { prisma } from "@/server/lib/db";
 import { buildTodayProjection } from "@/server/modules/admin-v2/today/query";
+import { toInputJson } from "../shared/prisma-json";
+import { characterReleaseSnapshotHash } from "./release-snapshot";
 import {
   CHARACTER_RELEASE_MONITOR_POLICY_VERSION,
   collectReleaseMonitorFacts,
@@ -55,6 +57,31 @@ describe("Release route qualification and post-publish monitor", () => {
         },
       ],
     };
+  }
+
+  async function createProviderReleaseFixture(label: string, generationProvenance: ReturnType<typeof releaseGenerationProvenance>) {
+    const source = await prisma.characterRelease.findUniqueOrThrow({ where: { id: releaseId } });
+    const snapshot = {
+      projectId: source.projectId,
+      revisionId: source.revisionId,
+      characterContentVersionId: source.characterContentVersionId,
+      visualProfileId: source.visualProfileId,
+      visualProfileVersion: source.visualProfileVersion,
+      referenceSetRevisionId: source.referenceSetRevisionId,
+      releasePlacementManifest: toInputJson(source.releasePlacementManifest),
+      generationProvenance,
+    };
+    const fixture = await prisma.characterRelease.create({ data: {
+      ...snapshot,
+      id: `monitor-${label}-release-${suffix}`,
+      snapshotHash: characterReleaseSnapshotHash(snapshot),
+      readiness: "ready",
+      status: "published",
+      publishedAt,
+      version: source.version,
+    } });
+    await prisma.characterServing.update({ where: { characterId }, data: { currentReleaseId: fixture.id } });
+    return fixture.id;
   }
 
   beforeAll(async () => {
@@ -458,19 +485,14 @@ describe("Release route qualification and post-publish monitor", () => {
   });
 
   it("uses immutable generation providers to fail closed for mock avatar, hero, and chat slots", async () => {
-    await prisma.characterRelease.update({
-      where: { id: releaseId },
-      data: {
-        generationProvenance: releaseGenerationProvenance({
-          character_avatar: "mock",
-          character_hero: "mock-image",
-          character_chat: "mocked-provider",
-        }),
-      },
-    });
+    const providerReleaseId = await createProviderReleaseFixture("mock-provider", releaseGenerationProvenance({
+      character_avatar: "mock",
+      character_hero: "mock-image",
+      character_chat: "mocked-provider",
+    }));
     try {
       const result = await collectReleaseMonitorFacts(prisma, {
-        releaseId,
+        releaseId: providerReleaseId,
         window: "72h",
         now,
       });
@@ -507,6 +529,7 @@ describe("Release route qualification and post-publish monitor", () => {
             },
           },
           operationalChecks: {
+            servingPointerLive: true,
             releaseAvatarRenderable: true,
             releaseAvatarVisible: false,
             releaseHeroRenderable: true,
@@ -519,32 +542,22 @@ describe("Release route qualification and post-publish monitor", () => {
         monitor: { status: "action_required" },
       });
     } finally {
-      await prisma.characterRelease.update({
-        where: { id: releaseId },
-        data: { generationProvenance: releaseGenerationProvenance() },
-      });
+      await prisma.characterServing.update({ where: { characterId }, data: { currentReleaseId: releaseId } });
+      await prisma.releaseMonitor.deleteMany({ where: { releaseId: providerReleaseId } });
+      await prisma.characterRelease.delete({ where: { id: providerReleaseId } });
     }
   });
 
   it("fails closed when strict v2 provider evidence is missing or duplicated", async () => {
     const valid = releaseGenerationProvenance();
-    await prisma.characterRelease.update({
-      where: { id: releaseId },
-      data: {
-        generationProvenance: {
-          ...valid,
-          placements: [
-            valid.placements[0],
-            valid.placements[1],
-            valid.placements[1],
-          ],
-        },
-      },
+    const providerReleaseId = await createProviderReleaseFixture("invalid-provider-evidence", {
+      ...valid,
+      placements: [valid.placements[0], valid.placements[1], valid.placements[1]],
     });
     try {
       await expect(
         collectReleaseMonitorFacts(prisma, {
-          releaseId,
+          releaseId: providerReleaseId,
           window: "72h",
           now,
         }),
@@ -571,6 +584,7 @@ describe("Release route qualification and post-publish monitor", () => {
             },
           },
           operationalChecks: {
+            servingPointerLive: true,
             releaseHeroVisible: false,
             releaseChatVisible: false,
             chatAuthorityReady: false,
@@ -579,10 +593,9 @@ describe("Release route qualification and post-publish monitor", () => {
         monitor: { status: "action_required" },
       });
     } finally {
-      await prisma.characterRelease.update({
-        where: { id: releaseId },
-        data: { generationProvenance: releaseGenerationProvenance() },
-      });
+      await prisma.characterServing.update({ where: { characterId }, data: { currentReleaseId: releaseId } });
+      await prisma.releaseMonitor.deleteMany({ where: { releaseId: providerReleaseId } });
+      await prisma.characterRelease.delete({ where: { id: providerReleaseId } });
     }
   });
 

@@ -275,7 +275,7 @@ export const adminZhCommon: Record<string, string> = {
   "Image access required": "需要图片资产权限",
   "Image consistency review": "图片一致性复核",
   "Image details": "图片详情",
-  "Image route": "图片生成路线",
+  "Generation route": "生成路线",
   "Immutable QA evidence": "不可变 QA 证据",
   "Inactive": "未上线",
   "Incident": "事故",
