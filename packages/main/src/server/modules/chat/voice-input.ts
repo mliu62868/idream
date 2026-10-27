@@ -3,7 +3,7 @@ import { VOICE_INPUT_LANGUAGES, VOICE_INPUT_MAX_DURATION_MS, VOICE_INPUT_MAX_UPL
 import { getAuthCtx, requireAgeGate, requireAgeVerified } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import { asrConfigured, asrReady, requestAsr } from "@/server/providers/asr/parakeet-redux";
+import { asrConfigured, asrReady, requestAsr } from "@/server/providers/asr/gateway";
 import { assertChatSessionServingAuthority } from "./turn-ledger";
 import { readVoiceUpload } from "@/server/providers/asr/upload";
 

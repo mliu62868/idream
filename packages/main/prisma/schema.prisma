@@ -326,6 +326,7 @@ model VoiceClipRequest {
   messageId          String
   replyAttempt       Int              @default(0) // 0: legacy reply version cannot be proven
   voiceCallUtteranceId String?         @unique
+  executionAuthority Json?            // Current attempt: standalone or an exact Call lease; null means historical authority is unknown.
   requestFingerprint String
   synthesisPayload   Json?
   billingAuthority   Json?

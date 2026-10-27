@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import httpx
-from scripts import parakeet_asr_gateway as g
+from scripts import asr_gateway as g
 
 
 def wav(seconds=1, *, pcm=None):
@@ -60,8 +60,12 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         result = await self.client.get("/health", headers=self.headers())
         self.assertEqual(result.status_code, 200)
         self.assertEqual(result.json()["languages"], ["en"])
-        self.assertEqual(result.json()["model"], "moondream/parakeet-redux")
-        self.assertEqual(result.json()["modelRevision"], "2bf128600aac4b16946f7ed8372e56117fe5e23b")
+        self.assertEqual(result.json()["model"], "mlx-community/whisper-large-v3-mlx")
+        self.assertEqual(result.json()["modelRevision"], "49e6aa286ad60c14352c404340ded53710378a11")
+        self.assertEqual(result.json()["provider"], "mlx-whisper")
+        self.assertEqual(result.json()["runtimeVersion"], "0.4.3")
+        self.assertEqual(result.json()["device"], "metal")
+        self.assertEqual(result.json()["precision"], "float16")
 
     async def test_real_decode_replay_conflict_and_scope(self):
         first = await self.post()

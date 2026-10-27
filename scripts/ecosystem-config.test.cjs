@@ -27,6 +27,7 @@ const {
   verifyDevelopmentRuntime,
   verifyProductionRuntime,
   verifyAsrRuntime,
+  stopAsrRuntimes,
   withPm2TransitionLock,
 } = require("./start-pm2-ecosystem.cjs");
 
@@ -2386,8 +2387,8 @@ test("orphan recovery package scripts preserve explicit quiesce, plan and apply 
 
 test("ASR readiness requires the pinned ready model and keeps its token off argv", () => {
   const calls = [];
-  const runtimeEnv = { ASR_PROVIDER: "parakeet-redux", PARAKEET_ASR_API_TOKEN: "fixture-private", PARAKEET_ASR_API_URL: "http://127.0.0.1:8064" };
-  const ready = { ready: true, model: "moondream/parakeet-redux", modelRevision: "2bf128600aac4b16946f7ed8372e56117fe5e23b", runtimeVersion: "2.6.1" };
+  const runtimeEnv = { ASR_PROVIDER: "mlx-whisper", ASR_API_TOKEN: "fixture-private", ASR_API_URL: "http://127.0.0.1:8064" };
+  const ready = { ready: true, provider: "mlx-whisper", model: "mlx-community/whisper-large-v3-mlx", modelRevision: "49e6aa286ad60c14352c404340ded53710378a11", runtimeVersion: "0.4.3", device: "metal", precision: "float16" };
   assert.equal(verifyAsrRuntime({ runtimeEnv, attempts: 2, delay() {}, spawnSync: scriptedSpawn([
     { status: 0, stdout: JSON.stringify({ ...ready, ready: false }) },
     { status: 0, stdout: JSON.stringify(ready) },
@@ -2405,10 +2406,118 @@ test("ASR readiness requires the pinned ready model and keeps its token off argv
 });
 
 test("ASR topology is optional and uses one offline resident process", () => {
-  const config = loadConfig("development", { ASR_PROVIDER: "parakeet-redux" });
-  const asr = byName(config, "parakeet-asr");
+  const config = loadConfig("development", { ASR_PROVIDER: "mlx-whisper" });
+  const asr = byName(config, "asr");
   assert.equal(asr.instances, 1);
   assert.equal(asr.kill_timeout, 35000);
   assert.equal(asr.env.HF_HUB_OFFLINE, "1");
-  assert.equal(loadConfig().apps.some(app => app.name === "parakeet-asr"), false);
+  assert.equal(loadConfig().apps.some(app => app.name === "asr"), false);
+});
+
+function registeredAsr(name, status = "online") {
+  const prefix = name === "parakeet-asr" ? "PARAKEET_ASR" : "ASR";
+  return { name, pm2_env: { status, [`${prefix}_API_TOKEN`]: "old-resident-token", [`${prefix}_PORT`]: "8064" } };
+}
+
+function asrHealth(name, overrides = {}) {
+  return {
+    ready: true, active: 0,
+    ...(name === "parakeet-asr"
+      ? { provider: "photon", model: "moondream/parakeet-redux", modelRevision: "2bf128600aac4b16946f7ed8372e56117fe5e23b", runtimeVersion: "2.6.1", device: "cpu" }
+      : { provider: "mlx-whisper", model: "mlx-community/whisper-large-v3-mlx", modelRevision: "49e6aa286ad60c14352c404340ded53710378a11", runtimeVersion: "0.4.3", device: "metal", precision: "float16" }),
+    ...overrides,
+  };
+}
+
+for (const name of ["parakeet-asr", "asr"]) {
+  test(`${name} retirement authenticates the resident environment and confirms stop before delete`, () => {
+    const calls = [];
+    const result = stopAsrRuntimes({
+      runtimeEnv: { ASR_API_TOKEN: "replacement-token" },
+      processes: [registeredAsr(name)], deleteDefinitions: true,
+      spawnSync: scriptedSpawn([
+        { status: 0, stdout: JSON.stringify(asrHealth(name)) },
+        { status: 0 },
+        { status: 0, stdout: noisyPm2List([registeredAsr(name, "stopped")]) },
+        { status: 0 },
+        { status: 0, stdout: noisyPm2List([]) },
+      ], calls),
+    });
+    assert.equal(result.status, 0);
+    assert.deepEqual(result.processes, []);
+    assert.deepEqual(commandList(calls).map(([command, args]) => [command, ...args.slice(0, 2)]), [
+      ["curl", "--fail", "--silent"], ["pm2", "stop", name], ["pm2", "jlist"], ["pm2", "delete", name], ["pm2", "jlist"],
+    ]);
+    assert.match(calls[0].options.input, /old-resident-token/);
+    assert.equal(calls[0].options.input.includes("replacement-token"), false);
+    assert.equal(calls[0].args.join(" ").includes("old-resident-token"), false);
+  });
+
+  for (const [reason, response] of [
+    ["busy", { status: 0, stdout: JSON.stringify(asrHealth(name, { active: 1 })) }],
+    ["missing active count", { status: 0, stdout: JSON.stringify(asrHealth(name, { active: undefined })) }],
+    ["noninteger active count", { status: 0, stdout: JSON.stringify(asrHealth(name, { active: "0" })) }],
+    ["wrong model", { status: 0, stdout: JSON.stringify(asrHealth(name, { model: "unrelated" })) }],
+    ["unauthorized", { status: 22, stdout: "" }],
+    ["malformed health", { status: 0, stdout: "not-json" }],
+  ]) {
+    test(`${name} retirement refuses ${reason} before stop or delete`, () => {
+      const calls = [];
+      const result = stopAsrRuntimes({ runtimeEnv: {}, processes: [registeredAsr(name)], deleteDefinitions: true, spawnSync: scriptedSpawn([response], calls) });
+      assert.equal(result.status, 1);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].command, "curl");
+    });
+  }
+}
+
+test("ASR retirement verifies every resident before stopping the first", () => {
+  const calls = [];
+  const result = stopAsrRuntimes({ runtimeEnv: {}, processes: [registeredAsr("asr"), registeredAsr("parakeet-asr")], deleteDefinitions: true, spawnSync: scriptedSpawn([
+    { status: 0, stdout: JSON.stringify(asrHealth("asr")) },
+    { status: 0, stdout: JSON.stringify(asrHealth("parakeet-asr", { active: 1 })) },
+  ], calls) });
+  assert.equal(result.status, 1);
+  assert.deepEqual(calls.map(call => call.command), ["curl", "curl"]);
+});
+
+test("ASR retirement refuses a stop survivor without deleting its definition", () => {
+  const calls = [];
+  const result = stopAsrRuntimes({ runtimeEnv: {}, processes: [registeredAsr("parakeet-asr")], deleteDefinitions: true, spawnSync: scriptedSpawn([
+    { status: 0, stdout: JSON.stringify(asrHealth("parakeet-asr")) }, { status: 0 },
+    { status: 0, stdout: noisyPm2List([registeredAsr("parakeet-asr")]) },
+  ], calls) });
+  assert.equal(result.status, 1);
+  assert.equal(calls.some(call => call.command === "pm2" && call.args[0] === "delete"), false);
+});
+
+test("ASR retirement refuses a definition that survives deletion", () => {
+  const calls = [];
+  const result = stopAsrRuntimes({ runtimeEnv: {}, processes: [registeredAsr("parakeet-asr", "stopped")], deleteDefinitions: true, spawnSync: scriptedSpawn([
+    { status: 0, stdout: noisyPm2List([registeredAsr("parakeet-asr", "stopped")]) }, { status: 0 },
+    { status: 0, stdout: noisyPm2List([registeredAsr("parakeet-asr", "stopped")]) },
+  ], calls) });
+  assert.equal(result.status, 1);
+  assert.deepEqual(commandList(calls), [["pm2", ["jlist"]], ["pm2", ["delete", "parakeet-asr"]], ["pm2", ["jlist"]]]);
+});
+
+test("PM2 start refuses an active legacy ASR after the generation fence", () => {
+  const calls = [];
+  const resident = [registeredAsr("parakeet-asr")];
+  const result = runPm2Ecosystem({
+    args: ["development", "start"], env: { APP_ENV: "development", ASR_PROVIDER: "mlx-whisper" },
+    computeSourceRevision: () => "fixture-revision", verifyGenImageWorkerOwnership: () => 0,
+    spawnSync: scriptedSpawn([
+      { status: 0, stdout: noisyPm2List(resident) }, { status: 0 },
+      { status: 0, stdout: noisyPm2List(resident) },
+      { status: 0, stdout: noisyPm2List(resident) },
+      { status: 0, stdout: noisyPm2List(resident) }, { status: 0 },
+      { status: 0, stdout: JSON.stringify(asrHealth("parakeet-asr", { active: 1 })) },
+    ], calls),
+  });
+  assert.equal(result, 1);
+  assert.ok(calls.some(call => call.args.includes("generation-cutover:pause-and-drain")));
+  assert.ok(calls.some(call => call.args.includes("check:generation-cutover")));
+  assert.equal(calls.some(call => call.command === "pm2" && ["stop", "delete", "start", "restart"].includes(call.args[0])), false);
+  assert.equal(calls.some(call => call.args.includes("generation-cutover:resume")), false);
 });

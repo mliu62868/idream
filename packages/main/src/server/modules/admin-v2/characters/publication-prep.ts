@@ -1,7 +1,7 @@
 import { loadCharacterSoulSnapshot } from "@idream/shared/chat/persona";
 import { hasHydratableMediaBlobAuthority } from "@/server/lib/media-asset-authority";
 import { moderateText } from "@/server/moderation/text-authority";
-import { assertIdentityImageMediaInTx } from "@/server/modules/ourdream/customer-media-authority";
+import { assertIdentityImageMedia } from "@/server/modules/ourdream/customer-media-authority";
 import type { Prisma } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "../shared/prisma-json";
@@ -227,7 +227,7 @@ export async function prepareApprovedCustomerCharacterPublication(
     if (!soul.ok || soul.snapshot.soul.age < 18) throw Errors.badRequest("Character Soul must describe an adult");
     if (!character.imageAssetId) throw Errors.badRequest("The character identity image is missing");
     await lockCharacterMediaAssetAuthorities(tx, [character.imageAssetId]);
-    const image = await assertIdentityImageMediaInTx(tx, character.imageAssetId, character.creatorId);
+    const image = await assertIdentityImageMedia(character.imageAssetId, character.creatorId, tx);
     if (image.characterId !== character.id) throw Errors.badRequest("The identity image belongs to another character");
     if (!hasHydratableMediaBlobAuthority(image)) throw Errors.badRequest("The identity image has no available media source");
     const moderation = await moderateText("character", character.id, JSON.stringify({

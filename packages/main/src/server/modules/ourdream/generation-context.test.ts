@@ -153,6 +153,35 @@ describe("Chat to Generate authority", () => {
     await expect(loadGenerationContext("user-original", { ...selector, mediaAssetId: "image-original" })).rejects.toThrow("available delivery");
   });
 
+  it.each([
+    { label: "nested legacy identity", metadata: { effect: { attempt: 2 } }, attempt: 2 },
+    { label: "non-numeric root with nested identity", metadata: { attempt: "2", effect: { attempt: 2 } }, attempt: 2 },
+    { label: "null root with nested identity", metadata: { attempt: null, effect: { attempt: 2 } }, attempt: 2 },
+    { label: "legacy identity without an attempt", metadata: {}, attempt: 1 },
+    { label: "unsafe numeric root", metadata: { attempt: Number.MAX_SAFE_INTEGER + 1 }, attempt: 1 },
+  ])("keeps the delivered attachment available to Generate: $label", async ({ metadata, attempt }) => {
+    const turn = originalTurn();
+    db.chatTurn.findFirst.mockResolvedValue({
+      ...turn, attempt,
+      executionSnapshot: { ...turn.executionSnapshot, attempt },
+      attachments: [{ ...turn.attachments[0], metadata }],
+    });
+    await expect(loadGenerationContext("user-original", { ...selector, attempt, mediaAssetId: "image-original" }))
+      .resolves.toMatchObject({ sourceMedia: { id: "image-original" }, source: { attempt } });
+  });
+
+  it.each([1, 0, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects attachment root attempt %s instead of using a newer nested identity",
+    async (attempt) => {
+      const turn = originalTurn();
+      db.chatTurn.findFirst.mockResolvedValue({
+        ...turn, attachments: [{ ...turn.attachments[0], metadata: { attempt, effect: { attempt: 2 } } }],
+      });
+      await expect(loadGenerationContext("user-original", { ...selector, mediaAssetId: "image-original" }))
+        .rejects.toThrow("available delivery");
+    },
+  );
+
   it("rejects forged visual pins and target changes while accepting explicit prompt edits", async () => {
     const { handoff, token } = await issued();
     const body = generationJobSchema.parse({ characterId: "character-1", chatHandoffToken: token, prompt: "Turn toward the window." });

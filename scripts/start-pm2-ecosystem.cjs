@@ -32,7 +32,7 @@ function localAudioEnvironment(environment) {
   const values = {};
   for (const key of [
     "VOICE_PROVIDER", "VOICE_IDENTITY_PROVIDER", "FISH_AUDIO_PORT", "POCKET_TTS_PORT",
-    "ASR_PROVIDER", "PARAKEET_ASR_API_URL", "PARAKEET_ASR_API_TOKEN",
+    "ASR_PROVIDER", "ASR_API_URL", "ASR_API_TOKEN",
   ]) {
     if (configured[key] !== undefined) values[key] = configured[key];
   }
@@ -78,6 +78,9 @@ const productionQuiescenceTargets = [
   ...productionDrainWorkerTargets,
 ];
 const voiceRuntimeTargets = structuralTopology.voiceRuntimeTargets;
+// The previous process name is retained only to retire an already-running
+// deployment safely; it is never a provider alias or a start target.
+const asrRuntimeTargets = ["asr", "parakeet-asr"];
 const productionRuntimeTargets = structuralTopology.definitionPlanTargets;
 const quiescedStatuses = new Set(["stopped", "errored"]);
 const runtimeModes = new Set(Object.keys(RUNTIME_CERTIFICATION));
@@ -448,13 +451,13 @@ function verifyProductionRuntime(options) {
     cwd: repoRoot,
   });
   const voiceProbes = configuredVoiceRuntimeTargets(runtimeEnv).map((name) =>
-    name === "parakeet-asr"
+    name === "asr"
       ? {
           name,
           command: "curl",
-          args: ["--fail", "--silent", "--show-error", "--connect-timeout", "2", "--max-time", "5", "--output", "/dev/null", "--config", "-", new URL("/health", runtimeEnv.PARAKEET_ASR_API_URL ?? "http://127.0.0.1:8064").href],
+          args: ["--fail", "--silent", "--show-error", "--connect-timeout", "2", "--max-time", "5", "--output", "/dev/null", "--config", "-", new URL("/health", runtimeEnv.ASR_API_URL ?? "http://127.0.0.1:8064").href],
           // Internal credentials must not appear in the command line / ps.
-          input: `header = "Authorization: Bearer ${String(runtimeEnv.PARAKEET_ASR_API_TOKEN ?? "").replace(/[\r\n"\\]/g, "")}"\n`,
+          input: `header = "Authorization: Bearer ${String(runtimeEnv.ASR_API_TOKEN ?? "").replace(/[\r\n"\\]/g, "")}"\n`,
           cwd: repoRoot,
         }
       : name === "pocket-tts"
@@ -620,14 +623,93 @@ function verifyGenImageWorkerOwnership({
 
 // First launch after dependency installation can take longer than a warm
 // restart. Keep admission paused while the pinned native runtime loads.
+function isCurrentAsrHealth(health) {
+  return health?.ready === true && health.provider === "mlx-whisper" &&
+    health.model === "mlx-community/whisper-large-v3-mlx" &&
+    health.modelRevision === "49e6aa286ad60c14352c404340ded53710378a11" &&
+    health.runtimeVersion === "0.4.3" && health.device === "metal" &&
+    health.precision === "float16";
+}
+
+function stopAsrRuntimes({ spawnSync: spawn, runtimeEnv, processes, deleteDefinitions = false }) {
+  const registered = processes.filter(process => asrRuntimeTargets.includes(process?.name));
+  if (registered.length === 0) return { status: 0, processes };
+
+  // Main admission is already stopped. Prove every resident ASR is idle before
+  // signalling any of them; queued/uploading/decoding operations all count.
+  for (const registeredProcess of registered) {
+    if (quiescedStatuses.has(processStatus(registeredProcess))) continue;
+    const legacy = registeredProcess.name === "parakeet-asr";
+    const prefix = legacy ? "PARAKEET_ASR" : "ASR";
+    const processEnv = { ...registeredProcess.pm2_env?.env, ...registeredProcess.pm2_env };
+    const token = String(processEnv[`${prefix}_API_TOKEN`] ?? "");
+    const host = processEnv[`${prefix}_HOST`] ?? "127.0.0.1";
+    const port = processEnv[`${prefix}_PORT`] ?? "8064";
+    let url;
+    try {
+      url = new URL("/health", processEnv[`${prefix}_API_URL`] ?? `http://${host}:${port}`).href;
+    } catch {
+      return { status: 1, processes };
+    }
+    if (!token || /[\r\n"\\]/.test(token)) {
+      process.stderr.write(`Cannot authenticate ${registeredProcess.name} idle state; ASR was not stopped\n`);
+      return { status: 1, processes };
+    }
+    const result = spawn("curl", ["--fail", "--silent", "--connect-timeout", "1", "--max-time", "2", "--config", "-", url], {
+      cwd: repoRoot, env: runtimeEnv, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"],
+      input: `header = "Authorization: Bearer ${token}"\n`,
+    });
+    if (result.error) throw result.error;
+    let idle = false;
+    if (result.status === 0) {
+      try {
+        const health = JSON.parse(result.stdout);
+        const identified = legacy
+          ? health.ready === true && health.provider === "photon" &&
+            health.model === "moondream/parakeet-redux" &&
+            health.modelRevision === "2bf128600aac4b16946f7ed8372e56117fe5e23b" &&
+            health.runtimeVersion === "2.6.1" && health.device === "cpu"
+          : isCurrentAsrHealth(health);
+        idle = identified && Number.isSafeInteger(health.active) && health.active === 0;
+      } catch { /* Unknown health is never evidence that a request can be discarded. */ }
+    }
+    if (!idle) {
+      process.stderr.write(`${registeredProcess.name} is active or its idle state is unverified; ASR was not stopped\n`);
+      return { status: 1, processes };
+    }
+  }
+  const stopped = stopProductionTargets(spawn, runtimeEnv, processes, asrRuntimeTargets);
+  if (stopped !== 0) return { status: stopped, processes };
+  const confirmedStopped = readPm2ProcessList(spawn, runtimeEnv);
+  if (!confirmedStopped.ok) return { status: confirmedStopped.status, processes };
+  if (hasUnsafeProductionTarget(confirmedStopped.processes, asrRuntimeTargets)) {
+    process.stderr.write("ASR remained online after stop; no ASR definition was deleted\n");
+    return { status: 1, processes: confirmedStopped.processes };
+  }
+  if (!deleteDefinitions) return { status: 0, processes: confirmedStopped.processes };
+  for (const name of asrRuntimeTargets) {
+    if (!confirmedStopped.processes.some(process => process?.name === name)) continue;
+    const deleted = spawn("pm2", ["delete", name], { cwd: repoRoot, env: runtimeEnv, stdio: "inherit" });
+    if (deleted.error) throw deleted.error;
+    if (deleted.status !== 0) return { status: deleted.status ?? 1, processes: confirmedStopped.processes };
+  }
+  const confirmedDeleted = readPm2ProcessList(spawn, runtimeEnv);
+  if (!confirmedDeleted.ok) return { status: confirmedDeleted.status, processes: confirmedStopped.processes };
+  if (confirmedDeleted.processes.some(process => asrRuntimeTargets.includes(process?.name))) {
+    process.stderr.write("ASR definition survived delete; no replacement was started\n");
+    return { status: 1, processes: confirmedDeleted.processes };
+  }
+  return { status: 0, processes: confirmedDeleted.processes };
+}
+
 function verifyAsrRuntime({ spawnSync: spawn, runtimeEnv, attempts = 120, delay = blockingDelay }) {
-  if (runtimeEnv.ASR_PROVIDER !== "parakeet-redux") return 0;
-  const token = String(runtimeEnv.PARAKEET_ASR_API_TOKEN ?? "");
+  if (runtimeEnv.ASR_PROVIDER !== "mlx-whisper") return 0;
+  const token = String(runtimeEnv.ASR_API_TOKEN ?? "");
   if (!token || /[\r\n"\\]/.test(token)) {
-    process.stderr.write("Parakeet ASR requires a valid internal token; Generation queues remain paused\n");
+    process.stderr.write("Whisper ASR requires a valid internal token; Generation queues remain paused\n");
     return 1;
   }
-  const url = new URL("/health", runtimeEnv.PARAKEET_ASR_API_URL ?? "http://127.0.0.1:8064").href;
+  const url = new URL("/health", runtimeEnv.ASR_API_URL ?? "http://127.0.0.1:8064").href;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const result = spawn("curl", ["--fail", "--silent", "--connect-timeout", "1", "--max-time", "2", "--config", "-", url], {
       cwd: repoRoot, env: runtimeEnv, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"],
@@ -637,12 +719,12 @@ function verifyAsrRuntime({ spawnSync: spawn, runtimeEnv, attempts = 120, delay 
     if (result.status === 0) {
       try {
         const health = JSON.parse(result.stdout);
-        if (health.ready === true && health.model === "moondream/parakeet-redux" && health.modelRevision === "2bf128600aac4b16946f7ed8372e56117fe5e23b" && health.runtimeVersion === "2.6.1") return 0;
+        if (isCurrentAsrHealth(health)) return 0;
       } catch { /* A TCP listener or unrelated service is not model readiness. */ }
     }
     if (attempt + 1 < attempts) delay(500);
   }
-  process.stderr.write("Pinned Parakeet ASR did not become ready; Generation queues remain paused\n");
+  process.stderr.write("Pinned Whisper ASR did not become ready; Generation queues remain paused\n");
   return 1;
 }
 
@@ -785,6 +867,9 @@ function runPm2Ecosystem(options = {}) {
   });
   if (noImageWorkers !== 0) return noImageWorkers;
   if (action === "stop") {
+    const asrStopped = stopAsrRuntimes({ spawnSync: spawn, runtimeEnv, processes: quiescedProcesses });
+    if (asrStopped.status !== 0) return asrStopped.status;
+    quiescedProcesses = asrStopped.processes;
     const voiceStopped = stopProductionTargets(
       spawn,
       runtimeEnv,
@@ -797,7 +882,7 @@ function runPm2Ecosystem(options = {}) {
     if (
       hasUnsafeProductionTarget(
         finalSnapshot.processes,
-        [...productionRuntimeTargets, ...voiceRuntimeTargets],
+        [...productionRuntimeTargets, ...voiceRuntimeTargets, ...asrRuntimeTargets],
       )
     ) {
       return 1;
@@ -814,6 +899,11 @@ function runPm2Ecosystem(options = {}) {
   });
   if (gate.error) throw gate.error;
   if (gate.status !== 0) return gate.status ?? 1;
+
+  definitionRecreated = quiescedProcesses.some(process => asrRuntimeTargets.includes(process?.name));
+  const asrStopped = stopAsrRuntimes({ spawnSync: spawn, runtimeEnv, processes: quiescedProcesses, deleteDefinitions: true });
+  if (asrStopped.status !== 0) return asrStopped.status;
+  quiescedProcesses = asrStopped.processes;
 
   {
     const definitionPlan = mode === "production"
@@ -848,7 +938,7 @@ function runPm2Ecosystem(options = {}) {
         return 1;
       }
     }
-    definitionRecreated = definitionPlan.requiresStart;
+    definitionRecreated ||= definitionPlan.requiresStart;
   }
 
   // Pocket owns default English speech. Recreate it on every topology start so
@@ -858,12 +948,6 @@ function runPm2Ecosystem(options = {}) {
     env: runtimeEnv,
     stdio: "ignore",
   });
-  if (runtimeEnv.ASR_PROVIDER === "parakeet-redux" || quiescedProcesses.some(process => process?.name === "parakeet-asr")) {
-    const deleted = spawn("pm2", ["delete", "parakeet-asr"], { cwd: repoRoot, env: runtimeEnv, stdio: "ignore" });
-    if (deleted.error) throw deleted.error;
-    if (deleted.status !== 0 && quiescedProcesses.some(process => process?.name === "parakeet-asr")) return deleted.status ?? 1;
-    // A missing optional process is expected on the first enabled start.
-  }
 
   const pm2Args =
     action === "start" || definitionRecreated
@@ -954,6 +1038,7 @@ module.exports = {
   withPm2TransitionLock,
   verifyDevelopmentRuntime,
   verifyAsrRuntime,
+  stopAsrRuntimes,
   productionAdmissionTargets,
   productionDrainWorkerTargets,
   productionQuiescenceTargets,

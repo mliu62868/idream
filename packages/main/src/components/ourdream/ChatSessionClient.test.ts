@@ -1,17 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  applyLocalStreamState,
   chatAttachmentCostLabel,
   chatUpgradeLinkLabel,
   chatViewPinAfterScroll,
 } from "./ChatSessionClient";
-
-const streamingReply = {
-  id: "assistant-1",
-  role: "assistant",
-  content: "",
-  status: "generating",
-};
 
 describe("chat upgrade reason", () => {
   it("keeps the upgrade action aligned with the blocked capability", () => {
@@ -19,57 +11,6 @@ describe("chat upgrade reason", () => {
       "Upgrade for unlimited messages",
     );
     expect(chatUpgradeLinkLabel("dreamcoins")).toBe("Get more dreamcoins");
-  });
-});
-
-describe("local stream state over polled session rows", () => {
-  it("keeps streamed text when the polled row is still empty", () => {
-    const [reply] = applyLocalStreamState(
-      [streamingReply],
-      new Map([["assistant-1", { content: "Once upon", stopped: false }]]),
-    );
-    expect(reply?.content).toBe("Once upon");
-    expect(reply?.status).toBe("generating");
-  });
-
-  it("yields to a terminal row, including a shorter moderated rewrite", () => {
-    const finalized = {
-      ...streamingReply,
-      content: "Once upon a time.",
-      status: "sent",
-    };
-    expect(
-      applyLocalStreamState(
-        [finalized],
-        new Map([["assistant-1", { content: "Once upon", stopped: false }]]),
-      )[0]?.content,
-    ).toBe("Once upon a time.");
-
-    const moderated = { ...streamingReply, content: "Blocked.", status: "blocked" };
-    expect(
-      applyLocalStreamState(
-        [moderated],
-        new Map([
-          ["assistant-1", { content: "the raw streamed reply", stopped: false }],
-        ]),
-      )[0]?.content,
-    ).toBe("Blocked.");
-  });
-
-  it("freezes a stopped reply at the text that arrived", () => {
-    const [reply] = applyLocalStreamState(
-      [streamingReply],
-      new Map([["assistant-1", { content: "Once upon", stopped: true }]]),
-    );
-    expect(reply?.content).toBe("Once upon");
-    expect(reply?.status).toBe("cancelled");
-  });
-
-  it("leaves untracked messages untouched", () => {
-    const messages = [streamingReply];
-    expect(applyLocalStreamState(messages, new Map())).toBe(messages);
-    expect(applyLocalStreamState(messages, new Map([["other", { content: "x", stopped: false }]]))[0])
-      .toBe(streamingReply);
   });
 });
 

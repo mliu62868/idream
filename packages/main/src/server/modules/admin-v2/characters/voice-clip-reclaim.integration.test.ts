@@ -561,6 +561,7 @@ describe("Character Voice clip reclaim authority", () => {
         characterId,
         messageId: `${requestId}-message`,
         replyAttempt: overrides.replyAttempt ?? turn.attempt,
+        executionAuthority: { version: 1, kind: "standalone" },
         requestFingerprint: `${requestId}-fingerprint`,
         synthesisPayload:
           overrides.synthesisPayload === null

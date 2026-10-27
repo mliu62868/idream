@@ -78,6 +78,47 @@ async function fixture() {
 }
 
 describe("Chat image retry delivery authority", () => {
+  it("quotes historical attachment attempts consistently with Chat without admitting another reply version", async () => {
+    const f = await fixture();
+    const attachment = await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: f.accepted.attachmentId } });
+    const metadata = JSON.parse(JSON.stringify(attachment.metadata));
+    const quote = () => api("POST", `generation/jobs/${f.accepted.generationJobId}/retry/quote`, { userId: f.userId, ageGate: true });
+    const setAttempt = (attempt: number, nestedAttempt: number) => prisma.chatTurnAttachment.update({
+      where: { id: attachment.id }, data: { metadata: { ...metadata, attempt, effect: { ...metadata.effect, attempt: nestedAttempt } } },
+    });
+    const balance = await dreamcoinBalance(f.userId);
+
+    for (const attempt of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      // Legacy invalid numeric identity belongs to attempt 1; it must not
+      // borrow a different nested attempt or disappear only from retry quotes.
+      await setAttempt(attempt, 2);
+      const selected = (await getChatSession(f.userId, f.session.id)).messages
+        .find(message => message.id === f.snapshot.assistantMessageId);
+      expect(selected?.attachments).toEqual([expect.objectContaining({ generationJobId: f.accepted.generationJobId, status: "failed" })]);
+      const response = await quote();
+      expectOk(response);
+      expect(parseGenerationRetryQuoteResponse(response.json).quote).toMatchObject({ generationJobId: f.accepted.generationJobId });
+    }
+
+    await setAttempt(1, 2);
+    expectOk(await quote());
+    await setAttempt(2, 1);
+    expectError(await quote(), 409);
+    const revised = await regenerateChatTurn(f.userId, f.snapshot.assistantMessageId);
+    expect(revised.attempt).toBe(2);
+    expectOk(await quote());
+    await setAttempt(1, 2);
+    expectError(await quote(), 409);
+    await setAttempt(0, 2);
+    expectError(await quote(), 409);
+    const stranger = `${P}quote-stranger-${randomUUID()}`;
+    await createUser({ id: stranger });
+    expectError(await api("POST", `generation/jobs/${f.accepted.generationJobId}/retry/quote`, { userId: stranger, ageGate: true }), 404);
+    expect(await dreamcoinBalance(f.userId)).toBe(balance);
+    expect(await prisma.generationJob.count({ where: { derivedFromJobId: f.accepted.generationJobId! } })).toBe(0);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId: f.userId, reason: "generation_spend" } })).toBe(0);
+  });
+
   it("rebinds once before dispatch, delivers in the same Chat, and reuses that delivery on regenerate", async () => {
     const f = await fixture();
     await grantCoins(f.userId, f.quoteAuthority.costDreamcoins - await dreamcoinBalance(f.userId), "exact_retry_balance");

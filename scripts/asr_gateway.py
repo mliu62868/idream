@@ -1,4 +1,4 @@
-"""Single resident Redux ASR. Audio and unsubmitted text are never persisted.
+"""Single resident MLX Whisper ASR. Audio and unsubmitted text are never persisted.
 
 INVARIANT: cancelling HTTP delivery does not release a running native inference
 slot. All Main instances must share this one gateway for user admission limits.
@@ -23,10 +23,14 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-MODEL_ID = "moondream/parakeet-redux"
-MODEL_REVISION = "2bf128600aac4b16946f7ed8372e56117fe5e23b"
-SDK_VERSION = "2.6.1"
-MODEL_SHA256 = "78ec25733ee0d0c1586d1346fc86db9d0c2e436e3a8ab1d32a82d1bb8f848d21"
+MODEL_ID = "mlx-community/whisper-large-v3-mlx"
+MODEL_REVISION = "49e6aa286ad60c14352c404340ded53710378a11"
+SDK_VERSION = "0.4.3"
+MODEL_FILES = {
+    "weights.npz": "05ff791ce3630fae47e7c51004e9666204d786246ec07cac6110af768099b40d",
+    "config.json": "34982ce6ae286095000f82ae9583b3431639e8b092bf60c961f203745e6500e3",
+}
+GATEWAY_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 # Product support, not the multilingual model's complete vocabulary.
 LANGUAGES = ["en"]
 MAX_BYTES = 8 * 1024 * 1024
@@ -39,9 +43,9 @@ DEADLINE = 30
 QUEUE_TIMEOUT = 2
 MAX_QUEUE = 4
 MAX_TEXT = 32000
-TEMP_DIR = Path(os.getenv("PARAKEET_ASR_TEMP_DIR", ".data/parakeet-asr/audio")).resolve()
+TEMP_DIR = Path(os.getenv("ASR_TEMP_DIR", ".data/asr/audio")).resolve()
 uploads = 0
-API_TOKEN = os.getenv("PARAKEET_ASR_API_TOKEN", "").strip()
+API_TOKEN = os.getenv("ASR_API_TOKEN", "").strip()
 runtime: Any = None
 healthy = False
 accepting = True
@@ -68,18 +72,54 @@ class Operation:
     uploaded: asyncio.Event = field(default_factory=asyncio.Event)
 
 
+class WhisperRuntime:
+    def __init__(self, snapshot: str):
+        self.snapshot = snapshot
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_error):
+        from mlx_whisper.transcribe import ModelHolder
+        ModelHolder.model = ModelHolder.model_path = None
+
+    def transcribe(self, *, audio, sample_rate, timestamps, language="en"):
+        import mlx_whisper
+        if sample_rate != SAMPLE_RATE or timestamps != "none":
+            raise ValueError("ASR requires normalized 16 kHz PCM without timestamps")
+        # No prompt, hotwords, or transcript rewriting. A fixed greedy decoder
+        # avoids stochastic retries and context leakage between recordings.
+        return mlx_whisper.transcribe(
+            audio, path_or_hf_repo=self.snapshot, language=language, task="transcribe",
+            temperature=0, condition_on_previous_text=False, fp16=True,
+            word_timestamps=False, verbose=None,
+        )
+
+
 def load_runtime():
     """Use only the pinned cached snapshot; installation is an explicit step."""
-    import moondream as md
+    import mlx.core as mx
+    from mlx_whisper.transcribe import ModelHolder
+    from mlx.utils import tree_flatten
     from huggingface_hub import snapshot_download
-    if version("moondream") != SDK_VERSION:
+    if version("mlx-whisper") != SDK_VERSION:
         raise RuntimeError("ASR SDK version differs from the lock")
-    snapshot = snapshot_download(MODEL_ID, revision=MODEL_REVISION, local_files_only=True)
-    with (Path(snapshot) / "model.safetensors").open("rb") as file:
-        if hashlib.file_digest(file, "sha256").hexdigest() != MODEL_SHA256:
-            raise RuntimeError("ASR weights differ from the pinned checksum")
-    # Photon accepts the local snapshot so its own resolver cannot select main.
-    return md.photon(MODEL_ID, api_key="", model_path=snapshot, device=os.getenv("PARAKEET_ASR_DEVICE", "cpu"), single_pass_batch_capacity=1)
+    if not mx.metal.is_available():
+        raise RuntimeError("ASR requires an available Apple Metal device")
+    mx.set_default_device(mx.gpu)
+    snapshot = snapshot_download(MODEL_ID, revision=MODEL_REVISION, allow_patterns=list(MODEL_FILES), local_files_only=True)
+    for name, expected in MODEL_FILES.items():
+        with (Path(snapshot) / name).open("rb") as file:
+            if hashlib.file_digest(file, "sha256").hexdigest() != expected:
+                raise RuntimeError("ASR model files differ from the pinned checksums")
+    # mlx-whisper prefers this alternative filename if present. It is not part
+    # of our pinned snapshot and must not bypass the checked NPZ weights.
+    if (Path(snapshot) / "weights.safetensors").exists():
+        raise RuntimeError("Unexpected ASR weight override in the cached snapshot")
+    model = ModelHolder.get_model(snapshot, mx.float16)
+    if any(value.dtype != mx.float16 for _, value in tree_flatten(model.parameters()) if mx.issubdtype(value.dtype, mx.floating)):
+        raise RuntimeError("ASR parameter precision differs from float16")
+    return WhisperRuntime(snapshot)
 
 
 def expire():
@@ -168,12 +208,13 @@ async def decode(path: Path, deadline: float) -> bytes:
             await process.wait()
 
 
-def transcribe(pcm: bytes):
+def transcribe(pcm: bytes, *, language="en"):
     import numpy as np
     audio = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768
-    # INVARIANT: pinned Parakeet rejects language forcing. English-only is our
-    # product support scope; the model still performs its native auto-detection.
-    return runtime.transcribe(audio=audio, sample_rate=SAMPLE_RATE, timestamps="none")
+    # HTTP callers always use the English default. The offline qualification
+    # CLI can explicitly select its existing research language without changing
+    # the product's supported input languages or supplying lexical hints.
+    return runtime.transcribe(audio=audio, sample_rate=SAMPLE_RATE, timestamps="none", language=language)
 
 
 async def execute(op: Operation, directory: str, path: Path):
@@ -255,7 +296,7 @@ async def janitor():
 async def lifespan(_: FastAPI):
     global runtime, healthy, slot, accepting
     if not API_TOKEN:
-        raise RuntimeError("PARAKEET_ASR_API_TOKEN is required")
+        raise RuntimeError("ASR_API_TOKEN is required")
     slot = asyncio.Lock()
     TEMP_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     for stale in TEMP_DIR.glob("idream-asr-*"):
@@ -277,14 +318,14 @@ async def lifespan(_: FastAPI):
     runtime.__exit__(None, None, None)
 
 
-app = FastAPI(title="iDream Parakeet ASR", lifespan=lifespan)
+app = FastAPI(title="iDream ASR", lifespan=lifespan)
 
 
 @app.get("/health")
 async def health(request: Request):
     if not API_TOKEN or not hmac.compare_digest(request.headers.get("authorization", ""), f"Bearer {API_TOKEN}"):
         raise HTTPException(401, detail="unauthorized")
-    return JSONResponse({"ready": healthy and accepting, "active": sum(op.active for op in states.values()), "provider": "photon", "model": MODEL_ID, "modelRevision": MODEL_REVISION, "runtimeVersion": SDK_VERSION, "device": os.getenv("PARAKEET_ASR_DEVICE", "cpu"), "languages": LANGUAGES, "maxAudioBytes": MAX_BYTES, "maxAudioDurationMs": 60000}, status_code=200 if healthy and accepting else 503)
+    return JSONResponse({"ready": healthy and accepting, "active": sum(op.active for op in states.values()), "provider": "mlx-whisper", "model": MODEL_ID, "modelRevision": MODEL_REVISION, "runtimeVersion": SDK_VERSION, "device": "metal", "precision": "float16", "sourceRevision": os.getenv("IDREAM_SOURCE_REVISION"), "gatewaySha256": GATEWAY_SHA256, "languages": LANGUAGES, "maxAudioBytes": MAX_BYTES, "maxAudioDurationMs": 60000}, status_code=200 if healthy and accepting else 503)
 
 
 @app.post("/v1/transcriptions")

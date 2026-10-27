@@ -164,7 +164,7 @@ import {
   metricExposureSubject,
   verifyExposureContext,
 } from "./exposure-context";
-import { createVoiceClip as createDurableVoiceClip, quoteVoiceClip } from "./voice-clip";
+import { createVoiceClip, quoteVoiceClip } from "./voice-clip";
 import { getCharacterDraftVoiceCatalog, previewCharacterDraftVoice } from "./character-draft-voice";
 import { characterVoiceSample, characterVoiceSampleProfile } from "./character-voice-sample";
 import { characterQuickStartRequestSchema, generateCharacterQuickStart } from "./character-quick-start";
@@ -273,7 +273,7 @@ import {
   retryGenerationJobForUser,
 } from "./generation-job-retry";
 import {
-  assertIdentityImageMediaInTx,
+  assertIdentityImageMedia,
   assertMediaOwner,
   assertNonSyntheticMediaAsset,
   mediaMetadataWithQuality,
@@ -723,14 +723,18 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     if (id === "config" && !action && method === "GET") return generationConfig(request);
     if (id === "quote" && !action && method === "POST") return generationQuote(request);
     if (id === "jobs" && !action && method === "POST") return createGenerationJob(request);
-    if (id === "voice" && action === "quote" && !child && method === "POST") {
-      return quoteVoiceClip(request, { entitlementMap, readableCharacter });
-    }
-    if (id === "voice" && !action && method === "POST") {
-      return createDurableVoiceClip(request, {
-        entitlementMap,
-        readableCharacter,
-      });
+    if (id === "voice" && (!action || action === "quote") && !child && method === "POST") {
+      const auth = await getAuthCtx(request);
+      // Keep authentication/age rejection ahead of body decoding, including
+      // malformed JSON. The common business entry also enforces these guards.
+      requireUser(auth);
+      requireAgeGate(auth);
+      requireAgeVerified(auth);
+      const input = await jsonBody(request);
+      const deps = { entitlementMap, readableCharacter };
+      if (action === "quote") return ok({ quote: await quoteVoiceClip(auth, input, deps) });
+      const result = await createVoiceClip(auth, input, deps);
+      return ok(result.value, { status: result.kind === "created" ? 201 : 200 });
     }
     if (id === "jobs" && !action && method === "GET") return listGenerationJobs(request);
     if (id === "jobs" && action && !child && method === "GET") return getGenerationJob(request, action);
@@ -3690,7 +3694,7 @@ async function saveMediaAsCharacterLook(request: Request, id: string) {
       character.id,
       user.id,
     );
-    const lockedAsset = await assertIdentityImageMediaInTx(tx, asset.id, user.id);
+    const lockedAsset = await assertIdentityImageMedia(asset.id, user.id, tx);
     if (lockedAsset.characterId !== lockedCharacter.id) {
       throw Errors.conflict("Media identity target changed before saving the Character Look");
     }
@@ -5257,22 +5261,6 @@ async function assertReadableMediaAsset(id: string, userId: string) {
   return media;
 }
 
-async function assertIdentityImageMedia(id: string, userId: string) {
-  const asset = await assertMediaOwner(id, userId);
-  if (asset.type !== "image") throw Errors.badRequest("Only image media can update character identity");
-  if (asset.safetyStatus !== "passed") {
-    throw Errors.conflict("Only safety-passed media can update Character authority");
-  }
-  if (!isMediaAssetOperationalForAuthority(asset.metadata)) {
-    throw Errors.conflict("Archived or rejected media cannot be used for Character authority");
-  }
-  assertNonSyntheticMediaAsset(
-    asset,
-    "Synthetic media cannot update character identity",
-  );
-  return asset;
-}
-
 async function assertIdentityImageMediaForCharacterInTx(
   tx: Prisma.TransactionClient,
   id: string,
@@ -5280,7 +5268,7 @@ async function assertIdentityImageMediaForCharacterInTx(
   characterId: string,
   options: { readonly allowUnassigned: boolean },
 ) {
-  const asset = await assertIdentityImageMediaInTx(tx, id, userId);
+  const asset = await assertIdentityImageMedia(id, userId, tx);
   if (
     asset.characterId !== characterId &&
     !(options.allowUnassigned && asset.characterId === null)

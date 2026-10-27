@@ -47,29 +47,6 @@ export function chatServiceEnabled(): boolean {
   return Boolean(env.CHAT_SERVICE_URL);
 }
 
-export type ChatMessageVoiceAuthority = {
-  schemaVersion: 1;
-  sessionId: string;
-  messageId: string;
-  characterId: string;
-  text: string;
-  attempt: number;
-  sceneVersion: number;
-  scene: unknown;
-  characterContentVersionId: string | null;
-  characterReleaseId: string | null;
-};
-
-/** Voice reads the selected final reply from Main; Chat is never queried. */
-export async function fetchChatMessageVoiceAuthority(
-  request: Request,
-  input: { sessionId: string; messageId: string; testOnlyText?: string; characterId?: string },
-): Promise<ChatMessageVoiceAuthority> {
-  const auth = await getAuthCtx(request);
-  if (!auth.userId) throw Errors.unauthorized("Sign in required");
-  return await chatVoiceAuthority(auth.userId, input.sessionId, input.messageId);
-}
-
 /** Public `/api/v1/chat|messages/*` façade. Product reads/writes stay in Main. */
 export async function proxyChatRequest(request: Request, segments: string[]): Promise<Response> {
   const auth = await getAuthCtx(request);

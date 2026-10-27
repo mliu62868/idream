@@ -1,0 +1,12 @@
+mlx-whisper==0.4.3
+mlx==0.32.2
+numpy==2.4.6
+numba==0.67.0
+tiktoken==0.14.0
+more-itertools==11.1.0
+huggingface-hub==1.30.0
+fastapi==0.135.2
+uvicorn==0.42.0
+# Numba optionally imports coverage; a real package prevents the repository's
+# coverage/ output directory from being mistaken for that module at startup.
+coverage==7.17.0

@@ -8,7 +8,7 @@ const test = require("node:test");
 const launchers = [
   ["fish-audio", "scripts/ming-tts-requirements.lock", "ming-3.0-tts-0.5b-8bit"],
   ["fish-audio", "scripts/breeze-tts-requirements.lock", "breeze-tts-2-mlx-8bit"],
-  ["parakeet-asr", "scripts/parakeet-asr-requirements.lock"],
+  ["asr", "scripts/asr-requirements.lock"],
   ["pocket-tts", "scripts/pocket-tts-requirements.lock"],
 ];
 
@@ -28,9 +28,8 @@ for (const executable of [process.execPath, "bun"]) for (const [name, lock, mode
       ...(model ? { FISH_AUDIO_MODEL: model } : {}),
       FISH_AUDIO_API_TOKEN: "fixture-fish-token",
       FISH_AUDIO_PORT: "18062",
-      PARAKEET_ASR_API_TOKEN: "fixture-asr-token",
-      PARAKEET_ASR_DEVICE: "cpu",
-      PARAKEET_ASR_PORT: "18064",
+      ASR_API_TOKEN: "fixture-asr-token",
+      ASR_PORT: "18064",
       POCKET_TTS_MODEL_REVISION: "fixture-pocket-revision",
       POCKET_TTS_API_TOKEN: "fixture-pocket-token",
       POCKET_TTS_PORT: "18063",
@@ -62,7 +61,7 @@ for (const executable of [process.execPath, "bun"]) for (const [name, lock, mode
       for (const [key, value] of Object.entries(preserved)) assert.equal(child.environment[key], value, key);
       assert.deepEqual(child.args.slice(0, 7), ["run", "--offline", "--no-project", "--python", "3.12", "--with-requirements", lock]);
       assert.equal(child.args[7], "uvicorn");
-      if (name === "parakeet-asr") assert.equal(child.environment.HF_HUB_OFFLINE, "1");
+      if (name === "asr") assert.equal(child.environment.HF_HUB_OFFLINE, "1");
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

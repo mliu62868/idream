@@ -13,8 +13,12 @@ import { jsonRecord } from "./json-values";
 // INTENT: 建角色、改角色、复制角色、打身份反馈四条路径问的是同一句话
 // （这张图归我吗、能不能当身份用），实现必须只有一份。
 
-export async function assertMediaOwner(id: string, userId: string) {
-  const media = await prisma.mediaAsset.findFirst({
+export async function assertMediaOwner(
+  id: string,
+  userId: string,
+  db: Pick<Prisma.TransactionClient, "mediaAsset"> = prisma,
+) {
+  const media = await db.mediaAsset.findFirst({
     where: { id, ownerId: userId, deletedAt: null },
   });
   if (!media) throw Errors.notFound("Media not found");
@@ -29,15 +33,15 @@ export function assertNonSyntheticMediaAsset(
   throw Errors.badRequest(message, { mediaAssetId: asset.id });
 }
 
-export async function assertIdentityImageMediaInTx(
-  tx: Prisma.TransactionClient,
+// Preflight and locked commits use the same eligibility rules. A commit must
+// pass its transaction and read again after acquiring the media authority lock;
+// a successful preflight is not permission to reuse that earlier snapshot.
+export async function assertIdentityImageMedia(
   id: string,
   userId: string,
+  db: Pick<Prisma.TransactionClient, "mediaAsset"> = prisma,
 ) {
-  const asset = await tx.mediaAsset.findFirst({
-    where: { id, ownerId: userId, deletedAt: null },
-  });
-  if (!asset) throw Errors.notFound("Media not found");
+  const asset = await assertMediaOwner(id, userId, db);
   if (asset.type !== "image") {
     throw Errors.badRequest("Only image media can update character identity");
   }

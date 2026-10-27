@@ -9,7 +9,7 @@ import { createUser, createCharacter, purgeTestData } from "@/server/test/helper
 const prefix = "zt-voice-input-";
 const userId = `${prefix}owner`, outsider = `${prefix}outsider`;
 let sessionId: string, groupId: string;
-const previous = { provider: env.ASR_PROVIDER, token: env.PARAKEET_ASR_API_TOKEN };
+const previous = { provider: env.ASR_PROVIDER, token: env.ASR_API_TOKEN };
 function request(method: string, path: string, options: { user?: string; scope?: string; key?: string; audio?: boolean; recipient?: string | null } = {}) {
   const actor = options.user ?? userId;
   const form = new FormData();
@@ -32,13 +32,13 @@ beforeAll(async () => {
   await prisma.groupConversation.create({ data: { id: groupId, userId, title: "Voice input group" } });
   const originalSession = await prisma.recentChat.findUniqueOrThrow({ where: { sessionId } });
   await prisma.recentChat.create({ data: { sessionId: `${prefix}group-member`, userId, groupId, characterId: originalSession.characterId, characterContentVersionId: originalSession.characterContentVersionId } });
-  env.ASR_PROVIDER = "parakeet-redux"; env.PARAKEET_ASR_API_TOKEN = "integration-test-token";
+  env.ASR_PROVIDER = "mlx-whisper"; env.ASR_API_TOKEN = "integration-test-token";
 });
 afterEach(() => vi.unstubAllGlobals());
-afterAll(async () => { env.ASR_PROVIDER = previous.provider; env.PARAKEET_ASR_API_TOKEN = previous.token; await purgeTestData(prefix); await prisma.$disconnect(); });
+afterAll(async () => { env.ASR_PROVIDER = previous.provider; env.ASR_API_TOKEN = previous.token; await purgeTestData(prefix); await prisma.$disconnect(); });
 describe("Main voice input authority", () => {
   it("reads actual gateway capability independently of Chat availability", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ ready: true, model: "moondream/parakeet-redux", modelRevision: "2bf128600aac4b16946f7ed8372e56117fe5e23b", runtimeVersion: "2.6.1" })));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ ready: true, provider: "mlx-whisper", model: "mlx-community/whisper-large-v3-mlx", modelRevision: "49e6aa286ad60c14352c404340ded53710378a11", runtimeVersion: "0.4.3", device: "metal", precision: "float16" })));
     const response = await run(request("GET", `sessions/${sessionId}/voice-input`));
     expect(response.status).toBe(200);
     expect((await response.json()).data).toMatchObject({ supported: true, available: true, ownerScope: `user:${userId}`, languages: ["en"] });
@@ -68,7 +68,7 @@ describe("Main voice input authority", () => {
     expect(mock.mock.calls[0][1].headers["x-asr-conversation-id"]).toBe(`group:${groupId}`);
   });
   it("checks the selected group recipient before microphone capability or transcription", async () => {
-    const mock = vi.fn().mockResolvedValue(Response.json({ ready: true, model: "moondream/parakeet-redux", modelRevision: "2bf128600aac4b16946f7ed8372e56117fe5e23b", runtimeVersion: "2.6.1" })); vi.stubGlobal("fetch", mock);
+    const mock = vi.fn().mockResolvedValue(Response.json({ ready: true, provider: "mlx-whisper", model: "mlx-community/whisper-large-v3-mlx", modelRevision: "49e6aa286ad60c14352c404340ded53710378a11", runtimeVersion: "0.4.3", device: "metal", precision: "float16" })); vi.stubGlobal("fetch", mock);
     expect((await run(request("GET", `groups/${groupId}/voice-input`, { recipient: null }))).status).toBe(400);
     expect((await run(request("GET", `groups/${groupId}/voice-input`, { recipient: `${prefix}not-member` }))).status).toBe(404);
     expect(mock).not.toHaveBeenCalled();
@@ -101,7 +101,7 @@ describe("Main voice input authority", () => {
     } });
     await prisma.characterServing.create({ data: { characterId, currentReleaseId: releaseId, state: "live" } });
     await prisma.character.update({ where: { id: characterId }, data: { creatorId: outsider, visibility: "public" } });
-    const mock = vi.fn().mockResolvedValue(Response.json({ ready: true, model: "moondream/parakeet-redux", modelRevision: "2bf128600aac4b16946f7ed8372e56117fe5e23b", runtimeVersion: "2.6.1" })); vi.stubGlobal("fetch", mock);
+    const mock = vi.fn().mockResolvedValue(Response.json({ ready: true, provider: "mlx-whisper", model: "mlx-community/whisper-large-v3-mlx", modelRevision: "49e6aa286ad60c14352c404340ded53710378a11", runtimeVersion: "0.4.3", device: "metal", precision: "float16" })); vi.stubGlobal("fetch", mock);
     try {
       const stale = await run(request("GET", `sessions/${sessionId}/voice-input`));
       expect(stale.status).toBe(410);

@@ -10,7 +10,7 @@ const candidates = [
 ].filter(Boolean);
 const uv = candidates.find((candidate) => candidate === "uv" || existsSync(candidate));
 if (!uv) {
-  throw new Error("uv is required to start Parakeet ASR; set UV_BIN to its executable");
+  throw new Error("uv is required to start ASR; set UV_BIN to its executable");
 }
 
 // SPEC: start only from the wheels `bun run voice:asr:install` put in the uv cache.
@@ -31,15 +31,15 @@ const child = spawn(
     "--python",
     "3.12",
     "--with-requirements",
-    "scripts/parakeet-asr-requirements.lock",
+    "scripts/asr-requirements.lock",
     "uvicorn",
-    "scripts.parakeet_asr_gateway:app",
+    "scripts.asr_gateway:app",
     "--workers",
     "1",
     "--host",
-    process.env.PARAKEET_ASR_HOST || "127.0.0.1",
+    process.env.ASR_HOST || "127.0.0.1",
     "--port",
-    process.env.PARAKEET_ASR_PORT || "8064",
+    process.env.ASR_PORT || "8064",
   ],
   {
     cwd: path.resolve(__dirname, ".."),

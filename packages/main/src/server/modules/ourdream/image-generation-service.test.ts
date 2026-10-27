@@ -24,6 +24,7 @@ import {
   referenceSetSnapshotHash,
 } from "@/server/modules/admin-v2/characters/release-snapshot";
 import * as generationCatalog from "@/server/modules/generation/generation-catalog";
+import * as mediaAuthorityLocks from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import {
   api,
   completeQueuedCharacterPreview,
@@ -3296,6 +3297,65 @@ describe("image generation service contract", () => {
         selectedAsCharacterImage: true,
       },
     });
+  });
+
+  it.each([
+    { change: "archived", status: 409 },
+    { change: "deleted", status: 404 },
+    { change: "transferred", status: 404 },
+    { change: "video", status: 400 },
+  ] as const)("rechecks a $change image after waiting for media authority before changing the Character", async ({ change, status }) => {
+    const userId = `${P}promote-lock-${change}`;
+    const characterId = `${userId}-character`;
+    const mediaId = `${userId}-media`;
+    const otherUserId = `${userId}-other`;
+    await createUser({ id: userId });
+    if (change === "transferred") await createUser({ id: otherUserId });
+    await createCharacter({ id: characterId, creatorId: userId, visibility: "private", status: "approved" });
+    await prisma.mediaAsset.create({ data: {
+      id: mediaId, ownerId: userId, type: "image", url: "/images/ourdream/card-sarah-mercer.webp",
+      visibility: "private", safetyStatus: "passed", metadata: {},
+    } });
+    const before = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
+    let reachedMediaLock!: () => void;
+    const atMediaLock = new Promise<void>(resolve => { reachedMediaLock = resolve; });
+    const originalLock = mediaAuthorityLocks.lockCharacterMediaAssetAuthorities;
+    const lock = vi.spyOn(mediaAuthorityLocks, "lockCharacterMediaAssetAuthorities").mockImplementation((tx, ids) => {
+      const acquiring = originalLock(tx, ids);
+      if (ids.includes(mediaId)) reachedMediaLock();
+      return acquiring;
+    });
+    let pending: ReturnType<typeof api> | undefined;
+    try {
+      await prisma.$transaction(async tx => {
+        await mediaAuthorityLocks.lockMediaAssetAuthority(tx, mediaId);
+        pending = api("POST", `media/${mediaId}/use-as-character-image`, {
+          userId, ageGate: true, body: { characterId },
+        });
+        // Reaching this real lock proves the initial qualification succeeded.
+        // The writer then revokes authority before the request can read again.
+        await Promise.race([atMediaLock, pending.then(() => { throw new Error("Promotion settled before reaching its media authority lock"); })]);
+        const data = change === "archived" ? { metadata: { platformAsset: { status: "archived" } } }
+          : change === "deleted" ? { deletedAt: new Date() }
+          : change === "transferred" ? { ownerId: otherUserId }
+          : { type: "video" };
+        await tx.mediaAsset.update({ where: { id: mediaId }, data });
+      });
+      expect(pending).toBeDefined();
+      expectError(await pending!, status);
+      expect(lock).toHaveBeenCalled();
+      expect(await prisma.character.findUniqueOrThrow({ where: { id: characterId } })).toEqual(before);
+      const after = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: mediaId } });
+      expect(after.characterId).toBeNull();
+      expect(after.metadata).toEqual(change === "archived" ? { platformAsset: { status: "archived" } } : {});
+      expect(await prisma.characterVisualProfile.count({ where: { characterId } })).toBe(0);
+    } finally {
+      try {
+        await pending;
+      } finally {
+        lock.mockRestore();
+      }
+    }
   });
 
   it("never reparents an asset that already belongs to another Character", async () => {

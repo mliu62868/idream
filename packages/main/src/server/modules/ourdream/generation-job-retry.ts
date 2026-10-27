@@ -34,6 +34,7 @@ import { directCharacterAudienceWhere } from "./public-content-audience";
 import { assertMediaEnhancementSource } from "./media-enhancement-source";
 import { isExecutableGenerationProfile } from "./generation-profile-catalog";
 import { assertChatVideoAvailable } from "@/server/modules/chat/video-availability";
+import { attachmentAttempt } from "@/server/modules/chat/turn-scope";
 import { generationContextSourceToken, lockGenerationContext, resolveGenerationContext } from "./generation-context";
 import {
   assertGenerationProfileCanDispatchReferences,
@@ -145,10 +146,7 @@ export async function quoteGenerationRetry(input: {
       },
       select: { metadata: true, turn: { select: { attempt: true } } },
     }) : null;
-    const metadata = jsonRecord(attachment?.metadata);
-    const effect = jsonRecord(metadata.effect);
-    const attempt = numberFromRecord(metadata, "attempt") ?? numberFromRecord(effect, "attempt") ?? 1;
-    if (!attachment || attempt !== attachment.turn.attempt) {
+    if (!attachment || attachmentAttempt(attachment.metadata) !== attachment.turn.attempt) {
       throw Errors.conflict("This Chat image is no longer available to retry. Check the chat for its current result.");
     }
   }

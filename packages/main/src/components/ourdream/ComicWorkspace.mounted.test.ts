@@ -11,7 +11,7 @@ vi.mock("./ComicShell", () => ({ ComicShell: ({ children }: { children: ReactNod
 import { ComicReader } from "./ComicReader";
 import { ComicStudio } from "./ComicStudio";
 import { ComicCatalog } from "./ComicCatalog";
-import { invalidateViewerAuthority } from "./viewer-auth";
+import { invalidateViewerAuthority, VIEWER_AUTH_CHANGE_STORAGE_KEY } from "./viewer-auth";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let container: HTMLDivElement;
@@ -232,6 +232,77 @@ describe("Comic workspace authority and saved order", () => {
     await until(() => container.querySelectorAll("textarea").length === 3);
     expect([...container.querySelectorAll("textarea")].map((item) => item.value)).toEqual(["An evening journey.", "On the train", "At the station"]);
     expect(button("Submit for review").disabled).toBe(true);
+  });
+
+  it("revokes a new author's unsaved draft as soon as another tab changes authentication", async () => {
+    let accountChanged = false;
+    const check = Promise.withResolvers<Response>();
+    const writes: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url) === "/api/v1/me") return accountChanged ? check.promise : viewer();
+      if (String(url).startsWith("/api/v1/media?")) return gallery();
+      writes.push(String(init?.body));
+      return envelope(comic());
+    }));
+    await act(async () => root.render(createElement(ComicStudio)));
+    await until(() => Boolean(container.querySelector('button[aria-label="Add Gallery image 1 to chapter 1"]')));
+    const title = container.querySelector<HTMLInputElement>('input[placeholder="Give your story a title"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(title, "A private unfinished story");
+      title.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click(container.querySelector<HTMLButtonElement>('button[aria-label="Add Gallery image 1 to chapter 1"]')!);
+    accountChanged = true;
+    // The author can cancel AuthNav's reload via the unsaved-work prompt. The
+    // still-mounted editor must revoke its draft before /me finishes anyway.
+    await act(async () => window.dispatchEvent(new StorageEvent("storage", {
+      key: VIEWER_AUTH_CHANGE_STORAGE_KEY, newValue: "account-changed", storageArea: window.localStorage,
+    })));
+    expect(container.textContent).toContain("signed-in account changed");
+    expect(container.querySelectorAll("textarea, input, img")).toHaveLength(0);
+    const leaving = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(leaving);
+    expect(leaving.defaultPrevented).toBe(false);
+
+    await act(async () => check.resolve(viewer("reader-b")));
+    expect(container.textContent).toContain("signed-in account changed");
+    expect(button("Save draft")).toBeUndefined();
+    expect(writes).toEqual([]);
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).startsWith("/api/v1/media?"))).toHaveLength(1);
+  });
+
+  it("ignores an old author's save body after the account changes", async () => {
+    const navigate = vi.spyOn(window.location, "assign").mockImplementation(() => {});
+    const savedBody = Promise.withResolvers<unknown>();
+    let readingBody = false;
+    let currentViewer = "author-a";
+    vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url) === "/api/v1/me") return viewer(currentViewer);
+      if (String(url).startsWith("/api/v1/media?")) return gallery();
+      if (init?.method === "POST") {
+        const response = envelope(comic());
+        vi.spyOn(response, "json").mockImplementation(() => { readingBody = true; return savedBody.promise; });
+        return response;
+      }
+      throw new Error(`Unexpected request ${String(url)}`);
+    }));
+    await act(async () => root.render(createElement(ComicStudio)));
+    await until(() => Boolean(container.querySelector('button[aria-label="Add Gallery image 1 to chapter 1"]')));
+    const title = container.querySelector<HTMLInputElement>('input[placeholder="Give your story a title"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(title, "A private saved story");
+      title.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click(container.querySelector<HTMLButtonElement>('button[aria-label="Add Gallery image 1 to chapter 1"]')!);
+    await click(button("Save draft"));
+    await until(() => readingBody);
+    currentViewer = "reader-b";
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await until(() => container.textContent?.includes("signed-in account changed") === true);
+    await act(async () => savedBody.resolve({ ok: true, data: comic() }));
+    expect(navigate).not.toHaveBeenCalled();
+    expect(container.querySelectorAll("textarea, input, img")).toHaveLength(0);
+    expect(container.textContent).toContain("signed-in account changed");
   });
 
   it("stops guarding a saved new draft before synchronously navigating to its editor", async () => {

@@ -5,15 +5,15 @@ import { createVoicePortsForKey } from "@/server/providers/voice/factory";
 import { voiceCallStartSchema } from "@idream/shared/contracts";
 import { voiceCallAvailability } from "./voice-call";
 
-const previous = { provider: env.VOICE_PROVIDER, language: env.POCKET_TTS_LANGUAGE, asr: env.ASR_PROVIDER, token: env.PARAKEET_ASR_API_TOKEN, voice: providers.voice };
+const previous = { provider: env.VOICE_PROVIDER, language: env.POCKET_TTS_LANGUAGE, asr: env.ASR_PROVIDER, token: env.ASR_API_TOKEN, voice: providers.voice };
 beforeAll(() => {
   env.VOICE_PROVIDER = "pocket-tts"; env.POCKET_TTS_LANGUAGE = "english";
-  env.ASR_PROVIDER = "parakeet-redux"; env.PARAKEET_ASR_API_TOKEN = "test-call-token";
+  env.ASR_PROVIDER = "mlx-whisper"; env.ASR_API_TOKEN = "test-call-token";
   providers.voice = createVoicePortsForKey("pocket_tts");
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); env.VOICE_PROVIDER = "pocket-tts"; });
-afterAll(() => { env.VOICE_PROVIDER = previous.provider; env.POCKET_TTS_LANGUAGE = previous.language; env.ASR_PROVIDER = previous.asr; env.PARAKEET_ASR_API_TOKEN = previous.token; providers.voice = previous.voice; });
-const health = { ready: true, model: "moondream/parakeet-redux", modelRevision: "2bf128600aac4b16946f7ed8372e56117fe5e23b", runtimeVersion: "2.6.1" };
+afterAll(() => { env.VOICE_PROVIDER = previous.provider; env.POCKET_TTS_LANGUAGE = previous.language; env.ASR_PROVIDER = previous.asr; env.ASR_API_TOKEN = previous.token; providers.voice = previous.voice; });
+const health = { ready: true, provider: "mlx-whisper", model: "mlx-community/whisper-large-v3-mlx", modelRevision: "49e6aa286ad60c14352c404340ded53710378a11", runtimeVersion: "0.4.3", device: "metal", precision: "float16" };
 describe("qualified English turn-based Call capability", () => {
   it("requires both resident TTS readiness and the pinned ASR runtime", async () => {
     vi.spyOn(providers.voice.identity!, "inspectCapabilities").mockResolvedValue({ ok: true, data: { voiceCloning: false, model: env.POCKET_TTS_MODEL, supportedModels: [env.POCKET_TTS_MODEL], languages: ["en"] } });

@@ -9,7 +9,7 @@ import { hasHydratableMediaBlobAuthority, isMediaAssetOperationalForAuthority } 
 import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency";
 import { characterContentHash } from "@/server/modules/admin-v2/shared/character-content-identity";
 import { lockCharacterGenerationAuthority } from "@/server/modules/admin-v2/characters/generation-authority-lock";
-import { lockChatScope } from "@/server/modules/chat/turn-scope";
+import { attachmentAttempt, lockChatScope } from "@/server/modules/chat/turn-scope";
 import type { GenerationPromptCharacter } from "./generation-character-authority";
 import type { GenerationCreateBody, GenerationSource } from "./generation-request-schema";
 import { loadReadableComic, comicContentUrl } from "./comic-authority";
@@ -75,12 +75,6 @@ export function readGenerationContextToken(token: string, userId: string, secret
 
 export function generationContextToken(body: Pick<GenerationCreateBody, "generationContextToken" | "chatHandoffToken">) {
   return body.generationContextToken ?? body.chatHandoffToken;
-}
-
-function attachmentAttempt(metadata: unknown) {
-  const root = jsonRecord(metadata);
-  const value = root.attempt ?? jsonRecord(root.effect).attempt;
-  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : 1;
 }
 
 async function loadChatContext(userId: string, selector: z.infer<typeof chatSelectorSchema>, db: ContextDatabase) {

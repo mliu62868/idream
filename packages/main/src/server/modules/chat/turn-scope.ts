@@ -191,10 +191,15 @@ async function resolveScopeIdentity(
   };
 }
 
-/** 历史上附件把 attempt 写在根上或 effect 下，两处都要认。 */
+/**
+ * 历史上附件把 attempt 写在根上或 effect 下，两处都要认。
+ * 数值根字段优先；其它根字段沿用旧读取规则回退到 effect，不做字符串转数值。
+ * 无有效身份的历史附件属于 attempt 1。展示、工具重放、取锁与生成引用共用此判定。
+ */
 export function attachmentAttempt(metadata: Prisma.JsonValue): number {
   const root = record(metadata);
-  const value = root?.attempt ?? record(root?.effect)?.attempt;
+  const direct = root?.attempt;
+  const value = typeof direct === "number" ? direct : record(root?.effect)?.attempt;
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 1;
 }
 

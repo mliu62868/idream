@@ -39,14 +39,10 @@ export function ComicStudio({ id }: { id?: string }) {
   const [error, setError] = useState("");
   const [chapter, setChapter] = useState(0);
   const [viewerChanged, setViewerChanged] = useState(false);
-  // SPEC: the editor is locked, not reloaded, when the signed-in account moves.
-  // INTENT: every other gated surface answers an account change by re-reading.
-  // This one holds an unsaved draft, so re-reading would either discard the
-  // author's work or, worse, leave it on screen for whoever is signed in now to
-  // submit. The gate supplies the one fact — who the server says is looking —
-  // and this surface keeps its own, stricter answer to it.
   const viewer = useViewerGate();
-  const authorId = useRef<string | null>(null);
+  const ownerChanged = useRef(false);
+  const requestSerial = useRef(0);
+  const gallerySerial = useRef(0);
   const dirtyRef = useRef(false);
   const editable = (!id || Boolean(comic?.canManage)) && (!comic || ["draft", "withdrawn"].includes(comic.status));
   const disabled = loading || writing || viewerChanged || !editable;
@@ -56,23 +52,26 @@ export function ComicStudio({ id }: { id?: string }) {
 
   const gatedFetch = viewer.fetch;
   const load = useCallback(async () => {
-    if (!id) return;
+    if (!id || ownerChanged.current) return;
+    const ticket = ++requestSerial.current;
     setComic(null); setManifest(emptyManifest); setLoading(true); setError(""); markDirty(false);
     const outcome = await loadViewerResource({
       path: `/api/v1/comics/${encodeURIComponent(id)}`,
       parse: parseComic,
       fallbackError: "Comic could not load.",
       init: { cache: "no-store" },
+      isCurrent: () => ticket === requestSerial.current,
     }, gatedFetch);
     if (outcome.kind === "discarded") return;
     setLoading(false);
     if (outcome.kind === "failed") { setError(outcome.error); return; }
     if (!outcome.data.canManage) { setError("Only this Comic’s creator can edit it."); return; }
-    authorId.current = outcome.data.creator.id;
     setComic(outcome.data); setManifest(manifestFromComic(outcome.data));
   }, [gatedFetch, id, markDirty]);
 
   const loadGallery = useCallback(async (cursor?: string) => {
+    if (ownerChanged.current) return;
+    const ticket = ++gallerySerial.current;
     setGalleryLoading(true); setGalleryError("");
     const query = new URLSearchParams({ type: "image", limit: "24" });
     if (cursor) query.set("cursor", cursor);
@@ -81,12 +80,13 @@ export function ComicStudio({ id }: { id?: string }) {
       parse: parseWorkspaceMediaResponse,
       fallbackError: "Gallery could not load.",
       init: { cache: "no-store" },
+      isCurrent: () => ticket === gallerySerial.current,
     }, async (input, init) => {
       const response = await gatedFetch(input, init);
       // INVARIANT: 401 is a navigation, not an error banner — the editor cannot
       // do anything useful for a signed-out viewer, and the sign-in target has
       // to carry this draft's own return path.
-      if (response.status === 401) {
+      if (ticket === gallerySerial.current && response.status === 401) {
         window.location.assign(authHrefForTarget("/login", id ? `/creator-studio/comics/${encodeURIComponent(id)}` : "/creator-studio/comics/new"));
       }
       return response;
@@ -111,7 +111,7 @@ export function ComicStudio({ id }: { id?: string }) {
   const confirmed = viewer.identity !== null;
   const anonymous = viewer.identity?.kind === "anonymous";
   useEffect(() => {
-    if (!accepted || !confirmed) return;
+    if (!accepted || !confirmed || ownerChanged.current) return;
     // The gate issues no ticket to a signed-out viewer, so the reads below would
     // never start; send them to sign in the same way a 401 does.
     if (anonymous) {
@@ -122,21 +122,20 @@ export function ComicStudio({ id }: { id?: string }) {
     return () => window.clearTimeout(start);
   }, [accepted, anonymous, confirmed, id, load, loadGallery]);
 
-  const identity = viewer.identity;
-  const seenIdentity = useRef(identity);
-  useEffect(() => {
-    const previous = seenIdentity.current;
-    seenIdentity.current = identity;
-    // The first confirmation is not a change, and `load` has not named an author
-    // yet on the very first pass.
-    if (identity === null || previous === null || previous === identity) return;
-    if (identity.kind === "user" && identity.userId === authorId.current) return;
-    // INVARIANT: a cookie change must not expose or submit the previous author's
-    // local draft. The gate has already aborted this surface's in-flight reads
-    // and bumped its generation, so what remains is dropping what is on screen.
-    setComic(null); setManifest(emptyManifest); setGallery([]); markDirty(false); setViewerChanged(true);
+  // SPEC: editors lock when their owner is revoked, including A → unresolved → B.
+  // The gate owns identity changes; this module owns disposal of its unsaved
+  // draft. Invalidate the whole request, including JSON bodies already in flight.
+  useEffect(() => viewer.gate.onOwnerChange?.(() => {
+    ownerChanged.current = true;
+    requestSerial.current += 1; gallerySerial.current += 1;
+    setComic(null); setManifest(emptyManifest); setGallery([]); setGalleryCursor(null);
+    setGalleryLoading(false); setGalleryError(""); setLoading(false); setWriting(false);
+    setMessage(""); setChapter(0); markDirty(false); setViewerChanged(true);
     setError("The signed-in account changed. Reload the editor for your current account.");
-  }, [identity, markDirty]);
+  }), [markDirty, viewer.gate]);
+  useEffect(() => () => {
+    requestSerial.current += 1; gallerySerial.current += 1;
+  }, []);
   useEffect(() => {
     const guard = (event: BeforeUnloadEvent) => { if (dirtyRef.current) event.preventDefault(); };
     window.addEventListener("beforeunload", guard);
@@ -148,35 +147,34 @@ export function ComicStudio({ id }: { id?: string }) {
     edit((current) => ({ ...current, episodes: current.episodes.map((episode, ordinal) => ordinal === index ? update(episode) : episode) }));
   }
   async function write(action: "save" | "submit" | "withdraw") {
-    if (writing) return;
+    if (writing || ownerChanged.current) return;
     setError(""); setMessage("");
     if (action === "save") {
       const result = comicManifestSchema.safeParse(manifest);
       if (!result.success) { setError(result.error.issues[0]?.message ?? "Check your Comic details."); return; }
     }
     if (action !== "save" && !comic) return;
+    const ticket = ++requestSerial.current;
     setWriting(true);
     try {
       const base = `/api/v1/comics${id ? `/${encodeURIComponent(id)}` : ""}`;
-      // INVARIANT: the gate re-checks the owner after the reply lands, so a save
-      // that was in the air while the account changed throws here instead of
-      // painting the previous author's saved draft for whoever is signed in now.
       const response = await gatedFetch(action === "save" ? base : `${base}/${action}`, {
         method: action === "save" && id ? "PATCH" : "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(action === "save" ? id ? { version: comic!.version, manifest } : manifest : { version: comic!.version }),
       });
       const raw: unknown = await response.json();
+      if (ticket !== requestSerial.current) return;
       if (!response.ok) throw new Error(parsePublicApiError(raw)?.message ?? "Could not save. Try again.");
       const result = parseComic(raw);
       markDirty(false); setComic(result); setManifest(manifestFromComic(result));
-      setWriting(false);
       if (!id) { window.location.assign(`/creator-studio/comics/${encodeURIComponent(result.id)}`); return; }
       setMessage(action === "save" ? "Draft saved." : action === "submit" ? "Submitted for review. This version stays locked until a decision or withdrawal." : "Comic withdrawn. Readers can no longer open it; edit and save the draft to submit again.");
     } catch (cause) {
-      if (isAbortError(cause)) return;
-      setWriting(false);
+      if (ticket !== requestSerial.current || isAbortError(cause)) return;
       setError(cause instanceof Error ? cause.message : "Could not save. Try again.");
+    } finally {
+      if (ticket === requestSerial.current) setWriting(false);
     }
   }
   const previews = new Map(gallery.map((item) => [item.id, item.thumbnailUrl || item.url]));

@@ -271,6 +271,50 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
     const changed = await api("POST", "generation/video-sequences", { userId, ageGate: true, headers: { "idempotency-key": key }, body: { ...request, audio: "silent" } }); expectError(changed, 409);
   });
 
+  it("batches list authority reads while matching ordered detail receipts and actual refunds", async () => {
+    const { sequence: older } = await create();
+    const stopped = await api("POST", `generation/video-sequences/${older.id}/stop`, { userId, ageGate: true });
+    expectOk(stopped);
+    // The untouched second scene is refunded; the dispatched first scene is
+    // still unresolved. A quote or sequence status cannot supply this balance.
+    expect(stopped.data.sequence.cost).toEqual({ charged: 200, refunded: 100, finalCharge: 100 });
+    const { sequence: newer } = await create(body(1));
+    const expected = await Promise.all([read(newer.id), read(older.id)]);
+    const stranger = `${P}user-${randomUUID()}-list-reader`;
+    await createUser({ id: stranger });
+
+    const sequenceReads = vi.spyOn(prisma.videoSequence, "findMany");
+    const detailReads = vi.spyOn(prisma.videoSequence, "findFirst");
+    const attemptReads = vi.spyOn(prisma.generationAttempt, "findMany");
+    const rawReads = vi.spyOn(prisma, "$queryRaw");
+    const settlementReads = () => rawReads.mock.calls.filter(([query]) =>
+      typeof query === "object" && query !== null && "sql" in query &&
+      typeof query.sql === "string" && query.sql.includes("generation_settlement_links"));
+    try {
+      const listed = await api("GET", "generation/video-sequences", { userId, ageGate: true });
+      expectOk(listed);
+      const sequences = (listed.data.sequences as unknown[]).map(row => videoSequenceDtoSchema.parse(row));
+      expect(sequences).toEqual(expected);
+      expect(sequences.map(sequence => sequence.scenes.map(scene => scene.ordinal))).toEqual([[0], [0, 1]]);
+      expect(sequenceReads).toHaveBeenCalledTimes(1);
+      expect(detailReads).not.toHaveBeenCalled();
+      expect(attemptReads).toHaveBeenCalledTimes(1);
+      expect(attemptReads.mock.calls[0]![0]).toMatchObject({
+        where: { requestId: { in: expected.flatMap(sequence => sequence.scenes.map(scene => scene.job.id)) } },
+      });
+      expect(settlementReads()).toHaveLength(1);
+
+      attemptReads.mockClear(); rawReads.mockClear();
+      const empty = await api("GET", "generation/video-sequences", { userId: stranger, ageGate: true });
+      expectOk(empty);
+      expect(empty.data.sequences).toEqual([]);
+      expect(attemptReads).not.toHaveBeenCalled();
+      expect(settlementReads()).toHaveLength(0);
+    } finally {
+      sequenceReads.mockRestore(); detailReads.mockRestore(); attemptReads.mockRestore(); rawReads.mockRestore();
+    }
+  });
+
   it("rejects a stale quote, ownership theft and insufficient total balance without partial admission", async () => {
     const price = await quote();
     const stale = await api("POST", "generation/video-sequences", { userId, ageGate: true, headers: { "idempotency-key": randomUUID() }, body: { ...body(), quoteFingerprint: "0".repeat(64) } }); expectError(stale, 409);

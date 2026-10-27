@@ -12,14 +12,14 @@ const runtimeModes = new Set(Object.keys(RUNTIME_CERTIFICATION));
 // the same facts before it is allowed to resume Generation queues.
 const processSpecs = Object.freeze([
   {
-    name: "parakeet-asr",
+    name: "asr",
     roles: ["voice"],
     definitionPlan: false,
     modes: {
-      development: { cwd: ".", script: "scripts/start-parakeet-asr.cjs", execMode: "fork" },
-      production: { cwd: ".", script: "scripts/start-parakeet-asr.cjs", execMode: "fork" },
+      development: { cwd: ".", script: "scripts/start-asr.cjs", execMode: "fork" },
+      production: { cwd: ".", script: "scripts/start-asr.cjs", execMode: "fork" },
     },
-    watchPaths: ["scripts/start-parakeet-asr.cjs", "scripts/parakeet_asr_gateway.py", "scripts/parakeet-asr-requirements.lock"],
+    watchPaths: ["scripts/start-asr.cjs", "scripts/asr_gateway.py", "scripts/asr-requirements.lock"],
     killTimeout: 35_000,
   },
   {
@@ -167,7 +167,7 @@ function configuredVoiceRuntimeTargets(environment) {
     // Pocket still serves persisted preset profiles and the creator catalog
     // when Ming/Breeze owns the default speech and cloning route.
     ...(environment.VOICE_PROVIDER === "fish-audio" ? ["pocket-tts"] : []),
-    ...(environment.ASR_PROVIDER === "parakeet-redux" ? ["parakeet-asr"] : []),
+    ...(environment.ASR_PROVIDER === "mlx-whisper" ? ["asr"] : []),
   ];
   return namesWithRole("voice").filter((name) => configured.includes(name));
 }

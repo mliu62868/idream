@@ -4,11 +4,11 @@ import { Errors } from "@/server/lib/errors";
 
 export type AsrScope = { userId: string; conversationId: string; requestId: string };
 export function asrConfigured() {
-  return env.ASR_PROVIDER === "parakeet-redux" && Boolean(env.PARAKEET_ASR_API_TOKEN);
+  return env.ASR_PROVIDER === "mlx-whisper" && Boolean(env.ASR_API_TOKEN);
 }
 function headers(scope?: AsrScope) {
   return {
-    authorization: `Bearer ${env.PARAKEET_ASR_API_TOKEN}`,
+    authorization: `Bearer ${env.ASR_API_TOKEN}`,
     ...(scope ? { "x-asr-user-id": scope.userId, "x-asr-conversation-id": scope.conversationId,
       "x-asr-request-id": scope.requestId, "idempotency-key": scope.requestId } : {}),
   };
@@ -16,17 +16,21 @@ function headers(scope?: AsrScope) {
 export async function asrReady(): Promise<boolean> {
   if (!asrConfigured()) return false;
   try {
-    const response = await fetch(`${env.PARAKEET_ASR_API_URL.replace(/\/$/, "")}/health`, { headers: headers(), signal: AbortSignal.timeout(1500), cache: "no-store" });
+    const response = await fetch(`${env.ASR_API_URL.replace(/\/$/, "")}/health`, { headers: headers(), signal: AbortSignal.timeout(1500), cache: "no-store" });
     if (!response.ok) return false;
-    const health = await response.json() as { ready?: boolean; model?: string; modelRevision?: string; runtimeVersion?: string };
-    return health.ready === true && health.model === "moondream/parakeet-redux" && health.modelRevision === "2bf128600aac4b16946f7ed8372e56117fe5e23b" && health.runtimeVersion === "2.6.1";
+    const health = await response.json() as Record<string, unknown>;
+    return health.ready === true && health.provider === "mlx-whisper" &&
+      health.model === "mlx-community/whisper-large-v3-mlx" &&
+      health.modelRevision === "49e6aa286ad60c14352c404340ded53710378a11" &&
+      health.runtimeVersion === "0.4.3" && health.device === "metal" &&
+      health.precision === "float16";
   } catch { return false; }
 }
 export async function requestAsr(method: "POST" | "GET" | "DELETE", scope: AsrScope, audio?: Blob): Promise<VoiceInputResult> {
   if (!asrConfigured()) throw Errors.unavailable("Voice input is not configured");
   let response: Response;
   try {
-    response = await fetch(`${env.PARAKEET_ASR_API_URL.replace(/\/$/, "")}/v1/transcriptions${method === "POST" ? "" : `/${scope.requestId}`}`, {
+    response = await fetch(`${env.ASR_API_URL.replace(/\/$/, "")}/v1/transcriptions${method === "POST" ? "" : `/${scope.requestId}`}`, {
       method, headers: { ...headers(scope), ...(audio ? { "content-type": audio.type || "application/octet-stream" } : {}) },
       body: audio, signal: AbortSignal.timeout(method === "POST" ? 32_000 : 5000), cache: "no-store",
     });

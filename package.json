@@ -49,8 +49,9 @@
     "comfyui:status": "pm2 status comfyui-video comfyui-image",
     "comfyui:logs": "pm2 logs comfyui-video comfyui-image",
     "source:revision": "node scripts/source-revision.cjs",
-    "test:pm2-config": "node --test scripts/bound-react-async-debug.test.cjs scripts/next-hmr-client-isolation.test.cjs scripts/source-revision.test.cjs scripts/build-bun-service.test.cjs scripts/build-next-standalone.test.mjs scripts/ecosystem-config.test.cjs scripts/voice-launcher-environment.test.cjs scripts/check-gen-image-worker-ownership.test.cjs scripts/recover-gen-worker-orphans.test.cjs scripts/start-comfyui-idream.test.cjs scripts/cutover-embedded-chat-runtime.test.mjs scripts/launch-operator-docs.test.cjs scripts/development-process-exit.test.cjs scripts/setup-pi-companion.test.mjs scripts/run-pi-gate.test.mjs scripts/purge-legacy-chat-session-traces.test.mjs packages/main/scripts/start-development.test.cjs packages/admin/scripts/start-development.test.cjs",
+    "test:pm2-config": "node --test scripts/bound-react-async-debug.test.cjs scripts/next-hmr-client-isolation.test.cjs scripts/source-revision.test.cjs scripts/build-bun-service.test.cjs scripts/build-next-standalone.test.mjs scripts/ecosystem-config.test.cjs scripts/voice-launcher-environment.test.cjs scripts/check-gen-image-worker-ownership.test.cjs scripts/recover-gen-worker-orphans.test.cjs scripts/web-orphan-observe.test.cjs scripts/start-comfyui-idream.test.cjs scripts/cutover-embedded-chat-runtime.test.mjs scripts/launch-operator-docs.test.cjs scripts/development-process-exit.test.cjs scripts/setup-pi-companion.test.mjs scripts/run-pi-gate.test.mjs scripts/purge-legacy-chat-session-traces.test.mjs packages/main/scripts/start-development.test.cjs packages/admin/scripts/start-development.test.cjs",
     "probe:gen-image-ownership": "node scripts/check-gen-image-worker-ownership.cjs --mode steady",
+    "probe:web-orphan": "node scripts/web-orphan-observe.cjs",
     "generation:quiesce-for-orphan-recovery": "bun scripts/start-pm2-ecosystem.cjs current quiesce",
     "generation:plan-orphan-recovery": "bun scripts/recover-gen-worker-orphans.cjs plan",
     "generation:apply-orphan-recovery": "bun scripts/recover-gen-worker-orphans.cjs apply",
@@ -73,9 +74,9 @@
     "test:voice:fish": "uv run --offline --no-project --python 3.12 --with-requirements scripts/breeze-tts-requirements.lock python -m unittest scripts.test_fish_audio_gateway",
     "voice:pocket:install": "uv run --no-project --python 3.12 --with-requirements scripts/pocket-tts-requirements.lock python -c \"import pocket_tts\"",
     "voice:pocket:start": "bun scripts/start-pocket-tts.cjs",
-    "voice:asr:install": "UV_HTTP_TIMEOUT=120 uv run --no-project --python 3.12 --with-requirements scripts/parakeet-asr-requirements.lock python -m scripts.install_parakeet_asr",
-    "voice:asr:start": "bun scripts/start-parakeet-asr.cjs",
-    "test:voice:asr": "uv run --offline --no-project --python 3.12 --with-requirements scripts/parakeet-asr-requirements.lock python -m unittest scripts.test_parakeet_asr_gateway",
+    "voice:asr:install": "UV_HTTP_TIMEOUT=120 uv run --no-project --python 3.12 --with-requirements scripts/asr-requirements.lock python -m scripts.install_asr",
+    "voice:asr:start": "bun scripts/start-asr.cjs",
+    "test:voice:asr": "uv run --offline --no-project --python 3.12 --with-requirements scripts/asr-requirements.lock python -m unittest scripts.test_asr_gateway scripts.test_probe_asr",
     "test:voice:pocket": "uv run --no-project --python 3.12 --with-requirements scripts/pocket-tts-requirements.lock python -m scripts.test_pocket_tts_gateway",
     "launch:probe:payment": "bun run --filter @idream/main probe:payment",
     "launch:probe:product-config": "bun run --filter @idream/main probe:product-config",
@@ -92,7 +93,8 @@
     "pi-companion:check": "node scripts/setup-pi-companion.mjs --check",
     "test:pi-gate": "node scripts/run-pi-gate.mjs",
     "voice:ming:install": "env -u PYTHONPATH -u PYTHONHOME uv run --no-project --python 3.12 --with-requirements scripts/ming-tts-requirements.lock python -m scripts.install_ming_tts",
-    "test:voice:ming": "env -u PYTHONPATH -u PYTHONHOME uv run --offline --no-project --python 3.12 --with-requirements scripts/ming-tts-requirements.lock python -m unittest scripts.test_fish_audio_gateway"
+    "test:voice:ming": "env -u PYTHONPATH -u PYTHONHOME uv run --offline --no-project --python 3.12 --with-requirements scripts/ming-tts-requirements.lock python -m unittest scripts.test_fish_audio_gateway",
+    "probe:voice:asr": "uv run --offline --no-project --python 3.12 --with-requirements scripts/asr-requirements.lock python scripts/probe-asr.py"
   },
   "devDependencies": {
     "turbo": "^2.9.18"

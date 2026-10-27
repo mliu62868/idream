@@ -61,7 +61,7 @@ PM2 starts the product topology from `ecosystem.config.js`:
 | PM2 app | Default port | Description |
 | --- | --- | --- |
 | `fish-audio` | 8062 | Fish Audio voice gateway |
-| `parakeet-asr` | 8064 | Optional resident Parakeet Redux speech input |
+| `asr` | 8064 | Optional resident MLX Whisper speech input |
 | `main-web` | 3000 | Public app and `/api/v1/*` (Next dev + Fast Refresh by default) |
 | `admin-web` | 3001 | Admin console (Next dev + Fast Refresh by default) |
 | `chat` | `CHAT_PORT` | Chat API/SSE |
@@ -99,6 +99,12 @@ pm2 save
 
 If the ownership gate reports a daemon orphan, use the auditable recovery path;
 do not use `pkill -f` or manually guessed PIDs:
+
+For an unresponsive local Main/Admin listener, `bun run probe:web-orphan`
+collects a redacted macOS process-group and socket snapshot. It is read-only:
+successful collection does not establish ownership or prove that Web requests
+have drained, and it does not authorize a signal. The Generation orphan
+recovery below does not recover Web or voice listeners.
 
 First run `bun run --cwd packages/main check:generation-cutover`. If it reports a
 historical `ai.video.generate` failed residue, acknowledge that exact retained
@@ -277,12 +283,12 @@ no recording is stored in the product database or media storage.
 Enable in `packages/main/.env` (production uses the secret manager):
 
 ```dotenv
-ASR_PROVIDER=parakeet-redux
-PARAKEET_ASR_API_URL=http://127.0.0.1:8064
-PARAKEET_ASR_API_TOKEN=<random-private-token>
+ASR_PROVIDER=mlx-whisper
+ASR_API_URL=http://127.0.0.1:8064
+ASR_API_TOKEN=<random-private-token>
 ```
 
-Install `uv` and `ffmpeg`, then prepare the hashed dependencies and fixed model
+On Apple Silicon with Metal, install `uv` and `ffmpeg`, then prepare the hashed dependencies and fixed model
 snapshot before starting through the controlled PM2 wrapper:
 
 ```bash
@@ -291,9 +297,11 @@ bun run test:voice:asr
 bun run pm2:restart
 ```
 
-The optional process runs one offline CPU Photon worker, with a private Bearer
-token and readiness checks for `moondream==2.6.1` and model revision
-`2bf128600aac4b16946f7ed8372e56117fe5e23b`. Configure an internal URL reachable by
+The optional process runs one offline Metal worker with float16 weights, a private
+Bearer token, and readiness checks for `mlx-whisper==0.4.3`,
+`mlx-community/whisper-large-v3-mlx`, and model revision
+`49e6aa286ad60c14352c404340ded53710378a11`. Greedy English decoding uses no prompt,
+hotword substitutions, or context from previous recordings. Configure an internal URL reachable by
 Main and keep port 8064 private. Limit each recording to 8 MiB; decoded audio is
 also bounded to 60 seconds. All Main instances share the gateway's per-user
 admission (one active request, ten new requests/minute), one inference slot, four
@@ -302,6 +310,22 @@ Cancellation suppresses delivery immediately but retains the inference slot unti
 native execution returns. Temporary decoded files are removed after native
 execution; results are memory-only and fetched candidates are deleted.
 
+For an existing Parakeet deployment, replace `ASR_PROVIDER=parakeet-redux` with
+`mlx-whisper`, rename `PARAKEET_ASR_API_URL/TOKEN` to `ASR_API_URL/TOKEN`, and remove
+`PARAKEET_ASR_DEVICE`. Optional host, port, and temporary-directory variables now
+use `ASR_HOST`, `ASR_PORT`, and `ASR_TEMP_DIR`. The controlled PM2 restart checks
+that the old gateway has no active transcription before retiring `parakeet-asr`
+and starting `asr`; do not restart the old process directly. The model files are
+about 3.08 GB and GPU contention must be included in real Call qualification.
+
+Frozen controlled audio can be checked through the actual gateway decode and
+inference path with `bun run probe:voice:asr regress --manifest <manifest.json>
+--output <new-result.json>`. Each manifest row supplies `id`, `path`, `sha256`,
+`reference`, and optional `critical_tokens` / `forbidden_tokens`. References only
+score results; they are never sent to the model. Critical-word failures and empty
+speech results fail independently of the aggregate WER. The output is never
+overwritten, and partial runs remain marked `incomplete`.
+
 ASR for voice input and calls supports English only (`en`). TTS language support
 remains provider-specific. The resident ASR model's broader language capability
 does not expand the product's supported languages.
@@ -309,14 +333,11 @@ A supported recording browser and HTTPS (or localhost)
 are required. Unsupported providers leave the microphone entry hidden; configured
 but unavailable models show a disabled entry with a retry availability action.
 
-Photon 2.6.1 attempts to send periodic runtime usage metadata to Moondream (model, hardware,
-hostname and request/token counts); its reporter has no documented off switch.
-The gateway sends no audio/text to cloud inference, but offline Hugging Face flags
-do not disable Photon usage telemetry. Deployments requiring no outbound metadata
-must enforce egress policy and verify it separately. Public read-speech evaluation
-does not certify real whispers, natural noise, or physical mobile microphones;
-see the [qualification report](.scratch/chat-voice-input/qualification/REPORT.md)
-for measured coverage before rollout.
+The [ASR regression report](.scratch/asr-cup-cop-2026-10-25/REPORT.md) records the
+preserved failures, controlled model comparison, and real Voice Call delivery and
+billing checks for this runtime. The small human-speech corpus improved overall
+but includes one additional word error in its held-out subset. It does not certify
+real whispers, natural noise, physical mobile microphones, or human listening quality.
 
 ## Image Generation
 

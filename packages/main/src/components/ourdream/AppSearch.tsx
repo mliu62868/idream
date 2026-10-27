@@ -67,6 +67,7 @@ export function AppSearch() {
   const [status, setStatus] = useState<SuggestStatus>("idle");
   const [tags, setTags] = useState<SearchTagSuggestion[]>([]);
   const [suggestionOwner, setSuggestionOwner] = useState<ViewerIdentity | null>(null);
+  const [suggestionQuery, setSuggestionQuery] = useState("");
   const [loadAttempt, setLoadAttempt] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
@@ -74,10 +75,12 @@ export function AppSearch() {
   const trimmedQuery = query.trim();
   const displayStatus = viewer.error
     ? "error"
-    : !viewer.identity || suggestionOwner !== viewer.identity ? "loading" : status;
+    : !viewer.identity || suggestionOwner !== viewer.identity || suggestionQuery !== trimmedQuery
+      ? "loading"
+      : status;
 
   const suggestions = useMemo<SearchSuggestion[]>(() => {
-    if (suggestionOwner !== viewer.identity || status !== "ready") return [];
+    if (suggestionOwner !== viewer.identity || suggestionQuery !== trimmedQuery || status !== "ready") return [];
     const characterSuggestions = characters.map((character) => ({
       href: `/characters/${encodeURIComponent(character.id)}`,
       id: `character:${character.id}`,
@@ -102,7 +105,7 @@ export function AppSearch() {
       template: route.template,
     }));
     return [...characterSuggestions, ...tagSuggestions, ...routeSuggestions].slice(0, 8);
-  }, [characters, routes, tags, status, suggestionOwner, viewer.identity]);
+  }, [characters, routes, tags, status, suggestionOwner, suggestionQuery, trimmedQuery, viewer.identity]);
 
   const panelOpen =
     focused &&
@@ -142,6 +145,7 @@ export function AppSearch() {
     const controller = new AbortController();
     const timer = window.setTimeout(async () => {
       setSuggestionOwner(viewer.identity);
+      setSuggestionQuery(trimmedQuery);
       setActiveIndex(-1);
       setStatus("loading");
       try {

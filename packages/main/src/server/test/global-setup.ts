@@ -235,6 +235,9 @@ async function installInvariantAuthorityConstraints(url: string) {
       "../../../prisma/migrations/20261001020000_voice_calls/migration.sql", import.meta.url,
     ), "utf8");
     await client.query(voiceCallAuthority.slice(voiceCallAuthority.indexOf("-- Authority constraints")));
+    await client.query(await readFile(new URL(
+      "../../../prisma/migrations/20261025060000_voice_execution_authority/migration.sql", import.meta.url,
+    ), "utf8"));
     const affiliateAuthority = await readFile(new URL(
       "../../../prisma/migrations/20261001030000_affiliate_attribution_evidence/migration.sql", import.meta.url,
     ), "utf8");

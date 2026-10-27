@@ -1,19 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { env } from "@/server/lib/env";
-import { asrReady, requestAsr } from "./parakeet-redux";
+import { asrReady, requestAsr } from "./gateway";
 const id = "db1bb2a6-67f9-414e-85c2-2a3b28d12a3c";
 const scope = { userId: "u", conversationId: "session:s", requestId: id };
-const original = { provider: env.ASR_PROVIDER, token: env.PARAKEET_ASR_API_TOKEN };
-beforeEach(() => { env.ASR_PROVIDER = "parakeet-redux"; env.PARAKEET_ASR_API_TOKEN = "private-test-token"; });
-afterEach(() => { env.ASR_PROVIDER = original.provider; env.PARAKEET_ASR_API_TOKEN = original.token; vi.unstubAllGlobals(); });
+const original = { provider: env.ASR_PROVIDER, token: env.ASR_API_TOKEN };
+beforeEach(() => { env.ASR_PROVIDER = "mlx-whisper"; env.ASR_API_TOKEN = "private-test-token"; });
+afterEach(() => { env.ASR_PROVIDER = original.provider; env.ASR_API_TOKEN = original.token; vi.unstubAllGlobals(); });
 describe("resident ASR adapter", () => {
   it("requires actual authenticated readiness rather than configuration", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ ready: false })));
     expect(await asrReady()).toBe(false);
   });
-  it("rejects an unrelated or stale ready runtime", async () => {
-    const health = { ready: true, model: "moondream/parakeet-redux", modelRevision: "2bf128600aac4b16946f7ed8372e56117fe5e23b", runtimeVersion: "2.6.1" };
-    const fetchMock = vi.fn().mockResolvedValueOnce(Response.json({ ...health, modelRevision: "stale" })).mockResolvedValueOnce(Response.json(health));
+  it.each([
+    ["provider", "photon"],
+    ["model", "moondream/parakeet-redux"],
+    ["modelRevision", "stale"],
+    ["runtimeVersion", "2.6.1"],
+    ["device", "cpu"],
+    ["precision", "float32"],
+  ])("rejects a ready runtime with mismatched %s", async (field, value) => {
+    const health = { ready: true, provider: "mlx-whisper", model: "mlx-community/whisper-large-v3-mlx", modelRevision: "49e6aa286ad60c14352c404340ded53710378a11", runtimeVersion: "0.4.3", device: "metal", precision: "float16" };
+    const fetchMock = vi.fn().mockResolvedValueOnce(Response.json({ ...health, [field]: value })).mockResolvedValueOnce(Response.json(health));
     vi.stubGlobal("fetch", fetchMock);
     expect(await asrReady()).toBe(false);
     expect(await asrReady()).toBe(true);

@@ -30,7 +30,7 @@ import {
   scheduleCompanionMemoryProjection,
   scheduleCompanionMemoryRebuild,
 } from "./companion-memory-authority";
-import { lockChatScope } from "./turn-scope";
+import { attachmentAttempt, lockChatScope } from "./turn-scope";
 import { legacyTurnActionAttachmentId } from "./tool-effect-attachment";
 import { userChatPersonaForTurn } from "./user-persona";
 import { DEFAULT_PROFILE_EXPERIENCE } from "./conversation-profiles";
@@ -1838,14 +1838,6 @@ function publicAssistantMessage(turn: {
 function attachmentCost(metadata: Prisma.JsonValue): number | null {
   const value = jsonRecord(metadata).costDreamcoins;
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
-}
-
-function attachmentAttempt(metadata: Prisma.JsonValue): number {
-  const root = jsonRecord(metadata);
-  const direct = root.attempt;
-  const nested = isRecord(root.effect) ? root.effect.attempt : undefined;
-  const value = typeof direct === "number" ? direct : nested;
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 1;
 }
 
 function streamUrl(assistantMessageId: string, attempt: number) {

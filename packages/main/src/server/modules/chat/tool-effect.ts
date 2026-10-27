@@ -22,7 +22,7 @@ import {
   reopenUnreservedFailedToolEffectAttachment,
 } from "./tool-effect-attachment";
 import { chatTurnForEffect } from "./turn-ledger";
-import { lockChatScope } from "./turn-scope";
+import { attachmentAttempt, lockChatScope } from "./turn-scope";
 
 export type ChatToolEffectResult =
   | {
@@ -77,7 +77,7 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
     }
   }
   // An exact historical ACK is a read, with no execution or reattachment.
-  if (prior && prior.status !== "requesting" && turn.attempt === effect.attempt && effectAttempt(prior.metadata) === effect.attempt) {
+  if (prior && prior.status !== "requesting" && turn.attempt === effect.attempt && attachmentAttempt(prior.metadata) === effect.attempt) {
     if (effect.effectScope === "attempt") assertEffectRequest(prior, requestDigest);
     else assertTurnActionIntent(prior, effect);
     return existingEffect(prior, requestDigest, effect.effectScope);
@@ -399,16 +399,8 @@ async function lastDeliveredImage(sessionId: string, before: Date): Promise<stri
     },
   });
   return attachments.find((attachment) =>
-    effectAttempt(attachment.metadata) === attachment.turn.attempt
+    attachmentAttempt(attachment.metadata) === attachment.turn.attempt
   )?.mediaAssetId ?? undefined;
-}
-
-function effectAttempt(metadata: Prisma.JsonValue): number {
-  const root = record(metadata);
-  const direct = root?.attempt;
-  const nested = record(root?.effect)?.attempt;
-  const value = typeof direct === "number" ? direct : nested;
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 1;
 }
 
 async function rebindTurnActionAttempt(

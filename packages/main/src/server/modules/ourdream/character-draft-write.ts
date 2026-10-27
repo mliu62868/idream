@@ -28,7 +28,7 @@ import {
 } from "./generation-job-authority";
 import { createReferenceSetRevision } from "./generation-reference-set";
 import {
-  assertIdentityImageMediaInTx,
+  assertIdentityImageMedia,
   assertNonSyntheticMediaAsset,
 } from "./customer-media-authority";
 import {
@@ -451,11 +451,7 @@ export async function submitCharacterDraft(input: {
     const currentDraft = await tx.characterDraft.findUniqueOrThrow({ where: { id: draft.id } });
     assertDraftRevision(currentDraft, draft.updatedAt.toISOString());
     await lockCharacterMediaAssetAuthorities(tx, [anchorAssetId]);
-    const lockedAnchorAsset = await assertIdentityImageMediaInTx(
-      tx,
-      anchorAssetId,
-      userId,
-    );
+    const lockedAnchorAsset = await assertIdentityImageMedia(anchorAssetId, userId, tx);
     if (lockedAnchorAsset.characterId !== null) {
       throw Errors.conflict(
         "The selected identity image already belongs to another Character. Choose an unassigned image or clone it first.",

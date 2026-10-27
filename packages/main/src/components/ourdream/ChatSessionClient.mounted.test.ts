@@ -790,6 +790,80 @@ describe("ChatSessionClient streaming composer", () => {
     expect(container.textContent).not.toContain("Reply stopped.");
   });
 
+  it.each(["server", "network", "wrong-attempt", "invalid-cancelled"] as const)(
+    "recovers the same attempt after Stop returns %s instead of a valid cancellation",
+    async (failure) => {
+      await startStreamingReply();
+      sessionMessages = [opening, userTurn, streamingReply];
+      const oldStream = FakeEventSource.instances[0]!;
+      const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+      vi.mocked(fetch).mockImplementation(async (input, init) => {
+        if (String(input).endsWith("/cancel")) {
+          if (failure === "network") throw new TypeError("Connection lost before the cancellation was confirmed");
+          if (failure === "server") return Response.json({ ok: false }, { status: 503 });
+          return Response.json(failure === "wrong-attempt"
+            ? { cancelled: true, attempt: 2 }
+            : { cancelled: "yes", attempt: 1 });
+        }
+        return originalFetch(input, init);
+      });
+
+      await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="chat-stop-reply"]')?.click());
+      await waitUntil(() => FakeEventSource.instances.length === 2);
+      const resumed = FakeEventSource.instances[1]!;
+      expect(oldStream.closed).toBe(true);
+      expect(resumed.url).toContain("attempt=1");
+      expect(resumed.closed).toBe(false);
+      await act(async () => resumed.emit("delta", { attempt: 1, delta: "The original reply continues" }));
+      expect(replyBubble()?.textContent).toContain("The original reply continues");
+      expect(container.querySelector('[aria-label="Assistant is typing"]')).not.toBeNull();
+      expect(container.querySelector<HTMLButtonElement>('[data-testid="chat-stop-reply"]')?.disabled).toBe(false);
+      expect(container.textContent).not.toContain("Reply stopped.");
+      expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/cancel"))).toHaveLength(1);
+      expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/regenerate"))).toHaveLength(0);
+    },
+  );
+
+  it("recovers by polling when both Stop and its immediate authority read fail", async () => {
+    await startStreamingReply();
+    sessionMessages = [opening, userTurn, streamingReply];
+    const oldStream = FakeEventSource.instances[0]!;
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    let failRecoveryRead = false;
+    let failedRecoveryReads = 0;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/cancel")) {
+        failRecoveryRead = true;
+        return Response.json({ ok: false }, { status: 503 });
+      }
+      if (url === "/api/v1/chat/sessions/session-1" && failRecoveryRead) {
+        failRecoveryRead = false;
+        failedRecoveryReads += 1;
+        return Response.json({ ok: false }, { status: 503 });
+      }
+      return originalFetch(input, init);
+    });
+
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="chat-stop-reply"]')?.click());
+    expect(failedRecoveryReads).toBe(1);
+    expect(oldStream.closed).toBe(true);
+    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(container.textContent).toContain("Couldn't stop the reply. Reconnecting…");
+    expect(container.querySelector('[aria-label="Assistant is typing"]')).not.toBeNull();
+
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await waitUntil(() => FakeEventSource.instances.length === 2);
+    const resumed = FakeEventSource.instances[1]!;
+    expect(resumed.url).toContain("attempt=1");
+    expect(resumed.closed).toBe(false);
+    await act(async () => resumed.emit("delta", { attempt: 1, delta: "Recovered through Main" }));
+    expect(replyBubble()?.textContent).toContain("Recovered through Main");
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="chat-stop-reply"]')?.disabled).toBe(false);
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/cancel"))).toHaveLength(1);
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/regenerate"))).toHaveLength(0);
+  });
+
   it("keeps a stopped reply's new pending attempt alive until it can stream", async () => {
     await startStreamingReply();
     await act(async () => {
@@ -1117,6 +1191,45 @@ describe("ChatSessionClient streaming composer", () => {
     expect(currentStream?.closed).toBe(false);
     expect(container.querySelector('[aria-label="Assistant is typing"]')).not.toBeNull();
     expect(container.textContent).not.toContain("Reply failed to load");
+  });
+
+  it("keeps the new attempt's source open when an earlier done recovery arrives late", async () => {
+    await startStreamingReply();
+    const oldStream = FakeEventSource.instances[0]!;
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    // Main committed attempt 1 before this read began. Its response is delayed
+    // while another page regenerates that same product Turn to attempt 2.
+    sessionMessages = [opening, userTurn, { ...streamingReply, content: "The earlier committed reply", status: "sent" }];
+    const oldSnapshot = await originalFetch("/api/v1/chat/sessions/session-1");
+    const recovery = Promise.withResolvers<Response>();
+    let deferRecovery = true;
+    let recoveryStarted = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/chat/sessions/session-1" && deferRecovery) {
+        deferRecovery = false;
+        recoveryStarted = true;
+        return recovery.promise;
+      }
+      return originalFetch(input, init);
+    });
+    await act(async () => oldStream.emit("done", { attempt: 1 }));
+    await waitUntil(() => recoveryStarted);
+    sessionMessages = [opening, userTurn, { ...streamingReply, attempt: 2 }];
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await waitUntil(() => FakeEventSource.instances.length === 2);
+    const currentStream = FakeEventSource.instances[1]!;
+    await act(async () => currentStream.emit("delta", { attempt: 2, delta: "The current reply" }));
+    await act(async () => recovery.resolve(oldSnapshot));
+
+    expect(oldStream.closed).toBe(true);
+    expect(currentStream.closed).toBe(false);
+    expect(currentStream.url).toContain("attempt=2");
+    expect(replyBubble()?.textContent).toContain("The current reply");
+    expect(replyBubble()?.textContent).not.toContain("The earlier committed reply");
+    expect(container.querySelector('[aria-label="Assistant is typing"]')).not.toBeNull();
+    await act(async () => currentStream.emit("delta", { attempt: 2, delta: " keeps streaming" }));
+    expect(replyBubble()?.textContent).toContain("The current reply keeps streaming");
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/regenerate"))).toHaveLength(0);
   });
 
   it("retracts provisional tool-step prose before rendering the final step", async () => {

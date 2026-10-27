@@ -146,14 +146,13 @@ const runtimeProcess = (name) => {
 module.exports = {
   apps: [
     {
-      ...runtimeProcess("parakeet-asr"),
+      ...runtimeProcess("asr"),
       env: {
         ...runtimeIdentityEnv,
-        PARAKEET_ASR_HOST: mainEnvValue("PARAKEET_ASR_HOST", "127.0.0.1"),
-        PARAKEET_ASR_PORT: mainEnvValue("PARAKEET_ASR_PORT", "8064"),
-        PARAKEET_ASR_DEVICE: mainEnvValue("PARAKEET_ASR_DEVICE", "cpu"),
-        PARAKEET_ASR_API_TOKEN: mainEnvValue("PARAKEET_ASR_API_TOKEN"),
-        PARAKEET_ASR_TEMP_DIR: mainEnvValue("PARAKEET_ASR_TEMP_DIR", dir(".data/parakeet-asr/audio")),
+        ASR_HOST: mainEnvValue("ASR_HOST", "127.0.0.1"),
+        ASR_PORT: mainEnvValue("ASR_PORT", "8064"),
+        ASR_API_TOKEN: mainEnvValue("ASR_API_TOKEN"),
+        ASR_TEMP_DIR: mainEnvValue("ASR_TEMP_DIR", dir(".data/asr/audio")),
         HF_HUB_OFFLINE: "1",
       },
     },

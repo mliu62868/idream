@@ -225,12 +225,17 @@ function classifySingleOwnership(input, spec) {
     issues.push("pm2_duplicate_id");
   }
 
-  // A host may run isolated PM2 daemons. Only the complete home used by the
-  // collector's PM2 client can establish this worker's parent authority.
+  // Independent worktrees may run their own PM2 daemons. Ownership belongs to
+  // the exact home used by this collector's PM2 client, never whichever daemon
+  // happens to be unique globally or is the claimed worker's parent.
+  const pm2Home = typeof input.pm2Home === "string" && path.isAbsolute(input.pm2Home)
+    ? path.resolve(input.pm2Home)
+    : null;
   const daemonRows = input.psRows.filter((row) => {
-    const match = row.command.match(/^PM2 v[^:]*: God Daemon \((.+)\)$/);
-    return match !== null && path.resolve(repoRoot, match[1]) === input.pm2Home;
+    const home = row.command.match(/^PM2 v[^:]*: God Daemon \((.+)\)$/)?.[1];
+    return pm2Home !== null && home && path.isAbsolute(home) && path.resolve(home) === pm2Home;
   });
+  if (daemonRows.length !== 1) issues.push("pm2_daemon_identity_mismatch");
   const daemonPid = daemonRows.length === 1 ? daemonRows[0].pid : null;
   const registeredRoots = new Map(livePm2.map((row) => [row.pid, row]));
   const redis = input.redisWorkers.map((worker) => redisIdentity(worker, spec));
@@ -597,6 +602,15 @@ function assertPm2SocketPaths(env, platform = process.platform) {
   return pm2Home;
 }
 
+function ownershipPm2Home(env) {
+  const configured = env.PM2_HOME || (env.HOME && path.join(env.HOME, ".pm2"));
+  if (typeof configured !== "string" || !configured) {
+    throw new Error("Generation ownership requires PM2_HOME or HOME");
+  }
+  // checkedSpawn runs PM2 from repoRoot, including when PM2_HOME is relative.
+  return path.resolve(repoRoot, configured);
+}
+
 async function collectOwnership(
   env,
   expected,
@@ -606,7 +620,8 @@ async function collectOwnership(
   requireRunId,
   mode,
 ) {
-  const pm2Home = assertPm2SocketPaths(env);
+  const pm2Home = ownershipPm2Home(env);
+  assertPm2SocketPaths(env);
   const pm2Processes = parseJsonArraySuffix(
     checkedSpawn("pm2", ["jlist"], env),
   );
@@ -801,6 +816,7 @@ module.exports = {
   classifyOwnership,
   collectOwnership,
   loadGenEnvironment,
+  ownershipPm2Home,
   mergeGenEnvironment,
   ownershipRedisOptions,
   parseCliArgs,

@@ -128,6 +128,38 @@ it("does not keyboard-select the previous account's suggestions while the next r
   expect(push).toHaveBeenCalledWith("/characters/owner-b-character");
 });
 
+it.each(["input", "history"])("does not select suggestions for a previous search after %s changes", async (source) => {
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input) === "/api/v1/search/suggest?q=moon") {
+      const payload = await responseFor(input).json();
+      payload.data.characters[0].title = "moon result";
+      return Response.json(payload);
+    }
+    return responseFor(input);
+  }));
+  await mount("search");
+  expect(container.textContent).toContain("owner-a preferred character");
+
+  const input = container.querySelector<HTMLInputElement>("input")!;
+  await act(async () => {
+    if (source === "history") {
+      window.history.replaceState(null, "", "/?q=moon");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    } else {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "moon");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  });
+  expect(container.textContent).not.toContain("owner-a preferred character");
+  expect(container.textContent).toContain("Searching...");
+  await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+  await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+  expect(push).not.toHaveBeenCalled();
+
+  await settle();
+  expect(container.textContent).toContain("moon result");
+});
+
 it.each([
   ["a malformed successful response", () => ok({})],
   ["a dependency failure", () => Response.json({ ok: false, error: { code: "DEPENDENCY_UNAVAILABLE" } }, { status: 503 })],

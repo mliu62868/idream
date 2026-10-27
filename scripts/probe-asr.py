@@ -2,13 +2,12 @@
 """Public FLEURS qualification. Never accepts production recordings or logs secrets.
 
 prepare streams official archives and stops after N clips (no whole-corpus download).
-run uses one resident Photon model. Derived quiet/noise are stress tests, not whispers.
+run uses the current pinned gateway model. Derived quiet/noise are stress tests, not whispers.
 Defaults qualify English product input; explicit --languages targets are research
 only and do not expand the product's supported ASR languages. Set --output explicitly
 for a separate research run so historical evidence remains identifiable.
 """
-import argparse, array, csv, hashlib, json, math, os, pathlib, platform, random, resource, tarfile, time, unicodedata, urllib.request, uuid, wave
-MODEL_REV = '2bf128600aac4b16946f7ed8372e56117fe5e23b'
+import argparse, array, asyncio, csv, hashlib, json, math, os, pathlib, platform, random, resource, sys, tarfile, time, unicodedata, urllib.request, uuid, wave
 CONFIGS = dict(zip('bg hr cs da nl en et fi fr de el hu it lv lt mt pl pt ro ru sk sl es sv uk'.split(), 'bg_bg hr_hr cs_cz da_dk nl_nl en_us et_ee fi_fi fr_fr de_de el_gr hu_hu it_it lv_lv lt_lt mt_mt pl_pl pt_br ro_ro ru_ru sk_sk sl_si es_419 sv_se uk_ua'.split()))
 ROOT = pathlib.Path('.scratch/chat-voice-input/qualification')
 
@@ -86,10 +85,70 @@ def edits(reference,hypothesis):
         prev=current
     return prev[-1],len(a)
 
+def regress(args):
+    """Exercise the deployed decoder and inference seam with frozen local audio.
+
+    References and critical tokens are assertions only, never model inputs.
+    Output is exclusive-create so a failed run cannot silently become a pass.
+    """
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+    from scripts import asr_gateway as gateway
+    from collections import Counter
+    records=json.loads(pathlib.Path(args.manifest).read_text())
+    if not isinstance(records,list) or not records: raise ValueError('manifest must be a nonempty array')
+    ids=set()
+    for row in records:
+        if not isinstance(row.get('id'),str) or row['id'] in ids: raise ValueError('unique sample IDs required')
+        ids.add(row['id'])
+        if not isinstance(row.get('reference'),str): raise ValueError('reference text required')
+        if hashlib.sha256(pathlib.Path(row['path']).read_bytes()).hexdigest()!=row.get('sha256'):
+            raise ValueError('frozen audio checksum mismatch: '+row['id'])
+        expected=Counter(words(row['reference']))
+        if any(not isinstance(t,str) or words(t)!=[t] or not expected[t] for t in row.get('critical_tokens',[])):
+            raise ValueError('critical tokens must occur in the normalized reference')
+    metadata=dict(model=gateway.MODEL_ID,modelRevision=gateway.MODEL_REVISION,runtimeVersion=gateway.SDK_VERSION,
+        sourceRevision=__import__('subprocess').check_output(['node','scripts/source-revision.cjs'],text=True).strip(),
+        manifestSha256=hashlib.sha256(pathlib.Path(args.manifest).read_bytes()).hexdigest(),
+        score='NFKC/lower/unicode-punctuation-space token Levenshtein',maxWer=args.max_wer)
+    rows=[]
+    with pathlib.Path(args.output).open('x') as output:
+        def checkpoint(status,**summary):
+            output.seek(0)
+            json.dump({**metadata,'status':status,'rows':rows,**summary},output,indent=2)
+            output.write('\n');output.truncate();output.flush()
+        checkpoint('incomplete')
+        with gateway.load_runtime() as model:
+            gateway.runtime=model
+            for row in records:
+                start=time.monotonic();text='';error=None;pcm=None
+                try:
+                    pcm=asyncio.run(gateway.decode(pathlib.Path(row['path']),time.monotonic()+gateway.DEADLINE))
+                    # Match the gateway's definitive digital-silence guard.
+                    text=gateway.transcribe(pcm).get('text','').strip() if any(pcm) else ''
+                    if len(text)>gateway.MAX_TEXT: error='transcript_too_long'
+                    elif words(row['reference']) and not text: error='no_speech'
+                    elif not words(row['reference']) and text: error='unexpected_speech'
+                except Exception as exc: error=type(exc).__name__
+                distance,count=edits(row['reference'],text)
+                expected,actual=Counter(words(row['reference'])),Counter(words(text))
+                critical=row.get('critical_tokens',[])
+                forbidden=row.get('forbidden_tokens',[])
+                substitution=row.get('forbidden_substitution')
+                if substitution and not expected[substitution['to']]: forbidden=[*forbidden,substitution['to']]
+                lexical_pass=all(actual[t]==expected[t] for t in critical) and not any(actual[t] for t in forbidden)
+                result=dict(id=row['id'],inputSha256=row['sha256'],pcmSha256=hashlib.sha256(pcm).hexdigest() if pcm is not None else None,
+                    transcript=text,error=error,editDistance=distance,referenceWords=count,criticalPassed=lexical_pass,
+                    elapsedMs=round((time.monotonic()-start)*1000,2))
+                rows.append(result);checkpoint('incomplete');print(json.dumps(result),flush=True)
+        total=sum(r['referenceWords'] for r in rows);distance=sum(r['editDistance'] for r in rows)
+        passed=all(not r['error'] and r['criticalPassed'] for r in rows) and (distance/total<=args.max_wer if total else distance==0)
+        checkpoint('complete',editDistance=distance,referenceWords=total,wer=distance/total if total else None,passed=passed)
+    if not passed: raise SystemExit(1)
+
 def run(args):
     os.environ['HF_HUB_OFFLINE']='1'
-    import moondream as md
-    import importlib.metadata
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+    from scripts import asr_gateway as gateway
     records=json.loads((ROOT/'manifest.json').read_text()) if (ROOT/'manifest.json').exists() else [row for file in sorted(ROOT.glob('*-samples.json')) for row in json.loads(file.read_text())]
     for seconds in [1,10,60]:
         path=ROOT/f'silence-{seconds}s.wav'
@@ -97,26 +156,26 @@ def run(args):
         if not any(row['path']==str(path) for row in records): records.append(dict(language='none',path=str(path),reference='',condition='synthetic_digital_silence',duration_s=seconds))
     selected=[r for r in records if not args.languages or r['language'] in args.languages.split(',') or r['language']=='none']
     output=ROOT/args.output
-    from huggingface_hub import snapshot_download
-    cache=snapshot_download('moondream/parakeet-redux',revision=MODEL_REV,local_files_only=True)
+    if output.exists(): raise FileExistsError('Use a new output path; historical model evidence cannot be resumed')
     hardware=dict(machine=platform.machine(),processor=platform.processor(),platform=platform.platform(),cpu_count=os.cpu_count())
     if platform.system()=='Darwin': hardware['cpu_model']=__import__('subprocess').check_output(['sysctl','-n','machdep.cpu.brand_string'],text=True).strip()
-    metadata=dict(provider='photon',model='moondream/parakeet-redux',revision=MODEL_REV,runtime=importlib.metadata.version('moondream'),hardware=hardware,device=args.device,source_revision=__import__('subprocess').check_output(['node','scripts/source-revision.cjs'],text=True).strip(),score='NFKC/lower/unicode-punctuation-space token Levenshtein; NOT official leaderboard compound-merging normalizer',qualification_limits=['No verified speaker IDs','No genuine whisper or environmental-noise recordings','No human critical-meaning adjudication','FLEURS read speech does not represent companion dictation'])
+    metadata=dict(provider='mlx-whisper',model=gateway.MODEL_ID,revision=gateway.MODEL_REVISION,runtime=gateway.SDK_VERSION,hardware=hardware,device='metal',precision='float16',source_revision=__import__('subprocess').check_output(['node','scripts/source-revision.cjs'],text=True).strip(),score='NFKC/lower/unicode-punctuation-space token Levenshtein; NOT official leaderboard compound-merging normalizer',qualification_limits=['No verified speaker IDs','No genuine whisper or environmental-noise recordings','No human critical-meaning adjudication','FLEURS read speech does not represent companion dictation'])
     metadata['probe_sha256']=hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()
     metadata['git_commit']=__import__('subprocess').check_output(['git','rev-parse','HEAD'],text=True).strip()
-    (ROOT/'runtime.json').write_text(json.dumps(metadata,indent=2))
+    with output.with_suffix('.runtime.json').open('x') as file: json.dump(metadata,file,indent=2)
     start=time.monotonic()
-    with md.photon("moondream/parakeet-redux",api_key="",model_path=cache,device=args.device,single_pass_batch_capacity=1) as model:
+    with gateway.load_runtime() as model:
+        gateway.runtime=model
         loaded_ms=round((time.monotonic()-start)*1000)
-        with output.open('a') as f:
-            completed=set()
-            for line in output.read_text().splitlines():
-                if line: completed.add(json.loads(line)['path'])
+        with output.open('x') as f:
             for r in selected:
-                if r['path'] in completed: continue
+                if r.get('sha256') and hashlib.sha256(pathlib.Path(r['path']).read_bytes()).hexdigest()!=r['sha256']:
+                    raise ValueError('frozen audio checksum mismatch: '+r['path'])
                 request=str(uuid.uuid4());begin=time.monotonic()
                 try:
-                    result=model.transcribe(audio=r['path']);text=result['text'];error=None
+                    pcm=asyncio.run(gateway.decode(pathlib.Path(r['path']),time.monotonic()+gateway.DEADLINE))
+                    text=gateway.transcribe(pcm,language=r['language'] if r['language']!='none' else 'en').get('text','').strip() if any(pcm) else ''
+                    error='no_speech' if words(r['reference']) and not text else None
                 except Exception as exc: text='';error=f'{type(exc).__name__}: {exc}'
                 latency=round((time.monotonic()-begin)*1000,2);distance,count=edits(r['reference'],text)
                 evidence={**r,'audio_source_revision':r.get('source_revision'),'request_id':request,'attempt_id':request,'transcript':text,'error':error,'latency_ms':latency,'edit_distance':distance,'reference_words':count,'model_load_ms':loaded_ms,'max_rss_bytes':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*(1 if platform.system()=='Darwin' else 1024),**metadata}
@@ -141,8 +200,12 @@ def summarize(output):
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='command',required=True)
     prep=sub.add_parser('prepare');prep.add_argument('--languages',default='en');prep.add_argument('--count',type=int,default=20)
-    runp=sub.add_parser('run');runp.add_argument('--languages',default='en');runp.add_argument('--device',default='cpu',choices=['cpu','mps','cuda']);runp.add_argument('--output',default='results-english.jsonl')
+    runp=sub.add_parser('run');runp.add_argument('--languages',default='en');runp.add_argument('--output',default='results-english.jsonl')
+    regression=sub.add_parser('regress');regression.add_argument('--manifest',required=True);regression.add_argument('--output',required=True);regression.add_argument('--max-wer',type=float,default=.1)
     args=p.parse_args()
+    if args.command=='regress':
+        if not 0<=args.max_wer<=1: p.error('--max-wer must be between 0 and 1')
+        regress(args);raise SystemExit(0)
     if args.command=='prepare' and not 1<=args.count<=100: p.error('--count must be between 1 and 100')
     if args.languages and any(lang not in CONFIGS for lang in args.languages.split(',')): p.error('unknown target language')
     prepare(args) if args.command=='prepare' else run(args)

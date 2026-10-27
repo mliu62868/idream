@@ -17,6 +17,7 @@ const {
   classifyOwnership,
   mergeGenEnvironment,
   ownershipRedisOptions,
+  ownershipPm2Home,
   parseCliArgs,
   parseJsonArraySuffix,
   parsePsSnapshot,
@@ -351,6 +352,13 @@ test("parses PM2 warning prefixes and ps process identity", () => {
   assert.throws(() => parsePsSnapshot("collector format drift"));
 });
 
+test("PM2 home comes from the collector environment and matches the client working directory", () => {
+  assert.equal(ownershipPm2Home({ HOME: "/tmp/operator" }), "/tmp/operator/.pm2");
+  assert.equal(ownershipPm2Home({ HOME: "/tmp/operator", PM2_HOME: "/tmp/worktree/.pm2" }), "/tmp/worktree/.pm2");
+  assert.equal(ownershipPm2Home({ PM2_HOME: ".scratch/pm2" }), path.join(repoRoot, ".scratch/pm2"));
+  assert.throws(() => ownershipPm2Home({}), /requires PM2_HOME or HOME/);
+});
+
 test("deletes the ownership check's duplicate process identity map", () => {
   const source = readFileSync(
     path.join(__dirname, "check-gen-image-worker-ownership.cjs"),
@@ -552,6 +560,74 @@ test("registered PM2 Bun containers require daemon parent and their own process 
       ],
     });
     assert.equal(report.ok, false, `ppid=${ppid}, pgid=${pgid}`);
+  }
+});
+
+test("accepts the current PM2 home with an unrelated worktree daemon in either OS order", () => {
+  const current = row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)");
+  const unrelated = row(900, 1, 900, "PM2 v6.0.14: God Daemon (/tmp/worktree/.pm2)");
+  for (const daemons of [[current, unrelated], [unrelated, current]]) {
+    const report = classifyOwnership({
+      pm2Home: "/tmp/.pm2",
+      mode: "ready", expected: 1, expectedVideo: 1,
+      runId: "release1", videoRunId: "release1",
+      pm2Processes: [pm2(200, 0), videoPm2(400)],
+      psRows: [...daemons, pm2BunRuntime(200), pm2BunRuntime(400)],
+      redisWorkers: [redis("release1", 0, 200)],
+      videoRedisWorkers: [videoRedis("release1", 0, 400)],
+    });
+    assert.equal(report.ok, true, JSON.stringify(report.issues));
+    assert.equal(report.image.groups[0].classification, "registered");
+    assert.equal(report.video.groups[0].classification, "registered");
+  }
+});
+
+test("rejects a daemon outside the current PM2 home even when it is the only daemon", () => {
+  for (const pm2Home of ["/tmp/other/.pm2", "/tmp/.pm2-prefix", undefined]) {
+    const report = classifyOwnership({
+      pm2Home, mode: "ready", expected: 1, runId: "release1",
+      pm2Processes: [pm2(200, 0)],
+      psRows: [row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"), pm2BunRuntime(200)],
+      redisWorkers: [redis("release1", 0, 200)],
+    });
+    assert.equal(report.ok, false, String(pm2Home));
+  }
+});
+
+test("rejects duplicate daemons for the current PM2 home even when the parent matches one", () => {
+  const report = classifyOwnership({
+    pm2Home: "/tmp/.pm2", mode: "ready", expected: 1, runId: "release1",
+    pm2Processes: [pm2(200, 0)],
+    psRows: [row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"), row(900, 1, 900, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"), pm2BunRuntime(200)],
+    redisWorkers: [redis("release1", 0, 200)],
+  });
+  assert.equal(report.ok, false);
+});
+
+test("multiple daemons do not relax the registered parent or process group contract", () => {
+  for (const [ppid, pgid] of [[900, 200], [100, 999]]) {
+    const report = classifyOwnership({
+      pm2Home: "/tmp/.pm2", mode: "ready", expected: 1, runId: "release1",
+      pm2Processes: [pm2(200, 0)],
+      psRows: [
+        row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"),
+        row(900, 1, 900, "PM2 v6.0.14: God Daemon (/tmp/worktree/.pm2)"),
+        row(200, ppid, pgid, `${bunPath} ${pm2BunProcessContainer}`),
+      ],
+      redisWorkers: [redis("release1", 0, 200)],
+    });
+    assert.equal(report.ok, false, `ppid=${ppid}, pgid=${pgid}`);
+    assert.ok(report.issues.includes("registered_runtime_process_identity_mismatch"));
+  }
+});
+
+test("quiescence still refuses an ambiguous daemon authority", () => {
+  for (const psRows of [
+    [row(900, 1, 900, "PM2 v6.0.14: God Daemon (/tmp/worktree/.pm2)")],
+    [row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"), row(900, 1, 900, "PM2 v6.0.14: God Daemon (/tmp/.pm2)")],
+  ]) {
+    const report = classifyOwnership({ pm2Home: "/tmp/.pm2", mode: "quiescent", expected: 0, pm2Processes: [], psRows, redisWorkers: [] });
+    assert.equal(report.ok, false);
   }
 });
 

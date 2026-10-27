@@ -164,6 +164,7 @@ describe("voice clip replay settlement", () => {
     const legacy = await prisma.voiceClipRequest.create({ data: {
       ...current, id: legacyId, requestFingerprint: legacyFingerprint,
       synthesisPayload: toInputJson(current.synthesisPayload), providerPayload: toInputJson(current.providerPayload), error: Prisma.DbNull,
+      executionAuthority: toInputJson(current.executionAuthority),
       providerRequestId: `voice:${legacyId}:provider`,
       billingAuthority: { ...(current.billingAuthority as object), requestFingerprint: legacyFingerprint },
     } });

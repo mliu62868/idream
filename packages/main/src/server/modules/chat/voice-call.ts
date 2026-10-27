@@ -4,8 +4,9 @@ import { z } from "zod";
 import { voiceCallSchema, voiceCallStartSchema, voiceClipBillingAuthoritySchema } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
-import { getAuthCtx, requireAgeGate, requireAgeVerified } from "@/server/lib/auth";
+import { getAuthCtx, requireAgeGate, requireAgeVerified, type AuthCtx } from "@/server/lib/auth";
 import { AppError, Errors } from "@/server/lib/errors";
+import { ok } from "@/server/lib/http";
 import { generationCostFromAuthority, resolveGenerationPricingAuthority } from "@/server/lib/generation-pricing";
 import { dreamcoinBalance } from "@/server/modules/billing/ledger";
 import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency";
@@ -13,7 +14,7 @@ import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { resolveCharacterVoiceAuthority } from "@/server/modules/voice-defaults";
 import { providers } from "@/server/providers";
 import { configuredVoiceProviderKey, englishVoiceRuntimeReady } from "@/server/providers/voice/factory";
-import { asrReady, requestAsr } from "@/server/providers/asr/parakeet-redux";
+import { asrReady, requestAsr } from "@/server/providers/asr/gateway";
 import { readVoiceUpload } from "@/server/providers/asr/upload";
 import { createVoiceClip, characterVoiceTone, pinnedVoiceProviderPayloadSchema, voiceMinutesRemainingMs } from "../ourdream/voice-clip";
 import { acceptVoiceClipQuote, signVoiceClipQuote } from "../ourdream/voice-clip-quote";
@@ -250,7 +251,7 @@ async function submitUtterance(call: VoiceCall, token: string | null, id: string
   return { utteranceId: id, status: result.status,
     retryAfterMs: result.retryAfterMs };
 }
-async function speakUtterance(request: Request, call: VoiceCall, token: string | null, id: string) {
+async function speakUtterance(auth: AuthCtx, call: VoiceCall, token: string | null, id: string) {
   const utterance = await prisma.voiceCallUtterance.findFirst({ where: { id, callId: call.id } });
   if (!utterance?.assistantMessageId || utterance.status === "cancelled") throw Errors.conflict("This spoken turn is unavailable");
   if (!leaseIsLive(call, token) || call.status !== "active") throw Errors.gone("Call is no longer active");
@@ -260,14 +261,14 @@ async function speakUtterance(request: Request, call: VoiceCall, token: string |
   const spent = (await prisma.voiceCallUtterance.aggregate({ where: { callId: call.id }, _sum: { costDreamcoins: true } }))._sum.costDreamcoins ?? 0;
   const remaining = Math.max(0, call.maxCostDreamcoins - spent);
   const onlyMinutes = remaining < terms.overflowCostDreamcoins;
-  const voiceRequest = new Request(request.url, { method: "POST", headers: request.headers, body: JSON.stringify({
+  return createVoiceClip(auth, {
     characterId: call.characterId, sessionId: call.sessionId, messageId: utterance.assistantMessageId, intent: onlyMinutes ? "prewarm" : "play",
-  }) });
-  return createVoiceClip(voiceRequest, { entitlementMap, readableCharacter }, {
+  }, { entitlementMap, readableCharacter }, {
     callUtteranceId: id,
+    replyAttempt: reply.attempt,
+    leaseToken: token!,
     providerPayload: pinnedVoiceProviderPayloadSchema.parse(call.providerPayload),
     billingAuthority: fingerprint => ({ ...terms, requestFingerprint: fingerprint, intent: onlyMinutes ? "prewarm" : "play", maxCostDreamcoins: onlyMinutes ? 0 : terms.overflowCostDreamcoins }),
-
   });
 }
 /** Dispatch before Chat's JSON reader: uploads preserve their binary contract. */
@@ -301,7 +302,10 @@ export async function routeVoiceCall(request: Request, path: string[], userId: s
   if (path.length === 5 && ["heartbeat", "mute", "unmute", "resume", "end", "interrupt", "disconnect"].includes(path[4]) && request.method === "POST") return reply({ call: await controlCall(userId, sessionId, callId, token, path[4]) });
   if (path[4] === "utterances" && path[5]) {
     const id = z.uuid().parse(path[5]);
-    if (path.length === 7 && path[6] === "voice" && request.method === "POST") return speakUtterance(request, call, token, id);
+    if (path.length === 7 && path[6] === "voice" && request.method === "POST") {
+      const result = await speakUtterance(auth, call, token, id);
+      return ok(result.value, { status: result.kind === "created" ? 201 : 200 });
+    }
     if (path.length === 6 && ["POST", "GET"].includes(request.method)) return reply(await submitUtterance(call, token, id, request.method === "POST" ? await readVoiceUpload(request) : undefined));
   }
   throw Errors.notFound("Call route not found");

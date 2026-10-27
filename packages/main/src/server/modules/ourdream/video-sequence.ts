@@ -115,17 +115,26 @@ export async function createVideoSequence(userId: string, body: VideoSequenceReq
 export async function readVideoSequence(userId: string, id: string) {
   const row = await prisma.videoSequence.findFirst({ where: { id, userId }, include });
   if (!row) throw Errors.notFound("Video sequence not found");
-  const jobs = await readGenerationJobs(row.scenes.map(scene => scene.generationJob));
-  const scenes = row.scenes.map((scene, index) => ({ ordinal: scene.ordinal, job: jobs[index]!,
-    narrationState: scene.narrationState, assets: scene.generationJob.assets.filter(asset => !asset.deletedAt).map(asset => ({ id: asset.id, url: `/api/v1/media/${asset.id}/content`, downloadUrl: `/api/v1/media/${asset.id}/content?download=1` })) }));
-  const cost = scenes.reduce((sum, scene) => ({ charged: sum.charged + scene.job.cost.charged, refunded: sum.refunded + scene.job.cost.refunded, finalCharge: sum.finalCharge + scene.job.cost.finalCharge }), { charged: 0, refunded: 0, finalCharge: 0 });
-  return { id: row.id, status: row.status, errorCode: row.errorCode, request: row.request, acceptedQuote: row.acceptedQuote, scenes, cost, createdAt: row.createdAt.toISOString(), completedAt: row.completedAt?.toISOString() ?? null,
-    asset: row.mediaAsset && !row.mediaAsset.deletedAt ? { id: row.mediaAsset.id, url: `/api/v1/media/${row.mediaAsset.id}/content`, downloadUrl: `/api/v1/media/${row.mediaAsset.id}/content?download=1`, width: row.mediaAsset.width, height: row.mediaAsset.height, metadata: row.mediaAsset.metadata } : null };
+  return (await projectVideoSequences([row]))[0]!;
 }
 
 export async function listVideoSequences(userId: string) {
-  const rows = await prisma.videoSequence.findMany({ where: { userId }, select: { id: true }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 20 });
-  return Promise.all(rows.map(row => readVideoSequence(userId, row.id)));
+  const rows = await prisma.videoSequence.findMany({ where: { userId }, include, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 20 });
+  return projectVideoSequences(rows);
+}
+
+async function projectVideoSequences(rows: readonly SequenceRow[]) {
+  // List and detail cross the same read seam. Batch every child Request so a
+  // page does not multiply Attempt and ledger reads by its sequence count.
+  const jobs = await readGenerationJobs(rows.flatMap(row => row.scenes.map(scene => scene.generationJob)));
+  const byId = new Map(jobs.map(job => [job.id, job]));
+  return rows.map(row => {
+    const scenes = row.scenes.map(scene => ({ ordinal: scene.ordinal, job: byId.get(scene.generationJobId)!,
+      narrationState: scene.narrationState, assets: scene.generationJob.assets.filter(asset => !asset.deletedAt).map(asset => ({ id: asset.id, url: `/api/v1/media/${asset.id}/content`, downloadUrl: `/api/v1/media/${asset.id}/content?download=1` })) }));
+    const cost = scenes.reduce((sum, scene) => ({ charged: sum.charged + scene.job.cost.charged, refunded: sum.refunded + scene.job.cost.refunded, finalCharge: sum.finalCharge + scene.job.cost.finalCharge }), { charged: 0, refunded: 0, finalCharge: 0 });
+    return { id: row.id, status: row.status, errorCode: row.errorCode, request: row.request, acceptedQuote: row.acceptedQuote, scenes, cost, createdAt: row.createdAt.toISOString(), completedAt: row.completedAt?.toISOString() ?? null,
+      asset: row.mediaAsset && !row.mediaAsset.deletedAt ? { id: row.mediaAsset.id, url: `/api/v1/media/${row.mediaAsset.id}/content`, downloadUrl: `/api/v1/media/${row.mediaAsset.id}/content?download=1`, width: row.mediaAsset.width, height: row.mediaAsset.height, metadata: row.mediaAsset.metadata } : null };
+  });
 }
 
 async function stopUnstartedScenes(tx: Prisma.TransactionClient, row: SequenceRow, reason: string) {

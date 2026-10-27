@@ -51,14 +51,11 @@ import { chatVideoSources, isExplicitChatVideoRequest } from "@/lib/chat-video";
 import { ChatVideoComposer, type ChatVideoSubmission } from "./chat/ChatVideoComposer";
 import { ChatVideoAttachmentCard } from "./chat/ChatVideoAttachmentCard";
 import {
-  chatStreamErrorDisposition,
   chatStreamLatestReplyFailed,
   chatStreamMessageIsInProgress,
-  chatStreamMessageIsTerminal,
   chatStreamMessagesNeedReconciliation,
-  chatStreamTerminalErrorMessage,
-  reconcileChatStreamAuthority,
-} from "./chat-stream-recovery";
+  useChatReplyDelivery,
+} from "./chat-reply-delivery";
 import {
   canRegenerateChatMessage,
   canSubmitChatMessage,
@@ -98,7 +95,6 @@ type VoiceClipRequestResult = {
 };
 
 const BLOCKED_ASSISTANT_NOTICE = "I can’t help with that request.";
-const STOPPED_REPLY_STATUS = "cancelled";
 const SPEAKER_SELECT_FAILED = "Couldn't select that Character. Try again.";
 const CHAT_RELEASE_HANDOFF_NOTICE =
   "This Character was updated, so we opened a new chat. Your unsent message is ready below. The earlier conversation stays in your chats.";
@@ -109,12 +105,6 @@ const PROACTIVE_POLL_MS = 60_000;
 const COMPOSER_BUTTON_CLASS =
   "inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] text-white disabled:opacity-70";
 
-type LocalStreamState = {
-  readonly attempt?: number;
-  readonly content: string;
-  readonly stopped: boolean;
-};
-
 export function chatUpgradeLinkLabel(reason: ChatUpgradeReason) {
   if (reason === "dreamcoins") return "Get more dreamcoins";
   return "Upgrade for unlimited messages";
@@ -122,47 +112,6 @@ export function chatUpgradeLinkLabel(reason: ChatUpgradeReason) {
 
 function upgradeHrefForChatSession(sessionId: string, groupMode = false) {
   return `/upgrade?returnTo=${encodeURIComponent(`/chat/${groupMode ? "groups/" : ""}${encodeURIComponent(sessionId)}`)}`;
-}
-
-function mergeCanonicalMessages(
-  current: ChatMessage[],
-  incoming: ChatMessage[],
-): ChatMessage[] {
-  const replacements = new Map(incoming.map((message) => [message.id, message]));
-  const merged = current.map((message) => replacements.get(message.id) ?? message);
-  const existingIds = new Set(current.map((message) => message.id));
-  return [
-    ...merged,
-    ...incoming.filter((message) => !existingIds.has(message.id)),
-  ];
-}
-
-// SPEC: Chat streams deltas through Redis and only writes the assistant row at
-//       finalize, so every read landing mid-stream returns content: "". Reapply
-//       the text this client has already received so the 1.5s poller can never
-//       blank a bubble the reader is watching.
-// INVARIANT: a row Chat reports as terminal always wins — including a shorter
-//            moderated rewrite of what streamed. Only the mid-stream hole is
-//            filled locally.
-export function applyLocalStreamState(
-  messages: ChatMessage[],
-  localState: ReadonlyMap<string, LocalStreamState>,
-): ChatMessage[] {
-  if (localState.size === 0) return messages;
-  return messages.map((message) => {
-    const local = localState.get(message.id);
-    if (!local || local.attempt !== message.attempt) return message;
-    if (chatStreamMessageIsTerminal(message) && message.status !== STOPPED_REPLY_STATUS) {
-      return message;
-    }
-    if (local.stopped) {
-      return { ...message, content: local.content, status: STOPPED_REPLY_STATUS };
-    }
-    if (chatStreamMessageIsTerminal(message)) return message;
-    return local.content.length > message.content.length
-      ? { ...message, content: local.content }
-      : message;
-  });
 }
 
 // SPEC: Follow the newest message only while the reader is parked at it: the end
@@ -281,7 +230,6 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingContent, setEditingContent] = useState("");
   const [editingPending, setEditingPending] = useState(false);
-  const [stoppingReply, setStoppingReply] = useState(false);
   const [deleteConfirmMessageId, setDeleteConfirmMessageId] = useState<string | null>(null);
   const [variationPendingMediaId, setVariationPendingMediaId] =
     useState<string | null>(null);
@@ -303,9 +251,6 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     resume: resumeGenerationReceipts,
   } = useGenerationReceipts({ ownerScope: receiptOwnerScope, onWarning: setReceiptWarning });
   const [jumpToLatestVisible, setJumpToLatestVisible] = useState(false);
-  const localStreamStateRef = useRef<Map<string, LocalStreamState>>(new Map());
-  // Attempt identity survives text-cache cleanup and pending/terminal snapshots.
-  const observedAttemptsRef = useRef<Map<string, number>>(new Map());
   const pinnedToBottomRef = useRef(true);
   const sendIntentRef = useRef<{
     sessionId: string;
@@ -314,7 +259,6 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     characterId: string | null;
   } | null>(null);
   const imageRetryPendingRef = useRef(new Set<string>());
-  const streamSources = useRef<Map<string, EventSource>>(new Map());
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const voicePlaybackIntentRef = useRef(0);
   const voicePlaybackMessageIdRef = useRef<string | null>(null);
@@ -342,25 +286,28 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     },
     beforeRecording: stopVoice,
   });
+  const delivery = useChatReplyDelivery({
+    conversationId: id,
+    messages,
+    setMessages,
+    readSession: fetchSession,
+    request: fetchForSession,
+    onSession: applySessionMetadata,
+    onRepliesInvalidated: invalidateReplyVoices,
+    onStatus: setStatus,
+  });
+  const stoppingReply = delivery.stopping;
   const voiceCall = useVoiceCall({
     sessionPath, ownerScope: receiptOwnerScope,
     enabled: ageGateAccepted && loadState === "ready" && !conversationReadOnly && !groupMode,
     beforeConnect: () => { stopVoice(); voiceInput.cancel(); },
-    onTurn: ({ userMessage, assistant, streamUrl }) => {
-      setMessages(current => mergeCanonicalMessages(current, [userMessage, assistant]));
-      if (streamUrl && chatStreamMessageIsInProgress(assistant)) streamAssistant(streamUrl, assistant.id, assistant.content);
-    },
+    onTurn: (turn) => delivery.receiveTurn(turn),
   });
-  const sessionMutationEpochRef = useRef(0);
   useLayoutEffect(() => {
     mountedRef.current = true;
-    const sources = streamSources.current;
     return () => {
       mountedRef.current = false;
-      sessionMutationEpochRef.current += 1;
       suspendGenerationReceipts(true);
-      for (const source of sources.values()) source.close();
-      sources.clear();
       audioRef.current?.pause();
       if (audioRef.current) audioRef.current.src = "";
       audioRef.current = null;
@@ -438,10 +385,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     let cancelled = false;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
-      for (const source of streamSources.current.values()) source.close();
-      streamSources.current.clear();
-      localStreamStateRef.current.clear();
-      observedAttemptsRef.current.clear();
+      delivery.reset();
       pinnedToBottomRef.current = true;
       setJumpToLatestVisible(false);
       setVoiceCallOpen(false);
@@ -452,7 +396,6 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
       voiceClipUrlsRef.current.clear();
       setVoicePreparingIds(new Set());
       setVoicePlayingId(null);
-      sessionMutationEpochRef.current += 1;
       setReceiptOwnerScope(null);
       suspendGenerationReceipts(true);
       setReceiptWarning("");
@@ -474,12 +417,10 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
         setLoadState("signed-out");
         return;
       }
-      const epoch = sessionMutationEpochRef.current;
-      fetchSession(controller.signal)
+      const read = delivery.context();
+      read.refresh(controller.signal)
         .then((session) => {
-          if (cancelled || epoch !== sessionMutationEpochRef.current || session.id !== id) return;
-          applySession(session);
-          resumePendingStreams(session.messages);
+          if (cancelled || !session) return;
           setLoadState("ready");
           const handedOver = groupMode ? null : takeChatReleaseHandoff(id);
           if (handedOver !== null) {
@@ -488,14 +429,14 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
           }
         })
         .catch((error: unknown) => {
-          if (cancelled || epoch !== sessionMutationEpochRef.current) return;
+          if (cancelled || !read.isCurrent()) return;
           setLoadState(isChatAuthError(error) ? "signed-out" : "error");
           setStatus(null);
         });
     }, 0);
     return () => {
       cancelled = true;
-      sessionMutationEpochRef.current += 1;
+      delivery.context({ invalidate: true });
       controller.abort();
       window.clearTimeout(timer);
     };
@@ -533,20 +474,18 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
       controller?.abort();
       controller = new AbortController();
       const signal = controller.signal;
-      const epoch = ++sessionMutationEpochRef.current;
+      const read = delivery.context({ invalidate: true });
       const scopeBefore = receiptOwnerScopeRef.current;
       suspendGenerationReceipts(true);
       setReceiptOwnerScope(null);
       // INTENT: re-validate in the background. Swapping the conversation for a
       // spinner on every window focus dropped the scroll position, the composer
       // and any playing voice; the page only changes when the owner check fails.
-      void fetchSession(signal).then((session) => {
-        if (signal.aborted || epoch !== sessionMutationEpochRef.current) return;
-        applySession(session);
+      void read.refresh(signal).then((session) => {
+        if (!session) return;
         setLoadState("ready");
-        resumePendingStreams(session.messages);
       }).catch((error: unknown) => {
-        if (signal.aborted || epoch !== sessionMutationEpochRef.current) return;
+        if (signal.aborted || !read.isCurrent()) return;
         // Only a failed owner check (signed out, or this chat is not readable
         // any more) replaces the page; a network blip keeps the conversation.
         const status = (error as { status?: unknown }).status;
@@ -560,10 +499,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
         stopVoice();
         // A failed owner check revokes cached content as well as new writes.
         // Header/Scene and open drawers render outside the ready-state branch.
-        for (const source of streamSources.current.values()) source.close();
-        streamSources.current.clear();
-        localStreamStateRef.current.clear();
-        observedAttemptsRef.current.clear();
+        delivery.reset();
         voiceClipRequestsRef.current.clear();
         voiceClipUrlsRef.current.clear();
         receiptOwnerScopeRef.current = null;
@@ -589,17 +525,6 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     // Revalidate the same session's owner, never the cached viewer from /me.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ageGateAccepted, id, suspendGenerationReceipts, viewer.identity]);
-
-  useEffect(() => {
-    const sources = streamSources.current;
-    return () => {
-      for (const source of sources.values()) source.close();
-      sources.clear();
-      audioRef.current?.pause();
-      audioRef.current = null;
-      voicePlaybackIntentRef.current += 1;
-    };
-  }, []);
 
   useEffect(() => {
     if (!ageGateAccepted) return;
@@ -632,18 +557,9 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
         return;
       }
       controller = new AbortController();
-      const mutationEpoch = sessionMutationEpochRef.current;
       try {
-        const session = await fetchSession(controller.signal);
-        if (
-          cancelled ||
-          session.id !== id ||
-          mutationEpoch !== sessionMutationEpochRef.current
-        ) {
-          return;
-        }
-        applySession(session);
-        resumePendingStreams(session.messages);
+        const session = await delivery.refresh(controller.signal);
+        if (cancelled || !session) return;
         failureCount = 0;
         if (reconciling && chatStreamLatestReplyFailed(session.messages)) {
           setStatus("Reply failed to load. Please try again.");
@@ -686,6 +602,15 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     pending,
     proactiveEnabled,
   ]);
+
+  function invalidateReplyVoices(messageIds: readonly string[]) {
+    for (const messageId of messageIds) {
+      if (voicePlaybackMessageIdRef.current === messageId) stopVoice();
+      voiceClipRequestsRef.current.delete(messageId);
+      voiceClipUrlsRef.current.delete(messageId);
+    }
+    setVoicePreparingIds(current => new Set([...current].filter(id => !messageIds.includes(id))));
+  }
 
   function stopVoice() {
     voicePlaybackIntentRef.current += 1;
@@ -870,7 +795,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     setUpgradeReason(null);
     setContent("");
     setPending(true);
-    sessionMutationEpochRef.current += 1;
+    const sendDelivery = delivery.context({ invalidate: true });
     // SPEC: Render the reader's own turn before the round-trip resolves — on a
     //       phone the POST costs a full reply latency, and an input that empties
     //       into nothing reads as a dropped message.
@@ -924,46 +849,14 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
         // A reply the page has not seen yet (a proactive check-in) can be the
         // one generating; show it now instead of on the next minute's poll.
         if (response.status === 409) {
-          void fetchSession().then((session) => {
-            applySession(session);
-            resumePendingStreams(session.messages);
-          }).catch(() => undefined);
+          void delivery.refresh().catch(() => undefined);
         }
         return;
       }
       const payload = parseChatSendResponse(await response.json());
-      // A focus re-check that started before this send was accepted would
-      // otherwise land afterwards and replace the new turn with an older snapshot.
-      sessionMutationEpochRef.current += 1;
-      const userMessage = payload.userMessage;
-      const assistant = payload.assistant;
-      const streamUrl = payload.streamUrl;
       sendIntentRef.current = null;
       setSendOutcomeUnknown(false);
-
-      // Blocked input (P0-B): the assistant turn is a terminal safety notice with no
-      // stream. Render it in place; do NOT open an EventSource that would never fill.
-      if (assistant.status === "blocked" || !streamUrl) {
-        setMessages((current) =>
-          mergeCanonicalMessages(dropOptimisticMessage(current), [
-            userMessage,
-            assistant,
-          ]),
-        );
-        if (assistant.status === "blocked") {
-          setStatus("That message was blocked by our safety policy.");
-        }
-      } else {
-        setMessages((current) =>
-          mergeCanonicalMessages(dropOptimisticMessage(current), [
-            userMessage,
-            { ...assistant, content: "" },
-          ]),
-        );
-        if (assistant.status === "generating") {
-          streamAssistant(streamUrl, assistant.id, assistant.content);
-        }
-      }
+      sendDelivery.receiveTurn(payload, localMessageId);
     } catch {
       // Network/parse failure: surface the error and restore the typed text so the
       // user's message is never silently lost (P0 — silent message loss).
@@ -1024,53 +917,10 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     setUpgradeReason(null);
     setEditingPending(true);
     stopVoice();
-    sessionMutationEpochRef.current += 1;
     try {
-      const response = await fetchForSession(`/api/v1/messages/${encodeURIComponent(messageId)}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ content: next }),
-      });
-      if (response.status === 402) {
-        setUpgradeReason("messages");
-        setStatus("Daily free message limit reached.");
-        return;
-      }
-      if (!response.ok) {
-        setStatus(chatFailureCopy(
-          await response.json().catch(() => null),
-          "Couldn't edit the message. Please try again.",
-        ));
-        return;
-      }
-      const payload = (await response.json()) as {
-        assistantMessageId?: string;
-        streamUrl?: string | null;
-        status?: "pending" | "generating" | "blocked";
-      };
-      // Reads started during the edit can still describe the discarded attempt.
-      sessionMutationEpochRef.current += 1;
-      if (payload.assistantMessageId) {
-        localStreamStateRef.current.delete(payload.assistantMessageId);
-      }
-      cancelEdit();
-      const session = await fetchSession();
-      applySession(session);
-      if (payload.status === "blocked" || !payload.streamUrl) {
-        if (payload.status === "blocked") {
-          setStatus("That message was blocked by our safety policy.");
-        }
-        return;
-      }
-      if (!payload.assistantMessageId) {
-        setStatus("Couldn't edit the message. Please try again.");
-        return;
-      }
-      if (payload.status === "generating") {
-        streamAssistant(payload.streamUrl, payload.assistantMessageId, "");
-      }
-    } catch {
-      setStatus("Couldn't edit the message. Please try again.");
+      const result = await delivery.edit(messageId, next);
+      if (result === "quota_exhausted") setUpgradeReason("messages");
+      if (result === "applied") cancelEdit();
     } finally {
       setEditingPending(false);
     }
@@ -1092,10 +942,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     return session;
   }
 
-  function applySession(session: ChatSession) {
-    if (session.id !== id) return;
-    if (session.messages.some((message) => typeof message.attempt === "number"
-      && (observedAttemptsRef.current.get(message.id) ?? message.attempt) > message.attempt)) return;
+  function applySessionMetadata(session: ChatSession) {
     const intent = sendIntentRef.current;
     if (session.group && intent && session.messages.some(message => message.requestKey === intent.idempotencyKey)) {
       sendIntentRef.current = null;
@@ -1104,51 +951,9 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     }
     resumeGenerationReceipts(session.ownerScope);
     setReceiptOwnerScope(session.ownerScope);
-    let recoveredStream = false;
-    let changedAttempt = false;
-    for (const message of session.messages) {
-      const observedAttempt = observedAttemptsRef.current.get(message.id);
-      const advancedAttempt = typeof message.attempt === "number"
-        && observedAttempt !== undefined && message.attempt > observedAttempt;
-      if (typeof message.attempt === "number") observedAttemptsRef.current.set(message.id, message.attempt);
-      const local = localStreamStateRef.current.get(message.id);
-      if (advancedAttempt || (local && local.attempt !== message.attempt)) {
-        localStreamStateRef.current.delete(message.id);
-        streamSources.current.get(message.id)?.close();
-        streamSources.current.delete(message.id);
-        // A revision discards every delivery from its earlier attempt. Revoke
-        // only this reply's voice intent; another history clip may keep playing.
-        if (voicePlaybackMessageIdRef.current === message.id) stopVoice();
-        voiceClipRequestsRef.current.delete(message.id);
-        voiceClipUrlsRef.current.delete(message.id);
-        setVoicePreparingIds((current) => {
-          const next = new Set(current);
-          next.delete(message.id);
-          return next;
-        });
-        changedAttempt = true;
-      }
-      if (!chatStreamMessageIsTerminal(message)) continue;
-      if (message.status !== STOPPED_REPLY_STATUS) localStreamStateRef.current.delete(message.id);
-      const source = streamSources.current.get(message.id);
-      if (!source) continue;
-      source.close();
-      streamSources.current.delete(message.id);
-      recoveredStream = true;
-    }
-    // Another page can advance the same durable message. Old recovery reads
-    // must not apply after this page has observed that newer attempt.
-    if (changedAttempt) sessionMutationEpochRef.current += 1;
-    if (recoveredStream) setStatus(null);
     // 角色行可能已经不存在了（创作者注销会硬删他的角色，且不通知 chat）。
     // BFF 在那种情况下把 name 兜成空串，直接用会渲染出一个无名会话头。
     setTitle(session.title || session.character.name || "Unavailable character");
-    setMessages((current) => [
-      ...applyLocalStreamState(session.messages, localStreamStateRef.current),
-      // An optimistic turn is not in the session yet; a poll or a recovery read
-      // must not make the reader's own message disappear mid-send.
-      ...current.filter((message) => isLocalChatMessageId(message.id)),
-    ]);
     setDeleteConfirmMessageId(null);
     if (session.characterId) setCharacterId(session.characterId);
     selectedSpeakerRef.current = session.characterId ?? null;
@@ -1167,18 +972,16 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     if (!group || !group.members.some(member => member.characterId === nextCharacterId) || nextCharacterId === characterId
       || pending || hasGeneratingReply || speakerPending || sendOutcomeUnknown) return;
     const prior = selectedSpeakerRef.current;
-    const epoch = ++sessionMutationEpochRef.current;
+    const read = delivery.context({ invalidate: true });
     selectedSpeakerRef.current = nextCharacterId;
     setSpeakerPending(true);
     stopVoice();
     try {
-      const session = await fetchSession();
-      if (epoch !== sessionMutationEpochRef.current) return;
-      applySession(session);
+      if (!await read.refresh()) return;
       // INVARIANT: 只收回自己上一次的失败提示。无差别清空会吞掉切换期间提交给用户的回执。
       setStatus((current) => (current === SPEAKER_SELECT_FAILED ? null : current));
     } catch {
-      if (epoch === sessionMutationEpochRef.current) {
+      if (read.isCurrent()) {
         selectedSpeakerRef.current = prior;
         setStatus(SPEAKER_SELECT_FAILED);
       }
@@ -1193,7 +996,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     setDeleteConfirmMessageId(null);
     const next = !memoryEnabled;
     setMemoryPending(true);
-    sessionMutationEpochRef.current += 1;
+    delivery.context({ invalidate: true });
     try {
       const response = await fetchForSession(`/api/v1/chat/sessions/${encodeURIComponent(executionSessionId)}/memory`, {
         method: "POST",
@@ -1221,28 +1024,13 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
       return;
     }
     stopVoice();
-    sessionMutationEpochRef.current += 1;
+    delivery.context({ invalidate: true });
     try {
       const response = await fetchForSession(`/api/v1/messages/${encodeURIComponent(messageId)}`, {
         method: "DELETE",
       });
       if (response.ok) {
-        // Reads started while DELETE was in flight may still contain this Turn.
-        sessionMutationEpochRef.current += 1;
-        // INVARIANT: Main deletes one complete Turn from either message id.
-        const target = messages.find((message) => message.id === messageId);
-        const userMessageId = target?.role === "user" ? target.id : target?.replyToMessageId;
-        for (const message of messages) {
-          if (message.id !== messageId && message.id !== userMessageId && message.replyToMessageId !== userMessageId) continue;
-          localStreamStateRef.current.delete(message.id);
-          voiceClipUrlsRef.current.delete(message.id);
-          voiceClipRequestsRef.current.delete(message.id);
-        }
-        setMessages((current) => current.filter((message) =>
-          message.id !== messageId &&
-          message.id !== userMessageId &&
-          message.replyToMessageId !== userMessageId,
-        ));
+        delivery.removeTurn(messageId);
         setDeleteConfirmMessageId(null);
       } else {
         setStatus(chatFailureCopy(
@@ -1264,11 +1052,11 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     setRetryingImageIds(new Set(imageRetryPendingRef.current));
     setStatus(null);
     setDeleteConfirmMessageId(null);
-    const epoch = ++sessionMutationEpochRef.current;
+    const read = delivery.context({ invalidate: true });
     let receiptContext: ReturnType<typeof generationReceiptContext> | undefined;
     try {
       receiptContext = generationReceiptContext();
-      const current = () => epoch === sessionMutationEpochRef.current && receiptContext!.isCurrent();
+      const current = () => read.isCurrent() && receiptContext!.isCurrent();
       let quoteAuthority = confirmedQuote;
       if (!quoteAuthority && !hasUnconfirmedGenerationRetry(jobId, receiptContext.keys.retry)) {
         const response = await fetchForSession(`/api/v1/generation/jobs/${encodeURIComponent(jobId)}/retry/quote`, { method: "POST", cache: "no-store", headers: { "x-idream-viewer-scope": receiptContext.persistence.ownerScope } });
@@ -1283,10 +1071,9 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
       setMessages(current => current.map(message => ({ ...message, attachments: message.attachments?.map(item => item.id === attachment.id
         ? { ...item, generationJobId: job.id, status: "accepted", errorCode: null, costDreamcoins: job.costDreamcoins }
         : item) })));
-      const session = await fetchSession();
-      if (epoch === sessionMutationEpochRef.current && session.id === id) applySession(session);
+      await delivery.context({ isCurrent: current }).refresh();
     } catch (error) {
-      if (epoch !== sessionMutationEpochRef.current) return;
+      if (!read.isCurrent()) return;
       if (error instanceof GenerationRequestError && error.status === 402) setUpgradeReason("dreamcoins");
       setStatus(error instanceof GenerationRequestError ? error.message : "Couldn't confirm the media request. Try again to check the same request.");
     } finally {
@@ -1304,14 +1091,12 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
 
   async function submitVideoRequest(submission: ChatVideoSubmission) {
     const context = generationReceiptContext();
-    const epoch = sessionMutationEpochRef.current;
-    const current = () => context.isCurrent() && epoch === sessionMutationEpochRef.current;
+    const read = delivery.context({ isCurrent: context.isCurrent });
+    const current = read.isCurrent;
     try {
       await requestChatVideoWithExactAuthority({ ...submission, idempotencyKeys: context.keys.generation, persistence: context.persistence, isCurrent: current });
       if (!current()) return false;
-      const session = await fetchSession();
-      if (!current()) return false;
-      applySession(session);
+      if (!await read.refresh()) return false;
       setContent("");
       setStatus("Video requested. You can keep chatting while it finishes.");
       return true;
@@ -1324,9 +1109,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
 
   async function refreshAfterVideoCancellation() {
     const context = generationReceiptContext();
-    const epoch = sessionMutationEpochRef.current;
-    const session = await fetchSession();
-    if (context.isCurrent() && epoch === sessionMutationEpochRef.current) applySession(session);
+    await delivery.context({ isCurrent: context.isCurrent }).refresh();
   }
 
   async function addAttachmentToIdentity(mediaAssetId: string, sourceCharacterId = characterId) {
@@ -1401,292 +1184,35 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
   }
 
   async function checkGenerationReceipt(receipt: GenerationReceipt) {
-    const epoch = sessionMutationEpochRef.current;
+    const read = delivery.context();
     try {
       const result = await recoverGenerationReceipt(receipt);
-      if (!result || epoch !== sessionMutationEpochRef.current) return;
+      if (!result || !read.isCurrent()) return;
       setStatus("Original request confirmed. Its progress is available in Generate and Gallery.");
-      const session = await fetchSession();
-      if (epoch === sessionMutationEpochRef.current) applySession(session);
+      await read.refresh();
     } catch (error) {
-      if (epoch !== sessionMutationEpochRef.current) return;
+      if (!read.isCurrent()) return;
       setStatus(`${error instanceof Error ? error.message : "The request could not be confirmed."} Your original request is kept; check again or contact support.`);
     }
   }
 
-  // SPEC: Regenerate keeps the assistant message identity and advances its
-  // attempt. Discard the old stream cache before displaying the new attempt.
   async function regenerate(messageId: string) {
     if (pending || hasGeneratingReply) return;
     setPending(true);
     stopVoice();
     setStatus(null);
     setDeleteConfirmMessageId(null);
-    sessionMutationEpochRef.current += 1;
     try {
-      const response = await fetchForSession(
-        `/api/v1/messages/${encodeURIComponent(messageId)}/regenerate`,
-        { method: "POST" },
-      );
-      if (!response.ok) {
-        setStatus(chatFailureCopy(
-          await response.json().catch(() => null),
-          "Couldn't regenerate. Please try again.",
-        ));
-        return;
-      }
-      const payload = (await response.json()) as {
-        assistantMessageId?: string;
-        attempt?: number;
-        streamUrl?: string | null;
-        status?: "pending" | "generating";
-      };
-      const newId = payload.assistantMessageId;
-      const streamUrl = payload.streamUrl;
-      if (!newId || !streamUrl || typeof payload.attempt !== "number"
-        || !Number.isSafeInteger(payload.attempt) || payload.attempt <= 0) {
-        setStatus("Couldn't regenerate. Please try again.");
-        return;
-      }
-      // A focus read started during this POST may still contain the old reply.
-      sessionMutationEpochRef.current += 1;
-      localStreamStateRef.current.delete(messageId);
-      streamSources.current.get(messageId)?.close();
-      streamSources.current.delete(messageId);
-      observedAttemptsRef.current.set(newId, payload.attempt);
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === messageId
-            ? { ...message, id: newId, attempt: payload.attempt, content: "", status: payload.status ?? "pending" }
-            : message,
-        ),
-      );
-      if (payload.status === "generating") streamAssistant(streamUrl, newId, "");
-    } catch {
-      setStatus("Couldn't regenerate. Please try again.");
+      await delivery.regenerate(messageId);
     } finally {
       setPending(false);
     }
-  }
-
-  function resumePendingStreams(loadedMessages: ChatMessage[]) {
-    for (const message of loadedMessages) {
-      if (
-        message.role === "assistant" &&
-        !message.content.trim() &&
-        message.status === "generating" &&
-        typeof message.attempt === "number" && Number.isSafeInteger(message.attempt) && message.attempt > 0 &&
-        observedAttemptsRef.current.get(message.id) === message.attempt
-      ) {
-        streamAssistant(
-          `/api/v1/chat/messages/${encodeURIComponent(message.id)}/stream?attempt=${message.attempt}`,
-          message.id,
-          "",
-        );
-      }
-    }
-  }
-
-  function streamAssistant(streamUrl: string, assistantId: string, fallback: string) {
-    if (!mountedRef.current) return;
-    const requestedAttempt = new URL(streamUrl, window.location.origin).searchParams.get("attempt");
-    const attempt = Number(requestedAttempt);
-    if (!Number.isSafeInteger(attempt) || attempt <= 0
-      || (observedAttemptsRef.current.get(assistantId) ?? attempt) > attempt
-      || streamSources.current.has(assistantId)) return;
-    observedAttemptsRef.current.set(assistantId, attempt);
-    let streamed = "";
-    let finished = false;
-    const source = new EventSource(streamUrl);
-    streamSources.current.set(assistantId, source);
-    localStreamStateRef.current.set(assistantId, { attempt, content: "", stopped: false });
-
-    const close = () => {
-      source.close();
-      // A late recovery from the previous attempt must not close the newer
-      // EventSource registered under the same durable assistant message id.
-      if (streamSources.current.get(assistantId) !== source) return;
-      streamSources.current.delete(assistantId);
-      if (!localStreamStateRef.current.get(assistantId)?.stopped) {
-        localStreamStateRef.current.delete(assistantId);
-      }
-    };
-
-    const finish = async () => {
-      if (finished) return;
-      finished = true;
-      const mutationEpoch = sessionMutationEpochRef.current;
-      if (!streamed && fallback) {
-        setMessages((current) =>
-          current.map((message) =>
-            message.id === assistantId ? { ...message, content: fallback } : message,
-          ),
-        );
-      }
-      const outcome = await recoverAssistantFromSession(assistantId);
-      if (mutationEpoch !== sessionMutationEpochRef.current) return;
-      if (!streamed && !fallback && outcome === "terminal_empty") {
-        setMessages((current) => current.filter((message) => message.id !== assistantId));
-        setStatus("Reply failed to load. Please try again.");
-      }
-    };
-
-    source.addEventListener("delta", (event) => {
-      if (finished || streamSources.current.get(assistantId) !== source) return;
-      const data = parseStreamEvent(event);
-      const delta = typeof data.delta === "string" ? data.delta : "";
-      streamed += delta;
-      localStreamStateRef.current.set(assistantId, {
-        attempt,
-        content: streamed,
-        stopped: false,
-      });
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === assistantId ? { ...message, content: streamed } : message,
-        ),
-      );
-    });
-
-    source.addEventListener("replace", (event) => {
-      if (finished || streamSources.current.get(assistantId) !== source) return;
-      const data = parseStreamEvent(event);
-      streamed = typeof data.content === "string" ? data.content : "";
-      localStreamStateRef.current.set(assistantId, {
-        attempt,
-        content: streamed,
-        stopped: false,
-      });
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === assistantId ? { ...message, content: streamed } : message,
-        ),
-      );
-    });
-
-    source.addEventListener("done", () => {
-      if (finished || streamSources.current.get(assistantId) !== source) return;
-      setStatus(null);
-      void finish().finally(close);
-    });
-
-    source.addEventListener("error", (event) => {
-      if (finished || streamSources.current.get(assistantId) !== source) return;
-      const payload = parseStreamEvent(event);
-      if (chatStreamErrorDisposition(payload) === "reconnect") {
-        // HTTP/auth/protocol failures can leave EventSource CLOSED, where it
-        // will never reconnect itself. Let the authority poll reopen this same
-        // attempt instead of retaining a dead source in the registry.
-        if (source.readyState === EventSource.CLOSED) close();
-        setStatus("Reply interrupted. Reconnecting…");
-        return;
-      }
-      finished = true;
-      const mutationEpoch = sessionMutationEpochRef.current;
-      const terminalMessage = chatStreamTerminalErrorMessage(payload);
-      void recoverAssistantFromSession(assistantId).finally(() => {
-        if (mutationEpoch === sessionMutationEpochRef.current) setStatus(terminalMessage);
-        close();
-      });
-    });
-  }
-
-  // SPEC: Main owns Stop's exact-attempt terminal transition. The browser closes
-  // SSE immediately, then applies only the matching durable cancellation ACK.
-  async function stopStreamingReply() {
-    if (stoppingReply) return;
-    const stoppedReplies = messages.flatMap((message) => {
-      if (!chatStreamMessageIsInProgress(message) || typeof message.attempt !== "number"
-        || !Number.isSafeInteger(message.attempt) || message.attempt <= 0) return [];
-      const local = localStreamStateRef.current.get(message.id);
-      return [{ messageId: message.id, attempt: message.attempt,
-        content: local?.attempt === message.attempt ? local.content : message.content }];
-    });
-    if (stoppedReplies.length === 0) return;
-    sessionMutationEpochRef.current += 1;
-    for (const { messageId, attempt } of stoppedReplies) {
-      if (observedAttemptsRef.current.get(messageId) !== attempt) continue;
-      streamSources.current.get(messageId)?.close();
-      streamSources.current.delete(messageId);
-    }
-    setStoppingReply(true);
-    setStatus("Stopping reply…");
-    let completionWonRace = false;
-    const results = await Promise.all(
-      stoppedReplies.map(async ({ messageId, attempt }) => {
-        const response = await fetchForSession(
-          `/api/v1/messages/${encodeURIComponent(messageId)}/cancel`,
-          { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ attempt }) },
-        );
-        if (response.ok) {
-          const result = await response.json() as { cancelled?: boolean; attempt?: number };
-          if (result.attempt !== attempt || typeof result.cancelled !== "boolean") return false;
-          completionWonRace ||= result.cancelled === false;
-        }
-        return response.ok;
-      }),
-    ).catch(() => [false]);
-    // A Stop belongs to the attempt visible when clicked, even if another
-    // page has already advanced the same assistant id while its ACK travelled.
-    const currentReplies = stoppedReplies.filter(({ messageId, attempt }) =>
-      observedAttemptsRef.current.get(messageId) === attempt);
-    if (currentReplies.length === 0) {
-      setStatus(null);
-      setStoppingReply(false);
-      return;
-    }
-    if (!results.every(Boolean) || completionWonRace) {
-      for (const { messageId, attempt } of currentReplies) {
-        if (localStreamStateRef.current.get(messageId)?.attempt === attempt) localStreamStateRef.current.delete(messageId);
-      }
-      setStatus(completionWonRace ? null : "Couldn't stop the reply. Reconnecting…");
-      try {
-        const mutationEpoch = sessionMutationEpochRef.current;
-        const session = await fetchSession();
-        if (mutationEpoch === sessionMutationEpochRef.current) {
-          applySession(session);
-          resumePendingStreams(session.messages);
-        }
-      } catch {
-        // Keep the explicit reconnecting state; the normal poll loop remains
-        // the recovery path when this immediate authority read also fails.
-      } finally {
-        setStoppingReply(false);
-      }
-      return;
-    }
-    for (const { messageId, attempt, content } of currentReplies) {
-      const local = localStreamStateRef.current.get(messageId);
-      localStreamStateRef.current.set(messageId, {
-        attempt,
-        content: local?.attempt === attempt ? local.content : content,
-        stopped: true,
-      });
-    }
-    setMessages((current) =>
-      applyLocalStreamState(current, localStreamStateRef.current),
-    );
-    setStatus("Reply stopped. Regenerate for a new one.");
-    setStoppingReply(false);
   }
 
   function jumpToLatest() {
     pinnedToBottomRef.current = true;
     setJumpToLatestVisible(false);
     scrollChatToEnd("smooth");
-  }
-
-  async function recoverAssistantFromSession(assistantId: string) {
-    const mutationEpoch = sessionMutationEpochRef.current;
-    return reconcileChatStreamAuthority({
-      apply: (session) => {
-        if (mutationEpoch === sessionMutationEpochRef.current) applySession(session);
-      },
-      assistantId,
-      messages: (session: ChatSession) => session.messages,
-      read: () => fetchSession(),
-      wait: () => new Promise((resolve) => window.setTimeout(resolve, 500)),
-    });
   }
 
   const latestUserMessageId = latestTurnUserMessageId(messages);
@@ -1870,7 +1396,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
                         </>
                       ) : !isUser && !message.content.trim() && !(message.attachments ?? []).length ? (
                         <span aria-label="Assistant reply unavailable" role="status">
-                          {message.status === STOPPED_REPLY_STATUS
+                          {message.status === "cancelled"
                             ? "Reply stopped."
                             : message.status === "failed" && message.replyInterrupted
                               ? "Reply interrupted. Your message is saved. Regenerate to try again."
@@ -2074,7 +1600,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
                     className={COMPOSER_BUTTON_CLASS}
                     disabled={stoppingReply}
                     data-testid="chat-stop-reply"
-                    onClick={() => void stopStreamingReply()}
+                    onClick={() => void delivery.stop()}
                     title="Stop reply"
                     type="button"
                   >
@@ -2634,14 +2160,5 @@ function isBlankChatImagePreview(image: HTMLImageElement) {
     return range <= 1 || (range <= 4 && (min >= 250 || max <= 5));
   } catch {
     return false;
-  }
-}
-
-function parseStreamEvent(event: Event): Record<string, unknown> {
-  try {
-    const data = (event as MessageEvent<string>).data;
-    return JSON.parse(data) as Record<string, unknown>;
-  } catch {
-    return {};
   }
 }

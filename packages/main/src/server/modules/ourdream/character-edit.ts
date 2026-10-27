@@ -14,7 +14,7 @@ import { moderateText } from "@/server/moderation/text-authority";
 import { jsonNonBlankString, jsonRecord, jsonStringArray } from "./json-values";
 import { assertCharacterIdentityAuthorityMutable } from "./generation-character-authority";
 import { createActiveCharacterVisualProfileVersion } from "./generation-reference-set";
-import { assertIdentityImageMediaInTx, assertNonSyntheticMediaAsset } from "./customer-media-authority";
+import { assertIdentityImageMedia } from "./customer-media-authority";
 import {
   compileUserSoulOrBadRequest,
   loadCurrentCharacterContentSnapshot,
@@ -337,8 +337,7 @@ export async function applyCharacterEditDraft(input: {
     if (await hasReleaseAuthority(tx, characterId)) throw Errors.conflict(PUBLISHED_LOOK_LOCKED);
     if (anchorAssetId) {
       await lockCharacterMediaAssetAuthorities(tx, [anchorAssetId]);
-      const anchor = await assertIdentityImageMediaInTx(tx, anchorAssetId, userId);
-      assertNonSyntheticMediaAsset(anchor, "Demo preview images cannot be published as a character identity");
+      const anchor = await assertIdentityImageMedia(anchorAssetId, userId, tx);
       if (anchor.characterId !== null && anchor.characterId !== characterId) {
         throw Errors.conflict("The selected identity image already belongs to another Character.");
       }

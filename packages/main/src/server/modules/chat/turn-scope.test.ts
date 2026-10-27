@@ -214,6 +214,36 @@ describe("chat scope lock ladder", () => {
     })).rejects.toThrow(/discarded attempt/);
   });
 
+  it.each([
+    { label: "nested legacy identity", metadata: { effect: { attempt: 2 } }, attempt: 2 },
+    { label: "non-numeric root with nested identity", metadata: { attempt: "2", effect: { attempt: 2 } }, attempt: 2 },
+    { label: "null root with nested identity", metadata: { attempt: null, effect: { attempt: 2 } }, attempt: 2 },
+    { label: "legacy identity without an attempt", metadata: {}, attempt: 1 },
+    { label: "unsafe numeric root", metadata: { attempt: Number.MAX_SAFE_INTEGER + 1 }, attempt: 1 },
+  ])("locks the same attachment identity used by delivery: $label", async ({ metadata, attempt }) => {
+    const { tx } = fakeTx({
+      ...SOLO,
+      turns: [{ ...(SOLO.turns ?? [])[0], attempt }],
+      attachments: [{ ...(SOLO.attachments ?? [])[0], metadata }],
+    });
+    await expect(lockChatScope(tx, {
+      userId: "u1", at: { attachment: "a1" }, expect: { attachmentAttemptMatchesTurn: true },
+    })).resolves.toMatchObject({ turn: { attempt }, attachment: { id: "a1" } });
+  });
+
+  it.each([1, 0, Number.MAX_SAFE_INTEGER + 1])(
+    "does not replace numeric attachment attempt %s with a newer nested attempt",
+    async (attempt) => {
+      const { tx } = fakeTx({
+        ...SOLO,
+        attachments: [{ ...(SOLO.attachments ?? [])[0], metadata: { attempt, effect: { attempt: 2 } } }],
+      });
+      await expect(lockChatScope(tx, {
+        userId: "u1", at: { attachment: "a1" }, expect: { attachmentAttemptMatchesTurn: true },
+      })).rejects.toThrow(/discarded attempt/);
+    },
+  );
+
   it("refuses another account's rows and a session pinned to another character", async () => {
     const { tx } = fakeTx(SOLO);
     await expect(lockChatScope(tx, { userId: "u2", at: { attachment: "a1" } })).rejects.toThrow();

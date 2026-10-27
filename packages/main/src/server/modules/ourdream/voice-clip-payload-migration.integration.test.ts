@@ -33,15 +33,69 @@ describe("Voice clip current-attempt payload database guard", () => {
       "utf8",
     );
     await client.query(scenePayloadMigration);
+    await client.query('ALTER TABLE "voice_clip_requests" ADD COLUMN "replyAttempt" INTEGER NOT NULL DEFAULT 1, ADD COLUMN "voiceCallUtteranceId" TEXT');
+    await client.query('CREATE TABLE "voice_call_utterances" (id TEXT PRIMARY KEY, "voiceRequestId" TEXT, "settledAt" TIMESTAMP(3))');
     await client.query('INSERT INTO "users" ("id") VALUES ($1)', ["user-1"]);
     await client.query('INSERT INTO "characters" ("id") VALUES ($1)', [
       "character-1",
     ]);
+    await client.query(`INSERT INTO "voice_clip_requests" (
+      id, "userId", "characterId", "messageId", "requestFingerprint", "providerPayload", "voiceCallUtteranceId", "updatedAt"
+    ) VALUES
+      ('execution-legacy-ordinary', 'user-1', 'character-1', 'ordinary', 'ordinary', '{}', NULL, NOW()),
+      ('execution-legacy-call', 'user-1', 'character-1', 'call', 'call', '{}', 'origin-call', NOW()),
+      ('execution-legacy-takeover', 'user-1', 'character-1', 'takeover', 'takeover', '{}', NULL, NOW())`);
+    await client.query(`INSERT INTO "voice_call_utterances" (id, "voiceRequestId") VALUES ('takeover-call', 'execution-legacy-takeover')`);
+    await client.query(await readFile(path.resolve(process.cwd(), "prisma/migrations/20261025060000_voice_execution_authority/migration.sql"), "utf8"));
   });
 
   afterAll(async () => {
     await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
     await client.end();
+  });
+
+  it("backfills only proven standalone history without inventing a historical Call lease", async () => {
+    const { rows } = await client.query('SELECT id, "executionAuthority" FROM "voice_clip_requests" WHERE id LIKE $1 ORDER BY id', ["execution-legacy-%"]);
+    expect(rows).toEqual([
+      { id: "execution-legacy-call", executionAuthority: null },
+      { id: "execution-legacy-ordinary", executionAuthority: { version: 1, kind: "standalone" } },
+      { id: "execution-legacy-takeover", executionAuthority: null },
+    ]);
+  });
+
+  it("pins execution authority within an attempt and permits explicit authorization on the next expired or failed attempt", async () => {
+    const call = { version: 1, kind: "call", callUtteranceId: "utterance-1", replyAttempt: 1, leaseToken: "original-lease" };
+    const next = { ...call, leaseToken: "new-lease" };
+    await client.query(`INSERT INTO "voice_clip_requests" (
+      id, "userId", "characterId", "messageId", "requestFingerprint", "providerPayload", "executionAuthority", "leaseExpiresAt", "updatedAt"
+    ) VALUES ('execution-cas', 'user-1', 'character-1', 'execution-cas', 'execution-cas', '{}', $1::jsonb, NOW() + interval '1 minute', NOW())`, [JSON.stringify(call)]);
+    await expect(client.query('UPDATE "voice_clip_requests" SET "executionAuthority" = $1::jsonb WHERE id = $2', [JSON.stringify(next), "execution-cas"]))
+      .rejects.toThrow(/immutable within an attempt/);
+    await expect(client.query('UPDATE "voice_clip_requests" SET "attemptNo" = "attemptNo" + 1, "executionAuthority" = $1::jsonb WHERE id = $2', [JSON.stringify(next), "execution-cas"]))
+      .rejects.toThrow(/immutable within an attempt/);
+    await client.query('UPDATE "voice_clip_requests" SET "leaseExpiresAt" = NOW() - interval \'1 second\' WHERE id = $1', ["execution-cas"]);
+    await expect(client.query('UPDATE "voice_clip_requests" SET "attemptNo" = "attemptNo" + 1, "executionAuthority" = $1::jsonb, "leaseExpiresAt" = NOW() + interval \'1 minute\' WHERE id = $2', [JSON.stringify(next), "execution-cas"]))
+      .resolves.toMatchObject({ rowCount: 1 });
+    await client.query('UPDATE "voice_clip_requests" SET status = \'failed\' WHERE id = $1', ["execution-cas"]);
+    await expect(client.query('UPDATE "voice_clip_requests" SET status = \'running\', "attemptNo" = "attemptNo" + 1, "executionAuthority" = $1::jsonb WHERE id = $2', [JSON.stringify({ version: 1, kind: "standalone" }), "execution-cas"]))
+      .resolves.toMatchObject({ rowCount: 1 });
+    expect((await client.query('SELECT "attemptNo", "executionAuthority" FROM "voice_clip_requests" WHERE id = $1', ["execution-cas"])).rows[0])
+      .toEqual({ attemptNo: 3, executionAuthority: { version: 1, kind: "standalone" } });
+  });
+
+  it.each([
+    null,
+    { version: 1, kind: "standalone", leaseToken: "smuggled" },
+    { version: 1, kind: "call", callUtteranceId: "u", replyAttempt: 1 },
+    { version: 1, kind: "call", callUtteranceId: "u", replyAttempt: "1", leaseToken: "lease" },
+    { version: 1, kind: "call", callUtteranceId: "u", replyAttempt: 2, leaseToken: "lease" },
+    { version: 1, kind: "call", callUtteranceId: "u", replyAttempt: 1, leaseToken: "" },
+  ])("rejects malformed or mismatched execution authority %j", async authority => {
+    const id = `execution-shape-${crypto.randomUUID()}`;
+    await expect(client.query(`INSERT INTO "voice_clip_requests" (
+      id, "userId", "characterId", "messageId", "requestFingerprint", "providerPayload", "executionAuthority", "updatedAt"
+    ) VALUES ($1, 'user-1', 'character-1', $1, $1, '{}', $2::jsonb, NOW())`, [id, JSON.stringify(authority)]))
+      .rejects.toThrow(/execution_authority_check/);
   });
 
   it("rejects in-attempt rewrites but permits one expired-lease takeover CAS", async () => {
