@@ -342,6 +342,7 @@ export interface BlobStore {
     key: string;
     body: Uint8Array;
     contentType: string;
+    signal?: AbortSignal;
   }): Promise<ProviderResult<{ key: string; size: number }>>;
   signGetUrl(input: {
     key: string;
@@ -351,6 +352,8 @@ export interface BlobStore {
   delete(input: { key: string }): Promise<ProviderResult<{ deleted: true }>>;
   getPrivate?(input: {
     key: string;
+    signal?: AbortSignal;
+    maxBytes?: number;
   }): Promise<ProviderResult<{ body: Uint8Array; contentType: string | null }>>;
 }
 

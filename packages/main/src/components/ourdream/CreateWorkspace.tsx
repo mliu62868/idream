@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, ImageIcon, Loader2, Sparkles, Wand2 } from "lucide-react";
 import { CHARACTER_VISIBILITY, isCatalogMember } from "@idream/shared/catalog";
 import { legacySoulDetailsMarkdown, renderCharacterSoulMarkdown } from "@idream/shared/chat/persona-render";
@@ -331,6 +331,16 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
   const previewRunSequenceRef = useRef(0);
   const stateRef = useRef(state);
   const viewerBlockedRef = useRef(false);
+  const stepHeadingRef = useRef<HTMLHeadingElement>(null);
+  const requestedStepFocusRef = useRef<number | null>(null);
+  const nextFocusListenerRef = useRef<((event: FocusEvent) => void) | null>(null);
+
+  useEffect(() => () => {
+    if (nextFocusListenerRef.current) {
+      document.removeEventListener("focusin", nextFocusListenerRef.current);
+      nextFocusListenerRef.current = null;
+    }
+  }, []);
 
   const invalidateViewer = useCallback(() => {
     viewerBlockedRef.current = true;
@@ -346,6 +356,15 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
   }, []);
 
   const step = state.step;
+  useLayoutEffect(() => {
+    if (requestedStepFocusRef.current !== step) return;
+    requestedStepFocusRef.current = null;
+    const heading = stepHeadingRef.current;
+    if (!heading) return;
+    // The persistent 56px top bar can cover an element that focus considers visible.
+    heading.focus({ preventScroll: true });
+    heading.scrollIntoView({ block: "start", behavior: "auto" });
+  }, [step]);
   const quickStartBrief = state.quickStartBrief;
   const previewCandidates = state.previewBatch?.candidates ?? state.restoredPreviewCandidates;
   const set = useCallback(
@@ -967,7 +986,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
     );
   }
 
-  async function next() {
+  async function next(initiator: HTMLButtonElement) {
     if (currentFieldErrors.length) {
       setShowFieldErrors(true);
       setStatus("");
@@ -980,13 +999,27 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
     }
     setPending(true);
     setStatus("");
+    // A save can take long enough for the user to move elsewhere. Do not
+    // pull focus back when its response eventually arrives.
+    let focusMoved = false;
+    const onFocusIn = (event: FocusEvent) => {
+      if (event.target !== initiator) focusMoved = true;
+    };
+    nextFocusListenerRef.current = onFocusIn;
+    document.addEventListener("focusin", onFocusIn);
     try {
       await saveStep(step + 1);
       setShowFieldErrors(false);
-      set("step", Math.min(step + 1, STEPS.length - 1));
+      const target = Math.min(step + 1, STEPS.length - 1);
+      if (!focusMoved && !viewerBlockedRef.current && target !== step) {
+        requestedStepFocusRef.current = target;
+      }
+      set("step", target);
     } catch (error) {
       setStatus(messageFrom(error));
     } finally {
+      document.removeEventListener("focusin", onFocusIn);
+      if (nextFocusListenerRef.current === onFocusIn) nextFocusListenerRef.current = null;
       setPending(false);
     }
   }
@@ -998,6 +1031,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
   function goToStep(target: number) {
     setStatus("");
     setShowFieldErrors(false);
+    if (target !== step) requestedStepFocusRef.current = target;
     set("step", target);
   }
 
@@ -1358,6 +1392,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
         <ol className="mt-8 flex flex-wrap justify-center gap-2" data-testid="create-steps">
           {STEPS.map((label, index) => (
             <li
+              aria-current={index === step ? "step" : undefined}
               className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-[12px] font-bold uppercase ${
                 index === step
                   ? "bg-white text-[rgb(13,13,13)]"
@@ -1428,6 +1463,9 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
           </div>
 
           <div className="rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4 md:p-6">
+            <h2 ref={stepHeadingRef} tabIndex={-1} className="mb-4 scroll-mt-24 text-[18px] font-black text-white outline-none focus-visible:rounded focus-visible:ring-2 focus-visible:ring-[rgb(253,95,194)]">
+              {STEPS[step]} <span className="text-[13px] font-semibold text-[rgb(170,170,170)]">{step + 1} of {STEPS.length}</span>
+            </h2>
             {step === 0 && !editCharacterId && (
               <form
                 className="mb-4"
@@ -1966,7 +2004,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                         className="inline-flex h-10 items-center gap-2 rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
                         disabled={pending}
                         onClick={() => {
-                          set("step", 1);
+                          goToStep(1);
                           setStatus("Adjust appearance traits, then generate a new identity family.");
                         }}
                         type="button"
@@ -2062,7 +2100,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                   className="inline-flex h-11 items-center gap-2 rounded-full bg-white px-5 text-[13px] font-black text-[rgb(13,13,13)] disabled:cursor-not-allowed disabled:bg-[rgb(55,55,55)] disabled:text-[rgb(114,113,112)]"
                   data-testid="create-next"
                   disabled={pending || draftConflict || (step === 3 && !identityReady)}
-                  onClick={() => void next()}
+                  onClick={(event) => void next(event.currentTarget)}
                   type="button"
                 >
                   {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}

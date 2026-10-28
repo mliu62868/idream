@@ -19,8 +19,8 @@ export async function runPlaywrightNextServer(name, port, options = {}) {
   if (
     env.APP_ENV !== "test" || env.PLAYWRIGHT_E2E !== "1" ||
     !runId || !/^[a-f0-9]{8}$/.test(runId) || !env.IDREAM_SOURCE_REVISION ||
-    env.IDREAM_NEXT_DIST_DIR !== `.next/playwright-${name}-${port}-${runId}` ||
-    env.IDREAM_NEXT_TSCONFIG !== `.next/playwright-config-${name}-${port}-${runId}/tsconfig.json`
+    env.IDREAM_NEXT_DIST_DIR !== `.next-playwright/playwright-${name}-${port}-${runId}` ||
+    env.IDREAM_NEXT_TSCONFIG !== `.next-playwright/playwright-config-${name}-${port}-${runId}/tsconfig.json`
   ) {
     throw new Error("Playwright Next build/start requires this test run's source, distDir, and tsconfig authority");
   }

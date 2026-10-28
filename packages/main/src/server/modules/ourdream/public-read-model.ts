@@ -57,7 +57,8 @@ export function characterDTO(
   followedCreatorIds?: ReadonlySet<string>,
 ) {
   const visualProfile = character.visualProfiles[0] ?? null;
-  const image = character.imageAsset?.url ?? missingCharacterImage;
+  const imageAsset = character.imageAsset;
+  const image = imageAsset ? mediaDisplayUrl(imageAsset) : missingCharacterImage;
   const official = character.source === "official";
   const creatorName = official
     ? "Official"
@@ -102,7 +103,8 @@ export function characterDTO(
     canEditIdentity: Boolean(!official && viewerId && character.creatorId === viewerId),
     image,
     imageAssetId: character.imageAsset?.id ?? null,
-    thumbnailUrl: character.imageAsset?.thumbnailUrl ?? image,
+    thumbnailUrl: imageAsset?.thumbnailUrl && !isExternalMediaUrl(imageAsset.thumbnailUrl)
+      ? imageAsset.thumbnailUrl : image,
     hasImage: Boolean(character.imageAsset?.url),
     likes: formatCount(character.stats?.likesCount ?? 0),
     chats: formatCount(character.stats?.chatsCount ?? 0),
@@ -221,6 +223,15 @@ export function mediaCollectionDTO(collection: MediaCollectionWithRelations) {
 export function collectionMediaViewUrl(asset: Parameters<typeof mediaViewUrl>[0]) {
   // Editorial static files already have an owned public URL; they have no blob key to sign.
   return !asset.storageKey && asset.url.startsWith("/images/") ? asset.url : mediaViewUrl(asset);
+}
+
+export function isExternalMediaUrl(url: string) {
+  return /^https?:\/\//i.test(url.trim());
+}
+
+/** Remote image URLs are authority inputs, never direct browser URLs. */
+export function mediaDisplayUrl(asset: Parameters<typeof mediaViewUrl>[0]) {
+  return asset.type === "image" && isExternalMediaUrl(asset.url) ? mediaViewUrl(asset) : asset.url;
 }
 
 export function mediaViewUrl(asset: {

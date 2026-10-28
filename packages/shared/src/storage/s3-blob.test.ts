@@ -13,6 +13,34 @@ function createStore(fetchImpl?: typeof fetch) {
 }
 
 describe("S3CompatibleBlobStore", () => {
+  it("returns a private object within the requested streaming size limit", async () => {
+    const store = createStore(async () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/png" } }));
+    const result = await store.getPrivate({ key: "source.png", maxBytes: 3 });
+    expect(result).toEqual({ ok: true, data: { body: new Uint8Array([1, 2, 3]), contentType: "image/png" } });
+  });
+  it("limits and cancels a streamed private object when it exceeds the requested size", async () => {
+    const cancelled = vi.fn();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array([1, 2])); controller.enqueue(new Uint8Array([3, 4])); },
+      cancel: cancelled,
+    });
+    const store = createStore(async () => new Response(stream, { status: 200 }));
+    const result = await store.getPrivate({ key: "source.png", maxBytes: 3 });
+    expect(result).toMatchObject({ ok: false, error: { code: "too_large", retryable: false } });
+    expect(cancelled).toHaveBeenCalledOnce();
+  });
+
+  it("passes the caller's abort signal into the private object request", async () => {
+    const aborter = new AbortController();
+    const fetchImpl = vi.fn(async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      await new Promise<void>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+      return new Response(null);
+    });
+    const pending = createStore(fetchImpl).getPrivate({ key: "source.png", signal: aborter.signal, maxBytes: 10 });
+    await Promise.resolve(); aborter.abort();
+    await expect(pending).resolves.toMatchObject({ ok: false, error: { code: "get_failed", retryable: true } });
+    expect(fetchImpl.mock.calls[0]?.[1]?.signal).toBe(aborter.signal);
+  });
   it("uploads private objects with SigV4 authorization", async () => {
     const fetchImpl = vi.fn(
       async (_input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) =>
@@ -46,6 +74,18 @@ describe("S3CompatibleBlobStore", () => {
     expect((init?.headers as Record<string, string>).authorization).toContain(
       "AWS4-HMAC-SHA256",
     );
+  });
+
+  it("passes the import PUT abort signal to the HTTP transport", async () => {
+    const aborter = new AbortController();
+    const fetchImpl = vi.fn(async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      await new Promise<void>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+      return new Response(null);
+    });
+    const pending = createStore(fetchImpl).putPrivate({ key: "import", body: new Uint8Array([1]), contentType: "image/png", signal: aborter.signal });
+    await Promise.resolve(); aborter.abort();
+    await expect(pending).resolves.toMatchObject({ ok: false, error: { code: "put_failed" } });
+    expect(fetchImpl.mock.calls[0]?.[1]?.signal).toBe(aborter.signal);
   });
 
   it("atomically creates an object only when its key is absent", async () => {

@@ -79,7 +79,7 @@ export function ComicDiscovery({ creatorId, mine = false, compact = false }: { c
         <Link className="group block" href={mine ? `/creator-studio/comics/${encodeURIComponent(item.id)}` : `/comics/${encodeURIComponent(item.id)}`}>
           <div className="relative aspect-[4/3] overflow-hidden rounded-xl bg-white/5">{item.coverUrl ? <Image alt="" fill className="object-cover transition-transform group-hover:scale-[1.02] motion-reduce:transition-none" sizes="(max-width:640px) 100vw, 33vw" src={item.coverUrl} unoptimized /> : <span className="flex h-full items-center justify-center text-neutral-300">Add your first page</span>}</div>
           <h3 className="mt-3 truncate text-lg font-bold">{item.title}</h3>
-          <p className="mt-1 text-sm text-neutral-300">{item.episodeCount} chapters · {item.pageCount} pages{mine ? ` · ${comicStateLabel(item.status, item.visibility)}` : ` · ${item.creator.displayName}`}</p>
+          <p className="mt-1 text-sm text-neutral-300">{item.episodeCount} {item.episodeCount === 1 ? "chapter" : "chapters"} · {item.pageCount} {item.pageCount === 1 ? "page" : "pages"}{mine ? ` · ${comicStateLabel(item.status, item.visibility)}` : ` · ${item.creator.displayName}`}</p>
         </Link>
       </li>)}
     </ul>

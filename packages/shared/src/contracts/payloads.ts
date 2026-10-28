@@ -49,6 +49,9 @@ const generationReferenceImageSchema = z
       "source_image",
     ]),
     storageKey: z.string().optional(),
+    // An admitted source snapshot must be verified before the bytes reach a provider.
+    contentSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    sourceSnapshotId: z.string().min(1).optional(),
     url: z.string().optional(),
     contentType: z.string().optional(),
     width: z.number().int().positive().optional(),

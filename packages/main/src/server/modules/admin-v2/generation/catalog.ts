@@ -28,6 +28,9 @@ import { jsonRecord, toInputJson } from "@/server/modules/admin-v2/shared/prisma
 import { adminRequestId, assertTargetConfirmation } from "./model-profiles";
 import { inspectRecipeValidation, loadRecipeMatrix, recipeFingerprint } from "./recipe-validation";
 import { findActiveRecipe, resolveImageRecipeNegative } from "@/server/modules/ourdream/generation-profile-selection";
+import { lockCharacterGenerationAuthority, lockCharacterMediaAssetAuthorities } from "@/server/modules/admin-v2/characters/generation-authority-lock";
+import { freezeGenerationReferences } from "@/server/modules/ourdream/generation-reference-snapshot";
+import { lockUserLedger } from "@/server/modules/ourdream/subscription-lifecycle";
 
 const DEFAULT_CATALOG_PAGE_SIZE = 25;
 
@@ -282,9 +285,16 @@ export async function testGenerationRecipeMatrix(request: Request, recipeId: str
     validateResult: (value) => generationRecipeTestMatrixResponseSchema.parse(value),
     environment: env.APP_ENV, actor, idempotencyKey: requireIdempotencyKey(request), requestId,
     commandType: "generation.prompt_template.test_matrix", target: { type: "generation_prompt_template", id: recipeId }, payload: body,
+    transactionTimeoutMs: 60_000,
     mutate: async (tx) => {
       assertTargetConfirmation(body.confirmation, recipeId);
-      const matrix = await loadRecipeMatrix(tx, recipeId, body.profileId, actor.id);
+      await lockUserLedger(tx, actor.id);
+      let matrix = await loadRecipeMatrix(tx, recipeId, body.profileId, actor.id);
+      for (const characterId of [...new Set(matrix.samples.flatMap(sample => sample.characterId ? [sample.characterId] : []))].sort()) {
+        await lockCharacterGenerationAuthority(tx, characterId);
+      }
+      await lockCharacterMediaAssetAuthorities(tx, matrix.samples.flatMap(sample => sample.sourceImageAssetId ? [sample.sourceImageAssetId] : []));
+      matrix = await loadRecipeMatrix(tx, recipeId, body.profileId, actor.id);
       if (matrix.recipe.status !== "draft") throw Errors.badRequest("Only draft recipes can run validation samples.");
       if (matrix.fingerprint !== body.fingerprint) throw Errors.versionConflict("Recipe inputs changed after preview. Refresh the preview before running samples.");
       const issues = [...matrix.issues, ...matrix.samples.flatMap(sample => sample.issues)];
@@ -292,14 +302,22 @@ export async function testGenerationRecipeMatrix(request: Request, recipeId: str
       if ((await inspectRecipeValidation(tx, matrix)).status === "running") throw Errors.conflict("The current sample matrix is still running. Refresh its results.");
       const jobs: { id: string; sampleIndex: number; status: string }[] = [];
       for (const sample of matrix.samples) {
+        const controls = {
+          orientation: sample.orientation, model: matrix.profile.profileKey, profileId: matrix.profile.profileKey,
+          width: sample.dimensions.width, height: sample.dimensions.height, adminTest: true,
+          sourceImageAssetId: sample.sourceImageAssetId,
+          ...(matrix.recipe.useCase === "enhance" ? { enhancementScale: 2 } : {}),
+        };
+        const referenceSnapshots = await freezeGenerationReferences(tx, {
+          userId: actor.id, characterId: sample.characterId ?? null, controls,
+          referenceAssetIds: sample.sourceImageAssetId ? [sample.sourceImageAssetId] : undefined,
+        });
+        if (sample.sourceImageAssetId && !referenceSnapshots.some(pin => pin.assetId === sample.sourceImageAssetId && pin.role === "source_image")) {
+          throw Errors.conflict("This sample source image is unavailable for generation.");
+        }
         const job = await tx.generationJob.create({ data: {
           userId: actor.id, characterId: sample.characterId, mode: matrix.mode, prompt: sample.prompt, negativePrompt: sample.negativePrompt,
-          controls: toInputJson({
-            orientation: sample.orientation, model: matrix.profile.profileKey, profileId: matrix.profile.profileKey,
-            width: sample.dimensions.width, height: sample.dimensions.height, adminTest: true,
-            sourceImageAssetId: sample.sourceImageAssetId,
-            ...(matrix.recipe.useCase === "enhance" ? { enhancementScale: 2 } : {}),
-          }),
+          controls: toInputJson({ ...controls, referenceSnapshots }),
           referenceAssetIds: sample.sourceImageAssetId ? [sample.sourceImageAssetId] : undefined,
           presetIds: [], model: matrix.profile.pipelineModel, profileId: matrix.profile.profileKey, profileVersion: matrix.profile.version,
           recipeId: matrix.productionRecipe.recipeKey, recipeVersion: matrix.productionRecipe.version, orientation: sample.orientation,

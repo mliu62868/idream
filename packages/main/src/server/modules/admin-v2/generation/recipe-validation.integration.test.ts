@@ -1,9 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { adminV2 } from "@/server/test/admin-v2-http";
 import { resolveImageRecipeNegative, selectRecipe } from "@/server/modules/ourdream/generation-profile-selection";
 import { resolveProductionRecipe } from "@/server/modules/admin-v2/creative/run-create-authority";
+import { providers } from "@/server/providers";
 
 // The integration seam reserves real Main Attempts/Outbox, but never consumes a provider.
 vi.mock("@/server/modules/generation/generation-attempt-authority", async (original) => ({
@@ -105,6 +107,38 @@ describe("recipe sample validation and publication", () => {
     });
     expect(result.status).toBe(400);
     expect((await prisma.generationRecipe.findUniqueOrThrow({ where: { id: recipe.id } })).status).toBe("draft");
+  });
+
+  it("pins a recipe sample's actual source bytes before its blob can be replaced", async () => {
+    const key = `test-fixtures/${prefix}-matrix-source.png`;
+    const bytes = await sharp({ create: { width: 12, height: 12, channels: 3, background: "#bb5533" } }).png().toBuffer();
+    await providers.blob.putPrivate({ key, body: bytes, contentType: "image/png" });
+    try {
+      await prisma.generationModelProfile.update({ where: { id: profileId }, data: {
+        workflowKey: "qwen-image-edit-img2img", pipelineModel: "redcraft-image-edit",
+        runnerConfig: { workflowVersion: 6, capabilities: { initImage: true, referenceImages: true } },
+      } });
+      const asset = await prisma.mediaAsset.create({ data: { id: `${prefix}-matrix-source`, ownerId: adminId, type: "image", url: `/user-content/${key}`, storageKey: key, metadata: {}, safetyStatus: "passed", contentType: "image/png" } });
+      const recipe = await draft("matrix-source");
+      await prisma.generationRecipe.update({ where: { id: recipe.id }, data: { sampleMatrix: [{ prompt: "A portrait", orientation: "1:1", sourceImageAssetId: asset.id }] } });
+      const initial = await preview(recipe.id);
+      const started = await run(recipe.id, initial.fingerprint);
+      expect(started.status, JSON.stringify(started.error)).toBe(202);
+      const job = await prisma.generationJob.findUniqueOrThrow({ where: { id: started.data.jobs[0].id } });
+      const controls = job.controls as { referenceSnapshots: Array<{ assetId: string; role: string; snapshotId: string; sha256: string }> };
+      expect(controls.referenceSnapshots).toHaveLength(1);
+      const pin = controls.referenceSnapshots[0]!;
+      expect(pin).toMatchObject({ assetId: asset.id, role: "source_image", sha256: createHash("sha256").update(bytes).digest("hex") });
+      await providers.blob.putPrivate({ key, body: Buffer.from("replaced"), contentType: "image/png" });
+      const chunks = await prisma.generationSourceSnapshotChunk.findMany({ where: { snapshotId: pin.snapshotId }, orderBy: { ordinal: "asc" } });
+      expect(Buffer.concat(chunks.map(chunk => Buffer.from(chunk.bytes)))).toEqual(bytes);
+    } finally {
+      await prisma.generationModelProfile.update({ where: { id: profileId }, data: {
+        workflowKey: "redcraft-qw21t", pipelineModel: "redcraft-qw21t",
+        runnerConfig: { workflowVersion: 3, capabilities: { textToImage: true } },
+      } });
+      await providers.blob.delete({ key });
+    }
   });
 
   it("withdraws a first publication and returns default requests to the prior recipe in another family", async () => {

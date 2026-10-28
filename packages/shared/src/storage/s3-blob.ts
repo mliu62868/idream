@@ -37,6 +37,7 @@ export class S3CompatibleBlobStore {
     key: string;
     body: Uint8Array;
     contentType: string;
+    signal?: AbortSignal;
   }): Promise<BlobProviderResult<{ key: string; size: number }>> {
     const target = this.objectUrl(input.key);
     const payloadHash = sha256Hex(input.body);
@@ -56,6 +57,7 @@ export class S3CompatibleBlobStore {
         method: "PUT",
         headers,
         body: new Blob([arrayBuffer(input.body)], { type: input.contentType }),
+        signal: input.signal,
       });
       if (!response.ok) return blobFailure("put_failed", response);
       return {
@@ -159,12 +161,33 @@ export class S3CompatibleBlobStore {
     return { ok: true, data: { url: target.toString() } };
   }
 
-  async getPrivate(input: { key: string }): Promise<BlobProviderResult<{ body: Uint8Array; contentType: string | null }>> {
+  async getPrivate(input: { key: string; signal?: AbortSignal; maxBytes?: number }): Promise<BlobProviderResult<{ body: Uint8Array; contentType: string | null }>> {
     const signed = await this.signGetUrl({ key: input.key, expiresInSeconds: 60 });
     if (!signed.ok) return signed;
     try {
-      const response = await this.fetchImpl(signed.data.url);
+      const response = await this.fetchImpl(signed.data.url, { signal: input.signal });
       if (!response.ok) return blobFailure(response.status === 404 ? "not_found" : "get_failed", response);
+      if (input.maxBytes !== undefined && response.body) {
+        const reader = response.body.getReader();
+        const chunks: Uint8Array[] = [];
+        let size = 0;
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            size += value.byteLength;
+            if (size > input.maxBytes) {
+              await reader.cancel();
+              return { ok: false, error: { code: "too_large", message: "Source image is too large", retryable: false } };
+            }
+            chunks.push(value);
+          }
+        } finally { reader.releaseLock(); }
+        const body = new Uint8Array(size);
+        let offset = 0;
+        for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+        return { ok: true, data: { body, contentType: response.headers.get("content-type") } };
+      }
       return {
         ok: true,
         data: {

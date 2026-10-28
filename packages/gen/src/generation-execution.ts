@@ -59,6 +59,7 @@ type TerminalRetryability = Extract<
 >["error"]["retryability"];
 
 export type GenerationExecutionPorts = {
+  readSourceSnapshot?: (input: { snapshotId: string; jobId: string; attemptId: string }) => Promise<Uint8Array>;
   // This ACK means the independent terminal relay durably accepted the row;
   // it is deliberately not an HTTP ACK from Main's business projection.
   acknowledgeTerminalRecord: (
@@ -694,10 +695,49 @@ export async function runGeneration<TPrepared, TProviderOutput>(
       blockedPolicyCode = moderation.data.policyCode ?? "PROHIBITED_OTHER";
       prepared = undefined as TPrepared;
     } else {
+      // Older queued references may point at replaced content. Their original
+      // bytes cannot be reconstructed, so do not invoke the provider.
+      const references = payload.referenceImages?.map(image => {
+        if (!image.sourceSnapshotId || !image.contentSha256) throw new Error("Legacy reference image was not frozen; retry with a newly accepted image");
+        return image;
+      });
       prepared = await modality.prepare({
         referenceImages: await hydratedImageReferenceInputs(
-          payload.referenceImages,
-          ports.blob,
+          references,
+          {
+            ...ports.blob,
+            signGetUrl: ports.blob.signGetUrl.bind(ports.blob),
+            getPrivate: ports.blob.getPrivate?.bind(ports.blob),
+            getSourceSnapshot: async ({ snapshotId }) => {
+              if (ports.readSourceSnapshot) return ports.readSourceSnapshot({ snapshotId, jobId: payload.generationJobId, attemptId: payload.attemptId });
+              const url = new URL("/api/internal/generation/source-snapshot", env.MAIN_GENERATION_TRANSPORT_URL);
+              url.searchParams.set("snapshotId", snapshotId);
+              url.searchParams.set("jobId", payload.generationJobId);
+              url.searchParams.set("attemptId", payload.attemptId);
+              const response = await fetch(url, { headers: { "x-internal-token": env.INTERNAL_TOKEN }, signal: AbortSignal.timeout(60_000) });
+              if (!response.ok || !response.body) throw new Error("Pinned source snapshot is unavailable");
+              const declared = Number(response.headers.get("content-length"));
+              if (!Number.isSafeInteger(declared) || declared <= 0 || declared > 64 * 1024 * 1024) throw new Error("Pinned source snapshot has invalid size");
+              const reader = response.body.getReader();
+              const bytes = new Uint8Array(declared);
+              let offset = 0;
+              try {
+                while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  if (offset + value.byteLength > declared) throw new Error("Pinned source snapshot exceeds declared size");
+                  bytes.set(value, offset); offset += value.byteLength;
+                }
+              } catch (error) {
+                // Stop the server-side stream on a malformed or aborted read;
+                // cancellation failure must not hide the original error.
+                await reader.cancel().catch(() => {});
+                throw error;
+              } finally { reader.releaseLock(); }
+              if (offset !== declared) throw new Error("Pinned source snapshot is truncated");
+              return bytes;
+            },
+          },
         ),
       });
     }

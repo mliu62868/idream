@@ -181,11 +181,11 @@ export function AuthWorkspace({
             </p>
           )}
           {mode === "signup" && (
-            <label className="block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+            <label className="block text-[12px] font-bold uppercase text-[rgb(170,170,170)]">
               Display name
               <input
                 aria-describedby="signup-display-name-hint"
-                className="mt-2 h-12 w-full rounded-[12px] bg-[rgb(36,36,36)] px-4 text-[14px] normal-case text-white outline-none"
+                className="mt-2 h-12 w-full rounded-[12px] bg-[rgb(36,36,36)] px-4 text-[14px] normal-case text-white focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
                 disabled={!interactive}
                 maxLength={80}
                 onChange={(event) => setName(event.target.value)}
@@ -202,10 +202,10 @@ export function AuthWorkspace({
               Shown publicly on characters and other content you publish.
             </p>
           )}
-          <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+          <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(170,170,170)]">
             Email
             <input
-              className="mt-2 h-12 w-full rounded-[12px] bg-[rgb(36,36,36)] px-4 text-[14px] normal-case text-white outline-none"
+              className="mt-2 h-12 w-full rounded-[12px] bg-[rgb(36,36,36)] px-4 text-[14px] normal-case text-white focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
               disabled={!interactive}
               onChange={(event) => setEmail(event.target.value)}
               required
@@ -213,10 +213,10 @@ export function AuthWorkspace({
               value={email}
             />
           </label>
-          <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+          <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(170,170,170)]">
             Password
             <input
-              className="mt-2 h-12 w-full rounded-[12px] bg-[rgb(36,36,36)] px-4 text-[14px] normal-case text-white outline-none"
+              className="mt-2 h-12 w-full rounded-[12px] bg-[rgb(36,36,36)] px-4 text-[14px] normal-case text-white focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
               disabled={!interactive}
               aria-describedby={mode === "signup" ? "signup-password-hint" : undefined}
               autoComplete={mode === "signup" ? "new-password" : "current-password"}

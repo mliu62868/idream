@@ -5,10 +5,13 @@ import {
 } from "@idream/shared/catalog";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
+import { readRemoteImage, verifySourceImageBytes, withRemoteImageValidationLimit } from "@/server/lib/safe-remote-image";
 import {
   hasHydratableMediaBlobAuthority,
   isMediaAssetOperationalForAuthority,
+  resolveMediaAssetBlobLocator,
 } from "@/server/lib/media-asset-authority";
+import { providers } from "@/server/providers";
 import { isRecord, toInputJson } from "@/server/lib/request-json";
 import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency";
 import { dreamcoinBalance, postDreamcoinEntry } from "@/server/modules/billing/ledger";
@@ -43,6 +46,7 @@ type GenerationAdmissionData = Omit<
 type GenerationAdmission = {
   userId: string;
   identity: GenerationJobIdentity;
+  transactionTimeoutMs?: number;
   retryOf?: Pick<GenerationJobRow, "id" | "version">;
   chatAttachment?: { sessionId: string; turnId: string; attempt: number };
   sequenceId?: string;
@@ -237,7 +241,7 @@ export async function acceptGenerationJobForUser(input: GenerationAdmission, adm
       const dispatch = await reserveInitialGenerationAttempt(tx, job);
       return { job, outboxId: dispatch.outbox.id };
     };
-    reservation = admissionTx ? await admit(admissionTx) : await prisma.$transaction(admit);
+    reservation = admissionTx ? await admit(admissionTx) : await prisma.$transaction(admit, input.transactionTimeoutMs ? { timeout: input.transactionTimeoutMs } : undefined);
   } catch (error) {
     if (admissionTx || !isUniqueConstraintError(error)) throw error;
     const existing = await findAdmissionReplay(prisma, input);
@@ -374,6 +378,8 @@ export async function assertGenerationSourceImageAuthority(
     readonly sourceImageAssetId: string;
     readonly userId: string;
     readonly characterId: string | null;
+    readonly verifyVideoPixels?: boolean;
+    readonly verifyImagePixels?: boolean;
     /** Granted only by a locked, freshly resolved Comic context. Never a request field. */
     readonly authorizedComicSourceMediaId?: string;
   },
@@ -406,6 +412,26 @@ export async function assertGenerationSourceImageAuthority(
       "This source image is unavailable for generation. Choose another image or generate a new image first.",
       { sourceImageAssetId: input.sourceImageAssetId },
     );
+  }
+  // A locator is an authorization to read, not evidence that stored pixels
+  // still decode. Recheck on admission as sources can change after a quote.
+  const locator = resolveMediaAssetBlobLocator(source);
+  if (input.verifyVideoPixels || input.verifyImagePixels) {
+    const loadAndValidate = async () => {
+      let bytes: Uint8Array;
+      if (locator) {
+        if (!providers.blob.getPrivate) throw Errors.unavailable("Source image storage is temporarily unavailable.");
+        const stored = await providers.blob.getPrivate({ key: locator.key, signal: AbortSignal.timeout(10_000), maxBytes: 64 * 1024 * 1024 });
+        if (!stored.ok) {
+          if (stored.error.code === "too_large") throw Errors.conflict("This source image is too large to verify. Choose another image.", { sourceImageAssetId: input.sourceImageAssetId });
+          if (stored.error.code !== "not_found") throw Errors.unavailable("Source image storage is temporarily unavailable.");
+          throw Errors.conflict("This source image is unavailable for generation. Choose another image or generate a new image first.", { sourceImageAssetId: input.sourceImageAssetId });
+        }
+        bytes = stored.data.body;
+      } else bytes = (await readRemoteImage(source.url!.trim())).bytes;
+      return verifySourceImageBytes(bytes, input.sourceImageAssetId);
+    };
+    return locator ? loadAndValidate() : withRemoteImageValidationLimit(loadAndValidate);
   }
 }
 

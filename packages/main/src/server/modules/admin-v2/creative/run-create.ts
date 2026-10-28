@@ -37,7 +37,10 @@ import {
 import { loadCharacterIdentityBootstrapAuthority } from "@/server/modules/admin-v2/characters/identity-bootstrap-authority";
 import {
   lockCharacterGenerationAndMediaAssetAuthorities,
+  lockCharacterMediaAssetAuthorities,
 } from "@/server/modules/admin-v2/characters/generation-authority-lock";
+import { freezeGenerationReferences } from "@/server/modules/ourdream/generation-reference-snapshot";
+import { lockUserLedger } from "@/server/modules/ourdream/subscription-lifecycle";
 import {
   generationSourceVariationAuthority,
   identityCalibrationGenerationModes,
@@ -669,6 +672,7 @@ export async function createCreativeRun(
 
   let replayed = false;
   const batch = await auditedTransaction("content.production.batch.create", async (tx) => {
+    await lockUserLedger(tx, actor.id);
     if (idempotencyKey) {
       await tx.$queryRaw`SELECT 1::int AS locked FROM pg_advisory_xact_lock(hashtext(${`${commandScope}:${idempotencyKey}`}))`;
       const existing = await tx.controlPlaneCommand.findUnique({
@@ -722,6 +726,8 @@ export async function createCreativeRun(
           },
         );
       }
+    } else {
+      await lockCharacterMediaAssetAuthorities(tx, referenceAssetIds);
     }
     let verifiedBootstrapAuthority = bootstrapAuthority;
     let verifiedIdentityBootstrapAuthority = identityBootstrapAuthority;
@@ -1070,6 +1076,13 @@ export async function createCreativeRun(
         });
       }
     }
+    const referenceSnapshots = await freezeGenerationReferences(tx, {
+      userId: actor.id,
+      characterId: body.targetType === "character" ? body.targetId ?? null : null,
+      controls,
+      referenceAssetIds,
+      referenceManifest,
+    });
     const createdBatch = await tx.contentProductionBatch.create({
       data: {
         title,
@@ -1160,7 +1173,7 @@ export async function createCreativeRun(
           mode: productionMode,
           prompt,
           negativePrompt: effectiveNegativePrompt,
-          controls: toInputJson(controls),
+          controls: toInputJson({ ...controls, referenceSnapshots }),
           presetIds: toInputJson(body.presetIds),
           model: workflowKey,
           profileId: profile.profileKey,
@@ -1296,7 +1309,7 @@ export async function createCreativeRun(
       where: { id: createdBatch.id },
       select: { id: true, items: { select: { id: true } } },
     });
-  });
+  }, { timeout: 60_000 });
   await dispatchGenerationAttemptOutbox(prisma, {
     limit: totalOutputCount,
     outboxIds: batch.items.map((item) => `creative_initial_${batch.id}_${item.id}`),

@@ -17,6 +17,8 @@ import { createHash } from "node:crypto";
 import { Errors } from "@/server/lib/errors";
 import { prisma } from "@/server/lib/db";
 import { assertGenerationSourceImageAuthority } from "./generation-job-authority";
+import { preflightGenerationReferences } from "./generation-reference-snapshot";
+import { withGenerationSnapshotSlot } from "./generation-source-snapshot";
 import {
   generationCostFromAuthority,
   resolveGenerationPricingAuthority,
@@ -459,6 +461,8 @@ export async function quoteGeneration(input: {
   readonly body: GenerationCreateBody;
   readonly profileSelectionAuthority: GenerationProfileSelectionAuthority;
   readonly source?: GenerationSource;
+  /** Only shared by scenes of one sequence request. */
+  readonly videoSourceChecks?: Set<string>;
 }): Promise<{
   readonly plan: GenerationPlan;
   readonly pricingAuthority: GenerationPricingAuthority;
@@ -473,10 +477,24 @@ export async function quoteGeneration(input: {
     bootstrapVisualProfile: false,
   });
   if (input.body.mode === "video" && plan.requestedSourceImageAssetId) {
-    await assertGenerationSourceImageAuthority(prisma, {
-      sourceImageAssetId: plan.requestedSourceImageAssetId,
+    const sourceImageAssetId = plan.requestedSourceImageAssetId;
+    const cached = input.videoSourceChecks?.has(sourceImageAssetId);
+    const validate = () => assertGenerationSourceImageAuthority(prisma, {
+      sourceImageAssetId,
       userId: input.userId,
       characterId: plan.character?.id ?? null,
+      verifyVideoPixels: !cached,
+    });
+    if (cached) await validate();
+    else await withGenerationSnapshotSlot(validate);
+    input.videoSourceChecks?.add(sourceImageAssetId);
+  }
+  if (input.body.mode === "image") {
+    await preflightGenerationReferences({
+      userId: input.userId, characterId: plan.character?.id ?? null,
+      controls: { sourceImageAssetId: plan.requestedSourceImageAssetId, lookReferenceAssetId: plan.requestedLookReferenceAssetId },
+      referenceManifest: plan.referenceRequirements.map(reference => ({ mediaAssetId: reference.assetId, role: reference.role })),
+      authorizedSourceImageAssetId: plan.context?.source.kind === "comic" ? plan.context.sourceMedia?.id : undefined,
     });
   }
   const routeFingerprint = generationPlanRouteFingerprint(plan);

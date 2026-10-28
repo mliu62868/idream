@@ -100,9 +100,13 @@ describe("Video sequence exact acceptance and recoverable delivery UI", () => {
     customize = path => path.endsWith("/video-sequences") ? Promise.resolve(envelope({ sequences: [sequence()] })) : undefined;
     await mount();
     expect(container.textContent).toContain("Each scene usually takes several minutes");
+    expect(container.textContent).toContain("current net charge");
+    expect(container.textContent).toContain("The final charge can change as scenes finish or refunds are settled.");
+    expect(container.textContent).not.toContain("final charge 200 coins");
     await act(async () => root.unmount()); root = createRoot(container);
     customize = path => path.endsWith("/video-sequences") ? Promise.resolve(envelope({ sequences: [sequence("unknown")] })) : path.includes("sequence-original") ? Promise.resolve(envelope({ sequence: sequence("unknown") })) : undefined;
     await mount();
+    expect(container.textContent).toContain("current net charge");
     expect(container.textContent).toContain("refunded automatically within about 30 minutes");
     expect(container.textContent).not.toMatch(/reconciliation/i);
   });
@@ -255,10 +259,11 @@ describe("Video sequence exact acceptance and recoverable delivery UI", () => {
       : path.endsWith("/sequence-original/stop") && init?.method === "POST" ? Promise.resolve(envelope({ sequence: cancelled }))
       : path.endsWith("/sequence-original") ? Promise.resolve(envelope({ sequence: delivered })) : undefined;
     await mount(); await click("Stop remaining scenes");
-    expect(container.textContent).toContain("Sequence cancelled · reserved 300 · refunded 100 · final charge 200 coins");
+    expect(container.textContent).toContain("Sequence cancelled · reserved 300 · refunded 100 · current net charge 200 coins");
     expect(container.textContent).toContain("Scene 2: running");
     await act(async () => vi.advanceTimersByTime(3000)); await settle();
     expect(container.textContent).toContain("Scene 2: completed");
+    expect(container.textContent).toContain("Sequence cancelled · reserved 300 · refunded 100 · final charge 200 coins");
     expect(container.querySelector('a[href="/api/v1/media/scene-two-video/content?download=1"]')).not.toBeNull();
     expect(calls.filter(call => call.path.endsWith("/sequence-original"))).toHaveLength(1);
     await act(async () => vi.advanceTimersByTime(9000)); await settle();
@@ -276,6 +281,32 @@ describe("Video sequence exact acceptance and recoverable delivery UI", () => {
     expect(calls.filter(call => call.init?.method === "POST")).toHaveLength(0);
   });
 
+  it("labels another character's previous sequence using its own identity and retains its download", async () => {
+    const first = deliveredSequence("sequence-a");
+    customize = path => path.endsWith("/video-sequences") ? Promise.resolve(envelope({ sequences: [first] })) : undefined;
+    const characters = [{ id: "character-one", title: "Mira" }, { id: "character-two", title: "Lola" }];
+    await mount({ ...props, characters });
+    expect(container.textContent).toContain("Sequence · Mira");
+    await mount({ ...props, characterId: "character-two", characters });
+    expect(container.textContent).toContain("Previous sequence · Mira");
+    expect(container.textContent).not.toContain("Previous sequence · Lola");
+    expect(container.querySelector('a[href="/api/v1/media/sequence-a-complete/content?download=1"]')).not.toBeNull();
+    await mount({ ...props, characterId: "character-two", characters: [characters[1]!] });
+    expect(container.textContent).toContain("Previous sequence · Character ID: character-one");
+    expect(calls.filter(call => call.init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("identifies an unconfirmed receipt by its original character after selection changes", async () => {
+    customize = (path, init) => path.endsWith("/video-sequences") && init?.method === "POST" ? Promise.reject(new TypeError("Connection lost")) : undefined;
+    const characters = [{ id: "character-one", title: "Mira" }, { id: "character-two", title: "Lola" }];
+    await mount({ ...props, characters }); await type("Scene 1 prompt", "A calm wave"); await click("Review video price"); await click("Accept 200 coins & create video");
+    const saved = localStorage.getItem(storageKey);
+    await mount({ ...props, characterId: "character-two", characters });
+    expect(container.textContent).toContain("Original request · Mira"); expect(container.textContent).not.toContain("Original request · Lola");
+    expect(localStorage.getItem(storageKey)).toBe(saved);
+    expect(calls.filter(call => call.init?.method === "POST" && !call.path.endsWith("/quote"))).toHaveLength(1);
+  });
+
   it("keeps an uncertain submission receipt across reload and checks its original key without another POST", async () => {
     customize = (path, init) => path.endsWith("/video-sequences") && init?.method === "POST" ? Promise.reject(new TypeError("Connection lost")) : undefined;
     await mount(); await type("Scene 1 prompt", "A calm wave"); await click("Review video price"); await click("Accept 200 coins & create video");
@@ -286,19 +317,77 @@ describe("Video sequence exact acceptance and recoverable delivery UI", () => {
     expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Scene 1 prompt"]')?.value).toBe("A calm wave");
   });
 
-  it("releases a deterministically absent stale request and retains the script for a new price", async () => {
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  it("retains the original receipt when the server reports that admission is still in progress", async () => {
+    let pending = true;
     customize = (path, init) => path.endsWith("/video-sequences") && init?.method === "POST"
-      ? Promise.resolve(Response.json({ ok: false, error: { message: "Video sequence quote changed" } }, { status: 409 }))
+      ? Promise.resolve(Response.json({ ok: false, error: { message: "The original video request is still being processed. Check it again shortly." } }, { status: 503 }))
+      : path.includes("/request?") && pending
+        ? Promise.resolve(Response.json({ ok: false, error: { message: "The original video request is still being processed. Check it again shortly." } }, { status: 503 }))
+        : path.includes("/request?") ? Promise.resolve(envelope({ sequence: deliveredSequence("sequence-original") })) : undefined;
+    await mount(); await type("Scene 1 prompt", "A calm wave"); await click("Review video price"); await click("Accept 200 coins & create video");
+    const saved = JSON.parse(localStorage.getItem(storageKey)!);
+    expect(saved.id).toBeNull();
+    expect(container.textContent).toContain("original request is not confirmed yet");
+    pending = false;
+    await click("Check original request");
+    expect(container.textContent).toContain("Sequence completed");
+    expect(localStorage.getItem(storageKey)).toBeNull();
+    expect(calls.filter(call => call.init?.method === "POST" && !call.path.endsWith("/quote"))).toHaveLength(1);
+  });
+
+  it("keeps a not-yet-visible original request and retries with the same key and body", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    let submissions = 0;
+    customize = (path, init) => path.endsWith("/video-sequences") && init?.method === "POST"
+      ? Promise.resolve(++submissions === 1 ? Response.json({ ok: false, error: { message: "Video sequence quote changed" } }, { status: 409 }) : envelope({ sequence: deliveredSequence("sequence-original") }, 202))
       : path.includes("/request?") ? Promise.resolve(Response.json({ ok: false, error: { message: "Video sequence not found" } }, { status: 404 }))
       : path.endsWith("/video-sequences") ? Promise.resolve(envelope({ sequences: [sequence()] })) : undefined;
     await mount(); await select("Video sound", "narration"); await type("Scene 1 prompt", "A calm wave"); await type("Scene 1 narration", "Welcome to the garden.");
     await click("Review video price"); await click("Accept 200 coins & create video");
-    expect(container.textContent).toContain("original request was not accepted"); expect(button("Review video price").disabled).toBe(false); expect(localStorage.getItem(storageKey)).toBeNull();
-    expect(container.querySelector('[aria-label="Video price"]')).toBeNull(); expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Scene 1 narration"]')?.value).toBe("Welcome to the garden.");
+    expect(container.textContent).toContain("original request is not confirmed yet"); expect(button("Retry original request").disabled).toBe(false); expect(localStorage.getItem(storageKey)).not.toBeNull();
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Scene 1 narration"]')?.value).toBe("Welcome to the garden.");
+    await click("Retry original request");
+    expect(container.textContent).toContain("Sequence completed");
+    expect(localStorage.getItem(storageKey)).toBeNull();
+    const writes = calls.filter(call => call.init?.method === "POST" && !call.path.endsWith("/quote"));
+    expect(writes).toHaveLength(2);
+    expect(new Headers(writes[1]!.init!.headers).get("idempotency-key")).toBe(new Headers(writes[0]!.init!.headers).get("idempotency-key"));
+    expect(writes[1]!.init!.body).toBe(writes[0]!.init!.body);
     await act(async () => vi.advanceTimersByTime(3000)); await settle();
-    expect(calls.filter(call => call.path.endsWith("/sequence-original"))).toHaveLength(1);
-    expect(calls.filter(call => call.init?.method === "POST" && !call.path.endsWith("/quote"))).toHaveLength(1);
+    expect(calls.filter(call => call.path.endsWith("/sequence-original"))).toHaveLength(0);
+    expect(calls.filter(call => call.init?.method === "POST" && !call.path.endsWith("/quote"))).toHaveLength(2);
+  });
+
+  it("retains a receipt when close disconnects and releases it only after the confirmed tombstone", async () => {
+    let closed = false;
+    customize = (path, init) => path.endsWith("/request/abandon") ? (closed = true, Promise.reject(new TypeError("Connection lost")))
+      : path.endsWith("/video-sequences") && init?.method === "POST" ? Promise.reject(new TypeError("Connection lost"))
+      : path.includes("/request?") ? Promise.resolve(Response.json({ ok: false, error: closed
+        ? { message: "Closed", details: { reason: "video_sequence_intent_closed" } } : { message: "Not confirmed" } }, { status: closed ? 410 : 503 })) : undefined;
+    await mount(); await type("Scene 1 prompt", "A calm wave"); await click("Review video price"); await click("Accept 200 coins & create video");
+    const saved = localStorage.getItem(storageKey); expect(saved).not.toBeNull();
+    await click("Close original request"); expect(localStorage.getItem(storageKey)).toBe(saved);
+    await click("Check original request"); expect(localStorage.getItem(storageKey)).toBeNull();
+    expect(container.textContent).toContain("closed without a charge");
+    expect(button("Review video price").disabled).toBe(false);
+  });
+
+  it("requires explicit approval of the revised price and displays the actual accepted price", async () => {
+    let writes = 0, quotes = 0;
+    const changedPrice = { ...price, fingerprint: "b".repeat(64), costDreamcoins: 250 };
+    customize = (path, init) => path.endsWith("/quote") ? Promise.resolve(envelope({ quote: ++quotes === 1 ? price : changedPrice }))
+      : path.endsWith("/video-sequences") && init?.method === "POST" ? Promise.resolve(++writes < 3
+        ? Response.json({ ok: false, error: { message: "Price changed" } }, { status: 409 })
+        : envelope({ sequence: { ...sequence(), acceptedQuote: price } }, 202))
+      : path.includes("/request?") ? Promise.resolve(Response.json({ ok: false, error: { message: "Not confirmed" } }, { status: 503 })) : undefined;
+    await mount(); await type("Scene 1 prompt", "A calm wave"); await click("Review video price"); await click("Accept 200 coins & create video");
+    await click("Retry original request"); await click("Review current price");
+    expect(button("Accept 250 coins & retry original request").disabled).toBe(false); expect(writes).toBe(2);
+    await click("Accept 250 coins & retry original request");
+    expect(container.textContent).toContain("Accepted price 200 coins");
+    const submissions = calls.filter(call => call.path.endsWith("/video-sequences") && call.init?.method === "POST");
+    expect(new Headers(submissions[2]!.init!.headers).get("idempotency-key")).toBe(new Headers(submissions[0]!.init!.headers).get("idempotency-key"));
+    expect(JSON.parse(String(submissions[2]!.init!.body)).quoteFingerprint).toBe(changedPrice.fingerprint);
   });
 
   it("offers packaging recovery and the delivered scene without issuing a new native generation", async () => {

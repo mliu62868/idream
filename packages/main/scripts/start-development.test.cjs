@@ -156,9 +156,9 @@ test("development startup preserves Playwright-owned Next directories", async ()
     argv: ["/runtime/node", "start-development.cjs", "--port", "3940"],
     env: {
       PW_RUN_ID: "acd11234",
-      IDREAM_NEXT_DIST_DIR: ".next/playwright-main-3940-acd11234",
+      IDREAM_NEXT_DIST_DIR: ".next-playwright/playwright-main-3940-acd11234",
       IDREAM_NEXT_TSCONFIG:
-        ".next/playwright-config-main-3940-acd11234/tsconfig.json",
+        ".next-playwright/playwright-config-main-3940-acd11234/tsconfig.json",
     },
     execPath: "/runtime/node",
   });
@@ -174,11 +174,11 @@ test("development startup preserves Playwright-owned Next directories", async ()
   assert.equal(runtime.env.IDREAM_NEXT_DEVELOPMENT, undefined);
   assert.equal(
     runtime.env.IDREAM_NEXT_DIST_DIR,
-    ".next/playwright-main-3940-acd11234",
+    ".next-playwright/playwright-main-3940-acd11234",
   );
   assert.equal(
     runtime.env.IDREAM_NEXT_TSCONFIG,
-    ".next/playwright-config-main-3940-acd11234/tsconfig.json",
+    ".next-playwright/playwright-config-main-3940-acd11234/tsconfig.json",
   );
 });
 

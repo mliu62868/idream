@@ -102,6 +102,7 @@ ADR-10 对照决策：
 - **XSS**：用户内容渲染默认转义；富文本经 sanitize。
 - **CSRF**：状态变更用 SameSite cookie + better-auth CSRF 防护；webhook 用验签而非 cookie。
 - **SSRF**：provider/图片 URL 拉取走白名单 + 禁内网地址。
+  外部源图按每次跳转校验全部解析地址，并将已验证的公网地址绑定到连接；系统 DNS 全部返回 fake-IP 时，使用固定的 Google DNS-over-HTTPS 解析公网地址，保持 TLS 主机名验证并拒绝非公网结果。此回退会向 Google 发送被访问的域名，并不适用于要求域名只经内部 DNS 解析的部署；DoH 不可达时请求失败，不回退到 fake-IP 或代理解析。
 - **限流**：auth/搜索/聊天/生成/举报/验证全限流（04 §7，ADR-9）。
 - **安全响应头/CSP**（proxy 统一加）：`Content-Security-Policy`、`Strict-Transport-Security`、`X-Content-Type-Options`、`Referrer-Policy`、`Permissions-Policy`；媒体走独立私有域。
 - **审计日志**：审核决定、申诉、ledger、provider 事件、role 变更、删号——不可变、带时间与操作者。

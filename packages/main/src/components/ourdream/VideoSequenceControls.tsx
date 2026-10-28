@@ -4,13 +4,27 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import Image from "next/image";
 import Link from "next/link";
 import { UNKNOWN_SETTLEMENT_GRACE_MINUTES } from "@/lib/generation-failure-copy";
+import { isTerminalGenerationJobStatus } from "@idream/shared/catalog";
 import { REDGRAFT_VIDEO_DEFAULTS, redgraftVideoEnvelope, videoSequenceRequestSchema, videoSequenceCapabilitiesSchema, videoSequenceQuoteSchema, videoSequenceDtoSchema,
   type VideoSequenceRequest, type VideoSequenceQuote, type VideoSequenceDto } from "@idream/shared/contracts";
 
 export type VideoSequenceRecovery = { request: VideoSequenceRequest; sourceImageAssetId: string | null };
-type Props = { directionDraft?: { id: string; prompt: string }; viewerScope: string | null; characterId?: string; generationContextToken?: string; consistencyMode: "balanced" | "strict" | "creative"; seed?: string; disabled?: boolean; unavailableMessage?: string; coinsHref: string; onStatusChange?: () => void; onRecoveryChange?: (value: VideoSequenceRecovery | null) => void };
+type Props = { directionDraft?: { id: string; prompt: string }; viewerScope: string | null; characterId?: string; characters?: ReadonlyArray<{ id: string; title: string }>; generationContextToken?: string; consistencyMode: "balanced" | "strict" | "creative"; seed?: string; disabled?: boolean; unavailableMessage?: string; coinsHref: string; onStatusChange?: () => void; onRecoveryChange?: (value: VideoSequenceRecovery | null) => void };
 type Receipt = { key: string; request: VideoSequenceRequest; id: string | null };
-class VideoRequestError extends Error { constructor(message: string, readonly status: number) { super(message); } }
+class VideoRequestError extends Error { constructor(message: string, readonly status: number, readonly reason?: string) { super(message); } }
+
+export function hasSavedVideoSequenceReceipt(viewerScope: string | null): boolean {
+  if (!viewerScope) return false;
+  try {
+    const raw = localStorage.getItem(`idream:video-sequence:${viewerScope}`);
+    if (!raw) return false;
+    const saved = JSON.parse(raw) as Partial<Receipt>;
+    return typeof saved.key === "string" && saved.key.length >= 8 &&
+      (saved.id === null || typeof saved.id === "string") && videoSequenceRequestSchema.safeParse(saved.request).success;
+  } catch {
+    return false;
+  }
+}
 
 // This receipt belongs to one authenticated viewer. Reload checks the original
 // authority; it never replaces an uncertain submission with a fresh paid key.
@@ -26,6 +40,9 @@ export function VideoSequenceControls(props: Props) {
   const [sequence, setSequence] = useState<VideoSequenceDto | null>(null);
   const [history, setHistory] = useState<VideoSequenceDto[]>([]);
   const [receipt, setReceipt] = useState<Receipt | null>(null);
+  const [originalNotFound, setOriginalNotFound] = useState(false);
+  const [originalNeedsQuote, setOriginalNeedsQuote] = useState(false);
+  const [originalQuote, setOriginalQuote] = useState<VideoSequenceQuote | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const epoch = useRef(0);
@@ -43,6 +60,7 @@ export function VideoSequenceControls(props: Props) {
   const storageKey = `idream:video-sequence:${props.viewerScope}`;
   const retainReceipt = useCallback((value: Receipt | null) => {
     receiptRef.current = value; setReceipt(value);
+    if (!value) { setOriginalNotFound(false); setOriginalNeedsQuote(false); setOriginalQuote(null); }
     try { if (value) localStorage.setItem(storageKey, JSON.stringify(value)); else localStorage.removeItem(storageKey); }
     catch { setError("Local recovery storage is unavailable. Keep this page open and use Check original request after a connection failure."); }
   }, [storageKey]);
@@ -52,7 +70,7 @@ export function VideoSequenceControls(props: Props) {
     if (init.body) headers.set("content-type", "application/json");
     const response = await fetch(`/api/v1/generation/video-sequences${suffix}`, { ...init, headers, cache: "no-store" });
     const value = await response.json();
-    if (!response.ok || value.ok !== true) throw new VideoRequestError(value.error?.message ?? `Video request failed (${response.status})`, response.status);
+    if (!response.ok || value.ok !== true) throw new VideoRequestError(value.error?.message ?? `Video request failed (${response.status})`, response.status, value.error?.details?.reason);
     return value.data;
   }, [props.viewerScope]);
   const loadSequence = useCallback(async (id: string) => {
@@ -90,15 +108,64 @@ export function VideoSequenceControls(props: Props) {
     try {
       const value = videoSequenceDtoSchema.parse((await api(original.id ? `/${original.id}` : `/request?${new URLSearchParams({ key: original.key })}`)).sequence);
       if (ticket !== epoch.current || read !== sequenceRead.current) return;
+      setOriginalNotFound(false);
       retainReceipt({ ...original, id: value.id }); showSequence(value);
       if (!["generating", "composing", "unknown"].includes(value.status)) retainReceipt(null);
     } catch (cause) {
       if (ticket !== epoch.current || read !== sequenceRead.current) return;
-      if (cause instanceof VideoRequestError && cause.status === 404) { retainReceipt(null); setQuote(null); setError("The original request was not accepted. Review a current price before creating the video."); }
+      if (cause instanceof VideoRequestError && cause.status === 410 && cause.reason === "video_sequence_intent_closed") { retainReceipt(null); setError("The original request was closed without a charge. You can create a new video."); }
+      else if (cause instanceof VideoRequestError && (cause.status === 404 || cause.status === 503)) { setOriginalNotFound(true); setQuote(null); setError("The original request is not confirmed yet. Check again, retry it, or safely close it."); }
       else setError(`${cause instanceof Error ? cause.message : "The original request is still unconfirmed"}. Keep its receipt and check again before submitting.`);
     }
     finally { if (ticket === epoch.current) { if (read === sequenceRead.current) sequenceReadPending.current = false; setBusy(false); } }
   }, [api, retainReceipt, showSequence]);
+  const closeOriginal = async () => {
+    const original = receiptRef.current;
+    if (!original || original.id) return;
+    const ticket = epoch.current; setBusy(true); setError("");
+    try {
+      const result = await api("/request/abandon", { method: "POST", headers: { "idempotency-key": original.key }, body: JSON.stringify(original.request) });
+      if (ticket !== epoch.current) return;
+      if (result.state === "abandoned") { retainReceipt(null); setError("The original request was closed without a charge. You can create a new video."); }
+      else if (result.state === "accepted") {
+        const value = videoSequenceDtoSchema.parse(result.sequence);
+        retainReceipt({ ...original, id: value.id }); showSequence(value);
+        if (!["generating", "composing", "unknown"].includes(value.status)) retainReceipt(null);
+      } else throw new Error("The original request could not be confirmed");
+    } catch (cause) { if (ticket === epoch.current) setError(`${cause instanceof Error ? cause.message : "The request could not be closed"}. Keep the receipt and check again.`); }
+    finally { if (ticket === epoch.current) setBusy(false); }
+  };
+  const retryOriginal = async (replacementQuote?: VideoSequenceQuote) => {
+    const original = receiptRef.current;
+    if (!original || original.id) return;
+    const ticket = epoch.current;
+    const submission = replacementQuote ? { ...original, request: { ...original.request, quoteFingerprint: replacementQuote.fingerprint } } : original;
+    if (replacementQuote) retainReceipt(submission);
+    setBusy(true); setError("");
+    try {
+      const value = videoSequenceDtoSchema.parse((await api("", { method: "POST", headers: { "idempotency-key": submission.key }, body: JSON.stringify(submission.request) })).sequence);
+      if (ticket !== epoch.current) return;
+      setOriginalNotFound(false); setOriginalNeedsQuote(false); setOriginalQuote(null); retainReceipt({ ...submission, id: value.id }); showSequence(value);
+      if (!["generating", "composing", "unknown"].includes(value.status)) retainReceipt(null);
+    } catch (cause) {
+      if (ticket === epoch.current) {
+        if (cause instanceof VideoRequestError && cause.status === 409) setOriginalNeedsQuote(true);
+        setError(`${cause instanceof Error ? cause.message : "The original request is still unconfirmed"}. Keep its receipt and check again.`);
+      }
+    } finally { if (ticket === epoch.current) setBusy(false); }
+  };
+  const reviewOriginalPrice = async () => {
+    const original = receiptRef.current;
+    if (!original || original.id) return;
+    const ticket = epoch.current;
+    setBusy(true); setError("");
+    try {
+      const value = videoSequenceQuoteSchema.parse((await api("/quote", { method: "POST", body: JSON.stringify(original.request) })).quote);
+      if (ticket === epoch.current) setOriginalQuote(value);
+    } catch (cause) {
+      if (ticket === epoch.current) setError(`${cause instanceof Error ? cause.message : "The price could not be reviewed"}. Keep the original request and check again.`);
+    } finally { if (ticket === epoch.current) setBusy(false); }
+  };
   useEffect(() => {
     const ticket = ++epoch.current;
     selectedSequenceId.current = null; sequenceRead.current += 1; sequenceReadPending.current = false;
@@ -195,6 +262,9 @@ export function VideoSequenceControls(props: Props) {
   };
   const locked = busy || Boolean(receipt) || props.disabled;
   const statusLocked = busy || Boolean(receipt && receipt.id !== sequence?.id);
+  const settled = sequence && !["generating", "composing", "unknown"].includes(sequence.status) &&
+    sequence.scenes.length > 0 && sequence.scenes.every(scene => isTerminalGenerationJobStatus(scene.job.status));
+  const originalCharacter = (id?: string) => id ? props.characters?.find(character => character.id === id)?.title ?? `Character ID: ${id}` : "Original character unavailable";
   const inputClass = "mt-1 w-full rounded-lg bg-white/10 px-3 py-2 text-sm text-white disabled:opacity-50";
   return <section className="mt-4 space-y-4" aria-label="Video sequence">
     <p className="text-sm leading-6 text-white/70">Create up to three scenes from this character image, in order. Each completed scene keeps its own result and charge. If a scene fails or its result can&apos;t be confirmed, later scenes stop.</p>
@@ -214,7 +284,9 @@ export function VideoSequenceControls(props: Props) {
     {scenes.length < 3 ? <button className="text-sm underline disabled:opacity-50" disabled={locked} type="button" onClick={() => setScenes(values => [...values, { prompt: "", seconds: 5 }])}>Add scene</button> : null}
     {audio === "narration" ? <p className="text-sm leading-6 text-white/70">English system voice narration replaces generated sound. This is narration, without lip synchronization. If a line is longer than its scene, the final frame holds until the full line finishes.</p> : null}
     {props.unavailableMessage ? <p role="status" className="text-sm text-amber-200">{props.unavailableMessage}</p> : null}
-    {!receipt ? <button className="rounded-full border border-white/30 px-4 py-2 text-sm font-bold disabled:opacity-50" type="button" disabled={busy || props.disabled || !props.characterId || !capabilities} onClick={() => void review()}>Review video price</button> : <button className="rounded-full border border-white/30 px-4 py-2 text-sm" type="button" disabled={busy} onClick={() => void recoverOriginal()}>Check original request</button>}
+    {receipt && !receipt.id ? <p className="text-sm text-white/70">Original request · {originalCharacter(receipt.request.characterId)}</p> : null}
+    {!receipt ? <button className="rounded-full border border-white/30 px-4 py-2 text-sm font-bold disabled:opacity-50" type="button" disabled={busy || props.disabled || !props.characterId || !capabilities} onClick={() => void review()}>Review video price</button> : <><button className="rounded-full border border-white/30 px-4 py-2 text-sm" type="button" disabled={busy} onClick={() => void recoverOriginal()}>Check original request</button>{originalNotFound && !receipt.id ? <button className="ml-3 rounded-full border border-white/30 px-4 py-2 text-sm" type="button" disabled={busy} onClick={() => void retryOriginal()}>Retry original request</button> : null}{originalNeedsQuote && !receipt.id ? <button className="ml-3 rounded-full border border-white/30 px-4 py-2 text-sm" type="button" disabled={busy} onClick={() => void reviewOriginalPrice()}>Review current price</button> : null}{!receipt.id ? <><button className="ml-3 rounded-full border border-white/30 px-4 py-2 text-sm" type="button" disabled={busy} onClick={() => void closeOriginal()}>Close original request</button><p className="mt-2 text-sm text-white/70">If the original was accepted, we&apos;ll show it. Otherwise, we&apos;ll close it without a charge.</p></> : null}</>}
+    {originalQuote && receipt && !receipt.id ? <div className="rounded-xl bg-white/5 p-4 text-sm" aria-label="Original request current price"><p>Current price {originalQuote.costDreamcoins} coins · balance {originalQuote.balance}</p><p className="mt-2 text-white/70">If your original request was already accepted, its existing charge applies instead.</p><button type="button" className="mt-3 rounded-full bg-white px-4 py-2 font-bold text-black disabled:opacity-50" disabled={busy || originalQuote.balance < originalQuote.costDreamcoins} onClick={() => void retryOriginal(originalQuote)}>Accept {originalQuote.costDreamcoins} coins & retry original request</button></div> : null}
     {quote ? <div className="rounded-xl bg-white/5 p-4 text-sm" aria-label="Video price">
       {quote.scenes.map((scene, ordinal) => <p key={scene.ordinal}>Scene {ordinal + 1} · {scene.video.durationSeconds.toFixed(2)}s · {scene.video.width}×{scene.video.height} · {quote.costs[ordinal]?.costDreamcoins} coins</p>)}
       <p className="mt-2 font-bold">Total {quote.costDreamcoins} coins · balance {quote.balance}</p>
@@ -228,7 +300,10 @@ export function VideoSequenceControls(props: Props) {
     {error ? <p role="alert" className="text-sm text-amber-200">{error}</p> : null}
     {history.length > 1 ? <label className="block text-sm">Recent sequences<select className={inputClass} aria-label="Recent video sequences" value={sequence?.id ?? ""} disabled={busy || Boolean(receipt)} onChange={event => void loadSequence(event.target.value)}>{history.map(value => <option key={value.id} value={value.id}>{new Date(value.createdAt).toLocaleString()} · {value.status} · {value.cost.finalCharge} coins</option>)}</select></label> : null}
     {sequence ? <div className="space-y-2 rounded-xl border border-white/10 p-4 text-sm" aria-label="Video sequence status">
-      <p role="status">Sequence {sequence.status} · reserved {sequence.cost.charged} · refunded {sequence.cost.refunded} · final charge {sequence.cost.finalCharge} coins</p>
+      <p className="font-semibold">{sequence.request.characterId !== props.characterId ? "Previous sequence" : "Sequence"} · {originalCharacter(sequence.request.characterId)}</p>
+      <p role="status">Sequence {sequence.status} · reserved {sequence.cost.charged} · refunded {sequence.cost.refunded} · {settled ? "final charge" : "current net charge"} {sequence.cost.finalCharge} coins</p>
+      {sequence.acceptedQuote ? <p className="text-white/65">Accepted price {sequence.acceptedQuote.costDreamcoins} coins.</p> : null}
+      {!settled ? <p className="text-white/65">The final charge can change as scenes finish or refunds are settled.</p> : null}
       {["generating", "composing"].includes(sequence.status) ? <p className="text-white/65">Each scene usually takes several minutes to render, then the scenes are joined into one video. You can leave this page; progress is saved and the finished video appears in your Gallery.</p> : null}
       {sequence.scenes[0]?.job.controls.sourceImageAssetId ? <div className="flex items-center gap-3"><Image alt="Original video reference" src={`/api/v1/media/${encodeURIComponent(sequence.scenes[0].job.controls.sourceImageAssetId)}/content`} width={80} height={96} unoptimized className="h-24 w-20 rounded-lg object-cover object-top" /><p>Original animation reference</p></div> : null}
       {sequence.scenes.map(scene => <p key={scene.ordinal}>Scene {scene.ordinal + 1}: {scene.job.status} · {scene.job.cost.finalCharge} coins{sequence.request.audio === "narration" ? ` · narration ${scene.narrationState === "completed" ? "ready" : scene.narrationState === "failed" ? "failed" : scene.narrationState === "running" ? "in progress" : "pending"}` : ""} {scene.assets.map(asset => <a key={asset.id} href={asset.downloadUrl} className="ml-2 underline">Download scene {scene.ordinal + 1}</a>)}</p>)}

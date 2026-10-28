@@ -47,6 +47,9 @@ describe("Playwright resource lifecycle", () => {
       `playwright-blob-sentinel-${runId}`,
     );
     const unownedSiblingPath = path.join(unownedSiblingRoot, "preserved.bin");
+    const ownedBuildPath = path.resolve(mainPackageRoot, environment.mainDistDir, "server/owned.js");
+    const foreignBuildRoot = path.resolve(mainPackageRoot, `.next-playwright/playwright-main-3510-${randomBytes(4).toString("hex")}`);
+    const foreignBuildPath = path.join(foreignBuildRoot, "server/preserved.js");
 
     try {
       await lifecycleVerifier.setup();
@@ -63,12 +66,18 @@ describe("Playwright resource lifecycle", () => {
       expect(JSON.parse(await readFile(mainTsconfigPath, "utf8"))).toEqual({
         extends: "../../tsconfig.json",
         compilerOptions: { baseUrl: "../.." },
+        include: ["../../idream-next-env.d.ts", "../../**/*.ts", "../../**/*.tsx", "../../**/*.mts", `../../${environment.mainDistDir}/types/**/*.ts`],
       });
       expect(JSON.parse(await readFile(adminTsconfigPath, "utf8"))).toEqual({
         extends: "../../tsconfig.json",
         compilerOptions: { baseUrl: "../.." },
+        include: ["../../idream-next-env.d.ts", "../../**/*.ts", "../../**/*.tsx", "../../**/*.mts", `../../${environment.adminDistDir}/types/**/*.ts`],
       });
       await writeFile(ownedBlobPath, "owned");
+      await mkdir(path.dirname(ownedBuildPath), { recursive: true });
+      await mkdir(path.dirname(foreignBuildPath), { recursive: true });
+      await writeFile(ownedBuildPath, "owned");
+      await writeFile(foreignBuildPath, "preserved");
 
       await redis.set(ownedKey, "runtime");
       await cleanupPlaywrightResources(plan);
@@ -77,6 +86,8 @@ describe("Playwright resource lifecycle", () => {
       await expect(access(mainTsconfigPath)).rejects.toThrow();
       await expect(access(adminTsconfigPath)).rejects.toThrow();
       await expect(access(environment.blobRoot)).rejects.toThrow();
+      await expect(access(ownedBuildPath)).rejects.toThrow();
+      await expect(readFile(foreignBuildPath, "utf8")).resolves.toBe("preserved");
       await expect(readFile(unownedSiblingPath, "utf8")).resolves.toBe(
         "preserved",
       );
@@ -91,6 +102,7 @@ describe("Playwright resource lifecycle", () => {
       await cleanupPlaywrightResources(plan).catch(() => undefined);
       await lifecycleVerifier.setup();
       await rm(unownedSiblingRoot, { recursive: true, force: true });
+      await rm(foreignBuildRoot, { recursive: true, force: true });
       await redis.quit();
     }
   });

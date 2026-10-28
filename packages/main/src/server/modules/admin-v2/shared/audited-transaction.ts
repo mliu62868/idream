@@ -9,9 +9,10 @@ import { prisma } from "@/server/lib/db";
 export async function auditedTransaction<T>(
   operation: string,
   callback: (tx: Prisma.TransactionClient) => Promise<T>,
+  options?: { timeout?: number },
 ) {
   try {
-    return await prisma.$transaction(callback);
+    return await prisma.$transaction(callback, options);
   } catch (error) {
     incrementCounter(
       "admin_audit_transaction_failure_total",

@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { ImageGeneratePayload } from "../contracts";
 import { resolveLocalBlobPath } from "../storage/local-blob";
@@ -8,6 +9,11 @@ export type ImageReferenceInput =
 
 /** The one capability hydration needs from a blob store. */
 export type ImageReferenceBlobStore = {
+  getSourceSnapshot?(input: { snapshotId: string }): Promise<Uint8Array>;
+  getPrivate?(input: { key: string; signal?: AbortSignal; maxBytes?: number }): Promise<
+    | { ok: true; data: { body: Uint8Array; contentType: string | null } }
+    | { ok: false; error: unknown }
+  >;
   signGetUrl(input: {
     key: string;
     expiresInSeconds: number;
@@ -35,6 +41,27 @@ export async function hydratedImageReferenceInputs(
   const requested = images ?? [];
   const hydrated = await Promise.all(
     requested.map(async (image) => {
+      if (image.contentSha256) {
+        if (image.sourceSnapshotId) {
+          if (!blob.getSourceSnapshot) throw new Error(`Pinned source snapshot cannot be read: ${image.assetId}`);
+          const bytes = await blob.getSourceSnapshot({ snapshotId: image.sourceSnapshotId });
+          if (bytes.byteLength > 64 * 1024 * 1024 || createHash("sha256").update(bytes).digest("hex") !== image.contentSha256) {
+            throw new Error(`Pinned source snapshot failed integrity verification: ${image.assetId}`);
+          }
+          const { url: _url, ...reference } = image;
+          return { ...reference, b64Json: Buffer.from(bytes).toString("base64") };
+        }
+        if (!image.storageKey || !blob.getPrivate) {
+          throw new Error(`Pinned source snapshot cannot be read: ${image.assetId}`);
+        }
+        const stored = await blob.getPrivate({ key: image.storageKey, signal: AbortSignal.timeout(10_000), maxBytes: 64 * 1024 * 1024 });
+        if (!stored.ok || createHash("sha256").update(stored.data.body).digest("hex") !== image.contentSha256) {
+          throw new Error(`Pinned source snapshot failed integrity verification: ${image.assetId}`);
+        }
+        // Never hand the provider a mutable URL after verifying different bytes.
+        const { url: _url, ...reference } = image;
+        return { ...reference, b64Json: Buffer.from(stored.data.body).toString("base64") };
+      }
       if (image.b64Json || isAbsoluteUrl(image.url)) return image;
       if (!image.storageKey) return image;
       const local = await localBlobReference(image);

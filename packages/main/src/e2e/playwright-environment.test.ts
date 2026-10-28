@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { ChildProcess, type SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
@@ -141,16 +142,16 @@ describe("managed Playwright environment", () => {
     expect(servers[2]?.env.CHAT_SERVICE_URL).toBe(first.chatBaseURL);
     expect(servers[2]?.env.BLOB_ROOT).toBe(first.blobRoot);
     expect(servers[2]?.env.IDREAM_NEXT_DIST_DIR).toBe(
-      ".next/playwright-main-3110-a1b2c3d4",
+      ".next-playwright/playwright-main-3110-a1b2c3d4",
     );
     expect(servers[2]?.env.IDREAM_NEXT_TSCONFIG).toBe(
-      ".next/playwright-config-main-3110-a1b2c3d4/tsconfig.json",
+      ".next-playwright/playwright-config-main-3110-a1b2c3d4/tsconfig.json",
     );
     expect(servers[3]?.env.IDREAM_NEXT_DIST_DIR).toBe(
-      ".next/playwright-admin-3111-a1b2c3d4",
+      ".next-playwright/playwright-admin-3111-a1b2c3d4",
     );
     expect(servers[3]?.env.IDREAM_NEXT_TSCONFIG).toBe(
-      ".next/playwright-config-admin-3111-a1b2c3d4/tsconfig.json",
+      ".next-playwright/playwright-config-admin-3111-a1b2c3d4/tsconfig.json",
     );
     expect(servers[3]?.env.BLOB_ROOT).toBe(first.blobRoot);
     for (const [index, mode] of [[4, "image"], [5, "video"]] as const) {
@@ -383,6 +384,48 @@ describe("managed Playwright environment", () => {
     expect(first.mainTsconfigPath).not.toBe(third.mainTsconfigPath);
   });
 
+  it("preserves an active run's build, config, and lifecycle receipt when Next cleans the default build", async () => {
+    const { recursiveDeleteSyncWithAsyncRetries } = createRequire(import.meta.url)("next/dist/lib/recursive-delete") as typeof import("next/dist/lib/recursive-delete");
+    const environment = resolvePlaywrightEnvironment({ PW_BASE_URL: "http://127.0.0.1:3110", PW_RUN_ID: "a1b2c3d4" });
+    const root = await mkdtemp(path.join(tmpdir(), "idream-next-isolation-"));
+    try {
+      for (const [name, distDir, configPath] of [
+        ["main", environment.mainDistDir, environment.mainTsconfigPath],
+        ["admin", environment.adminDistDir, environment.adminTsconfigPath],
+      ] as const) {
+        const pkg = path.join(root, name);
+        const defaultDist = path.join(pkg, ".next");
+        const chunk = path.join(pkg, distDir, "server/chunks/ssr/active.js");
+        const config = path.join(pkg, configPath);
+        const receipt = path.join(pkg, environment.lifecycleReceiptPath);
+        for (const file of [path.join(defaultDist, "server/old.js"), chunk, config, receipt]) {
+          await mkdir(path.dirname(file), { recursive: true });
+          await writeFile(file, "active");
+        }
+        // This is the same cleaner and exclusion Next invokes for a normal build.
+        await recursiveDeleteSyncWithAsyncRetries(defaultDist, /^(cache|dev|lock)/);
+        await expect(access(path.join(defaultDist, "server/old.js"))).rejects.toThrow();
+        for (const file of [chunk, config, receipt]) await expect(access(file)).resolves.toBeUndefined();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses cleanup paths belonging to a default build or another run", () => {
+    const plan = createPlaywrightCleanupPlan(resolvePlaywrightEnvironment({ PW_BASE_URL: "http://127.0.0.1:3110", PW_RUN_ID: "a1b2c3d4" }));
+    for (const override of [
+      { mainDistDir: ".next" },
+      { mainDistDir: ".next/playwright-main-3110-a1b2c3d4" },
+      { adminDistDir: ".next-playwright/playwright-admin-3111-deadbeef" },
+      { mainTsconfigPath: ".next-playwright/playwright-config-main-3110-deadbeef/tsconfig.json" },
+      { adminTsconfigPath: "../admin/tsconfig.json" },
+      { lifecycleReceiptPath: ".next-playwright/playwright-lifecycle-main-3110-deadbeef/cleanup.json" },
+    ]) {
+      expect(() => assertPlaywrightCleanupPlan({ ...plan, ...override })).toThrow("Next.js resources do not match this run");
+    }
+  });
+
   it("accepts bracketed IPv6 loopback origins and dedicated Redis", () => {
     const environment = resolvePlaywrightEnvironment({
       TEST_DATABASE_URL: "postgresql://postgres:postgres@[::1]:5433/idream_test",
@@ -494,8 +537,8 @@ describe("Playwright built Next lifecycle", () => {
       BULLMQ_PREFIX: h.environment.bullmqPrefix,
       PW_RUN_ID: h.environment.runId,
       IDREAM_SOURCE_REVISION: `idream-worktree-${"c".repeat(64)}`,
-      IDREAM_NEXT_DIST_DIR: `.next/playwright-${name}-${port}-a1b2c3d4`,
-      IDREAM_NEXT_TSCONFIG: `.next/playwright-config-${name}-${port}-a1b2c3d4/tsconfig.json`,
+      IDREAM_NEXT_DIST_DIR: `.next-playwright/playwright-${name}-${port}-a1b2c3d4`,
+      IDREAM_NEXT_TSCONFIG: `.next-playwright/playwright-config-${name}-${port}-a1b2c3d4/tsconfig.json`,
     });
     expect(h.env.NODE_ENV).toBe("development");
     expect(h.env.IDREAM_NEXT_DEVELOPMENT).toBe("1");
@@ -601,7 +644,7 @@ describe("Playwright built Next lifecycle", () => {
     { IDREAM_SOURCE_REVISION: "" },
     { IDREAM_NEXT_DIST_DIR: ".next" },
     { IDREAM_NEXT_TSCONFIG: "tsconfig.json" },
-    { IDREAM_NEXT_DIST_DIR: ".next/playwright-admin-3111-a1b2c3d4" },
+    { IDREAM_NEXT_DIST_DIR: ".next-playwright/playwright-admin-3111-a1b2c3d4" },
   ])("rejects foreign authority %j before any build", async (override) => {
     const h = harness();
     await expect(runPlaywrightNextServer(h.name, h.port, {

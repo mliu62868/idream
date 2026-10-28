@@ -24,7 +24,7 @@ import {
   PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION,
 } from "@/server/modules/ourdream/public-catalog-qualification";
 import { directCharacterAudienceWhere } from "@/server/modules/ourdream/public-content-audience";
-import { assertMediaEnhancementSource } from "@/server/modules/ourdream/media-enhancement-source";
+import { assertFrozenMediaEnhancementSource, assertMediaEnhancementSource } from "@/server/modules/ourdream/media-enhancement-source";
 import { lockCharacterMediaAssetAuthorities } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 
 const LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION_V1 =
@@ -351,7 +351,10 @@ export async function buildGenerationAttemptQueueInput(
     }
     const sourceId = stringFromRecord(jsonRecord(job.controls), "sourceImageAssetId");
     await lockCharacterMediaAssetAuthorities(input.db, sourceId ? [sourceId] : []);
-    await assertMediaEnhancementSource(job, input.db);
+    const controls = jsonRecord(job.controls);
+    if (Array.isArray(controls.referenceSnapshots)) {
+      await assertFrozenMediaEnhancementSource(job, input.db);
+    } else await assertMediaEnhancementSource(job, input.db);
   } else {
     await assertGenerationCharacterDispatchable(input.db, job);
   }
@@ -383,7 +386,7 @@ export async function buildGenerationAttemptQueueInput(
     }
     authorizedComicSourceImageAssetId = grant.comicGrant.mediaAssetId;
   }
-  const resolvedReferenceImages =
+  let resolvedReferenceImages =
     job.mode === "image" || job.mode === "video"
       ? await imageReferenceInputsForGenerationJob({
           userId: job.userId,
@@ -396,6 +399,34 @@ export async function buildGenerationAttemptQueueInput(
           db: input.db,
         })
       : [];
+  const sourceSnapshot = jsonRecord(controls.sourceSnapshot);
+  if (job.mode === "video" && Object.keys(sourceSnapshot).length) {
+    const snapshotId = stringFromRecord(sourceSnapshot, "snapshotId");
+    const sha256 = stringFromRecord(sourceSnapshot, "sha256");
+    const sourceId = stringFromRecord(sourceSnapshot, "sourceImageAssetId");
+    if (sourceSnapshot.version !== 1 || !snapshotId || !sha256 || !/^[a-f0-9]{64}$/.test(sha256) || sourceId !== requestedSourceImageAssetId) {
+      throw Errors.conflict("Generation source snapshot authority is invalid");
+    }
+    const snapshot = await input.db.generationSourceSnapshot.findFirst({ where: { id: snapshotId, userId: job.userId, sha256 }, select: { id: true, contentType: true } });
+    if (!snapshot) throw Errors.conflict("Generation source snapshot is unavailable");
+    resolvedReferenceImages = resolvedReferenceImages.map(image => image.assetId === sourceId && image.role === "source_image"
+      ? { ...image, storageKey: undefined, url: undefined, b64Json: undefined, sourceSnapshotId: snapshot.id, contentSha256: sha256, contentType: snapshot.contentType }
+      : image);
+  }
+  if (Array.isArray(controls.referenceSnapshots)) {
+    const pins = controls.referenceSnapshots.map(jsonRecord);
+    if (pins.length !== resolvedReferenceImages.length) throw Errors.conflict("Generation reference snapshot authority is incomplete");
+    const ids = [...new Set(pins.map(pin => stringFromRecord(pin, "snapshotId")).filter((id): id is string => Boolean(id)))];
+    const stored = await input.db.generationSourceSnapshot.findMany({ where: { id: { in: ids }, userId: job.userId }, select: { id: true, sha256: true, sizeBytes: true, contentType: true } });
+    const byId = new Map(stored.map(snapshot => [snapshot.id, snapshot]));
+    resolvedReferenceImages = resolvedReferenceImages.map((image, index) => {
+      const pin = pins[index]!;
+      const snapshotId = stringFromRecord(pin, "snapshotId");
+      const snapshot = snapshotId ? byId.get(snapshotId) : undefined;
+      if (!snapshot || pin.assetId !== image.assetId || pin.role !== image.role || pin.sha256 !== snapshot.sha256 || pin.sizeBytes !== snapshot.sizeBytes || pin.contentType !== snapshot.contentType) throw Errors.conflict("Generation reference snapshot authority is invalid");
+      return { ...image, storageKey: undefined, url: undefined, b64Json: undefined, sourceSnapshotId: snapshot.id, contentSha256: snapshot.sha256, contentType: snapshot.contentType };
+    });
+  }
   const manifestEntries = referenceManifestEntries(job.referenceManifest);
   const manifestSourceImageAssetIds = [
     ...new Set(manifestEntries.flatMap((entry) =>

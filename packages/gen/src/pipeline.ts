@@ -205,6 +205,7 @@ export async function processImageGenerate(
     maxAttempts: deps.maxAttempts,
     acknowledgeTerminalRecord: deps.acknowledgeTerminalRecord,
     recordTransportExecution: deps.recordTransportExecution,
+    readSourceSnapshot: deps.readSourceSnapshot,
   });
 }
 
@@ -352,6 +353,7 @@ export async function processVideoGenerate(
     maxAttempts: deps.maxAttempts,
     acknowledgeTerminalRecord: deps.acknowledgeTerminalRecord,
     recordTransportExecution: deps.recordTransportExecution,
+    readSourceSnapshot: deps.readSourceSnapshot,
   });
 }
 

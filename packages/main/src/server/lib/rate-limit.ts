@@ -41,6 +41,8 @@ export const RATE_LIMITS = {
   characterQuickStart: { limit: 20, windowMs: 60 * 60_000 },
   // 角色试听：匿名可听；每个声音版本只合成一次，之后是 Blob 读。挡的是刷接口。
   voiceSample: { limit: 60, windowMs: 60 * 60_000 },
+  // Remote image import downloads and stores untrusted bytes for an account.
+  mediaImport: { limit: 30, windowMs: 60 * 60_000 },
 } as const satisfies Record<string, RateLimitPolicy>;
 
 export type RateLimitScope = keyof typeof RATE_LIMITS;

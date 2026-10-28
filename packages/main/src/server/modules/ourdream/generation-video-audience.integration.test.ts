@@ -1,5 +1,6 @@
 import { generationTerminalRecordChecksum } from "@idream/shared/contracts/durable-server";
 import { randomUUID } from "node:crypto";
+import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { generationProviderIdempotencyKey, generationTerminalFinalizeDedupeKey, idempotencyKeys, MAIN_QUEUES, videoGeneratePayloadSchema } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
@@ -13,6 +14,7 @@ import { generationJobSchema } from "./generation-request-schema";
 import { quoteGenerationRetry, resolveGenerationRetryTarget, retryGenerationJobForUser } from "./generation-job-retry";
 import { dispatchPendingGenerationTerminalRecords, ingestGenerationTerminalRecord } from "@/server/ai/generation-terminal-record-ingest";
 import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
+import { providers } from "@/server/providers";
 
 const prefix = `video-audience-${randomUUID()}`;
 const ownerId = `${prefix}-owner`;
@@ -47,10 +49,15 @@ beforeAll(async () => {
   }
   await prisma.character.create({ data: { id: characterId, creatorId: ownerId, source: "user", name: "Owner's private Character", age: 28, description: "A private Character with a confirmed image", visibility: "private", status: "approved", appearance: {}, advancedDetails: {} } });
   await prisma.mediaAsset.create({ data: { id: sourceAssetId, ownerId, characterId, type: "image", url: `/user-content/${sourceAssetId}.webp`, storageKey: `${sourceAssetId}.webp`, contentType: "image/webp", visibility: "private", safetyStatus: "passed", metadata: {} } });
+  const pixels = await sharp({ create: { width: 512, height: 512, channels: 3, background: "#846432" } }).webp().toBuffer();
+  await providers.blob.putPrivate({ key: `${sourceAssetId}.webp`, body: pixels, contentType: "image/webp" });
+  await providers.blob.putPrivate({ key: `${prefix}-unlisted-image.webp`, body: pixels, contentType: "image/webp" });
   await prisma.character.update({ where: { id: characterId }, data: { imageAssetId: sourceAssetId } });
 });
 
 afterAll(async () => {
+  await providers.blob.delete({ key: `${sourceAssetId}.webp` });
+  await providers.blob.delete({ key: `${prefix}-unlisted-image.webp` });
   const jobs = await prisma.generationJob.findMany({ where: { userId: { in: [ownerId, otherId] } }, select: { id: true } });
   const jobIds = jobs.map((job) => job.id);
   const attempts = await prisma.generationAttempt.findMany({ where: { requestId: { in: jobIds } } });

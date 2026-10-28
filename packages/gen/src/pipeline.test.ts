@@ -160,6 +160,7 @@ function makeProviders(over: Partial<GenProviders> = {}): GenProviders {
   };
 }
 
+const fixtureSnapshots = new Map<string, Uint8Array>();
 function makePipelineDeps(
   providers: GenProviders,
   overrides: Partial<Omit<PipelineDeps, "providers">> = {},
@@ -169,6 +170,11 @@ function makePipelineDeps(
     probeVideoMedia: vi.fn(async () => ({ width: 768, height: 1152, durationSeconds: 6, framesPerSecond: 24, frameCount: 144, hasAudio: true })),
     acknowledgeTerminalRecord: vi.fn(async () => {}),
     recordTransportExecution: vi.fn(async () => {}),
+    readSourceSnapshot: async ({ snapshotId }) => {
+      const bytes = fixtureSnapshots.get(snapshotId);
+      if (!bytes) throw new Error(`Missing fixture snapshot ${snapshotId}`);
+      return bytes;
+    },
     ...overrides,
   };
 }
@@ -321,17 +327,17 @@ describe("processImageGenerate", () => {
     expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({ terminalRecord: expect.objectContaining({ outcome: "failed", providerInvoked: false, usage: {} }) }));
   });
 
-  it("freezes remotely read source bytes so the provider cannot reread a changed URL", async () => {
+  it("does not reread a source URL when a frozen snapshot is available", async () => {
     const source = patternedPng(4, 5);
     const payload = enhancePayload(source);
-    payload.referenceImages = [{ assetId: "source-1", role: "source_image", url: "https://storage.example/source.png", storageKey: "original.png" }];
+    Object.assign(payload.referenceImages![0]!, { url: "https://storage.example/source.png", storageKey: "original.png" });
     globalThis.fetch = vi.fn(async () => new Response(source));
     const providers = makeProviders({ blob: makeMemoryBlob() });
     vi.mocked(providers.image.generate).mockResolvedValue({ ok: true, data: { assets: [{ body: patternedPng(8, 10), contentType: "image/png", width: 8, height: 10 }] } });
 
     await processImageGenerate(payload, makePipelineDeps(providers));
 
-    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
     const reference = vi.mocked(providers.image.generate).mock.calls[0]![0].referenceImages![0]!;
     expect(reference.b64Json).toBe(Buffer.from(source).toString("base64"));
     expect(reference).not.toHaveProperty("url");
@@ -762,7 +768,10 @@ describe("processImageGenerate", () => {
     expect(acknowledgeTerminalRecord).toHaveBeenCalledTimes(2);
   });
 
-  it("hydrates reference image storage keys before calling the image provider", async () => {
+  it("hydrates frozen reference bytes before calling the image provider", async () => {
+    const bytes = Buffer.from("anchor fixture");
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    fixtureSnapshots.set(digest, bytes);
     const imageGenerate = vi.fn(async () => ({
       ok: true as const,
       data: {
@@ -801,7 +810,8 @@ describe("processImageGenerate", () => {
           {
             assetId: "anchor-1",
             role: "identity_anchor",
-            storageKey: "identity/anchor-1.webp",
+            sourceSnapshotId: digest,
+            contentSha256: digest,
             contentType: "image/webp",
             width: 1024,
             height: 1280,
@@ -818,8 +828,8 @@ describe("processImageGenerate", () => {
           expect.objectContaining({
             assetId: "anchor-1",
             role: "identity_anchor",
-            url: "https://blob.test/identity%2Fanchor-1.webp",
-            storageKey: "identity/anchor-1.webp",
+            b64Json: bytes.toString("base64"),
+            sourceSnapshotId: digest,
             weight: 1.25,
           }),
         ],
@@ -881,19 +891,21 @@ describe("processImageGenerate", () => {
             {
               assetId: "anchor-unavailable",
               role: "identity_anchor",
-              storageKey: "identity/unavailable.webp",
+              sourceSnapshotId: "unavailable",
+              contentSha256: "0".repeat(64),
             },
             {
               assetId: "anchor-available",
               role: "identity_reference",
-              storageKey: "identity/available.webp",
+              sourceSnapshotId: "available",
+              contentSha256: "0".repeat(64),
             },
           ],
         }),
         deps,
       ),
     ).rejects.toThrow(
-      "Pinned image references could not be hydrated: anchor-unavailable",
+      "Missing fixture snapshot unavailable",
     );
     expect(imageGenerate).not.toHaveBeenCalled();
     expect(deps.acknowledgeTerminalRecord).not.toHaveBeenCalled();
@@ -1464,13 +1476,15 @@ describe("processImageGenerate", () => {
 });
 
 function enhancePayload(source: Uint8Array): ImageGeneratePayload {
+  const digest = createHash("sha256").update(source).digest("hex");
+  fixtureSnapshots.set(digest, source);
   return imagePayload({
     count: 1, model: "realesrgan-x2plus", controls: {
       workflowKey: "realesrgan-x2plus-enhance", workflowVersion: 1,
       width: 8, height: 10, sourceImageAssetId: "source-1",
       enhancement: { sourceMediaId: "source-1", sourceSha256: createHash("sha256").update(source).digest("hex"), sourceWidth: 4, sourceHeight: 5, scale: 2 },
     },
-    referenceImages: [{ assetId: "source-1", role: "source_image", b64Json: Buffer.from(source).toString("base64"), width: 900, height: 900 }],
+    referenceImages: [{ assetId: "source-1", role: "source_image", sourceSnapshotId: digest, contentSha256: digest, width: 900, height: 900 }],
   });
 }
 
@@ -1683,19 +1697,32 @@ describe("processVideoGenerate", () => {
 
   it("passes the pinned source image to the video provider", async () => {
     const providers = makeProviders();
+    const bytes = Buffer.from("image");
     const referenceImages = [{
       assetId: "source-1",
       role: "source_image" as const,
-      b64Json: "aW1hZ2U=",
+      sourceSnapshotId: "snapshot-1",
+      contentSha256: createHash("sha256").update(bytes).digest("hex"),
       contentType: "image/webp",
     }];
 
-    await processVideoGenerate(videoPayload({ referenceImages }), makePipelineDeps(providers));
+    await processVideoGenerate(videoPayload({ referenceImages }), makePipelineDeps(providers, { readSourceSnapshot: async () => bytes }));
 
     expect(providers.video.generate).toHaveBeenCalledWith(
-      expect.objectContaining({ referenceImages }),
+      expect.objectContaining({ referenceImages: [expect.objectContaining({ ...referenceImages[0], b64Json: bytes.toString("base64") })] }),
     );
   });
+
+  it.each([{ url: "http://127.0.0.1/private" }, { storageKey: "legacy.png" }, { b64Json: "aW1hZ2U=" }])("fails an exhausted legacy video source before provider invocation: %o", async reference => {
+    const providers = makeProviders({ blob: makeMemoryBlob() });
+    const deps = makePipelineDeps(providers, { attemptsMade: 2, maxAttempts: 3 });
+    await processVideoGenerate(videoPayload({ referenceImages: [{ assetId: "legacy", role: "source_image", ...reference }] }), deps);
+    expect(providers.video.generate).not.toHaveBeenCalled();
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({ terminalRecord: expect.objectContaining({
+      outcome: "failed", providerInvoked: false, error: expect.objectContaining({ code: "preparation_failed", message: expect.stringContaining("Legacy reference image was not frozen") }),
+    }) }));
+  });
+
 
   it("fails closed when a successful provider response has no video bytes or URL", async () => {
     const providers = makeProviders({

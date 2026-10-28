@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
@@ -12,16 +13,23 @@ import { getVoiceDefaultSettings } from "@/server/modules/voice-defaults";
 import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
 import * as voiceFactory from "@/server/providers/voice/factory";
 import * as composition from "./video-composition";
+import * as remoteImage from "@/server/lib/safe-remote-image";
 import * as jobReads from "./generation-job-read-model";
 import { PRODUCTION_REDGRAFT_LTX25_VIDEO_OPTIONS_PROFILE } from "@/server/modules/generation/production-video-profile";
 import * as dispatchAuthority from "@/server/modules/generation/generation-attempt-authority";
-import { CHAT_TO_MAIN_EVENTS, REDGRAFT_VIDEO_OPTIONS, videoSequenceDtoSchema } from "@idream/shared/contracts";
+import { CHAT_TO_MAIN_EVENTS, REDGRAFT_VIDEO_OPTIONS, videoSequenceDtoSchema, idempotencyKeys } from "@idream/shared/contracts";
+import { jobQueue } from "@/server/jobs/queue";
+import { dispatchPendingGenerationTerminalRecords, ingestGenerationTerminalRecord } from "@/server/ai/generation-terminal-record-ingest";
+import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
+import { quoteAuthorityFor } from "./generation-quote";
+import { quoteGenerationRetry, resolveGenerationRetryTarget, retryGenerationJobForUser } from "./generation-job-retry";
 import { ACCOUNT_DELETION_GRACE_PERIOD_MS, accountDeletionSubjectHash, dispatchPendingAccountDeletionBlobDeletes, requestAccountDeletion } from "@/server/account-deletion-authority";
 import { ACCOUNT_ERASURE_COMPLETION_V2_SOURCE_SERVICE, applyChatEvent } from "@/processes/event-consumer";
 import { api, createCharacter, createMedia, createUser, dreamcoinBalance, expectError, expectOk, generationTestProviders, grantCoins, purgeTestData, runQueuedGenerationJobs } from "@/server/test/helpers";
 import { videoFixture, narrationFixture } from "@/server/test/video-fixtures";
 import { advanceVideoSequences } from "./video-sequence";
 import { reconcileUnknownGenerationRequest } from "@/server/modules/admin-v2/jobs/unknown-reconciliation";
+import { GET as getSourceSnapshot } from "@/app/api/internal/generation/source-snapshot/route";
 
 const P = "zt-video-sequence-";
 const profileId = `${P}profile`, sourceKeys: string[] = [], erasureUserIds: string[] = [];
@@ -106,6 +114,437 @@ async function acknowledgeSequenceAccountDeletion() {
 }
 
 describe("ordered video Requests, ledger settlement and packaging", () => {
+  it("limits concurrent Blob quote verification and releases slots after failure", async () => {
+    const entered = barrier(), release = barrier();
+    const get = providers.blob.getPrivate!.bind(providers.blob);
+    let reads = 0;
+    vi.spyOn(providers.blob, "getPrivate").mockImplementation(async input => {
+      reads++;
+      if (reads === 2) entered.release();
+      await release.promise;
+      return get(input);
+    });
+    const makeQuote = () => api("POST", "generation/video-sequences/quote", { userId, ageGate: true, body: body(1) });
+    const first = makeQuote(), second = makeQuote();
+    try {
+      await entered.promise;
+      expectError(await makeQuote(), 503, "unavailable");
+    } finally { release.release(); }
+    expectOk(await first); expectOk(await second);
+    expectOk(await makeQuote());
+  });
+  it("freezes accepted source pixels for every scene even if the original Blob changes", async () => {
+    const character = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
+    const source = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: character.imageAssetId! } });
+    const original = await providers.blob.getPrivate!({ key: source.storageKey! });
+    if (!original.ok) throw new Error("Fixture source missing");
+    const native = await mockedNativeSuccess();
+    const { sequence } = await create(body(2));
+    const jobs = await prisma.generationJob.findMany({ where: { sourceId: { startsWith: `${sequence.id}:` } }, orderBy: { sourceId: "asc" } });
+    expect(jobs).toHaveLength(2);
+    const pins = jobs.map(job => (job.controls as { sourceSnapshot: { snapshotId: string } }).sourceSnapshot.snapshotId);
+    expect(pins[0]).toBeTruthy(); expect(pins[0]).toBe(pins[1]);
+    await providers.blob.putPrivate({ key: source.storageKey!, body: await sharp({ create: { width: 512, height: 512, channels: 3, background: "#123456" } }).png().toBuffer(), contentType: "image/png" });
+    const result = await finish(sequence.id, 2);
+    expect(result.status).toBe("completed");
+    expect(native).toHaveBeenCalledTimes(2);
+    for (const [input] of native.mock.calls) {
+      expect(Buffer.from(input.referenceImages![0]!.b64Json!, "base64")).toEqual(Buffer.from(original.data.body));
+      expect(input.referenceImages![0]!.url).toBeUndefined();
+    }
+    expect(await prisma.generationSourceSnapshot.count({ where: { userId } })).toBe(1);
+  });
+
+  it("freezes external URL bytes at admission even when the URL changes after quote and submission", async () => {
+    const character = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
+    const source = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: character.imageAssetId! } });
+    await prisma.mediaAsset.update({ where: { id: source.id }, data: { storageKey: null, url: "https://example.test/source.png" } });
+    const makeImage = (color: string) => sharp({ create: { width: 512, height: 512, channels: 3, background: color } }).png().toBuffer();
+    let current = await makeImage("#112233");
+    vi.spyOn(remoteImage, "readRemoteImage").mockImplementation(async () => ({ bytes: current, contentType: "image/png" }));
+    const native = await mockedNativeSuccess();
+    const request = body(1), price = await quote(request);
+    current = await makeImage("#445566");
+    const acceptedBytes = current;
+    const response = await api("POST", "generation/video-sequences", { userId, ageGate: true, headers: { "idempotency-key": randomUUID() }, body: { ...request, quoteFingerprint: price.fingerprint } });
+    expectOk(response, 202);
+    current = await makeImage("#778899");
+    const result = await finish(response.data.sequence.id, 1);
+    expect(result.status).toBe("completed");
+    expect(Buffer.from(native.mock.calls[0]![0].referenceImages![0]!.b64Json!, "base64")).toEqual(acceptedBytes);
+  });
+
+  it("restricts frozen bytes to the current active attempt and fails closed on corruption", async () => {
+    const native = await mockedNativeSuccess();
+    const { sequence } = await create(body(1));
+    const jobId = sequence.scenes[0]!.job.id;
+    const job = await prisma.generationJob.findUniqueOrThrow({ where: { id: jobId } });
+    const snapshotId = (job.controls as { sourceSnapshot: { snapshotId: string } }).sourceSnapshot.snapshotId;
+    const attempt = await prisma.generationAttempt.findFirstOrThrow({ where: { requestId: jobId } });
+    const request = (id: string, token = env.INTERNAL_TOKEN) => new Request(`http://localhost/api/internal/generation/source-snapshot?snapshotId=${snapshotId}&jobId=${jobId}&attemptId=${id}`, { headers: { "x-internal-token": token } });
+    expect((await getSourceSnapshot(request(attempt.id, "wrong"))).status).toBe(401);
+    expect((await getSourceSnapshot(request("other-attempt"))).status).toBe(404);
+    expect((await getSourceSnapshot(request(attempt.id))).status).toBe(200);
+    const newer = await prisma.generationAttempt.create({ data: { requestId: jobId, attemptNo: attempt.attemptNo + 1, status: "queued" } });
+    expect((await getSourceSnapshot(request(attempt.id))).status).toBe(404);
+    expect((await getSourceSnapshot(request(newer.id))).status).toBe(200);
+    await prisma.generationAttempt.delete({ where: { id: newer.id } });
+    const queued = await jobQueue.getByDedupeKey("ai.video.generate", idempotencyKeys.generationAttempt(jobId, 1));
+    if (!queued) throw new Error("Missing queued fixture");
+    await prisma.generationSourceSnapshotChunk.update({ where: { snapshotId_ordinal: { snapshotId, ordinal: 0 } }, data: { bytes: new Uint8Array([1, 2, 3]) } });
+    await expect(runQueuedGenerationJobs(10)).rejects.toThrow("Source snapshot truncated");
+    expect(native).not.toHaveBeenCalled();
+    const genPath = new URL("../../../../../gen/src/pipeline.ts", import.meta.url).href;
+    const gen = await import(genPath);
+    await gen.processVideoGenerate(queued.payload, {
+      providers: await generationTestProviders(), attemptsMade: queued.maxAttempts - 1, maxAttempts: queued.maxAttempts,
+      readSourceSnapshot: async () => new Uint8Array(await (await getSourceSnapshot(request(attempt.id))).arrayBuffer()),
+      acknowledgeTerminalRecord: async (record: Parameters<typeof ingestGenerationTerminalRecord>[0]) => { await ingestGenerationTerminalRecord(record); },
+      recordTransportExecution: async () => { throw new Error("Unexpected provider entry"); },
+    });
+    await dispatchPendingGenerationTerminalRecords();
+    await drainLocalAiPipeline(); await advanceVideoSequences();
+    expect(native).not.toHaveBeenCalled();
+    expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: jobId } })).toMatchObject({ status: "failed", errorCode: "preparation_failed" });
+    expect(await dreamcoinBalance(userId)).toBe(1000);
+    expect(await prisma.generationSettlementLink.count({ where: { requestId: jobId, kind: "refund" } })).toBe(1);
+  });
+
+  it.each([{ url: "http://127.0.0.1/private" }, { storageKey: "legacy.png" }])("refunds a legacy attempt and freezes the source on user retry: %o", async reference => {
+    const native = await mockedNativeSuccess();
+    const { sequence } = await create(body(1));
+    const jobId = sequence.scenes[0]!.job.id;
+    const queued = await jobQueue.getByDedupeKey("ai.video.generate", idempotencyKeys.generationAttempt(jobId, 1));
+    if (!queued) throw new Error("Missing queued fixture");
+    const payload = { ...(queued.payload as Record<string, unknown>), referenceImages: [{ assetId: "legacy", role: "source_image", ...reference }] };
+    const originalJob = await prisma.generationJob.findUniqueOrThrow({ where: { id: jobId } });
+    const { sourceSnapshot: _pin, referenceSnapshots: _references, ...legacyControls } = originalJob.controls as Record<string, unknown>;
+    await prisma.generationJob.update({ where: { id: jobId }, data: { controls: legacyControls as never } });
+    await jobQueue.removeByDedupeKey("ai.video.generate", idempotencyKeys.generationAttempt(jobId, 1));
+    const genPath = new URL("../../../../../gen/src/pipeline.ts", import.meta.url).href;
+    const gen = await import(genPath);
+    await gen.processVideoGenerate(payload, {
+      providers: await generationTestProviders(), attemptsMade: queued.maxAttempts - 1, maxAttempts: queued.maxAttempts,
+      acknowledgeTerminalRecord: async (record: Parameters<typeof ingestGenerationTerminalRecord>[0]) => { await ingestGenerationTerminalRecord(record); },
+      recordTransportExecution: async () => { throw new Error("Unexpected provider entry"); },
+    });
+    await dispatchPendingGenerationTerminalRecords();
+    await drainLocalAiPipeline(); await advanceVideoSequences();
+    expect(native).not.toHaveBeenCalled();
+    expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: jobId } })).toMatchObject({ status: "failed", errorCode: "preparation_failed" });
+    expect(await dreamcoinBalance(userId)).toBe(1000);
+    expect(await prisma.generationSettlementLink.count({ where: { requestId: jobId, kind: "refund" } })).toBe(1);
+    const character = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
+    const source = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: character.imageAssetId! } });
+    const retryBytes = await sharp({ create: { width: 512, height: 512, channels: 3, background: "#456789" } }).png().toBuffer();
+    await providers.blob.putPrivate({ key: source.storageKey!, body: retryBytes, contentType: "image/png" });
+    const retryInput = { userId, generationJobId: jobId, idempotencyKey: randomUUID() };
+    const target = await resolveGenerationRetryTarget(retryInput);
+    if (target.kind !== "retryable") throw new Error("Legacy failure should be retryable");
+    const { quote: retryQuote } = await quoteGenerationRetry(retryInput);
+    const retry = await retryGenerationJobForUser({ ...retryInput, job: target.job, quoteAuthority: quoteAuthorityFor(retryQuote, 1)! });
+    expect(retry.controls).toMatchObject({ sourceSnapshot: { version: 1 } });
+    await providers.blob.putPrivate({ key: source.storageKey!, body: Buffer.from("replaced after retry"), contentType: "image/png" });
+    await runQueuedGenerationJobs(10);
+    expect(native).toHaveBeenCalledTimes(1);
+    expect(Buffer.from(native.mock.calls[0]![0].referenceImages![0]!.b64Json!, "base64")).toEqual(retryBytes);
+  });
+
+  it.each(["corrupt", "missing"] as const)("rejects a %s source before quoting or reserving coins", async state => {
+    const request = body(1);
+    const price = await quote(request);
+    const character = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
+    const source = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: character.imageAssetId! } });
+    if (!source.storageKey) throw new Error("Test source has no blob");
+    if (state === "missing") await providers.blob.delete({ key: source.storageKey });
+    else await providers.blob.putPrivate({ key: source.storageKey, body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/ak9zP8AAAAASUVORK5CYII=", "base64"), contentType: "image/png" });
+    const balance = await dreamcoinBalance(userId);
+    const quoteAfter = await api("POST", "generation/video-sequences/quote", { userId, ageGate: true, body: request });
+    expectError(quoteAfter, 409, "conflict");
+    const submitted = await api("POST", "generation/video-sequences", { userId, ageGate: true,
+      headers: { "idempotency-key": randomUUID() }, body: { ...request, quoteFingerprint: price.fingerprint } });
+    expectError(submitted, 409, "conflict");
+    expect(await prisma.videoSequence.count({ where: { userId } })).toBe(0);
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(0);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(0);
+    expect(await dreamcoinBalance(userId)).toBe(balance);
+  });
+
+  it("rechecks source bytes inside admission after a successful quote, without leaving a charge", async () => {
+    const request = body(1), price = await quote(request), balance = await dreamcoinBalance(userId);
+    const get = providers.blob.getPrivate!.bind(providers.blob);
+    let reads = 0;
+    vi.spyOn(providers.blob, "getPrivate").mockImplementation(async input => {
+      reads += 1;
+      if (reads === 1) return get(input);
+      return { ok: true, data: { body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/ak9zP8AAAAASUVORK5CYII=", "base64"), contentType: "image/png" } };
+    });
+    const submitted = await api("POST", "generation/video-sequences", { userId, ageGate: true,
+      headers: { "idempotency-key": randomUUID() }, body: { ...request, quoteFingerprint: price.fingerprint } });
+    expectError(submitted, 409, "conflict");
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(await prisma.videoSequence.count({ where: { userId } })).toBe(0);
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(0);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(0);
+    expect(await dreamcoinBalance(userId)).toBe(balance);
+  });
+
+  it.each([{ width: 6400, allowed: true }, { width: 6401, allowed: false }])("honors the 40M pixel source limit (width $width)", async ({ width, allowed }) => {
+    const character = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
+    const source = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: character.imageAssetId! } });
+    if (!source.storageKey) throw new Error("Test source has no blob");
+    const bytes = await sharp({ create: { width, height: 6250, channels: 3, background: "#83919f" } }).png().toBuffer();
+    await providers.blob.putPrivate({ key: source.storageKey, body: bytes, contentType: "image/png" });
+    const response = await api("POST", "generation/video-sequences/quote", { userId, ageGate: true, body: body(1) });
+    if (allowed) expectOk(response); else expectError(response, 409, "conflict");
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(0);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(0);
+  });
+
+  it("rejects decodable SVG source bytes before charging for a video", async () => {
+    const character = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
+    const source = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: character.imageAssetId! } });
+    if (!source.storageKey) throw new Error("Test source has no blob");
+    await providers.blob.putPrivate({ key: source.storageKey, body: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="red"/></svg>'), contentType: "image/svg+xml" });
+    const response = await api("POST", "generation/video-sequences/quote", { userId, ageGate: true, body: body(1) });
+    expectError(response, 409, "conflict");
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(0);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(0);
+  });
+
+  it.each(["png", "jpeg", "webp", "gif", "tiff", "avif"] as const)("keeps %s source images usable for video", async format => {
+    const character = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
+    const source = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: character.imageAssetId! } });
+    if (!source.storageKey) throw new Error("Test source has no blob");
+    const bytes = await sharp({ create: { width: 64, height: 64, channels: 3, background: "#7296b0" } })[format]().toBuffer();
+    await providers.blob.putPrivate({ key: source.storageKey, body: bytes, contentType: `image/${format}` });
+    const response = await api("POST", "generation/video-sequences/quote", { userId, ageGate: true, body: body(1) });
+    expectOk(response);
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(0);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(0);
+  });
+
+  it("accepts a fully decoded small animated GIF source", async () => {
+    const character = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
+    const source = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: character.imageAssetId! } });
+    if (!source.storageKey) throw new Error("Test source has no blob");
+    const pixels = Buffer.concat([Buffer.alloc(64 * 64 * 3, 32), Buffer.alloc(64 * 64 * 3, 192)]);
+    const bytes = await sharp(pixels, { raw: { width: 64, height: 128, channels: 3, pageHeight: 64 } }).gif().toBuffer();
+    expect((await sharp(bytes, { animated: true }).metadata()).pages).toBe(2);
+    await providers.blob.putPrivate({ key: source.storageKey, body: bytes, contentType: "image/gif" });
+    expectOk(await api("POST", "generation/video-sequences/quote", { userId, ageGate: true, body: body(1) }));
+  });
+
+  it("decodes a shared source once per quote and once per locked multi-scene admission", async () => {
+    const reads = vi.spyOn(providers.blob, "getPrivate");
+    const request = body(3), price = await quote(request);
+    expect(reads).toHaveBeenCalledTimes(1);
+    const response = await api("POST", "generation/video-sequences", { userId, ageGate: true,
+      headers: { "idempotency-key": randomUUID() }, body: { ...request, quoteFingerprint: price.fingerprint } });
+    expectOk(response, 202);
+    // The write requotes once, then verifies once while holding the source authority.
+    expect(reads).toHaveBeenCalledTimes(3);
+    expect(videoSequenceDtoSchema.parse(response.data.sequence).scenes).toHaveLength(3);
+  });
+
+  it.each([{ code: "get_failed", retryable: false }, { code: "get_failed", retryable: true }])("reports storage failures as unavailable without charging ($retryable)", async ({ code, retryable }) => {
+    const request = body(1), price = await quote(request), balance = await dreamcoinBalance(userId);
+    vi.spyOn(providers.blob, "getPrivate").mockResolvedValue({ ok: false, error: { code, retryable, message: "controlled storage failure" } });
+    const response = await api("POST", "generation/video-sequences", { userId, ageGate: true,
+      headers: { "idempotency-key": randomUUID() }, body: { ...request, quoteFingerprint: price.fingerprint } });
+    expectError(response, 503, "unavailable");
+    expect(await prisma.videoSequence.count({ where: { userId } })).toBe(0);
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(0);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(0);
+    expect(await dreamcoinBalance(userId)).toBe(balance);
+  });
+
+  it("releases the intent lock after a failed read so the same key can be retried", async () => {
+    const request = body(1), price = await quote(request), key = randomUUID();
+    const get = providers.blob.getPrivate!.bind(providers.blob);
+    let firstRead = true;
+    vi.spyOn(providers.blob, "getPrivate").mockImplementation(async input => {
+      if (firstRead) { firstRead = false; return { ok: false, error: { code: "get_failed", retryable: true, message: "controlled outage" } }; }
+      return get(input);
+    });
+    const write = () => api("POST", "generation/video-sequences", { userId, ageGate: true,
+      headers: { "idempotency-key": key }, body: { ...request, quoteFingerprint: price.fingerprint } });
+    expectError(await write(), 503, "unavailable");
+    expectOk(await write(), 202);
+    expect(await prisma.videoSequence.count({ where: { userId } })).toBe(1);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(1);
+  });
+
+  it("replays an accepted sequence after its source becomes corrupt without charging again", async () => {
+    const request = body(1), price = await quote(request), key = randomUUID();
+    const write = () => api("POST", "generation/video-sequences", { userId, ageGate: true,
+      headers: { "idempotency-key": key }, body: { ...request, quoteFingerprint: price.fingerprint } });
+    const first = await write(); expectOk(first, 202);
+    const sequence = videoSequenceDtoSchema.parse(first.data.sequence);
+    const character = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
+    const source = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: character.imageAssetId! } });
+    if (!source.storageKey) throw new Error("Test source has no blob");
+    await providers.blob.putPrivate({ key: source.storageKey, body: Buffer.from("broken image"), contentType: "image/png" });
+    const replay = await write(); expectOk(replay, 202);
+    expect(videoSequenceDtoSchema.parse(replay.data.sequence).id).toBe(sequence.id);
+    expect(await prisma.videoSequence.count({ where: { userId } })).toBe(1);
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(1);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(1);
+  });
+
+  it("keeps a same-key replay and receipt check pending while the original submission commits", async () => {
+    const request = body(1), price = await quote(request), key = randomUUID();
+    const write = () => api("POST", "generation/video-sequences", { userId, ageGate: true,
+      headers: { "idempotency-key": key }, body: { ...request, quoteFingerprint: price.fingerprint } });
+    const entered = barrier(), hold = barrier();
+    const get = providers.blob.getPrivate!.bind(providers.blob);
+    let reads = 0;
+    vi.spyOn(providers.blob, "getPrivate").mockImplementation(async input => {
+      reads += 1;
+      if (reads === 2) { entered.release(); await hold.promise; return get(input); }
+      if (reads === 3) return { ok: true, data: { body: Buffer.from("broken image"), contentType: "image/png" } };
+      return get(input);
+    });
+    const first = write();
+    await Promise.race([entered.promise, first.then(result => { throw new Error(`Original submission ended before the controlled pause: ${result.status}`); })]);
+    const replay = await write();
+    const lookup = await api("GET", "generation/video-sequences/request", { userId, ageGate: true, query: { key } });
+    hold.release();
+    const original = await first;
+    expectError(replay, 409, "conflict");
+    expectError(lookup, 503, "unavailable");
+    const repeated = await write();
+    const recovered = await api("GET", "generation/video-sequences/request", { userId, ageGate: true, query: { key } });
+    expectOk(original, 202); expectOk(repeated, 202); expectOk(recovered);
+    const id = videoSequenceDtoSchema.parse(original.data.sequence).id;
+    expect(videoSequenceDtoSchema.parse(repeated.data.sequence).id).toBe(id);
+    expect(videoSequenceDtoSchema.parse(recovered.data.sequence).id).toBe(id);
+    expect(await prisma.videoSequence.count({ where: { userId } })).toBe(1);
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(1);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(1);
+  });
+
+  it("closes an unconfirmed old receipt and fences a delayed same-key preflight", async () => {
+    const request = body(1), price = await quote(request), key = randomUUID();
+    const payload = { ...request, quoteFingerprint: price.fingerprint };
+    const write = () => api("POST", "generation/video-sequences", { userId, ageGate: true, headers: { "idempotency-key": key }, body: payload });
+    const close = (value = payload) => api("POST", "generation/video-sequences/request/abandon", { userId, ageGate: true, headers: { "idempotency-key": key }, body: value });
+    const entered = barrier(), hold = barrier();
+    const get = providers.blob.getPrivate!.bind(providers.blob);
+    vi.spyOn(providers.blob, "getPrivate").mockImplementation(async input => { entered.release(); await hold.promise; return get(input); });
+    const pending = write();
+    await Promise.race([entered.promise, pending.then(result => { throw new Error(`Submission ended before pause: ${result.status}`); })]);
+    try {
+      const missing = await api("GET", "generation/video-sequences/request", { userId, ageGate: true, query: { key } });
+      expectError(missing, 503, "unavailable");
+      const canceled = await close(); expectOk(canceled); expect(canceled.data.state).toBe("abandoned");
+      const recovered = await api("GET", "generation/video-sequences/request", { userId, ageGate: true, query: { key } });
+      expectError(recovered, 410, "gone");
+      expectOk(await close());
+      expectError(await close({ ...payload, audio: "silent" }), 409, "conflict");
+    } finally { hold.release(); }
+    expectError(await pending, 410, "gone");
+    expectError(await write(), 410, "gone");
+    expect(await prisma.videoSequence.count({ where: { userId } })).toBe(0);
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(0);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(0);
+  }, 30_000);
+
+  it("returns an already accepted original when close races after commitment", async () => {
+    const { sequence, key, request } = await create(body(1));
+    const closed = await api("POST", "generation/video-sequences/request/abandon", { userId, ageGate: true, headers: { "idempotency-key": key }, body: request });
+    expectOk(closed); expect(closed.data.state).toBe("accepted"); expect(closed.data.sequence.id).toBe(sequence.id);
+    const lookup = await api("GET", "generation/video-sequences/request", { userId, ageGate: true, query: { key } });
+    expectOk(lookup); expect(lookup.data.sequence.id).toBe(sequence.id);
+    const revisedReplay = await api("POST", "generation/video-sequences", { userId, ageGate: true, headers: { "idempotency-key": key }, body: { ...request, quoteFingerprint: "0".repeat(64) } });
+    expectOk(revisedReplay, 202); expect(revisedReplay.data.sequence.id).toBe(sequence.id);
+    expect(revisedReplay.data.sequence.acceptedQuote.fingerprint).toBe(request.quoteFingerprint);
+    expect(await prisma.videoSequenceCancellation.count({ where: { userId, idempotencyKey: key } })).toBe(0);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(1);
+  });
+
+  it("honors the intent lock across a separate PostgreSQL client process", async () => {
+    const request = body(1), price = await quote(request), key = randomUUID();
+    const identity = JSON.stringify(["video-sequence-intent", userId, key]).replaceAll("'", "''");
+    const child = spawn("psql", [process.env.DATABASE_URL!, "-X", "-qAt", "-v", "ON_ERROR_STOP=1"], { stdio: ["pipe", "pipe", "pipe"] });
+    const acquired = new Promise<void>((resolve, reject) => {
+      child.once("error", reject);
+      child.stdout.once("data", value => String(value).trim() === "t" ? resolve() : reject(new Error(`Unexpected lock result: ${value}`)));
+      child.once("exit", code => reject(new Error(`Lock process exited early: ${code}`)));
+    });
+    child.stdin.write(`BEGIN; SELECT pg_try_advisory_xact_lock(hashtextextended('${identity}', 0));\n`);
+    try {
+      await acquired;
+      const payload = { ...request, quoteFingerprint: price.fingerprint };
+      const close = () => api("POST", "generation/video-sequences/request/abandon", { userId, ageGate: true, headers: { "idempotency-key": key }, body: payload });
+      expectError(await close(), 503, "unavailable");
+      expectError(await api("GET", "generation/video-sequences/request", { userId, ageGate: true, query: { key } }), 503, "unavailable");
+      child.stdin.write("COMMIT;\n"); child.stdin.end();
+      await new Promise<void>((resolve, reject) => child.once("exit", code => code === 0 ? resolve() : reject(new Error(`Lock process failed: ${code}`))));
+      const result = await close(); expectOk(result); expect(result.data.state).toBe("abandoned");
+    } finally { if (child.exitCode === null) child.kill(); }
+  });
+
+  it("recovers the accepted sequence after post-commit dispatch fails", async () => {
+    const request = body(1), price = await quote(request), key = randomUUID();
+    const payload = { ...request, quoteFingerprint: price.fingerprint };
+    const write = () => api("POST", "generation/video-sequences", { userId, ageGate: true, headers: { "idempotency-key": key }, body: payload });
+    const dispatch = vi.spyOn(dispatchAuthority, "dispatchGenerationAttemptOutbox").mockRejectedValueOnce(new Error("simulated lost dispatch response"));
+    const failed = await write(); expectError(failed, 500, "internal");
+    dispatch.mockRestore();
+    const recovered = await api("GET", "generation/video-sequences/request", { userId, ageGate: true, query: { key } });
+    expectOk(recovered); const id = recovered.data.sequence.id;
+    const close = await api("POST", "generation/video-sequences/request/abandon", { userId, ageGate: true, headers: { "idempotency-key": key }, body: payload });
+    expectOk(close); expect(close.data).toMatchObject({ state: "accepted", sequence: { id } });
+    expectOk(await write(), 202);
+    const sequence = await prisma.videoSequence.findUniqueOrThrow({ where: { id }, include: { scenes: true } });
+    expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(1);
+    const outboxId = `generation_initial_${sequence.scenes[0]!.generationJobId}`;
+    expect(await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: outboxId } })).toMatchObject({ status: "pending" });
+    await dispatchAuthority.dispatchGenerationAttemptOutbox(prisma, { outboxIds: [outboxId] });
+    expect(await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: outboxId } })).toMatchObject({ status: "delivered" });
+  });
+
+  it("admits concurrent independent users without exhausting a small Prisma connection pool", async () => {
+    const second = await createSequenceActor();
+    const firstBody = body(1), secondBody = { ...body(1), characterId: second.characterId };
+    const [firstQuote, secondQuote] = await Promise.all([quote(firstBody), quote(secondBody, second.userId)]);
+    const [first, another] = await Promise.all([
+      api("POST", "generation/video-sequences", { userId, ageGate: true, headers: { "idempotency-key": randomUUID() }, body: { ...firstBody, quoteFingerprint: firstQuote.fingerprint } }),
+      api("POST", "generation/video-sequences", { userId: second.userId, ageGate: true, headers: { "idempotency-key": randomUUID() }, body: { ...secondBody, quoteFingerprint: secondQuote.fingerprint } }),
+    ]);
+    expectOk(first, 202); expectOk(another, 202);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId: { in: [userId, second.userId] }, reason: "generation_spend" } })).toBe(2);
+  }, 30_000);
+
+  it("does not let repeated checks for a pending key block another user's sequence", async () => {
+    const second = await createSequenceActor();
+    const firstBody = body(1), secondBody = { ...body(1), characterId: second.characterId };
+    const [firstQuote, secondQuote] = await Promise.all([quote(firstBody), quote(secondBody, second.userId)]);
+    const character = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
+    const source = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: character.imageAssetId! } });
+    const entered = barrier(), hold = barrier();
+    const get = providers.blob.getPrivate!.bind(providers.blob);
+    let reads = 0;
+    vi.spyOn(providers.blob, "getPrivate").mockImplementation(async input => {
+      if (input.key === source.storageKey && ++reads === 2) { entered.release(); await hold.promise; }
+      return get(input);
+    });
+    const key = randomUUID();
+    const first = api("POST", "generation/video-sequences", { userId, ageGate: true, headers: { "idempotency-key": key }, body: { ...firstBody, quoteFingerprint: firstQuote.fingerprint } });
+    await Promise.race([entered.promise, first.then(result => { throw new Error(`Original submission ended before the controlled pause: ${result.status}`); })]);
+    try {
+      const [checks, other] = await Promise.all([
+        Promise.all(Array.from({ length: 8 }, () => api("GET", "generation/video-sequences/request", { userId, ageGate: true, query: { key } }))),
+        api("POST", "generation/video-sequences", { userId: second.userId, ageGate: true, headers: { "idempotency-key": randomUUID() }, body: { ...secondBody, quoteFingerprint: secondQuote.fingerprint } }),
+      ]);
+      for (const check of checks) expectError(check, 503, "unavailable");
+      expectOk(other, 202);
+    } finally { hold.release(); }
+    expectOk(await first, 202);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId: { in: [userId, second.userId] }, reason: "generation_spend" } })).toBe(2);
+  }, 30_000);
+
   it("refuses to quote a display-only primary image before accepting any video price", async () => {
     const request = body(1);
     const validQuote = await quote(request);

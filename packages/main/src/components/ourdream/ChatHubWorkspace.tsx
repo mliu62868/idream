@@ -141,7 +141,7 @@ function ChatHubContent({ viewer }: Readonly<{ viewer: ViewerGate }>) {
                 <MessageCircle className="mx-auto h-10 w-10 text-[rgb(114,113,112)]" />
                 <h2 className="mt-4 text-[22px] font-black uppercase">Sign in to see your chats</h2>
                 <p className="mx-auto mt-3 max-w-md text-[14px] leading-6 text-[rgb(170,170,170)]">
-                  Save long-running sessions, keep memory across characters, and return to your latest roleplay.
+                  Save long-running sessions, keep each character&apos;s memory across sessions, and return to your latest roleplay.
                 </p>
                 <div className="mt-6 flex flex-wrap justify-center gap-2">
                   <Link

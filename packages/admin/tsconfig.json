@@ -41,7 +41,7 @@
     }
   },
   "include": [
-    "next-env.d.ts",
+    "idream-next-env.d.ts",
     "**/*.ts",
     "**/*.tsx",
     ".next/types/**/*.ts",
@@ -50,6 +50,7 @@
     ".next-development/dev/types/**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "next-env.d.ts"
   ]
 }

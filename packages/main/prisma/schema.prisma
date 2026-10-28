@@ -37,7 +37,9 @@ model User {
   chatTurnUsageFacts ChatTurnUsageFact[]
   chatContextDirectives ChatContextDirective[]
   generationJobs     GenerationJob[]
+  generationSourceSnapshots GenerationSourceSnapshot[]
   videoSequences     VideoSequence[]
+  videoSequenceCancellations VideoSequenceCancellation[]
   mediaAssets        MediaAsset[]
   voiceClipRequests  VoiceClipRequest[]
   voiceCalls         VoiceCall[]
@@ -955,6 +957,33 @@ model GenerationPreset {
   @@map("generation_presets")
 }
 
+// Byte chunks commit with the paid request; retries and scenes share the same
+// user-scoped digest without depending on mutable Blob or external URLs.
+model GenerationSourceSnapshot {
+  id          String   @id @default(cuid())
+  userId      String
+  sha256      String
+  contentType String
+  sizeBytes   Int
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chunks      GenerationSourceSnapshotChunk[]
+
+  @@unique([userId, sha256])
+  @@index([userId])
+  @@map("generation_source_snapshots")
+}
+
+model GenerationSourceSnapshotChunk {
+  snapshotId String
+  ordinal    Int
+  bytes      Bytes
+  snapshot   GenerationSourceSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+
+  @@id([snapshotId, ordinal])
+  @@map("generation_source_snapshot_chunks")
+}
+
 model GenerationJob {
   id                     String                  @id @default(cuid())
   userId                 String
@@ -1110,6 +1139,17 @@ model MediaAsset {
   @@index([sourceJobId])
   @@index([characterId])
   @@map("media_assets")
+}
+
+model VideoSequenceCancellation {
+  userId             String
+  idempotencyKey     String
+  requestFingerprint String
+  createdAt          DateTime @default(now())
+  user               User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, idempotencyKey])
+  @@map("video_sequence_cancellations")
 }
 
 model VideoSequence {

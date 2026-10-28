@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { compileCharacterSoul } from "@idream/shared";
 import { MAIN_QUEUES } from "@idream/shared/contracts";
@@ -71,7 +72,7 @@ async function fixture() {
   await prisma.chatTurnAttachment.create({ data: { id: `${id}-attachment`, turnId, kind: "generated_image", status: "completed", mediaAssetId: source.id, generationJobId: sourceJob.id, promptHint: "Earlier wording", metadata: { attempt: 1 } } });
   const sourceKey = `${id}-source.png`;
   sourceKeys.push(sourceKey);
-  await providers.blob.putPrivate({ key: sourceKey, body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlZlE0AAAAASUVORK5CYII=", "base64"), contentType: "image/png" });
+  await providers.blob.putPrivate({ key: sourceKey, body: await sharp({ create: { width: 8, height: 8, channels: 3, background: "#7296b0" } }).png().toBuffer(), contentType: "image/png" });
   await prisma.mediaAsset.update({ where: { id: source.id }, data: { storageKey: sourceKey, contentType: "image/png", characterId: character.id } });
   const query = { kind: "chat", sessionId, turnId, attempt: "1" };
   return { id, userId, characterId: character.id, userMessageId, turnId, sessionId, visual, referenceSet, release, source, query };

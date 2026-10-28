@@ -136,14 +136,16 @@ export function resolvePlaywrightEnvironment(
   );
   const bffSecret = `playwright-bff-${isolationHash}`;
   const internalToken = `playwright-internal-${isolationHash}`;
-  const mainDistDir = `.next/playwright-main-${mainPort}-${runId}`;
-  const adminDistDir = `.next/playwright-admin-${adminPort}-${runId}`;
+  // A normal Next build cleans .next, so active Playwright resources must be
+  // siblings of that directory, not children of the output it replaces.
+  const mainDistDir = `.next-playwright/playwright-main-${mainPort}-${runId}`;
+  const adminDistDir = `.next-playwright/playwright-admin-${adminPort}-${runId}`;
   const mainTsconfigPath =
-    `.next/playwright-config-main-${mainPort}-${runId}/tsconfig.json`;
+    `.next-playwright/playwright-config-main-${mainPort}-${runId}/tsconfig.json`;
   const adminTsconfigPath =
-    `.next/playwright-config-admin-${adminPort}-${runId}/tsconfig.json`;
+    `.next-playwright/playwright-config-admin-${adminPort}-${runId}/tsconfig.json`;
   const lifecycleReceiptPath =
-    `.next/playwright-lifecycle-main-${mainPort}-${runId}/cleanup.json`;
+    `.next-playwright/playwright-lifecycle-main-${mainPort}-${runId}/cleanup.json`;
   const remoteDatabaseAuthority = {
     allowReset: input.CHAT_TEST_ALLOW_REMOTE_RESET === "1",
     ci: input.CI === "true",

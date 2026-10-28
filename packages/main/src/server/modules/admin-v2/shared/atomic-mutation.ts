@@ -20,6 +20,7 @@ export async function executeAtomicIdempotentMutation<
   readonly commandType: string;
   readonly target: { readonly type: string; readonly id: string };
   readonly expectedVersion?: number;
+  readonly transactionTimeoutMs?: number;
   readonly payload: unknown;
   readonly prepare?: () => Promise<Prepared>;
   readonly mutate: (
@@ -120,7 +121,7 @@ export async function executeAtomicIdempotentMutation<
           },
         });
         return response;
-      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, ...(input.transactionTimeoutMs ? { timeout: input.transactionTimeoutMs } : {}) });
     } catch (cause) {
       if (isSerializableWriteConflict(cause)) {
         if (attempt < 2) continue;

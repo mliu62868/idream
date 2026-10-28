@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
+import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { characterVideoProductionRecipe, compileCharacterSoul } from "@idream/shared";
 import { POST as createCreativeRun } from "@/app/api/v2/admin/creative/runs/route";
 import { prisma } from "@/server/lib/db";
+import { providers } from "@/server/providers";
 import { getCharacterWorkspace } from "@/server/modules/admin-v2/characters/workspace";
 import { isDefaultProductionVideoProfile } from "@/server/modules/generation/production-video-profile";
 import { purgeQueuedGenerationJobs } from "@/server/test/helpers";
@@ -53,6 +55,10 @@ describe("Character video Creative Run authority", () => {
   }
 
   beforeAll(async () => {
+    const fixture = await sharp({ create: { width: 8, height: 8, channels: 3, background: "#643a2b" } }).webp().toBuffer();
+    for (const id of [publishedPrimaryAssetId, sourceAssetId, otherSourceAssetId]) {
+      await providers.blob.putPrivate({ key: `tests/${id}.webp`, body: fixture, contentType: "image/webp" });
+    }
     const profile = await prisma.generationModelProfile.findFirst({
       where: {
         profileKey: "profile_video_redgraft_ltx25_v1",
@@ -197,6 +203,9 @@ describe("Character video Creative Run authority", () => {
   });
 
   afterAll(async () => {
+    for (const id of [publishedPrimaryAssetId, sourceAssetId, otherSourceAssetId]) {
+      await providers.blob.delete({ key: `tests/${id}.webp` });
+    }
     const items = await prisma.contentProductionItem.findMany({
       where: { batchId: { in: batchIds } },
       select: { jobId: true },

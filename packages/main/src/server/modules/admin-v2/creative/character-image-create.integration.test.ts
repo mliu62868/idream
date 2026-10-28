@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import sharp from "sharp";
 import { compileCharacterSoul } from "@idream/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { POST as createCreativeRun } from "@/app/api/v2/admin/creative/runs/route";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
+import { providers } from "@/server/providers";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import {
   characterVisualProfileSnapshotHash,
@@ -158,6 +160,7 @@ describe("Character image Creative Run authority", () => {
   const variationSourceItemId = `character-image-create-source-item-${suffix}`;
   const variationSourceJobId = `character-image-create-source-job-${suffix}`;
   const variationSourceAssetId = `character-image-create-source-asset-${suffix}`;
+  const currentSourceAssetId = `character-image-create-current-source-asset-${suffix}`;
   const variationDependentJobId = `character-image-create-dependent-job-${suffix}`;
   const calibrationSourceJobId = `character-image-calibration-source-job-${suffix}`;
   const calibrationSourceAssetId = `character-image-calibration-source-asset-${suffix}`;
@@ -220,6 +223,10 @@ describe("Character image Creative Run authority", () => {
   }
 
   beforeAll(async () => {
+    const fixture = await sharp({ create: { width: 8, height: 8, channels: 3, background: "#643a2b" } }).webp().toBuffer();
+    for (const id of [anchorAssetId, variationSourceAssetId, currentSourceAssetId, calibrationSourceAssetId, legacyAssetId, archiveRaceAssetId]) {
+      await providers.blob.putPrivate({ key: `test-fixtures/${id}.webp`, body: fixture, contentType: "image/webp" });
+    }
     await prisma.user.create({
       data: {
         id: actorId,
@@ -342,6 +349,9 @@ describe("Character image Creative Run authority", () => {
   });
 
   afterAll(async () => {
+    for (const id of [anchorAssetId, variationSourceAssetId, currentSourceAssetId, calibrationSourceAssetId, legacyAssetId, archiveRaceAssetId]) {
+      await providers.blob.delete({ key: `test-fixtures/${id}.webp` });
+    }
     await cleanupBatches(batchIds);
     await prisma.creativeReviewDecision.deleteMany({
       where: { runItemId: variationSourceItemId },
@@ -1974,7 +1984,6 @@ describe("Character image Creative Run authority", () => {
       where: { sourceType: "content_production_item", sourceId: currentSourceItem.id },
     });
     expect(currentSourceJob.referenceSetRevisionId).toBe(overlapSourceReferenceSetId);
-    const currentSourceAssetId = `character-image-create-current-source-asset-${suffix}`;
     await prisma.mediaAsset.create({
       data: {
         id: currentSourceAssetId,

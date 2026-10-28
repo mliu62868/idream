@@ -99,7 +99,7 @@ import {
 } from "@/lib/generation-write-client";
 import { publicOptimisticMutationFailure } from "./optimistic-write-state";
 import { useReportDialog } from "./ReportDialog";
-import { VideoSequenceControls, type VideoSequenceRecovery } from "./VideoSequenceControls";
+import { hasSavedVideoSequenceReceipt, VideoSequenceControls, type VideoSequenceRecovery } from "./VideoSequenceControls";
 import { MediaLightbox, VideoPreview, type LightboxMedia } from "./MediaLightbox";
 import { canStartAgeGatedLoad } from "@/lib/age-gate";
 
@@ -155,6 +155,26 @@ type EnhancementConfirmation = {
 };
 
 const galleryTabs: readonly GalleryTab[] = ["image", "video", "liked"];
+
+// Only the key is retained: source URLs can contain private signed query data.
+function importReceiptKey(scope: string) {
+  return `idream:image-url-import:${scope}`;
+}
+
+function readImportReceipt(scope: string): string | null {
+  try {
+    const key = window.sessionStorage.getItem(importReceiptKey(scope));
+    return key && /^[a-zA-Z0-9-]{8,160}$/.test(key) ? key : null;
+  } catch { return null; }
+}
+
+function writeImportReceipt(scope: string, key: string | null): boolean {
+  try {
+    if (key) window.sessionStorage.setItem(importReceiptKey(scope), key);
+    else window.sessionStorage.removeItem(importReceiptKey(scope));
+    return true;
+  } catch { return false; }
+}
 
 function generatorImageEditSources(
   items: readonly MediaItem[],
@@ -629,6 +649,15 @@ export function GeneratorWorkspace() {
   const [deleteConfirmPresetId, setDeleteConfirmPresetId] = useState<string | null>(null);
   const [mediaCursorTrail, setMediaCursorTrail] = useState<Array<string | null>>([null]);
   const [imageEditSources, setImageEditSources] = useState<MediaItem[]>([]);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importUrl, setImportUrl] = useState("");
+  const [importError, setImportError] = useState("");
+  const [importBusy, setImportBusy] = useState(false);
+  const [pendingImportKey, setPendingImportKey] = useState<string | null>(null);
+  const [importResetConfirm, setImportResetConfirm] = useState(false);
+  const importPendingRef = useRef<symbol | null>(null);
+  const importUrlRef = useRef<HTMLInputElement>(null);
+  const importReturnRef = useRef<{ mode: GenerationMode; workflow: ImageWorkflow; view: WorkspaceView } | null>(null);
   const [enhancement, setEnhancement] = useState<EnhancementConfirmation | null>(null);
   const enhancementCost = enhancement?.quote ? exactGenerationQuoteForCount(enhancement.quote.quote, 1) : null;
   const enhancementSerialRef = useRef(0);
@@ -636,6 +665,17 @@ export function GeneratorWorkspace() {
   const enhancementQuoteControllerRef = useRef<AbortController | null>(null);
   const [receiptStorageWarning, setReceiptStorageWarning] = useState("");
   const receiptOwnerScope = config?.viewer.authenticated ? config.viewer.scope : null;
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const pending = receiptOwnerScope ? readImportReceipt(receiptOwnerScope) : null;
+      setPendingImportKey(pending);
+      setImportUrl("");
+      setImportError("");
+      setImportOpen(false);
+      setImportResetConfirm(false);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [receiptOwnerScope]);
   const enhancementReceiptBook = useGenerationReceipts({ ownerScope: receiptOwnerScope, onWarning: setReceiptStorageWarning });
   const { suspend: suspendEnhancementReceipts, resume: resumeEnhancementReceipts } = enhancementReceiptBook;
   const enhancementReceipts = enhancementReceiptBook.receipts.filter((receipt) => receipt.kind === "media_enhancement");
@@ -1007,14 +1047,15 @@ export function GeneratorWorkspace() {
     setOrientation(firstVideoModel?.orientations?.[0] ?? "");
     setCount(1);
   }
-  // SPEC: 回到 /generate 时若有进行中的视频任务，默认停在 Video —— 序列进度面板只在那里渲染。
+  // SPEC: 回到 /generate 时若有进行中的视频任务或未核对的回执，默认停在 Video。
   // INTENT: 只在首个成功的任务读取后判断一次，reset 的空 ready 不算。之后用户自己切走不再抢；Chat/Remix 带来的
   //   generationContext 与未确认的表单各自决定模式，优先于这里。
   const hasActiveVideoJob = jobs.some((job) => job.mode === "video" && !isTerminalGenerationJobStatus(job.status));
   useEffect(() => {
     if (videoTabRestoredRef.current !== false || !videoModeEnabled) return;
     videoTabRestoredRef.current = true;
-    if (generationContext.required || unconfirmedFormRef.current || mode !== "image" || !hasActiveVideoJob) return;
+    if (generationContext.required || unconfirmedFormRef.current || mode !== "image" ||
+      (!hasActiveVideoJob && !hasSavedVideoSequenceReceipt(receiptOwnerScope))) return;
     selectVideoMode();
   });
   const selectedCharacter = useMemo(
@@ -1138,6 +1179,15 @@ export function GeneratorWorkspace() {
   const clearPrivateViewerProjections = useCallback(() => {
     intentSerialRef.current += 1; intentOperationRef.current = null; intentSubmittedRef.current = null;
     setIntentEditor(null); setIntentEditorHidden(false); setIntentBusy(false); setIntentUncertain(false); setIntentDirection(""); setIntentFeedbackError(""); setIntentCanRetryOriginal(false); setVideoDirectionDraft(null);
+
+    importPendingRef.current = null;
+    importReturnRef.current = null;
+    setImportBusy(false);
+    setImportOpen(false);
+    setImportUrl("");
+    setImportError("");
+    setPendingImportKey(null);
+    setImportResetConfirm(false);
 
     abortPrivateViewerRequests();
     suspendEnhancementReceipts(true);
@@ -1349,6 +1399,7 @@ export function GeneratorWorkspace() {
       const nextScope = data.viewer.scope;
       const confirmedViewerChanged = generationKeysScopeRef.current !== nextScope;
       if (confirmedViewerChanged || !data.viewer.authenticated) {
+        if (confirmedViewerChanged) videoTabRestoredRef.current = null;
         resetGenerationRequestScope();
         generationKeysScopeRef.current = nextScope;
         unconfirmedFormRef.current = false;
@@ -2615,6 +2666,137 @@ export function GeneratorWorkspace() {
     void refreshMedia(galleryTab);
   }
 
+  function openImageImport() {
+    if (generationContext.required) return;
+    if (!importOpen) importReturnRef.current = { mode, workflow: imageWorkflow, view };
+    setMode("image");
+    setImageWorkflow("image-edit");
+    setView("create");
+    setImportOpen(true);
+    window.setTimeout(() => importUrlRef.current?.focus(), 0);
+  }
+
+  function closeImageImport() {
+    setImportOpen(false);
+    setImportResetConfirm(false);
+    const previous = importReturnRef.current;
+    importReturnRef.current = null;
+    if (previous) {
+      setMode(previous.mode);
+      setImageWorkflow(previous.workflow);
+      setView(previous.view);
+    }
+  }
+
+  async function selectImportedImage(assetId: string, ticket: PrivateViewerTicket) {
+    const response = await fetch(`/api/v1/media?type=image&assetId=${encodeURIComponent(assetId)}`, {
+      cache: "no-store", signal: ticket.controller.signal,
+      headers: { "x-idream-viewer-scope": ticket.scope },
+    });
+    const raw: unknown = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(apiPayloadErrorMessage(raw) ?? "The imported image could not be loaded. Check the import again.");
+    const item = parseWorkspaceMediaResponse(raw).items.find((candidate) => candidate.id === assetId && candidate.type === "image");
+    if (!item) throw new Error("The imported image could not be loaded. Check the import again.");
+    if (!privateViewerRequestIsCurrent(ticket) || ticket.controller.signal.aborted) return;
+    writeImportReceipt(ticket.scope, null);
+    importReturnRef.current = null;
+    setPendingImportKey(null);
+    setImportResetConfirm(false);
+    setImportUrl("");
+    setImportOpen(false);
+    setImportError("");
+    setModelSelection({ id: "", explicit: false });
+    setSelectedEditSource(item);
+    setImageEditSources((current) => [item, ...current.filter((candidate) => candidate.id !== item.id)]);
+    setStatus("Image imported to your private Gallery and selected for editing.");
+    void refreshMedia("image");
+  }
+
+  async function checkImageImport() {
+    if (!pendingImportKey || importPendingRef.current) return;
+    const ticket = beginPrivateViewerRequest();
+    if (!ticket) return;
+    const operation = Symbol("check-import");
+    importPendingRef.current = operation;
+    setImportBusy(true);
+    setImportError("");
+    try {
+      const response = await fetch(`/api/v1/media/import-url/request?key=${encodeURIComponent(pendingImportKey)}`, {
+        cache: "no-store", signal: ticket.controller.signal,
+        headers: { "x-idream-viewer-scope": ticket.scope },
+      });
+      const raw: unknown = await response.json().catch(() => null);
+      if (!privateViewerRequestIsCurrent(ticket)) return;
+      if (response.status === 404) {
+        setImportError("The import has not finished yet. Enter the same URL to retry safely.");
+        return;
+      }
+      if (!response.ok) throw new Error(apiPayloadErrorMessage(raw) ?? "Could not check the import. Try again.");
+      const data = isRecord(raw) && isRecord(raw.data) ? raw.data : null;
+      if (!data || typeof data.assetId !== "string" || !data.assetId) throw new Error("Could not confirm the imported image. Try checking again.");
+      await selectImportedImage(data.assetId, ticket);
+    } catch (error) {
+      if (privateViewerRequestIsCurrent(ticket) && !ticket.controller.signal.aborted) setImportError(requestErrorMessage(error, "Could not check the import. Try again."));
+    } finally {
+      finishPrivateViewerRequest(ticket);
+      if (importPendingRef.current === operation) { importPendingRef.current = null; setImportBusy(false); }
+    }
+  }
+
+  async function submitImageImport() {
+    if (importPendingRef.current) return;
+    if (importUrl.trim().length > 4096) {
+      setImportError("The image URL is too long. Use a URL with 4,096 characters or fewer.");
+      return;
+    }
+    let url: URL;
+    try { url = new URL(importUrl.trim()); }
+    catch { setImportError("Enter a complete image URL starting with http:// or https://."); return; }
+    if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password) {
+      setImportError("Use an http:// or https:// image URL without a username or password.");
+      return;
+    }
+    const ticket = beginPrivateViewerRequest();
+    if (!ticket) { setImportError("Sign in and reconnect before importing an image."); return; }
+    const operation = Symbol("import-image");
+    importPendingRef.current = operation;
+    const existingKey = pendingImportKey;
+    const key = existingKey ?? crypto.randomUUID();
+    const stored = writeImportReceipt(ticket.scope, key);
+    setPendingImportKey(key);
+    setImportBusy(true);
+    setImportError("");
+    try {
+      const response = await fetch("/api/v1/media/import-url", {
+        method: "POST", cache: "no-store", signal: ticket.controller.signal,
+        headers: { "content-type": "application/json", "idempotency-key": key, "x-idream-viewer-scope": ticket.scope },
+        body: JSON.stringify({ url: importUrl.trim() }),
+      });
+      const raw: unknown = await response.json().catch(() => null);
+      if (!privateViewerRequestIsCurrent(ticket)) return;
+      if (!response.ok) {
+        if (!existingKey && response.status >= 400 && response.status < 500) {
+          writeImportReceipt(ticket.scope, null);
+          setPendingImportKey(null);
+        }
+        throw new Error(apiPayloadErrorMessage(raw) ?? "Image import could not finish. Check the URL and try again.");
+      }
+      const data = isRecord(raw) && isRecord(raw.data) ? raw.data : null;
+      if (!data || typeof data.assetId !== "string" || !data.assetId) throw new Error("The import response could not be confirmed. Check the import before retrying.");
+      await selectImportedImage(data.assetId, ticket);
+    } catch (error) {
+      if (privateViewerRequestIsCurrent(ticket) && !ticket.controller.signal.aborted) {
+        const message = error instanceof TypeError
+          ? "The import result could not be confirmed. Check the import or retry with the same URL."
+          : requestErrorMessage(error, "Image import could not be confirmed. Check the import before retrying.");
+        setImportError(stored ? message : `${message} If you leave this page, check Gallery before trying again.`);
+      }
+    } finally {
+      finishPrivateViewerRequest(ticket);
+      if (importPendingRef.current === operation) { importPendingRef.current = null; setImportBusy(false); }
+    }
+  }
+
   function editGalleryImage(item: MediaItem) {
     if (generationContext.required) leaveGenerationContext();
     setMode("image");
@@ -3054,6 +3236,7 @@ export function GeneratorWorkspace() {
                     mode === "image" ? "bg-white text-[rgb(13,13,13)]" : "text-[rgb(170,170,170)]"
                   }`}
                   onClick={() => {
+                    videoTabRestoredRef.current = true;
                     setMode("image");
                     setModelSelection({
                       id: "",
@@ -3069,7 +3252,10 @@ export function GeneratorWorkspace() {
                   className={`h-10 rounded-full text-[13px] font-bold ${
                     mode === "video" ? "bg-white text-[rgb(13,13,13)]" : "text-[rgb(170,170,170)]"
                   }`}
-                  onClick={selectVideoMode}
+                  onClick={() => {
+                    videoTabRestoredRef.current = true;
+                    selectVideoMode();
+                  }}
                   type="button"
                 >
                   Video
@@ -3132,7 +3318,7 @@ export function GeneratorWorkspace() {
                       Source image
                     </p>
                     <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">
-                      Pick a Gallery image, then describe the exact change you want.
+                      Pick a Gallery image or import one, then describe the change you want.
                     </p>
                   </div>
                   <button
@@ -3143,6 +3329,64 @@ export function GeneratorWorkspace() {
                     Open Gallery
                   </button>
                 </div>
+                {config?.viewer.authenticated === true && (
+                  <div className="mb-3">
+                    {!importOpen ? (
+                      <button
+                        className="min-h-10 rounded-full bg-[rgb(36,36,36)] px-4 text-[12px] font-bold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                        onClick={openImageImport}
+                        type="button"
+                      >
+                        {pendingImportKey ? "Continue image import" : "Import image from URL"}
+                      </button>
+                    ) : (
+                      <div className="space-y-2">
+                        <label className="block text-[12px] font-bold text-white" htmlFor="image-import-url">Image URL</label>
+                        <p className="text-[12px] leading-5 text-[rgb(190,190,190)]" id="image-import-help">
+                          Import a public image you have permission to use. A private copy is saved to your Gallery.
+                        </p>
+                        {pendingImportKey && (
+                          <p className="text-[12px] leading-5 text-[rgb(255,200,135)]" role="status">
+                            An import may still be in progress. Check it, or enter the same URL to retry safely.
+                          </p>
+                        )}
+                        <input
+                          autoComplete="url"
+                          className="min-h-11 w-full rounded-[8px] border border-white/20 bg-[rgb(36,36,36)] px-3 text-[14px] text-white placeholder:text-[rgb(170,170,170)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                          disabled={importBusy}
+                          id="image-import-url"
+                          inputMode="url"
+                          onChange={(event) => { setImportUrl(event.target.value); setImportError(""); }}
+                          onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void submitImageImport(); } }}
+                          placeholder="https://example.com/image.jpg"
+                          ref={importUrlRef}
+                          type="text"
+                          value={importUrl}
+                          aria-describedby={importError ? "image-import-help image-import-error" : "image-import-help"}
+                        />
+                        {importError && <p className="text-[12px] leading-5 text-[rgb(255,185,185)]" id="image-import-error" role="alert">{importError}</p>}
+                        <div className="flex flex-wrap gap-2">
+                          <button className="min-h-10 rounded-full bg-white px-4 text-[12px] font-bold text-black disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white" disabled={importBusy} onClick={() => void submitImageImport()} type="button">
+                            {importBusy ? "Working…" : pendingImportKey ? "Retry import" : "Import image"}
+                          </button>
+                          {pendingImportKey && <button className="min-h-10 rounded-full bg-[rgb(36,36,36)] px-4 text-[12px] font-bold text-white disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white" disabled={importBusy} onClick={() => void checkImageImport()} type="button">Check import</button>}
+                          {pendingImportKey && !importResetConfirm && <button className="min-h-10 px-3 text-[12px] font-bold text-[rgb(200,200,200)] disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white" disabled={importBusy} onClick={() => setImportResetConfirm(true)} type="button">Start a different import</button>}
+                          <button className="min-h-10 px-3 text-[12px] font-bold text-[rgb(200,200,200)] disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white" disabled={importBusy} onClick={closeImageImport} type="button">Close</button>
+                        </div>
+                        {pendingImportKey && importResetConfirm && (
+                          <div className="space-y-2" role="alert">
+                            <p className="text-[12px] leading-5 text-[rgb(255,200,135)]">The earlier import may still finish. Check Gallery before starting a different import.</p>
+                            <button className="min-h-10 rounded-full bg-[rgb(36,36,36)] px-4 text-[12px] font-bold text-white disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white" disabled={importBusy} onClick={() => {
+                              if (receiptOwnerScope) writeImportReceipt(receiptOwnerScope, null);
+                              setPendingImportKey(null); setImportResetConfirm(false); setImportError(""); setImportUrl("");
+                              importUrlRef.current?.focus();
+                            }} type="button">Start new import</button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
                 {anonymousViewer ? (
                   <GeneratorPrivateDataAuthHint label="your editable images" />
                 ) : mediaAuthority.phase === "error" ? (
@@ -3158,7 +3402,7 @@ export function GeneratorWorkspace() {
                   </p>
                 ) : authorityShowsEmpty(mediaAuthority, imageEditCandidates.length) ? (
                   <p className="rounded-[8px] bg-[rgb(36,36,36)] p-3 text-[12px] font-semibold text-[rgb(170,170,170)]">
-                    No editable images yet. Generate an image first, then return to Image Edit.
+                    No editable images yet. Import an image or generate one first.
                   </p>
                 ) : imageEditCandidates.length > 0 ? (
                   <div className="grid max-h-72 grid-cols-3 gap-2 overflow-y-auto p-1">
@@ -3405,7 +3649,7 @@ export function GeneratorWorkspace() {
               </div>
             ) : null}
 
-            {mode === "video" ? anonymousViewer ? <Link className="mt-4 flex h-12 w-full items-center justify-center rounded-full bg-[rgb(255,48,170)] text-[14px] font-black text-white" href={authHrefForTarget("/signup", authReturnTarget)}>Join free to generate</Link> : <VideoSequenceControls key={receiptOwnerScope ?? "signed-out"} viewerScope={receiptOwnerScope} characterId={generationBody.characterId} generationContextToken={generationBody.generationContextToken} consistencyMode={consistencyMode} seed={generationBody.seed} directionDraft={videoDirectionDraft ?? undefined} disabled={!modeAvailable || !contextReady || formUnconfirmed} unavailableMessage={modeUnavailableMessage ?? undefined} coinsHref={insufficientBalanceHref} onStatusChange={refreshVideoSequenceAuthority} onRecoveryChange={recoverVideoSequenceContext} /> : <>
+            {mode === "video" ? anonymousViewer ? <Link className="mt-4 flex h-12 w-full items-center justify-center rounded-full bg-[rgb(255,48,170)] text-[14px] font-black text-white" href={authHrefForTarget("/signup", authReturnTarget)}>Join free to generate</Link> : <VideoSequenceControls key={receiptOwnerScope ?? "signed-out"} viewerScope={receiptOwnerScope} characterId={generationBody.characterId} characters={characters} generationContextToken={generationBody.generationContextToken} consistencyMode={consistencyMode} seed={generationBody.seed} directionDraft={videoDirectionDraft ?? undefined} disabled={!modeAvailable || !contextReady || formUnconfirmed} unavailableMessage={modeUnavailableMessage ?? undefined} coinsHref={insufficientBalanceHref} onStatusChange={refreshVideoSequenceAuthority} onRecoveryChange={recoverVideoSequenceContext} /> : <>
             <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                 {imageEditMode
                   ? "Edit instructions"
@@ -4297,6 +4541,15 @@ export function GeneratorWorkspace() {
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-[16px] font-black text-white">Gallery</h2>
                 <div className="flex flex-wrap gap-2">
+                  {config?.viewer.authenticated && !generationContext.required && (
+                    <button
+                      className="min-h-10 rounded-full bg-[rgb(36,36,36)] px-4 text-[12px] font-bold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                      onClick={openImageImport}
+                      type="button"
+                    >
+                      {pendingImportKey ? "Continue image import" : "Import image"}
+                    </button>
+                  )}
                   {galleryTabs.map((tab) => (
                     <button
                       className={`h-9 rounded-full px-4 text-[12px] font-bold ${
@@ -4566,13 +4819,12 @@ export function GeneratorWorkspace() {
                   const isSelected = selectedMediaIds.has(item.id);
                   return (
                     <div
-                      className={`group relative aspect-[4/5] overflow-hidden rounded-[10px] bg-[rgb(36,36,36)] ${
-                        manageMode && isSelected ? "ring-2 ring-[rgb(255,48,170)]" : ""
-                      }`}
+                      className="group min-w-0"
                       data-media-id={item.id}
                       data-testid="gallery-media-card"
                       key={item.id}
                     >
+                      <div className={`relative aspect-[4/5] overflow-hidden rounded-[10px] bg-[rgb(36,36,36)] ${manageMode && isSelected ? "ring-2 ring-[rgb(255,48,170)]" : ""}`}>
                       {isUnavailable ? (
                         <div
                           className="grid h-full place-items-center px-4 text-center text-[13px] font-semibold text-[rgb(170,170,170)]"
@@ -4718,10 +4970,6 @@ export function GeneratorWorkspace() {
                                 {item.identity.selectedAsCharacterImage ? "Character image" : "Identity ref"}
                               </div>
                             )}
-                          {item.intentFeedbackAvailable && <div className="absolute inset-x-2 bottom-12">{intentButtons(item, "gallery")}</div>}
-                          {item.provenance && (
-                            <GalleryProvenanceBadge provenance={item.provenance} />
-                          )}
                           <div className={`absolute inset-x-2 ${item.type === "video" ? "top-2" : "bottom-2"} flex justify-end gap-2 opacity-100 md:opacity-0 md:transition-opacity md:group-hover:opacity-100 md:group-focus-within:opacity-100`}>
                             <IconButton
                               label={item.liked ? "Unlike" : "Like"}
@@ -4778,6 +5026,13 @@ export function GeneratorWorkspace() {
                           </div>
                         </>
                       )}
+                      </div>
+                      {!manageMode && (item.provenance || item.intentFeedbackAvailable) && (
+                        <div className="mt-2 space-y-2">
+                          {item.provenance && <GalleryProvenanceBadge provenance={item.provenance} />}
+                          {item.intentFeedbackAvailable && intentButtons(item, "gallery")}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -4833,7 +5088,7 @@ function GalleryProvenanceBadge({
     ? `${provenance.label}: ${provenance.sourceCharacterName}`
     : provenance.label;
   const className =
-    "absolute bottom-12 left-2 z-10 inline-flex max-w-[calc(100%-1rem)] items-center gap-1 rounded-full bg-black/75 px-2 py-1 text-[10px] font-bold text-white shadow-sm backdrop-blur";
+    "inline-flex max-w-full items-center gap-1 rounded-full bg-black/75 px-2 py-1 text-[10px] font-bold text-white";
   const content = (
     <>
       <WandSparkles className="h-3 w-3 shrink-0 text-[rgb(255,48,170)]" />

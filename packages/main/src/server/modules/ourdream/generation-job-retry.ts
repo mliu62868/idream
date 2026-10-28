@@ -31,10 +31,12 @@ import {
 } from "./json-values";
 import { entitlementMap } from "./subscription-lifecycle";
 import { directCharacterAudienceWhere } from "./public-content-audience";
-import { assertMediaEnhancementSource } from "./media-enhancement-source";
+import { assertFrozenMediaEnhancementSource, assertMediaEnhancementSource } from "./media-enhancement-source";
 import { isExecutableGenerationProfile } from "./generation-profile-catalog";
 import { assertChatVideoAvailable } from "@/server/modules/chat/video-availability";
 import { attachmentAttempt } from "@/server/modules/chat/turn-scope";
+import { freezeGenerationSource, withGenerationSnapshotSlot, type FrozenGenerationSource } from "./generation-source-snapshot";
+import { freezeGenerationReferences } from "./generation-reference-snapshot";
 import { generationContextSourceToken, lockGenerationContext, resolveGenerationContext } from "./generation-context";
 import {
   assertGenerationProfileCanDispatchReferences,
@@ -190,7 +192,10 @@ async function resolveGenerationRetryAuthority(
   const controls = jsonRecord(job.controls);
   const contextToken = generationContextSourceToken(job);
   if (contextToken) await resolveGenerationContext(userId, contextToken);
-  if (job.sourceType === "media_enhance") await assertMediaEnhancementSource(job);
+  if (job.sourceType === "media_enhance") {
+    if (Array.isArray(controls.referenceSnapshots)) await assertFrozenMediaEnhancementSource(job);
+    else await assertMediaEnhancementSource(job);
+  }
   const retrySourceImageAssetId = stringFromRecord(
     controls,
     "sourceImageAssetId",
@@ -450,6 +455,7 @@ export async function retryGenerationJobForUser(input: {
   const retry = await acceptGenerationJobForUser({
     userId,
     identity: { idempotencyKey: retryIdempotencyKey },
+    transactionTimeoutMs: 30_000,
     retryOf: job,
     prepare: async (tx) => {
       const lockedJob = await tx.generationJob.findUniqueOrThrow({ where: { id: job.id } });
@@ -509,25 +515,55 @@ export async function retryGenerationJobForUser(input: {
         ...(retryLookReferenceAssetId ? [retryLookReferenceAssetId] : []),
         ...(lockedContext?.authorityMediaAssetIds ?? []),
       ]);
-      if (job.sourceType === "media_enhance") await assertMediaEnhancementSource(job, tx);
+      if (job.sourceType === "media_enhance") {
+        if (Array.isArray(controls.referenceSnapshots)) await assertFrozenMediaEnhancementSource(job, tx);
+        else await assertMediaEnhancementSource(job, tx);
+      }
       await assertRetryGenerationReferenceAuthoritiesInTx(tx, {
         referenceAssetIds: retryReferenceAssetIds,
         characterId: job.characterId,
       });
       if (contextToken) await resolveGenerationContext(userId, contextToken, tx);
+      let frozenRetrySource: FrozenGenerationSource | undefined;
       if (retrySourceImageAssetId) {
-        await assertGenerationSourceImageAuthority(tx, {
+        const needsSnapshot = job.mode === "video" && !Object.keys(jsonRecord(controls.sourceSnapshot)).length;
+        const verifySource = () => assertGenerationSourceImageAuthority(tx, {
           sourceImageAssetId: retrySourceImageAssetId,
           userId,
           characterId: job.characterId,
           authorizedComicSourceMediaId: lockedContext?.source.kind === "comic" ? lockedContext.sourceMedia?.id : undefined,
+          verifyVideoPixels: needsSnapshot,
         });
+        if (needsSnapshot) frozenRetrySource = await withGenerationSnapshotSlot(async () => {
+          const source = await verifySource();
+          if (!source) throw new Error("Verified retry source bytes are missing");
+          return freezeGenerationSource(tx, { userId, ...source });
+        });
+        else await verifySource();
       }
       if (retryLookReferenceAssetId) {
         await assertGenerationSourceImageAuthority(tx, {
           sourceImageAssetId: retryLookReferenceAssetId,
           userId,
           characterId: job.characterId,
+        });
+      }
+      let referenceSnapshots: unknown = controls.referenceSnapshots;
+      if (!Array.isArray(referenceSnapshots)) {
+        if (!frozenRetrySource && job.mode === "video" && retrySourceImageAssetId) {
+          const sourcePin = jsonRecord(controls.sourceSnapshot);
+          const id = stringFromRecord(sourcePin, "snapshotId");
+          const sha256 = stringFromRecord(sourcePin, "sha256");
+          if (id && sha256 && sourcePin.version === 1 && sourcePin.sourceImageAssetId === retrySourceImageAssetId) {
+            frozenRetrySource = await tx.generationSourceSnapshot.findFirst({ where: { id, userId, sha256, sizeBytes: typeof sourcePin.sizeBytes === "number" ? sourcePin.sizeBytes : -1, contentType: stringFromRecord(sourcePin, "contentType") ?? "" } }) ?? undefined;
+            if (!frozenRetrySource) throw Errors.conflict("Generation source snapshot is unavailable");
+          } else if (Object.keys(sourcePin).length) throw Errors.conflict("Generation source snapshot authority is invalid");
+        }
+        referenceSnapshots = await freezeGenerationReferences(tx, {
+          userId, characterId: job.characterId, controls: { ...controls, lookReferenceAssetId: retryLookReferenceAssetId },
+          referenceAssetIds: job.referenceAssetIds, referenceManifest: job.referenceManifest,
+          authorizedSourceImageAssetId: lockedContext?.source.kind === "comic" ? lockedContext.sourceMedia?.id : undefined,
+          reuse: retrySourceImageAssetId && frozenRetrySource ? { assetId: retrySourceImageAssetId, snapshot: frozenRetrySource } : undefined,
         });
       }
       return {
@@ -549,6 +585,8 @@ export async function retryGenerationJobForUser(input: {
           negativePrompt: job.negativePrompt,
           controls: toInputJson(pruneUndefined({
             ...controls,
+            ...(Array.isArray(referenceSnapshots) && referenceSnapshots.length ? { referenceSnapshots } : {}),
+            ...(frozenRetrySource ? { sourceSnapshot: { version: 1, sourceImageAssetId: retrySourceImageAssetId, snapshotId: frozenRetrySource.id, sha256: frozenRetrySource.sha256, sizeBytes: frozenRetrySource.sizeBytes, contentType: frozenRetrySource.contentType } } : {}),
             generationProfileKey: profile.profileKey,
             generationProfileVersion: profile.version,
             workflowKey: workflowDescriptor?.workflowKey,

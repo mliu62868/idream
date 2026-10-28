@@ -58,6 +58,8 @@ import type {
   GenerationSource,
 } from "./generation-request-schema";
 import { generationContextToken, lockGenerationContext, resolveGenerationContext } from "./generation-context";
+import { freezeGenerationSource, withGenerationSnapshotSlot, type FrozenGenerationSource } from "./generation-source-snapshot";
+import { freezeGenerationReferences } from "./generation-reference-snapshot";
 
 // SPEC: 用户侧「发起一次生成」的完整业务动作 —— 定路线、验报价、锁身份与素材权威、
 // 扣币、落 Generation Job、预留首个 Attempt 并唤醒投递。
@@ -92,10 +94,7 @@ export function fitChatImageRequestToRoute(
   };
 }
 
-export async function createGenerationJobForUser(
-  userId: string,
-  body: GenerationCreateBody,
-  options: {
+type GenerationJobOptions = {
     idempotencyKey?: string | null;
     requestFingerprint?: string;
     source?: GenerationSource;
@@ -109,12 +108,24 @@ export async function createGenerationJobForUser(
     // A sequence atomically admits its ordinary child Requests in one ledger transaction.
     admissionTx?: Prisma.TransactionClient;
     sequenceId?: string;
-  } = {},
-) {
+    /** Only shared by child scenes inside the same admission transaction. */
+    videoSourceChecks?: Set<string>;
+    /** Shared only by scenes in one admission transaction. */
+    videoSourceSnapshots?: Map<string, FrozenGenerationSource>;
+  };
+
+export async function createGenerationJobForUser(userId: string, body: GenerationCreateBody, options: GenerationJobOptions = {}) {
+  const admit = await prepareGenerationJobForUser(userId, body, options);
+  return admit(options.admissionTx);
+}
+
+// Resolve the pre-admission snapshot before a caller opens its transaction.
+// The returned closure rechecks mutable authorities under that transaction.
+export async function prepareGenerationJobForUser(userId: string, body: GenerationCreateBody, options: GenerationJobOptions = {}) {
   const preexisting = await findExistingGenerationJob(userId, options, options.admissionTx);
   if (preexisting) {
     if (!options.admissionTx) await wakeQueuedGenerationDispatch(preexisting);
-    return preexisting;
+    return async () => preexisting;
   }
   if (
     (
@@ -300,9 +311,13 @@ export async function createGenerationJobForUser(
         )
       : (body.negativePrompt ?? null);
 
-  return acceptGenerationJobForUser({
+  return (admissionTx?: Prisma.TransactionClient) => acceptGenerationJobForUser({
     userId,
     identity: options,
+    // Video admission reads, decodes, and stores its source under the same
+    // authority locks; the default five-second transaction cannot cover its
+    // bounded ten-second remote read and chunk writes.
+    transactionTimeoutMs: 30_000,
     chatAttachment: options.chatAttachment,
     sequenceId: options.sequenceId,
     prepare: async (tx) => {
@@ -409,13 +424,25 @@ export async function createGenerationJobForUser(
       }
       // Re-read the complete grant after all identity and Comic page locks are held.
       if (contextToken) await resolveGenerationContext(userId, contextToken, tx);
+      let frozenVideoSource: FrozenGenerationSource | undefined;
       if (sourceImageAssetId) {
-        await assertGenerationSourceImageAuthority(tx, {
+        frozenVideoSource = options.videoSourceSnapshots?.get(sourceImageAssetId);
+        const verify = async () => assertGenerationSourceImageAuthority(tx, {
           sourceImageAssetId,
           userId,
           characterId: character?.id ?? null,
+          verifyVideoPixels: body.mode === "video" && !frozenVideoSource,
           authorizedComicSourceMediaId: lockedContext?.source.kind === "comic" ? lockedContext.sourceMedia?.id : undefined,
         });
+        if (body.mode === "video" && !frozenVideoSource) {
+          frozenVideoSource = await withGenerationSnapshotSlot(async () => {
+            const source = await verify();
+            if (!source) throw new Error("Verified video source bytes are missing");
+            return freezeGenerationSource(tx, { userId, ...source });
+          });
+          options.videoSourceSnapshots?.set(sourceImageAssetId, frozenVideoSource);
+        } else await verify();
+        if (body.mode === "video") options.videoSourceChecks?.add(sourceImageAssetId);
       }
       const referenceAssetIds =
         referenceAuthority?.referenceAssetIds ?? [];
@@ -482,6 +509,7 @@ export async function createGenerationJobForUser(
         width: dimensions.width,
         height: dimensions.height,
         sourceImageAssetId: sourceImageAssetId ?? undefined,
+        ...(frozenVideoSource ? { sourceSnapshot: { version: 1, sourceImageAssetId, snapshotId: frozenVideoSource.id, sha256: frozenVideoSource.sha256, sizeBytes: frozenVideoSource.sizeBytes, contentType: frozenVideoSource.contentType } } : {}),
         lookReferenceAssetId: requestedLookReferenceAssetId ?? undefined,
         workflowIdentity: workflowDescriptor?.identity,
         consistencyMode: visualProfile ? consistencyMode : undefined,
@@ -501,6 +529,14 @@ export async function createGenerationJobForUser(
             }
           : undefined,
       });
+      const referenceSnapshots = await freezeGenerationReferences(tx, {
+        userId, characterId: character?.id ?? null, controls,
+        referenceAssetIds: visualProfile ? JSON.parse(JSON.stringify(referenceAssetIds)) : undefined,
+        referenceManifest: referenceSetRevision ? JSON.parse(JSON.stringify(referenceManifest)) : undefined,
+        authorizedSourceImageAssetId: lockedContext?.source.kind === "comic" ? lockedContext.sourceMedia?.id : undefined,
+        reuse: sourceImageAssetId && frozenVideoSource ? { assetId: sourceImageAssetId, snapshot: frozenVideoSource } : undefined,
+      });
+      if (referenceSnapshots.length) Object.assign(controls, { referenceSnapshots });
       return {
         entitlements,
         data: {
@@ -539,7 +575,7 @@ export async function createGenerationJobForUser(
         },
       };
     },
-  }, options.admissionTx);
+  }, admissionTx);
 }
 
 function characterLookSnapshot(look: {

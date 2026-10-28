@@ -69,7 +69,7 @@ export function CharacterDetailHero({
           {character.style ?? "realistic"} companion
         </p>
         <div className="mt-3 flex flex-wrap items-end gap-x-3 gap-y-2">
-          <h1 className="text-[40px] font-black uppercase leading-[0.95] lg:text-[72px]">
+          <h1 className="min-w-0 max-w-full break-words text-[40px] font-black uppercase leading-[0.95] lg:text-[72px]">
             {character.title}
           </h1>
           <span

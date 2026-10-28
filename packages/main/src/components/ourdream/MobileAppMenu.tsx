@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { ExternalLink, Menu } from "lucide-react";
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { primaryNavItems, secondaryNavItems } from "@/lib/ourdream-data";
 import { useViewerGate } from "@/hooks/useViewerGate";
 import { authHrefForTarget, authNextTargetFromPath, signupReferralCode } from "./authRedirect";
@@ -28,6 +28,7 @@ export function MobileAppMenu({
   currentPath = "/",
 }: Readonly<{ activeHref?: string; currentPath?: string }>) {
   const [open, setOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const menuId = useId();
   // A signed-out visitor gets Log in / Join free here: on the narrowest phones
   // the top bar keeps only Join free so the search box stays usable.
@@ -48,11 +49,17 @@ export function MobileAppMenu({
   ];
 
   return (
-    <div className="relative md:hidden">
+    <div className="relative md:hidden" onKeyDown={(event) => {
+      if (event.key !== "Escape" || !open) return;
+      event.preventDefault();
+      setOpen(false);
+      buttonRef.current?.focus();
+    }}>
       <button
+        ref={buttonRef}
         aria-controls={menuId}
         aria-expanded={open}
-        aria-label="Open navigation menu"
+        aria-label={open ? "Close navigation menu" : "Open navigation menu"}
         className="inline-flex h-10 w-10 items-center justify-center rounded-full text-[rgb(170,170,170)] transition-colors hover:bg-[rgb(36,36,36)] hover:text-white"
         onClick={() => setOpen((value) => !value)}
         type="button"
@@ -62,7 +69,7 @@ export function MobileAppMenu({
       {open ? (
         <nav
           aria-label="App navigation"
-          className="absolute left-0 top-12 z-50 grid w-[calc(100vw-1rem)] max-w-[358px] grid-cols-2 gap-2 rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-3 shadow-[0_16px_40px_rgba(0,0,0,0.38)]"
+          className="absolute left-0 top-12 z-50 grid max-h-[calc(100dvh-8rem-env(safe-area-inset-bottom))] w-[calc(100vw-1rem)] max-w-[358px] grid-cols-2 gap-2 overflow-y-auto overscroll-contain rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-3 shadow-[0_16px_40px_rgba(0,0,0,0.38)]"
           id={menuId}
         >
           {menuItems.map((item) => {

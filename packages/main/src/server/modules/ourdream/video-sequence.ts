@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { fishAudioDeliverySettingsSchema, videoSequenceRequestSchema, REDGRAFT_VIDEO_OPTIONS, REDGRAFT_VIDEO_DEFAULTS, type VideoSequenceRequest } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
+import type { FrozenGenerationSource } from "./generation-source-snapshot";
 import { Errors } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
 import { resolveMediaAssetBlobLocator } from "@/server/lib/media-asset-authority";
@@ -22,7 +23,7 @@ import { selectGenerationProfile } from "./generation-profile-selection";
 import { featureFlagEnabled } from "./generation-profile-catalog";
 import { generationJobSchema } from "./generation-request-schema";
 import { quoteGeneration, quoteAuthorityFor } from "./generation-quote";
-import { createGenerationJobForUser } from "./generation-job-create";
+import { prepareGenerationJobForUser } from "./generation-job-create";
 import { appendGenerationEvent, generationWriteRequestFingerprint } from "./generation-job-authority";
 import { generationJobInclude, readGenerationJobs, latestGenerationAttemptStatuses } from "./generation-job-read-model";
 import { composeVideoScenes } from "./video-composition";
@@ -53,10 +54,50 @@ function requestIdentity(body: VideoSequenceRequest) {
   return canonicalJsonHash({ version: "video-sequence-request-v1", body: semantic });
 }
 
+// Lock only the short intent transitions, on the same connection as the write.
+async function lockSequenceIntent(tx: Prisma.TransactionClient, userId: string, key: string) {
+  const identity = JSON.stringify(["video-sequence-intent", userId, key]);
+  const rows = await tx.$queryRaw<Array<{ acquired: boolean }>>`SELECT pg_try_advisory_xact_lock(hashtextextended(${identity}, 0)) AS acquired`;
+  if (!rows[0]?.acquired) throw Errors.unavailable("The original video request is still being processed. Check it again shortly.");
+}
+
+export async function readVideoSequenceByRequest(userId: string, key: string) {
+  const id = await prisma.$transaction(async tx => {
+    await lockSequenceIntent(tx, userId, key);
+    const id = (await tx.videoSequence.findUnique({ where: { userId_idempotencyKey: { userId, idempotencyKey: key } }, select: { id: true } }))?.id;
+    if (!id) {
+      const cancellation = await tx.videoSequenceCancellation.findUnique({ where: { userId_idempotencyKey: { userId, idempotencyKey: key } } });
+      if (cancellation) throw Errors.gone("The original video request was closed without a charge", { reason: "video_sequence_intent_closed" });
+      throw Errors.unavailable("The original video request is not confirmed. Retry or close it safely.");
+    }
+    return id;
+  });
+  return readVideoSequence(userId, id);
+}
+
+export async function abandonVideoSequenceIntent(userId: string, body: VideoSequenceRequest, idempotencyKey: string) {
+  const fingerprint = requestIdentity(body);
+  const result = await prisma.$transaction(async tx => {
+    await lockSequenceIntent(tx, userId, idempotencyKey);
+    const key = { userId_idempotencyKey: { userId, idempotencyKey } };
+    const sequence = await tx.videoSequence.findUnique({ where: key });
+    if (sequence) {
+      if (sequence.requestFingerprint !== fingerprint) throw Errors.conflict("This video request key belongs to a different sequence");
+      return { id: sequence.id };
+    }
+    const cancellation = await tx.videoSequenceCancellation.findUnique({ where: key });
+    if (cancellation && cancellation.requestFingerprint !== fingerprint) throw Errors.conflict("This video request key belongs to a different sequence");
+    if (!cancellation) await tx.videoSequenceCancellation.create({ data: { userId, idempotencyKey, requestFingerprint: fingerprint } });
+    return { id: null };
+  });
+  return result.id ? { state: "accepted" as const, sequence: await readVideoSequence(userId, result.id) } : { state: "abandoned" as const };
+}
+
 export async function quoteVideoSequence(userId: string, body: VideoSequenceRequest) {
   const resolved = [];
+  const videoSourceChecks = new Set<string>();
   for (const [ordinal] of body.scenes.entries()) {
-    const value = await quoteGeneration({ userId, body: nativeSceneBody(body, ordinal), profileSelectionAuthority: "public_generator" });
+    const value = await quoteGeneration({ userId, body: nativeSceneBody(body, ordinal), profileSelectionAuthority: "public_generator", videoSourceChecks });
     if (value.plan.videoRecipe?.workflowKey !== "redgraft-ltx25-i2v") throw Errors.conflict("Video sequences require the published RedGraft route");
     const authority = quoteAuthorityFor(value.quote, 1);
     if (!authority || !value.quote.video) throw Errors.unavailable("The native video quote is incomplete");
@@ -88,28 +129,41 @@ export async function createVideoSequence(userId: string, body: VideoSequenceReq
   if (existing) { checkReplay(existing); return readVideoSequence(userId, existing.id); }
   const quoted = await quoteVideoSequence(userId, body);
   if (!body.quoteFingerprint || body.quoteFingerprint !== quoted.fingerprint) throw Errors.conflict("Video sequence quote changed. Review its current price before accepting.", { reason: "video_sequence_quote_stale" });
-  const result = await prisma.$transaction(async tx => {
+  const sequenceId = randomUUID();
+  const videoSourceChecks = new Set<string>();
+  const videoSourceSnapshots = new Map<string, FrozenGenerationSource>();
+  const admissions: Array<Awaited<ReturnType<typeof prepareGenerationJobForUser>>> = [];
+  for (const [ordinal] of body.scenes.entries()) {
+    const native = { ...nativeSceneBody(body, ordinal), quoteAuthority: quoted.scenes[ordinal]!.authority };
+    admissions.push(await prepareGenerationJobForUser(userId, native, { sequenceId,
+      idempotencyKey: `video-sequence:${sequenceId}:${ordinal}`, requestFingerprint: generationWriteRequestFingerprint("generation.create", native),
+      source: { sourceType: "video_sequence_scene", sourceId: `${sequenceId}:${ordinal}`, sourceMeta: { sequenceId, ordinal } }, profileSelectionAuthority: "public_generator", videoSourceChecks, videoSourceSnapshots }));
+  }
+  const sequence = await prisma.$transaction(async tx => {
+    await lockSequenceIntent(tx, userId, idempotencyKey);
     await lockUserLedger(tx, userId);
     const replay = await tx.videoSequence.findUnique({ where: { userId_idempotencyKey: { userId, idempotencyKey } } });
     if (replay) { checkReplay(replay); return replay; }
+    const cancellation = await tx.videoSequenceCancellation.findUnique({ where: { userId_idempotencyKey: { userId, idempotencyKey } } });
+    if (cancellation) {
+      checkReplay(cancellation);
+      throw Errors.gone("The original video request was closed without a charge", { reason: "video_sequence_intent_closed" });
+    }
     if (await tx.videoSequence.count({ where: { userId, status: { in: ["generating", "composing", "unknown"] } } })) throw Errors.rateLimited("Finish or stop the existing video sequence before starting another");
     const balance = await dreamcoinBalance(userId, tx);
     if (balance < quoted.costDreamcoins) throw Errors.paymentRequired("Insufficient DreamCoins for this sequence", { required: quoted.costDreamcoins, available: balance });
     const { quoteFingerprint: _quote, ...request } = body;
-    const sequence = await tx.videoSequence.create({ data: { id: randomUUID(), userId, characterId: body.characterId,
+    const sequence = await tx.videoSequence.create({ data: { id: sequenceId, userId, characterId: body.characterId,
       idempotencyKey, requestFingerprint: fingerprint, request: toInputJson(request), acceptedQuote: toInputJson(quoted), audio: body.audio,
       ...(quoted.voicePin ? { voicePin: toInputJson(quoted.voicePin) } : {}) } });
-    for (const [ordinal] of body.scenes.entries()) {
-      const native = { ...nativeSceneBody(body, ordinal), quoteAuthority: quoted.scenes[ordinal]!.authority };
-      const job = await createGenerationJobForUser(userId, native, { admissionTx: tx, sequenceId: sequence.id,
-        idempotencyKey: `video-sequence:${sequence.id}:${ordinal}`, requestFingerprint: generationWriteRequestFingerprint("generation.create", native),
-        source: { sourceType: "video_sequence_scene", sourceId: `${sequence.id}:${ordinal}`, sourceMeta: { sequenceId: sequence.id, ordinal } }, profileSelectionAuthority: "public_generator" });
+    for (const [ordinal, admit] of admissions.entries()) {
+      const job = await admit(tx);
       await tx.videoSequenceScene.create({ data: { sequenceId: sequence.id, ordinal, generationJobId: job.id } });
     }
     return sequence;
   }, { timeout: 30_000 });
   await dispatchGenerationAttemptOutbox(prisma);
-  return readVideoSequence(userId, result.id);
+  return readVideoSequence(userId, sequence.id);
 }
 
 export async function readVideoSequence(userId: string, id: string) {

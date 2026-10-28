@@ -33,6 +33,7 @@ vi.mock("./CharacterDetailHero", () => ({
 
 import { CharacterDetailClient } from "./CharacterDetailClient";
 import { invalidateViewerAuthority } from "./viewer-auth";
+import * as viewerGateModule from "@/hooks/useViewerGate";
 
 const viewerResponse = (input: RequestInfo | URL) => String(input) === "/api/v1/me"
   ? Response.json({ ok: true, data: { user: { id: "owner-a" } } }) : null;
@@ -71,11 +72,12 @@ describe("CharacterDetailClient like relationship", () => {
     mutationMethods.length = 0;
     invalidateViewerAuthority();
     window.history.replaceState(null, "", "/characters/character-1");
+    let liked = false;
     vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const viewer = viewerResponse(_input);
       if (viewer) return viewer;
       if (!init?.method) {
-        return Response.json({ ok: true, data: { character } });
+        return Response.json({ ok: true, data: { character: { ...character, liked, likes: liked ? "1" : "0" } } });
       }
       mutationMethods.push(init.method);
       if (String(_input) === "/api/v1/chat/sessions") {
@@ -84,7 +86,7 @@ describe("CharacterDetailClient like relationship", () => {
           { status: 403 },
         );
       }
-      const liked = init.method === "POST";
+      liked = init.method === "POST";
       return Response.json({
         ok: true,
         data: { liked, likesCount: liked ? 1 : 0, likes: liked ? "1" : "0" },
@@ -339,9 +341,35 @@ describe("CharacterDetailClient viewer lifecycle", () => {
     await mount(); expect(button("Chat")).toBeUndefined(); expect(reads).toEqual([]); expect(button("Retry")).toBeDefined();
     unavailable = false; await act(async () => button("Retry")!.click()); await settle(); expect(button("Chat")).toBeDefined();
   });
+  it("offers account retry if viewer confirmation fails with a character still displayed", async () => {
+    const identity = { kind: "user", userId: "owner-a", scope: "user:owner-a" } as const;
+    const revalidate = vi.fn(async () => identity);
+    let error: string | null = null;
+    const gate = {
+      onOwnerChange: () => () => {},
+    } as unknown as viewerGateModule.ViewerGate["gate"];
+    vi.spyOn(viewerGateModule, "useViewerGate").mockImplementation(() => ({
+      identity, scope: identity.scope, error, revalidation: 0, gate,
+      fetch: async input => read(input), revalidate,
+    }));
+    await mount();
+    expect(button("Chat")).toBeDefined();
+    error = "Your account could not be checked.";
+    await act(async () => root.render(createElement(CharacterDetailClient, { id: "character-1" }))); await settle();
+    expect(container.textContent).toContain(error);
+    expect(button("Chat")).toBeUndefined();
+    expect(button("Retry")).toBeDefined();
+    await act(async () => button("Retry")!.click());
+    expect(revalidate).toHaveBeenCalledOnce();
+  });
   it("sends a same-account like with a fixed scope and uses the authority result", async () => {
     const scopes: Array<string | null> = [];
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => { if (init?.method) { scopes.push(new Headers(init.headers).get("x-idream-viewer-scope")); return ok({ liked: false, likesCount: 7, likes: "7" }); } return read(input); }));
+    let changed = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method) { changed = true; scopes.push(new Headers(init.headers).get("x-idream-viewer-scope")); return ok({ liked: false, likesCount: 7, likes: "7" }); }
+      if (changed && String(input) === "/api/v1/characters/character-1") return ok({ character: { ...character, name: "Private owner-a", title: "Private owner-a", liked: false, likesCount: 7, likes: "7" } });
+      return read(input);
+    }));
     await mount(); await act(async () => button("Liked")!.click()); await settle();
     expect(scopes).toEqual(["user:owner-a"]); expect(button("Like")).toBeDefined(); expect(container.textContent).toContain("7 likes");
   });
@@ -424,6 +452,160 @@ describe("CharacterDetailClient viewer lifecycle", () => {
     expect(container.textContent).toContain("Report submitted."); unavailable = true;
     await act(async () => window.dispatchEvent(new Event("focus"))); await settle();
     expect(container.textContent).toContain("Report submitted."); expect(container.textContent).toContain("Could not load this character."); expect(button("Retry")).toBeDefined();
+  });
+
+  it.each([401, 403, 404, 409])("removes a previously loaded character when a later read returns %s", async status => {
+    let denied = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      denied && String(input) === "/api/v1/characters/character-1"
+        ? Response.json({ ok: false }, { status }) : read(input)));
+    await mount();
+    expect(container.textContent).toContain("Private owner-a");
+    denied = true;
+    await act(async () => window.dispatchEvent(new Event("focus"))); await settle();
+    expect(container.textContent).not.toContain("Private owner-a");
+    expect(document.title).not.toContain("Private owner-a");
+    expect(button("Chat")).toBeUndefined();
+    expect(container.querySelector('a[href^="/generate?"]')).toBeNull();
+    expect(container.textContent).toContain(status === 404 ? "could not be found" : "sign in");
+  });
+
+  it("marks a transient failure stale, removes actions, and restores them after retry", async () => {
+    let unavailable = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      unavailable && String(input) === "/api/v1/characters/character-1"
+        ? Response.json({ ok: false }, { status: 503 }) : read(input)));
+    await mount();
+    unavailable = true;
+    await act(async () => window.dispatchEvent(new Event("focus"))); await settle();
+    expect(container.textContent).toContain("Private owner-a");
+    expect(container.textContent).toContain("out of date");
+    expect(button("Chat")).toBeUndefined();
+    expect(button("Liked")).toBeUndefined();
+    expect(button("Report")).toBeUndefined();
+    expect(container.querySelector('a[href^="/generate?"]')).toBeNull();
+    unavailable = false;
+    await act(async () => button("Retry")!.click()); await settle();
+    expect(container.textContent).not.toContain("out of date");
+    expect(button("Chat")).toBeDefined();
+    expect(button("Liked")).toBeDefined();
+  });
+
+  it("hides an open report while stale and keeps its draft through retry", async () => {
+    let unavailable = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      unavailable && String(input) === "/api/v1/characters/character-1"
+        ? Response.json({ ok: false }, { status: 503 }) : read(input)));
+    await mount();
+    await act(async () => button("Report")!.click());
+    const textarea = container.querySelector("textarea")!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(textarea, "My report draft");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    unavailable = true;
+    await act(async () => window.dispatchEvent(new Event("focus"))); await settle();
+    expect(container.querySelector('[role="dialog"]')?.closest("[hidden]")).not.toBeNull();
+    unavailable = false;
+    await act(async () => button("Retry")!.click()); await settle();
+    expect(container.querySelector('[role="dialog"]')?.closest("[hidden]")).toBeNull();
+    expect(container.querySelector("textarea")?.value).toBe("My report draft");
+  });
+
+  it("rechecks the character after a pending like even when focus happens during the write", async () => {
+    let finishLike!: (response: Response) => void;
+    let withdrawn = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method) return new Promise<Response>(resolve => { finishLike = resolve; });
+      if (withdrawn && String(input) === "/api/v1/characters/character-1") return Response.json({ ok: false }, { status: 404 });
+      return read(input);
+    }));
+    await mount();
+    await act(async () => button("Liked")!.click()); await settle();
+    expect(finishLike).toBeDefined();
+    withdrawn = true;
+    await act(async () => window.dispatchEvent(new Event("focus"))); await settle();
+    await act(async () => finishLike(ok({ liked: false, likesCount: 0, likes: "0" }))); await settle();
+    expect(container.textContent).toContain("could not be found");
+    expect(container.textContent).not.toContain("Private owner-a");
+    expect(button("Chat")).toBeUndefined();
+  });
+
+  it("keeps an open report usable if its character becomes unavailable, but clears it on account change", async () => {
+    let withdrawn = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      withdrawn && String(input) === "/api/v1/characters/character-1"
+        ? Response.json({ ok: false }, { status: 404 }) : read(input)));
+    await mount();
+    await act(async () => button("Report")!.click());
+    const textarea = container.querySelector("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "My report draft");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    withdrawn = true;
+    await act(async () => window.dispatchEvent(new Event("focus"))); await settle();
+    expect(container.textContent).not.toContain("Private owner-a");
+    expect(container.querySelector('[role="dialog"]')?.closest("[hidden]")).toBeNull();
+    expect(container.querySelector("textarea")?.value).toBe("My report draft");
+    viewer = "owner-b";
+    await act(async () => window.dispatchEvent(new Event("focus"))); await settle();
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(container.textContent).not.toContain("My report draft");
+  });
+
+  it.each([401, 409])("hides the report draft when account confirmation returns %s", async status => {
+    let unconfirmed = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      unconfirmed && String(input) === "/api/v1/characters/character-1"
+        ? Response.json({ ok: false }, { status }) : read(input)));
+    await mount();
+    await act(async () => button("Report")!.click());
+    unconfirmed = true;
+    await act(async () => window.dispatchEvent(new Event("focus"))); await settle();
+    expect(container.querySelector('[role="dialog"]')?.closest("[hidden]")).not.toBeNull();
+    expect(button("Retry")).toBeDefined();
+    viewer = "owner-b";
+    await act(async () => window.dispatchEvent(new Event("focus"))); await settle();
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("restores the original account's report after account retry and a fresh character read", async () => {
+    let conflict = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      conflict && String(input) === "/api/v1/characters/character-1"
+        ? Response.json({ ok: false }, { status: 409 }) : read(input)));
+    await mount();
+    await act(async () => button("Report")!.click());
+    conflict = true;
+    await act(async () => window.dispatchEvent(new Event("focus"))); await settle();
+    expect(container.querySelector('[role="dialog"]')?.closest("[hidden]")).not.toBeNull();
+    conflict = false;
+    await act(async () => button("Retry")!.click()); await settle();
+    expect(container.textContent).toContain("Private owner-a");
+    expect(container.querySelector('[role="dialog"]')?.closest("[hidden]")).toBeNull();
+  });
+
+  it("waits for a fresh character before resuming chat after a stale read", async () => {
+    let unavailable = false;
+    const writes: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method) { writes.push(String(input)); return Response.json({ ok: false }, { status: 403 }); }
+      if (unavailable && String(input) === "/api/v1/characters/character-1") return Response.json({ ok: false }, { status: 503 });
+      return read(input);
+    }));
+    await mount();
+    unavailable = true;
+    await act(async () => window.dispatchEvent(new Event("focus"))); await settle();
+    window.history.replaceState(null, "", "/characters/character-1?resume=chat");
+    await act(async () => root.render(createElement(CharacterDetailClient, { id: "character-1" }))); await settle();
+    expect(writes).toEqual([]);
+    expect(window.location.search).toBe("?resume=chat");
+    unavailable = false;
+    await act(async () => button("Retry")!.click()); await settle();
+    expect(writes).toEqual(["/api/v1/chat/sessions"]);
+    expect(window.location.search).toBe("");
   });
 
 });

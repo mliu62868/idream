@@ -164,6 +164,120 @@ describe("GeneratorWorkspace media journeys", () => {
     expect(container.textContent).toContain("100 coins");
   }
 
+  it("imports a public image into private Gallery and selects its authoritative editable projection", async () => {
+    const originalFetch = globalThis.fetch;
+    const imported = { ...mediaItem("imported-image"), prompt: null };
+    let importRequest: { body: unknown; key: string | null } | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/media/import-url") {
+        importRequest = { body: JSON.parse(String(init?.body)), key: new Headers(init?.headers).get("idempotency-key") };
+        return Response.json({ ok: true, data: { assetId: imported.id } }, { status: 201 });
+      }
+      if (path === "/api/v1/media?type=image&assetId=imported-image") return Response.json({ ok: true, data: { items: [imported], nextCursor: null } });
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Image Edit"));
+    await click(button("Import image from URL"));
+    const field = container.querySelector<HTMLInputElement>("#image-import-url")!;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "https://example.org/photo.jpg"); field.dispatchEvent(new Event("input", { bubbles: true })); });
+    const submit = container.querySelector('[data-testid="image-edit-panel"]')!.querySelectorAll("button");
+    await click([...submit].find((item) => item.textContent?.trim() === "Import image")!);
+    expect(importRequest?.body).toEqual({ url: "https://example.org/photo.jpg" });
+    expect(importRequest?.key).toBeTruthy();
+    expect(container.querySelector('[data-testid="image-edit-source-card"][data-media-id="imported-image"]')?.getAttribute("aria-pressed")).toBe("true");
+    expect(container.textContent).toContain("Image imported to your private Gallery and selected for editing.");
+    expect(window.sessionStorage.getItem("idream:image-url-import:user:generator-viewer")).toBeNull();
+  });
+
+  it("recovers a lost import response after refresh without retaining the source URL or resubmitting", async () => {
+    const originalFetch = globalThis.fetch;
+    const imported = { ...mediaItem("recovered-image"), prompt: null };
+    let submissions = 0;
+    let checkedKey = "";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/media/import-url") { submissions += 1; throw new TypeError("connection lost"); }
+      if (path.startsWith("/api/v1/media/import-url/request?")) {
+        checkedKey = new URL(path, window.location.origin).searchParams.get("key") ?? "";
+        return Response.json({ ok: true, data: { assetId: imported.id } });
+      }
+      if (path === "/api/v1/media?type=image&assetId=recovered-image") return Response.json({ ok: true, data: { items: [imported], nextCursor: null } });
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Image Edit"));
+    await click(button("Import image from URL"));
+    const field = container.querySelector<HTMLInputElement>("#image-import-url")!;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "https://example.org/photo.jpg?private=secret"); field.dispatchEvent(new Event("input", { bubbles: true })); });
+    await click([...container.querySelector('[data-testid="image-edit-panel"]')!.querySelectorAll("button")].find((item) => item.textContent?.trim() === "Import image")!);
+    const key = window.sessionStorage.getItem("idream:image-url-import:user:generator-viewer");
+    expect(key).toBeTruthy();
+    expect(JSON.stringify(window.sessionStorage)).not.toContain("private=secret");
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await mount();
+    await click(button("Image Edit"));
+    await click(button("Continue image import"));
+    expect(container.querySelector<HTMLInputElement>("#image-import-url")?.value).toBe("");
+    await click(button("Check import"));
+    expect(checkedKey).toBe(key);
+    expect(submissions).toBe(1);
+    expect(container.querySelector('[data-testid="image-edit-source-card"][data-media-id="recovered-image"]')?.getAttribute("aria-pressed")).toBe("true");
+    expect(window.sessionStorage.getItem("idream:image-url-import:user:generator-viewer")).toBeNull();
+  });
+
+  it("closes the import without changing the previous Gallery view or discarding the prompt", async () => {
+    await mount();
+    await click(button("Image Edit"));
+    const prompt = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Edit instructions"]')!;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(prompt, "Keep the flowers blue"); prompt.dispatchEvent(new Event("input", { bubbles: true })); });
+    await click(button("Gallery"));
+    await click(button("Import image"));
+    expect(container.querySelector("#image-import-url")).not.toBeNull();
+    await click(button("Close"));
+    expect(container.querySelector("#image-import-url")).toBeNull();
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Edit instructions"]')?.value).toBe("Keep the flowers blue");
+    expect(container.querySelector("form")?.className).toContain("hidden");
+  });
+
+  it("retries an unconfirmed import with its original key and rejects credentialed URLs before sending", async () => {
+    const originalFetch = globalThis.fetch;
+    const keys: Array<string | null> = [];
+    const imported = { ...mediaItem("retried-image"), prompt: null };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/media/import-url") {
+        keys.push(new Headers(init?.headers).get("idempotency-key"));
+        if (keys.length === 1) throw new TypeError("connection lost");
+        return Response.json({ ok: true, data: { assetId: imported.id } });
+      }
+      if (path === "/api/v1/media?type=image&assetId=retried-image") return Response.json({ ok: true, data: { items: [imported], nextCursor: null } });
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Image Edit"));
+    await click(button("Import image from URL"));
+    const field = container.querySelector<HTMLInputElement>("#image-import-url")!;
+    const enter = async (value: string) => act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, value); field.dispatchEvent(new Event("input", { bubbles: true })); });
+    await enter("https://user:password@example.org/image.jpg");
+    await click([...container.querySelector('[data-testid="image-edit-panel"]')!.querySelectorAll("button")].find((item) => item.textContent?.trim() === "Import image")!);
+    expect(keys).toHaveLength(0);
+    expect(container.textContent).toContain("without a username or password");
+    await enter(`https://example.org/${"a".repeat(4096)}`);
+    await click([...container.querySelector('[data-testid="image-edit-panel"]')!.querySelectorAll("button")].find((item) => item.textContent?.trim() === "Import image")!);
+    expect(keys).toHaveLength(0);
+    expect(container.textContent).toContain("4,096 characters or fewer");
+    await enter("https://example.org/photo.jpg");
+    await click([...container.querySelector('[data-testid="image-edit-panel"]')!.querySelectorAll("button")].find((item) => item.textContent?.trim() === "Import image")!);
+    await click(button("Retry import"));
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBeTruthy();
+    expect(keys[1]).toBe(keys[0]);
+    expect(container.querySelector('[data-testid="image-edit-source-card"][data-media-id="retried-image"]')?.getAttribute("aria-pressed")).toBe("true");
+  });
+
   it.each(["image", "video"] as const)("brings the opened %s feedback editor into view and keyboard focus without submitting", async type => {
     const originalFetch = globalThis.fetch;
     const mutations: string[] = [];
@@ -232,6 +346,10 @@ describe("GeneratorWorkspace media journeys", () => {
     if (type === "video") await click(button("Videos"));
     const card = container.querySelector('[data-testid="gallery-media-card"]')!;
     expect(card.querySelector('button[aria-label="Report intent mismatch"]'), "report instruction mismatch without misrating identity").not.toBeNull();
+    if (type === "image") {
+      const preview = card.querySelector('[data-testid="gallery-media-open"]')!;
+      expect(preview.parentElement?.contains(card.querySelector('button[aria-label="Report intent mismatch"]'))).toBe(false);
+    }
     await click(card.querySelector('button[aria-label="Report intent mismatch"]')!);
     expect(writes).toHaveLength(0);
     const direction = container.querySelector('textarea[aria-label="Correction direction"]') as HTMLTextAreaElement;
@@ -1709,14 +1827,14 @@ describe("GeneratorWorkspace media journeys", () => {
     expect(container.textContent).not.toContain("Applied preset");
   });
 
-  it.each([false, true])("restores the pending video's original character and pinned image instead of the catalog default (first jobs read delayed: %s)", async delayedJobs => {
+  it.each([[false, false], [true, false], [false, true]])("restores the pending video's original character and pinned image instead of the catalog default (first jobs read delayed: %s, response lost: %s)", async (delayedJobs, responseLost) => {
     const originalFetch = globalThis.fetch;
     const firstJobs = deferredResponse();
     let jobsReleased = false;
     const jobs = { items: [{ id: "original-scene", mode: "video", status: "running", errorCode: null,
       outputCount: 1, costDreamcoins: 100, createdAt: "2026-10-02T00:00:00.000Z" }] };
     const request = { characterId: "original-character", consistencyMode: "balanced", orientation: "2:3", quality: "preview", audio: "generated", scenes: [{ prompt: "A calm wave", seconds: 3 }] };
-    localStorage.setItem("idream:video-sequence:user:generator-viewer", JSON.stringify({ key: "original-request-key", id: "original-sequence", request }));
+    localStorage.setItem("idream:video-sequence:user:generator-viewer", JSON.stringify({ key: "original-request-key", id: responseLost ? null : "original-sequence", request }));
     const sequence = { id: "original-sequence", status: "generating", errorCode: null, request,
       scenes: [{ ordinal: 0, narrationState: "pending", job: { id: "original-scene", status: "running", controls: { sourceImageAssetId: "pinned-original-image" }, cost: { charged: 100, refunded: 0, finalCharge: 100 } }, assets: [] }],
       cost: { charged: 100, refunded: 0, finalCharge: 100 }, asset: null, createdAt: "2026-10-02T00:00:00.000Z", completedAt: null };
@@ -1737,6 +1855,7 @@ describe("GeneratorWorkspace media journeys", () => {
       if (path.endsWith("/video-sequences/capabilities")) return Response.json({ ok: true, data: { capabilities: videoCapabilities } });
       if (path.endsWith("/video-sequences")) return Response.json({ ok: true, data: { sequences: [sequence] } });
       if (path.endsWith("/original-sequence")) return Response.json({ ok: true, data: { sequence } });
+      if (path.startsWith("/api/v1/generation/video-sequences/request?")) return Response.json({ ok: true, data: { sequence } });
       if (delayedJobs && path.startsWith("/api/v1/generation/jobs?")) {
         return jobsReleased ? Response.json({ ok: true, data: jobs }) : firstJobs.promise;
       }
@@ -1749,7 +1868,8 @@ describe("GeneratorWorkspace media journeys", () => {
       await settle();
       expect(container.querySelector('[data-generation-job-id="original-scene"]'), "the first real jobs response has reached the workspace").not.toBeNull();
       expect(container.querySelector('[aria-label="Video sequence"]'), "a reload restores the active sequence without a manual Video click").not.toBeNull();
-    } else await click(button("Video"));
+    }
+    expect(container.querySelector('[aria-label="Video sequence"]'), "a reload restores the active sequence without a manual Video click").not.toBeNull();
     expect(container.querySelector<HTMLSelectElement>("#generator-character")?.value).toBe("original-character");
     expect(container.querySelector<HTMLSelectElement>("#generator-character")?.disabled).toBe(true);
     expect(container.querySelector<HTMLInputElement>("#generator-freeplay")?.disabled).toBe(true);
@@ -1924,10 +2044,14 @@ describe("GeneratorWorkspace media journeys", () => {
     { jobStatus: "completed", expected: "image", delayedJobs: false, priority: "none" },
     { jobStatus: "running", expected: "image", delayedJobs: true, priority: "handoff" },
     { jobStatus: "running", expected: "image", delayedJobs: true, priority: "unconfirmed-image" },
+    { jobStatus: "running", expected: "image", delayedJobs: true, priority: "user-image" },
   ])("opens on the $expected tab when the latest video job is $jobStatus ($priority; delayed jobs: $delayedJobs)", async ({ jobStatus, expected, delayedJobs, priority }) => {
     if (priority === "handoff") window.history.replaceState(null, "", "/generate?characterId=character&chatSessionId=chat-session&chatTurnId=chat-turn&chatAttempt=1");
     if (priority === "unconfirmed-image") {
       window.history.replaceState(null, "", "/generate?characterId=character");
+      localStorage.setItem("idream:video-sequence:user:generator-viewer", JSON.stringify({ key: "pending-video-key", id: null, request: {
+        characterId: "character", consistencyMode: "balanced", orientation: "7:12", quality: "preview", audio: "generated", scenes: [{ prompt: "A slow wave", seconds: 5 }],
+      } }));
       await expect(requestGenerationJobWithExactAuthority({
         body: { mode: "image", characterId: "character", freeplay: false, consistencyMode: "balanced", outputCount: 1, controls: { orientation: "4:5" },
           quoteAuthority: { profileId: "image-model", profileVersion: 1, routeFingerprint: "a".repeat(64), pricingFingerprint: "b".repeat(64), outputCount: 1, costDreamcoins: 5 } },
@@ -1968,12 +2092,51 @@ describe("GeneratorWorkspace media journeys", () => {
       expect(container.querySelector('[data-pending-request-key="retained-image-key"]')).not.toBeNull();
       expect(container.textContent).toContain("Check the existing request with its original settings and price.");
     }
+    if (priority === "user-image") {
+      await click(button("Video"));
+      await click(button("Image"));
+    }
     if (delayedJobs) {
       await act(async () => { jobsReleased = true; firstJobs.resolve(Response.json({ ok: true, data: jobs })); });
       await settle();
       expect(container.querySelector('[data-generation-job-id="video-job"]')).not.toBeNull();
     }
     expect(container.querySelector('[aria-label="Video sequence"]') !== null).toBe(expected === "video");
+    expect(paidWrites).toEqual([]);
+  });
+
+  it("restores only the new viewer's pending video after an account change", async () => {
+    const originalFetch = globalThis.fetch;
+    let viewer = "user:generator-viewer";
+    const nextViewer = "user:next-viewer";
+    const request = { characterId: "character", consistencyMode: "balanced", orientation: "7:12", quality: "preview", audio: "generated", scenes: [{ prompt: "The second viewer's wave", seconds: 5 }] };
+    const sequence = { id: "next-sequence", status: "generating", errorCode: null, request,
+      scenes: [{ ordinal: 0, narrationState: "pending", job: { id: "next-scene", status: "running", controls: {}, cost: { charged: 100, refunded: 0, finalCharge: 100 } }, assets: [] }],
+      cost: { charged: 100, refunded: 0, finalCharge: 100 }, asset: null, createdAt: "2026-10-02T00:00:00.000Z", completedAt: null };
+    localStorage.setItem(`idream:video-sequence:${nextViewer}`, JSON.stringify({ key: "next-viewer-key", id: sequence.id, request }));
+    const paidWrites: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (init?.method === "POST" && ["/api/v1/generation/jobs", "/api/v1/generation/video-sequences"].includes(path)) paidWrites.push(path);
+      if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: {
+        ...config, viewer: { authenticated: true, scope: viewer }, entitlements: { premium_controls: true, video_generation: true },
+        video: { enabled: true, availability: { state: "available" }, requiredEntitlement: "video_generation",
+          recipes: [{ id: "video-recipe", rowId: "video-recipe-v1", label: "Animate character", mode: "video", useCase: "character", version: 1 }],
+          models: [{ id: "video-model", label: "Video", maxCount: 1, costMultiplier: 1, entitlement: null }] },
+      } });
+      if (path.startsWith("/api/v1/generation/jobs?")) return Response.json({ ok: true, data: { items: viewer === nextViewer ? [{ id: "next-scene", mode: "video", status: "running", errorCode: null, outputCount: 1, costDreamcoins: 100, createdAt: sequence.createdAt }] : [] } });
+      if (path.endsWith("/video-sequences/capabilities")) return Response.json({ ok: true, data: { capabilities: videoCapabilities } });
+      if (path.endsWith("/video-sequences")) return Response.json({ ok: true, data: { sequences: viewer === nextViewer ? [sequence] : [] } });
+      if (path.endsWith("/next-sequence")) return Response.json({ ok: true, data: { sequence } });
+      return originalFetch(input, init);
+    }));
+    await mount();
+    expect(container.querySelector('[aria-label="Video sequence"]')).toBeNull();
+    viewer = nextViewer;
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    expect(container.querySelector('[aria-label="Video sequence"]')).not.toBeNull();
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Scene 1 prompt"]')?.value).toBe("The second viewer's wave");
     expect(paidWrites).toEqual([]);
   });
 

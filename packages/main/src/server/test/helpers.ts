@@ -3,6 +3,7 @@ import { expect } from "vitest";
 import type { Prisma } from "@prisma/client";
 import { idempotencyKeys, MAIN_QUEUES } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
+import { env } from "@/server/lib/env";
 import { AGE_GATE_COOKIE, type ActorRole } from "@/server/lib/auth";
 import { dispatchV1 } from "@/server/modules/ourdream/service";
 import { quoteAuthorityFor } from "@/server/modules/ourdream/generation-quote";
@@ -682,6 +683,14 @@ export async function runQueuedGenerationJobs(
             recordTransportExecution: async (input) => {
               await recordGenerationTransportExecution(input);
             },
+            readSourceSnapshot: async ({ snapshotId, jobId, attemptId }) => {
+              const { GET } = await import("@/app/api/internal/generation/source-snapshot/route");
+              const url = new URL("http://main.test/api/internal/generation/source-snapshot");
+              url.searchParams.set("snapshotId", snapshotId); url.searchParams.set("jobId", jobId); url.searchParams.set("attemptId", attemptId);
+              const response = await GET(new Request(url, { headers: { "x-internal-token": env.INTERNAL_TOKEN } }));
+              if (!response.ok) throw new Error(`Source snapshot test read failed: ${response.status}`);
+              return new Uint8Array(await response.arrayBuffer());
+            },
             providers: await generationTestProviders(),
             attemptsMade: job.attemptsMade,
             maxAttempts: job.maxAttempts,
@@ -737,6 +746,7 @@ export async function runQueuedGenerationJobs(
 type TestGenPipelineDeps = {
   acknowledgeTerminalRecord(input: any): Promise<void>;
   recordTransportExecution(input: any): Promise<void>;
+  readSourceSnapshot(input: { snapshotId: string; jobId: string; attemptId: string }): Promise<Uint8Array>;
   providers: TestGenProviders;
   attemptsMade: number;
   maxAttempts: number;

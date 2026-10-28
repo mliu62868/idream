@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { Client } from "pg";
-import { generationTerminalRecordSchema } from "@idream/shared/contracts";
+import { generationTerminalRecordSchema, imageGeneratePayloadSchema } from "@idream/shared/contracts";
 import sharp from "sharp";
 import { prisma } from "@/server/lib/db";
 import { providers } from "@/server/providers";
@@ -107,6 +107,17 @@ describe("Gallery image enhancement authority", () => {
     if (!attempt.provider) throw new Error("Reserved enhancement has no provider");
     const queued = await buildGenerationAttemptQueueInput(job, { ...attempt, provider: attempt.provider });
     expect(queued.payload).toMatchObject({ count: 1, model: "realesrgan-x2plus-enhance", controls: { width: 160, height: 120, enhancement: { sourceMediaId: sourceId, sourceSha256: createHash("sha256").update(sourceBytes).digest("hex"), scale: 2 } }, referenceImages: [{ assetId: sourceId, role: "source_image" }] });
+    const reference = imageGeneratePayloadSchema.parse(queued.payload).referenceImages?.[0];
+    if (!reference?.sourceSnapshotId) throw new Error("Enhancement reference was not frozen");
+    await providers.blob.putPrivate({ key: sourceKey, body: await sharp(sourceBytes).negate().png().toBuffer(), contentType: "image/png" });
+    try {
+      const afterReplacement = await buildGenerationAttemptQueueInput(job, { ...attempt, provider: attempt.provider });
+      expect(imageGeneratePayloadSchema.parse(afterReplacement.payload).referenceImages?.[0]).toMatchObject({ sourceSnapshotId: reference.sourceSnapshotId, contentSha256: createHash("sha256").update(sourceBytes).digest("hex") });
+      const chunks = await prisma.generationSourceSnapshotChunk.findMany({ where: { snapshotId: reference.sourceSnapshotId }, orderBy: { ordinal: "asc" } });
+      expect(Buffer.concat(chunks.map(chunk => Buffer.from(chunk.bytes)))).toEqual(sourceBytes);
+    } finally {
+      await providers.blob.putPrivate({ key: sourceKey, body: sourceBytes, contentType: "image/png" });
+    }
     expect(await dreamcoinBalance(owner)).toBe(before - quoted.quote.costs[0]!.costDreamcoins);
     await runWithOutput();
     const detail = await api("GET", `generation/jobs/${job.id}`, { userId: owner, ageGate: true });
@@ -188,15 +199,24 @@ describe("Gallery image enhancement authority", () => {
     await prisma.mediaAsset.update({ where: { id: sourceId }, data: { deletedAt: new Date() } });
     try { expectError(await api("POST", `generation/jobs/${first.data.job.id}/retry/quote`, { userId: owner, ageGate: true }), 404); }
     finally { await prisma.mediaAsset.update({ where: { id: sourceId }, data: { deletedAt: null } }); }
-    const retry = await api("POST", `generation/jobs/${first.data.job.id}/retry`, { userId: owner, ageGate: true, headers: { "Idempotency-Key": `${P}retry` } });
-    expectOk(retry, 202);
-    const replay = await api("POST", `generation/jobs/${first.data.job.id}/retry`, { userId: owner, ageGate: true, headers: { "Idempotency-Key": `${P}retry` } });
-    expectOk(replay, 202); expect(replay.data.job.id).toBe(retry.data.job.id);
-    await runWithOutput();
-    const result = await api("GET", `generation/jobs/${retry.data.job.id}`, { userId: owner, ageGate: true });
-    expectOk(result); expect(result.data.job.status).toBe("completed");
-    expect(result.data.assets[0].enhancement).toEqual({ sourceMediaId: sourceId, scale: 2 });
-    expect(await prisma.dreamcoinLedger.count({ where: { sourceId: first.data.job.id, reason: "refund" } })).toBe(1);
-    expect(await prisma.dreamcoinLedger.count({ where: { sourceId: retry.data.job.id, reason: "generation_spend" } })).toBe(1);
+    await providers.blob.putPrivate({ key: sourceKey, body: await sharp(sourceBytes).negate().png().toBuffer(), contentType: "image/png" });
+    const gen = await generationTestProviders();
+    const native = vi.spyOn(gen.image, "generate").mockResolvedValue({ ok: true, data: { assets: [{ key: "enhanced.png", body: await generatedBytes(160, 120), contentType: "image/png", width: 160, height: 120 }] } });
+    try {
+      const retry = await api("POST", `generation/jobs/${first.data.job.id}/retry`, { userId: owner, ageGate: true, headers: { "Idempotency-Key": `${P}retry` } });
+      expectOk(retry, 202);
+      const replay = await api("POST", `generation/jobs/${first.data.job.id}/retry`, { userId: owner, ageGate: true, headers: { "Idempotency-Key": `${P}retry` } });
+      expectOk(replay, 202); expect(replay.data.job.id).toBe(retry.data.job.id);
+      await runQueuedGenerationJobs();
+      expect(Buffer.from(native.mock.calls[0]![0].referenceImages![0]!.b64Json!, "base64")).toEqual(sourceBytes);
+      const result = await api("GET", `generation/jobs/${retry.data.job.id}`, { userId: owner, ageGate: true });
+      expectOk(result); expect(result.data.job.status).toBe("completed");
+      expect(result.data.assets[0].enhancement).toEqual({ sourceMediaId: sourceId, scale: 2 });
+      expect(await prisma.dreamcoinLedger.count({ where: { sourceId: first.data.job.id, reason: "refund" } })).toBe(1);
+      expect(await prisma.dreamcoinLedger.count({ where: { sourceId: retry.data.job.id, reason: "generation_spend" } })).toBe(1);
+    } finally {
+      native.mockRestore();
+      await providers.blob.putPrivate({ key: sourceKey, body: sourceBytes, contentType: "image/png" });
+    }
   });
 });

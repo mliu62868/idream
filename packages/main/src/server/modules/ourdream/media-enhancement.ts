@@ -7,7 +7,9 @@ import { toInputJson } from "@/server/lib/request-json";
 import { lockCharacterMediaAssetAuthorities } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { dreamcoinBalance } from "@/server/modules/billing/ledger";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
-import { acceptGenerationJobForUser, findExistingGenerationJob, generationWriteRequestFingerprint, wakeQueuedGenerationDispatch } from "./generation-job-authority";
+import { acceptGenerationJobForUser, assertGenerationSourceImageAuthority, findExistingGenerationJob, generationWriteRequestFingerprint, wakeQueuedGenerationDispatch } from "./generation-job-authority";
+import { freezeGenerationReferences } from "./generation-reference-snapshot";
+import { withGenerationSnapshotSlot } from "./generation-source-snapshot";
 import { generationQuoteAuthoritySchema } from "./generation-quote-contract";
 import { assertQuoteStillValid, generationPricingFingerprint } from "./generation-quote";
 import { assertMediaEnhancementSource, loadMediaEnhancementSource } from "./media-enhancement-source";
@@ -64,6 +66,9 @@ async function enhancementPlan(userId: string, sourceMediaId: string) {
 
 export async function quoteMediaEnhancement(userId: string, sourceMediaId: string) {
   const plan = await enhancementPlan(userId, sourceMediaId);
+  await withGenerationSnapshotSlot(() => assertGenerationSourceImageAuthority(prisma, {
+    userId, characterId: plan.asset.characterId, sourceImageAssetId: sourceMediaId, verifyImagePixels: true,
+  }));
   return { quote: {
     mode: "image" as const, profileId: plan.authority.profileId, profileVersion: plan.authority.profileVersion,
     routeFingerprint: plan.authority.routeFingerprint,
@@ -95,10 +100,18 @@ export async function createMediaEnhancement(userId: string, sourceMediaId: stri
   return acceptGenerationJobForUser({
     userId,
     identity: options,
+    transactionTimeoutMs: 60_000,
     prepare: async (tx) => {
       await lockCharacterMediaAssetAuthorities(tx, [sourceMediaId]);
       const lockedSource = await assertMediaEnhancementSource({ userId, characterId: asset.characterId, controls }, tx);
       if (lockedSource.asset.sourceJobId !== asset.sourceJobId) throw Errors.conflict("Source image provenance changed after the quote");
+      const referenceSnapshots = await freezeGenerationReferences(tx, {
+        userId, characterId: asset.characterId, controls,
+      });
+      if (referenceSnapshots.length !== 1 || referenceSnapshots[0]?.assetId !== sourceMediaId ||
+        referenceSnapshots[0]?.role !== "source_image" || referenceSnapshots[0]?.sha256 !== pin.sourceSha256) {
+        throw Errors.conflict("The original image changed after this enhancement was quoted");
+      }
       // Historical identity/Release/recipe evidence belongs to the source. It is
       // preserved here, not reinterpreted as references for a new character render.
       const sourceGeneration = asset.sourceJob ? {
@@ -111,7 +124,7 @@ export async function createMediaEnhancement(userId: string, sourceMediaId: stri
       } : null;
       return { entitlements: plan.entitlements, data: {
         characterId: asset.characterId, mode: "image", prompt: recipe.body,
-        controls: toInputJson(controls), presetIds: [], model: workflow.workflowKey,
+        controls: toInputJson({ ...controls, referenceSnapshots }), presetIds: [], model: workflow.workflowKey,
         profileId: profile.profileKey, profileVersion: profile.version, recipeId: recipe.recipeKey, recipeVersion: recipe.version,
         orientation: "original", outputCount: 1, costDreamcoins: plan.authority.costDreamcoins,
         provider: profile.runner, sourceType: "media_enhance", sourceId: `${userId}:${idempotencyKey}`,

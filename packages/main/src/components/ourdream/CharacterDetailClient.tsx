@@ -45,6 +45,8 @@ function CharacterDetailView({ id, viewer }: Readonly<{ id: string; viewer: View
   const [busy, setBusy] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [retryAvailable, setRetryAvailable] = useState(false);
+  const [stale, setStale] = useState(false);
+  const [viewerUnconfirmed, setViewerUnconfirmed] = useState(false);
   const { openReport, reportDialog } = useReportDialog(setStatus);
 
   useEffect(() => {
@@ -57,30 +59,48 @@ function CharacterDetailView({ id, viewer }: Readonly<{ id: string; viewer: View
       .then(async (response) => {
         if (controller.signal.aborted) return;
         if (!response.ok) {
-          // Distinguish failure categories: 403 is the age gate, 404 is a
-          // genuine missing character, anything else is a load/server error.
-          if (response.status === 403) {
+          // A denied or missing character can no longer be shown, even when a
+          // previous read succeeded. Other failures retain a clearly stale
+          // snapshot, without actions, until a fresh read succeeds.
+          if (response.status === 401 || response.status === 403 || response.status === 404 || response.status === 409) {
+            setCharacter(undefined);
+            setStale(false);
+          } else {
+            setStale(true);
+          }
+          setViewerUnconfirmed(response.status === 401 || response.status === 409);
+          if (response.status === 401) {
+            setLoadStatus("Please sign in to view this character.");
+          } else if (response.status === 409) {
+            setLoadStatus("Your account may have changed. Check your account or sign in to continue.");
+          } else if (response.status === 403) {
             setLoadStatus("Accept the age gate or sign in to view this character.");
           } else if (response.status === 404) {
             setLoadStatus("This character could not be found.");
           } else {
             setLoadStatus("Could not load this character. Please try again.");
           }
-          setRetryAvailable(response.status >= 500);
+          setRetryAvailable(response.status !== 403 && response.status !== 404);
           return;
         }
         const payload = parseCharacterDetailResponse(await response.json());
         if (controller.signal.aborted) return;
         setCharacter(payload.character);
+        setViewerUnconfirmed(false);
+        setStale(false);
+        setRetryAvailable(false);
         setLoadStatus("");
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted || isAbortError(error)) return;
+        setStale(true);
         setRetryAvailable(true);
         setLoadStatus("Could not load this character. Please try again.");
       });
     return () => controller.abort();
-  }, [ageGateAccepted, gatedFetch, id, loadAttempt, viewer.identity, viewer.revalidation]);
+  // If a command overlaps a revalidation, read once it finishes rather than
+  // leaving the pre-command snapshot on screen indefinitely.
+  }, [ageGateAccepted, busy, gatedFetch, id, loadAttempt, viewer.identity, viewer.revalidation]);
 
   // SPEC: 服务端元数据对非公开角色刻意退化成通用标题并 noindex —— 它是可被爬虫和缓存
   //       读到的，不能泄露私有角色名。标签页标题是本人才看得到的，读出来才不算泄露。
@@ -93,7 +113,7 @@ function CharacterDetailView({ id, viewer }: Readonly<{ id: string; viewer: View
 
   const resumedChat = useRef(false);
   useEffect(() => {
-    if (!character || viewer.identity?.kind !== "user" || resumedChat.current) return;
+    if (!character || stale || viewer.error || viewer.identity?.kind !== "user" || resumedChat.current) return;
     const params = new URLSearchParams(window.location.search);
     if (params.get("resume") !== "chat") return;
     resumedChat.current = true;
@@ -101,9 +121,9 @@ function CharacterDetailView({ id, viewer }: Readonly<{ id: string; viewer: View
     const query = params.toString();
     window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
     void startChat();
-    // startChat reads only `character`, which is the trigger here.
+    // Retry may turn a stale snapshot back into an actionable character.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [character]);
+  }, [character, stale, viewer.error]);
 
   async function startChat() {
     if (!character || pendingCommand.current) return;
@@ -171,11 +191,11 @@ function CharacterDetailView({ id, viewer }: Readonly<{ id: string; viewer: View
       }
       const payload = parseCharacterLikeResponse(await response.json());
       if (!mountedRef.current) return;
-      setCharacter({
-        ...character,
+      setCharacter(current => current ? {
+        ...current,
         liked: payload.liked,
         ...(payload.likesCount === undefined ? {} : { likesCount: payload.likesCount, likes: payload.likes ?? String(payload.likesCount) }),
-      });
+      } : current);
       setStatus(payload.liked ? "Character liked." : "Character like removed.");
     } catch (error) {
       if (!mountedRef.current || isAbortError(error)) return;
@@ -201,13 +221,13 @@ function CharacterDetailView({ id, viewer }: Readonly<{ id: string; viewer: View
   }
 
   function retryLoad() {
-    if (viewer.error) { void viewer.revalidate(); return; }
+    if (viewer.error || viewerUnconfirmed) { void viewer.revalidate(); return; }
     setLoadStatus("Loading character...");
     setRetryAvailable(false);
     setLoadAttempt(attempt => attempt + 1);
   }
 
-  const displayedStatus = viewer.error || [loadStatus, status].filter(Boolean).join(" ");
+  const displayedStatus = viewer.error || [loadStatus, stale && character ? "This character may be out of date. Retry to restore actions." : "", status].filter(Boolean).join(" ");
   const notice = character ? publicationNotice(character) : null;
   return (
     <main className="min-h-screen bg-[rgb(13,13,13)] text-white">
@@ -227,7 +247,7 @@ function CharacterDetailView({ id, viewer }: Readonly<{ id: string; viewer: View
           {character ? (
             <div className="mt-6">
               <CharacterDetailHero
-                actions={<div className="mt-7 flex flex-wrap gap-3" data-testid="character-detail-actions">
+                actions={!stale && !viewer.error && <div className="mt-7 flex flex-wrap gap-3" data-testid="character-detail-actions">
                   <button
                     className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-white px-6 text-[14px] font-black text-[rgb(13,13,13)] disabled:opacity-70"
                     disabled={busy}
@@ -296,10 +316,10 @@ function CharacterDetailView({ id, viewer }: Readonly<{ id: string; viewer: View
                     role="status"
                   >
                     {displayedStatus}
-                    {retryAvailable && <button className="ml-3 rounded-full border border-white/20 px-3 py-1 text-white" onClick={retryLoad} type="button">Retry</button>}
+                    {(viewer.error || retryAvailable) && <button className="ml-3 rounded-full border border-white/20 px-3 py-1 text-white" onClick={retryLoad} type="button">Retry</button>}
                   </p>
               )}
-              <SimilarCharacters character={character} viewer={viewer} />
+              {!stale && !viewer.error && <SimilarCharacters character={character} viewer={viewer} />}
             </div>
           ) : (
             <div
@@ -317,7 +337,7 @@ function CharacterDetailView({ id, viewer }: Readonly<{ id: string; viewer: View
       </div>
       <SiteFooter />
       <MobileBottomNav activeHref="/" />
-      {reportDialog}
+      <div hidden={stale || viewerUnconfirmed || Boolean(viewer.error)}>{reportDialog}</div>
     </main>
   );
 }

@@ -12,9 +12,10 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { createMediaEnhancement, mediaEnhancementAvailable, mediaEnhancementBodySchema, mediaEnhancementQuoteBodySchema, quoteMediaEnhancement } from "./media-enhancement";
+import { createRemoteImageImport, readRemoteImageImport } from "./media-url-import";
 import { isEnhanceEligible } from "./media-enhancement-source";
 import { videoSequenceRequestSchema } from "@idream/shared/contracts";
-import { createVideoSequence, quoteVideoSequence, readVideoSequence, listVideoSequences, stopVideoSequence, retryVideoComposition, videoSequenceCapabilities } from "./video-sequence";
+import { createVideoSequence, quoteVideoSequence, readVideoSequence, readVideoSequenceByRequest, abandonVideoSequenceIntent, listVideoSequences, stopVideoSequence, retryVideoComposition, videoSequenceCapabilities } from "./video-sequence";
 import type { ChatImageRequestedPayload } from "@/server/ai/schemas";
 import {
   isProductionVideoProfile,
@@ -117,9 +118,11 @@ import {
   hasHydratableMediaBlobAuthority,
   isMediaAssetOperationalForAuthority,
   isSyntheticMediaAsset,
+  isUnfinishedExternalImageImport,
   resolveMediaAssetBlobLocator,
 } from "@/server/lib/media-asset-authority";
 import { mediaByteResponse } from "@/server/lib/media-byte-response";
+import { readRemoteImage, verifySourceImageBytes, withRemoteImageValidationLimit } from "@/server/lib/safe-remote-image";
 import { mediaAssetAuthorityDependencies } from "@/server/modules/admin-v2/shared/media-asset-authority-dependencies";
 import { canonicalJsonEqual, canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency";
 import {
@@ -225,6 +228,8 @@ import {
   mediaCollectionDTO,
   mediaCollectionInclude,
   collectionMediaViewUrl,
+  isExternalMediaUrl,
+  mediaDisplayUrl,
   mediaFileExtension,
   mediaViewUrl,
   visualProfileDTO,
@@ -764,6 +769,8 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
 
   if (resource === "media") {
     if (!id && method === "GET") return listMedia(request);
+    if (id === "import-url" && !action && method === "POST") return importMediaUrl(request);
+    if (id === "import-url" && action === "request" && !child && method === "GET") return readMediaUrlImport(request);
     if (id === "collections" && !action && method === "GET") return listMediaCollections(request);
     if (id === "collections" && !action && method === "POST") return createMediaCollection(request);
     if (id === "collections" && action && !child && method === "GET") {
@@ -2525,10 +2532,9 @@ async function videoSequences(request: Request, action?: string, child?: string)
   if (request.method === "POST" && !action) return ok({ sequence: await createVideoSequence(user.id, videoSequenceRequestSchema.parse(await jsonBody(request)), requireGenerationWriteIdempotencyKey(request)) }, { status: 202 });
   if (request.method === "GET" && action === "request" && !child) {
     const key = z.string().min(8).max(160).parse(new URL(request.url).searchParams.get("key"));
-    const sequence = await prisma.videoSequence.findUnique({ where: { userId_idempotencyKey: { userId: user.id, idempotencyKey: key } }, select: { id: true } });
-    if (!sequence) throw Errors.notFound("The original video sequence was not accepted");
-    return ok({ sequence: await readVideoSequence(user.id, sequence.id) });
+    return ok({ sequence: await readVideoSequenceByRequest(user.id, key) });
   }
+  if (request.method === "POST" && action === "request" && child === "abandon") return ok(await abandonVideoSequenceIntent(user.id, videoSequenceRequestSchema.parse(await jsonBody(request)), requireGenerationWriteIdempotencyKey(request)));
   if (request.method === "GET" && !action) return ok({ sequences: await listVideoSequences(user.id) });
   if (request.method === "GET" && action && !child) return ok({ sequence: await readVideoSequence(user.id, action) });
   if (request.method === "POST" && action && child === "stop") return ok({ sequence: await stopVideoSequence(user.id, action) });
@@ -2969,6 +2975,27 @@ async function updatePreset(request: Request, id: string) {
   return ok({ preset });
 }
 
+async function importMediaUrl(request: Request) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const key = requireGenerationWriteIdempotencyKey(request);
+  const { url } = z.object({ url: z.string().trim().min(1).max(4096) }).strict().parse(await jsonBody(request));
+  await enforceRateLimit(request, "mediaImport", user.id);
+  const result = await createRemoteImageImport(user.id, key, url);
+  return ok({ assetId: result.assetId }, { status: result.replayed ? 200 : 201 });
+}
+
+async function readMediaUrlImport(request: Request) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const key = z.string().trim().min(8).max(160).parse(new URL(request.url).searchParams.get("key"));
+  return ok(await readRemoteImageImport(user.id, key));
+}
+
 async function listMedia(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
@@ -2977,6 +3004,9 @@ async function listMedia(request: Request) {
   const url = new URL(request.url);
   const liked = url.searchParams.get("liked") === "1";
   const type = url.searchParams.get("type");
+  const assetId = url.searchParams.has("assetId")
+    ? z.string().min(1).max(200).parse(url.searchParams.get("assetId"))
+    : undefined;
   const rawTypes = url.searchParams.get("types");
   if (rawTypes !== null && type !== null) {
     throw Errors.badRequest("Choose either type or types, not both");
@@ -2996,12 +3026,20 @@ async function listMedia(request: Request) {
   const offset = decodeCursor(url.searchParams.get("cursor"));
   const assets = await prisma.mediaAsset.findMany({
     where: {
+      id: assetId,
       ownerId: user.id,
       deletedAt: null,
       // Preset descriptors are private identity evidence, not playable clips.
       AND: [{ OR: [
         { contentType: null },
         { contentType: { not: "application/vnd.idream.pocket-tts-preset+json" } },
+      ] },
+      // A reserved URL import owns a Blob key for recovery, but is not a
+      // deliverable image until its verified bytes have committed.
+      { OR: [
+        { metadata: { path: ["source"], equals: Prisma.AnyNull } },
+        { NOT: { metadata: { path: ["source"], equals: "external_url_import" } } },
+        { metadata: { path: ["importState"], equals: "completed" } },
       ] },
       // SPEC: 图库展示可交付物。视频序列交付成片后，各场景片段与旁白音频是成片的
       //   中间产物，不再与成片并列（多场景时会把图库淹没）。
@@ -3486,6 +3524,8 @@ async function unlikeMedia(request: Request, id: string) {
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
+  const media = await prisma.mediaAsset.findFirst({ where: { id, ownerId: user.id }, select: { metadata: true } });
+  if (media && isUnfinishedExternalImageImport(media.metadata)) throw Errors.notFound("Media not found");
   await prisma.mediaLike.deleteMany({ where: { userId: user.id, mediaAssetId: id } });
   await prisma.mediaAsset.updateMany({ where: { id, ownerId: user.id }, data: { liked: false } });
   return ok({ liked: false });
@@ -3984,7 +4024,7 @@ async function bulkMedia(request: Request) {
     await lockCharacterMediaAssetAuthorities(tx, ownedAssetIds);
     if (ownedAssetIds.length === 0) return 0;
 
-    const current = await tx.mediaAsset.findMany({
+    const found = await tx.mediaAsset.findMany({
       where: {
         id: { in: ownedAssetIds },
         ownerId: user.id,
@@ -3992,6 +4032,7 @@ async function bulkMedia(request: Request) {
       },
       select: { id: true, metadata: true },
     });
+    const current = found.filter(asset => !isUnfinishedExternalImageImport(asset.metadata));
     if (
       targetVisibility === "public_pack"
       && current.some((asset) => isSyntheticMediaAsset(asset.metadata))
@@ -4034,7 +4075,7 @@ async function downloadMedia(request: Request, id: string) {
   const key = blobLocator?.key;
   if (!key) {
     const remoteUrl = absoluteHttpMediaUrl(asset.url);
-    if (remoteUrl) return ok({ url: remoteUrl });
+    if (remoteUrl) return ok({ url: asset.type === "image" ? `${mediaViewUrl(asset)}?download=1` : remoteUrl });
     throw Errors.unavailable("Media storage authority is incomplete", {
       assetId: asset.id,
     });
@@ -4104,6 +4145,7 @@ async function contentMediaAsset(
   request: Request,
   asset: Awaited<ReturnType<typeof assertReadableMediaAsset>>,
 ) {
+  if (isUnfinishedExternalImageImport(asset.metadata)) throw Errors.notFound("Media not found");
   const key = resolveMediaAssetBlobLocator(asset)?.key;
 
   if (key && (process.env.BLOB_PROVIDER ?? "mock") === "mock") {
@@ -4114,6 +4156,15 @@ async function contentMediaAsset(
 
   if (!key) {
     const remoteUrl = absoluteHttpMediaUrl(asset.url);
+    if (remoteUrl && asset.type === "image") {
+      return withRemoteImageValidationLimit(async () => {
+        const { bytes } = await readRemoteImage(remoteUrl);
+        const verified = await verifySourceImageBytes(bytes, asset.id);
+        const headers = localMediaHeaders(request, { ...asset, contentType: verified.contentType });
+        headers.set("x-content-type-options", "nosniff");
+        return mediaByteResponse(request, verified.bytes, headers);
+      });
+    }
     if (remoteUrl) return Response.redirect(remoteUrl, 302);
     throw Errors.unavailable("Media storage authority is incomplete", {
       assetId: asset.id,
@@ -4236,9 +4287,9 @@ async function softDeleteOwnedMediaAssets(
         ownerId,
         deletedAt: null,
       },
-      select: { id: true },
+      select: { id: true, metadata: true },
     });
-    const currentAssetIds = current.map((asset) => asset.id).sort();
+    const currentAssetIds = current.filter(asset => !isUnfinishedExternalImageImport(asset.metadata)).map((asset) => asset.id).sort();
     if (currentAssetIds.length === 0) return 0;
     for (const assetId of currentAssetIds) {
       await assertCustomerMediaAuthorityMutationAllowed(tx, assetId);
@@ -4898,12 +4949,12 @@ async function characterDetailDTO(
   if (!assetPack) throw Errors.notFound("Character not found");
   const heroImage = assetPack.hero.storageKey
     ? mediaViewUrl(assetPack.hero)
-    : assetPack.hero.url;
+    : mediaDisplayUrl(assetPack.hero);
   return {
     ...base,
     currentReleaseId: currentRelease.id,
     heroImage,
-    heroThumbnailUrl: assetPack.hero.thumbnailUrl ?? heroImage,
+    heroThumbnailUrl: assetPack.hero.thumbnailUrl && !isExternalMediaUrl(assetPack.hero.thumbnailUrl) ? assetPack.hero.thumbnailUrl : heroImage,
     heroImageAssetId: assetPack.hero.id,
     imageAuthority: {
       source: "release",
@@ -4963,7 +5014,7 @@ function mediaDTO(asset: {
   editableCharacterIds?: ReadonlySet<string>;
   imageEditModelIds?: readonly string[];
 } = {}) {
-  const displayUrl = asset.storageKey ? mediaViewUrl(asset) : asset.url;
+  const displayUrl = asset.storageKey ? mediaViewUrl(asset) : mediaDisplayUrl(asset);
   const metadata = jsonRecord(asset.metadata);
   const quality = jsonRecord(metadata.quality);
   const visualProfileVersion =
@@ -4987,7 +5038,7 @@ function mediaDTO(asset: {
       : null,
     type: asset.type,
     url: displayUrl,
-    thumbnailUrl: asset.storageKey ? displayUrl : (asset.thumbnailUrl ?? asset.url),
+    thumbnailUrl: asset.storageKey || (asset.thumbnailUrl && isExternalMediaUrl(asset.thumbnailUrl)) ? displayUrl : (asset.thumbnailUrl ?? displayUrl),
     prompt: asset.prompt,
     visibility: asset.visibility,
     safetyStatus: asset.safetyStatus,

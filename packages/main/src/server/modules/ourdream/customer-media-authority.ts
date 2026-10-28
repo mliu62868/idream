@@ -4,6 +4,7 @@ import { Errors } from "@/server/lib/errors";
 import {
   isMediaAssetOperationalForAuthority,
   isSyntheticMediaAsset,
+  isUnfinishedExternalImageImport,
 } from "@/server/lib/media-asset-authority";
 import { toInputJson } from "@/server/lib/request-json";
 import { jsonRecord } from "./json-values";
@@ -21,7 +22,7 @@ export async function assertMediaOwner(
   const media = await db.mediaAsset.findFirst({
     where: { id, ownerId: userId, deletedAt: null },
   });
-  if (!media) throw Errors.notFound("Media not found");
+  if (!media || isUnfinishedExternalImageImport(media.metadata)) throw Errors.notFound("Media not found");
   return media;
 }
 

@@ -1,5 +1,6 @@
 import { generationTerminalRecordChecksum } from "@idream/shared/contracts/durable-server";
 import { readFileSync } from "node:fs";
+import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Prisma } from "@prisma/client";
 import {
@@ -19,6 +20,7 @@ import {
 import { reserveInitialGenerationAttempt } from "@/server/modules/generation/generation-attempt-authority";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
+import { providers } from "@/server/providers";
 import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
@@ -37,6 +39,7 @@ import {
   publishCharacterForPublicAudience,
   purgeTestData,
   runQueuedGenerationJobs,
+  generationTestProviders,
 } from "@/server/test/helpers";
 
 const P = "zt-imgsvc-";
@@ -44,6 +47,14 @@ const currentImageEdit = JSON.parse(readFileSync(new URL("../../../../../gen/wor
 const currentMultiIdentity = JSON.parse(readFileSync(new URL("../../../../../gen/workflows/qwen-image-edit-multi-identity.json", import.meta.url), "utf8"));
 const SYS = `${P}sys`;
 const CHAR = `${P}char`;
+const sourceFixtureKeys = [
+  `test-fixtures/${P}legacy-chat-projection-character-public-avatar.webp`,
+  `${P}identity/anchor-1.webp`, `${P}identity/ref-1.webp`,
+  ...["full", "none", "unspecified"].map(value => `${P}chat-identity-companion-${value}-anchor.webp`),
+  `${P}moment/identity-anchor.webp`, `${P}look-identity-anchor.webp`, `${P}look-identity-reference.webp`, `${P}look-media.webp`,
+  `${P}look-drift-anchor.webp`, `${P}variation/identity-anchor.webp`, `${P}variation/source.webp`,
+  `${P}variation/public-character-source.webp`, `${P}freeplay-variation/source.webp`, `${P}no-profile-variation/source.webp`,
+];
 const COMPLETE_PERSONA_DETAILS = {
   description: "A grounded companion who notices the details other people miss.",
   detailsMarkdown: [
@@ -320,6 +331,9 @@ async function createSealedReferenceSet(input: {
 }
 
 beforeAll(async () => {
+  for (const [index, key] of sourceFixtureKeys.entries()) {
+    await providers.blob.putPrivate({ key, body: await sharp({ create: { width: 512, height: 512, channels: 3, background: { r: index * 11, g: 50, b: 90 } } }).webp().toBuffer(), contentType: "image/webp" });
+  }
   await purgeTestData(P);
   await prisma.generationModelProfile.create({
     data: {
@@ -370,6 +384,7 @@ beforeAll(async () => {
       },
     },
   });
+  await providers.blob.putPrivate({ key: `${P}sys-char-asset.webp`, body: await sharp({ create: { width: 512, height: 512, channels: 3, background: "#a86432" } }).webp().toBuffer(), contentType: "image/webp" });
   await prisma.character.update({
     where: { id: CHAR },
     data: { imageAssetId: assetId },
@@ -467,6 +482,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await purgeTestData(P);
+  for (const key of [...sourceFixtureKeys, `${P}sys-char-asset.webp`, `${P}manifest/${P}manifest-anchor.webp`, `${P}manifest/${P}manifest-reference.webp`]) await providers.blob.delete({ key });
   await prisma.$disconnect();
 });
 
@@ -1017,7 +1033,33 @@ describe("image generation service contract", () => {
     await expect(dreamcoinBalance(userId)).resolves.toBe(
       balanceBefore - (quote.costs[0]?.costDreamcoins ?? 0),
     );
-    await runQueuedGenerationJobs(4);
+    const original = await providers.blob.getPrivate!({ key: `${P}sys-char-asset.webp` });
+    if (!original.ok) throw new Error("Missing anchor fixture");
+    const gen = await generationTestProviders();
+    const native = vi.spyOn(gen.image, "generate");
+    await providers.blob.putPrivate({ key: `${P}sys-char-asset.webp`, body: await sharp({ create: { width: 512, height: 512, channels: 3, background: "#456789" } }).webp().toBuffer(), contentType: "image/webp" });
+    try {
+      await runQueuedGenerationJobs(4);
+      expect(Buffer.from(native.mock.calls[0]![0].referenceImages![0]!.b64Json!, "base64")).toEqual(Buffer.from(original.data.body));
+    } finally {
+      native.mockRestore();
+      await providers.blob.putPrivate({ key: `${P}sys-char-asset.webp`, body: original.data.body, contentType: "image/webp" });
+    }
+  });
+
+  it("rejects an unreadable image reference before quoting and never charges", async () => {
+    const userId = `${P}unreadable-quote-user`;
+    await createUser({ id: userId }); await grantCoins(userId, 100, "seed");
+    const key = `${P}sys-char-asset.webp`;
+    const original = await providers.blob.getPrivate!({ key });
+    if (!original.ok) throw new Error("Missing anchor fixture");
+    await providers.blob.putPrivate({ key, body: Buffer.from("not an image"), contentType: "image/webp" });
+    try {
+      const result = await api("POST", "generation/quote", { userId, ageGate: true, body: { mode: "image", characterId: CHAR, outputCount: 1 } });
+      expectError(result, 409, "conflict");
+      expect(await prisma.generationJob.count({ where: { userId } })).toBe(0);
+      expect(await dreamcoinBalance(userId)).toBe(100);
+    } finally { await providers.blob.putPrivate({ key, body: original.data.body, contentType: "image/webp" }); }
   });
 
   it("quotes failed-job retry without writes, rejects stale authority, and replays a committed retry without revalidation", async () => {
@@ -2975,13 +3017,15 @@ describe("image generation service contract", () => {
       expect.objectContaining({
         assetId: `${P}anchor-1`,
         role: "identity_anchor",
-        storageKey: `${P}identity/anchor-1.webp`,
+        sourceSnapshotId: expect.any(String),
+        contentSha256: expect.any(String),
         weight: 1.25,
       }),
       expect.objectContaining({
         assetId: `${P}ref-1`,
         role: "identity_reference",
-        storageKey: `${P}identity/ref-1.webp`,
+        sourceSnapshotId: expect.any(String),
+        contentSha256: expect.any(String),
         weight: 0.95,
       }),
     ]);
@@ -4579,6 +4623,8 @@ describe("image generation service contract", () => {
       })),
     });
 
+    for (const id of [anchorId, referenceId]) await providers.blob.putPrivate({ key: `${P}manifest/${id}.webp`, body: await sharp({ create: { width: 512, height: 512, channels: 3, background: "#a86432" } }).webp().toBuffer(), contentType: "image/webp" });
+
     const promoted = await api("POST", `media/${referenceId}/add-to-identity`, {
       userId,
       ageGate: true,
@@ -5510,12 +5556,12 @@ describe("image generation service contract", () => {
         expect.objectContaining({
           assetId: identityAnchorId,
           role: "identity_anchor",
-          storageKey: `${P}look-identity-anchor.webp`,
+          sourceSnapshotId: expect.any(String),
         }),
         expect.objectContaining({
           assetId: lookMediaId,
           role: "look_reference",
-          storageKey: `${P}look-media.webp`,
+          sourceSnapshotId: expect.any(String),
         }),
       ]),
     });
@@ -5576,12 +5622,12 @@ describe("image generation service contract", () => {
         expect.objectContaining({
           assetId: identityAnchorId,
           role: "identity_anchor",
-          storageKey: `${P}look-identity-anchor.webp`,
+          sourceSnapshotId: expect.any(String),
         }),
         expect.objectContaining({
           assetId: lookMediaId,
           role: "look_reference",
-          storageKey: `${P}look-media.webp`,
+          sourceSnapshotId: expect.any(String),
         }),
       ]),
     });
@@ -6260,17 +6306,33 @@ describe("image generation service contract", () => {
       expect.objectContaining({
         assetId: mediaId,
         role: "source_image",
-        storageKey: `${P}variation/source.webp`,
+        sourceSnapshotId: expect.any(String),
         weight: 0.7,
       }),
       expect.objectContaining({
         assetId: identityAnchorId,
         role: "identity_anchor",
-        storageKey: `${P}variation/identity-anchor.webp`,
+        sourceSnapshotId: expect.any(String),
         selectionReason: "primary_identity_anchor",
       }),
     ]);
-    await runQueuedGenerationJobs(4);
+    const source = await providers.blob.getPrivate!({ key: `${P}variation/source.webp` });
+    const anchor = await providers.blob.getPrivate!({ key: `${P}variation/identity-anchor.webp` });
+    if (!source.ok || !anchor.ok) throw new Error("Missing variation fixtures");
+    const native = vi.spyOn((await generationTestProviders()).image, "generate");
+    await providers.blob.putPrivate({ key: `${P}variation/source.webp`, body: Buffer.from("replaced"), contentType: "image/webp" });
+    await providers.blob.putPrivate({ key: `${P}variation/identity-anchor.webp`, body: Buffer.from("replaced"), contentType: "image/webp" });
+    try {
+      for (let round = 0; round < 10 && !native.mock.calls.some(([input]) => input.referenceImages?.some((item: { assetId: string }) => item.assetId === mediaId)); round++) await runQueuedGenerationJobs(4);
+      const references: Array<{ assetId: string; b64Json?: string }> | undefined = native.mock.calls.find(([input]) => input.referenceImages?.some((item: { assetId: string }) => item.assetId === mediaId))?.[0].referenceImages;
+      expect(references).toBeDefined();
+      expect(Buffer.from(references!.find(item => item.assetId === mediaId)!.b64Json!, "base64")).toEqual(Buffer.from(source.data.body));
+      expect(Buffer.from(references!.find(item => item.assetId === identityAnchorId)!.b64Json!, "base64")).toEqual(Buffer.from(anchor.data.body));
+    } finally {
+      native.mockRestore();
+      await providers.blob.putPrivate({ key: `${P}variation/source.webp`, body: source.data.body, contentType: "image/webp" });
+      await providers.blob.putPrivate({ key: `${P}variation/identity-anchor.webp`, body: anchor.data.body, contentType: "image/webp" });
+    }
   });
 
   it("keeps a non-premium source-only variation's provenance through failed-job retry and delivery", async () => {

@@ -53,6 +53,19 @@ describe("cross-tab account changes", () => {
     expect(window.localStorage.getItem("idream.auth-change")).toBeTruthy();
     expect(await fetchViewerScope()).toBe("anonymous:anonymous-1");
   });
+  it("closes the mobile menu with Escape and returns focus to its trigger", async () => {
+    await act(async () => root.render(createElement(MobileAppMenu, { currentPath: "/" })));
+    await settle();
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-label="Open navigation menu"]')!;
+    await act(async () => trigger.click());
+    const navigation = container.querySelector<HTMLElement>('nav[aria-label="App navigation"]')!;
+    const link = navigation.querySelector<HTMLAnchorElement>("a")!;
+    link.focus();
+    await act(async () => link.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(container.querySelector('nav[aria-label="App navigation"]')).toBeNull();
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(trigger);
+  });
   it.each([
     ["/create?draftResume=guest-intent#voice", "/create?draftResume=guest-intent#voice"],
     ["//evil.example/steal", null],

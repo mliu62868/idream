@@ -40,6 +40,7 @@ const sceneAssetSchema = z.object({ id: z.string().min(1), url: z.string().min(1
 export const videoSequenceDtoSchema = z.object({
   id: z.string().min(1), status: z.enum(["generating", "composing", "completed", "failed", "unknown", "composition_failed", "cancelled"]), errorCode: z.string().nullable(),
   request: videoSequenceRequestSchema,
+  acceptedQuote: videoSequenceQuoteSchema.optional(),
   scenes: z.array(z.object({ ordinal: z.number().int().nonnegative(), narrationState: z.string(),
     job: z.object({ id: z.string().min(1), status: z.string(), controls: z.object({ sourceImageAssetId: z.string().min(1).optional() }), cost: z.object({ charged: z.number(), refunded: z.number(), finalCharge: z.number() }) }), assets: z.array(sceneAssetSchema) })),
   cost: z.object({ charged: z.number().nonnegative(), refunded: z.number().nonnegative(), finalCharge: z.number().nonnegative() }),

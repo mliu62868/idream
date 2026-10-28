@@ -5108,7 +5108,7 @@ test("cancelled video sequences keep observing an active scene until its downloa
     await expect(status).toContainText("Scene 2: running");
     const readsBeforeStop = sequenceReads;
     await controls.getByRole("button", { name: "Stop remaining scenes", exact: true }).click();
-    await expect(status.getByRole("status")).toHaveText("Sequence cancelled · reserved 300 · refunded 100 · final charge 200 coins");
+    await expect(status.getByRole("status")).toHaveText("Sequence cancelled · reserved 300 · refunded 100 · current net charge 200 coins");
     await expect(status).toContainText("Scene 2: completed", { timeout: 10_000 });
     await expect(status).toContainText("Scene 3: cancelled");
     const downloaded = page.waitForEvent("download");

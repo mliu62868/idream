@@ -121,6 +121,80 @@ describe("CreateWorkspace identity confirmation", () => {
     } });
   }
 
+  async function openIdentityForNavigation(save: () => Promise<Response>) {
+    const draft = {
+      id: "draft-1", updatedAt: "2026-10-01T00:00:00.000Z", step: 0,
+      name: "Avery", gender: "female", style: "realistic", appearance: {},
+      hair: {}, body: {}, tags: [], advancedDetails: { age: 25 }, previewJobId: null,
+    };
+    window.localStorage.setItem(draftStorageKeyForScope("user:creator-1"), JSON.stringify({
+      ...initialCharacterDraft(), draftId: draft.id, draftUpdatedAt: draft.updatedAt,
+      name: draft.name, age: 25,
+    }));
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      if (String(input) === "/api/v1/character-drafts/current") {
+        return Promise.resolve(Response.json({ ok: true, data: { draft } }));
+      }
+      if (String(input) === "/api/v1/character-drafts/draft-1" && init?.method === "PATCH") return save();
+      return originalFetch(input, init);
+    });
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-step-identity"]')));
+  }
+
+  it("moves focus to the new step after explicit navigation, but not when restoring a draft", async () => {
+    await openIdentityForNavigation(async () => Response.json({ ok: true, data: {} }));
+    const heading = () => container.querySelector<HTMLHeadingElement>('h2[tabindex="-1"]')!;
+    expect(document.activeElement).not.toBe(heading());
+    const scroll = vi.fn();
+    heading().scrollIntoView = scroll;
+    const next = container.querySelector<HTMLButtonElement>('[data-testid="create-next"]')!;
+    next.focus();
+    await act(async () => next.click());
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-step-appearance"]')));
+    expect(heading().textContent).toContain("Appearance");
+    expect(document.activeElement).toBe(heading());
+    expect(scroll).toHaveBeenCalledWith({ block: "start", behavior: "auto" });
+    const back = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Back")!;
+    await act(async () => back.click());
+    expect(heading().textContent).toContain("Identity");
+    expect(document.activeElement).toBe(heading());
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="create-next"]')!.click());
+    const identity = [...container.querySelectorAll<HTMLButtonElement>('[data-testid="create-steps"] button')].find(button => button.textContent?.trim() === "Identity")!;
+    await act(async () => identity.click());
+    expect(heading().textContent).toContain("Identity");
+    expect(document.activeElement).toBe(heading());
+  });
+
+  it("does not steal focus after a delayed save if the user moved elsewhere", async () => {
+    let finishSave!: (response: Response) => void;
+    await openIdentityForNavigation(() => new Promise<Response>(resolve => { finishSave = resolve; }));
+    const next = container.querySelector<HTMLButtonElement>('[data-testid="create-next"]')!;
+    const scroll = vi.fn();
+    container.querySelector<HTMLHeadingElement>('h2[tabindex="-1"]')!.scrollIntoView = scroll;
+    next.focus();
+    await act(async () => next.click());
+    const other = document.createElement("button");
+    document.body.append(other);
+    other.focus();
+    await act(async () => finishSave(Response.json({ ok: true, data: {} })));
+    expect(container.querySelector('[data-testid="create-step-appearance"]')).not.toBeNull();
+    expect(document.activeElement).toBe(other);
+    expect(scroll).not.toHaveBeenCalled();
+    other.remove();
+  });
+
+  it("keeps focus and the current step when saving fails", async () => {
+    await openIdentityForNavigation(async () => Response.json({ ok: false, error: { message: "Save failed" } }, { status: 500 }));
+    const next = container.querySelector<HTMLButtonElement>('[data-testid="create-next"]')!;
+    next.focus();
+    await act(async () => next.click());
+    expect(container.querySelector('[data-testid="create-step-identity"]')).not.toBeNull();
+    expect(document.activeElement).not.toBe(container.querySelector('h2[tabindex="-1"]'));
+    expect(container.textContent).toContain("Save failed");
+  });
+
   it("opens the exact older draft from Studio and leaves the latest browser draft alone", async () => {
     const latest = window.localStorage.getItem(draftStorageKeyForScope("user:creator-1"));
     window.history.replaceState(null, "", "/create?draft=older-draft");

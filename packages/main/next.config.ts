@@ -13,10 +13,10 @@ const sourceDevelopment =
   !isolatedTsconfigPath &&
   !playwrightRunId;
 const isolatedDistMatch = isolatedDistDir?.match(
-  /^\.next\/playwright-main-(\d+)-([a-f0-9]{8})$/,
+  /^\.next-playwright\/playwright-main-(\d+)-([a-f0-9]{8})$/,
 );
 const isolatedTsconfigMatch = isolatedTsconfigPath?.match(
-  /^\.next\/playwright-config-main-(\d+)-([a-f0-9]{8})\/tsconfig\.json$/,
+  /^\.next-playwright\/playwright-config-main-(\d+)-([a-f0-9]{8})\/tsconfig\.json$/,
 );
 
 if (isolatedDistDir && !isolatedDistMatch && !sourceDevelopment) {

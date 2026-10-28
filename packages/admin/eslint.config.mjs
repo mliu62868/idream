@@ -33,6 +33,7 @@ const eslintConfig = defineConfig([
   },
   globalIgnores([
     ".next/**",
+    ".next-playwright/**",
     ".next-development/**",
     ".next-runtime/**",
     "out/**",

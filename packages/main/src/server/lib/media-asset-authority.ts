@@ -96,7 +96,13 @@ export function mediaAssetPlatformStatus(metadata: unknown) {
  * label. Every Character consumer must reject these rows even when the
  * underlying media file still exists.
  */
+export function isUnfinishedExternalImageImport(metadata: unknown) {
+  const data = record(metadata);
+  return data.source === "external_url_import" && data.importState !== "completed";
+}
+
 export function isMediaAssetOperationalForAuthority(metadata: unknown) {
+  if (isUnfinishedExternalImageImport(metadata)) return false;
   const status = mediaAssetPlatformStatus(metadata);
   return status !== "archived" && status !== "rejected";
 }

@@ -76,15 +76,15 @@ export function assertPlaywrightCleanupPlan(
     throw new Error("Playwright cleanup Redis prefix does not match this run");
   }
   const expectedMainDistDir =
-    `.next/playwright-main-${plan.mainPort}-${plan.runId}`;
+    `.next-playwright/playwright-main-${plan.mainPort}-${plan.runId}`;
   const expectedAdminDistDir =
-    `.next/playwright-admin-${plan.adminPort}-${plan.runId}`;
+    `.next-playwright/playwright-admin-${plan.adminPort}-${plan.runId}`;
   const expectedMainTsconfigPath =
-    `.next/playwright-config-main-${plan.mainPort}-${plan.runId}/tsconfig.json`;
+    `.next-playwright/playwright-config-main-${plan.mainPort}-${plan.runId}/tsconfig.json`;
   const expectedAdminTsconfigPath =
-    `.next/playwright-config-admin-${plan.adminPort}-${plan.runId}/tsconfig.json`;
+    `.next-playwright/playwright-config-admin-${plan.adminPort}-${plan.runId}/tsconfig.json`;
   const expectedLifecycleReceiptPath =
-    `.next/playwright-lifecycle-main-${plan.mainPort}-${plan.runId}/cleanup.json`;
+    `.next-playwright/playwright-lifecycle-main-${plan.mainPort}-${plan.runId}/cleanup.json`;
   if (
     plan.mainDistDir !== expectedMainDistDir ||
     plan.adminDistDir !== expectedAdminDistDir ||
@@ -225,8 +225,8 @@ export async function preparePlaywrightResources(
   await Promise.all([
     mkdir(plan.chatFsRoot, { recursive: true }),
     mkdir(plan.blobRoot, { recursive: true }),
-    writeIsolatedTsconfig(MAIN_PACKAGE_ROOT, plan.mainTsconfigPath),
-    writeIsolatedTsconfig(ADMIN_PACKAGE_ROOT, plan.adminTsconfigPath),
+    writeIsolatedTsconfig(MAIN_PACKAGE_ROOT, plan.mainTsconfigPath, plan.mainDistDir),
+    writeIsolatedTsconfig(ADMIN_PACKAGE_ROOT, plan.adminTsconfigPath, plan.adminDistDir),
   ]);
 }
 
@@ -248,6 +248,7 @@ export async function assertPlaywrightBlobRootRemoved(
 async function writeIsolatedTsconfig(
   packageRoot: string,
   relativeTsconfigPath: string,
+  relativeDistDir: string,
 ) {
   const absolutePath = path.resolve(packageRoot, relativeTsconfigPath);
   await mkdir(path.dirname(absolutePath), { recursive: true });
@@ -258,6 +259,13 @@ async function writeIsolatedTsconfig(
     `${JSON.stringify({
       extends: "../../tsconfig.json",
       compilerOptions: { baseUrl: "../.." },
+      include: [
+        "../../idream-next-env.d.ts",
+        "../../**/*.ts",
+        "../../**/*.tsx",
+        "../../**/*.mts",
+        `../../${relativeDistDir}/types/**/*.ts`,
+      ],
     }, null, 2)}\n`,
     { encoding: "utf8", flag: "wx" },
   );
