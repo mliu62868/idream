@@ -26,6 +26,8 @@ import {
 } from "@/server/modules/chat/agent-run-admission";
 import { dispatchDueProactiveTurns } from "@/server/modules/chat/proactive-messages";
 import { dispatchPendingGenerationBlobCleanup } from "@/server/ai/generation-blob-cleanup";
+import { cleanupExpiredMediaImports } from "@/server/modules/ourdream/media-import-staging-cleanup";
+import { dispatchImportMarkerReapers } from "@/server/modules/ourdream/import-marker-reaper";
 import { dispatchPendingVoicePreparationCleanup } from "@/server/modules/admin-v2/characters/voice-preparation-cleanup";
 
 interface InboundEvent {
@@ -341,6 +343,14 @@ export function startEventConsumer(): { close(): Promise<void> } {
     { name: "proactive_messages", run: () => dispatchDueProactiveTurns(20, stopping.signal).then(() => undefined) },
     { name: "account_blob_deletion", run: () => dispatchPendingAccountDeletionBlobDeletes({ signal: stopping.signal }) },
     { name: "generation_blob_cleanup", run: () => dispatchPendingGenerationBlobCleanup({ signal: stopping.signal }) },
+    { name: "media_import_staging_cleanup", run: async () => {
+      const result = await cleanupExpiredMediaImports({ signal: stopping.signal });
+      if (result.failed > 0) logger.warn({ failed: result.failed }, "media import staging cleanup will retry");
+    } },
+    { name: "import_marker_reaper", run: async () => {
+      const result = await dispatchImportMarkerReapers({ signal: stopping.signal });
+      if (result.failed > 0) logger.warn({ failed: result.failed }, "import marker cleanup will retry");
+    } },
     { name: "voice_preparation_cleanup", run: () => dispatchPendingVoicePreparationCleanup({ signal: stopping.signal }) },
     { name: "unrouted_outbox", run: () => recordUnroutedMainOutboxEvents().then(() => undefined) },
   ].map((lane) => ({ ...lane, inFlight: null as Promise<void> | null }));

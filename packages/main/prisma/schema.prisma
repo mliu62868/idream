@@ -114,6 +114,7 @@ model AccountDeletionBlobReceipt {
   deletionId     String
   storageKey     String?
   storageKeyHash String
+  storageAuthorityHash String?
   status         String          @default("pending") // pending | processing | deleted
   attempts       Int             @default(0)
   nextAttemptAt  DateTime        @default(now())
@@ -128,6 +129,26 @@ model AccountDeletionBlobReceipt {
   @@unique([deletionId, storageKeyHash])
   @@index([status, nextAttemptAt, leaseExpiresAt])
   @@map("account_deletion_blob_receipts")
+}
+
+// INTENT: A random, non-user marker key can be written after its caller timed
+// out. Keep its reaping authority independently of the User and MediaAsset
+// rows, so account deletion cannot remove the only record of a late marker.
+model ImportMarkerReaper {
+  id             String    @id
+  storageKey     String    @unique
+  authorityHash  String
+  status         String    @default("dormant") // dormant | pending | processing
+  attempts       Int       @default(0)
+  nextRunAt      DateTime  @default(now())
+  leaseToken     String?
+  leaseExpiresAt DateTime?
+  lastError      Json?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([status, nextRunAt, leaseExpiresAt])
+  @@map("import_marker_reapers")
 }
 
 // INTENT: Finance keeps the minimum append-only arithmetic needed to explain

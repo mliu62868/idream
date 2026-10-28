@@ -1,4 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { compileCharacterSoul } from "@idream/shared";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +11,8 @@ import { scheduleCompanionMemoryProjection } from "@/server/modules/chat/compani
 import { beginChatTurn, createChatSession } from "@/server/modules/chat/turn-ledger";
 import { recordMainToChatEvent } from "./chat-outbox";
 import { startEventConsumer } from "./event-consumer";
+import { providers } from "@/server/providers";
+import { IMPORT_STAGING_RETENTION_MS } from "@/server/modules/ourdream/media-import-staging-cleanup";
 
 // Registry publication has its own refresh lifecycle and query tests. Keep
 // this independent periodic module from changing their certification fixtures;
@@ -64,6 +69,45 @@ async function fixture() {
 }
 
 describe("durable event consumer time isolation", () => {
+  it("runs fenced import expiry on the actual consumer lane", async () => {
+    const userId = `${prefix}import-${randomUUID()}`;
+    const canonicalId = `media_url_import_${createHash("sha256").update(userId).digest("hex")}`;
+    const stageId = `media_url_stage_${randomUUID()}`;
+    const storageKey = `imports/${randomUUID()}/${randomUUID()}`;
+    const oldRoot = process.env.BLOB_ROOT;
+    const temporaryRoot = await mkdtemp(path.join(tmpdir(), "idream-import-scheduler-"));
+    process.env.BLOB_ROOT = temporaryRoot;
+    let worker: ReturnType<typeof startEventConsumer> | undefined;
+    try {
+      await createUser({ id: userId });
+      if (!providers.blob.prepareFencedPut || !providers.blob.getPrivate) throw new Error("Local fenced Blob provider required");
+      const authority = providers.blob.getFencedStorageAuthority?.();
+      if (!authority) throw new Error("Local fenced storage authority required");
+      const marker = await providers.blob.prepareFencedPut({ key: storageKey });
+      if (!marker.ok) throw new Error("Could not prepare isolated marker");
+      const createdAt = new Date(Date.now() - IMPORT_STAGING_RETENTION_MS - 10_000);
+      await prisma.mediaAsset.create({ data: { id: canonicalId, ownerId: userId, type: "image", url: "", visibility: "private", safetyStatus: "unknown", createdAt,
+        metadata: { source: "external_url_import", synthetic: false, importState: "pending", importRequestHash: "a".repeat(64) } } });
+      await prisma.$transaction(async tx => {
+        await tx.mediaAsset.create({ data: { id: stageId, ownerId: userId, type: "image", url: "", storageKey, visibility: "private", safetyStatus: "unknown", createdAt,
+          metadata: { source: "external_url_import", synthetic: false, importState: "staging", importParentId: canonicalId, importWriteProtocol: "fenced-v1", importStorageAuthority: authority } } });
+        await tx.importMarkerReaper.create({ data: { id: stageId, storageKey, authorityHash: authority, status: "dormant" } });
+      });
+      worker = startEventConsumer();
+      await expect.poll(() => prisma.mediaAsset.findUnique({ where: { id: stageId } }), { timeout: 12_000 }).toBeNull();
+      await expect.poll(async () => (await prisma.mediaAsset.findUniqueOrThrow({ where: { id: canonicalId } })).metadata, { timeout: 12_000 })
+        .toMatchObject({ importState: "expired" });
+      expect(await providers.blob.getPrivate({ key: storageKey })).toMatchObject({ ok: false, error: { code: "not_found" } });
+      expect(await prisma.importMarkerReaper.findUniqueOrThrow({ where: { id: stageId } })).toMatchObject({ storageKey, authorityHash: authority, status: "pending" });
+    } finally {
+      await worker?.close();
+      await prisma.importMarkerReaper.deleteMany({ where: { id: stageId } });
+      if (oldRoot === undefined) delete process.env.BLOB_ROOT;
+      else process.env.BLOB_ROOT = oldRoot;
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
+  }, 15_000);
+
   it("reclaims an expired generating Turn while a pending admission is still blocked", async () => {
     const expiredFixture = await fixture();
     const expired = await beginChatTurn({

@@ -338,12 +338,29 @@ export interface PaymentProvider {
 }
 
 export interface BlobStore {
+  /** Stable non-secret fingerprint of the exact fenced-write storage authority. */
+  getFencedStorageAuthority?(): string;
   putPrivate(input: {
     key: string;
     body: Uint8Array;
     contentType: string;
     signal?: AbortSignal;
   }): Promise<ProviderResult<{ key: string; size: number }>>;
+  /** Creates a fresh, non-sensitive marker on a never-reused key. */
+  prepareFencedPut?(input: {
+    key: string;
+    signal?: AbortSignal;
+  }): Promise<ProviderResult<{ key: string; markerEtag: string }>>;
+  /** Must atomically reject if the original marker has been deleted or replaced. */
+  putPrivateFenced?(input: {
+    key: string;
+    body: Uint8Array;
+    contentType: string;
+    markerEtag: string;
+    signal?: AbortSignal;
+  }): Promise<ProviderResult<{ key: string; size: number }>>;
+  /** Fail closed unless a successful delete also erases every retained version. */
+  deleteFenced?(input: { key: string; signal?: AbortSignal }): Promise<ProviderResult<{ deleted: true }>>;
   signGetUrl(input: {
     key: string;
     expiresInSeconds: number;

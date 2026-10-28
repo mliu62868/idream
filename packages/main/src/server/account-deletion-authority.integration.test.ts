@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import pg from "pg";
 import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import {
   CHAT_TO_MAIN_EVENTS,
   MAIN_TO_CHAT_EVENTS,
@@ -59,9 +60,14 @@ const TEST_USER_IDS = [
   `${P}voice-late-put-inflight`,
   `${P}voice-put-takeover`,
   `${P}voice-expired-running`,
+  `${P}import-authority`,
+  `${P}import-old-receipt`,
+  `${P}import-stage`,
 ];
+const importMarkerTestIds: string[] = [];
 
 async function purgeAccountDeletionTestData() {
+  await prisma.importMarkerReaper.deleteMany({ where: { id: { in: importMarkerTestIds } } });
   await prisma.accountDeletion.deleteMany({
     where: {
       OR: [
@@ -159,6 +165,57 @@ afterEach(async () => {
 });
 
 describe("account deletion authority", () => {
+  it.each(["changed bucket", "historical receipt"])("keeps imported bytes and account on %s until the original receipt authority is available", async scenario => {
+    const userId = `${P}${scenario === "changed bucket" ? "import-authority" : "import-old-receipt"}`;
+    const authority = "a".repeat(64), otherAuthority = "b".repeat(64);
+    const key = `imports/${randomUUID()}/${randomUUID()}`;
+    await createUser({ id: userId, dataClass: "customer" });
+    await prisma.mediaAsset.create({ data: { id: `${userId}-asset`, ownerId: userId, type: "image", url: "blob:import", storageKey: key, metadata: { importWriteProtocol: "fenced-v1", importStorageAuthority: authority } } });
+    const requested = await requestDeletionPastGrace(userId), ackAt = new Date();
+    await prisma.mainOutboxEvent.update({ where: { id: `user_deleted_${userId}` }, data: { status: "delivered", deliveredAt: ackAt, nextRunAt: ackAt } });
+    await applyChatEvent({ eventId: `${userId}-completion`, eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2, schemaVersion: 2, sourceService: ACCOUNT_ERASURE_COMPLETION_V2_SOURCE_SERVICE, aggregateId: userId, payload: chatCompletionPayload(userId, `${userId}-mutation`) });
+    const receipt = await prisma.accountDeletionBlobReceipt.findFirstOrThrow({ where: { deletionId: requested.id, storageKey: key } });
+    expect(receipt.storageAuthorityHash).toBe(authority);
+    if (scenario === "historical receipt") await prisma.accountDeletionBlobReceipt.update({ where: { id: receipt.id }, data: { storageAuthorityHash: null } });
+    let current = scenario === "changed bucket" ? otherAuthority : authority;
+    let calls = 0;
+    const blob: BlobStore = { putPrivate: async () => { throw new Error("not used"); }, signGetUrl: async () => { throw new Error("not used"); }, delete: async () => { throw new Error("plain delete forbidden"); }, getFencedStorageAuthority: () => current, deleteFenced: async ({ key: deletedKey }) => { expect(deletedKey).toBe(key); calls++; return { ok: true, data: { deleted: true } }; } };
+    const now = new Date();
+    expect(await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], blob, now })).toMatchObject({ failed: 1, completed: 0 });
+    expect(calls).toBe(0);
+    expect(await prisma.user.findUnique({ where: { id: userId } })).not.toBeNull();
+    expect(await prisma.accountDeletionBlobReceipt.findUniqueOrThrow({ where: { id: receipt.id } })).toMatchObject({ status: "pending", lastError: { code: "import_storage_authority_mismatch" } });
+    current = authority;
+    // A new worker cannot invent an authority for a historical receipt.
+    if (scenario === "historical receipt") {
+      expect(await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], blob, now: new Date(now.getTime() + 300_000) })).toMatchObject({ failed: 1, completed: 0 });
+      expect(calls).toBe(0);
+    } else {
+      expect(await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], blob, workerId: `${P}restarted-worker`, now: new Date(now.getTime() + 300_000) })).toMatchObject({ deleted: 1, completed: 1 });
+      expect(calls).toBe(1);
+      expect(await prisma.user.findUnique({ where: { id: userId } })).toBeNull();
+    }
+  });
+
+  it("keeps the account until the exact stage marker is armed in the hard-delete transaction", async () => {
+    const userId = `${P}import-stage`, stageId = `media_url_stage_${randomUUID()}`;
+    importMarkerTestIds.push(stageId);
+    const key = `imports/${randomUUID()}/${randomUUID()}`, authority = "c".repeat(64);
+    await createUser({ id: userId, dataClass: "customer" });
+    await prisma.mediaAsset.create({ data: { id: stageId, ownerId: userId, type: "image", url: "blob:stage", storageKey: key, metadata: { importWriteProtocol: "fenced-v1", importStorageAuthority: authority } } });
+    const requested = await requestDeletionPastGrace(userId), ackAt = new Date();
+    await prisma.mainOutboxEvent.update({ where: { id: `user_deleted_${userId}` }, data: { status: "delivered", deliveredAt: ackAt, nextRunAt: ackAt } });
+    await applyChatEvent({ eventId: `${userId}-completion`, eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2, schemaVersion: 2, sourceService: ACCOUNT_ERASURE_COMPLETION_V2_SOURCE_SERVICE, aggregateId: userId, payload: chatCompletionPayload(userId, `${userId}-mutation`) });
+    const blob: BlobStore = { putPrivate: async () => { throw new Error("not used"); }, signGetUrl: async () => { throw new Error("not used"); }, delete: async () => { throw new Error("plain delete forbidden"); }, getFencedStorageAuthority: () => authority, deleteFenced: async () => ({ ok: true, data: { deleted: true } }) };
+    const now = new Date();
+    expect(await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], blob, now })).toMatchObject({ deleted: 1, completed: 0 });
+    expect(await prisma.user.findUnique({ where: { id: userId } })).not.toBeNull();
+    expect(await prisma.accountDeletion.findUniqueOrThrow({ where: { id: requested.id } })).toMatchObject({ lastError: { code: "account_deletion_import_marker_pending" } });
+    await prisma.importMarkerReaper.create({ data: { id: stageId, storageKey: key, authorityHash: authority, status: "dormant" } });
+    expect(await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], blob, now: new Date(now.getTime() + 1000) })).toMatchObject({ completed: 1 });
+    expect(await prisma.user.findUnique({ where: { id: userId } })).toBeNull();
+    expect(await prisma.importMarkerReaper.findUniqueOrThrow({ where: { id: stageId } })).toMatchObject({ storageKey: key, authorityHash: authority, status: "pending" });
+  });
   it("revokes access immediately and durably waits through the erasure grace period", async () => {
     const user = await createUser({
       id: `${P}request-user`,

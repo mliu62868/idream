@@ -66,6 +66,8 @@ function createBlobStore() {
     endpoint: requireEnv("BLOB_ENDPOINT", env.BLOB_ENDPOINT),
     bucket: requireEnv("BLOB_BUCKET", env.BLOB_BUCKET),
     region: env.BLOB_REGION,
+    provider: env.BLOB_PROVIDER,
+    fencedWriteSemantics: env.BLOB_FENCED_IMPORT_SEMANTICS,
     accessKeyId: requireEnv(
       "BLOB_ACCESS_KEY_ID",
       env.BLOB_ACCESS_KEY_ID ?? env.BLOB_ACCESS_KEY ?? env.AWS_ACCESS_KEY_ID,

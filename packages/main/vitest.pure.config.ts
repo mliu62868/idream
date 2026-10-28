@@ -29,6 +29,7 @@ export default defineConfig({
       "src/server/public-route-existence.test.ts",
       "src/server/security-headers.test.ts",
       "src/server/providers/voice/transcode.test.ts",
+      "src/server/providers/blob/mock.fence.test.ts",
       "src/server/lib/auth/password.test.ts",
       "src/server/lib/media-byte-response.test.ts",
       "src/server/modules/voice-defaults.test.ts",

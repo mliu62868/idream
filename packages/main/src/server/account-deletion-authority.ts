@@ -14,6 +14,8 @@ import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { updateCharacterProjectMetadata } from "@/server/modules/admin-v2/characters/transition";
 import { revokeAccountEmailCodes } from "@/server/modules/ourdream/account-email-challenges";
 import { packReleaseStorageKeys } from "@/server/modules/ourdream/pack-authority";
+import { armImportMarker } from "@/server/modules/ourdream/import-marker-reaper";
+import { findActiveAccountDeletionLegalHold } from "@/server/modules/ourdream/import-legal-hold";
 import { materializeVoiceErasure, eraseAccountVoiceStores, erasedVoiceReceipt } from "@/server/voice-account-erasure";
 import { voiceArtifactKeys, voiceProviderIdempotencyKey } from "@/server/providers/voice/idempotency";
 
@@ -351,6 +353,10 @@ export async function dispatchPendingAccountDeletionBlobDeletes(input: {
       });
       if (!deletion?.userId) return false;
       await tx.$queryRaw`SELECT id FROM users WHERE id = ${deletion.userId} FOR UPDATE`;
+      if (!await checkLegacyImportWritesTerminal(tx, deletion.userId)) {
+        await deferForMediaIo(tx, row.deletionId, "legacy_import");
+        return true;
+      }
       if (!await checkVoiceAuthorityTerminal(tx, deletion.userId)) {
         await deferForMediaIo(tx, row.deletionId, "voice");
         return true;
@@ -408,7 +414,16 @@ export async function dispatchPendingAccountDeletionBlobDeletes(input: {
     }
     let result: Awaited<ReturnType<BlobStore["delete"]>>;
     try {
-      result = await blob.delete({ key });
+      // Imported image keys require the same unversioned storage contract as
+      // their conditional PUT. A plain DELETE on a versioned bucket can leave
+      // prior image bytes behind while falsely reporting successful erasure.
+      result = key.startsWith("imports/")
+        ? !row.storageAuthorityHash || !/^[a-f0-9]{64}$/.test(row.storageAuthorityHash) || blob.getFencedStorageAuthority?.() !== row.storageAuthorityHash
+          ? { ok: false, error: { code: "import_storage_authority_mismatch", message: "Original import storage authority is unavailable or differs from the current provider", retryable: true } }
+          : blob.deleteFenced
+            ? await blob.deleteFenced({ key })
+            : { ok: false, error: { code: "import_erasure_unsupported", message: "Fenced import deletion is unavailable", retryable: true } }
+        : await blob.delete({ key });
     } catch (error) {
       result = {
         ok: false,
@@ -545,6 +560,10 @@ export async function finalizeReadyAccountDeletions(input: {
       if (!["deleting_blobs", "finalizing"].includes(deletion.status) || !deletion.userId || !deletion.chatCompletedAt || deletion.graceEndsAt > now) return null;
       await tx.$queryRaw`SELECT id FROM users WHERE id = ${deletion.userId} FOR UPDATE`;
       if (await findActiveAccountDeletionLegalHold(tx, deletion.userId)) return null;
+      if (!await checkLegacyImportWritesTerminal(tx, deletion.userId)) {
+        await deferForMediaIo(tx, deletion.id, "legacy_import");
+        return null;
+      }
       if (!await checkVoiceAuthorityTerminal(tx, deletion.userId)) {
         await deferForMediaIo(tx, deletion.id, "voice");
         return null;
@@ -580,6 +599,10 @@ export async function finalizeReadyAccountDeletions(input: {
       await tx.$queryRaw(Prisma.sql`
         SELECT id FROM users WHERE id = ${deletion.userId} FOR UPDATE
       `);
+      if (!await checkLegacyImportWritesTerminal(tx, deletion.userId)) {
+        await deferForMediaIo(tx, deletion.id, "legacy_import");
+        return false;
+      }
       if (!await checkVoiceAuthorityTerminal(tx, deletion.userId)) {
         await deferForMediaIo(tx, deletion.id, "voice");
         return false;
@@ -652,6 +675,12 @@ export async function finalizeReadyAccountDeletions(input: {
         });
         return false;
       }
+      if (!await armAccountImportMarkers(tx, deletion.userId, now)) {
+        await tx.accountDeletion.update({ where: { id: deletion.id }, data: {
+          status: "finalizing", lastError: toInputJson({ code: "account_deletion_import_marker_pending", message: "Import marker cleanup authority is missing or invalid" }), version: { increment: 1 },
+        } });
+        return false;
+      }
       await tx.accountDeletion.update({
         where: { id: deletion.id },
         data: { status: "finalizing", version: { increment: 1 } },
@@ -680,45 +709,54 @@ async function checkVideoCompositionTerminal(tx: Prisma.TransactionClient, userI
   return await tx.videoSequence.count({ where: { userId, OR: [{ status: "composing" }, { activeCompositionOwners: { isEmpty: false } }] } }) === 0;
 }
 
-async function deferForMediaIo(tx: Prisma.TransactionClient, deletionId: string, kind: "voice" | "video_composition") {
+// An unfenced historical PUT may still complete after a successful DELETE.
+// Retain its durable owner and block erasure until external reconciliation can
+// prove that writer is unable to complete; age or a missing object is not proof.
+async function checkLegacyImportWritesTerminal(tx: Prisma.TransactionClient, userId: string) {
+  const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT id FROM media_assets
+    WHERE "ownerId" = ${userId}
+      AND starts_with(id, 'media_url_stage_')
+      AND "storageKey" IS NOT NULL
+      AND (metadata->>'importWriteProtocol') IS DISTINCT FROM 'fenced-v1'
+    LIMIT 1
+  `);
+  return rows.length === 0;
+}
+
+// Caller holds User and has established that the account is inactive. The
+// marker intent must survive the User cascade, even if a marker PUT arrives
+// after the fenced delete acknowledged by the ordinary blob receipt.
+async function armAccountImportMarkers(tx: Prisma.TransactionClient, userId: string, now: Date): Promise<boolean> {
+  const user = await tx.user.findUnique({ where: { id: userId }, select: { status: true, deletedAt: true } });
+  if (!user || user.status !== "deleted" || !user.deletedAt) return false;
+  const stages = await tx.mediaAsset.findMany({
+    where: { ownerId: userId, id: { startsWith: "media_url_stage_" } },
+    select: { id: true, storageKey: true, metadata: true },
+  });
+  const markers = await tx.importMarkerReaper.findMany({ where: { id: { in: stages.map(stage => stage.id) } } });
+  const byId = new Map(markers.map(marker => [marker.id, marker]));
+  const identities: Array<{ stageId: string; key: string; authority: string }> = [];
+  for (const stage of stages) {
+    const metadata = stage.metadata && typeof stage.metadata === "object" && !Array.isArray(stage.metadata) ? stage.metadata : null;
+    const authority = metadata?.importStorageAuthority;
+    const marker = byId.get(stage.id);
+    if (metadata?.importWriteProtocol !== "fenced-v1" || typeof authority !== "string" || !/^[a-f0-9]{64}$/.test(authority) ||
+        !/^media_url_stage_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(stage.id) ||
+        !stage.storageKey || !/^imports\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(stage.storageKey) ||
+        !marker || marker.storageKey !== stage.storageKey || marker.authorityHash !== authority || !["dormant", "pending", "processing"].includes(marker.status)) return false;
+    identities.push({ stageId: stage.id, key: stage.storageKey, authority });
+  }
+  for (const identity of identities) await armImportMarker(tx, identity, now);
+  return true;
+}
+
+async function deferForMediaIo(tx: Prisma.TransactionClient, deletionId: string, kind: "voice" | "video_composition" | "legacy_import") {
   await tx.accountDeletion.updateMany({ where: { id: deletionId, status: { in: ["deleting_blobs", "finalizing"] } }, data: {
     status: "finalizing",
     lastError: toInputJson({ code: `account_deletion_${kind === "voice" ? "voice_authority" : kind}_pending`, message: "A Main media invocation has not finished its artifact writes" }),
     version: { increment: 1 },
   } });
-}
-
-async function findActiveAccountDeletionLegalHold(
-  tx: Prisma.TransactionClient,
-  userId: string,
-) {
-  const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-    SELECT hold.id
-    FROM legal_holds AS hold
-    WHERE hold.status = 'active'
-      AND (
-        (hold."targetType" = 'user' AND hold."targetId" = ${userId})
-        OR (
-          hold."targetType" = 'media'
-          AND EXISTS (
-            SELECT 1 FROM media_assets AS media
-            WHERE media.id = hold."targetId"
-              AND media."ownerId" = ${userId}
-          )
-        )
-        OR (
-          hold."targetType" = 'generation_job'
-          AND EXISTS (
-            SELECT 1 FROM generation_jobs AS job
-            WHERE job.id = hold."targetId"
-              AND job."userId" = ${userId}
-          )
-        )
-      )
-    ORDER BY hold."createdAt" ASC, hold.id ASC
-    LIMIT 1
-  `);
-  return rows[0] ?? null;
 }
 
 function activeLegalHoldError(legalHoldId: string) {
@@ -737,7 +775,7 @@ async function materializeCurrentBlobDeletes(
   if (!deletion.userId) return 0;
   const rows = await tx.mediaAsset.findMany({
     where: { ownerId: deletion.userId, storageKey: { not: null } },
-    select: { storageKey: true },
+    select: { storageKey: true, metadata: true },
   });
   const requestRows = await tx.generationJob.findMany({
     where: { userId: deletion.userId },
@@ -788,6 +826,16 @@ async function materializeCurrentBlobDeletes(
   const keys = new Set(rows.flatMap((row) =>
     row.storageKey?.trim() ? [row.storageKey.trim()] : [],
   ));
+  const importAuthorities = new Map<string, string | null>();
+  for (const row of rows) {
+    const key = row.storageKey?.trim();
+    if (!key?.startsWith("imports/")) continue;
+    const metadata = row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata) ? row.metadata : null;
+    const value = metadata?.importStorageAuthority;
+    const authority = typeof value === "string" && /^[a-f0-9]{64}$/.test(value) ? value : null;
+    if (importAuthorities.has(key) && importAuthorities.get(key) !== authority) importAuthorities.set(key, null);
+    else if (!importAuthorities.has(key)) importAuthorities.set(key, authority);
+  }
   const voiceRequests = await tx.voiceClipRequest.findMany({ where: { userId: deletion.userId }, select: { id: true } });
   for (const request of voiceRequests) {
     for (const key of voiceArtifactKeys(voiceProviderIdempotencyKey(request.id))) keys.add(key);
@@ -835,6 +883,7 @@ async function materializeCurrentBlobDeletes(
       deletionId: deletion.id,
       storageKey,
       storageKeyHash,
+      storageAuthorityHash: importAuthorities.get(storageKey) ?? null,
       status: "pending",
       nextAttemptAt: now,
     };

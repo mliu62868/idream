@@ -4,6 +4,7 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { readRemoteImage, verifySourceImageBytes, withRemoteImageValidationLimit } from "@/server/lib/safe-remote-image";
 import { providers } from "@/server/providers";
+import { reserveImportMarker, retireImportMarker } from "./import-marker-reaper";
 
 const digest = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 const importId = (userId: string, key: string) => `media_url_import_${digest(JSON.stringify([userId, key]))}`;
@@ -24,6 +25,7 @@ function validateImport(asset: { ownerId: string; metadata: Prisma.JsonValue; de
     throw Errors.conflict("This import request belongs to a different image. Start a new import.");
   }
   if (asset.deletedAt) throw Errors.gone("This imported image was deleted. Start a new import.");
+  if (metadata.importState === "expired") throw Errors.gone("This import request expired. Start a new import.");
   return metadata.importState === "completed" && asset.safetyStatus === "passed";
 }
 
@@ -55,11 +57,15 @@ export async function createRemoteImageImport(userId: string, key: string, url: 
     if (moderation.data.status !== "passed") throw Errors.conflict("This image could not be imported.");
     const remote = await readRemoteImage(url);
     const verified = await verifySourceImageBytes(remote.bytes);
+    const authority = providers.blob.getFencedStorageAuthority?.();
+    if (!authority || !/^[a-f0-9]{64}$/.test(authority) || !providers.blob.prepareFencedPut || !providers.blob.putPrivateFenced) throw unavailable();
 
     // A durable canonical intent and a distinct per-attempt staging row exist
     // before any Blob write. Failed or ambiguous PUTs never reuse their key.
     const stageId = `media_url_stage_${randomUUID()}`;
-    const stageKey = `imports/${digest(userId)}/${randomUUID()}`;
+    // An indeterminate marker PUT can leave only random, non-user bytes.
+    // Its key must also avoid embedding a stable account identifier.
+    const stageKey = `imports/${randomUUID()}/${randomUUID()}`;
     const reserved = await prisma.$transaction(async tx => {
       await lockActiveUser(tx, userId);
       const current = await tx.mediaAsset.findUnique({ where: { id } });
@@ -72,11 +78,29 @@ export async function createRemoteImageImport(userId: string, key: string, url: 
       await tx.mediaAsset.create({ data: {
         id: stageId, ownerId: userId, type: "image", url: "", storageKey: stageKey,
         contentType: verified.contentType, visibility: "private", safetyStatus: "unknown",
-        metadata: { source: "external_url_import", synthetic: false, importState: "staging", importParentId: id },
+        metadata: { source: "external_url_import", synthetic: false, importState: "staging", importParentId: id, importWriteProtocol: "fenced-v1", importStorageAuthority: authority },
       } });
+      await reserveImportMarker(tx, { stageId, key: stageKey, authority });
       return true;
     });
     if (!reserved) return { assetId: id, replayed: true };
+
+    // Marker creation can finish after its database transaction times out.
+    // Start it only while holding the shared locks, then use a fresh lock
+    // transaction before starting the sensitive PUT.
+    if (!providers.blob.prepareFencedPut || !providers.blob.putPrivateFenced || providers.blob.getFencedStorageAuthority?.() !== authority) throw unavailable();
+    const prepareFenced = providers.blob.prepareFencedPut.bind(providers.blob);
+    const putFenced = providers.blob.putPrivateFenced.bind(providers.blob);
+    const signal = AbortSignal.timeout(20_000);
+    const marker = await prisma.$transaction(async tx => {
+      await lockActiveUser(tx, userId);
+      await tx.$queryRaw`SELECT id FROM media_assets WHERE id = ${id} FOR UPDATE`;
+      const stage = await tx.mediaAsset.findUnique({ where: { id: stageId } });
+      const metadata = stage?.metadata && typeof stage.metadata === "object" && !Array.isArray(stage.metadata) ? stage.metadata : {};
+      if (!stage || stage.ownerId !== userId || stage.storageKey !== stageKey || metadata.importCleanupState === "claimed" || metadata.importStorageAuthority !== authority || providers.blob.getFencedStorageAuthority?.() !== authority) throw unavailable();
+      return prepareFenced({ key: stageKey, signal });
+    }, { timeout: 45_000 });
+    if (!marker.ok || marker.data.key !== stageKey) throw unavailable();
 
     return prisma.$transaction(async tx => {
       // Account deletion and retries share the User-root lock. Each PUT has a
@@ -87,21 +111,28 @@ export async function createRemoteImageImport(userId: string, key: string, url: 
       const asset = await tx.mediaAsset.findUnique({ where: { id } });
       if (!asset) throw unavailable();
       if (validateImport(asset, userId, requestHash)) {
-        // This attempt has not issued a PUT, so its reserved key is unused.
-        await tx.mediaAsset.delete({ where: { id: stageId } });
+        // This attempt may already have a marker. Keep its staging authority
+        // for the expiry worker, even though another attempt won the request.
         return { assetId: id, replayed: true };
       }
       const stage = await tx.mediaAsset.findUnique({ where: { id: stageId } });
       if (!stage || stage.ownerId !== userId || stage.storageKey !== stageKey) throw unavailable();
-      const stored = await providers.blob.putPrivate({ key: stageKey, body: verified.bytes, contentType: verified.contentType, signal: AbortSignal.timeout(20_000) });
+      const stageMetadata = stage.metadata && typeof stage.metadata === "object" && !Array.isArray(stage.metadata) ? stage.metadata : {};
+      // A cleanup claim is durable across process and network failures; never
+      // start a PUT for a key whose deletion may still complete later.
+      if (stageMetadata.importCleanupState === "claimed" || stageMetadata.importStorageAuthority !== authority || providers.blob.getFencedStorageAuthority?.() !== authority) throw unavailable();
+      // A successful delete of the known marker fences a timed-out PUT at the
+      // storage authority; client-side cancellation alone cannot do so.
+      const stored = await putFenced({ key: stageKey, body: verified.bytes, contentType: verified.contentType, markerEtag: marker.data.markerEtag, signal });
       if (!stored.ok || stored.data.key !== stageKey || stored.data.size !== verified.bytes.byteLength) throw unavailable();
       // The unique Blob locator moves atomically from staging to the completed
       // asset. If commit is ambiguous either row still records the same key.
       await tx.mediaAsset.update({ where: { id: stageId }, data: { storageKey: null } });
       await tx.mediaAsset.update({ where: { id }, data: {
         storageKey: stageKey, contentType: verified.contentType, safetyStatus: "passed",
-        metadata: { source: "external_url_import", synthetic: false, importState: "completed", importRequestHash: requestHash, sha256: digest(verified.bytes), sizeBytes: verified.bytes.byteLength },
+        metadata: { source: "external_url_import", synthetic: false, importState: "completed", importRequestHash: requestHash, importStorageAuthority: authority, sha256: digest(verified.bytes), sizeBytes: verified.bytes.byteLength },
       } });
+      await retireImportMarker(tx, { stageId, key: stageKey, authority });
       await tx.mediaAsset.delete({ where: { id: stageId } });
       return { assetId: id, replayed: false };
     }, { timeout: 45_000 });

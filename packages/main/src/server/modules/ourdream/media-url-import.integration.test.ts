@@ -95,8 +95,8 @@ it("does not create an asset if account deletion wins during the download", asyn
   const resume = new Promise<void>(resolve => { release = resolve; });
   vi.mocked(remoteImage.readRemoteImage).mockImplementation(async () => { started(); await resume; return { bytes: image, contentType: "image/png" }; });
   const keys: string[] = [];
-  const put = providers.blob.putPrivate.bind(providers.blob);
-  vi.spyOn(providers.blob, "putPrivate").mockImplementation(async input => { keys.push(input.key); return put(input); });
+  const put = providers.blob.putPrivateFenced!.bind(providers.blob);
+  vi.spyOn(providers.blob, "putPrivateFenced").mockImplementation(async input => { keys.push(input.key); return put(input); });
   const pending = post(`${prefix}deleted-race`, url, deleting);
   await downloading;
   await prisma.user.update({ where: { id: deleting }, data: { status: "deleted", deletedAt: new Date() } });
@@ -110,8 +110,8 @@ it("serializes account deletion with an active Blob PUT", async () => {
   let started!: () => void, release!: () => void;
   const writing = new Promise<void>(resolve => { started = resolve; });
   const resume = new Promise<void>(resolve => { release = resolve; });
-  const put = providers.blob.putPrivate.bind(providers.blob);
-  vi.spyOn(providers.blob, "putPrivate").mockImplementationOnce(async input => { started(); await resume; return put(input); });
+  const put = providers.blob.putPrivateFenced!.bind(providers.blob);
+  vi.spyOn(providers.blob, "putPrivateFenced").mockImplementationOnce(async input => { started(); await resume; return put(input); });
   const pending = post(`${prefix}delete-during-put`, url, deletingPut);
   await writing;
   let deleted = false;
@@ -134,8 +134,8 @@ it("serializes account deletion with an active Blob PUT", async () => {
 it("rejects a concurrent different URL before writing another Blob", async () => {
   const key = `${prefix}race`;
   const keys: string[] = [];
-  const put = providers.blob.putPrivate.bind(providers.blob);
-  vi.spyOn(providers.blob, "putPrivate").mockImplementation(async input => { keys.push(input.key); return put(input); });
+  const put = providers.blob.putPrivateFenced!.bind(providers.blob);
+  vi.spyOn(providers.blob, "putPrivateFenced").mockImplementation(async input => { keys.push(input.key); return put(input); });
   let start!: () => void;
   const barrier = new Promise<void>(resolve => { start = resolve; });
   let count = 0;
@@ -152,10 +152,12 @@ it("recovers an ambiguous PUT without exposing pending data or allowing a late P
   const key = `${prefix}ambiguous`;
   const firstBytes = image;
   const changedBytes = await sharp({ create: { width: 32, height: 24, channels: 3, background: "blue" } }).png().toBuffer();
-  const put = providers.blob.putPrivate.bind(providers.blob);
+  const put = providers.blob.putPrivateFenced!.bind(providers.blob);
   let oldKey = "";
-  vi.spyOn(providers.blob, "putPrivate").mockImplementationOnce(async input => {
+  let oldInput: Parameters<NonNullable<typeof providers.blob.putPrivateFenced>>[0] | undefined;
+  vi.spyOn(providers.blob, "putPrivateFenced").mockImplementationOnce(async input => {
     oldKey = input.key;
+    oldInput = input;
     await put(input);
     return { ok: false, error: { code: "put_failed", message: "ambiguous", retryable: true } };
   });
@@ -184,7 +186,8 @@ it("recovers an ambiguous PUT without exposing pending data or allowing a late P
   const complete = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: pending.id } });
   expect(complete.storageKey).not.toBe(oldKey);
   // Simulate a prior request completing its PUT after the retry committed.
-  await put({ key: oldKey, body: firstBytes, contentType: "image/png" });
+  expect(oldInput).toBeDefined();
+  await expect(put({ ...oldInput!, body: firstBytes })).resolves.toMatchObject({ ok: false });
   const actual = await providers.blob.getPrivate!({ key: complete.storageKey! });
   expect(actual.ok && Buffer.from(actual.data.body)).toEqual(changedBytes);
   expect((await prisma.mediaAsset.findUniqueOrThrow({ where: { id: stage.id } })).storageKey).toBe(oldKey);

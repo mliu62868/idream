@@ -74,6 +74,35 @@ source revision 的 production immutable topology 才能签发运行态证明。
 - `FISH_AUDIO_*` / `POCKET_TTS_*`：两个独立 runtime 的 endpoint、token、model、language 与 voice registry
 - Main moderation、billing、Blob、Generation 和 Sentry 配置
 
+外链图片导入的 S3/R2 存储默认关闭条件写入；仅在目标 bucket 和客户端已完成供应商实测及配置约束后设置 `BLOB_FENCED_IMPORT_SEMANTICS=verified-unversioned-v1`。该声明要求 bucket 从未启用版本管理（暂停版本管理同样不允许）、通过 IAM/运维策略阻止运行期间启用或切换版本管理，并确保 endpoint 对 `If-Match` PUT 与并发 DELETE 提供 AWS S3 的原子排序语义。S3 运行时检查 bucket versioning，并使用随机内容验证已删除对象的旧 ETag 和现有对象的错误 ETag 均被拒绝；清理也会验证对象不存在。无权限读取 versioning、返回异常或条件未实现时，导入和其围栏清理失败关闭并保留恢复记录。顺序探测不能证明 endpoint 的并发行为或配置不会变化，管理员必须对实际 endpoint 验证并持续监控这些条件。普通 Blob 写入不受该设置影响。
+
+Cloudflare R2 不实现 `GetBucketVersioning`。只有显式配置 `BLOB_PROVIDER=r2`、标准 HTTPS endpoint `<32 位十六进制账户 ID>.r2.cloudflarestorage.com` 及上述运维声明时，才按该声明使用无版本契约，仍会探测条件写入；其他 endpoint 和配置不享有此例外。此分支依赖供应商当前契约和运营验证，不能证明目标 bucket 的历史版本已被清除，也不代表已完成真实 R2 验收。若供应商版本策略或实际配置改变，应停用导入及围栏清理，重新评估和验收，不得将不支持 versioning 查询泛化为无版本证明。
+
+围栏准备对象及其 key 均为随机值，不含用户图片或稳定用户标识；若准备请求的结果不明，不能假定远端不会晚到创建标记。不得复用该 key 或在不明准备状态下发送图片 PUT。后台在 24 小时后回收可验证的过期 staging；独立的匿名清理记录在账号删除后继续保留，并在每次成功清理后隔 24 小时再次检查，以回收迟到的随机标记。失败会重试并发出不含 key 的聚合告警。此记录和周期性存储请求会持续产生开销；只有后台持续运行、存储可用且迟到写入最终结束时，才能期待后续巡检将标记删除，不能据此证明账号删除瞬间或未来任意时刻存储均为空。
+
+发布时先排空旧版写者并保留未决删除证据，再由用户或 CI 应用 `20261028010000_import_marker_reaper` migration，随后一起部署新写者和 event-consumer。清理记录及导入素材的删除凭据绑定原存储 authority；切换 provider、endpoint、bucket 或 region 后不会猜测旧对象的位置，而会保留记录并告警，恢复原配置或经核验证据处置后才能继续。历史无条件 PUT 不会因升级自动变安全，账号擦除会对这些未决 staging 保守等待；必须结合原存储的清单、写入终态和历史配置核实，不得仅凭对象当前不存在或等待固定时间认定安全。已被旧版本删除且没有留下 key 的记录需要从供应商侧清单和日志调查。备份、WAL 和历史版本的擦除仍需按各自策略处理。
+
+清理会检查现有的账号、素材和生成任务 legal hold，并在 hold 释放后重试。当前 hold 创建与外部对象删除没有共享的串行化协议：正在创建 hold 时必须先停用并排空相关清理与账号擦除工作，确认保全记录生效后再恢复；不能把一次检查视为对并发创建的保障。
+
+下列只读查询可盘点仍需处置的历史 staging 和被其阻塞的账号擦除；结果不输出账号 ID、URL 或对象 key：
+
+```sql
+SELECT u.status AS account_status, COALESCE(d.status, 'none') AS deletion_status,
+       COUNT(*) AS stage_count, COUNT(DISTINCT m."ownerId") AS account_count,
+       MIN(m."createdAt") AS oldest_at
+FROM media_assets m
+JOIN users u ON u.id = m."ownerId"
+LEFT JOIN account_deletions d ON d."userId" = m."ownerId"
+WHERE starts_with(m.id, 'media_url_stage_') AND m."storageKey" IS NOT NULL
+  AND (m.metadata->>'importWriteProtocol') IS DISTINCT FROM 'fenced-v1'
+GROUP BY u.status, COALESCE(d.status, 'none');
+
+SELECT status, COUNT(*) AS deletion_count
+FROM account_deletions
+WHERE "lastError"->>'code' = 'account_deletion_legacy_import_pending'
+GROUP BY status;
+```
+
 Ming 的固定依赖与权重通过 `bun run voice:ming:install` 预装，运行时离线加载；CAM++ 路径由 `FISH_AUDIO_CAMPLUS_MODEL_PATH` 指定。完整参考录音始终用于声纹条件，`ming_prompt` 只能指定有完整 WAV SHA、边界与精确转录的已核验短片段。情绪使用原生结构化指令，固定 CFG=2、temperature=0、10 steps；Breeze 的 token 采样参数不适用于 Ming。
 
 切换前先确认没有未完成语音任务，再更新配置、通过 `bun run pm2:restart` 执行受控重启，并在 Admin 保存匹配当前 provider 的系统默认声音。默认 Ming 时 Pocket 仍常驻以服务既有 catalog profile。新 clip、call、旁白保存实际 model；历史已交付资产仍可读取，同 gateway 的旧模型仅允许精确命中缓存的重播，不会用新模型重新合成。

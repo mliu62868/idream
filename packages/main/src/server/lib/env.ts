@@ -66,6 +66,7 @@ const EnvSchema = z.object({
   BLOB_ENDPOINT: z.string().url().optional(),
   BLOB_BUCKET: z.string().min(1).optional(),
   BLOB_REGION: z.string().min(1).default(DEFAULT_BLOB_REGION),
+  BLOB_FENCED_IMPORT_SEMANTICS: z.literal("verified-unversioned-v1").optional(),
   BLOB_ACCESS_KEY_ID: z.string().optional(),
   BLOB_ACCESS_KEY: z.string().optional(),
   AWS_ACCESS_KEY_ID: z.string().optional(),
