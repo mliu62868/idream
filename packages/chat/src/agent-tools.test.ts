@@ -6,6 +6,7 @@ import {
   GENERATE_IMAGE_ASYNC_TOOL,
   registryChatTools,
 } from "./agent-tools.js";
+import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL } from "@idream/shared/chat/media-library";
 
 describe("DSH image tool registry", () => {
   it("requires an explicit image subject and preserves a scene without a companion", () => {
@@ -17,10 +18,12 @@ describe("DSH image tool registry", () => {
     expect(findAgentTool(GENERATE_IMAGE_ASYNC_TOOL)?.parseCall({ prompt, subject: "unknown" })).toBeNull();
   });
 
-  it("exposes only the Chat-owned image bridge schemas", () => {
+  it("exposes the generation and prepared-media bridge schemas", () => {
     expect(AGENT_TOOL_REGISTRY.map((tool) => tool.name)).toEqual([
       GENERATE_IMAGE_ASYNC_TOOL,
       EDIT_LAST_IMAGE_TOOL,
+      SEARCH_CHARACTER_MEDIA_TOOL,
+      SEND_CHARACTER_MEDIA_TOOL,
     ]);
     expect(registryChatTools()).toEqual([
       expect.objectContaining({
@@ -31,6 +34,8 @@ describe("DSH image tool registry", () => {
         name: EDIT_LAST_IMAGE_TOOL,
         parameters: expect.objectContaining({ required: ["instruction"] }),
       }),
+      expect.objectContaining({ name: SEARCH_CHARACTER_MEDIA_TOOL }),
+      expect.objectContaining({ name: SEND_CHARACTER_MEDIA_TOOL }),
     ]);
   });
 

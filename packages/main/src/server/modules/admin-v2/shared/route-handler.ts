@@ -1,6 +1,8 @@
 import { ZodError } from "zod";
 import {
   findAdminV2ApiOperation,
+  adminV2BinaryResponseHeaders,
+  narrowAdminV2BinaryResponse,
   narrowAdminV2ResponseData,
   narrowAdminV2ResponseEnvelope,
   requireExecutableAdminV2Contract,
@@ -38,8 +40,9 @@ export function adminMutationResultValidator(request: Request) {
  *
  * INVARIANT: `execute` may still hand back a `Response` — modules that pick their own status or
  * `Cache-Control` need one — but that no longer buys an exit past the contract. A success
- * envelope is re-narrowed from its own bytes; only non-2xx and non-`ok` responses (`fail`)
- * pass through, because an error is not the success contract.
+ * envelope is re-narrowed from its own bytes. An explicit manifest binary operation
+ * validates media metadata and preserves its authorized stream; arbitrary Responses
+ * cannot opt out of the JSON contract by changing Content-Type.
  */
 export async function adminV2Route<T>(
   request: Request,
@@ -59,6 +62,18 @@ export async function adminV2Route<T>(
       });
     }
     const result = await execute();
+    if (operation.responseBody === "binary") {
+      if (!(result instanceof Response)) throw Errors.internal("Binary Admin operation did not return a Response");
+      if (result.ok) {
+        const narrowed = narrowAdminV2BinaryResponse(operation, result);
+        if (!narrowed.ok) throw contractViolation(narrowed.violation);
+      }
+      return new Response(result.body, {
+        status: result.status,
+        statusText: result.statusText,
+        headers: adminV2BinaryResponseHeaders(result),
+      });
+    }
     if (!(result instanceof Response)) {
       const narrowed = narrowAdminV2ResponseData(operation, result);
       if (!narrowed.ok) throw contractViolation(narrowed.violation);

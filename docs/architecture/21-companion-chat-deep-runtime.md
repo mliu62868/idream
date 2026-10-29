@@ -22,9 +22,11 @@ Stop 禁止继续执行、发布文本和提交终态，但允许已开始的模
 
 `PreparedTurn` 是 Chat 内唯一执行输入：编译时直接生成带稳定消息 id、source kind、Soul/Scene trace、预算与模型 profile 的对象，不再先造产品对象、再经 WeakMap/`*Wire` 转换。Invocation、event、tool 与 commit ACK schema 只存在于 `packages/chat/src/agent-runtime`；Shared 保留 Main↔Chat 的产品执行快照、接纳回执、工具效果、终态提交、记忆重建、readiness 与无内容运营证据契约。本地 AgentRun event 文件只记录 content-free lifecycle/tool/failure 事实；文本 delta 与终态正文分别属于 Redis 流和未决 `proposal.json`。
 
-2026-10-07 决策调整：图片动作由 Companion Agent 根据当前请求和完整上下文选择，取代词表意图识别、独立分类模型和 required-action 强制调用。`PreparedTurn` 按产品权限与模型工具能力暴露图片工具；有 Main 固定的已交付图片时才暴露编辑工具。所有请求沿用原生 user/assistant 对话与 `tool_choice=auto`，保留消息 ID、来源和跨说话者先后顺序。历史、Scene、召回和保存偏好提供上下文，不单独触发新付费动作；Agent 理解拒绝、讨论、短确认和本次衣着要求。预算包含同一原生传输的完整消息及工具 schema。这证明传递保真，不证明模型语义判断永远正确。
+2026-10-07 决策调整：图片动作由 Companion Agent 根据当前请求和完整上下文选择，取代词表意图识别、独立分类模型和 required-action 强制调用。`PreparedTurn` 按产品权限与模型工具能力暴露生成工具；有 Main 固定的已交付图片时才暴露编辑工具。2026-10-29 增加角色聊天媒体库：Main 固定可用媒体种类和最多八条已交付媒体引用，独立于付费生图权益开放 `search_character_media` / `send_character_media`；仅有历史媒体时只开放重发，仍要求模型支持工具。所有请求沿用原生 user/assistant 对话与 `tool_choice=auto`，保留消息 ID、来源和跨说话者先后顺序。历史、Scene、召回和保存偏好提供上下文，不单独触发新付费动作；Agent 理解拒绝、讨论、短确认和本次衣着要求。预算包含完整消息、媒体描述与工具 schema。这证明传递保真，不证明模型语义判断永远正确。
 
-Agent 自己编写生成或编辑方向及 `requestedNudity`，Main 不再次解释用户措辞。Main 校验冻结 Turn/attempt、工具参数、实际编辑来源、实时权益和额度，再交给现有 Generation 原子预留。每个 Turn/用户原文仅允许一个图片动作，身份不按生成与编辑工具拆分；重新生成复用原收据，工具或衣着意图改变时拒绝第二个动作。编辑用户原文才形成新的动作身份。
+Agent 自己编写生成或编辑方向及 `requestedNudity`，Main 不再次解释用户措辞。Main 校验冻结 Turn/attempt、工具参数、实际编辑来源、实时权益和额度，再交给现有 Generation 原子预留。每个 Turn/用户原文仅允许一个媒体动作，生成、编辑与库存发送共用身份，不按工具名或 provider callId 拆分；重新生成回复复用原收据，动作来源或衣着意图改变时拒绝第二个动作。编辑用户原文才形成新的动作身份。`search_character_media` 是 attempt 范围的只读观察，不占动作；`send_character_media` 只接受本次候选 token 或本会话已交付媒体 ID，Main 完成归属与来源复核后持久化附件和用户媒体副本，返回费用零、`generationJobId=null` 的 completed 收据，不创建 GenerationJob。聊天自身的用量计量不因此免除。
+
+角色聊天媒体库只接纳具有当前视觉身份的平台角色成品或明确授权的运营导入，用户私有生成成果不能进入共享库。运营根据实际成品确认描述、正向事实与已验证缺失事实；生成 prompt 不能代替观察，unknown 不能当作 absence。可选视觉模型只提供待复核建议，Qwen3.5 路由使用关闭 thinking 的 JSON-object 响应；视频抽样帧不证明连续动作、声音或整体质量。首版按角色、视觉身份与媒体种类读取全部合格向量进行精确相似度检索，再融合关键词名次及可选 rerank，不宣称已具备大规模索引性能。聊天检索将完整事实要求、否定和场景保留在自然语言 query 中，仅将衣着、时长及音轨等明确结构条件用于预过滤；运营预览可另外使用人工填写的精确事实过滤。Agent 再逐项核对候选描述、已验证缺失事实和当前请求，检索分数不代表语义已满足。候选短凭证的签名绑定冻结 Turn、素材版本及原检索衣着要求，发送工具的默认意图不能覆盖该要求。普通发图/视频请求先查库存，明确要求新生成或编辑不被库存替换；视频无匹配不能自动购买生成。所有描述与检索内容都是证据，不是指令。撤下阻止从库存的新交付，既有用户副本仍可阅读和显式重发；检索与发送时继续复核发布、源媒体及视觉身份权威。
 
 群聊历史的 Character 归属必须穿过 Pi 的不可变消息投影到达实际 provider 请求。Agent 从当前 Character 的已提交历史理解图片邀约与短确认，宿主不合成确认事实。跨 attempt 的 turn_action 重放遵循统一 user→conversation→Turn→attachment 锁序，并在锁内重读 Job、状态与费用；requesting 只是动作身份已保存，不能作为成功预留 ACK。中断后恢复该动作先绑定当前 attempt，再进入原有 Generation 原子预留，以同一动作身份防止重复扣费。
 
@@ -40,7 +42,7 @@ Agent 自己编写生成或编辑方向及 `requestedNudity`，Main 不再次解
 
 legacy 图片动作收据只有在用户原文未变时可跨 attempt 重放；编辑在同一事务持久标记旧身份失效，包括没有 Job 的旧收据。已有 Job 的旧编辑清除证据也使该收据失效。Gen 完成、失败、取消与运营退款都先取得与 Chat 相同的 user 锁，再取得 Request 和附件锁；批量结算先按 userId 排序取得全部用户锁，避免钱包与附件的反向等待。金额与资格仍由锁内事实和现有幂等账本决定。
 
-OpenAI-compatible provider 仅以原生 tool call 进入动作执行；普通文本或参数 JSON 不转换成工具，也不通过兼容重试强迫调用。Agent 在 Main 返回结果后继续正常执行循环，自行给出角色回复；不合成固定图片回执。准备提示明确区分 `accepted` 与 `completed`：前者仍在制作，后者才已交付；工具 schema 不再要求预写 caption，Main 的异步交付仍以实际收据和附件状态为准。工具前文本是暂态，下一步重置后才交付最终回复。Main 已拒绝的图片动作可以产生自然的失败说明；接纳结果未知则停止，不能提交成功回复或再次购买。实际 provider 归属与每次物理请求用量仍必须可核验。
+OpenAI-compatible provider 仅以原生 tool call 进入动作执行；普通文本或参数 JSON 不转换成工具，也不通过兼容重试强迫调用。Agent 在 Main 返回结果后继续正常执行循环，自行给出角色回复；不合成固定媒体回执。准备提示明确区分生成 `accepted` 与 `completed`：前者仍在制作，后者才已交付；库存检索的 `matches` / `no_match` 均不表示交付，检索失败也不能冒充 no_match。工具 schema 不要求预写 caption；生成的异步交付仍以实际收据和附件状态为准，库存发送的回复只能描述已确认成品，不能声称刚刚定制或生成。工具前文本是暂态，下一步重置后才交付最终回复。Main 已拒绝的媒体动作可以产生自然的失败说明；发送或生成接纳结果未知则停止，不能提交成功回复或再次购买。实际 provider 归属与每次物理请求用量仍必须可核验。契约与原生工具循环回归不替代同一 source revision 的真实运营、交付、恢复与计费旅程验证。
 
 provider 的工具名分片先累计为完整当前名称，再交给 Pi；参数仍按 delta 累积。SSE `[DONE]` 结束当前响应读取，不等待 HTTP EOF，也不放宽 finish reason、provider attribution 或用量核验。
 

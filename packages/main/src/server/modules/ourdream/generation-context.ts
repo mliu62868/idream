@@ -10,6 +10,7 @@ import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency"
 import { characterContentHash } from "@/server/modules/admin-v2/shared/character-content-identity";
 import { lockCharacterGenerationAuthority } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { attachmentAttempt, lockChatScope } from "@/server/modules/chat/turn-scope";
+import { chatMediaDescription, isReadableChatMedia } from "@/server/modules/chat/chat-media-history";
 import type { GenerationPromptCharacter } from "./generation-character-authority";
 import type { GenerationCreateBody, GenerationSource } from "./generation-request-schema";
 import { loadReadableComic, comicContentUrl } from "./comic-authority";
@@ -200,17 +201,35 @@ async function loadChatContext(userId: string, selector: z.infer<typeof chatSele
   let sourceGenerationJobId: string | null = null;
   if (selector.mediaAssetId) {
     const attachment = turn.attachments.find(item => item.mediaAssetId === selector.mediaAssetId && item.status === "completed" && attachmentAttempt(item.metadata) === turn.attempt);
-    const job = attachment?.generationJobId ? await db.generationJob.findFirst({ where: { id: attachment.generationJobId, userId, characterId: character.id } }) : null;
-    const asset = job ? await db.mediaAsset.findFirst({ where: { id: selector.mediaAssetId, sourceJobId: job.id, ownerId: userId, type: "image", deletedAt: null, safetyStatus: "passed" } }) : null;
-    if (!attachment || !job || !asset || !isMediaAssetOperationalForAuthority(asset.metadata) || !hasHydratableMediaBlobAuthority(asset)) {
+    let job = attachment?.generationJobId ? await db.generationJob.findFirst({ where: { id: attachment.generationJobId, userId, characterId: character.id } }) : null;
+    const asset = attachment ? await db.mediaAsset.findFirst({ where: { id: selector.mediaAssetId,
+      ...(job ? { sourceJobId: job.id } : { characterId: character.id }), ownerId: userId,
+      type: "image", deletedAt: null, safetyStatus: "passed" } }) : null;
+    if (!attachment || !asset || !isMediaAssetOperationalForAuthority(asset.metadata) || !hasHydratableMediaBlobAuthority(asset)) {
       throw Errors.notFound("The image is no longer an available delivery of this chat reply.");
     }
-    if (job.visualProfileId !== visualProfileId || job.visualProfileVersion !== visualProfileVersion || job.referenceSetRevisionId !== referenceSetRevisionId) {
-      throw Errors.conflict("The delivered image does not match the original chat identity. It cannot be silently rebound.");
+    if (!job && jsonRecord(attachment.metadata).source === "previous_media" && asset.sourceJobId) {
+      job = await db.generationJob.findFirst({ where: { id: asset.sourceJobId, userId, characterId: character.id, status: "completed" } });
     }
-    const rawInput = jsonRecord(job.momentSpec).rawInput;
-    acceptedBrief = typeof rawInput === "string" && rawInput.trim() ? rawInput : attachment.promptHint;
-    sourceGenerationJobId = job.id;
+    if (job) {
+      if (job.visualProfileId !== visualProfileId || job.visualProfileVersion !== visualProfileVersion || job.referenceSetRevisionId !== referenceSetRevisionId) {
+        throw Errors.conflict("The delivered image does not match the original chat identity. It cannot be silently rebound.");
+      }
+      const rawInput = jsonRecord(job.momentSpec).rawInput;
+      acceptedBrief = typeof rawInput === "string" && rawInput.trim() ? rawInput : attachment.promptHint;
+      sourceGenerationJobId = job.id;
+    } else {
+      const delivery = jsonRecord(jsonRecord(asset.metadata).libraryDelivery);
+      if (!["library", "previous_media"].includes(String(jsonRecord(attachment.metadata).source))
+        || asset.sourceJobId !== null || !isReadableChatMedia(asset)
+        || delivery.schemaVersion !== 1 || delivery.visualProfileId !== visualProfileId
+        || delivery.visualProfileVersion !== visualProfileVersion || !chatMediaDescription(asset.metadata)) {
+        throw Errors.notFound("The image has no reusable delivery authority for this chat identity.");
+      }
+      // An existing photo's reviewed description is its source context. It has
+      // no generation prompt or Job, and withdrawing the library does not erase it.
+      acceptedBrief = chatMediaDescription(asset.metadata);
+    }
     const url = collectionMediaViewUrl(asset);
     sourceMedia = { id: asset.id, url, thumbnailUrl: url };
   }

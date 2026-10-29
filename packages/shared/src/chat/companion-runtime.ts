@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { COMPANION_PRODUCT_PROMPT_VERSION } from "./companion-agent-prompt";
+import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL } from "./media-library";
 
 // Shared contains only Main ↔ Chat contracts and operator evidence.
 export const COMPANION_RUNTIME_PROTOCOL_VERSION = 2 as const;
@@ -374,7 +375,7 @@ export function createCompanionWorkspaceRebuildStream(input: {
 const probeToolReservationSchema = z.object({
   attemptId: nonEmptyStringSchema,
   callId: nonEmptyStringSchema,
-  name: z.enum(["generate_image_async", "edit_last_image"]),
+  name: z.enum(["generate_image_async", "edit_last_image", SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL]),
   argumentsDigest: sha256Schema,
   // Current runtime reservations bind both action scope and user intent.
   // Missing authority in historical evidence cannot certify a current run.

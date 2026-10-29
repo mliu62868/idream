@@ -254,7 +254,7 @@ describe("chat scope lock ladder", () => {
 
 describe("tool effect attachment state machine", () => {
   const legal: Readonly<Record<ToolEffectAttachmentStatus, readonly ToolEffectAttachmentStatus[]>> = {
-    requesting: ["accepted", "failed"],
+    requesting: ["accepted", "failed", "completed"],
     accepted: ["completed", "failed", "blocked", "refunded", "cancelled"],
     completed: [],
     failed: ["accepted", "requesting"],
@@ -283,9 +283,9 @@ describe("tool effect attachment state machine", () => {
   it("refuses the illegal jumps that used to be expressible", async () => {
     const { tx } = fakeTx(SOLO);
     const scope = await lockChatScope(tx, { userId: "u1", at: { attachment: "a1" } });
-    // requesting 直接跳交付：以前任何一个写入方都写得出来。
+    // 免费库存交付有受守卫的直达边，生成附件仍不能绕过预留直接交付。
     await expect(transitionToolEffectAttachment(tx, scope.attachment!, { to: "completed" }))
-      .rejects.toThrow(/can no longer change/);
+      .rejects.toThrow(/free existing-media delivery/);
     const grouped = fakeTx(GROUPED);
     const done = await lockChatScope(grouped.tx, { userId: "u1", at: { attachment: "a1" } });
     await transitionToolEffectAttachment(grouped.tx, done.attachment!, { to: "completed", mediaAssetId: "m1" });

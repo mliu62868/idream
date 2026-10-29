@@ -1189,6 +1189,7 @@ function CharacterDetail({
             />
             <CharacterImageLibrary
               actorId={actorId}
+              canPublish={guardedPermissions.publishRelease}
               canArchive={guardedPermissions.archiveAssets}
               canCreate={
                 guardedPermissions.createAssets &&
@@ -1206,6 +1207,7 @@ function CharacterDetail({
         ) : tab === "video" ? (
           <CharacterVideoLibrary
             actorId={actorId}
+            canPublish={guardedPermissions.publishRelease}
             canArchive={guardedPermissions.archiveAssets}
             canCreate={guardedPermissions.createAssets}
             canImport={

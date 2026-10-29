@@ -1,6 +1,7 @@
 // SPEC: validate the Agent terminal text and execution receipts; tool choice belongs to the Agent.
 import { hasUnexecutedMemorySearchPayload } from "@idream/shared/chat/companion-runtime";
 import { imageReplyMatchesUserScript } from "@idream/shared/chat/image-action";
+import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL } from "@idream/shared/chat/media-library";
 import type {
   CompanionModelRequestEvidence,
   CompanionTerminalCandidate,
@@ -109,6 +110,7 @@ export function isUnexecutedImageToolPayload(
 ): boolean {
   if (!tools.some((tool) =>
     tool.name === "generate_image_async" || tool.name === "edit_last_image"
+      || tool.name === SEARCH_CHARACTER_MEDIA_TOOL || tool.name === SEND_CHARACTER_MEDIA_TOOL
   )) return false;
   let candidate = content.trim();
   if (/(?:^|\n)\s*(?:\[image\s*:[^\]\n]+\]|【图片\s*[：:][^】\n]+】)\s*(?:$|\n)/iu.test(candidate)) {
@@ -133,7 +135,8 @@ export function isUnexecutedImageToolPayload(
         : typeof nested?.name === "string"
           ? nested.name
           : "";
-    return name === "generate_image_async" || name === "edit_last_image";
+    return name === "generate_image_async" || name === "edit_last_image"
+      || name === SEARCH_CHARACTER_MEDIA_TOOL || name === SEND_CHARACTER_MEDIA_TOOL;
   } catch {
     return false;
   }

@@ -3,6 +3,7 @@ import { requireExecutableAdminV2Contract } from "../contract-registry";
 
 // Test-only examples: production contract resolution never depends on fixture generation.
 const fixtureOverrides: Readonly<Record<string, unknown>> = {
+  characterMediaLibraryUpdateRequestSchema: { expectedRevision: 1, status: "draft" },
   adminCoinOfferListSchema: { items: [] },
   adminCoinOfferCreateRequestSchema: {
     offerKey: "fixture-coins", name: "Fixture coins", dreamcoins: 100,

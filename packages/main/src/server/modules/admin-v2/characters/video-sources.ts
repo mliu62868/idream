@@ -5,9 +5,11 @@ import {
   type CharacterVideoUploadAsset,
 } from "@idream/shared/admin";
 import type { MediaAsset, Prisma } from "@prisma/client";
+import { createVideoMediaProbe, type VerifiedVideoMedia } from "@idream/shared/media/video-probe";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
+import { OPERATOR_UPLOAD_AUTHORITY_SCHEMA } from "@/server/lib/media-asset-authority";
 import { operationalCharacterWhere } from "@/server/modules/metric-data-scope";
 import { parseRequestInput, type AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
@@ -28,6 +30,7 @@ export type ParsedCharacterVideoSourceForm = {
     filename: string;
     body: Uint8Array;
     sha256: string;
+    verifiedMedia: VerifiedVideoMedia;
   };
 };
 
@@ -44,9 +47,21 @@ export async function parseCharacterVideoSourceForm(
   if (video.size > MAX_VIDEO_BYTES) {
     throw Errors.badRequest("Video must be 100 MB or smaller");
   }
-  const supported = supportedVideo(video);
-  if (!supported) throw Errors.badRequest("Video must be MP4 or WebM");
   const body = new Uint8Array(await video.arrayBuffer());
+  const supported = supportedVideo(video, body);
+  if (!supported) throw Errors.badRequest("Video must be MP4 or WebM");
+  let verifiedMedia: VerifiedVideoMedia;
+  try {
+    verifiedMedia = await createVideoMediaProbe({
+      ffprobePath: env.VIDEO_FFPROBE_BIN,
+      ffmpegPath: env.VOICE_FFMPEG_BIN,
+    })(body);
+  } catch (cause) {
+    if (missingProbeCommand(cause)) {
+      throw Errors.unavailable("Video verification is unavailable");
+    }
+    throw Errors.badRequest("Video could not be decoded completely. Choose a valid MP4 or WebM video.");
+  }
   return {
     purpose: fields.purpose,
     video: {
@@ -54,6 +69,7 @@ export async function parseCharacterVideoSourceForm(
       filename: normalizedFilename(video.name, supported.extension),
       body,
       sha256: createHash("sha256").update(body).digest("hex"),
+      verifiedMedia,
     },
   };
 }
@@ -88,6 +104,7 @@ export async function createCharacterVideoSource(input: {
         contentType: input.form.video.contentType,
         sizeBytes: input.form.video.body.byteLength,
         sha256: input.form.video.sha256,
+        verifiedMedia: input.form.video.verifiedMedia,
       },
       prepare: async () => {
         const stored = await providers.blob.putPrivate({
@@ -117,14 +134,25 @@ export async function createCharacterVideoSource(input: {
             url: mediaViewUrl(assetId, input.form.video.extension),
             storageKey,
             contentType: input.form.video.contentType,
+            width: input.form.video.verifiedMedia.width,
+            height: input.form.video.verifiedMedia.height,
             visibility: "private",
             safetyStatus: "passed",
             metadata: toInputJson({
               purpose: input.form.purpose,
-              source: "admin_local_upload",
+              source: "admin_asset_upload",
+              synthetic: false,
               filename: input.form.video.filename,
               sizeBytes: input.form.video.body.byteLength,
               sha256: input.form.video.sha256,
+              uploadAuthority: {
+                schemaVersion: OPERATOR_UPLOAD_AUTHORITY_SCHEMA,
+                kind: "operator_upload",
+                assetId,
+                uploadedById: input.actor.id,
+                sha256: input.form.video.sha256,
+              },
+              verifiedVideo: input.form.video.verifiedMedia,
               platformAsset: {
                 purpose: input.form.purpose,
                 status: "generated",
@@ -167,6 +195,14 @@ export async function createCharacterVideoSource(input: {
   }
 }
 
+function missingProbeCommand(cause: unknown): boolean {
+  for (let depth = 0; cause && typeof cause === "object" && depth < 5; depth += 1) {
+    if ("code" in cause && cause.code === "ENOENT") return true;
+    cause = "cause" in cause ? cause.cause : null;
+  }
+  return false;
+}
+
 function characterVideoSourceAssetDto(asset: MediaAsset): CharacterVideoUploadAsset {
   const metadata = jsonObject(asset.metadata);
   return {
@@ -191,12 +227,16 @@ async function requireCharacter(characterId: string) {
   if (!character) throw Errors.notFound("Character not found");
 }
 
-function supportedVideo(file: File): SupportedVideo | null {
+function supportedVideo(file: File, bytes: Uint8Array): SupportedVideo | null {
   const extension = file.name.toLowerCase().match(/\.(mp4|webm)$/)?.[1];
-  if (file.type === "video/mp4" || (!file.type && extension === "mp4")) {
+  if (file.type ? !["video/mp4", "video/webm"].includes(file.type) : !extension) return null;
+  // Claimed MIME/filename admits an upload; actual bytes determine how browsers
+  // receive it. The complete decoder below still establishes playable media.
+  if (Buffer.from(bytes.subarray(4, 8)).toString("ascii") === "ftyp") {
     return { contentType: "video/mp4", extension: ".mp4" };
   }
-  if (file.type === "video/webm" || (!file.type && extension === "webm")) {
+  const header = Buffer.from(bytes.subarray(0, 256));
+  if (bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3 && header.includes(Buffer.from("webm"))) {
     return { contentType: "video/webm", extension: ".webm" };
   }
   return null;

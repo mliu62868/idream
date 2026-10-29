@@ -20,6 +20,37 @@ function validSavedViewList() {
 
 describe("Admin v2 route seam", () => {
   afterEach(() => vi.restoreAllMocks());
+  it("preserves an explicitly declared media stream and filters private headers", async () => {
+    const request = get("http://localhost/api/v2/admin/characters/character-1/media-library/entry-1/content");
+    const media = new Response(new Uint8Array([255, 0, 128]), { status: 206, headers: {
+      "content-type": "video/mp4", "cache-control": "private, no-store", "accept-ranges": "bytes", "content-range": "bytes 1-3/4", "x-private-storage-key": "secret",
+    } });
+    const response = await adminV2Route(request, () => media);
+    expect(media.bodyUsed).toBe(false);
+    expect(response.status).toBe(206);
+    expect(response.headers.get("content-range")).toBe("bytes 1-3/4");
+    expect(response.headers.get("x-private-storage-key")).toBeNull();
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([255, 0, 128]));
+  });
+
+  it("does not bypass content authentication or unknown-operation admission", async () => {
+    const authorizedPath = get("http://localhost/api/v2/admin/characters/character-1/media-library/entry-1/content");
+    const denied = await adminV2Route(authorizedPath, () => { throw Errors.unauthorized("Login required"); });
+    expect(denied.status).toBe(401);
+    const execute = vi.fn(() => new Response(new Uint8Array([1]), { headers: { "content-type": "video/mp4" } }));
+    const unknown = await adminV2Route(get("http://localhost/api/v2/admin/unknown/content"), execute);
+    expect(unknown.status).toBe(500);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("refuses HTML or public caching on the binary operation", async () => {
+    const request = get("http://localhost/api/v2/admin/characters/character-1/media-library/entry-1/content");
+    for (const headers of [{ "content-type": "text/html", "cache-control": "private, no-store" }, { "content-type": "video/mp4", "cache-control": "public" }]) {
+      const response = await adminV2Route(request, () => new Response("private", { headers }));
+      expect(response.status).toBe(500);
+      expect(await response.text()).not.toContain('"private"');
+    }
+  });
   it("ships a payload its declared response contract admits", async () => {
     const response = await adminV2Route(get(savedViewsUrl), () => validSavedViewList());
 

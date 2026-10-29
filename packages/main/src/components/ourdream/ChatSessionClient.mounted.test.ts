@@ -1473,7 +1473,7 @@ describe("ChatSessionClient streaming composer", () => {
     const image = container.querySelector<HTMLImageElement>(
       '[data-testid="chat-image-attachment"]',
     );
-    expect(image?.alt).toBe("Generated character image from this chat");
+    expect(image?.alt).toBe("Character image from this chat");
     expect(image?.alt).not.toContain("internal prompt");
   });
 
@@ -1484,7 +1484,7 @@ describe("ChatSessionClient streaming composer", () => {
     }] }];
     await mountSession();
     const image = container.querySelector<HTMLImageElement>('[data-testid="chat-image-attachment"]');
-    expect(image?.alt).toBe("Generated scene image from this chat");
+    expect(image?.alt).toBe("Scene image from this chat");
     if (previewFailed) await act(async () => image?.dispatchEvent(new Event("error")));
     expect(container.querySelector('[aria-label="Character identity feedback"]')).toBeNull();
     expect(container.textContent).not.toMatch(/Looks like them|Doesn.t match|Use for identity/);

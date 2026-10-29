@@ -35,8 +35,9 @@ export type ToolEffectAttachmentKind = (typeof TOOL_EFFECT_ATTACHMENT_KINDS)[num
 //   直接把 Generation Request 的终态状态名写进附件，实测会写出这两个值。表必须描述
 //   真实系统，否则 fail-closed 会在正常终态上误伤。
 export const TOOL_EFFECT_ATTACHMENT_TRANSITIONS = {
-  // 预留的效果身份：要么被生成接纳，要么在接纳前就失败，从不直接跳到交付。
-  requesting: ["accepted", "failed"],
+  // 库存或历史媒体不生成、不预扣费用，在同一事务内直接完成免费交付。
+  // transitionToolEffectAttachment 单独验证这条边，付费生成仍必须先 accepted。
+  requesting: ["accepted", "failed", "completed"],
   // 已接纳即已扣费：它的每一种去向都必须对应一次结算（交付或退款/取消）。
   accepted: ["completed", "failed", "blocked", "refunded", "cancelled"],
   completed: [],
@@ -134,6 +135,14 @@ export async function transitionToolEffectAttachment(
   next: ToolEffectAttachmentTransition,
 ): Promise<ChatTurnAttachment> {
   assertToolEffectAttachmentTransition(attachment.status, next.to);
+  if (attachment.status === "requesting" && next.to === "completed") {
+    const value = next.metadata ?? attachment.metadata;
+    const metadata = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+    if (!["library", "previous_media"].includes(String(metadata.source)) || metadata.costDreamcoins !== 0
+      || attachment.generationJobId !== null || next.generationJobId !== null || !next.mediaAssetId) {
+      throw Errors.conflict("Only a free existing-media delivery can complete without generation admission");
+    }
+  }
   return tx.chatTurnAttachment.update({
     where: { id: attachment.id },
     data: {

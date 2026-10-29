@@ -1,5 +1,8 @@
 import {
   incrementCounter,
+  findAdminV2ApiOperation,
+  adminV2BinaryResponseHeaders,
+  narrowAdminV2BinaryResponse,
   narrowAdminV2ResponseEnvelope,
   observeHistogram,
 } from "@idream/shared";
@@ -172,9 +175,16 @@ export async function proxyToMain(request: Request, pathname: string): Promise<R
       redirect: "manual",
     });
     let responseBody: BodyInit | null = upstream.body;
+    const operation = surface === "admin_v2"
+      ? findAdminV2ApiOperation(request.method, pathname)
+      : null;
+    const binaryResponse = operation?.responseBody === "binary";
     if (surface === "admin_v2" && upstream.ok) {
-      const rawBody = await upstream.text();
-      const violation = validateAdminV2SuccessResponse(request.method, pathname, rawBody);
+      const rawBody = binaryResponse ? null : await upstream.text();
+      const binaryValidation = binaryResponse ? narrowAdminV2BinaryResponse(operation, upstream) : null;
+      const violation = binaryValidation
+        ? binaryValidation.ok ? null : binaryValidation.violation
+        : validateAdminV2SuccessResponse(request.method, pathname, rawBody ?? "");
       if (violation) {
         recordProxyMetrics(request.method, "contract_violation", surface, routeClass, startedAt, domain, readAuthority);
         return Response.json(
@@ -190,9 +200,11 @@ export async function proxyToMain(request: Request, pathname: string): Promise<R
           { status: 502, headers: provenanceHeaders(domain, readAuthority) },
         );
       }
-      responseBody = rawBody;
+      if (!binaryResponse) responseBody = rawBody;
     }
-    const responseHeaders = new Headers(upstream.headers);
+    const responseHeaders = binaryResponse
+      ? adminV2BinaryResponseHeaders(upstream)
+      : new Headers(upstream.headers);
     for (const name of responseHopByHopHeaders) responseHeaders.delete(name);
     // Fetch has decoded compressed upstream bodies (including error streams).
     // These headers describe the old wire bytes, not the body relayed here.

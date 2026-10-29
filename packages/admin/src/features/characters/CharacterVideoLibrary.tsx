@@ -22,6 +22,7 @@ import {
   CharacterVideoStudio,
   type RunCommittedMutation,
 } from "./CharacterVideoStudio";
+import { CharacterChatLibrary, type CharacterChatLibrarySource } from "./CharacterChatLibrary";
 
 type CharacterVideoLibraryProps = {
   actorId: string;
@@ -31,6 +32,7 @@ type CharacterVideoLibraryProps = {
   canImport: boolean;
   canCreate: boolean;
   canArchive: boolean;
+  canPublish?: boolean;
   onCreateImage: () => void;
   onProjectReload: () => Promise<void>;
   runCommittedMutation: RunCommittedMutation;
@@ -44,12 +46,15 @@ export function CharacterVideoLibrary({
   canImport,
   canCreate,
   canArchive,
+  canPublish = false,
   onCreateImage,
   onProjectReload,
   runCommittedMutation,
 }: CharacterVideoLibraryProps) {
   const { t } = useAdminI18n();
   const [assets, setAssets] = useState<ContentAsset[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [chatSource, setChatSource] = useState<CharacterChatLibrarySource | null>(null);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -71,26 +76,32 @@ export function CharacterVideoLibrary({
   const inputRef = useRef<HTMLInputElement | null>(null);
   const requestGate = useRef(createLatestRequestGate());
 
-  const loadAssets = useCallback(async () => {
+  const loadAssets = useCallback(async (cursor?: string) => {
     if (!canRead) return;
     const request = requestGate.current.begin();
     setLoading(true);
     setLoadError(null);
     try {
-      const result = await apiGet<{ items: ContentAsset[] }>(
+      const result = await apiGet<{ items: ContentAsset[]; nextCursor?: string | null }>(
         assetsListPath({
           mediaType: "video",
           targetId: data.character.id,
-          limit: 100,
+          search: search.trim() || undefined,
+          cursor,
+          limit: 25,
         }),
       );
-      if (request.isCurrent()) setAssets(result.items.filter((asset) => asset.platformStatus !== "archived"));
+      if (request.isCurrent()) {
+        const items = result.items.filter((asset) => asset.platformStatus !== "archived");
+        setAssets(current => cursor ? [...current, ...items] : items);
+        setNextCursor(result.nextCursor ?? null);
+      }
     } catch (cause) {
       if (request.isCurrent()) setLoadError(cause instanceof Error ? cause.message : t("Character videos could not be loaded"));
     } finally {
       if (request.isCurrent()) setLoading(false);
     }
-  }, [canRead, data.character.id, t]);
+  }, [canRead, data.character.id, search, t]);
 
   useEffect(() => {
     if (!canRead) return;
@@ -191,14 +202,7 @@ export function CharacterVideoLibrary({
   }
 
   const query = search.trim().toLowerCase();
-  const visibleAssets = query
-    ? assets.filter((asset) => [
-        asset.id,
-        asset.description ?? "",
-        asset.purpose ?? "",
-        ...asset.tags,
-      ].join(" ").toLowerCase().includes(query))
-    : assets;
+  const visibleAssets = assets;
 
   return (
     <div className="space-y-5">
@@ -270,6 +274,9 @@ export function CharacterVideoLibrary({
         </section>
       ) : null}
 
+      {canReadProduction ? <CharacterChatLibrary characterId={data.character.id} mediaType="video"
+        canWrite={canImport} canPublish={canPublish} source={chatSource} onCloseSource={() => setChatSource(null)} /> : null}
+
       <section aria-busy={loading} aria-label={t("Character video library")}>
         {/* SPEC: Only a successful read can establish an empty library. */}
         {loading && assets.length === 0 ? (
@@ -304,6 +311,7 @@ export function CharacterVideoLibrary({
                     <p className="text-sm font-semibold">{t(asset.sourceJob ? "Generated" : "Imported")}</p>
                     <p className="mt-0.5 truncate text-[11px] text-[var(--ad-text-muted)]">{asset.id}</p>
                   </div>
+                  {canReadProduction ? <WorkspaceButton onClick={() => setChatSource({ id: asset.id, url: asset.url, thumbnailUrl: asset.thumbnailUrl ?? null })}>{t("Set up chat content")}</WorkspaceButton> : null}
                   {canArchive ? (
                     <button
                       aria-label={t("Remove video from library")}
@@ -319,6 +327,7 @@ export function CharacterVideoLibrary({
             ))}
           </div>
         )}
+        {nextCursor ? <WorkspaceButton className="mt-4" disabled={loading} onClick={() => void loadAssets(nextCursor)}>{t("Load more videos")}</WorkspaceButton> : null}
       </section>
       {archiveSpec ? <ConfirmDialog onClose={() => setArchiveSpec(current => current === archiveSpec ? null : current)} spec={archiveSpec} /> : null}
     </div>

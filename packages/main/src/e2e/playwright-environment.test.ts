@@ -242,6 +242,27 @@ describe("managed Playwright environment", () => {
     expect(servers[1]?.env.CHAT_MODEL_BASE_URL).toBe(servers[2]?.env.CHAT_MODEL_BASE_URL);
   });
 
+  it("disables ambient Character media model routes for every managed service", () => {
+    const ambient = {
+      MEDIA_LIBRARY_EMBEDDING_URL: "https://live-media.invalid/v1",
+      MEDIA_LIBRARY_EMBEDDING_MODEL: "live-embedding",
+      MEDIA_LIBRARY_EMBEDDING_API_KEY: "live-embedding-secret",
+      MEDIA_LIBRARY_EMBEDDING_DIMENSIONS: "4096",
+      MEDIA_LIBRARY_RERANK_URL: "https://live-rerank.invalid/v1",
+      MEDIA_LIBRARY_RERANK_MODEL: "live-rerank",
+      MEDIA_LIBRARY_RERANK_API_KEY: "live-rerank-secret",
+      MEDIA_LIBRARY_VISION_URL: "https://live-vision.invalid/v1",
+      MEDIA_LIBRARY_VISION_MODEL: "live-vision",
+      MEDIA_LIBRARY_VISION_API_KEY: "live-vision-secret",
+    };
+    const environment = resolvePlaywrightEnvironment({ ...ambient, PW_RUN_ID: "a1b2c3d4" });
+    const disabled = Object.fromEntries(Object.keys(ambient).map(key => [key, ""]));
+    for (const server of managedPlaywrightWebServers(environment)) {
+      // Playwright inherits process.env before applying each service override.
+      expect({ ...ambient, ...server.env }).toMatchObject(disabled);
+    }
+  });
+
   it("rejects a cleanup plan whose Chat directory is not the exact run authority", () => {
     const environment = resolvePlaywrightEnvironment({
       TEST_DATABASE_URL:

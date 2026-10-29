@@ -10,6 +10,8 @@ const { adminV2Operation } = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/admin-v2-operation", () => ({ adminV2Operation }));
+// Chat-library membership has its own mounted behavior suite.
+vi.mock("./CharacterChatLibrary", () => ({ CharacterChatLibrary: () => <div /> }));
 vi.mock("next/image", () => ({
   default: ({ alt = "" }: { alt?: string }) => <span data-image-alt={alt} />,
 }));

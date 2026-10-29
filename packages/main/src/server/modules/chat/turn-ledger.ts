@@ -35,6 +35,7 @@ import { attachmentAttempt, lockChatScope } from "./turn-scope";
 import { legacyTurnActionAttachmentId } from "./tool-effect-attachment";
 import { userChatPersonaForTurn } from "./user-persona";
 import { DEFAULT_PROFILE_EXPERIENCE } from "./conversation-profiles";
+import { deliveredChatMedia } from "./chat-media-history";
 
 const BLOCKED_NOTICE = "I can’t help with that request.";
 const ACTIVE_ASSISTANT_STATES = ["pending", "generating"];
@@ -1076,7 +1077,7 @@ async function frozenExecutionSnapshot(
     include: {
       session: { select: { sessionId: true, characterId: true, title: true } },
       attachments: {
-        select: { status: true, mediaAssetId: true, metadata: true },
+        select: { kind: true, status: true, mediaAssetId: true, metadata: true },
       },
     },
   });
@@ -1107,6 +1108,8 @@ async function frozenExecutionSnapshot(
   const experience = experienceRow
     ? chatExperiencePreferenceSchema.parse({ ...experienceRow, conversationProfile: experienceRow.conversationProfile ?? undefined })
     : preservedExperience === undefined ? DEFAULT_PROFILE_EXPERIENCE : null;
+  const recentMedia = (await deliveredChatMedia(tx, { userId: turn.session.userId,
+    characterId: turn.session.characterId, sessionId: turn.sessionId, before: turn.createdAt })).slice(0, 8);
   const snapshot = chatExecutionSnapshotSchema.parse({
     version: 1,
     turnId: turn.id,
@@ -1134,13 +1137,17 @@ async function frozenExecutionSnapshot(
       ordinal: turn.groupTurn.ordinal,
       members: groupMembers.map(member => ({ sessionId: member.sessionId, characterId: member.characterId, name: member.title ?? "Character" })),
     } } : {}),
-    hasRecentImageContext: recent.some((item) =>
+    hasRecentImageContext: recentMedia.some(item => item.asset.type === "image") || recent.some((item) =>
       item.sessionId === turn.sessionId && item.attachments.some((attachment) =>
+        attachment.kind === "generated_image" &&
         attachment.status === "completed" &&
         attachment.mediaAssetId !== null &&
         attachmentAttempt(attachment.metadata) === item.attempt
       )
     ),
+    recentMedia: recentMedia.map(({ asset, attachment, description }) => ({
+      mediaAssetId: asset.id, kind: asset.type, turnId: attachment.turnId, description,
+    })),
     recentTurns: recent.map((item) => ({
       turnId: item.id,
       userMessageId: item.userMessageId,
@@ -1869,6 +1876,8 @@ function publicAssistantMessage(turn: {
         //   只有这层投影把它丢掉——用户于是只能事后去 Profile 对账。语音有报价确认卡，
         //   图片至少要有账目。
         costDreamcoins: attachmentCost(attachment.metadata),
+        ...(["library", "previous_media"].includes(String(jsonRecord(attachment.metadata).source))
+          ? { source: jsonRecord(attachment.metadata).source } : {}),
       })),
   };
 }

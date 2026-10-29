@@ -21,6 +21,8 @@ export async function POST(
       "character.project.write",
       { characterId: id },
     );
+    // The manifest requires both project authorship and media production.
+    await actorWithPermission(request, "creative.run.write", { characterId: id });
     const form = await parseCharacterVideoSourceForm(request);
     return characterVideoSourceUploadResponseSchema.parse(
       await createCharacterVideoSource({

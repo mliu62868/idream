@@ -16,6 +16,9 @@ const SIGNING_SECRET = "admin-bff-test-secret-at-least-32-characters";
 function validV2Response(method: string, pathname: string) {
   const operation = findAdminV2ApiOperation(method, pathname);
   if (!operation) throw new Error(`Missing manifest operation for ${method} ${pathname}`);
+  if (operation.responseBody === "binary") {
+    return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "video/mp4", "cache-control": "private, no-store" } });
+  }
   return Response.json({
     ok: true,
     data: adminV2ContractFixtures(operation.contract.response).valid,
@@ -29,6 +32,57 @@ afterEach(() => {
 });
 
 describe("Admin main HTTP proxy", () => {
+  it.each([200, 206, 416])("relays authorized media streams and range headers for status %s", async status => {
+    vi.stubEnv("ADMIN_BFF_SIGNING_SECRET", SIGNING_SECRET);
+    const pathname = "/api/v2/admin/characters/character-1/media-library/entry-1/content";
+    const bytes = new Uint8Array([0, 255, 128, 42]);
+    const upstream = new Response(status === 416 ? null : bytes, { status, headers: {
+      "content-type": "video/mp4", "cache-control": "private, no-store", "accept-ranges": "bytes",
+      ...(status === 206 ? { "content-range": "bytes 4-7/8" } : status === 416 ? { "content-range": "bytes */8" } : {}),
+      "content-length": "4", "x-provider-secret": "must-not-leak", "x-idream-bff-signature": "must-not-leak", "set-cookie": "provider=private",
+    } });
+    vi.stubGlobal("fetch", vi.fn(async (_target: URL, init: RequestInit) => {
+      const headers = new Headers(init.headers);
+      expect(headers.get("range")).toBe("bytes=4-7");
+      expect(headers.get("cookie")).toBe("idream_admin_session=operator");
+      expect(headers.get(BFF_HEADER)).toBeTruthy();
+      return upstream;
+    }));
+    const response = await proxyToMain(new Request(`http://admin.local${pathname}?thumbnail=0`, { headers: { range: "bytes=4-7", cookie: "idream_admin_session=operator" } }), pathname);
+    expect(response.status).toBe(status);
+    expect(upstream.bodyUsed).toBe(false);
+    expect(response.headers.get("accept-ranges")).toBe("bytes");
+    expect(response.headers.get("content-range")).toBe(status === 206 ? "bytes 4-7/8" : status === 416 ? "bytes */8" : null);
+    expect(response.headers.get("content-length")).toBeNull();
+    expect(response.headers.get("x-provider-secret")).toBeNull();
+    expect(response.headers.get("x-idream-bff-signature")).toBeNull();
+    expect(response.headers.get("set-cookie")).toBeNull();
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(status === 416 ? new Uint8Array() : bytes);
+  });
+
+  it("preserves an unauthorized content response without converting it into successful media", async () => {
+    const pathname = "/api/v2/admin/characters/character-1/media-library/entry-1/content";
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: false, error: { code: "unauthorized" } }, { status: 401 })));
+    const response = await proxyToMain(new Request(`http://admin.local${pathname}`), pathname);
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ ok: false, error: { code: "unauthorized" } });
+  });
+
+  it.each(["/api/v2/admin/unknown/content", "/api/v2/admin/bootstrap"])("cannot bypass the JSON contract by returning binary bytes from %s", async pathname => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(new Uint8Array([1, 2]), { headers: { "content-type": "video/mp4", "cache-control": "private, no-store" } })));
+    const response = await proxyToMain(new Request(`http://admin.local${pathname}`), pathname);
+    expect(response.status).toBe(502);
+  });
+
+  it("rejects unsafe content types even on the declared media operation", async () => {
+    const pathname = "/api/v2/admin/characters/character-1/media-library/entry-1/content";
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("<script>private</script>", { headers: { "content-type": "text/html", "cache-control": "private, no-store" } })));
+    const response = await proxyToMain(new Request(`http://admin.local${pathname}`), pathname);
+    expect(response.status).toBe(502);
+    expect(await response.text()).not.toContain("<script>");
+  });
+
   it.each([
     { label: "successful JSON", status: 200, contentType: "application/json" },
     { label: "failed HTML", status: 404, contentType: "text/html; charset=utf-8" },

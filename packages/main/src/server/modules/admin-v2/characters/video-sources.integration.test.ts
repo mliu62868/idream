@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { contentAssetQuerySchema } from "@idream/shared/admin";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
@@ -70,7 +71,10 @@ describe("Character video library import", () => {
   it("imports once and exposes the video through the role asset library", async () => {
     providerState.storedKeys = [];
     providerState.deletedKeys = [];
-    const bytes = new Uint8Array(2_048);
+    const bytes = new Uint8Array(execFileSync("ffmpeg", [
+      "-nostdin", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=96x96:rate=10",
+      "-t", "0.5", "-c:v", "libvpx-vp9", "-f", "webm", "pipe:1",
+    ], { timeout: 15_000, maxBuffer: 2 * 1024 * 1024 }));
     const form = new FormData();
     form.set("purpose", "character_video_library");
     form.set("video", new File([bytes], "mara-night.webm", { type: "video/webm" }));
@@ -117,6 +121,9 @@ describe("Character video library import", () => {
     });
     expect(persisted.metadata).toMatchObject({
       purpose: "character_video_library",
+      source: "admin_asset_upload",
+      uploadAuthority: { kind: "operator_upload", assetId: persisted.id, uploadedById: actorId },
+      verifiedVideo: { width: 96, height: 96, frameCount: 5, hasAudio: false },
       platformAsset: {
         purpose: "character_video_library",
         status: "generated",
@@ -134,6 +141,7 @@ describe("Character video library import", () => {
       targetType: "character",
       targetId: characterId,
       platformStatus: "generated",
+      customerPublishable: true,
     }));
   });
 });

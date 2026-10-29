@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { compileCharacterSoul } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
@@ -10,12 +11,15 @@ import { parseGenerationContextResponse } from "@/lib/public-api-contracts";
 import { comicDetailSchema } from "@idream/shared/comics";
 import { signGenerationContext, resolveGenerationContext } from "./generation-context";
 import { quoteAuthorityFor } from "./generation-quote";
+import { providers } from "@/server/providers";
 
 const prefix = "zt-handoff-";
+const fixtureBlobKeys: string[] = [];
 beforeAll(() => purgeTestData(prefix));
 afterAll(async () => {
   await prisma.comic.deleteMany({ where: { creatorId: { startsWith: prefix } } });
   await purgeTestData(prefix);
+  for (const key of fixtureBlobKeys) await providers.blob.delete({ key });
 });
 
 async function fixture() {
@@ -46,6 +50,14 @@ async function fixture() {
     executionSnapshot: { version: 1, turnId, sessionId, userId, characterId: character.id, userMessageId, assistantMessageId: `${id}-reply`, attempt: 1, characterContentVersionId: content.id, characterReleaseId: release.id, characterVisualProfileId: visual.id, characterVisualProfileVersion: visual.version, memoryEnabled: true, contextRevision: 0, userContent: "Stay beside the blue kitchen window.", recentTurns: [], sceneVersion: 0, scene: null } } });
   const sourceJob = await prisma.generationJob.create({ data: { id: `${id}-source-job`, userId, characterId: character.id, mode: "image", status: "completed", visualProfileId: visual.id, visualProfileVersion: visual.version, referenceSetRevisionId: referenceSet.id, controls: {}, presetIds: [], sourceType: "chat_image", sourceId: `${id}-attachment`, sourceMeta: { sessionId, exchangeId: turnId }, momentSpec: { rawInput: "Mira by the blue window holding a green cup." } } });
   const source = await createMedia({ id: `${id}-source-image`, ownerId: userId, sourceJobId: sourceJob.id });
+  // Quotes now hydrate their source authority. A storageKey with no physical
+  // bytes cannot stand in for an image when checking the actual admission path.
+  const fixtureBytes = await sharp({ create: { width: 32, height: 32, channels: 3, background: "#7296b0" } }).webp().toBuffer();
+  for (const asset of [anchor, source]) {
+    if (!asset.storageKey) throw new Error("Fixture image has no storage key");
+    fixtureBlobKeys.push(asset.storageKey);
+    await providers.blob.putPrivate({ key: asset.storageKey, body: fixtureBytes, contentType: "image/webp" });
+  }
   await prisma.chatTurnAttachment.create({ data: { id: `${id}-attachment`, turnId, kind: "generated_image", status: "completed", mediaAssetId: source.id, generationJobId: sourceJob.id, promptHint: "Earlier wording", metadata: { attempt: 1 } } });
   const query = { kind: "chat", sessionId, turnId, attempt: "1" };
   return { id, userId, characterId: character.id, userMessageId, turnId, sessionId, visual, referenceSet, release, source, query };

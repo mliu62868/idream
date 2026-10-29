@@ -3,6 +3,7 @@ import {
 } from "./image-action";
 import { COMPANION_IMAGE_SKILL_PROMPT } from "./image-skill";
 import { buildCompanionRuntimeAuthority } from "./runtime-policy";
+import { COMPANION_MEDIA_LIBRARY_GUIDANCE, COMPANION_MEDIA_RESEND_GUIDANCE } from "./media-library";
 
 /**
  * SPEC: This is the shared product behaviour contract for every iDream
@@ -38,8 +39,12 @@ import { buildCompanionRuntimeAuthority } from "./runtime-policy";
  * paraphrases preserve the source's subject, time and degree of certainty.
  * v16: omit only unrequested additions; explicit comparison and explanation
  * requests retain their scope, and spoken sentences do not prescribe quotes.
+ * v17: prepared media is searched as evidence and explicitly delivered; it
+ * cannot replace a request for new generation or editing.
+ * v18: ordinary photo requests search prepared media first; natural-language
+ * constraints stay in query and are checked against returned observations.
  */
-export const COMPANION_PRODUCT_PROMPT_VERSION = "companion-product-16" as const;
+export const COMPANION_PRODUCT_PROMPT_VERSION = "companion-product-18" as const;
 
 export function companionProductAgentPrompt(characterName: string): string {
   const name = characterName.trim() || "the Character";
@@ -60,6 +65,8 @@ export function companionProductAgentPrompt(characterName: string): string {
 export function composeCompanionSystemPrompt(input: {
   memoryEnabled: boolean;
   imageToolEnabled: boolean;
+  mediaLibraryKinds?: readonly ("image" | "video")[];
+  hasDeliveredMedia?: boolean;
   soulPrompt: string;
   identityPromptLine?: string;
   characterName?: string;
@@ -72,6 +79,7 @@ export function composeCompanionSystemPrompt(input: {
       imageToolEnabled: input.imageToolEnabled,
     }),
     input.imageToolEnabled ? COMPANION_IMAGE_SKILL_PROMPT : "",
+    input.mediaLibraryKinds?.length ? COMPANION_MEDIA_LIBRARY_GUIDANCE : input.hasDeliveredMedia ? COMPANION_MEDIA_RESEND_GUIDANCE : "",
   ].filter(Boolean).join("\n\n");
 }
 

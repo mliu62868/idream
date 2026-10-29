@@ -7,6 +7,7 @@ import {
   type ChatToolDefinition,
 } from "@idream/shared";
 import { EDIT_LAST_IMAGE_TOOL } from "@idream/shared/chat/image-action";
+import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL } from "@idream/shared/chat/media-library";
 import type { ChatAuthoritySnapshot } from "@idream/shared/bff";
 import type { ChatExecutionSnapshot } from "@idream/shared/contracts";
 import { buildContext, type BuiltContext } from "./context.js";
@@ -171,11 +172,24 @@ export function fitPreparedTurnBudget(
   if (!currentUser || currentUser.role !== "user") {
     throw new Error("PreparedTurn current user message is missing");
   }
-  // Capability controls availability; the Agent decides whether this request
-  // needs an image. An edit additionally needs a Main-owned delivered image.
-  const tools = fitted.policy.imageToolEnabled && fitted.policy.modelProfile.supportsTools
-    ? registryChatTools().filter(tool => tool.name !== EDIT_LAST_IMAGE_TOOL || fitted.hasRecentImageContext)
-    : [];
+  // Main's publication capability is independent of paid generation. Existing
+  // delivered media remains resendable even after a library item is withdrawn.
+  // The Agent still interprets the request; no wording classifier selects tools.
+  const mediaKinds = [...new Set(fitted.persona.mediaLibraryKinds ?? [])];
+  const tools = fitted.policy.modelProfile.supportsTools ? registryChatTools().filter(tool => {
+    if (tool.name === SEARCH_CHARACTER_MEDIA_TOOL) return mediaKinds.length > 0;
+    if (tool.name === SEND_CHARACTER_MEDIA_TOOL) return mediaKinds.length > 0 || Boolean(fitted.recentMedia?.length);
+    return fitted.policy.imageToolEnabled && (tool.name !== EDIT_LAST_IMAGE_TOOL || fitted.hasRecentImageContext);
+  }).map(tool => tool.name === SEARCH_CHARACTER_MEDIA_TOOL ? {
+    ...tool,
+    parameters: {
+      ...tool.parameters,
+      properties: {
+        ...(tool.parameters.properties as Record<string, unknown>),
+        kind: { type: "string", enum: mediaKinds },
+      },
+    },
+  } : tool) : [];
   const maxInputTokens = Math.max(1, Math.ceil(fitted.policy.maxContextChars / 4));
   const dropped = new Set(fitted.dropped);
   const replayMessageIds = new Set(fitted.recentMessages.filter(message => message.id !== currentUserMessageId).map(message => message.id));

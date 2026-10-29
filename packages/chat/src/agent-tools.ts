@@ -11,6 +11,11 @@ import {
   type GenerateImageAsyncToolCall,
   type ImageAgentToolCall,
 } from "@idream/shared/chat/image-action";
+import {
+  CHARACTER_MEDIA_TOOL_DEFINITIONS,
+  parseCharacterMediaToolCall,
+  type CharacterMediaToolCall,
+} from "@idream/shared/chat/media-library";
 import type { ChatToolDefinition } from "@idream/shared";
 
 export {
@@ -33,15 +38,16 @@ export type AgentTool = {
   name: string;
   description: string;
   toChatTool(): ChatToolDefinition;
-  parseCall(rawArgs: unknown): ImageAgentToolCall | null;
+  parseCall(rawArgs: unknown): ImageAgentToolCall | CharacterMediaToolCall | null;
 };
 
-export const AGENT_TOOL_REGISTRY: AgentTool[] = IMAGE_AGENT_TOOL_DEFINITIONS.map(
+export const AGENT_TOOL_REGISTRY: AgentTool[] = [...IMAGE_AGENT_TOOL_DEFINITIONS, ...CHARACTER_MEDIA_TOOL_DEFINITIONS].map(
   (definition) => ({
     name: definition.name,
     description: definition.description,
     toChatTool: () => definition,
-    parseCall: (rawArguments) => parseImageAgentToolCall(definition.name, rawArguments),
+    parseCall: (rawArguments) => parseImageAgentToolCall(definition.name, rawArguments)
+      ?? parseCharacterMediaToolCall(definition.name, rawArguments),
   }),
 );
 

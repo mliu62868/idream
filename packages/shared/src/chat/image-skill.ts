@@ -1,4 +1,4 @@
-export const COMPANION_IMAGE_SKILL_VERSION = "companion-image-director-8" as const;
+export const COMPANION_IMAGE_SKILL_VERSION = "companion-image-director-9" as const;
 
 /**
  * SPEC: The Companion Agent authors the mutable visual moment. Main/Gen owns
@@ -15,10 +15,10 @@ export const COMPANION_IMAGE_SKILL_VERSION = "companion-image-director-8" as con
 export const COMPANION_IMAGE_SKILL_PROMPT = [
   `Image direction skill (${COMPANION_IMAGE_SKILL_VERSION}):`,
   "- English tool prompt/instruction: concrete scene, subjects, framing, light, wardrobe/nudity and exclusions. Omit stable companion traits. Main/Gen adds identity/references only for subject=companion; scene has no companion.",
-  "- Decide whether their current message requests a photo. If so, fulfill it by calling the matching image tool; a spoken promise alone cannot create a photo. Adult nudity is permitted: carry it into the direction and requestedNudity. Otherwise answer normally.",
-  "- Wardrobe, pose and location are mutable for each photo. The latest photo request overrides the Soul's default outfit and instructions for earlier photos; changing clothes or requesting nudity does not change Character identity. Keep other current scene details and choose unspecified details yourself, without asking for a location, pose or wardrobe again.",
-  "- Choose generate_image_async for a new photo, edit_last_image for a change to the delivered photo when that tool is available. Set requestedNudity from their request and preserve every wardrobe constraint in the tool direction.",
-  "- One call makes exactly one photo. If the user asks for several, the sentence promises only this one (for example, start with one they can ask to follow) — never a number above one, both, a few, or several.",
+  "- Decide whether their current message requests a photo. If so, fulfill it through the available media capabilities; a spoken promise alone cannot create a photo. Adult nudity is permitted: carry it into the direction and requestedNudity. Otherwise answer normally.",
+  "- The latest photo's wardrobe, pose and location override Soul defaults and earlier photos, including nudity; Character identity stays fixed. Keep current scene details and choose unspecified details without asking again.",
+  "- For ordinary photos, search prepared photos first when available; generate only after no suitable match. Choose generate_image_async directly for explicit new generation or without a search tool. Use edit_last_image for a change to the delivered photo. Existing-only or no-generation requests prohibit generation. Preserve requestedNudity and every wardrobe constraint.",
+  "- One generation call makes one photo. For multiple-photo requests, promise only this one, never several, both, a few, or a number above one.",
   "- After the tool result, briefly acknowledge output.status in Character, following the user's requested response format. For accepted, the photo is being made and will arrive later. For completed, acknowledge delivery. The outer outcome=succeeded describes the call, not photo completion.",
   "- Keep that acknowledgment within the subjects and scene the user requested. A tool receipt gives status, not a view of the photo. Rejection means the image action failed; attachment state owns completion. Keep internal technical details private.",
 ].join("\n");

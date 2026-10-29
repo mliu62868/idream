@@ -3,6 +3,7 @@ import {
   parseImageAgentToolCall,
   type ImageAgentToolCall,
 } from "@idream/shared/chat/image-action";
+import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL, type SearchCharacterMediaResult } from "@idream/shared/chat/media-library";
 import {
   chatToolEffectSchema,
   chatExecutionSnapshotSchema,
@@ -23,6 +24,9 @@ import {
 } from "./tool-effect-attachment";
 import { chatTurnForEffect } from "./turn-ledger";
 import { attachmentAttempt, lockChatScope } from "./turn-scope";
+import { characterMediaReceipt, deliverChatCharacterMedia, searchChatCharacterMedia } from "./character-media-tool-effect";
+import { isReadableChatMedia, readableOwnedChatMediaWhere } from "./chat-media-history";
+import { lockCharacterGenerationAuthority, lockMediaAssetAuthority } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 
 export type ChatToolEffectResult =
   | {
@@ -33,13 +37,19 @@ export type ChatToolEffectResult =
       generationJobId: string | null;
       mediaAssetId: string | null;
       costDreamcoins: number;
+      source?: "library" | "previous_media";
+      description?: string | null;
     }
   | {
       accepted: false;
       duplicate: boolean;
       attachmentId: string;
       error: { code: string; message: string; retryable: boolean };
-    };
+    }
+  | (SearchCharacterMediaResult & {
+      attachmentId?: never; generationJobId?: never; mediaAssetId?: never;
+      costDreamcoins?: never; duplicate?: never;
+    });
 
 /**
  * Main-owned product effect. Reserving generation and debiting its wallet are
@@ -48,6 +58,7 @@ export type ChatToolEffectResult =
 export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectResult> {
   const effect = chatToolEffectSchema.parse(raw);
   const turn = await chatTurnForEffect(effect.turnId);
+  if (effect.name === SEARCH_CHARACTER_MEDIA_TOOL) return searchChatCharacterMedia(effect, turn);
   const requestDigest = sha256(JSON.stringify(canonical({
     name: effect.name,
     arguments: effect.arguments,
@@ -107,6 +118,9 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
   }
   if (turn.attempt !== effect.attempt || !["pending", "generating"].includes(turn.assistantStatus)) {
     throw Errors.conflict("Tool effect does not belong to the active Chat attempt");
+  }
+  if (effect.name === SEND_CHARACTER_MEDIA_TOOL) {
+    return deliverChatCharacterMedia({ effect, judged: turn, attachmentId, requestDigest });
   }
   // Only a durable pre-subject action has the old companion-only meaning.
   // New model output must make its own explicit, validated subject choice.
@@ -431,6 +445,14 @@ async function rebindTurnActionAttempt(
       throw Errors.conflict("Required effect replay does not belong to the active Chat attempt");
     }
     assertTurnActionIntent(lockedAttachment, effect);
+    if (["library", "previous_media"].includes(String(record(lockedAttachment.metadata)?.source))) {
+      await lockCharacterGenerationAuthority(tx, scope.session.characterId);
+      if (lockedAttachment.mediaAssetId) await lockMediaAssetAuthority(tx, lockedAttachment.mediaAssetId);
+      const asset = lockedAttachment.mediaAssetId ? await tx.mediaAsset.findFirst({ where: {
+        id: lockedAttachment.mediaAssetId, ...readableOwnedChatMediaWhere(scope.userId, scope.session.characterId),
+      } }) : null;
+      if (!asset || !isReadableChatMedia(asset)) throw Errors.gone("The previously delivered media is no longer available");
+    }
     // A concurrent delivery or paid retry may have changed status, Job and
     // cost since the first read. Rebinding carries only these locked facts.
     const metadata = record(lockedAttachment.metadata) ?? {};
@@ -460,12 +482,15 @@ function existingEffect(
   },
   expectedRequestDigest: string,
   effectScope: ChatToolEffect["effectScope"],
-): ChatToolEffectResult {
+): Exclude<ChatToolEffectResult, SearchCharacterMediaResult> {
   if (effectScope === "attempt") assertEffectRequest(attachment, expectedRequestDigest);
   if (attachment.status === "requesting") {
     // No Generation reservation has committed, so there is no durable success
     // ACK to replay. The caller must retry the same action identity.
     throw Errors.unavailable("The image action has not been reserved yet");
+  }
+  if (["library", "previous_media"].includes(String(record(attachment.metadata)?.source))) {
+    return characterMediaReceipt(attachment, true);
   }
   // A prior reservation is not a pending photo after its attachment has settled.
   if (["failed", "blocked", "refunded", "cancelled"].includes(attachment.status)) {
@@ -507,10 +532,14 @@ function assertTurnActionIntent(
 ) {
   const effect = record(record(attachment.metadata)?.effect);
   const intent = record(effect?.intent);
+  // Existing-media sends retain the first signed candidate or prior delivery;
+  // their tool has no wardrobe argument to reinterpret during receipt replay.
   if (
     effect?.effectScope !== "turn_action" ||
     (effect.name !== undefined && effect.name !== expected.name) ||
-    intent?.requestedNudity !== expected.intent.requestedNudity
+    (expected.name === SEND_CHARACTER_MEDIA_TOOL
+      ? effect.name !== SEND_CHARACTER_MEDIA_TOOL
+      : intent?.requestedNudity !== expected.intent.requestedNudity)
   ) {
     throw Errors.conflict("Turn image action was replayed with a different tool or wardrobe intent");
   }

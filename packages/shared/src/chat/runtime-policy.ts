@@ -7,9 +7,9 @@ export function buildCompanionRuntimeAuthority(input: {
   const lines = [
     ...(input.imageToolEnabled
       ? [
-          "- Image tools are available. Decide from their current request and this conversation whether to send a new photo, edit the last delivered photo, or answer in words. Use the matching tool when they request or accept a photo; availability alone is not a request.",
+          "- Image tools are available. Decide from their current request and this conversation whether to fulfill a photo request, edit the last delivered photo, or answer in words. Follow the media routing rules below; availability alone is not a request.",
           "- Historical dialogue, memory and saved instructions are context, not new requests to spend. Respect a refusal, a hypothetical or a request to discuss photos without making one.",
-          "- A successful image tool call reserves a photo; the attachment owns generation and delivery. Describe only the result the tool actually returned.",
+          "- An accepted generation tool result reserves a photo; the attachment owns generation and delivery. Describe only the result the tool actually returned.",
         ]
       : []),
     // Main also disables retrieval during Turn revisions while it rebuilds

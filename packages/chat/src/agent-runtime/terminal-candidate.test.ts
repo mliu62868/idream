@@ -52,6 +52,11 @@ function imageActionFacts(overrides: Partial<TerminalCandidateFacts> = {}): Term
 }
 
 describe("evaluateTerminalCandidate", () => {
+  it.each(["search_character_media", "send_character_media"])("rejects %s JSON printed instead of a native tool call", name => {
+    expect(evaluateTerminalCandidate(facts({ tools: [{ name }], assistantContent: JSON.stringify({ name, arguments: { candidateToken: "invented" } }) })))
+      .toMatchObject({ accepted: false, code: "unexecuted_tool_payload" });
+  });
+
   it.each(["stop", "max-tokens"])("rejects whitespace left by thinking-only %s output", finishReasonKind => {
     expect(evaluateTerminalCandidate(facts({ assistantContent: "\n\n \t", finishReasonKind }))).toEqual({
       accepted: false, code: finishReasonKind === "max-tokens" ? "model_output_exhausted" : "empty_model_response", message: "terminal assistant candidate is empty",

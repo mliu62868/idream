@@ -2,6 +2,7 @@ import type { ChatAuthoritySnapshot } from "@idream/shared/bff";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { entitlementMap } from "@/server/modules/ourdream/subscription-lifecycle";
+import { availableCharacterMediaLibraryKinds } from "@/server/modules/character-media-library/service";
 
 /** Main is the sole reader and compiler of facts admitted into one Agent run. */
 export async function loadChatAuthoritySnapshot(
@@ -50,6 +51,9 @@ export async function loadChatAuthoritySnapshot(
     throw Errors.gone("Pinned Character visual identity is unavailable");
   }
   const advanced = record(character.advancedDetails);
+  const mediaLibraryKinds = visual ? await availableCharacterMediaLibraryKinds({
+    characterId: character.id, visualProfileId: visual.id, visualProfileVersion: visual.version,
+  }) : [];
   return {
     version: 1,
     user: {
@@ -88,6 +92,7 @@ export async function loadChatAuthoritySnapshot(
       visualProfileVersion: visual?.version ?? null,
       identityPrompt: visual?.identityPrompt ?? null,
       imageToolEnabled: jsonBoolean(advanced?.imageToolEnabled, true),
+      mediaLibraryKinds,
       deletedAt: character.deletedAt?.toISOString() ?? null,
       contentVersion: {
         contentVersionId: contentVersion.id,

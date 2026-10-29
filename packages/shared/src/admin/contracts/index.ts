@@ -15,6 +15,7 @@ export * from "./characters-asset-studio";
 export * from "./characters-release";
 export * from "./characters-performance";
 export * from "./characters-media-operations";
+export * from "./characters-media-library";
 export * from "./creative";
 export * from "./assets";
 export * from "./incidents";

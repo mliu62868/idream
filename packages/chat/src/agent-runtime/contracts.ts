@@ -5,6 +5,11 @@ import {
   GENERATE_IMAGE_ASYNC_TOOL,
   generateImageAsyncArgsSchema,
 } from "@idream/shared/chat/image-action";
+import {
+  SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL,
+  searchCharacterMediaArgsSchema, sendCharacterMediaArgsSchema,
+  searchCharacterMediaResultSchema, sendCharacterMediaResultSchema,
+} from "@idream/shared/chat/media-library";
 import { companionMemoryModeSchema } from "@idream/shared/chat/companion-runtime";
 import { groupChatMemberSchema } from "@idream/shared/contracts";
 
@@ -53,7 +58,7 @@ export const preparedTurnMessageSchema = z.discriminatedUnion("role", [
   }).strict(),
 ]);
 
-const toolName = z.enum([GENERATE_IMAGE_ASYNC_TOOL, EDIT_LAST_IMAGE_TOOL]);
+const toolName = z.enum([GENERATE_IMAGE_ASYNC_TOOL, EDIT_LAST_IMAGE_TOOL, SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL]);
 const preparedToolDefinition = z.object({
   name: toolName,
   description: nonEmptyString,
@@ -155,6 +160,8 @@ const toolIdentity = { attemptId: nonEmptyString, callId: nonEmptyString };
 export const companionToolCallSchema = z.discriminatedUnion("name", [
   z.object({ ...toolIdentity, ...imageEffectAuthority, name: z.literal(GENERATE_IMAGE_ASYNC_TOOL), arguments: generateImageAsyncArgsSchema }).strict(),
   z.object({ ...toolIdentity, ...imageEffectAuthority, name: z.literal(EDIT_LAST_IMAGE_TOOL), arguments: editLastImageArgsSchema }).strict(),
+  z.object({ ...toolIdentity, ...imageEffectAuthority, effectScope: z.literal("attempt"), name: z.literal(SEARCH_CHARACTER_MEDIA_TOOL), arguments: searchCharacterMediaArgsSchema }).strict(),
+  z.object({ ...toolIdentity, ...imageEffectAuthority, effectScope: z.literal("turn_action"), name: z.literal(SEND_CHARACTER_MEDIA_TOOL), arguments: sendCharacterMediaArgsSchema }).strict(),
 ]);
 export const companionToolReservationSchema = z.object({
   ...toolIdentity,
@@ -167,7 +174,14 @@ export const companionToolResultSchema = z.discriminatedUnion("outcome", [
   z.object({ ...toolIdentity, name: toolName, outcome: z.literal("succeeded"), output: jsonValue }).strict(),
   z.object({ ...toolIdentity, name: toolName, outcome: z.literal("failed"), error: companionError }).strict(),
   z.object({ ...toolIdentity, name: toolName, outcome: z.literal("unknown"), error: companionError }).strict(),
-]);
+]).superRefine((result, context) => {
+  if (result.outcome !== "succeeded") return;
+  const schema = result.name === SEARCH_CHARACTER_MEDIA_TOOL ? searchCharacterMediaResultSchema
+    : result.name === SEND_CHARACTER_MEDIA_TOOL ? sendCharacterMediaResultSchema : null;
+  if (schema && !schema.safeParse(result.output).success) {
+    context.addIssue({ code: "custom", path: ["output"], message: "Media result must be a valid lookup or completed free-delivery receipt" });
+  }
+});
 const companionUsage = z.object({
   promptTokens: nonNegativeInteger,
   completionTokens: nonNegativeInteger,

@@ -18,6 +18,7 @@ export type ResolvedChatPersona = CharacterAuthority & {
 export interface BuiltContext {
   userLocale: string;
   hasRecentImageContext: boolean;
+  recentMedia?: ChatExecutionSnapshot["recentMedia"];
   contextDirectives?: ChatContextDirective[];
   experience?: ChatExperiencePreference;
   userPersona?: UserChatPersona | null;
@@ -123,6 +124,7 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
   return {
     userLocale: authority.user.locale,
     hasRecentImageContext: snapshot.hasRecentImageContext,
+    recentMedia: snapshot.recentMedia,
     contextDirectives: snapshot.contextDirectives ?? [],
     experience: snapshot.experience,
     userPersona: snapshot.userPersona,

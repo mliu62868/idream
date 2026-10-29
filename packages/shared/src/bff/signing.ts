@@ -49,6 +49,8 @@ export interface ChatAuthoritySnapshot {
     visualProfileVersion: number | null;
     identityPrompt: string | null;
     imageToolEnabled: boolean;
+    /** Published stock compatible with this Turn's fixed visual identity. */
+    mediaLibraryKinds?: Array<"image" | "video">;
     deletedAt: string | null;
     contentVersion: {
       contentVersionId: string;

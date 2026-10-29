@@ -51,7 +51,7 @@ export const IMAGE_AGENT_TOOL_DEFINITIONS: readonly ChatToolDefinition[] = [
     // capability). Advertising a count or a square format let the Character
     // promise "three ways" or "both angles" and deliver one.
     description:
-      "Create exactly one photo for a new photo request by calling this tool. A spoken promise creates no photo. Returns acceptance; the attachment delivers it.",
+      "Create exactly one photo. Use directly for explicit new generation; ordinary requests search prepared photos first when available. Existing-only requests prohibit generation. Returns acceptance; attachment delivers.",
     parameters: {
       type: "object",
       properties: {

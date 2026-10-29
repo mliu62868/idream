@@ -231,6 +231,50 @@ Apply running-process updates through the controlled PM2 wrapper above. The
 existing `chat-runtime:cutover` command migrates local `DSH_*` settings to `PI_*`
 while preserving configured memory roots and retiring plugin/bootstrap paths.
 
+## Character Chat Media Library
+
+Main owns reusable Character photos/videos and their delivery records. Before
+deploying this feature, confirm `DATABASE_URL` selects the intended database,
+then run from the repository root:
+
+```bash
+bun run --filter @idream/main db:migrate:deploy
+bun run --filter @idream/main db:generate
+```
+
+This applies pending migrations, including
+[`20261029180000_character_media_library`](packages/main/prisma/migrations/20261029180000_character_media_library/migration.sql).
+Configure Main's explicit `MEDIA_LIBRARY_EMBEDDING_*` route and matching vector
+dimensions before publishing/searching. `MEDIA_LIBRARY_RERANK_*` is optional;
+configured failures remain errors. Optional `MEDIA_LIBRARY_VISION_*` provides
+description suggestions. A Qwen3.5 vision route must support image inputs and
+JSON-object responses with thinking disabled; see Main's environment examples.
+Re-save/publish entries after changing the embedding model or dimensions.
+
+In Admin, open a Character's image/video library and choose **Edit chat
+description**. Review the actual finished media, enter visible facts and only
+verified absent facts, then save a draft or choose **Use in chat** with publication
+permission. **Recognize visible content** supplies an editable suggestion; the
+operator still confirms it. A generation prompt is not observed content, and
+unknown does not mean absent. Video samples cannot certify continuous actions,
+sound or quality. Only platform Character production or authorized operator
+imports may enter this shared library; private customer outputs are excluded.
+
+The first version scans all eligible vectors for the selected Character identity,
+combines exact vector similarity with keyword ranks, and optionally reranks the
+candidates. It has no approximate vector index or demonstrated large-catalog
+capacity. The Agent checks each candidate against every current requirement and
+exclusion before sending; rank alone is not eligibility. Ordinary media requests
+search first. Explicit new generation/edit requests keep their original meaning;
+a video miss uses the existing quote flow, never an automatic paid generation.
+
+Library delivery and explicit resend cost **0 Dreamcoins** and create no
+`GenerationJob`; normal chat usage remains separate. **Withdraw from chat** stops
+new library deliveries, while existing customer copies remain readable and explicitly
+resendable. Real Admin→Chat delivery, replay and billing journey qualification
+still requires same-revision runtime evidence. Playwright fixture runs explicitly
+disable these media model routes instead of inheriting live `.env` settings.
+
 ## Default Speech Runtime
 
 Ming 3.0 0.5B MLX 8-bit provides the default speech runtime. Its existing

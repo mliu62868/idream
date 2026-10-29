@@ -22,7 +22,8 @@ export type AdminV2ResourcePermissionResolver =
   | "command_target_read"
   | "mutation_recovery_command_type"
   | "saved_view_scope_read"
-  | "today_claim_source_write";
+  | "today_claim_source_write"
+  | "character_media_library_status_write";
 
 export type AdminV2Authorization =
   | { readonly kind: "bootstrap" }
@@ -83,6 +84,8 @@ export type AdminV2ApiOperation = {
   readonly route: AdminV2RoutePattern;
   readonly authorization: AdminV2Authorization;
   readonly contract: AdminV2ApiContract;
+  /** Explicit binary response: validate metadata and preserve the authorized stream. */
+  readonly responseBody?: "binary";
   /** Executable write admission; absent for read-only and preview operations. */
   readonly mutation?: AdminV2MutationMetadata;
   /** Additional permission-keyed DTO projections after admission. */
@@ -452,6 +455,65 @@ export const ADMIN_V2_API_OPERATIONS = [
     "characterVideoSourceUploadRequestSchema+idempotency-key",
     "characterVideoSourceUploadResponseSchema",
   ),
+  operation(
+    "GET",
+    "/api/v2/admin/characters/:id/media-library",
+    allOf("character.project.read", "creative.run.read"),
+    "characterMediaLibraryQuerySchema",
+    "characterMediaLibraryListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/media-library",
+    allOfAndOneOfBy(
+      "character_media_library_status_write",
+      ["creative.run.write"],
+      ["character.project.write", "character.release.publish"],
+    ),
+    "characterMediaLibraryCreateRequestSchema+idempotency-key",
+    "characterMediaLibraryMutationResponseSchema",
+    undefined,
+    { commandType: "character.media_library.create" },
+  ),
+  operation(
+    "PATCH",
+    "/api/v2/admin/characters/:id/media-library/:entryId",
+    allOfAndOneOfBy(
+      "character_media_library_status_write",
+      ["creative.run.write"],
+      ["character.project.write", "character.release.publish"],
+    ),
+    "characterMediaLibraryUpdateRequestSchema+idempotency-key",
+    "characterMediaLibraryMutationResponseSchema",
+    undefined,
+    { commandType: "character.media_library.update" },
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/media-library/describe",
+    allOf("character.project.write", "creative.run.write"),
+    "characterMediaLibraryDescribeRequestSchema+idempotency-key",
+    "characterMediaLibraryDescribeResponseSchema",
+    undefined,
+    { commandType: "character.media_library.describe" },
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/media-library/search-preview",
+    allOf("character.project.read", "creative.run.read"),
+    "characterMediaLibrarySearchRequestSchema",
+    "characterMediaLibrarySearchResponseSchema",
+  ),
+  {
+    ...operation(
+      "GET",
+      "/api/v2/admin/characters/:id/media-library/:entryId/content",
+      allOf("character.project.read", "creative.run.read"),
+      "characterMediaLibraryContentQuerySchema",
+      "characterMediaLibraryContentResponseSchema",
+    ),
+    responseBody: "binary",
+  },
   operation(
     "POST",
     "/api/v2/admin/characters/:id/voice-presets",

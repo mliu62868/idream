@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { chatTerminalAckSchema, type ChatStreamEvent, type ChatTerminalCommit, type ChatToolEffect } from "@idream/shared/contracts";
 import { COMPANION_PRODUCT_PROMPT_VERSION } from "@idream/shared";
+import {
+  SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL,
+  searchCharacterMediaResultSchema, sendCharacterMediaResultSchema,
+} from "@idream/shared/chat/media-library";
 import { ZodError } from "zod";
 import type {
   CompanionCommitAck,
@@ -466,6 +470,7 @@ async function executeMainTool(
   turnId: string,
   attempt: number,
 ): Promise<CompanionToolResult> {
+  const lookup = call.name === SEARCH_CHARACTER_MEDIA_TOOL;
   const effect: ChatToolEffect = {
     version: 2,
     turnId,
@@ -487,12 +492,16 @@ async function executeMainTool(
       const response = await postMain("/api/internal/chat/tool-effects", effect);
       const value = await response.json() as Record<string, unknown>;
       if (response.ok && value.accepted === true) {
+        // A lookup ACK proves neither a delivery nor a paid reservation. A
+        // malformed send receipt is ambiguous and must replay the same action.
+        const output = lookup ? searchCharacterMediaResultSchema.parse(value)
+          : call.name === SEND_CHARACTER_MEDIA_TOOL ? sendCharacterMediaResultSchema.parse(value) : value;
         return {
           attemptId: call.attemptId,
           callId: call.callId,
           name: call.name,
           outcome: "succeeded",
-          output: value as never,
+          output: output as never,
         };
       }
       if (response.status >= 500) {
@@ -508,10 +517,10 @@ async function executeMainTool(
           attemptId: call.attemptId,
           callId: call.callId,
           name: call.name,
-          outcome: "unknown",
+          outcome: lookup ? "failed" : "unknown",
           error: {
-            code: "main_tool_ack_unknown",
-            message: "Main tool effect outcome is unknown",
+            code: lookup ? "media_search_unavailable" : "main_tool_ack_unknown",
+            message: lookup ? "Prepared media search is unavailable" : "Main tool effect outcome is unknown",
             retryable: true,
           },
         };
@@ -547,10 +556,10 @@ async function executeMainTool(
         attemptId: call.attemptId,
         callId: call.callId,
         name: call.name,
-        outcome: "unknown",
+        outcome: lookup ? "failed" : "unknown",
         error: {
-          code: "main_tool_ack_unknown",
-          message: "Main tool effect outcome is unknown",
+          code: lookup ? "media_search_unavailable" : "main_tool_ack_unknown",
+          message: lookup ? "Prepared media search is unavailable" : "Main tool effect outcome is unknown",
           retryable: true,
         },
       };

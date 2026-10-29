@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL } from "../chat/media-library";
 
 export const CHAT_PIN_LIMIT = 8;
 
@@ -167,6 +168,14 @@ export const chatExecutionSnapshotSchema = z.object({
   userPersona: userChatPersonaSchema.nullable().optional(),
   contextRevision: z.number().int().nonnegative(),
   userContent: z.string(),
+  // Actual delivered facts only. Generation prompts are intentions, never
+  // descriptions of observed pixels. Historical snapshots omit this projection.
+  recentMedia: z.array(z.object({
+    mediaAssetId: z.string().min(1).max(160),
+    kind: z.enum(["image", "video"]),
+    turnId: z.string().min(1).max(160),
+    description: z.string().max(4_000).nullable(),
+  }).strict()).max(8).optional(),
   group: groupChatContextSchema.optional(),
   hasRecentImageContext: z.boolean().default(false),
   recentTurns: z.array(z.object({
@@ -263,13 +272,20 @@ export const chatToolEffectSchema = z.object({
   turnId: z.string().min(1),
   attempt: z.number().int().positive(),
   callId: z.string().min(1),
-  name: z.enum(["generate_image_async", "edit_last_image"]),
+  name: z.enum(["generate_image_async", "edit_last_image", SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL]),
   effectScope: z.enum(["attempt", "turn_action"]),
   intent: z.object({
     requestedNudity: z.enum(["unspecified", "none", "full"]),
   }).strict(),
   arguments: z.record(z.string(), z.unknown()),
-}).strict();
+}).strict().superRefine((effect, context) => {
+  if (effect.name === SEARCH_CHARACTER_MEDIA_TOOL && effect.effectScope !== "attempt") {
+    context.addIssue({ code: "custom", path: ["effectScope"], message: "Media lookup belongs to the current attempt" });
+  }
+  if (effect.name === SEND_CHARACTER_MEDIA_TOOL && effect.effectScope !== "turn_action") {
+    context.addIssue({ code: "custom", path: ["effectScope"], message: "Media delivery belongs to the Turn action" });
+  }
+});
 
 // A successful HTTP response alone is not a durable terminal acknowledgement.
 export const chatTerminalAckSchema = z.object({

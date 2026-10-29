@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 import type { CompanionReadiness } from "@idream/shared/chat/companion-runtime";
-import { companionEventSchema, companionToolReservationSchema, companionToolResultSchema,
+import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL } from "@idream/shared/chat/media-library";
+import { companionEventSchema, companionToolCallSchema, companionToolReservationSchema, companionToolResultSchema,
   type CompanionCommitAck, type CompanionEvent, type CompanionInvocation, type CompanionModelRequestEvidence,
   type CompanionTerminalCandidate, type CompanionToolCall, type CompanionToolResult, type PreparedTurnProfile } from "./contracts";
 import { evaluateTerminalCandidate, type TerminalValidationCode } from "./terminal-candidate";
@@ -246,6 +247,10 @@ class ToolBridge {
 
   get callCount(): number {
     return this.entries.size;
+  }
+
+  get actionCount(): number {
+    return [...this.entries.values()].filter(entry => entry.name !== SEARCH_CHARACTER_MEDIA_TOOL).length;
   }
 
   get reservations() {
@@ -596,18 +601,21 @@ export class CompanionEngine {
                 }
               },
             } satisfies ToolRegistration)),
-            ...invocation.preparedTurn.tools.map(tool => ({ ...tool, parameters: tool.parameters as ToolRegistration["parameters"], replay: "unsafe" as const, executionMode: "sequential" as const,
+            ...invocation.preparedTurn.tools.map(tool => ({ ...tool, parameters: tool.parameters as ToolRegistration["parameters"], replay: tool.name === SEARCH_CHARACTER_MEDIA_TOOL ? "safe" as const : "unsafe" as const, executionMode: "sequential" as const,
               async execute(args, api, context) {
-                if (bridge.callCount > 0) throw new Error("only one image action may execute per Turn");
-                const call = { attemptId: invocation.attemptId, callId: api.callId, name: tool.name, effectScope: "turn_action",
-                  intent: { requestedNudity: (args as { requestedNudity?: "unspecified" | "none" | "full" }).requestedNudity ?? "unspecified" }, arguments: args } as CompanionToolCall;
+                const lookup = tool.name === SEARCH_CHARACTER_MEDIA_TOOL;
+                if (!lookup && bridge.actionCount > 0) throw new Error("only one media action may execute per Turn");
+                const call = companionToolCallSchema.parse({ attemptId: invocation.attemptId, callId: api.callId, name: tool.name, effectScope: lookup ? "attempt" : "turn_action",
+                  intent: { requestedNudity: (args as { requestedNudity?: "unspecified" | "none" | "full" }).requestedNudity ?? "unspecified" }, arguments: args });
                 let result: CompanionToolResult;
                 try { result = await bridge.execute(call, toolSignal(active.cancellation.signal, context)); }
-                catch (error) { unconfirmedImageEffect = true; throw error; }
-                unconfirmedImageEffect = result.outcome === "unknown";
+                catch (error) { if (!lookup) unconfirmedImageEffect = true; throw error; }
+                if (!lookup) unconfirmedImageEffect = result.outcome === "unknown";
+                if (lookup && result.outcome !== "succeeded") return { isError: true, output: [{ type: "text" as const,
+                  text: "Prepared media search is unavailable. No media was sent or generated. This is not evidence that the library is empty; do not claim a match or delivery." }] };
                 if (result.outcome !== "succeeded") return { isError: true, output: [{ type: "text" as const, text: result.outcome === "failed"
-                  ? `The image action failed this time (${result.error.code}). Answer them in character in one or two short sentences: it will have to wait. Do not mention tools, systems, errors or this message.`
-                  : "Image action acceptance is unknown." }] };
+                  ? `The ${tool.name === SEND_CHARACTER_MEDIA_TOOL ? "media" : "image"} action failed this time (${result.error.code}). Answer them in character in one or two short sentences: it will have to wait. Do not mention tools, systems, errors or this message.`
+                  : "Media action acceptance is unknown." }] };
                 return { output: [{ type: "text" as const, text: JSON.stringify(result) }] };
               },
             } satisfies ToolRegistration)),

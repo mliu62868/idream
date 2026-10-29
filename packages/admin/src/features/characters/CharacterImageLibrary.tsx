@@ -20,6 +20,7 @@ import { readActiveDurableMutationIntent } from "@/lib/durable-mutation-intent";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { CharacterAssetStudio } from "./CharacterAssetStudio";
 import type { CharacterAssetProjectMutation } from "./character-asset-studio-authority";
+import { CharacterChatLibrary, type CharacterChatLibrarySource } from "./CharacterChatLibrary";
 
 type CharacterImageLibraryProps = {
   actorId: string;
@@ -29,6 +30,7 @@ type CharacterImageLibraryProps = {
   canCreate: boolean;
   canReview: boolean;
   canArchive: boolean;
+  canPublish?: boolean;
   onContinue: (tab: "visual" | "preview") => void;
   onProjectReload: () => Promise<void>;
   commitProjectMutation: CharacterAssetProjectMutation;
@@ -42,12 +44,14 @@ export function CharacterImageLibrary({
   canCreate,
   canReview,
   canArchive,
+  canPublish = false,
   onContinue,
   onProjectReload,
   commitProjectMutation,
 }: CharacterImageLibraryProps) {
   const { t } = useAdminI18n();
   const [assets, setAssets] = useState<CharacterImageSourceAsset[]>([]);
+  const [chatSource, setChatSource] = useState<CharacterChatLibrarySource | null>(null);
   const [search, setSearch] = useState("");
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const requestVersion = useRef(0);
@@ -276,6 +280,9 @@ export function CharacterImageLibrary({
       ) : null}
 
 
+      {canReadProduction ? <CharacterChatLibrary characterId={data.character.id} mediaType="image"
+        canWrite={canCreate} canPublish={canPublish} source={chatSource} onCloseSource={() => setChatSource(null)} /> : null}
+
       <section aria-busy={loading} aria-label={t("Character image library")}>
         {/* SPEC: Only a successful read can establish an empty library. */}
         {loading && assets.length === 0 ? (
@@ -330,6 +337,7 @@ export function CharacterImageLibrary({
                     </p>
                   ) : null}
                   <div className="mt-3 flex items-center gap-2">
+                    {canReadProduction ? <WorkspaceButton onClick={() => setChatSource({ id: asset.id, url: asset.url, thumbnailUrl: asset.thumbnailUrl ?? null })}>{t("Set up chat content")}</WorkspaceButton> : null}
                     {canArchive ? (
                       <button
                         aria-label={t("Remove image from library")}

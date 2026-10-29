@@ -42,6 +42,7 @@ export default defineConfig({
       "src/server/modules/admin-v2/characters/simplified-release.test.ts",
       "src/server/modules/admin-v2/characters/readiness.test.ts",
       "src/server/modules/admin-v2/characters/visual-authority.test.ts",
+      "src/server/modules/admin-v2/characters/video-sources.test.ts",
       "src/server/modules/admin-v2/characters/character-release-contract.test.ts",
       "src/server/modules/admin-v2/characters/production-journey.test.ts",
       "src/server/modules/admin-v2/characters/image-qualification.test.ts",
@@ -98,6 +99,9 @@ export default defineConfig({
       "src/server/providers/**/*.test.ts",
       "src/server/seed-nondestructive.test.ts",
       "src/server/modules/chat/turn-scope.test.ts",
+      "src/server/modules/character-media-library/media-models.test.ts",
+      "src/server/modules/character-media-library/media-bytes.test.ts",
+      "src/server/modules/character-media-library/service.test.ts",
     ],
   },
   resolve: {

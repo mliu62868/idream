@@ -30,7 +30,7 @@ describe("companion prompt instruction hierarchy", () => {
     } as never);
 
     expect(prompt.startsWith("Speak softly.")).toBe(true);
-    expect(prompt).toContain("iDream companion contract (companion-product-16)");
+    expect(prompt).toContain("iDream companion contract (companion-product-18)");
     expect(prompt).toContain("Write in first person as Mira");
     // An ordinary memory-on turn adds no capability section: nothing about
     // photos or memory mode seeds the reply, and the bytes stay cacheable.
@@ -65,7 +65,7 @@ describe("companion prompt instruction hierarchy", () => {
       sceneVersion: 0,
       lastExchangeAt: null,
     } as never);
-    expect(enabled).toContain("Choose generate_image_async for a new photo");
+    expect(enabled).toContain("Choose generate_image_async directly for explicit new generation");
     expect(enabled).toContain("edit_last_image for a change to the delivered photo");
 
     const disabled = buildCompanionSystemPrompt({

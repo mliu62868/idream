@@ -46,6 +46,16 @@ const snapshot = {
 } as const;
 
 describe("Chat execution snapshot", () => {
+  it("carries only bounded delivered-media facts and leaves historical snapshots compatible", () => {
+    expect(chatExecutionSnapshotSchema.parse(snapshot)).not.toHaveProperty("recentMedia");
+    const media = { mediaAssetId: "asset-1", kind: "image", turnId: "earlier-turn", description: null };
+    expect(chatExecutionSnapshotSchema.parse({ ...snapshot, recentMedia: [media] }).recentMedia).toEqual([media]);
+    for (const recentMedia of [
+      [{ ...media, prompt: "intended blue dress" }], [{ ...media, description: "x".repeat(4_001) }],
+      [{ ...media, kind: "audio" }], Array.from({ length: 9 }, (_, index) => ({ ...media, mediaAssetId: `asset-${index}` })),
+    ]) expect(chatExecutionSnapshotSchema.safeParse({ ...snapshot, recentMedia }).success).toBe(false);
+  });
+
   it("binds every group replay speaker to the pinned membership and the selected execution session", () => {
     const members = [{ characterId: "character-1", sessionId: "session-1", name: "Mira" }, { characterId: "character-2", sessionId: "session-2", name: "Briar" }];
     const grouped = { ...snapshot, group: { id: "group-1", ordinal: 2, members }, recentTurns: [{ turnId: "earlier", userMessageId: "old-user", assistantMessageId: "old-assistant", userContent: "Hi", assistantContent: "Briar here", createdAt: "2026-09-10T00:00:00.000Z", speaker: members[1] }] };
@@ -184,5 +194,14 @@ describe("Chat execution snapshot", () => {
       effectScope: "turn_action",
       intent: { requestedNudity: "full" },
     });
+  });
+
+  it("keeps lookup per attempt and delivery in the shared Turn action slot", () => {
+    const base = { version: 2, turnId: "turn-1", attempt: 1, callId: "provider-call-1",
+      intent: { requestedNudity: "unspecified" }, arguments: {} };
+    expect(chatToolEffectSchema.safeParse({ ...base, name: "search_character_media", effectScope: "attempt" }).success).toBe(true);
+    expect(chatToolEffectSchema.safeParse({ ...base, name: "send_character_media", effectScope: "turn_action" }).success).toBe(true);
+    expect(chatToolEffectSchema.safeParse({ ...base, name: "search_character_media", effectScope: "turn_action" }).success).toBe(false);
+    expect(chatToolEffectSchema.safeParse({ ...base, name: "send_character_media", effectScope: "attempt" }).success).toBe(false);
   });
 });

@@ -1824,7 +1824,7 @@ function ChatImageAttachmentCard({
       <figure className="relative w-full max-w-[260px] overflow-hidden rounded-[12px] border border-white/10 bg-black/20">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          alt={isSceneImage ? "Generated scene image from this chat" : "Generated character image from this chat"}
+          alt={isSceneImage ? "Scene image from this chat" : "Character image from this chat"}
           className="aspect-[4/5] w-full object-cover"
           data-asset-id={attachment.mediaAssetId ?? undefined}
           data-testid="chat-image-attachment"

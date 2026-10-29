@@ -45,6 +45,28 @@ export function narrowAdminV2ResponseData(
     : { ok: false, violation: { operationId: operation.id, contractRef, reason: "contract" } };
 }
 
+export function narrowAdminV2BinaryResponse(
+  operation: AdminV2ApiOperation,
+  response: Response,
+): AdminV2ResponseNarrowing {
+  return narrowAdminV2ResponseData(operation, {
+    contentType: response.headers.get("content-type")?.split(";", 1)[0]?.trim(),
+    cacheControl: response.headers.get("cache-control"),
+    status: response.status,
+  });
+}
+
+/** Do not expose provider, storage or internal authentication headers with media. */
+export function adminV2BinaryResponseHeaders(response: Response): Headers {
+  const headers = new Headers();
+  for (const name of ["content-type", "cache-control", "accept-ranges", "content-range"]) {
+    const value = response.headers.get(name);
+    if (value !== null) headers.set(name, value);
+  }
+  headers.set("x-content-type-options", "nosniff");
+  return headers;
+}
+
 /**
  * SPEC: the same judgement for a serialized `{ ok: true, data }` envelope observed on the wire.
  * INTENT: a consumer sees bytes and a URL, never an operation object. Resolving the operation

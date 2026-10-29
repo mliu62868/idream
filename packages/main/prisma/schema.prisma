@@ -297,6 +297,7 @@ model Character {
   generationJobs        GenerationJob[]
   videoSequences        VideoSequence[]
   mediaAssets           MediaAsset[]             @relation("CharacterAssets")
+  mediaLibraryEntries   CharacterMediaLibraryEntry[]
   voiceClipRequests     VoiceClipRequest[]
   voiceCalls            VoiceCall[]
   voiceUsageFacts       VoiceUsageFact[]
@@ -1155,11 +1156,59 @@ model MediaAsset {
   voiceUsageFacts        VoiceUsageFact[]                   @relation("VoiceUsageMedia")
   videoSequences         VideoSequence[]                    @relation("VideoSequenceOutput")
   videoNarrationScenes   VideoSequenceScene[]               @relation("VideoSceneNarration")
+  mediaLibraryEntries    CharacterMediaLibraryEntry[]
 
   @@index([ownerId, type, createdAt])
   @@index([sourceJobId])
   @@index([characterId])
   @@map("media_assets")
+}
+
+// The library owns its copied immutable bytes independently from the original
+// operator account. Withdrawal stops new delivery; owned customer copies keep
+// their historical access without depending on the source account or Release.
+model CharacterMediaLibraryEntry {
+  id                    String    @id @default(cuid())
+  characterId           String?
+  sourceAssetId         String?
+  visualProfileId       String
+  visualProfileVersion  Int
+  kind                  String    // image | video
+  status                String    @default("draft") // draft | published | withdrawn
+  description           String
+  facts                 String[]  @default([])
+  absentFacts           String[]  @default([])
+  nudity                String    @default("unknown")
+  durationSeconds       Float?
+  hasAudio              Boolean?
+  width                 Int?
+  height                Int?
+  contentType           String
+  storageKey            String    @unique
+  thumbnailKey          String?
+  contentHash           String
+  descriptionSource     String    @default("operator")
+  descriptorModel       String?
+  // Exact search is scoped to a Character and identity version. The vector is
+  // a rebuildable description projection, never publication or access authority.
+  embedding             Float[]   @default([])
+  embeddingModel        String?
+  embeddingDimensions   Int?
+  embeddingHash         String?
+  revision              Int       @default(1)
+  sourceSnapshot        Json
+  createdById           String
+  updatedById           String
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  publishedAt           DateTime?
+  character             Character? @relation(fields: [characterId], references: [id], onDelete: SetNull)
+  sourceAsset           MediaAsset? @relation(fields: [sourceAssetId], references: [id], onDelete: SetNull)
+
+  @@unique([characterId, sourceAssetId, visualProfileId, visualProfileVersion])
+  @@index([characterId, visualProfileId, visualProfileVersion, status, kind])
+  @@index([sourceAssetId, status])
+  @@map("character_media_library_entries")
 }
 
 model VideoSequenceCancellation {

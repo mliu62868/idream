@@ -182,6 +182,18 @@ export function resolvePlaywrightEnvironment(
     IGREP_RERANK_URL: "",
     IGREP_RERANK_MODEL: "",
     IGREP_RERANK_API_KEY: "",
+    // Empty values also stop dotenv from importing live media routes into a
+    // fixture process. These runs do not authorize vision/embedding purchases.
+    MEDIA_LIBRARY_EMBEDDING_URL: "",
+    MEDIA_LIBRARY_EMBEDDING_MODEL: "",
+    MEDIA_LIBRARY_EMBEDDING_API_KEY: "",
+    MEDIA_LIBRARY_EMBEDDING_DIMENSIONS: "",
+    MEDIA_LIBRARY_RERANK_URL: "",
+    MEDIA_LIBRARY_RERANK_MODEL: "",
+    MEDIA_LIBRARY_RERANK_API_KEY: "",
+    MEDIA_LIBRARY_VISION_URL: "",
+    MEDIA_LIBRARY_VISION_MODEL: "",
+    MEDIA_LIBRARY_VISION_API_KEY: "",
     CHAT_SERVICE_URL: chatBaseURL,
     CHAT_REDIS_URL: redisURL,
     CHAT_FS_ROOT: chatFsRoot,
