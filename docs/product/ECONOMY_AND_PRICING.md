@@ -88,10 +88,10 @@ iDream 的计划价格与权益如下；竞品公开快照见 [对标矩阵](PRO
 | 计划 | 月付 | 年付（一次付清 / 等效月价） | 当月 dreamcoin | 关键权益 |
 | --- | --- | --- | --- | --- |
 | **Free** | $0 | — | 注册赠币（一次性，见 §3） | 浏览、有限聊天、无付费生成（除非用赠币/充值） |
-| **Premium** | $19.99/mo | $99.90/yr（≈$8.33/mo） | 1,500 / 月（年付 18,000/年） | unlimited messages、image gen、voice（30 min/月）、`videoGeneration=false` |
-| **Deluxe** | $59.99/mo | $299.90/yr（≈$24.99/mo） | 6,000 / 月（年付 72,000/年） | Premium 全部 + premium generation models + voice（120 min/月） + video entitlement；仅在 `video_gen` 与 provider gate 同时 ready 时曝光 |
+| **Premium** | $19.99/mo | $99.90/yr（≈$8.33/mo） | 1,500 / 月（年付 18,000/年） | unlimited messages、image gen、voice（滚动 30 天内 30 min）、`videoGeneration=false` |
+| **Deluxe** | $59.99/mo | $299.90/yr（≈$24.99/mo） | 6,000 / 月（年付 72,000/年） | Premium 全部 + premium generation models + voice（滚动 30 天内 120 min） + video entitlement；仅在 `video_gen` 与 provider gate 同时 ready 时曝光 |
 
-月/年和等效月价说明购买周期及比较口径，不代表钱包自动续费。每次确认购买按已接受 offer 的 `includedDreamcoins` 发放一次，年付总币量不是十二笔未经定义的自动月发任务。语音的 30/120 分钟·月产品承诺保留；年卡 seed 存为 360/1440，而当前 `voiceMinutesRemainingMs` 直接按有效 `voice_minutes` 查询滚动 30 天使用量，月度承诺与年卡计量存在静态口径差异。此差异须独立核验和决策，不能把字段乘十二解释为已兑现按月额度或新的无限滚动承诺。
+月/年和等效月价说明购买周期及比较口径，不代表钱包自动续费。每次确认购买按已接受 offer 的 `includedDreamcoins` 发放一次，年付总币量不是十二笔未经定义的自动月发任务。语音的月度额度统一明确为滚动 30 天内 Premium 30 分钟、Deluxe 120 分钟，月付与年付相同；购买周期只决定访问到期时间，不将分钟额度乘十二，也不按自然月或购买周年重置。`voiceMinutesRemainingMs` 计算窗口内已交付且未用币支付的语音时长。2026-10-29 起的新 seed 与目录修正采用 30/120；旧的已接受购买/语音快照和独立授予保留原数值与窗口，不能批量除以十二。现有目录用 `db/sql/2026-10-29-annual-voice-allowance.sql` 修正；若年卡存在依赖可变 Plan 的历史订阅，该脚本拒绝更新，须先核对并固定其购买权威。
 
 ### 2.1 年付促销
 
@@ -100,7 +100,7 @@ iDream 的计划价格与权益如下；竞品公开快照见 [对标矩阵](PRO
 
 ### 2.2 权益与卡面
 
-`Plan.includedDreamcoins` 是独立币量，`features` 中的 `unlimitedMessages/imageGeneration/videoGeneration/voiceEnabled/voiceMinutes/premiumModels` 描述能力。年卡语音默认值与月度承诺的差异按 §2 单独核验。
+`Plan.includedDreamcoins` 是独立币量，`features` 中的 `unlimitedMessages/imageGeneration/videoGeneration/voiceEnabled/voiceMinutes/premiumModels` 描述能力。语音分钟数按 §2 的滚动 30 天窗口显示，不使用“每购买周期”表示。新售套餐与用户已购套餐可能不同，当前访问摘要必须展示已购权益。
 
 计划卡展示币量、消息和生成能力；高阶控制仍须服务端 entitlement。基础 Chat provider/model、人格、上下文与记忆不按计划分级；Deluxe 的 `premiumModels` 是生成模型权益。图片/视频不另设 quota；未来若展示等价数量须按费率动态计算且遵守能力门控，语音分钟不能混入币折算。
 

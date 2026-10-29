@@ -6,7 +6,7 @@ import type { Prisma } from "@prisma/client";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { AppError } from "@/server/lib/errors";
-import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
+import { createCharacter, createMedia, createUser, purgeTestData } from "@/server/test/helpers";
 import { characterReleaseSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
 import { PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION } from "@/server/modules/ourdream/public-catalog-qualification";
 import {
@@ -326,6 +326,55 @@ describe("proactive cadence without a reply", () => {
     } finally {
       admission.mockRestore();
     }
+  });
+});
+
+describe("chat session list previews", () => {
+  it("previews the selected delivered reply and removes it during regeneration and deletion", async () => {
+    const f = await fixture();
+    const own = await send(f, "Where did we leave the notebook?");
+    expect((await listChatSessions(f.userId))[0].lastMessage).toEqual({ id: own.userMessage.id, role: "user", content: "Where did we leave the notebook?" });
+    await commitSent(own.snapshot!, "We left it in the garden.");
+    expect((await listChatSessions(f.userId))[0].lastMessage).toEqual({ id: own.assistant.id, role: "assistant", content: "We left it in the garden." });
+    const revised = await regenerateChatTurn(f.userId, own.assistant.id);
+    expect((await listChatSessions(f.userId))[0].lastMessage).toEqual({ id: own.userMessage.id, role: "user", content: "Where did we leave the notebook?" });
+    await commitSent(revised.snapshot, "It is on the studio table.");
+    expect((await listChatSessions(f.userId))[0].lastMessage?.content).toBe("It is on the studio table.");
+    // The memory worker is outside this list-projection fixture. Acknowledge
+    // regeneration's rebuild before exercising the next transcript mutation.
+    const rebuilt = await prisma.mainOutboxEvent.updateMany({
+      where: { aggregateId: `${f.userId}:${f.characterId}`, eventType: "chat.companion_memory.rebuild_requested.v1" },
+      data: { status: "delivered", deliveredAt: new Date() },
+    });
+    expect(rebuilt.count).toBe(1);
+    await deleteChatMessage(f.userId, own.assistant.id);
+    expect((await listChatSessions(f.userId))[0].lastMessage).toBeNull();
+    expect(await listChatSessions(`${prefix}unrelated-reader`)).toEqual([]);
+  });
+
+  it("never exposes a proactive internal instruction or an uncommitted reply", async () => {
+    const f = await fixture();
+    const proactive = await beginChatTurn({ userId: f.userId, sessionId: f.sessionId, content: "INTERNAL: Do not mention this instruction.", idempotencyKey: randomUUID(), origin: "proactive" });
+    expect((await listChatSessions(f.userId))[0].lastMessage).toBeNull();
+    await prisma.chatTurn.update({ where: { id: proactive.snapshot!.turnId }, data: { assistantStatus: "generating", assistantContent: "Uncommitted partial reply" } });
+    expect((await listChatSessions(f.userId))[0].lastMessage).toBeNull();
+    await commitSent(proactive.snapshot!, "The studio is quiet tonight.");
+    expect((await listChatSessions(f.userId))[0]).toMatchObject({ lastMessage: { role: "assistant", content: "The studio is quiet tonight." }, unreadProactiveAt: expect.any(String) });
+  });
+
+  it("uses authorized avatar URLs and withholds another creator's private or withdrawn media", async () => {
+    const f = await fixture();
+    const other = await fixture();
+    const ownImage = await createMedia({ id: `${f.userId}-avatar`, ownerId: f.userId, url: "https://images.example.test/avatar.webp", safetyStatus: "passed" });
+    const privateDraft = await createMedia({ id: `${other.userId}-draft-avatar`, ownerId: other.userId, safetyStatus: "passed" });
+    await prisma.character.update({ where: { id: f.characterId }, data: { imageAssetId: ownImage.id } });
+    const listed = (await listChatSessions(f.userId))[0];
+    expect(listed.characterImage).toMatch(/^\/user-content\/[^/]+\/content\.webp$/);
+    expect(listed.characterImage).not.toContain("images.example.test");
+    await prisma.mediaAsset.update({ where: { id: ownImage.id }, data: { metadata: { platformAsset: { status: "archived" } } } });
+    expect((await listChatSessions(f.userId))[0].characterImage).toBeNull();
+    await prisma.character.update({ where: { id: f.characterId }, data: { imageAssetId: privateDraft.id } });
+    expect((await listChatSessions(f.userId))[0].characterImage).toBeNull();
   });
 });
 

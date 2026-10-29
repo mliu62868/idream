@@ -46,11 +46,12 @@ export function UpgradeWorkspace() {
   const [billingMode, setBillingMode] = useState<BillingMode | null>(null);
   const [checkoutResult, setCheckoutResult] = useState<CheckoutResult | null>(null);
   const [pendingPlan, setPendingPlan] = useState("");
+  const [selectedPeriod, setSelectedPeriod] = useState<Plan["billingPeriod"]>("monthly");
   const [returnTarget, setReturnTarget] = useState("/generate");
   const [returnTargetReady, setReturnTargetReady] = useState(false);
-  // Lowercased "name billingPeriod" of the user's active plan; "" when unknown
-  // (logged out / free / fetch failed) so no card gets marked as current.
-  const [activePlan, setActivePlan] = useState("");
+  // The purchased offer can differ from today's catalog even with the same
+  // plan ID. Keep its benefits instead of reducing it to a tier label.
+  const [activePlan, setActivePlan] = useState<Plan | null>(null);
   const [checkoutIntents, setCheckoutIntents] = useState<
     PendingCheckoutIntent[]
   >([]);
@@ -86,6 +87,8 @@ export function UpgradeWorkspace() {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setReturnTarget(upgradeReturnTarget());
+      const period = new URLSearchParams(window.location.search).get("billing");
+      if (period === "monthly" || period === "yearly") setSelectedPeriod(period);
       setReturnTargetReady(true);
     }, 0);
     return () => window.clearTimeout(timer);
@@ -99,7 +102,7 @@ export function UpgradeWorkspace() {
     requestSerialRef.current += 1;
     writingRef.current = false;
     setPendingPlan("");
-    setActivePlan("");
+    setActivePlan(null);
     setCheckoutIntents([]);
     setCheckoutResult({ kind: "error", message: "Your account changed. Review the current account before continuing." });
   }), [viewer.gate]);
@@ -121,8 +124,7 @@ export function UpgradeWorkspace() {
           if (!alive || payload === null) return;
           const profile = parseProfileResponse(payload);
           if (profile.user.id !== viewerId) return;
-          const plan = profile.subscription?.plan;
-          setActivePlan(plan ? `${plan.name} ${plan.billingPeriod}`.toLowerCase() : "");
+          setActivePlan(profile.subscription?.plan ?? null);
         })
         .catch(() => undefined);
     }, 0);
@@ -239,7 +241,7 @@ export function UpgradeWorkspace() {
           authorityViewerId,
           removePendingCheckoutIntent(pendingIntents, intentFingerprint),
         );
-        setActivePlan(`${plan.name} ${plan.billingPeriod}`.toLowerCase());
+        setActivePlan(payload.subscription.plan);
         const endLabel = formatBillingDate(
           payload.billingAccess?.benefitsEndAt ?? null,
         );
@@ -277,6 +279,30 @@ export function UpgradeWorkspace() {
     } finally {
       if (isCurrent()) { writingRef.current = false; setPendingPlan(""); }
     }
+  }
+
+  const availablePeriods = (["monthly", "yearly"] as const).filter((period) =>
+    plans.some((plan) => plan.billingPeriod === period),
+  );
+  // A published catalog can contain only one period. Never hide its offers
+  // because a previous selection or an incoming link requested another one.
+  const visiblePeriod = availablePeriods.includes(selectedPeriod)
+    ? selectedPeriod
+    : availablePeriods[0];
+  const visiblePlans = plans
+    .filter((plan) => plan.billingPeriod === visiblePeriod)
+    .sort((left, right) => left.priceCents - right.priceCents);
+  const purchasedBenefits = activePlan
+    ? configuredEntitlementBenefits(activePlan.features)
+    : [];
+
+  function selectPeriod(period: Plan["billingPeriod"]) {
+    // Keep this view recoverable after refresh, including an invoice whose
+    // response was lost. Preserve the original task and unrelated link state.
+    const url = new URL(window.location.href);
+    url.searchParams.set("billing", period);
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    setSelectedPeriod(period);
   }
 
   return (
@@ -352,11 +378,50 @@ export function UpgradeWorkspace() {
           </p>
         </div>
       )}
+      {plansState === "ready" && plans.length > 0 && (
+        <div className="mx-auto mb-6 max-w-5xl">
+          <h2 className="text-xl font-bold">Choose your access period</h2>
+          {availablePeriods.length > 1 ? (
+            <div aria-label="Access period" className="mt-3 inline-flex gap-1 rounded-full bg-[rgb(36,36,36)] p-1" role="group">
+              {availablePeriods.map((period) => (
+                <button
+                  aria-pressed={visiblePeriod === period}
+                  className={`min-h-11 rounded-full px-6 text-sm font-bold outline-none transition-colors focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-[rgb(13,13,13)] disabled:opacity-60 ${visiblePeriod === period ? "bg-white text-[rgb(13,13,13)]" : "text-neutral-300 hover:text-white"}`}
+                  disabled={pendingPlan !== ""}
+                  key={period}
+                  onClick={() => selectPeriod(period)}
+                  type="button"
+                >
+                  {period === "monthly" ? "Monthly" : "Yearly"}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-2 text-sm text-neutral-300">
+              {visiblePeriod === "monthly" ? "Monthly access" : "Yearly access"}
+            </p>
+          )}
+          <p className="mt-3 text-sm leading-6 text-neutral-300">
+            Pay once. No automatic renewal. Your existing chats and delivered media stay accessible after your access expires.
+          </p>
+        </div>
+      )}
+      {activePlan && (
+        <div className="mx-auto mb-6 max-w-5xl text-sm text-neutral-300" data-testid="upgrade-current-access">
+          <p>
+            Current access: <span className="capitalize font-semibold text-white">{activePlan.name} {activePlan.billingPeriod}</span>.{" "}
+            <Link className="underline underline-offset-4" href="/profile#billing">View access details</Link>
+          </p>
+          {purchasedBenefits.length > 0 && (
+            <ul aria-label="Purchased benefits" className="mt-2 flex flex-wrap gap-x-6 gap-y-1">
+              {purchasedBenefits.map((benefit) => <li key={benefit}>{benefit}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
       <div className="mx-auto grid max-w-5xl gap-4 md:grid-cols-2">
-        {plans.map((plan, index) => {
-          const isActive =
-            activePlan !== "" &&
-            `${plan.name} ${plan.billingPeriod}`.toLowerCase() === activePlan;
+        {visiblePlans.map((plan) => {
+          const isActive = activePlan?.id === plan.id;
           const storedIntent = billingMode
             ? checkoutIntents.find(
                 (intent) =>
@@ -369,10 +434,18 @@ export function UpgradeWorkspace() {
               )
             : undefined;
           const benefits = configuredEntitlementBenefits(plan.features);
+          const matchesPurchasedOffer = isActive && activePlan !== null &&
+            activePlan.name === plan.name &&
+            activePlan.billingPeriod === plan.billingPeriod &&
+            activePlan.priceCents === plan.priceCents &&
+            activePlan.includedDreamcoins === plan.includedDreamcoins &&
+            benefits.length === purchasedBenefits.length &&
+            benefits.every((benefit, index) => benefit === purchasedBenefits[index]);
           return (
           <article
-            className={`rounded-[20px] border p-6 ${
-              index === 0
+            aria-label={`${plan.name} ${plan.billingPeriod}`}
+            className={`flex min-w-0 flex-col rounded-[16px] border p-6 ${
+              matchesPurchasedOffer
                 ? "border-[rgb(253,95,194)] bg-[rgb(36,36,36)]"
                 : "border-white/10 bg-[rgb(18,18,18)]"
             }`}
@@ -382,7 +455,7 @@ export function UpgradeWorkspace() {
               <Crown className="h-6 w-6 text-[rgb(253,95,194)]" />
               {isActive && (
                 <span className="rounded-full bg-[rgb(253,95,194)] px-3 py-1 text-[11px] font-black uppercase text-[rgb(13,13,13)]">
-                  Current plan
+                  {matchesPurchasedOffer ? "Current plan" : "Already active"}
                 </span>
               )}
             </div>
@@ -417,8 +490,13 @@ export function UpgradeWorkspace() {
                 No additional entitlements are configured for this plan.
               </p>
             ) : null}
+            {isActive && !matchesPurchasedOffer && (
+              <p className="mt-3 text-[13px] leading-5 text-neutral-300">
+                This is today&apos;s offer. Your purchased benefits are listed above.
+              </p>
+            )}
             <button
-              className="mt-6 h-11 w-full rounded-full bg-white text-[14px] font-black text-[rgb(13,13,13)] disabled:opacity-70"
+              className="mt-6 min-h-11 w-full rounded-full bg-white text-[14px] font-black text-[rgb(13,13,13)] outline-none focus-visible:ring-2 focus-visible:ring-[rgb(253,95,194)] focus-visible:ring-offset-2 focus-visible:ring-offset-[rgb(18,18,18)] disabled:opacity-70"
               disabled={
                 pendingPlan !== "" ||
                 isActive ||
@@ -429,7 +507,7 @@ export function UpgradeWorkspace() {
               type="button"
             >
               {isActive
-                ? "Current plan"
+                ? matchesPurchasedOffer ? "Current plan" : "Already active"
                 : pendingPlan === plan.id
                   ? billingMode?.autoConfirmAvailable
                     ? "Activating..."

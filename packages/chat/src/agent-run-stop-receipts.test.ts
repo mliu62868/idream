@@ -32,6 +32,29 @@ import {
   withFenceLock,
 } from "./fence.js";
 
+const journalWrites = vi.hoisted(() => ({ shortWriteBytes: 0, zeroWrite: false }));
+vi.mock("node:fs/promises", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    open: async (...args: Parameters<typeof actual.open>) => {
+      const handle = await actual.open(...args);
+      if (String(args[0]).endsWith("/events.jsonl")) {
+        const write = handle.write;
+        Object.defineProperty(handle, "write", { value: async (...values: unknown[]) => {
+          const content = Buffer.isBuffer(values[0])
+            ? values[0].subarray(Number(values[1] ?? 0), Number(values[1] ?? 0) + Number(values[2] ?? values[0].length))
+            : Buffer.from(String(values[0]));
+          if (journalWrites.zeroWrite) return { bytesWritten: 0, buffer: content };
+          return Reflect.apply(write, handle, journalWrites.shortWriteBytes
+            ? [content.subarray(0, journalWrites.shortWriteBytes)] : values);
+        } });
+      }
+      return handle;
+    },
+  };
+});
+
 const NOW = "2026-10-23T03:00:00.000Z";
 const DAY_MS = 24 * 60 * 60 * 1_000;
 let root: string;
@@ -44,6 +67,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  journalWrites.shortWriteBytes = 0;
+  journalWrites.zeroWrite = false;
   vi.useRealTimers();
   vi.unstubAllEnvs();
   await rm(root, { recursive: true, force: true });
@@ -79,6 +104,26 @@ function receipt(usage: CompanionModelRequestEvidence["usage"] = { inputTokens: 
 }
 
 describe("crash recovery request evidence", () => {
+  it("persists complete request intents and receipts despite partial byte writes", async () => {
+    await admitAgentRun(input());
+    journalWrites.shortWriteBytes = 7;
+    const request = { ...receipt(null), model: "模型-🌙" };
+    await appendAgentRunEvent("turn-stop", 1, "pi.model_request_started", { request });
+    const measured = { ...request, usage: { inputTokens: 17, outputTokens: 4 } };
+    await appendAgentRunModelRequest("turn-stop", 1, measured);
+
+    expect(await readAgentRunRecoveryEvidence("turn-stop", 1)).toEqual({ started: true, modelRequests: [measured] });
+    expect((await events()).map(event => event.sequence)).toEqual([1, 2]);
+  });
+
+  it("refuses to acknowledge a request intent when the journal write makes no progress", async () => {
+    await admitAgentRun(input());
+    journalWrites.zeroWrite = true;
+    await expect(appendAgentRunEvent("turn-stop", 1, "pi.model_request_started", { request: receipt(null) }))
+      .rejects.toThrow("AgentRun journal write made no progress");
+    expect(await events()).toEqual([]);
+  });
+
   it("only resumes a runtime that proves no physical dispatch was started", async () => {
     await admitAgentRun(input());
     expect(await readAgentRunRecoveryEvidence("turn-stop", 1)).toEqual({ started: false, modelRequests: [] });

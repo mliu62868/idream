@@ -19,7 +19,7 @@ describe("entitlement copy", () => {
       }),
     ).toEqual([
       "Unlimited text messages",
-      "30 voice minutes per billing period",
+      "30 voice minutes in any 30-day period",
       "Image generation",
     ]);
   });
@@ -37,7 +37,7 @@ describe("entitlement copy", () => {
         true,
       ),
     ).toBe(
-      "Unlimited text messages · 120 voice minutes per billing period · Advanced generation controls.",
+      "Unlimited text messages · 120 voice minutes in any 30-day period · Advanced generation controls.",
     );
   });
 

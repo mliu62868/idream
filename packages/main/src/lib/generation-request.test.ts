@@ -880,7 +880,7 @@ describe("generation write outcome protocol", () => {
     ]);
   });
 
-  it("keeps a retry inside the jobs list it was fired from", async () => {
+  it("tracks the accepted retry while keeping it inside the jobs list it was fired from", async () => {
     const effects = recordingEffects();
 
     await runGenerationWrite(
@@ -890,13 +890,14 @@ describe("generation write outcome protocol", () => {
         dispatch: () => {},
         effects,
         keys: createGenerationIdempotencyKeys(),
-        fetcher: (async () => jobResponse("job-1")) as unknown as typeof fetch,
+        fetcher: (async () => jobResponse("retry-job")) as unknown as typeof fetch,
       },
     );
 
     expect(effects.calls).toEqual([
-      "applyJob:job-1",
+      "applyJob:retry-job",
       "status:Retry queued.",
+      "trackJob:retry-job",
       "refreshBalance",
     ]);
   });

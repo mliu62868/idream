@@ -17,7 +17,7 @@ export async function cancelChatVideo(userId: string, requestId: string) {
     if (!replay) throw Errors.notFound("Chat video request not found");
     if (replay.status === "cancelled") return { requestId, status: "cancelled" as const, refundAmount: 0 };
 
-    const { refundAmount } = await settleGenerationRequestCancellation(tx, {
+    const { job, refundAmount } = await settleGenerationRequestCancellation(tx, {
       requestId,
       userId,
       expectSourceType: "chat_video",
@@ -26,6 +26,7 @@ export async function cancelChatVideo(userId: string, requestId: string) {
       cancelledAt: new Date(),
     });
 
+    if (job.status === "cancelled") return { requestId, status: "cancelled" as const, refundAmount: 0 };
     await appendGenerationEvent(tx, requestId, "cancelled", "Video cancelled before execution", { refundAmount, actorId: userId });
     if (refundAmount > 0) {
       await appendGenerationEvent(tx, requestId, "refunded", "Dreamcoins returned after cancellation", { amount: refundAmount });

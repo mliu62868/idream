@@ -20,6 +20,7 @@ import { reserveInitialGenerationAttempt } from "@/server/modules/generation/gen
 import { redriveFailedGenerationTerminalRelays } from "./generation-terminal-relay";
 import { generationInvocationUsageFactConflicts, recordGenerationInvocationUsageFact } from "./generation-invocation-usage";
 import { dispatchPendingGenerationBlobCleanup, GENERATION_BLOB_CLEANUP_EVENT } from "./generation-blob-cleanup";
+import { settleGenerationRequestCancellation } from "./generation-request-lifecycle";
 
 const attemptId = "durable_terminal_record_attempt_1";
 const outboxId = `generation_terminal_record_${attemptId}`;
@@ -105,6 +106,102 @@ afterAll(async () => {
 });
 
 describe("generation terminal record durable ingest", () => {
+  it("accepts a late terminal and concurrent transport replay without a Request/Attempt deadlock", async () => {
+    await reserveAttempt();
+    const error = { code: "backend_error", message: "Provider returned a definitive failure" };
+    const lateTerminalRecord = {
+      ...terminalRecordBase,
+      outcome: "failed" as const,
+      error: { ...error, retryability: "retryable" as const },
+    };
+    const transport = {
+      version: 1,
+      attemptId,
+      attemptNo: terminalRecord.attemptNo,
+      generationJobId: terminalRecord.generationJobId,
+      transportAttemptNo: terminalRecord.transportAttemptNo,
+      provider: terminalRecord.provider,
+      model: terminalRecord.model,
+      providerRequestId: terminalRecord.providerRequestId,
+      idempotencyKey: terminalRecord.providerIdempotencyKey,
+      occurredAt: terminalRecord.completedAt,
+      status: "failed",
+      error,
+      accounting: terminalRecord.accounting,
+    };
+    await recordGenerationTransportExecution(transport);
+    const request = await prisma.generationJob.findUniqueOrThrow({ where: { id: terminalRecordJobId() } });
+    await prisma.$transaction(tx => settleGenerationRequestCancellation(tx, {
+      requestId: request.id,
+      guard: { kind: "operator", expectedVersion: request.version },
+      reason: "Cancel before the late provider result is delivered",
+      cancelledAt: new Date("2026-07-11T12:00:01.000Z"),
+    }));
+
+    let resumeIngest = () => {};
+    const paused = new Promise<void>(resolve => { resumeIngest = resolve; });
+    let reachedEvent = (_pid: number) => {};
+    const atEvent = new Promise<number>(resolve => { reachedEvent = resolve; });
+    const transaction = prisma.$transaction.bind(prisma);
+    // Pause the real ingest immediately before its late-result event insert.
+    // The competing real transport call then blocks on whatever authority row
+    // ingest holds. Observing pg_blocking_pids establishes the race without a
+    // timing guess; neither query results nor lock behavior are mocked.
+    const spy = vi.spyOn(prisma, "$transaction").mockImplementationOnce((async (...args: unknown[]) => {
+      const [callback, options] = args;
+      if (typeof callback !== "function") return Reflect.apply(transaction, prisma, args);
+      return transaction(async tx => callback(new Proxy(tx, {
+        get(target, property, receiver) {
+          if (property !== "generationJobEvent") return Reflect.get(target, property, receiver);
+          return new Proxy(target.generationJobEvent, {
+            get(delegate, method, delegateReceiver) {
+              if (method !== "create") return Reflect.get(delegate, method, delegateReceiver);
+              return async (...queryArgs: unknown[]) => {
+                const [{ pid }] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+                reachedEvent(pid);
+                await paused;
+                return Reflect.apply(delegate.create, delegate, queryArgs);
+              };
+            },
+          });
+        },
+      })), options as Parameters<typeof prisma.$transaction>[1]);
+    }) as typeof prisma.$transaction);
+    const ingest = ingestGenerationTerminalRecord({
+      terminalRecord: lateTerminalRecord,
+      terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`,
+      terminalRecordChecksum: generationTerminalRecordChecksum(lateTerminalRecord),
+    });
+    let replay: ReturnType<typeof recordGenerationTransportExecution> | undefined;
+    let outcomes: Promise<PromiseSettledResult<unknown>[]> | undefined;
+    try {
+      const blockerPid = await atEvent;
+      replay = recordGenerationTransportExecution(transport);
+      outcomes = Promise.allSettled([ingest, replay]);
+      await vi.waitFor(async () => {
+        const blocked = await prisma.$queryRaw<Array<{ pid: number }>>`
+          SELECT pid FROM pg_stat_activity
+          WHERE datname = current_database() AND ${blockerPid} = ANY(pg_blocking_pids(pid))
+        `;
+        expect(blocked.length).toBeGreaterThan(0);
+      }, { interval: 10, timeout: 2_000 });
+      resumeIngest();
+      expect(await outcomes).toEqual([
+        expect.objectContaining({ status: "fulfilled", value: expect.objectContaining({ acknowledged: true, status: "persisted" }) }),
+        expect.objectContaining({ status: "fulfilled", value: expect.objectContaining({ acknowledged: true, status: "duplicate" }) }),
+      ]);
+      expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: request.id } })).toMatchObject({ status: "cancelled" });
+      expect(await prisma.generationAttempt.findUniqueOrThrow({ where: { id: attemptId } })).toMatchObject({ status: "cancelled" });
+      expect(await prisma.generationJobEvent.count({ where: { jobId: request.id, type: "late_terminal_record_observed" } })).toBe(1);
+      expect(await prisma.generationDelivery.count({ where: { requestId: request.id } })).toBe(0);
+      expect(await prisma.mediaAsset.count({ where: { sourceJobId: request.id } })).toBe(0);
+    } finally {
+      resumeIngest();
+      await Promise.allSettled([ingest, ...(replay ? [replay] : [])]);
+      spy.mockRestore();
+    }
+  });
+
   it.each(["result", "throw"])("persists non-delivery cleanup atomically and retries delete failure (%s)", async (failure) => {
     await reserveAttempt();
     const cleanupKeys = [terminalRecord.assets[0]!.key];
@@ -456,7 +553,7 @@ describe("generation terminal record durable ingest", () => {
     await expect(prisma.aiUsageFact.count({ where: { attemptId } })).resolves.toBe(1);
   });
 
-  it("does not let stale reconciliation overwrite terminal evidence committed while the Job lock waits", async () => {
+  it("does not let stale reconciliation overwrite terminal evidence committed before its Job lock", async () => {
     await reserveAttempt();
     const staleAt = new Date("2026-01-01T00:00:00.000Z");
     await prisma.generationJob.update({
@@ -481,27 +578,42 @@ describe("generation terminal record durable ingest", () => {
       where: { aggregateId: terminalRecord.generationJobId },
       data: { createdAt: staleAt, updatedAt: staleAt, nextRunAt: staleAt },
     });
-    let releaseJobLock = () => {};
-    let reportJobLocked = () => {};
-    const jobLocked = new Promise<void>((resolve) => {
-      reportJobLocked = resolve;
+    let resumeReconciliation = () => {};
+    let reachedRequestLock = () => {};
+    const beforeRequestLock = new Promise<void>((resolve) => {
+      reachedRequestLock = resolve;
     });
-    const holdJobLock = new Promise<void>((resolve) => {
-      releaseJobLock = resolve;
+    const paused = new Promise<void>((resolve) => {
+      resumeReconciliation = resolve;
     });
-    const blocker = prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`
-        SELECT id FROM generation_jobs
-        WHERE id = ${terminalRecord.generationJobId}
-        FOR UPDATE
-      `;
-      reportJobLocked();
-      await holdJobLock;
-    });
-    await jobLocked;
+    const transaction = prisma.$transaction.bind(prisma);
+    // Candidate and external recovery reads have completed when reconciliation
+    // opens this transaction. Pause before its first query acquires Request;
+    // terminal ingest can then commit using the same Request -> Attempt order.
+    const spy = vi.spyOn(prisma, "$transaction").mockImplementationOnce((async (...args: unknown[]) => {
+      const [callback, options] = args;
+      if (typeof callback !== "function") return Reflect.apply(transaction, prisma, args);
+      return transaction(async tx => {
+        let firstQuery = true;
+        return callback(new Proxy(tx, {
+          get(target, property, receiver) {
+            if (property !== "$queryRaw") return Reflect.get(target, property, receiver);
+            return async (...queryArgs: unknown[]) => {
+              if (firstQuery) {
+                firstQuery = false;
+                reachedRequestLock();
+                await paused;
+              }
+              return Reflect.apply(target.$queryRaw, target, queryArgs);
+            };
+          },
+        }));
+      }, options as Parameters<typeof prisma.$transaction>[1]);
+    }) as typeof prisma.$transaction);
     const reconciliation = reconcileStaleGenerationJobs({
       now: new Date("2030-01-01T00:00:00.000Z"),
       timeoutMs: 60_000,
+      generationJobIds: [terminalRecord.generationJobId],
     });
     const input = {
       terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`,
@@ -509,16 +621,21 @@ describe("generation terminal record durable ingest", () => {
       terminalRecord,
     };
     try {
+      await Promise.race([
+        beforeRequestLock,
+        reconciliation.then(() => { throw new Error("Reconciliation never reached the selected stale Request"); }),
+      ]);
       await expect(ingestGenerationTerminalRecord(input)).resolves.toMatchObject({
         acknowledged: true,
         status: "persisted",
       });
     } finally {
-      releaseJobLock();
-      await blocker;
+      resumeReconciliation();
+      await Promise.allSettled([reconciliation]);
+      spy.mockRestore();
     }
 
-    await expect(reconciliation).resolves.toMatchObject({ quarantined: 0 });
+    await expect(reconciliation).resolves.toMatchObject({ scanned: 1, quarantined: 0 });
     await expect(prisma.generationAttempt.findUniqueOrThrow({
       where: { id: attemptId },
     })).resolves.toMatchObject({

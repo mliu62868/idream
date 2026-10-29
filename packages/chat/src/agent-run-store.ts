@@ -311,7 +311,15 @@ async function appendAgentRunEventUnlocked(
   };
   const handle = await open(file, "a", 0o600);
   try {
-    await handle.write(`${JSON.stringify(event)}\n`);
+    // Dispatch may proceed only after the complete intent is durable. A single
+    // write can accept fewer bytes, including part of a UTF-8 character.
+    const content = Buffer.from(`${JSON.stringify(event)}\n`);
+    let offset = 0;
+    while (offset < content.byteLength) {
+      const { bytesWritten } = await handle.write(content, offset, content.byteLength - offset);
+      if (bytesWritten === 0) throw new Error("AgentRun journal write made no progress");
+      offset += bytesWritten;
+    }
     await handle.sync();
   } finally {
     await handle.close();

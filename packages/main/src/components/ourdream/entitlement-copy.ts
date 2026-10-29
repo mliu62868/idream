@@ -44,7 +44,7 @@ export function configuredEntitlementBenefits(
     const voiceMinutes = numericValue(values, "voiceMinutes", "voice_minutes");
     benefits.push(
       voiceMinutes
-        ? `${voiceMinutes.toLocaleString()} voice minutes per billing period`
+        ? `${voiceMinutes.toLocaleString()} voice minutes in any 30-day period`
         : "Voice generation",
     );
   }

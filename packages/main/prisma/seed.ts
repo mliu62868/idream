@@ -22,6 +22,9 @@ import {
   resolveOfficialColdStartPersonaWrite,
 } from "../src/lib/official-cold-start-content";
 import { ensureOfficialEditorialCatalogQualification } from "../src/server/modules/ourdream/public-catalog-qualification";
+import { materializeOfficialCoverSource } from "../src/server/modules/ourdream/official-cover-source";
+import { readBundledEditorialImage, persistBundledEditorialImage } from "../src/server/lib/bundled-editorial-image";
+import { createBlobStore } from "../src/server/providers/blob/factory";
 
 process.env.DB_PROVIDER ??= "postgresql";
 process.env.DATABASE_URL ??= "postgresql://postgres:postgres@localhost:5433/idream";
@@ -332,6 +335,7 @@ async function seedTags() {
 async function seedCharacters(
   cards: readonly (typeof officialCharacterSeeds)[number][] = officialCharacterSeeds,
 ) {
+  const blob = createBlobStore();
   for (const card of cards) {
     const mediaAssetId = `seed-image-${card.id}`;
     const age = parseAge(card.age);
@@ -436,28 +440,27 @@ async function seedCharacters(
       },
     };
 
-    await prisma.mediaAsset.upsert({
-      where: { id: mediaAssetId },
-      update: {
-        ownerId: SYSTEM_USER_ID,
-        metadata: officialMetadata,
-      },
-      create: {
-        id: mediaAssetId,
-        ownerId: SYSTEM_USER_ID,
-        type: "image",
-        url: card.image,
-        thumbnailUrl: card.image,
-        prompt: card.description,
-        visibility: "public_pack",
-        safetyStatus: "passed",
-        metadata: {
-          seedSource: "src/lib/official-cold-start-content.ts",
-          originalCreator: card.originalCreator,
-          ownership: "platform_official",
+    // Existing ownership and operational metadata are not seed-owned. New
+    // official imports must own readable bytes before catalog qualification.
+    if (!existingAsset) {
+      const bundled = await readBundledEditorialImage(card.image);
+      if (!bundled) throw new Error(`Official cover is missing or unreadable: ${card.id}`);
+      const source = await persistBundledEditorialImage(mediaAssetId, bundled, blob);
+      await prisma.mediaAsset.create({
+        data: {
+          id: mediaAssetId,
+          ownerId: SYSTEM_USER_ID,
+          type: "image",
+          url: card.image,
+          thumbnailUrl: card.image,
+          ...source,
+          prompt: card.description,
+          visibility: "public_pack",
+          safetyStatus: "passed",
+          metadata: officialMetadata,
         },
-      },
-    });
+      });
+    }
 
     await prisma.character.upsert({
       where: { id: card.id },
@@ -497,6 +500,12 @@ async function seedCharacters(
       throw new Error(
         `Official seed asset ${mediaAssetId} is already owned by another Character`,
       );
+    }
+    if (existingAsset) {
+      // An interrupted seed may have left the original asset unattached.
+      // Restore bytes only after binding it; materialization independently
+      // verifies the original ownership, provenance and operational state.
+      await materializeOfficialCoverSource({ db: prisma, blob, characterId: card.id });
     }
 
     await prisma.characterStats.upsert({
@@ -627,7 +636,7 @@ async function seedPlans() {
         imageGeneration: true,
         videoGeneration: false,
         voiceEnabled: true,
-        voiceMinutes: 360,
+        voiceMinutes: 30,
       },
     },
     {
@@ -656,7 +665,7 @@ async function seedPlans() {
         imageGeneration: true,
         videoGeneration: true,
         voiceEnabled: true,
-        voiceMinutes: 1_440,
+        voiceMinutes: 120,
         premiumModels: true,
       },
     },

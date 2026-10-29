@@ -6,6 +6,7 @@ import {
 import { env } from "@/server/lib/env";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
+import { persistBundledEditorialImage } from "@/server/lib/bundled-editorial-image";
 import {
   hasHydratableMediaBlobAuthority,
   isMediaAssetOperationalForAuthority,
@@ -188,25 +189,7 @@ export async function prepareCharacterImageReadinessSource(
   let storageKey: string | null = null;
   let contentType: string | null = null;
   if (source.bundled) {
-    const assetKey = canonicalSha256(asset.id).slice(0, 16);
-    storageKey =
-      `official-editorial/${assetKey}/${source.bundled.contentSha256}${source.bundled.extension}`;
-    const stored = await providers.blob.putPrivate({
-      key: storageKey,
-      body: source.bundled.bytes,
-      contentType: source.bundled.contentType,
-    });
-    if (!stored.ok) {
-      throw Errors.unavailable(
-        "The live portrait could not be stored for image production",
-        {
-          assetId: asset.id,
-          providerCode: stored.error.code,
-        },
-      );
-    }
-    storageKey = stored.data.key;
-    contentType = source.bundled.contentType;
+    ({ storageKey, contentType } = await persistBundledEditorialImage(asset.id, source.bundled, providers.blob));
   }
   return {
     assetId: asset.id,

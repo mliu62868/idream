@@ -1,7 +1,7 @@
-import { S3CompatibleBlobStore, SafetyGatewayModerationProvider } from "@idream/shared";
+import { SafetyGatewayModerationProvider } from "@idream/shared";
 import { requiredNonMockMainProviderKeysForLaunchScope } from "@idream/shared/env";
 import { env } from "@/server/lib/env";
-import { MockBlobStore } from "./blob/mock";
+import { createBlobStore } from "./blob/factory";
 import { MockChatModel } from "./chat/mock";
 import { PipelineChatModel } from "./chat/pipeline";
 import { MockModerationProvider } from "./moderation/mock";
@@ -57,26 +57,6 @@ function assertProductionProvidersConfigured() {
       "Production requires CHAT_SERVICE_URL and CHAT_BFF_SIGNING_SECRET",
     );
   }
-}
-
-function createBlobStore() {
-  if (env.BLOB_PROVIDER === "mock") return new MockBlobStore();
-
-  return new S3CompatibleBlobStore({
-    endpoint: requireEnv("BLOB_ENDPOINT", env.BLOB_ENDPOINT),
-    bucket: requireEnv("BLOB_BUCKET", env.BLOB_BUCKET),
-    region: env.BLOB_REGION,
-    provider: env.BLOB_PROVIDER,
-    fencedWriteSemantics: env.BLOB_FENCED_IMPORT_SEMANTICS,
-    accessKeyId: requireEnv(
-      "BLOB_ACCESS_KEY_ID",
-      env.BLOB_ACCESS_KEY_ID ?? env.BLOB_ACCESS_KEY ?? env.AWS_ACCESS_KEY_ID,
-    ),
-    secretAccessKey: requireEnv(
-      "BLOB_SECRET_ACCESS_KEY",
-      env.BLOB_SECRET_ACCESS_KEY ?? env.BLOB_SECRET_KEY ?? env.AWS_SECRET_ACCESS_KEY,
-    ),
-  });
 }
 
 function createChatProvider() {
@@ -188,11 +168,6 @@ function createAgeVerificationProvider() {
     ),
     timeoutMs: env.AGE_VERIFY_TIMEOUT_MS,
   });
-}
-
-function requireEnv(name: string, value: string | undefined) {
-  if (!value) throw new Error(`${name} is required when BLOB_PROVIDER=${env.BLOB_PROVIDER}`);
-  return value;
 }
 
 function requireProviderEnv(

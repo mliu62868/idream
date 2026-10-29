@@ -43,15 +43,14 @@ export async function syncComfyUiWorkflow(input: {
   timeoutMs: number;
 }): Promise<JsonRecord> {
   const apiUrl = input.apiUrl.replace(/\/+$/, "");
-  const objectInfoResponse = await fetchWithTimeout(`${apiUrl}/object_info`, {}, input.timeoutMs);
-  if (!objectInfoResponse.ok) {
-    throw new Error(`ComfyUI /object_info HTTP ${objectInfoResponse.status}`);
-  }
-  const objectInfo = (await objectInfoResponse.json()) as Record<string, ObjectInfo>;
+  const objectInfo = await fetchWithTimeout(`${apiUrl}/object_info`, {}, input.timeoutMs, async (response) => {
+    if (!response.ok) throw new Error(`ComfyUI /object_info HTTP ${response.status}`);
+    return await response.json() as Record<string, ObjectInfo>;
+  });
   const workflow = buildComfyUiWorkflow(input.descriptor, objectInfo);
   const filename = `${sanitizeWorkflowName(input.descriptor.comfyWorkflow.name)}.json`;
   const userDataPath = encodeURIComponent(`workflows/${filename}`);
-  const saveResponse = await fetchWithTimeout(
+  await fetchWithTimeout(
     `${apiUrl}/userdata/${userDataPath}?overwrite=true`,
     {
       method: "POST",
@@ -59,10 +58,10 @@ export async function syncComfyUiWorkflow(input: {
       body: JSON.stringify(workflow),
     },
     input.timeoutMs,
+    async (response) => {
+      if (!response.ok) throw new Error(`ComfyUI workflow save HTTP ${response.status}`);
+    },
   );
-  if (!saveResponse.ok) {
-    throw new Error(`ComfyUI workflow save HTTP ${saveResponse.status}`);
-  }
   return workflow;
 }
 
@@ -292,12 +291,15 @@ function sanitizeWorkflowName(name: string): string {
   return name.replaceAll(/[/\\:]/g, "_").slice(0, 200).trim();
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+// Keep body reads within the same deadline as the request. Returning a live
+// Response would let callers wait indefinitely after the headers arrive.
+async function fetchWithTimeout<T>(url: string, init: RequestInit, timeoutMs: number, consume: (response: Response) => Promise<T>): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    return await consume(await fetch(url, { ...init, signal: controller.signal }));
   } finally {
     clearTimeout(timeout);
+    controller.abort();
   }
 }

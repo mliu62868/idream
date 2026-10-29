@@ -78,6 +78,8 @@ async function main() {
   const attemptId = `attempt_${randomUUID()}`;
   const requestId = `req_${generationJobId}`;
   const referenceBody = await readFile(options.referencePath);
+  const referenceSha256 = createHash("sha256").update(referenceBody).digest("hex");
+  const sourceSnapshotId = `probe_source_${randomUUID()}`;
   const binding = await resolveBackendBinding(options.model);
   const recipe = binding.recipe;
   const runtimeModelRoot = binding.backendKind === "comfyui"
@@ -133,15 +135,24 @@ async function main() {
     outputPrefix: `probe/${generationJobId}/`,
     referenceImages: [
       {
-        assetId: `probe-reference-${createHash("sha256").update(referenceBody).digest("hex").slice(0, 16)}`,
+        assetId: `probe-reference-${referenceSha256.slice(0, 16)}`,
         role: "source_image",
-        b64Json: referenceBody.toString("base64"),
+        sourceSnapshotId,
+        contentSha256: referenceSha256,
         contentType: contentTypeFromPath(options.referencePath),
       },
     ],
   };
 
   await processVideoGenerate(payload, {
+    // This standalone probe owns one immutable local snapshot. Exercise the
+    // same digest verification as a queued attempt without contacting Main.
+    readSourceSnapshot: async (input) => {
+      if (input.snapshotId !== sourceSnapshotId || input.jobId !== generationJobId || input.attemptId !== attemptId) {
+        throw new Error("Video probe source snapshot identity mismatch");
+      }
+      return referenceBody;
+    },
     acknowledgeTerminalRecord: async (input) => {
       terminalIngests.push(input);
     },
@@ -179,7 +190,8 @@ async function main() {
     seed: options.seed,
     requestId,
     attemptId,
-    referenceSha256: createHash("sha256").update(referenceBody).digest("hex"),
+    sourceSnapshotId,
+    referenceSha256,
     modelAssets,
     runtimeModelRoot,
     blobAuthority: env.BLOB_AUTHORITY,

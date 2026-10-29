@@ -949,9 +949,11 @@ function runPm2Ecosystem(options = {}) {
     stdio: "ignore",
   });
 
+  // Partial recreation leaves existing development apps registered; update
+  // their inherited environment even when the topology must use `start`.
   const pm2Args =
     action === "start" || definitionRecreated
-      ? ["start", "ecosystem.config.js"]
+      ? ["start", "ecosystem.config.js", "--update-env"]
       : [action, "ecosystem.config.js", "--update-env"];
   const result = spawn("pm2", pm2Args, {
     cwd: repoRoot,

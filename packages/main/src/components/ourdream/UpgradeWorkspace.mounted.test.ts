@@ -21,9 +21,9 @@ const plan: PublicPlan = {
 };
 const billing = { provider: "btcpay", demoMode: false, autoConfirmAvailable: false, billingModel: "prepaid_period", renewalCapability: "none" };
 const ok = (data: unknown) => Response.json({ ok: true, data });
-function invoice(owner: string) {
+function invoice(owner: string, selectedPlan = plan, returnPath = "/generate") {
   return ok({
-    checkout: { id: `checkout-${owner}`, planId: plan.id, provider: "btcpay", status: "created", returnPath: "/generate", createdAt: "2026-10-04T00:00:00.000Z", updatedAt: "2026-10-04T00:00:00.000Z" },
+    checkout: { id: `checkout-${owner}`, planId: selectedPlan.id, provider: "btcpay", status: "created", returnPath, createdAt: "2026-10-04T00:00:00.000Z", updatedAt: "2026-10-04T00:00:00.000Z" },
     invoice: { provider: "btcpay", invoiceId: `invoice-${owner}`, checkoutUrl: `https://payment.example.test/${owner}`, status: "created", additionalStatus: "none" },
     subscription: null, billingAccess: null, billing,
   });
@@ -36,6 +36,7 @@ beforeEach(() => {
 });
 afterEach(async () => {
   await act(async () => root.unmount()); container.remove();
+  window.history.replaceState(null, "", "/");
   invalidateViewerAuthority(); window.sessionStorage.clear(); vi.unstubAllGlobals(); vi.restoreAllMocks();
 });
 function read(path: string) {
@@ -52,7 +53,7 @@ async function until(condition: () => boolean) {
   expect(condition()).toBe(true);
 }
 function button(text: string) { return [...container.querySelectorAll("button")].find(element => element.textContent?.trim() === text); }
-async function mount() { await act(async () => root.render(createElement(UpgradeWorkspace))); await until(() => { const ready = button("Buy access") || button("Continue payment"); return Boolean(ready && !ready.disabled); }); }
+async function mount() { await act(async () => root.render(createElement(UpgradeWorkspace))); await until(() => { const ready = button("Buy access") || button("Continue payment") || button("Resume checkout"); return Boolean(ready && !ready.disabled); }); }
 async function click(text: string) { const target = button(text); expect(target).toBeTruthy(); await act(async () => target!.click()); }
 
 describe("prepaid access checkout stays with its confirmed account", () => {
@@ -183,10 +184,203 @@ describe("upgrade page keeps the visitor's way back and makes plans comparable",
       const back = container.querySelector<HTMLAnchorElement>('[data-testid="upgrade-return-link"]');
       expect(back?.getAttribute("href")).toBe("/chat/session-1");
       expect(back?.textContent).toBe("Back to your chat");
+      expect(container.querySelector('[data-testid="upgrade-plan-monthly-equivalent"]')).toBeNull();
+      await click("Yearly");
       const equivalents = [...container.querySelectorAll('[data-testid="upgrade-plan-monthly-equivalent"]')].map(node => node.textContent);
       expect(equivalents).toEqual(["$8.33 per month, paid once for the year"]);
     } finally {
       window.history.replaceState(null, "", "/");
     }
+  });
+
+  it("compares only published offers in the selected period without starting checkout", async () => {
+    const yearly: PublicPlan = { ...plan, id: "premium-yearly", billingPeriod: "yearly", priceCents: 9990 };
+    const deluxe: PublicPlan = { ...plan, id: "deluxe-monthly", slug: "deluxe", name: "Deluxe", priceCents: 5999 };
+    const deluxeYearly: PublicPlan = { ...deluxe, id: "deluxe-yearly", billingPeriod: "yearly", priceCents: 29990 };
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/v1/plans"
+      ? ok({ items: [deluxeYearly, deluxe, yearly, plan], billing }) : read(String(input)));
+    vi.stubGlobal("fetch", fetcher);
+    await mount();
+    const headings = () => [...container.querySelectorAll("article h2")].map(node => node.textContent);
+    expect(headings()).toEqual(["Premium monthly", "Deluxe monthly"]);
+    expect(button("Monthly")?.getAttribute("aria-pressed")).toBe("true");
+    await click("Yearly");
+    expect(headings()).toEqual(["Premium yearly", "Deluxe yearly"]);
+    expect(button("Yearly")?.getAttribute("aria-pressed")).toBe("true");
+    expect(button("Monthly")?.getAttribute("aria-pressed")).toBe("false");
+    expect(container.textContent).toContain("Your existing chats and delivered media stay accessible after your access expires.");
+    expect(fetcher.mock.calls.some(([path]) => String(path) === "/api/v1/billing/checkout")).toBe(false);
+  });
+
+  it("restores the requested yearly period and submits that exact offer with the original task", async () => {
+    window.history.replaceState(null, "", "/upgrade?billing=yearly&returnTo=%2Fchat%2Fsession-1");
+    const yearly: PublicPlan = { ...plan, id: "premium-yearly", billingPeriod: "yearly", priceCents: 9990 };
+    const requests: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/plans") return ok({ items: [plan, yearly], billing });
+      if (String(input) === "/api/v1/billing/checkout") {
+        requests.push(JSON.parse(String(init?.body)));
+        return invoice(viewer, yearly, "/chat/session-1");
+      }
+      return read(String(input));
+    }));
+    await mount();
+    expect(container.querySelector("article h2")?.textContent).toBe("Premium yearly");
+    await click("Buy access");
+    expect(requests).toEqual([{ planId: yearly.id, autoConfirm: false, returnPath: "/chat/session-1" }]);
+  });
+
+  it.each([
+    { outcome: "unknown submission", loseFirstResponse: true, action: "Resume checkout" },
+    { outcome: "created invoice", loseFirstResponse: false, action: "Continue payment" },
+  ])("restores a yearly $outcome after remount and reuses the original purchase intent", async ({ loseFirstResponse, action }) => {
+    window.history.replaceState(null, "", "/upgrade?returnTo=%2Fchat%2Fsession-1&source=chat#plans");
+    const yearly: PublicPlan = { ...plan, id: "premium-yearly", billingPeriod: "yearly", priceCents: 9990 };
+    const requests: Array<{ key: string | null; body: unknown }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/plans") return ok({ items: [plan, yearly], billing });
+      if (String(input) === "/api/v1/billing/checkout") {
+        requests.push({ key: new Headers(init?.headers).get("idempotency-key"), body: JSON.parse(String(init?.body)) });
+        if (loseFirstResponse && requests.length === 1) throw new TypeError("Controlled connection lost");
+        return invoice(viewer, yearly, "/chat/session-1");
+      }
+      return read(String(input));
+    }));
+    await mount();
+    await click("Yearly");
+    await click("Buy access");
+    await until(() => Boolean(button(action)));
+    const originalIntent = readPendingCheckoutIntents(window.sessionStorage, viewer)[0];
+    expect(originalIntent?.planId).toBe(yearly.id);
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await mount();
+    await until(() => Boolean(button(action)));
+    expect(container.querySelector("article h2")?.textContent).toBe("Premium yearly");
+    expect(button(action)).toBeTruthy();
+    const params = new URLSearchParams(window.location.search);
+    expect(params.get("billing")).toBe("yearly");
+    expect(params.get("returnTo")).toBe("/chat/session-1");
+    expect(params.get("source")).toBe("chat");
+    expect(window.location.hash).toBe("#plans");
+    await click(action);
+    expect(requests).toEqual(Array.from({ length: 2 }, () => ({
+      key: originalIntent?.idempotencyKey,
+      body: { planId: yearly.id, autoConfirm: false, returnPath: "/chat/session-1" },
+    })));
+  });
+
+  it("keeps a single available period reachable when the incoming period is unavailable", async () => {
+    window.history.replaceState(null, "", "/upgrade?billing=monthly");
+    const yearly: PublicPlan = { ...plan, id: "premium-yearly", billingPeriod: "yearly", priceCents: 9990 };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/v1/plans"
+      ? ok({ items: [yearly], billing }) : read(String(input))));
+    await mount();
+    expect(container.querySelector("article h2")?.textContent).toBe("Premium yearly");
+    expect(container.querySelector('[aria-label="Access period"]')).toBeNull();
+    expect(container.textContent).toContain("Yearly access");
+    expect(button("Buy access")?.disabled).toBe(false);
+  });
+
+  it("keeps current access visible across period switches and prevents repurchasing that offer", async () => {
+    const yearly: PublicPlan = { ...plan, id: "premium-yearly", billingPeriod: "yearly", priceCents: 9990 };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/v1/plans") return ok({ items: [plan, yearly], billing });
+      if (String(input) === "/api/v1/profile") return ok({
+        user: { id: viewer, email: `${viewer}@example.test` }, balance: 5,
+        subscription: { id: "subscription-a", userId: viewer, planId: yearly.id, status: "active", offerAuthority: "checkout_snapshot", plan: yearly },
+        billingAccess: { provider: "btcpay", billingModel: "prepaid_period", renewalCapability: "none", benefitsEndAt: "2027-10-04T00:00:00.000Z", renewsAt: null },
+        entitlements: {},
+      });
+      return read(String(input));
+    }));
+    await mount();
+    await until(() => Boolean(container.querySelector('[data-testid="upgrade-current-access"]')));
+    expect(container.querySelector('[data-testid="upgrade-current-access"]')?.textContent).toContain("Premium yearly");
+    await click("Yearly");
+    expect(button("Current plan")?.disabled).toBe(true);
+    await click("Monthly");
+    expect(container.querySelector('[data-testid="upgrade-current-access"]')?.textContent).toContain("Premium yearly");
+    expect(button("Buy access")?.disabled).toBe(false);
+  });
+
+  it("shows a purchased yearly allowance separately from today's offer without allowing the same plan to be bought again", async () => {
+    const yearly: PublicPlan = { ...plan, id: "premium-yearly", billingPeriod: "yearly", priceCents: 9990, features: { voiceEnabled: true, voiceMinutes: 30 } };
+    const purchased: PublicPlan = { ...yearly, features: { voiceEnabled: true, voiceMinutes: 360 } };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/v1/plans") return ok({ items: [plan, yearly], billing });
+      if (String(input) === "/api/v1/profile") return ok({
+        user: { id: viewer, email: `${viewer}@example.test` }, balance: 5,
+        subscription: { id: "subscription-a", userId: viewer, planId: purchased.id, status: "active", offerAuthority: "checkout_snapshot", plan: purchased },
+        billingAccess: { provider: "btcpay", billingModel: "prepaid_period", renewalCapability: "none", benefitsEndAt: "2027-10-04T00:00:00.000Z", renewsAt: null },
+        entitlements: { voice_enabled: true, voice_minutes: 360 },
+      });
+      return read(String(input));
+    }));
+    await mount();
+    await until(() => Boolean(container.querySelector('[data-testid="upgrade-current-access"]')));
+    const purchasedAccess = () => container.querySelector('[data-testid="upgrade-current-access"]')?.textContent;
+    expect(purchasedAccess()).toContain("360 voice minutes");
+    expect(purchasedAccess()).not.toContain("30 voice minutes");
+    await click("Yearly");
+    expect(container.querySelector("article")?.textContent).toContain("30 voice minutes");
+    expect(container.querySelector("article")?.textContent).not.toContain("360 voice minutes");
+    expect(container.querySelector("article")?.textContent).toContain("Your purchased benefits are listed above.");
+    expect(button("Already active")?.disabled).toBe(true);
+    expect(purchasedAccess()).toContain("360 voice minutes");
+    await click("Monthly");
+    expect(purchasedAccess()).toContain("360 voice minutes");
+  });
+
+  it("uses the activated purchase snapshot when resuming an older invoice from a changed catalog", async () => {
+    const yearly: PublicPlan = { ...plan, id: "premium-yearly", billingPeriod: "yearly", priceCents: 9990, features: { voiceEnabled: true, voiceMinutes: 30 } };
+    const purchased: PublicPlan = { ...yearly, features: { voiceEnabled: true, voiceMinutes: 360 } };
+    const receipt = { ...createPendingCheckoutIntent({ planId: purchased.id, autoConfirm: false, returnPath: "/generate" }, "purchased-yearly-key"), checkoutUrl: "https://payment.example.test/old-yearly" };
+    writePendingCheckoutIntents(window.sessionStorage, viewer, [receipt]);
+    let profileLoaded = false;
+    let activated = false;
+    let submittedKey: string | null = null;
+    const subscription = { id: "subscription-a", userId: viewer, planId: purchased.id, status: "active", offerAuthority: "checkout_snapshot", plan: purchased };
+    const billingAccess = { provider: "btcpay", billingModel: "prepaid_period", renewalCapability: "none", benefitsEndAt: "2027-10-04T00:00:00.000Z", renewsAt: null };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/plans") return ok({ items: [yearly], billing });
+      if (String(input) === "/api/v1/profile") {
+        profileLoaded = true;
+        if (activated) return ok({ user: { id: viewer, email: `${viewer}@example.test` }, balance: 5, subscription, billingAccess, entitlements: { voice_enabled: true, voice_minutes: 360 } });
+      }
+      if (String(input) === "/api/v1/billing/checkout") {
+        submittedKey = new Headers(init?.headers).get("idempotency-key");
+        activated = true;
+        return ok({
+          checkout: { id: "checkout-old-yearly", planId: purchased.id, provider: "btcpay", status: "completed", returnPath: "/generate", createdAt: "2026-10-04T00:00:00.000Z", updatedAt: "2026-10-04T00:00:00.000Z" },
+          invoice: { provider: "btcpay", invoiceId: "invoice-old-yearly", checkoutUrl: receipt.checkoutUrl, status: "settled", additionalStatus: "none" },
+          subscription,
+          billingAccess,
+          billing,
+        });
+      }
+      return read(String(input));
+    }));
+    await mount();
+    await until(() => profileLoaded && Boolean(button("Continue payment")));
+    await click("Continue payment");
+    await until(() => Boolean(container.querySelector('[data-testid="upgrade-current-access"]')));
+    expect(submittedKey).toBe("purchased-yearly-key");
+    expect(container.querySelector('[data-testid="upgrade-current-access"]')?.textContent).toContain("360 voice minutes");
+    expect(container.querySelector("article")?.textContent).toContain("30 voice minutes");
+    expect(button("Already active")?.disabled).toBe(true);
+    expect(readPendingCheckoutIntents(window.sessionStorage, viewer)).toEqual([]);
+  });
+
+  it("shows the unavailable state without phantom periods or purchase controls", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/v1/plans"
+      ? ok({ items: [], billing }) : read(String(input))));
+    await act(async () => root.render(createElement(UpgradeWorkspace)));
+    await until(() => container.textContent?.includes("No plans available right now.") === true);
+    expect(container.querySelectorAll("article")).toHaveLength(0);
+    expect(button("Monthly")).toBeUndefined();
+    expect(button("Yearly")).toBeUndefined();
+    expect(button("Buy access")).toBeUndefined();
   });
 });

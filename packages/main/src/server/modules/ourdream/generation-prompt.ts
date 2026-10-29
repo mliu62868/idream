@@ -270,7 +270,7 @@ function buildImageGenerationPrompt(input: {
   const identityLabel = visualProfile ? "Locked identity" : "Character identity";
 
   const mandatory = [
-      `High quality in-character portrait photo of ${cleanPromptText(lookIdentity?.name ?? character.name, 120)}`,
+      `High quality in-character photo of ${cleanPromptText(lookIdentity?.name ?? character.name, 120)}`,
       presentation.length ? `Subject: ${presentation.join(", ")}` : null,
       // Preserve sealed stable facts. A guarded derived cache is projected above;
       // manual or unknown identities keep their original text. The current
@@ -299,8 +299,10 @@ function buildImageGenerationPrompt(input: {
     ]
       .filter(Boolean)
       .join(". ");
-  const finish = "single coherent subject, face and body matching the character, expressive eyes, natural pose, well-lit visible face, properly exposed, sharp focus, detailed skin and hair, clean photographic composition";
-  return withOptionalImagePolish(mandatory, finish);
+  // Framing, pose, lighting and visible subjects belong to the requested scene.
+  // Generic portrait polish competes with those facts even when it fits the
+  // text budget; preserve identity without adding a second scene direction.
+  return mandatory;
 }
 
 /**

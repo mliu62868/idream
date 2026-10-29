@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { ArrowRight, Compass, MessageCircle, Plus, Sparkles } from "lucide-react";
+import { ArrowRight, ChevronDown, Compass, MessageCircle, Plus, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   parseCharacterListResponse,
@@ -34,9 +34,12 @@ function ChatHubContent({ viewer }: Readonly<{ viewer: ViewerGate }>) {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [state, setState] = useState<HubState>("loading");
   const [visibleCount, setVisibleCount] = useState(50);
+  const [archivedVisibleCount, setArchivedVisibleCount] = useState(50);
   const loadEpoch = useRef(0);
   const gatedFetch = viewer.fetch;
   const displayState = viewer.error ? "error" : state;
+  const activeSessions = sessions.filter(row => row.status !== "archived");
+  const archivedSessions = sessions.filter(row => row.status === "archived");
 
   const load = useCallback(async () => {
     if (!ageGateAccepted || !viewer.identity) return;
@@ -64,6 +67,7 @@ function ChatHubContent({ viewer }: Readonly<{ viewer: ViewerGate }>) {
           .sort(byMostRecent),
       );
       setVisibleCount(50);
+      setArchivedVisibleCount(50);
       setState("ready");
     } catch (error) {
       if (isAbortError(error)) return;
@@ -88,7 +92,7 @@ function ChatHubContent({ viewer }: Readonly<{ viewer: ViewerGate }>) {
               Your chats
             </h1>
             <p className="mt-2 text-[14px] font-medium text-[rgb(170,170,170)]">
-              Pick up a conversation or start a new one from Explore.
+              Continue your story, or meet someone new.
             </p>
           </div>
           <Link
@@ -102,7 +106,7 @@ function ChatHubContent({ viewer }: Readonly<{ viewer: ViewerGate }>) {
 
         <Link className="mt-5 inline-flex min-h-11 items-center rounded-full border border-white/20 px-5 text-sm font-bold hover:bg-white/10" href="/chat/groups">Create or open a group chat</Link>
         <div className="mt-6 grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
-          <div className="rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4 md:p-6">
+          <div className="min-w-0">
             {displayState === "loading" && (
               <p
                 aria-live="polite"
@@ -186,50 +190,36 @@ function ChatHubContent({ viewer }: Readonly<{ viewer: ViewerGate }>) {
               </div>
             )}
 
-            {displayState === "ready" && sessions.length > 0 && (
-              <ul className="grid gap-3 md:grid-cols-2">
-                {sessions.slice(0, visibleCount).map((row) => (
+            {displayState === "ready" && activeSessions.length > 0 && (
+              <ul className="grid gap-3">
+                {activeSessions.slice(0, visibleCount).map((row, index) => (
                   <li key={row.id}>
-                    <Link
-                      className="flex h-full flex-col rounded-[14px] border border-white/10 bg-[rgb(36,36,36)] p-4 transition-colors hover:bg-[rgb(46,46,46)]"
-                      data-testid="chat-hub-session"
-                      href={`/chat/${row.id}`}
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="flex min-w-0 items-center gap-2">
-                          {row.unreadProactiveAt ? (
-                            <span
-                              aria-hidden
-                              className="size-2 shrink-0 rounded-full bg-[rgb(233,74,124)]"
-                              data-testid="chat-hub-unread-dot"
-                            />
-                          ) : null}
-                          <span className="truncate text-[16px] font-bold text-white">
-                            {row.title ?? "Untitled chat"}
-                          </span>
-                        </span>
-                        <span className="shrink-0 text-[12px] font-medium text-[rgb(114,113,112)]">
-                          {row.unreadProactiveAt ? (
-                            <span className="text-[rgb(233,74,124)]">New message</span>
-                          ) : (
-                            formatRelative(row.lastMessageAt)
-                          )}
-                        </span>
-                      </div>
-                      {row.status === "archived" ? (
-                        <span className="mt-3 inline-flex w-fit rounded-full bg-black/30 px-2 py-1 text-[11px] font-bold uppercase text-[rgb(114,113,112)]">
-                          Archived
-                        </span>
-                      ) : null}
-                    </Link>
+                    <SessionLink row={row} continueLatest={index === 0} />
                   </li>
                 ))}
               </ul>
             )}
-            {displayState === "ready" && visibleCount < sessions.length ? (
-              <button className="mt-4 rounded-full bg-white/10 px-4 py-2 text-sm font-bold" onClick={() => setVisibleCount(count => count + 50)} type="button">
+            {displayState === "ready" && visibleCount < activeSessions.length ? (
+              <button className="mt-4 min-h-11 rounded-full bg-white/10 px-4 py-2 text-sm font-bold focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white" onClick={() => setVisibleCount(count => count + 50)} type="button">
                 Load more chats
               </button>
+            ) : null}
+            {displayState === "ready" && archivedSessions.length > 0 ? (
+              <details className="group mt-6 border-t border-white/10 pt-4">
+                <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 rounded-lg text-sm font-bold text-[rgb(190,190,190)] focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white [&::-webkit-details-marker]:hidden">
+                  Archived chats ({archivedSessions.length})
+                  <ChevronDown aria-hidden className="size-4 transition-transform group-open:rotate-180" />
+                </summary>
+                <p className="mb-3 text-sm text-[rgb(170,170,170)]">Your past conversations are still here to read.</p>
+                <ul className="grid gap-3">
+                  {archivedSessions.slice(0, archivedVisibleCount).map(row => <li key={row.id}><SessionLink row={row} /></li>)}
+                </ul>
+                {archivedVisibleCount < archivedSessions.length ? (
+                  <button className="mt-4 min-h-11 rounded-full bg-white/10 px-4 py-2 text-sm font-bold focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white" onClick={() => setArchivedVisibleCount(count => count + 50)} type="button">
+                    Load more archived chats
+                  </button>
+                ) : null}
+              </details>
             ) : null}
           </div>
 
@@ -237,6 +227,43 @@ function ChatHubContent({ viewer }: Readonly<{ viewer: ViewerGate }>) {
         </div>
       </div>
     </section>
+  );
+}
+
+function SessionLink({ row, continueLatest = false }: Readonly<{ row: SessionRow; continueLatest?: boolean }>) {
+  return (
+    <Link
+      className={`flex items-start gap-4 rounded-[14px] border p-4 transition-colors focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white ${continueLatest ? "border-white/25 bg-[rgb(36,36,36)] hover:bg-[rgb(46,46,46)]" : "border-white/10 bg-[rgb(18,18,18)] hover:bg-[rgb(36,36,36)]"}`}
+      data-testid="chat-hub-session"
+      href={`/chat/${row.id}`}
+    >
+      <span className="relative flex size-14 shrink-0 items-center justify-center overflow-hidden rounded-full bg-white/10">
+        {row.characterImage ? (
+          <Image alt="" className="object-cover object-top" fill sizes="56px" src={row.characterImage} unoptimized={isProtectedMediaUrl(row.characterImage)} />
+        ) : <MessageCircle aria-hidden className="size-6 text-[rgb(170,170,170)]" />}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+          <span className="flex min-w-0 items-center gap-2">
+            {row.unreadProactiveAt ? <span aria-hidden className="size-2 shrink-0 rounded-full bg-[rgb(253,95,194)]" data-testid="chat-hub-unread-dot" /> : null}
+            <span className="break-words text-[16px] font-bold text-white">{row.title ?? "Untitled chat"}</span>
+          </span>
+          <span className="shrink-0 text-[12px] font-medium text-[rgb(170,170,170)]">
+            {row.unreadProactiveAt ? <span className="text-[rgb(253,95,194)]">New message</span> : formatRelative(row.lastMessageAt)}
+          </span>
+        </span>
+        {row.lastMessage ? (
+          <span className="mt-2 line-clamp-2 break-words text-sm leading-6 text-[rgb(190,190,190)]">
+            {row.lastMessage.role === "user" ? "You: " : ""}{row.lastMessage.content}
+          </span>
+        ) : null}
+        {continueLatest ? (
+          <span className="mt-3 inline-flex items-center gap-2 text-sm font-bold text-[rgb(253,95,194)]" data-testid="chat-hub-continue">
+            Continue chat <ArrowRight aria-hidden className="size-4" />
+          </span>
+        ) : null}
+      </span>
+    </Link>
   );
 }
 

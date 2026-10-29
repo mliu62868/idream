@@ -478,6 +478,12 @@ const chatSessionSchema = z
     status: nonEmptyString,
     memoryEnabled: z.boolean(),
     lastMessageAt: timestamp.nullable(),
+    characterImage: renderableMediaSourceSchema.nullable().optional(),
+    lastMessage: z.object({
+      id: nonEmptyString,
+      role: z.enum(["user", "assistant"]),
+      content: nonEmptyString,
+    }).nullable().optional(),
     // Set when the Character reached out on its own and the user has not opened
     // the session since. Optional so an older server keeps parsing.
     unreadProactiveAt: timestamp.nullable().optional(),

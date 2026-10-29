@@ -3650,7 +3650,7 @@ export function GeneratorWorkspace() {
             ) : null}
 
             {mode === "video" ? anonymousViewer ? <Link className="mt-4 flex h-12 w-full items-center justify-center rounded-full bg-[rgb(255,48,170)] text-[14px] font-black text-white" href={authHrefForTarget("/signup", authReturnTarget)}>Join free to generate</Link> : <VideoSequenceControls key={receiptOwnerScope ?? "signed-out"} viewerScope={receiptOwnerScope} characterId={generationBody.characterId} characters={characters} generationContextToken={generationBody.generationContextToken} consistencyMode={consistencyMode} seed={generationBody.seed} directionDraft={videoDirectionDraft ?? undefined} disabled={!modeAvailable || !contextReady || formUnconfirmed} unavailableMessage={modeUnavailableMessage ?? undefined} coinsHref={insufficientBalanceHref} onStatusChange={refreshVideoSequenceAuthority} onRecoveryChange={recoverVideoSequenceContext} /> : <>
-            <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+            <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(170,170,170)]">
                 {imageEditMode
                   ? "Edit instructions"
                   : characterImageMode
@@ -3658,7 +3658,7 @@ export function GeneratorWorkspace() {
                     : "Scene Prompt"}
                 <textarea
                   aria-label={imageEditMode ? "Edit instructions" : "Prompt"}
-                  className="mt-2 min-h-24 w-full rounded-[10px] bg-[rgb(36,36,36)] p-4 text-[13px] font-semibold text-white outline-none disabled:text-[rgb(114,113,112)]"
+                  className="mt-2 min-h-24 w-full rounded-[10px] bg-[rgb(36,36,36)] p-4 text-[13px] font-semibold text-white outline-none placeholder:text-[rgb(170,170,170)] focus-visible:ring-2 focus-visible:ring-white/50 disabled:text-[rgb(114,113,112)]"
                   disabled={!imageEditMode && !canDescribeMoment}
                   id="generator-prompt"
                   name="prompt"
@@ -3675,6 +3675,32 @@ export function GeneratorWorkspace() {
                   value={prompt}
                 />
               </label>
+
+            {characterImageMode && !generationContext.required && !prompt.trim() && !formUnconfirmed ? (
+              <div aria-label="Scene ideas" className="mt-3">
+                <p className="text-[12px] text-[rgb(170,170,170)]">Start with an idea, then make it yours.</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {[
+                    { label: "Quiet morning", prompt: "A quiet morning in a sunlit kitchen, holding a warm mug, relaxed expression." },
+                    { label: "City walk", prompt: "Walking along a lively city street at sunset, candid smile, warm evening light." },
+                    { label: "Garden escape", prompt: "Sitting in a peaceful garden among flowers, reading a book, soft natural light." },
+                  ].map((idea) => (
+                    <button
+                      className="min-h-11 rounded-full border border-white/20 px-3 text-[12px] font-semibold text-white hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-offset-2 disabled:opacity-50"
+                      disabled={pending || !modeAvailable}
+                      key={idea.label}
+                      onClick={() => {
+                        setPrompt(idea.prompt);
+                        document.getElementById("generator-prompt")?.focus();
+                      }}
+                      type="button"
+                    >
+                      {idea.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
 
             {!imageEditMode ? (
               <div className="mt-4 grid grid-cols-2 gap-3">

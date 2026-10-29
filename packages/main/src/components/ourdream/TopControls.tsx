@@ -1,8 +1,7 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
-import { Check, ChevronDown, Search } from "lucide-react";
+import { Check, ChevronDown, Search, SlidersHorizontal } from "lucide-react";
 import { useState } from "react";
 import {
   characterStyleFilterOptions,
@@ -104,6 +103,12 @@ export function TopControls({
   onAgeChange?: (age: string) => void;
 }>) {
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const selectedFilters = [
+    gender !== "any" ? genderFilterOptions.find((option) => option.value === gender)?.label : null,
+    style !== "any" ? characterStyleFilterOptions.find((option) => option.value === style)?.label : null,
+    age !== "any" ? ageOptions.find((option) => option.value === age)?.label : null,
+  ].filter(Boolean).join(", ");
   const periodLabel = periodOptions.find((option) => option.value === period)?.label ?? "Month";
   const optionLabel = (value: string, label: string) =>
     value === "popular" ? `${label} · ${periodLabel}` : label;
@@ -116,37 +121,19 @@ export function TopControls({
           <MobileAppMenu activeHref="/" currentPath="/" />
           <div className="hidden min-w-0 flex-1 md:block" />
           <div className="ml-auto flex items-center gap-3">
+            <Link
+              aria-label="Compare upgrade plans"
+              className="inline-flex min-h-11 items-center rounded-full px-2 text-[12px] font-semibold text-white/75 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 md:hidden"
+              href="/upgrade"
+            >
+              Plans
+            </Link>
             <AuthNav />
           </div>
         </div>
       </header>
 
       <section className="w-full px-2 pt-0 md:px-[60px] md:pt-[14px]">
-        <Link
-          aria-label="Compare upgrade plans"
-          className="relative mb-3 flex h-[58px] overflow-hidden rounded-[12px] bg-[rgb(36,36,36)] md:hidden"
-          href="/upgrade"
-        >
-          <Image
-            alt=""
-            className="object-cover object-[center_35%]"
-            fill
-            loading="eager"
-            sizes="(max-width: 767px) calc(100vw - 16px), 0px"
-            src="/images/ourdream/promo-card-female.webp"
-            unoptimized
-          />
-          <span className="absolute inset-0 bg-[linear-gradient(90deg,rgba(0,0,0,.78),rgba(0,0,0,.35)_58%,rgba(0,0,0,.08))]" />
-          <span className="relative flex h-full flex-col justify-center px-4">
-            <span className="text-[17px] font-black uppercase leading-5 text-white">
-              Upgrade options
-            </span>
-            <span className="text-[11px] font-bold leading-4 text-white/80">
-              Compare current plans
-            </span>
-          </span>
-        </Link>
-
         <label className="mb-3 flex h-10 items-center gap-2 rounded-full bg-[rgb(53,53,54)] px-4 text-[12px] font-medium leading-4 text-[rgb(170,170,170)] transition-shadow focus-within:ring-2 focus-within:ring-white/50 md:hidden">
           <Search className="h-4 w-4 shrink-0" />
           <input
@@ -159,12 +146,12 @@ export function TopControls({
           />
         </label>
 
-        <div className="flex flex-col gap-2 pb-2 xl:grid xl:grid-cols-[auto_minmax(240px,1fr)_auto] xl:items-center xl:gap-3 xl:pb-0">
-          <div className="relative flex justify-start">
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 pb-2 md:flex md:flex-col xl:grid xl:grid-cols-[auto_minmax(240px,1fr)_auto] xl:items-center xl:gap-3 xl:pb-0">
+          <div className="relative flex min-w-0 flex-wrap items-center justify-start gap-y-2">
             <button
               aria-expanded={sortMenuOpen}
               aria-label="Sort characters"
-              className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full bg-[rgb(53,53,54)] pl-4 pr-3 text-[12px] font-medium leading-4 text-white transition-colors hover:bg-[rgb(62,62,63)]"
+              className="inline-flex h-11 shrink-0 items-center gap-2 rounded-full bg-[rgb(53,53,54)] pl-4 pr-3 text-[12px] font-medium leading-4 text-white transition-colors hover:bg-[rgb(62,62,63)] focus-visible:outline-2 focus-visible:outline-offset-2 md:h-9"
               onClick={() => setSortMenuOpen((open) => !open)}
               type="button"
             >
@@ -225,7 +212,22 @@ export function TopControls({
             />
           </label>
 
-          <div className="grid grid-cols-3 gap-2 xl:flex xl:justify-end">
+          <button
+            aria-controls="character-filters"
+            aria-expanded={filtersOpen}
+            aria-label={selectedFilters ? `Filters: ${selectedFilters}` : "Filters"}
+            className="inline-flex min-h-11 max-w-48 items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] px-3 text-[12px] font-medium text-white focus-visible:outline-2 focus-visible:outline-offset-2 md:hidden"
+            onClick={() => setFiltersOpen((open) => !open)}
+            type="button"
+          >
+            <SlidersHorizontal aria-hidden="true" className="h-4 w-4 shrink-0" />
+            <span className="truncate">{selectedFilters || "Filters"}</span>
+          </button>
+
+          <div
+            className={cn("col-span-2 grid-cols-3 gap-2 md:grid xl:col-span-1 xl:flex xl:justify-end", filtersOpen ? "grid" : "hidden")}
+            id="character-filters"
+          >
             <SelectPill
               ariaLabel="Gender filter"
               name="gender"

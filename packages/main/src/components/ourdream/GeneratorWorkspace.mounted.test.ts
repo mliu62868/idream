@@ -1501,6 +1501,46 @@ describe("GeneratorWorkspace media journeys", () => {
     expect(container.textContent).not.toContain("Look saved. You can reuse it for this character.");
   });
 
+  it("restores a successful retry instead of the original failure after reloading", async () => {
+    const originalFetch = globalThis.fetch;
+    const failedJob = { id: "failed-parent", mode: "image", status: "failed", errorCode: "backend_error",
+      costDreamcoins: 5, outputCount: 1, createdAt: "2026-10-29T06:00:00.000Z" };
+    const completedJob = { ...failedJob, id: "successful-retry", status: "completed", errorCode: null,
+      createdAt: "2026-10-29T06:01:00.000Z" };
+    const result = mediaItem("retry-result");
+    let retried = false;
+    saveCurrentGenerationJob(window.sessionStorage, config.viewer.scope, failedJob.id);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.startsWith("/api/v1/generation/jobs?")) return Response.json({ ok: true, data: { items: retried ? [completedJob, failedJob] : [failedJob] } });
+      if (path === `/api/v1/generation/jobs/${failedJob.id}`) return Response.json({ ok: true, data: { job: failedJob, assets: [] } });
+      if (path === `/api/v1/generation/jobs/${completedJob.id}`) return Response.json({ ok: true, data: { job: completedJob, assets: [result] } });
+      if (path.endsWith("/retry/quote")) return Response.json({ ok: true, data: { quote: {
+        mode: "image", profileId: quote.profileId, profileVersion: quote.profileVersion,
+        routeFingerprint: quote.routeFingerprint, pricing: quote.pricing,
+        generationJobId: failedJob.id, outputCount: 1, costDreamcoins: 5, balance: 100,
+      } } });
+      if (path === `/api/v1/generation/jobs/${failedJob.id}/retry` && init?.method === "POST") {
+        retried = true;
+        return Response.json({ ok: true, data: { job: { ...completedJob, status: "queued" }, assets: [] } }, { status: 202 });
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    expect(container.querySelector('[data-testid="generator-status"]')?.textContent).toBe("Failed: The generator hit an error. Your coins are back — try again.");
+    await click(button("Retry · 5 coins"));
+    expect(container.querySelector('[data-testid="generator-status"]')?.textContent).toBe("Generation complete.");
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await mount();
+    expect(container.querySelector('[data-testid="generator-status"]')?.textContent).toBe("Generation complete.");
+    expect(readCurrentGenerationJob(window.sessionStorage, config.viewer.scope)).toBe(completedJob.id);
+    expect(container.querySelector('[data-generation-job-id="successful-retry"]')?.textContent).toContain("Completed");
+    const failedCard = container.querySelector('[data-generation-job-id="failed-parent"]');
+    expect(failedCard?.textContent).toContain("Your coins for this attempt were refunded.");
+    expect(failedCard?.querySelector("button")?.textContent).toBe("Retry · 5 coins");
+  });
+
   it.each((["generation", "variation", "retry"] as const).flatMap((kind) =>
     (["balance", "route", "viewer", "late", "json", "config"] as const).map((scenario) => [kind, scenario] as const),
   ))("checks unconfirmed %s after focus: %s", async (kind, scenario) => {
@@ -1767,6 +1807,38 @@ describe("GeneratorWorkspace media journeys", () => {
     await click(button("Save changes"));
     expect(writes).toHaveLength(1);
     expect(writes[0].controls).toEqual({ backgroundPresetId: "garden-background", ...(newPrompt ? { prompt: newPrompt } : {}) });
+  });
+
+  it("fills an editable scene idea without submitting or replacing a written prompt", async () => {
+    const originalFetch = globalThis.fetch;
+    const generationWrites: string[] = [];
+    const model = { id: "image-model", label: "Image", maxCount: 1, costMultiplier: 1, entitlement: null };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/jobs" && init?.method === "POST") generationWrites.push(String(init.body));
+      if (path.startsWith("/api/v1/characters?")) return Response.json({ ok: true, data: {
+        items: [{ id: "character", title: "Mira", age: "28", description: "Photographer", likes: "0", chats: "0", creator: "iDream", image: "/user-content/portrait.png" }], nextCursor: null,
+      } });
+      if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: {
+        ...config, entitlements: { premium_controls: false }, pricing: { ...config.pricing, image: { baseCost: 5, maxCount: 1 } },
+        image: { ...config.image, availability: { state: "available" }, orientations: ["4:5"], models: [model],
+          recipes: ["character", "freeplay"].map((useCase) => ({ id: `image-${useCase}`, rowId: `image-${useCase}-v1`, label: "Image", mode: "image", useCase, version: 1 })) },
+      } });
+      if (path === "/api/v1/generation/quote") return Response.json({ ok: true, data: { quote: { ...quote, profileId: model.id } } });
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Quiet morning"));
+    const prompt = container.querySelector<HTMLTextAreaElement>('[aria-label="Prompt"]')!;
+    expect(prompt.value).toContain("sunlit kitchen");
+    expect(document.activeElement).toBe(prompt);
+    expect(container.querySelector('[aria-label="Scene ideas"]')).toBeNull();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(prompt, "A quiet balcony at dawn");
+      prompt.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(prompt.value).toBe("A quiet balcony at dawn");
+    expect(generationWrites).toEqual([]);
   });
 
   it("saves a new character moment preset for a free account", async () => {

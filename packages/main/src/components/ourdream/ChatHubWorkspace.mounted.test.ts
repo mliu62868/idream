@@ -14,7 +14,7 @@ const session = (title: string, id = "session-1", status = "active", lastMessage
 const read = (input: RequestInfo | URL) => {
   const path = String(input);
   if (path === "/api/v1/me") return ok({ user: viewer ? { id: viewer } : null });
-  if (path === "/api/v1/chat/sessions") return Response.json([session(`Private ${viewer}`)]);
+  if (path === "/api/v1/chat/sessions") return Response.json([{ ...session(`Private ${viewer}`), lastMessage: { id: "reply-1", role: "assistant", content: `Remember ${viewer}'s garden.` } }]);
   if (path.startsWith("/api/v1/characters?")) return ok({ items: [], nextCursor: null });
   throw new Error(`Unexpected read ${path}`);
 };
@@ -52,7 +52,7 @@ describe("ChatHubWorkspace private viewer lifecycle", () => {
       ? new Promise<Response>(resolve => { finish = resolve; }) : read(input)));
     await mount(); expect(container.textContent).toContain("Private owner-a"); viewer = "owner-b";
     await act(async () => window.dispatchEvent(new Event("focus"))); await settle();
-    expect(container.textContent).not.toContain("Private owner-a"); expect(finish).toBeDefined();
+    expect(container.textContent).not.toContain("Private owner-a"); expect(container.textContent).not.toContain("owner-a's garden"); expect(finish).toBeDefined();
     await act(async () => finish(Response.json([session("Private owner-b")]))); await settle(); expect(container.textContent).toContain("Private owner-b");
   });
   it("discards the previous account's late list even if its fetch ignores abort", async () => {
@@ -87,5 +87,29 @@ describe("ChatHubWorkspace private viewer lifecycle", () => {
     await mount(); expect(container.textContent).not.toContain("Deleted private"); expect(container.textContent).toContain("Archived reply");
     refreshed = true; await act(async () => window.dispatchEvent(new Event("focus"))); await settle(); expect(container.textContent).toContain("Recent reply"); expect(container.textContent).not.toContain("Initial reply");
     expect([...container.querySelectorAll('[data-testid="chat-hub-session"]')].map(item => item.getAttribute("href"))).toEqual(["/chat/s1", "/chat/s3"]);
+  });
+  it("offers the latest active conversation and keeps newer archived history folded", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/v1/chat/sessions"
+      ? Response.json([
+        session("Older active", "older", "active", "2026-10-02T12:00:00.000Z"),
+        { ...session("Continue this story", "latest", "active"), lastMessage: { id: "a1", role: "assistant", content: "We left the notebook in the garden." } },
+        { ...session("Archived story", "archive", "archived", "2026-10-05T12:00:00.000Z"), lastMessage: { id: "u2", role: "user", content: "See you tomorrow." } },
+      ]) : read(input)));
+    await mount();
+    expect(container.querySelector('[data-testid="chat-hub-continue"]')?.closest("a")?.getAttribute("href")).toBe("/chat/latest");
+    expect(container.querySelector('a[href="/chat/latest"]')?.textContent).toContain("We left the notebook in the garden.");
+    const archived = container.querySelector('a[href="/chat/archive"]');
+    expect(archived?.textContent).toContain("You: See you tomorrow.");
+    expect(archived?.closest("details")?.open).toBe(false);
+    expect(container.querySelector("summary")?.textContent).toContain("Archived chats (1)");
+  });
+  it("keeps archive-only history accessible without offering to continue an archived conversation", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/v1/chat/sessions"
+      ? Response.json([session("Archived story", "archive", "archived")]) : read(input)));
+    await mount();
+    expect(container.querySelector('[data-testid="chat-hub-continue"]')).toBeNull();
+    expect(container.querySelector('a[href="/chat/archive"]')?.closest("details")).not.toBeNull();
+    expect(container.textContent).not.toContain("No chats yet");
+    expect(container.querySelector('a[href="/chat/groups"]')).not.toBeNull();
   });
 });

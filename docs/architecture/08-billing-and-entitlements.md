@@ -1,6 +1,6 @@
 # 08 · 计费、权益与 dreamcoin
 
-更新日期：2026-09-09
+更新日期：2026-10-29（统一新售年卡语音额度，保留旧购买 authority）
 
 落地 `BackendFeatureSpec §3.5/§4.5/§5.8` 与 ADR-4（支付抽象 + **加密货币**）。核心三件事：**一次性预付访问生命周期**、**权益（entitlement）派生**、**dreamcoin append-only ledger**。数据库仍沿用 `Subscription` 等 legacy 物理名，但产品语义不包含自动续订。
 
@@ -9,9 +9,9 @@
 | plan | billing | 价格 | 关键权益（`Plan.features` JSON） |
 | --- | --- | --- | --- |
 | premium | monthly prepaid term | $19.99 / 30-day term | 1,500 dreamcoins、unlimited messages、imageGeneration、voiceEnabled、voiceMinutes=30、videoGeneration=false |
-| premium | yearly prepaid term | $99.90 / annual term | 18,000 dreamcoins、unlimited messages、imageGeneration、voiceEnabled、voiceMinutes=360、videoGeneration=false |
+| premium | yearly prepaid term | $99.90 / annual term | 18,000 dreamcoins、unlimited messages、imageGeneration、voiceEnabled、voiceMinutes=30、videoGeneration=false |
 | deluxe | monthly prepaid term | $59.99 / 30-day term | 6,000 dreamcoins、Premium 全部 + premiumModels、voiceMinutes=120、videoGeneration=true（仅在 `video_gen` + provider ready 时曝光） |
-| deluxe | yearly prepaid term | $299.90 / annual term | 72,000 dreamcoins、Premium 全部 + premiumModels、voiceMinutes=1440、videoGeneration=true（仅在 `video_gen` + provider ready 时曝光） |
+| deluxe | yearly prepaid term | $299.90 / annual term | 72,000 dreamcoins、Premium 全部 + premiumModels、voiceMinutes=120、videoGeneration=true（仅在 `video_gen` + provider ready 时曝光） |
 
 `Plan.features` 示例（SSoT 在 seed + `lib/constants.ts`）：
 
@@ -21,7 +21,7 @@
   "imageGeneration": true,
   "videoGeneration": false,       // deluxe=true, still gated by global video_gen/provider readiness
   "voiceEnabled": true,
-  "voiceMinutes": 30,             // yearly premium=360; deluxe monthly/yearly=120/1440
+  "voiceMinutes": 30,             // rolling 30 days, independent of monthly/yearly access; deluxe=120
   "premiumModels": false          // deluxe=true
 }
 ```
@@ -121,7 +121,7 @@ async function has(userId: string, key: string): Promise<boolean> {
 - **entitlement**：布尔/配置型能力门（能不能用 custom prompt / video / premium models）。
 - **dreamcoin 是平台唯一消耗型货币**（决策见 ECONOMY §0）。当前计划卡展示 `includedDreamcoins`、消息权益与生成模型权益，不展示 images/videos/voice quota；Chat provider/model、角色人格和基础记忆不按计划分级。若未来恢复媒体等价数字，必须按 `includedDreamcoins ÷ 费率` 动态计算，且 `video_gen=false` 时不得展示视频承诺。
   - 因此 `Plan.features` 不再设 `image_quota / video_quota` 独立计数；币量在 `Plan.includedDreamcoins` 顶层字段，媒体消耗按 PricingRule 从 ledger 扣。
-  - 语音分钟额度仍使用 `Plan.features.voiceMinutes`（滚动窗口），额度用尽后按 clip 兜底扣 coin；`voiceEnabled` 作能力门。
+  - 语音分钟额度使用 `Plan.features.voiceMinutes`（滚动 30 天窗口）：新售 Premium 月/年卡均为 30，Deluxe 月/年卡均为 120；额度用尽后按已接受的 clip 报价扣 coin，`voiceEnabled` 作能力门。旧 offer/quote 快照和独立 grant 保持原值，不按 billingPeriod 转换。现有目录修正见 `db/sql/2026-10-29-annual-voice-allowance.sql`，遇到依赖可变 Plan 的 legacy 订阅时拒绝改价/改权益，防止静默缩减旧权利。
   - 免费聊天额度（每日 messages）仍用 `chat_usage`（ECONOMY §3）——消息免费，只限频，不走 coin。
 
 ### Voice Clip 的报价与接受

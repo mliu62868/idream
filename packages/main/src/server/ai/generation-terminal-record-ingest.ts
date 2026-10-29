@@ -48,6 +48,17 @@ export async function ingestGenerationTerminalRecord(
         hashtextextended(${`generation_terminal_record:${input.terminalRecord.attemptId}`}, 0)
       )::text AS "lock"
     `);
+    // Transport and settlement lock Request before Attempt. Late-result event
+    // inserts also lock Request through their foreign key; taking only Attempt
+    // here inverted that order and deadlocked with an exact transport replay.
+    // Resolve ownership from the reserved Attempt, never the incoming envelope.
+    await tx.$queryRaw(Prisma.sql`
+      SELECT request.id
+      FROM generation_jobs AS request
+      JOIN generation_attempts AS attempt ON attempt."requestId" = request.id
+      WHERE attempt.id = ${input.terminalRecord.attemptId}
+      FOR UPDATE OF request
+    `);
     const receiptWhere = {
       sourceService_sourceEventId: { sourceService: "gen", sourceEventId: input.terminalRecord.attemptId },
     } as const;

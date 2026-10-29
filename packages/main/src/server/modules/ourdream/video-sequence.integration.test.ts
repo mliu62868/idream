@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -114,6 +115,22 @@ async function acknowledgeSequenceAccountDeletion() {
 }
 
 describe("ordered video Requests, ledger settlement and packaging", () => {
+  it("quotes and freezes the official cover created by the normal seed without an operator repair", async () => {
+    const request = { ...body(1), characterId: "sarah-mercer", orientation: "7:12", scenes: [{ prompt: "One gentle nod, with the same person and room.", seconds: 5 }] };
+    const { sequence } = await create(request);
+    const source = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: "seed-image-sarah-mercer" } });
+    const bundled = await readFile("public/images/ourdream/card-sarah-mercer.webp");
+    const expectedHash = createHash("sha256").update(bundled).digest("hex");
+    // The repository filename is .webp but the original bytes are JPEG.
+    expect(source.contentType).toBe("image/jpeg");
+    expect(source.storageKey).toBeTruthy();
+    const job = await prisma.generationJob.findUniqueOrThrow({ where: { id: sequence.scenes[0]!.job.id } });
+    expect(job.controls).toMatchObject({ sourceSnapshot: { sourceImageAssetId: source.id, sha256: expectedHash } });
+    const snapshot = await prisma.generationSourceSnapshot.findUniqueOrThrow({ where: { userId_sha256: { userId, sha256: expectedHash } } });
+    expect(snapshot.sha256).toBe(expectedHash);
+    expect(await dreamcoinBalance(userId)).toBe(900);
+  });
+
   it("limits concurrent Blob quote verification and releases slots after failure", async () => {
     const entered = barrier(), release = barrier();
     const get = providers.blob.getPrivate!.bind(providers.blob);

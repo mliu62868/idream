@@ -377,6 +377,40 @@ describe("ComfyUIBackend", () => {
       outcome: "ambiguous",
     });
   });
+  it.each(["prompt", "upload/image"])("bounds the /%s response body after headers arrive", async (endpoint) => {
+    vi.useFakeTimers();
+    let responseBody: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          responseBody = controller;
+          controller.enqueue(new TextEncoder().encode("{"));
+          init?.signal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")), { once: true });
+        },
+      });
+      return new Response(body, { headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const backend = makeBackend();
+    let outcome: unknown;
+    const submission = backend.submit({
+      descriptor: endpoint === "prompt" ? descriptor : editDescriptor,
+      slots: { prompt: "cat" },
+      ...(endpoint === "prompt" ? {} : { referenceImages: [{ assetId: "a1", role: "source_image" as const, b64Json: PNG_B64 }] }),
+      timeoutMs: 10,
+    }).catch((error: unknown) => { outcome = error; });
+    try {
+      await vi.advanceTimersByTimeAsync(11);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(String(fetchMock.mock.calls[0]?.[0])).toBe(`http://x/${endpoint}`);
+      expect(outcome).toMatchObject(endpoint === "prompt"
+        ? { code: "timeout", phase: "post_submit", outcome: "ambiguous" }
+        : { message: "ComfyUI /upload/image timed out after 10ms" });
+    } finally {
+      responseBody?.error(new Error("test cleanup"));
+      await submission;
+    }
+  });
   it("does not spend the execution budget while ComfyUI still has the prompt queued", async () => {
     vi.useFakeTimers();
     // 排队等待不吃执行预算：单实例 ComfyUI 串行执行，排在后面的 prompt 过去会在

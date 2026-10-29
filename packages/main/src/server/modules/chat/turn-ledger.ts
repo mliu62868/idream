@@ -13,7 +13,7 @@ import { Prisma, type RecentChat } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { AppError, Errors } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
-import { isSyntheticMediaAsset } from "@/server/lib/media-asset-authority";
+import { isMediaAssetOperationalForAuthority, isSyntheticMediaAsset } from "@/server/lib/media-asset-authority";
 import { moderateText } from "@/server/moderation/text-authority";
 import { updateGenerationRequestSourceMeta } from "@/server/ai/generation-request-transition";
 import { canCancelGenerationBeforeDispatch } from "@/server/ai/generation-request-lifecycle";
@@ -21,7 +21,8 @@ import { MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES } from "@/server/events/mai
 import { recordMainToChatEvent } from "@/processes/chat-outbox";
 import { appendCanonicalMetricEvent, appendCanonicalMetricEventsForUser } from "@/server/modules/admin-v2/metrics/event-writer";
 import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
-import { directCharacterAudienceWhere } from "@/server/modules/ourdream/public-content-audience";
+import { directCharacterAudienceWhere, publicReadableMediaAssetWhere } from "@/server/modules/ourdream/public-content-audience";
+import { collectionMediaViewUrl } from "@/server/modules/ourdream/public-read-model";
 import { effectiveGenerationJobStatus, generationExecutionErrorCode } from "@/server/modules/ourdream/generation-job-read-model";
 import { entitlementMap } from "@/server/modules/ourdream/subscription-lifecycle";
 import {
@@ -55,9 +56,46 @@ export async function listChatSessions(userId: string) {
   const rows = await prisma.recentChat.findMany({
     where: { userId, groupId: null },
     orderBy: [{ lastMessageAt: "desc" }, { createdAt: "desc" }],
-    include: { character: { select: { name: true } } },
+    include: {
+      character: { select: { name: true, imageAssetId: true } },
+      turns: {
+        // Only committed, visible text belongs in a preview. Proactive userContent
+        // is an internal instruction, and an unfinished reply is not delivered.
+        where: { OR: [
+          { assistantStatus: "sent", assistantContent: { not: "" } },
+          { origin: "user", userStatus: "sent", userContent: { not: "" } },
+        ] },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: 1,
+        select: { assistantMessageId: true, assistantStatus: true, assistantContent: true, userMessageId: true, userContent: true, origin: true },
+      },
+    },
   });
-  return rows.map((row) => publicSession(row, row.character.name));
+  const imageIds = [...new Set(rows.flatMap(row => row.character.imageAssetId ? [row.character.imageAssetId] : []))];
+  // Batch the same media audience used by owned-media reads. A private draft
+  // belonging to another creator cannot become a chat-list avatar.
+  const images = imageIds.length ? await prisma.mediaAsset.findMany({
+    where: {
+      id: { in: imageIds }, deletedAt: null, type: "image", safetyStatus: "passed",
+      OR: [...(isReusablePlatformAssetWhere(userId).OR ?? []), publicReadableMediaAssetWhere],
+    },
+    select: { id: true, type: true, url: true, storageKey: true, contentType: true, metadata: true },
+  }) : [];
+  const imageById = new Map(images.filter(image => isMediaAssetOperationalForAuthority(image.metadata)).map(image => [image.id, collectionMediaViewUrl(image)]));
+  return rows.map((row) => {
+    const turn = row.turns[0];
+    const assistant = turn?.assistantStatus === "sent" && Boolean(turn.assistantContent.trim());
+    const content = (assistant ? turn.assistantContent : turn?.origin === "user" ? turn.userContent : "").replace(/\s+/g, " ").trim();
+    return {
+      ...publicSession(row, row.character.name),
+      characterImage: imageById.get(row.character.imageAssetId ?? "") ?? null,
+      lastMessage: content ? {
+        id: assistant ? turn!.assistantMessageId : turn!.userMessageId,
+        role: assistant ? "assistant" as const : "user" as const,
+        content: content.length > 180 ? `${content.slice(0, 180)}…` : content,
+      } : null,
+    };
+  });
 }
 
 // A group member and a single-character session use exactly the same audience

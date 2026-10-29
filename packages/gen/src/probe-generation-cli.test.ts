@@ -152,6 +152,8 @@ describe("generation launch probe CLIs", () => {
         root: path.join(directory, "blob"),
       },
       seconds: 5,
+      sourceSnapshotId: expect.stringMatching(/^probe_source_/),
+      referenceSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       terminal: {
         outcome: "succeeded",
         assets: 1,

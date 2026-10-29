@@ -240,20 +240,15 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
     // curated asset matches its scene or wardrobe; only the prior ACK above is reusable.
     // Existing generation authority performs pricing, balance check, wallet
     // reservation, Request/Attempt creation and dispatch under attachment idempotency.
-    const job = await createChatImageGenerationJob(payload, effect.attempt);
+    await createChatImageGenerationJob(payload, effect.attempt);
     // Generation binds the attachment in its acceptance transaction. Its
     // terminal (or a user retry) may already have advanced this exact pointer;
     // a late reservation ACK must never write it back to the original Job.
     const current = await prisma.chatTurnAttachment.findUnique({ where: { id: attachmentId } });
-    return {
-      accepted: true,
-      duplicate: false,
-      attachmentId,
-      status: current?.status === "completed" ? "completed" : "accepted",
-      generationJobId: current?.generationJobId ?? job.id,
-      mediaAssetId: current?.mediaAssetId ?? null,
-      costDreamcoins: Number(record(current?.metadata)?.costDreamcoins ?? job.costDreamcoins),
-    };
+    if (!current) throw Errors.gone("The image action is no longer available");
+    // A fast terminal can also be a failure. Initial and replay receipts must
+    // describe the same durable attachment instead of promising a pending image.
+    return { ...existingEffect(current, requestDigest, effect.effectScope), duplicate: false };
   } catch (error) {
     const failure = publicFailure(error);
     // The attachment keeps only the code; operators need the reason too.

@@ -59,6 +59,23 @@ describe("Explore popular period", () => {
     expect(container.querySelector('[aria-label="Popular period"]')).toBeNull();
     expect(requests.at(-1)?.has("period")).toBe(false);
   });
+
+  it("keeps selected filters visible in the disclosure label and preserves them when collapsed", async () => {
+    window.history.replaceState(null, "", "/?gender=male&style=anime&age_min=35");
+    await act(async () => root.render(createElement(ExploreWorkspace))); await settle();
+    const toggle = container.querySelector<HTMLButtonElement>('[aria-controls="character-filters"]')!;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.getAttribute("aria-label")).toContain("Male, Anime, 35+");
+    await act(async () => toggle.click());
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const style = container.querySelector<HTMLSelectElement>('[aria-label="Style filter"]')!;
+    await act(async () => { style.value = "realistic"; style.dispatchEvent(new Event("change", { bubbles: true })); }); await settle();
+    await act(async () => toggle.click());
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.getAttribute("aria-label")).toContain("Male, Realistic, 35+");
+    expect(requests.at(-1)?.get("style")).toBe("realistic");
+    expect(window.location.search).toContain("style=realistic");
+  });
 });
 
 describe("Explore personalized discovery", () => {

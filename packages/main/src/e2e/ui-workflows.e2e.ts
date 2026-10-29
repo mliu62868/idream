@@ -439,13 +439,7 @@ async function seedDownloadableMedia(email: string) {
   const storageKey = `e2e/profile/${id}.png`;
   const target = resolveLocalBlobPath(storageKey);
   await mkdir(path.dirname(target), { recursive: true });
-  await writeFile(
-    target,
-    Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/ak9zP8AAAAASUVORK5CYII=",
-      "base64",
-    ),
-  );
+  await writeFile(target, whitePng(1, 1));
   await prisma.mediaAsset.create({
     data: {
       id,
@@ -598,13 +592,7 @@ async function seedOwnedIdentityMedia(email: string) {
   const storageKey = `e2e/generate/${mediaId}.png`;
   const target = resolveLocalBlobPath(storageKey);
   await mkdir(path.dirname(target), { recursive: true });
-  await writeFile(
-    target,
-    Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/ak9zP8AAAAASUVORK5CYII=",
-      "base64",
-    ),
-  );
+  await writeFile(target, whitePng(1, 1));
   const character = await prisma.character.create({
     data: {
       id: characterId,

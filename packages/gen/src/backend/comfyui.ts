@@ -120,9 +120,9 @@ export class ComfyUIBackend implements GenBackend {
     const submitStartedAt = performance.now();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), job.timeoutMs);
-    let response: Response;
+    let json: JsonRecord;
     try {
-      response = await fetch(`${this.apiUrl}/prompt`, {
+      const response = await fetch(`${this.apiUrl}/prompt`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -141,8 +141,20 @@ export class ComfyUIBackend implements GenBackend {
         }),
         signal: controller.signal,
       });
+      if (!response.ok) {
+        throw new BackendInvocationError(
+          "backend_error",
+          `ComfyUI /prompt HTTP ${response.status}`,
+          "pre_submit",
+          "definitive",
+        );
+      }
+      // The prompt may already be running when headers arrive. Keep the deadline
+      // through body consumption; a lost prompt_id remains an ambiguous submit.
+      json = jsonRecord(await response.json());
     } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") {
+      if (error instanceof BackendInvocationError) throw error;
+      if (controller.signal.aborted) {
         throw new BackendInvocationError(
           "timeout",
           `ComfyUI /prompt timed out after ${job.timeoutMs}ms`,
@@ -158,15 +170,7 @@ export class ComfyUIBackend implements GenBackend {
       );
     } finally {
       clearTimeout(timeout);
-    }
-    const json = (await response.json().catch(() => ({}))) as JsonRecord;
-    if (!response.ok) {
-      throw new BackendInvocationError(
-        "backend_error",
-        `ComfyUI /prompt HTTP ${response.status}`,
-        "pre_submit",
-        "definitive",
-      );
+      controller.abort();
     }
     const promptId = stringField(json, "prompt_id");
     if (!promptId) {
@@ -419,25 +423,26 @@ export class ComfyUIBackend implements GenBackend {
     form.append("overwrite", "true");
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    let response: Response;
+    let json: JsonRecord;
     try {
-      response = await fetch(`${this.apiUrl}/upload/image`, {
+      const response = await fetch(`${this.apiUrl}/upload/image`, {
         method: "POST",
         body: form,
         signal: controller.signal,
       });
+      if (!response.ok) throw new Error(`ComfyUI /upload/image HTTP ${response.status}`);
+      json = jsonRecord(await response.json());
     } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") {
+      if (controller.signal.aborted) {
         throw new Error(`ComfyUI /upload/image timed out after ${timeoutMs}ms`);
       }
       throw error;
     } finally {
       clearTimeout(timeout);
+      controller.abort();
     }
-    if (!response.ok) throw new Error(`ComfyUI /upload/image HTTP ${response.status}`);
-    const json = (await response.json().catch(() => null)) as JsonRecord | null;
-    const name = json ? stringField(json, "name") : undefined;
-    if (!json || !name) throw new Error(`ComfyUI /upload/image returned malformed response: ${JSON.stringify(json)}`);
+    const name = stringField(json, "name");
+    if (!name) throw new Error(`ComfyUI /upload/image returned malformed response: ${JSON.stringify(json)}`);
     return { name, subfolder: stringField(json, "subfolder") ?? "", type: stringField(json, "type") ?? "input" };
   }
 

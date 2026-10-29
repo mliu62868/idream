@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
+import path from "node:path";
 import type { Prisma } from "@prisma/client";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -332,7 +333,7 @@ describe("Character image-readiness repair", () => {
       characterId,
     );
     expect(prepared.storageKey).toMatch(
-      /^official-editorial\/.+\/[a-f0-9]{64}\.webp$/,
+      /^official-editorial\/.+\/[a-f0-9]{64}\.jpg$/,
     );
     await prisma.$executeRawUnsafe(`
       CREATE OR REPLACE FUNCTION fail_image_readiness_receipt() RETURNS trigger AS $$
@@ -552,12 +553,16 @@ describe("Character image-readiness repair", () => {
       select: { contentType: true, storageKey: true },
     });
     expect(materializedAsset.storageKey).toMatch(
-      /^official-editorial\/.+\/[a-f0-9]{64}\.webp$/,
+      /^official-editorial\/.+\/[a-f0-9]{64}\.jpg$/,
     );
-    expect(materializedAsset.contentType).toBe("image/webp");
+    // The bundled .webp filename contains JPEG bytes; hydration must preserve
+    // those bytes and record their real media type.
+    expect(materializedAsset.contentType).toBe("image/jpeg");
     await expect(readFile(resolveLocalBlobPath(
       materializedAsset.storageKey ?? "",
-    ))).resolves.not.toHaveLength(0);
+    ))).resolves.toEqual(await readFile(path.join(
+      process.cwd(), "public/images/ourdream/card-alexa-reeves.webp",
+    )));
     const dispatchReferences = await imageReferenceInputsForGenerationJob({
       userId: actorId,
       characterId,

@@ -561,6 +561,7 @@ describe("checkout (auto-confirm) activates entitlements + grants coins", () => 
   it("replays from the durable price snapshot after the mutable plan changes", async () => {
     const userId = await setupUser("plan-replay");
     const planId = await setupPlan("plan-replay", 725);
+    await prisma.plan.update({ where: { id: planId }, data: { billingPeriod: "yearly", features: { voiceEnabled: true, voiceMinutes: 360 } } });
     const idempotencyKey = `${P}plan-replay-key`;
     const first = await checkoutApi(
       userId,
@@ -571,7 +572,7 @@ describe("checkout (auto-confirm) activates entitlements + grants coins", () => 
 
     await prisma.plan.update({
       where: { id: planId },
-      data: { active: false, priceCents: 999_999, includedDreamcoins: 1 },
+      data: { active: false, priceCents: 999_999, includedDreamcoins: 1, features: { voiceEnabled: true, voiceMinutes: 30 } },
     });
     const replay = await checkoutApi(
       userId,
@@ -587,6 +588,7 @@ describe("checkout (auto-confirm) activates entitlements + grants coins", () => 
     expect(intent.offerSnapshot).toMatchObject({
       planId,
       includedDreamcoins: 725,
+      features: { voiceEnabled: true, voiceMinutes: 360 },
     });
     expect(replay.data.checkout).not.toHaveProperty("idempotencyKey");
     expect(replay.data.checkout).not.toHaveProperty("requestHash");

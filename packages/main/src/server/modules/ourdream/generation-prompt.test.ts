@@ -44,6 +44,21 @@ function prompt(
 }
 
 describe("image generation prompt", () => {
+  it("preserves the requested composition without imposing a portrait crop or pose", () => {
+    const scene = "Wide photograph of her seated at a cafe table, both hands resting on the table beside one red mug.";
+    const text = buildGenerationPrompt({ mode: "image", character, visualProfile: null,
+      consistencyMode: "balanced", userPrompt: scene, presetFragment: "", lookFragment: "" });
+    expect(text).toContain(`Requested scene: ${scene}`);
+    expect(text).not.toContain("portrait photo of");
+    expect(text).not.toContain("natural pose");
+    expect(text).toContain("Character identity:");
+    expect(text).toContain("Preserve the same adult face, age, hair, eye color, skin and body proportions");
+    const explicitPortrait = "A close-up portrait photo, with a deliberate unnatural pose.";
+    const requested = buildGenerationPrompt({ mode: "image", character, visualProfile: null,
+      consistencyMode: "balanced", userPrompt: explicitPortrait, presetFragment: "", lookFragment: "" });
+    expect(requested).toContain(`Requested scene: ${explicitPortrait}`);
+  });
+
   it.each([
     { label: "Character portrait", mode: "image" as const, subject: character },
     { label: "Freeplay still", mode: "image" as const, subject: null },
@@ -711,7 +726,7 @@ describe("saved Look with a sealed derived portrait identity", () => {
       advancedDetails: { signature: { age: 55, marks: "new scar" } } };
     const text = lookPortrait(profile, mutable);
     expect(text).toBe(lookPortrait(profile));
-    expect(text).toContain("portrait photo of Sealed Raya");
+    expect(text).toContain("photo of Sealed Raya");
     expect(text).toContain("Subject: adult, female, realistic");
     for (const leak of ["Mutable Nova", "55", "anime", "silver-haired", "violet eyes", "new facial tattoo", "new scar"]) expect(text).not.toContain(leak);
   });

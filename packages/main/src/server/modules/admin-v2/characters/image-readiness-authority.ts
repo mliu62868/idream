@@ -1,6 +1,4 @@
-import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
+import { readBundledEditorialImage } from "@/server/lib/bundled-editorial-image";
 import {
   hasHydratableMediaBlobAuthority,
 } from "@/server/lib/media-asset-authority";
@@ -37,13 +35,6 @@ export type CharacterImageAssetAuthority = {
   readonly bundledContentSha256: string | null;
 };
 
-export type BundledEditorialImage = {
-  readonly bytes: Uint8Array;
-  readonly contentType: string;
-  readonly extension: string;
-  readonly contentSha256: string;
-};
-
 export type CharacterImageReadinessFingerprintInput = {
   readonly characterId: string;
   readonly characterImageAssetId: string | null;
@@ -72,8 +63,6 @@ export type CharacterImageReadinessFingerprintInput = {
     readonly snapshotHash: string | null;
   } | null;
 };
-
-const BUNDLED_EDITORIAL_IMAGE_PREFIX = "/images/ourdream/";
 
 export function characterImageAssetAuthority(
   asset: CharacterImageAssetAuthorityInput,
@@ -117,68 +106,6 @@ export async function inspectCharacterImageGenerationSource(
     materializable: bundled !== null,
     bundled,
   } as const;
-}
-
-async function readBundledEditorialImage(
-  urlValue: string,
-): Promise<BundledEditorialImage | null> {
-  const value = urlValue.trim();
-  if (!value.startsWith("/") || value.startsWith("//")) return null;
-  let parsed: URL;
-  try {
-    parsed = new URL(value, "https://idream.invalid");
-  } catch {
-    return null;
-  }
-  if (parsed.search || parsed.hash) return null;
-  let pathname: string;
-  try {
-    pathname = decodeURIComponent(parsed.pathname);
-  } catch {
-    return null;
-  }
-  if (!pathname.startsWith(BUNDLED_EDITORIAL_IMAGE_PREFIX)) return null;
-  const extension = path.extname(pathname).toLowerCase();
-  const contentType = bundledImageContentType(extension);
-  if (!contentType) return null;
-  const relativePath = pathname.slice(
-    BUNDLED_EDITORIAL_IMAGE_PREFIX.length,
-  );
-  const publicRoot = path.join(
-    process.cwd(),
-    "public",
-    "images",
-    "ourdream",
-  );
-  const candidate = path.join(publicRoot, relativePath);
-  if (
-    candidate === publicRoot ||
-    !candidate.startsWith(`${publicRoot}${path.sep}`)
-  ) {
-    return null;
-  }
-  try {
-    const bytes = new Uint8Array(await readFile(candidate));
-    if (bytes.byteLength > 0) {
-      return {
-        bytes,
-        contentType,
-        extension,
-        contentSha256: createHash("sha256").update(bytes).digest("hex"),
-      };
-    }
-  } catch {
-    // The package cwd is pinned in dev, tests, and standalone runtime. A
-    // missing packaged file is therefore an actual materialization block.
-  }
-  return null;
-}
-
-function bundledImageContentType(extension: string) {
-  if (extension === ".webp") return "image/webp";
-  if (extension === ".png") return "image/png";
-  if (extension === ".jpg" || extension === ".jpeg") return "image/jpeg";
-  return null;
 }
 
 export function characterImageReadinessFingerprint(

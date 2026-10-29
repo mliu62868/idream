@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import sharp from "sharp";
 import { compileCharacterSoul } from "@idream/shared";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
@@ -50,7 +51,7 @@ describe("initial Chat image delivery", () => {
     await prisma.character.update({ where: { id: character.id }, data: { currentContentVersionId: content.id } });
     const sourceKey = `${userId}-source.png`;
     sourceKeys.push(sourceKey);
-    await providers.blob.putPrivate({ key: sourceKey, body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlZlE0AAAAASUVORK5CYII=", "base64"), contentType: "image/png" });
+    await providers.blob.putPrivate({ key: sourceKey, body: await sharp({ create: { width: 1, height: 1, channels: 3, background: "#7296b0" } }).png().toBuffer(), contentType: "image/png" });
     const source = await prisma.mediaAsset.create({ data: { id: `${userId}-source`, ownerId: userId, characterId: character.id, type: "image", url: `/api/media/${userId}-source/content.png`, storageKey: sourceKey, contentType: "image/png", visibility: "private", safetyStatus: "passed", width: 1, height: 1, metadata: {} } });
     const visual = await prisma.characterVisualProfile.create({ data: { characterId: character.id, status: "active", identityPrompt: "Avery", faceTraits: {}, hairTraits: {}, bodyTraits: {}, signatureTraits: {}, styleTraits: {}, anchorAssetIds: [source.id], adapterRefs: {}, createdFrom: "test" } });
     await prisma.$transaction(tx => createReferenceSetRevision(tx, visual, "test", [{ mediaAssetId: source.id, position: 0, role: "primary_face", weight: 1, selectionReason: "primary_identity_anchor" }]));
@@ -121,8 +122,13 @@ describe("initial Chat image delivery", () => {
     const effect = { version: 2 as const, turnId: snapshot.turnId, attempt: snapshot.attempt, callId: randomUUID(), name: "generate_image_async" as const, effectScope: "turn_action" as const, intent: { requestedNudity: "unspecified" as const }, arguments: { prompt: direction, ...(scenario === "requesting-recovery" && subject === "companion" ? {} : { subject: scenario === "requesting-recovery" ? "companion" : subject }), orientation: "4:5", outputCount: 1 } };
     const accepted = await applyChatToolEffect(effect);
     if (creationFailure) throw creationFailure;
-    expect(accepted, JSON.stringify(accepted)).toMatchObject({ accepted: true, duplicate: false, generationJobId: expect.any(String) });
-    if (!accepted.accepted || !accepted.generationJobId) throw new Error("Missing original image action");
+    if (outcome === "failed") {
+      // The first receipt must reflect a failure already committed by Main,
+      // just as a replay does; it must not tell the Agent the photo is pending.
+      expect(accepted).toMatchObject({ accepted: false, duplicate: false, error: { code: "backend_error", retryable: true } });
+    } else {
+      expect(accepted, JSON.stringify(accepted)).toMatchObject({ accepted: true, duplicate: false, status: "completed", generationJobId: replacementJobId ?? originalJobId });
+    }
     const finalJobId = replacementJobId ?? originalJobId;
     const stored = await prisma.generationJob.findUniqueOrThrow({ where: { id: finalJobId } });
     expect(stored.sourceMeta).toMatchObject({ chatCharacterId: character.id, imageSubject: subject, exchangeId: snapshot.turnId });
@@ -135,7 +141,6 @@ describe("initial Chat image delivery", () => {
     } else {
       expect(stored).toMatchObject({ characterId: character.id, visualProfileId: visual.id, consistencyMode: "strict" });
     }
-    expect(accepted.generationJobId).toBe(finalJobId);
     const delivery = outcome === "failed"
       ? { generationJobId: finalJobId, status: "failed", errorCode: "backend_error", mediaAssetId: null }
       : { generationJobId: finalJobId, status: "completed", errorCode: null, mediaAssetId: expect.any(String) };

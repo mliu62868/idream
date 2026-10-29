@@ -11,6 +11,7 @@ import { characterVisualProfileSnapshotHash, referenceSetSnapshotHash } from "@/
 import { parseChatSessionDetailResponse, parseGenerationContextResponse } from "@/lib/public-api-contracts";
 import { quoteAuthorityFor } from "../ourdream/generation-quote";
 import * as attempts from "../generation/generation-attempt-authority";
+import * as settlement from "@/server/ai/generation-settlement";
 import { editChatTurn, getChatSession } from "./turn-ledger";
 
 const prefix = "zt-chat-video-";
@@ -266,7 +267,7 @@ describe("explicit Chat video admission and delivery", () => {
     expect(generate).not.toHaveBeenCalled();
   });
 
-  it("atomically cancels only untouched dispatches and refunds once without later provider submission", async () => {
+  it("atomically replays concurrent cancellations and refunds once without later provider submission", async () => {
     const f = await fixture(); const body = await videoBody(f);
     const dispatch = attempts.dispatchGenerationAttemptOutbox;
     const held = vi.spyOn(attempts, "dispatchGenerationAttemptOutbox").mockImplementation((db) => dispatch(db, { outboxIds: [] }));
@@ -276,13 +277,31 @@ describe("explicit Chat video admission and delivery", () => {
     expect(await prisma.mainOutboxEvent.findFirstOrThrow({ where: { aggregateId: jobId } })).toMatchObject({ status: "pending", attempts: 0 });
     expect(await videoHistory(f, jobId)).toMatchObject({ generationJobId: jobId, status: "accepted", canCancel: true });
     const cancel = () => api("POST", `generation/jobs/${jobId}/cancel`, { userId: f.userId, ageGate: true });
-    const first = await cancel(); expectOk(first); expect(first.data.refundAmount).toBe(body.quoteAuthority.costDreamcoins);
+    // Both requests observe queued before either obtains the settlement lock.
+    // A pre-lock replay check alone cannot make cancellation idempotent.
+    const lock = settlement.lockGenerationRequestForSettlement;
+    let arrivals = 0;
+    let release!: () => void;
+    const bothArrived = new Promise<void>(resolve => { release = resolve; });
+    const locking = vi.spyOn(settlement, "lockGenerationRequestForSettlement").mockImplementation(async (tx, requestId) => {
+      if (requestId === jobId && arrivals < 2) {
+        if (++arrivals === 2) release();
+        await bothArrived;
+      }
+      return lock(tx, requestId);
+    });
+    const concurrent = await Promise.all([cancel(), cancel()]);
+    locking.mockRestore();
+    for (const response of concurrent) expectOk(response);
+    expect(concurrent.map(response => response.data.refundAmount).sort((a, b) => a - b)).toEqual([0, body.quoteAuthority.costDreamcoins]);
     const repeat = await cancel(); expectOk(repeat); expect(repeat.data.refundAmount).toBe(0);
     expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: jobId } })).toMatchObject({ status: "cancelled" });
     expect(await prisma.generationAttempt.findFirstOrThrow({ where: { requestId: jobId } })).toMatchObject({ status: "cancelled" });
     expect(await prisma.chatTurnAttachment.findFirstOrThrow({ where: { generationJobId: jobId } })).toMatchObject({ status: "cancelled" });
     expect(await dreamcoinBalance(f.userId)).toBe(500);
     expect(await prisma.dreamcoinLedger.count({ where: { sourceId: jobId, reason: "refund" } })).toBe(1);
+    expect(await prisma.generationJobEvent.count({ where: { jobId, type: "cancelled" } })).toBe(1);
+    expect(await prisma.generationJobEvent.count({ where: { jobId, type: "refunded" } })).toBe(1);
     held.mockRestore();
     await dispatch(prisma, { outboxIds: [`generation_initial_${jobId}`] });
     await runQueuedGenerationJobs(4, videoQueues);

@@ -951,12 +951,12 @@ export async function runGenerationWrite(
   if (outcome.kind === "queued") {
     context.effects.applyJob(outcome.job);
     context.effects.showStatus(outcome.statusMessage);
-    // A retry is fired from the jobs list and is already followed by the poll
-    // loop that the non-terminal job re-enters.
+    // A retry stays in the jobs list, but its accepted child becomes the
+    // current job for status, results, and recovery after a reload.
     if (request.kind !== "retry") {
       context.effects.revealJobs();
-      context.effects.trackJob(outcome.job.id);
     }
+    context.effects.trackJob(outcome.job.id);
     context.effects.refreshBalance();
     return outcome;
   }

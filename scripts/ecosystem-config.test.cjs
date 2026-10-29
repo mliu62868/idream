@@ -1547,7 +1547,7 @@ for (const scenario of [
     name: "pm2:start",
     args: [],
     initialProcesses: [],
-    action: ["start", "ecosystem.config.js"],
+    action: ["start", "ecosystem.config.js", "--update-env"],
   },
   {
     name: "pm2:restart",
@@ -1740,7 +1740,7 @@ test("production pauses and drains before phased stop, gate, restart, and resume
     ["pm2", ["delete", "gen-finalizer"]],
     ["pm2", ["jlist"]],
     ["pm2", ["delete", "pocket-tts"]],
-    ["pm2", ["start", "ecosystem.config.js"]],
+    ["pm2", ["start", "ecosystem.config.js", "--update-env"]],
     ["bun", ["run", "generation-cutover:resume"]],
   ]);
   assert.equal(calls[0].options.cwd, repoRoot);
@@ -1826,7 +1826,7 @@ test("development definitions are deleted and recreated before production resume
     ["pm2", ["delete", "main-web"]],
     ["pm2", ["jlist"]],
     ["pm2", ["delete", "pocket-tts"]],
-    ["pm2", ["start", "ecosystem.config.js"]],
+    ["pm2", ["start", "ecosystem.config.js", "--update-env"]],
     ["bun", ["run", "generation-cutover:resume"]],
   ]);
 });
@@ -2144,7 +2144,7 @@ test("a failed PM2 start never resumes generation queues", () => {
   assert.equal(status, 29);
   assert.deepEqual(commandList(calls).at(-1), [
     "pm2",
-    ["start", "ecosystem.config.js"],
+    ["start", "ecosystem.config.js", "--update-env"],
   ]);
   assert.equal(
     commandList(calls).some(([, args]) =>
@@ -2180,7 +2180,7 @@ test("a PM2 command accepted before runtime readiness never resumes queues", () 
   assert.equal(status, 47);
   assert.deepEqual(commandList(calls).at(-1), [
     "pm2",
-    ["start", "ecosystem.config.js"],
+    ["start", "ecosystem.config.js", "--update-env"],
   ]);
   assert.equal(
     commandList(calls).some(([, args]) =>
@@ -2221,7 +2221,7 @@ test("a post-start ownership mismatch blocks queue resume", () => {
   assert.deepEqual(ownershipModes, ["quiescent", "ready"]);
   assert.deepEqual(commandList(calls).at(-1), [
     "pm2",
-    ["start", "ecosystem.config.js"],
+    ["start", "ecosystem.config.js", "--update-env"],
   ]);
   assert.equal(
     commandList(calls).some(([, args]) =>
@@ -2296,7 +2296,7 @@ test("a first production deploy with no existing PM2 apps still closes the full 
     ["bun", ["run", "check:generation-cutover"]],
     ["pm2", ["jlist"]],
     ["pm2", ["delete", "pocket-tts"]],
-    ["pm2", ["start", "ecosystem.config.js"]],
+    ["pm2", ["start", "ecosystem.config.js", "--update-env"]],
     ["bun", ["run", "generation-cutover:resume"]],
   ]);
 });
@@ -2520,4 +2520,56 @@ test("PM2 start refuses an active legacy ASR after the generation fence", () => 
   assert.ok(calls.some(call => call.args.includes("check:generation-cutover")));
   assert.equal(calls.some(call => call.command === "pm2" && ["stop", "delete", "start", "restart"].includes(call.args[0])), false);
   assert.equal(calls.some(call => call.args.includes("generation-cutover:resume")), false);
+});
+
+test("ASR recreation refreshes inherited environment in retained development apps", () => {
+  const revision = "idream-worktree-asr-environment";
+  const nextUrl = "http://127.0.0.1:8364";
+  const main = pm2ProcessFromApp(byName(loadConfig("development"), "main-web"), "online", "development");
+  Object.assign(main.pm2_env, { IDREAM_SOURCE_REVISION: revision, ASR_API_URL: `${nextUrl}/v1` });
+  const resident = registeredAsr("asr");
+  let processes = [main, resident];
+  const stages = [];
+  const status = runPm2Ecosystem({
+    args: ["current", "restart"],
+    env: { APP_ENV: "development", ASR_PROVIDER: "mlx-whisper", ASR_API_URL: nextUrl },
+    computeSourceRevision: () => revision,
+    spawnSync: (command, args, options) => {
+      if (command === "pm2") {
+        if (args[0] === "jlist") return { status: 0, stdout: JSON.stringify(processes) };
+        stages.push(`${args[0]}:${args[1]}`);
+        if (args[0] === "stop") processes.find(row => row.name === args[1]).pm2_env.status = "stopped";
+        if (args[0] === "delete") processes = processes.filter(row => row.name !== args[1]);
+        if (args[0] === "start") {
+          // PM2 preserves an existing definition's inherited env unless asked
+          // to update it, while a newly created ASR receives the new env.
+          if (args.includes("--update-env")) Object.assign(main.pm2_env, options.env);
+          main.pm2_env.status = "online";
+          processes.push({ name: "asr", pm2_env: { ...options.env, status: "online" } });
+        }
+      } else if (command === "curl") {
+        stages.push("asr-idle");
+        return { status: 0, stdout: JSON.stringify(asrHealth("asr")) };
+      } else if (command === "bun") {
+        stages.push(args[1]);
+      } else assert.fail(`Unexpected command ${command}`);
+      return { status: 0 };
+    },
+    verifyGenImageWorkerOwnership: ({ mode }) => { stages.push(`ownership:${mode}`); return 0; },
+    verifyAsrRuntime: () => {
+      stages.push("asr-ready");
+      assert.equal(processes.find(row => row.name === "asr").pm2_env.ASR_API_URL, nextUrl);
+      return 0;
+    },
+    verifyDevelopmentRuntime: () => { stages.push("web-ready"); return 0; },
+  });
+
+  assert.equal(status, 0);
+  assert.equal(main.pm2_env.ASR_API_URL, nextUrl);
+  assert.deepEqual(stages, [
+    "generation-cutover:pause-and-drain", "stop:main-web", "ownership:quiescent",
+    "check:generation-cutover", "asr-idle", "stop:asr", "delete:asr",
+    "delete:pocket-tts", "start:ecosystem.config.js", "asr-ready", "web-ready",
+    "ownership:ready", "generation-cutover:resume",
+  ]);
 });

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { workflowDescriptorSchema } from "./workflow";
 import { buildComfyUiWorkflow, syncComfyUiWorkflow } from "./comfyui-workflow";
 
@@ -40,6 +40,31 @@ const objectInfo = {
 
 describe("ComfyUI visible workflow sync", () => {
   beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.useRealTimers());
+
+  it("bounds object_info body reads and never saves an incomplete graph", async () => {
+    vi.useFakeTimers();
+    let responseBody: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        responseBody = controller;
+        controller.enqueue(new TextEncoder().encode("{"));
+        init?.signal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")), { once: true });
+      },
+    })));
+    vi.stubGlobal("fetch", fetchMock);
+    let outcome: unknown;
+    const syncing = syncComfyUiWorkflow({ apiUrl: "http://comfy", descriptor, timeoutMs: 10 })
+      .catch((error: unknown) => { outcome = error; });
+    try {
+      await vi.advanceTimersByTimeAsync(11);
+      expect(outcome).toMatchObject({ name: "AbortError" });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      responseBody?.error(new Error("test cleanup"));
+      await syncing;
+    }
+  });
 
   it("builds a loadable UI graph with stable identity, widgets, and links", () => {
     const workflow = buildComfyUiWorkflow(descriptor, objectInfo) as {

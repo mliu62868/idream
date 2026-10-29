@@ -76,6 +76,12 @@ export async function settleGenerationRequestCancellation(
     orderBy: { attemptNo: "desc" },
   });
   const guard = input.guard;
+  // Concurrent user cancellations may both pass the caller's fast replay read.
+  // Decide replay under the settlement locks before checking dispatch eligibility;
+  // operator commands retain their stricter version-based conflict semantics.
+  if (guard.kind === "before_dispatch" && job.status === "cancelled") {
+    return { job, attempt, cancelled: job, refundAmount: 0 };
+  }
   if (guard.kind === "operator" && job.version !== guard.expectedVersion) {
     throw Errors.conflict("Generation Request changed before cancellation");
   }
