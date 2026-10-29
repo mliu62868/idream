@@ -477,6 +477,30 @@ describe("Visual Identity experiment activation", () => {
     expect(container.querySelector('button[aria-label="Generate 1 candidate image"]')).not.toBeNull();
   });
 
+  it("offers only explicit aspect ratios and excludes profiles with only original sizing", async () => {
+    const profile = data.visual.identityCalibration!.profiles[0];
+    const sourceSizingData = withCharacterWorkspaceDetail(data, {
+      visual: {
+        ...data.visual,
+        identityCalibration: {
+          blocker: null,
+          profiles: [
+            { ...profile, orientation: "original", allowedOrientations: ["original", "1:1", "4:5"] },
+            { ...profile, profileKey: "source-size-only", modelId: "source-size-only", orientation: "original", allowedOrientations: ["original"] },
+          ],
+        },
+      },
+    });
+    await act(async () => root.render(
+      <VisualIdentityExperimentWorkbench canActivate canCreate canReview canUploadSource data={sourceSizingData} />,
+    ));
+    const aspect = container.querySelector<HTMLSelectElement>('select[aria-label="Advanced aspect ratio"]')!;
+    expect([...aspect.options].map((option) => option.value)).toEqual(["1:1", "4:5"]);
+    expect(aspect.value).toBe("1:1");
+    const model = container.querySelector<HTMLSelectElement>('select[aria-label="Text to image model"]')!;
+    expect([...model.options].map((option) => option.value)).toEqual([profile.modelId]);
+  });
+
   it("gives every generation selector an explicit accessible name", async () => {
     await act(async () =>
       root.render(

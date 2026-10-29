@@ -20,4 +20,10 @@ describe("fitChatImageRequestToRoute", () => {
     const body = generationJobSchema.parse({ characterId: "c1", prompt: "Beach", orientation: "16:9", outputCount: 1, controls: { orientation: "16:9" } });
     expect(fitChatImageRequestToRoute(body, chatRoute)).toEqual(body);
   });
+
+  it("never fits a source-preserving edit into an unrelated route aspect", () => {
+    const body = generationJobSchema.parse({ characterId: "c1", prompt: "Make only the mug red", orientation: "original", controls: { orientation: "original" } });
+    expect(() => fitChatImageRequestToRoute(body, chatRoute)).toThrow("cannot preserve");
+    expect(fitChatImageRequestToRoute(body, { ...chatRoute, allowedOrientations: [...chatRoute.allowedOrientations, "original"] })).toEqual(body);
+  });
 });

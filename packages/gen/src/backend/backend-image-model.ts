@@ -156,6 +156,9 @@ export class BackendImageModel implements ImageModel {
         },
       };
     }
+    if (input.orientation === "original" && (!numericControl(input.controls, "width") || !numericControl(input.controls, "height"))) {
+      return { ok: false, error: { code: "invalid_image_dimensions", message: "Original image dimensions require Main's verified width and height", retryable: false } };
+    }
     const size = resolveSize(input);
     const baseSeed = numericSeed(input.seed, input.requestId);
     const count = Math.max(1, Math.min(input.count, 4));
@@ -343,7 +346,7 @@ function validateReferenceContract(
 }
 
 function resolveSize(input: GenerateInput): { width?: number; height?: number } {
-  const orientationSize = orientationToSize(input.orientation);
+  const orientationSize = input.orientation === "original" ? undefined : orientationToSize(input.orientation);
   const width = numericControl(input.controls, "width") ?? orientationSize?.width;
   const height = numericControl(input.controls, "height") ?? orientationSize?.height;
   return { width, height };

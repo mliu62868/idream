@@ -2668,8 +2668,10 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
     sceneOnly ? "unspecified" : payload.intent.requestedNudity,
     { userInstruction: sceneOnly ? undefined : payload.conversationContext ?? undefined },
   );
-  const orientation = normalizeImageOrientation(payload.controls.orientation, "4:5");
   const sourceImageAssetId = payload.controls.sourceImageAssetId;
+  // Editing has no crop/resize control. Main derives the output geometry from
+  // the same verified source bytes that admission freezes for Gen.
+  const orientation = sourceImageAssetId ? "original" : normalizeImageOrientation(payload.controls.orientation, "4:5");
   return createGenerationJobForUser(
     payload.userId,
     {

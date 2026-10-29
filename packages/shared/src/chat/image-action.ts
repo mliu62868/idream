@@ -73,7 +73,7 @@ export const IMAGE_AGENT_TOOL_DEFINITIONS: readonly ChatToolDefinition[] = [
   {
     name: EDIT_LAST_IMAGE_TOOL,
     description:
-      "Edit the LAST photo you sent to the user (img2img). Use when the user asks to change or redo that photo, not for a new unrelated scene. Keep identity consistent.",
+      "Request an asynchronous edit of the LAST delivered photo. Use for requested changes or redos, not unrelated scenes; preserve identity. accepted/queued means still processing; completed confirms delivery only, not visual correctness.",
     parameters: {
       type: "object",
       properties: {

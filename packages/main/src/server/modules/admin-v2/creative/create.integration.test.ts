@@ -131,6 +131,36 @@ describe("Creative Run v2 brief and launch", () => {
     await prisma.$disconnect();
   });
 
+  it.each(["original", undefined])("rejects unsupported source sizing before creating a Run (requested orientation: %s)", async (orientation) => {
+    await prisma.generationModelProfile.update({
+      where: { id: `${profileKey}-v1` },
+      data: { allowedOrientations: ["original", "1:1", "16:9"] },
+    });
+    const before = {
+      batches: await prisma.contentProductionBatch.count({ where: { ownerId: actorId } }),
+      jobs: await prisma.generationJob.count({ where: { userId: actorId } }),
+      commands: await prisma.controlPlaneCommand.count({ where: { actorId, commandType: "creative.run.create" } }),
+    };
+    try {
+      const rejected = request({ ...body, ...(orientation ? { orientation } : {}) });
+      rejected.headers.set("idempotency-key", randomUUID());
+      const response = await postCreativeRun(rejected);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: {
+        code: "bad_request",
+        message: "Creative Runs do not support original source dimensions. Choose an explicit aspect ratio.",
+      } });
+      expect(await prisma.contentProductionBatch.count({ where: { ownerId: actorId } })).toBe(before.batches);
+      expect(await prisma.generationJob.count({ where: { userId: actorId } })).toBe(before.jobs);
+      expect(await prisma.controlPlaneCommand.count({ where: { actorId, commandType: "creative.run.create" } })).toBe(before.commands);
+    } finally {
+      await prisma.generationModelProfile.update({
+        where: { id: `${profileKey}-v1` },
+        data: { allowedOrientations: ["1:1", "16:9"] },
+      });
+    }
+  });
+
   it("atomically creates lineage and replays the same idempotent brief", async () => {
     const first = await postCreativeRun(request());
     expect(first.status).toBe(202);

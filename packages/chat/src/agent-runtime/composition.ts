@@ -43,7 +43,7 @@ export function companionCompositionManifest(mode: CompanionCompositionMode, igr
     corePackages: COMPANION_CORE_PACKAGES, storage: "memory", builtInTools: [],
     compaction: { backend: "pi-durable", ...COMPANION_COMPACTION_CONFIG },
     reasoning: { generation: true, compaction: false, structured: false, totalLimit: "profile" },
-    execution: { version: 62, maxSteps: authority.maxSteps, toolExecution: "sequential", maxParallelToolCalls: 1,
+    execution: { version: 63, maxSteps: authority.maxSteps, toolExecution: "sequential", maxParallelToolCalls: 1,
       retry: false, backgroundCompaction: false, deadlineSource: "invocation.deadlineAt", commitBeforeProjection: true,
       recovery: "Main snapshot and immutable local proposal" },
     igrepMaintenance: { url: url.toString().replace(/\/$/u, ""), model: authority.igrepLlm.model.trim(), sampling: IGREP_MAINTENANCE_SAMPLING },

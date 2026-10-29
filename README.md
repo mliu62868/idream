@@ -233,6 +233,8 @@ while preserving configured memory roots and retiring plugin/bootstrap paths.
 
 ## Character Chat Media Library
 
+Chat 的 `edit_last_image` 保留实际源文件尺寸；Main 在接纳事务中校验像素并冻结同一份源快照，Gen 不再套用新生成的默认画幅。已存在的开发/测试库需在受影响任务排空后执行 `db/sql/2026-10-29-image-edit-original-dimensions.sql`，为现有两个编辑档案发布支持 `original` 的新版本。原图须为单帧、宽高为 64 的倍数，且不超过所选档案已有尺寸预算；不符合时在扣费前拒绝。该迁移保留历史任务与旧档案；按既有重试规则，旧档案归档后，其失败任务不能再发起付费重试。保留尺寸不代表模型能保证未编辑区域逐像素不变。
+
 Main owns reusable Character photos/videos and their delivery records. Before
 deploying this feature, confirm `DATABASE_URL` selects the intended database,
 then run from the repository root:

@@ -4,6 +4,14 @@ import { expect, it, vi } from "vitest";
 import { withGenerationSnapshotSlot } from "./generation-source-snapshot";
 import { assertGenerationSourceImageAuthority } from "./generation-job-authority";
 import { providers } from "@/server/providers";
+import { verifySourceImageBytes } from "@/server/lib/safe-remote-image";
+
+it("reports the decoded display dimensions of an EXIF-rotated source without changing its bytes", async () => {
+  const bytes = await sharp({ create: { width: 640, height: 960, channels: 3, background: "#567890" } }).withMetadata({ orientation: 6 }).jpeg().toBuffer();
+  const source = await verifySourceImageBytes(bytes);
+  expect(source).toMatchObject({ width: 960, height: 640, pages: 1 });
+  expect(source.bytes).toBe(bytes);
+});
 
 it("bounds concurrent verification and releases slots after success or failure", async () => {
   let release!: () => void;

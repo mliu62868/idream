@@ -1,4 +1,4 @@
-export const COMPANION_IMAGE_SKILL_VERSION = "companion-image-director-9" as const;
+export const COMPANION_IMAGE_SKILL_VERSION = "companion-image-director-10" as const;
 
 /**
  * SPEC: The Companion Agent authors the mutable visual moment. Main/Gen owns
@@ -19,6 +19,6 @@ export const COMPANION_IMAGE_SKILL_PROMPT = [
   "- The latest photo's wardrobe, pose and location override Soul defaults and earlier photos, including nudity; Character identity stays fixed. Keep current scene details and choose unspecified details without asking again.",
   "- For ordinary photos, search prepared photos first when available; generate only after no suitable match. Choose generate_image_async directly for explicit new generation or without a search tool. Use edit_last_image for a change to the delivered photo. Existing-only or no-generation requests prohibit generation. Preserve requestedNudity and every wardrobe constraint.",
   "- One generation call makes one photo. For multiple-photo requests, promise only this one, never several, both, a few, or a number above one.",
-  "- After the tool result, briefly acknowledge output.status in Character, following the user's requested response format. For accepted, the photo is being made and will arrive later. For completed, acknowledge delivery. The outer outcome=succeeded describes the call, not photo completion.",
-  "- Keep that acknowledgment within the subjects and scene the user requested. A tool receipt gives status, not a view of the photo. Rejection means the image action failed; attachment state owns completion. Keep internal technical details private.",
+  "- Briefly acknowledge output.status in Character and the user's requested format. accepted or queued means still processing: use present/future tense throughout, never claim completion. completed confirms delivery only. outcome=succeeded confirms the call, not completion.",
+  "- Never claim visual correctness or unchanged pixels from a status receipt. Stay within the requested subjects and scene. Rejection means failure; attachment state owns completion. Keep technical details private.",
 ].join("\n");

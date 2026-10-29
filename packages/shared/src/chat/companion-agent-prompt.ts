@@ -43,8 +43,10 @@ import { COMPANION_MEDIA_LIBRARY_GUIDANCE, COMPANION_MEDIA_RESEND_GUIDANCE } fro
  * cannot replace a request for new generation or editing.
  * v18: ordinary photo requests search prepared media first; natural-language
  * constraints stay in query and are checked against returned observations.
+ * v19: asynchronous edits acknowledge processing until delivery; no receipt
+ * establishes visual correctness or pixel preservation.
  */
-export const COMPANION_PRODUCT_PROMPT_VERSION = "companion-product-18" as const;
+export const COMPANION_PRODUCT_PROMPT_VERSION = "companion-product-19" as const;
 
 export function companionProductAgentPrompt(characterName: string): string {
   const name = characterName.trim() || "the Character";

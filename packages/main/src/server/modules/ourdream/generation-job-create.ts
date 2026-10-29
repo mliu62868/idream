@@ -84,6 +84,9 @@ export function fitChatImageRequestToRoute(
 ): GenerationCreateBody {
   const allowed = jsonStringArray(profile.allowedOrientations);
   const requested = body.orientation ?? body.controls.orientation;
+  if (requested === "original" && !allowed.includes(requested)) {
+    throw Errors.conflict("The selected edit route cannot preserve the source image dimensions.");
+  }
   const orientation = requested && allowed.length > 0 && !allowed.includes(requested)
     ? allowed[0] as NonNullable<GenerationCreateBody["orientation"]>
     : requested;
@@ -183,6 +186,10 @@ export async function prepareGenerationJobForUser(userId: string, body: Generati
     body.controls.orientation ??
     allowedOrientations[0] ??
     "4:5";
+  const preserveSourceGeometry = body.mode === "image" && orientation === "original";
+  if (orientation === "original" && (!preserveSourceGeometry || !requestedSourceImageAssetId)) {
+    throw Errors.badRequest("Original dimensions require an image edit source.");
+  }
   const pricingAuthority = await resolveGenerationPricingAuthority(body.mode);
   const pricingFingerprint = generationPricingFingerprint(pricingAuthority);
   const cost = generationCostFromAuthority(
@@ -424,23 +431,39 @@ export async function prepareGenerationJobForUser(userId: string, body: Generati
       }
       // Re-read the complete grant after all identity and Comic page locks are held.
       if (contextToken) await resolveGenerationContext(userId, contextToken, tx);
-      let frozenVideoSource: FrozenGenerationSource | undefined;
+      let outputDimensions = dimensions;
+      let frozenSource: FrozenGenerationSource | undefined;
       if (sourceImageAssetId) {
-        frozenVideoSource = options.videoSourceSnapshots?.get(sourceImageAssetId);
+        frozenSource = options.videoSourceSnapshots?.get(sourceImageAssetId);
         const verify = async () => assertGenerationSourceImageAuthority(tx, {
           sourceImageAssetId,
           userId,
           characterId: character?.id ?? null,
-          verifyVideoPixels: body.mode === "video" && !frozenVideoSource,
+          verifyVideoPixels: body.mode === "video" && !frozenSource,
+          verifyImagePixels: preserveSourceGeometry,
           authorizedComicSourceMediaId: lockedContext?.source.kind === "comic" ? lockedContext.sourceMedia?.id : undefined,
         });
-        if (body.mode === "video" && !frozenVideoSource) {
-          frozenVideoSource = await withGenerationSnapshotSlot(async () => {
+        if ((body.mode === "video" && !frozenSource) || preserveSourceGeometry) {
+          frozenSource = await withGenerationSnapshotSlot(async () => {
             const source = await verify();
-            if (!source) throw new Error("Verified video source bytes are missing");
+            if (!source) throw new Error("Verified generation source bytes are missing");
+            if (preserveSourceGeometry) {
+              if (source.pages !== 1) throw Errors.conflict("Original dimensions require a single-frame source image.");
+              // Preserve actual pixels without silently stretching or cropping.
+              // Keep the admitted workload within this profile's published size
+              // envelope; an arbitrary imported source must not expand its budget.
+              const envelope = allowedOrientations.filter(value => value !== "original").map(value => dimensionsForImageOrientation({ orientation: value, defaultWidth: profile.defaultWidth, defaultHeight: profile.defaultHeight }));
+              if (!envelope.length) envelope.push({ width: profile.defaultWidth, height: profile.defaultHeight });
+              const maxPixels = Math.max(...envelope.map(size => size.width * size.height));
+              const maxSide = Math.max(...envelope.flatMap(size => [size.width, size.height]));
+              if (source.width % 64 !== 0 || source.height % 64 !== 0 || source.width * source.height > maxPixels || Math.max(source.width, source.height) > maxSide) {
+                throw Errors.conflict("This edit route cannot preserve the source image dimensions. Choose a smaller image with dimensions divisible by 64.", { width: source.width, height: source.height, maxPixels, maxSide });
+              }
+              outputDimensions = { width: source.width, height: source.height };
+            }
             return freezeGenerationSource(tx, { userId, ...source });
           });
-          options.videoSourceSnapshots?.set(sourceImageAssetId, frozenVideoSource);
+          if (body.mode === "video") options.videoSourceSnapshots?.set(sourceImageAssetId, frozenSource);
         } else await verify();
         if (body.mode === "video") options.videoSourceChecks?.add(sourceImageAssetId);
       }
@@ -506,10 +529,10 @@ export async function prepareGenerationJobForUser(userId: string, body: Generati
         generationProfileVersion: profile.version,
         workflowKey: workflowDescriptor?.workflowKey,
         workflowVersion: workflowDescriptor?.version,
-        width: dimensions.width,
-        height: dimensions.height,
+        width: outputDimensions.width,
+        height: outputDimensions.height,
         sourceImageAssetId: sourceImageAssetId ?? undefined,
-        ...(frozenVideoSource ? { sourceSnapshot: { version: 1, sourceImageAssetId, snapshotId: frozenVideoSource.id, sha256: frozenVideoSource.sha256, sizeBytes: frozenVideoSource.sizeBytes, contentType: frozenVideoSource.contentType } } : {}),
+        ...(body.mode === "video" && frozenSource ? { sourceSnapshot: { version: 1, sourceImageAssetId, snapshotId: frozenSource.id, sha256: frozenSource.sha256, sizeBytes: frozenSource.sizeBytes, contentType: frozenSource.contentType } } : {}),
         lookReferenceAssetId: requestedLookReferenceAssetId ?? undefined,
         workflowIdentity: workflowDescriptor?.identity,
         consistencyMode: visualProfile ? consistencyMode : undefined,
@@ -534,7 +557,7 @@ export async function prepareGenerationJobForUser(userId: string, body: Generati
         referenceAssetIds: visualProfile ? JSON.parse(JSON.stringify(referenceAssetIds)) : undefined,
         referenceManifest: referenceSetRevision ? JSON.parse(JSON.stringify(referenceManifest)) : undefined,
         authorizedSourceImageAssetId: lockedContext?.source.kind === "comic" ? lockedContext.sourceMedia?.id : undefined,
-        reuse: sourceImageAssetId && frozenVideoSource ? { assetId: sourceImageAssetId, snapshot: frozenVideoSource } : undefined,
+        reuse: sourceImageAssetId && frozenSource ? { assetId: sourceImageAssetId, snapshot: frozenSource } : undefined,
       });
       if (referenceSnapshots.length) Object.assign(controls, { referenceSnapshots });
       return {

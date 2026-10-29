@@ -1046,6 +1046,57 @@ describe("Chat embedded companion runtime", () => {
     });
   });
 
+  it.each([
+    ["generate_image_async", "accepted"], ["generate_image_async", "queued"], ["generate_image_async", "completed"],
+    ["edit_last_image", "accepted"], ["edit_last_image", "queued"], ["edit_last_image", "completed"],
+  ] as const)("pins %s %s receipt meaning in the native continuation without changing the receipt", async (name, status) => {
+    const original = imageInvocation();
+    const value = companionInvocationSchema.parse({ ...original, preparedTurn: {
+      ...original.preparedTurn, tools: IMAGE_AGENT_TOOL_DEFINITIONS,
+    } });
+    const requests: WireRequest[] = [];
+    const receipts: CompanionToolResult[] = [];
+    const reply = status === "completed" ? "The photo has arrived." : "The photo is still being worked on.";
+    const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: async (_url, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return requests.length === 1
+        ? response({ tool_calls: [{ index: 0, id: "image-status", function: { name, arguments: JSON.stringify(name === "edit_last_image"
+          ? { instruction: "Change the mug to red.", requestedNudity: "none" }
+          : { prompt: "Mira holding a red mug.", subject: "companion", requestedNudity: "none" }) } }] }, "tool_calls")
+        : response({ content: reply });
+    } });
+    const runtime = await engine(adapter);
+    const connection = port({ executeTool: async call => {
+      const receipt: CompanionToolResult = { attemptId: call.attemptId, callId: call.callId, name: call.name,
+        outcome: "succeeded", output: { accepted: true, duplicate: false, status, attachmentId: "attachment-status",
+          generationJobId: "job-status", mediaAssetId: status === "completed" ? "media-status" : null, costDreamcoins: 8 } };
+      receipts.push(structuredClone(receipt));
+      return receipt;
+    } });
+    try {
+      await runtime.run(value, connection.runtimePort);
+      expect(requests).toHaveLength(2);
+      const continuation = requests[1]!.messages.find(message => message.role === "tool");
+      expect(continuation?.tool_call_id).toBe("image-status");
+      const raw = JSON.stringify(receipts[0]);
+      expect(continuation?.content.startsWith(`${raw}\n\n`)).toBe(true);
+      const guidance = continuation!.content.slice(raw.length);
+      if (status === "completed") {
+        expect(guidance).toContain("confirms delivery only");
+        expect(guidance).not.toContain("still processing");
+      } else {
+        expect(guidance).toContain("No finished image is available yet");
+        expect(guidance).toContain("including the opening");
+        expect(guidance).toContain("never start with 'Done'");
+        expect(guidance).toContain("Do not repeat requested edit or scene details");
+        expect(guidance).toContain("Earlier assistant claims");
+      }
+      expect(guidance).toContain("Do not claim visual correctness or promise unchanged details");
+      expect(connection.candidates[0]?.content).toBe(reply);
+      expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
+    } finally { await runtime.shutdown(); }
+  });
+
   it("runs a native search, selected free delivery and factual reply without spending the action on search", async () => {
     const requests: WireRequest[] = [];
     const calls: CompanionToolCall[] = [];

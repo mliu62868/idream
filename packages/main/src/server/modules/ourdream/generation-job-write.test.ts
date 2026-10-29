@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import sharp from "sharp";
 import { prisma } from "@/server/lib/db";
+import { providers } from "@/server/providers";
 import { AppError } from "@/server/lib/errors";
 import {
   createCharacter,
@@ -31,6 +33,7 @@ import { requestMediaVariationWithExactQuote } from "@/lib/generation-write-clie
 // 这个文件才跑得起来。
 
 const P = "zt-genwrite-";
+const sourceKeys: string[] = [];
 const PINNED_RETRY_JOB_AUTHORITY = {
   model: "redcraft-qw21t",
   profileId: "profile_image_default_v1",
@@ -125,6 +128,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await purgeTestData(P);
+  for (const key of sourceKeys) await providers.blob.delete({ key });
   await prisma.$disconnect();
 });
 
@@ -140,7 +144,9 @@ describe("createGenerationJobForUser", () => {
       id: sourceJobId, userId, mode: "image", ...PINNED_RETRY_JOB_AUTHORITY,
       status: "completed", orientation: "4:5", controls: { orientation: "4:5" }, presetIds: [],
     } });
-    await createMedia({ id: sourceAssetId, ownerId: userId, sourceJobId });
+    const source = await createMedia({ id: sourceAssetId, ownerId: userId, sourceJobId });
+    sourceKeys.push(source.storageKey!);
+    await providers.blob.putPrivate({ key: source.storageKey!, body: await sharp({ create: { width: 832, height: 1024, channels: 3, background: "#7296b0" } }).webp().toBuffer(), contentType: "image/webp" });
     await prisma.mediaAsset.update({ where: { id: sourceAssetId }, data: { width: 832, height: 1024 } });
 
     const result = await requestMediaVariationWithExactQuote({

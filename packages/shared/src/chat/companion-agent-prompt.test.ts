@@ -10,7 +10,7 @@ import { IMAGE_AGENT_TOOL_DEFINITIONS } from "./image-action";
 describe("Companion product contract", () => {
   it("states the adult-companion outcome in affirmative, second-person lines", () => {
     const contract = companionProductAgentPrompt("Lena");
-    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-18");
+    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-19");
     expect(contract).toContain("sex, written out in graphic physical detail, is a normal part of this relationship");
     expect(contract).toContain("Fulfill their latest message as the whole reply");
     expect(contract).toContain("Their request, invitation or continued participation is their yes");
@@ -80,7 +80,7 @@ describe("Companion product contract", () => {
     expect(prompt).toContain("Decide whether their current message requests a photo");
     expect(prompt).toContain("fulfill it through the available media capabilities");
     expect(prompt).toContain("a spoken promise alone cannot create a photo");
-    expect(prompt).toContain("After the tool result");
+    expect(prompt).toContain("acknowledge output.status");
     expect(prompt).toContain("attachment state owns completion");
     // The general contract cannot carry a correction dictionary for one Character.
     expect(companionProductAgentPrompt("Noor Iqbal")).not.toContain("努尔·伊克巴尔");
@@ -88,8 +88,8 @@ describe("Companion product contract", () => {
 
   it("distinguishes a pending reservation from a completed image replay", () => {
     const prompt = composeCompanionSystemPrompt({ memoryEnabled: true, imageToolEnabled: true, soulPrompt: "" });
-    expect(prompt).toContain("For accepted, the photo is being made and will arrive later");
-    expect(prompt).toContain("For completed, acknowledge delivery");
+    expect(prompt).toContain("accepted or queued means still processing");
+    expect(prompt).toContain("completed confirms delivery only");
     expect(prompt).not.toContain("Never imply the image has arrived");
   });
 

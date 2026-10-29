@@ -315,8 +315,10 @@ describe("PreparedTurn budget", () => {
     expect(state).not.toContain(`call ${name}`);
     expect(state).not.toContain("is sent with this reply");
     expect(state).not.toContain("answer as you send it");
-    expect(instructions).toContain("For accepted, the photo is being made and will arrive later");
-    expect(instructions).toContain("For completed, acknowledge delivery");
+    expect(instructions).toContain("accepted or queued means still processing");
+    expect(instructions).toContain("use present/future tense throughout, never claim completion");
+    expect(instructions).toContain("completed confirms delivery only");
+    expect(instructions).toContain("Never claim visual correctness or unchanged pixels from a status receipt");
     expect(prepared.messages.at(-1)?.content).toBe(text);
   });
 

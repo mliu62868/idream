@@ -35,7 +35,11 @@ export async function verifySourceImageBytes(bytes: Uint8Array, sourceImageAsset
     // Wait for the native callback before releasing the verification slot.
     await image.raw().toBuffer();
     if (performance.now() - startedAt >= 10_000) throw Errors.unavailable("Reference image verification timed out. Please try again.");
-    return { bytes, contentType: metadata.format === "heif" ? "image/avif" : `image/${metadata.format}` };
+    const rotated = [5, 6, 7, 8].includes(metadata.orientation ?? 1);
+    return { bytes, contentType: metadata.format === "heif" ? "image/avif" : `image/${metadata.format}`,
+      pages: metadata.pages ?? 1,
+      width: rotated ? metadata.height : metadata.width,
+      height: rotated ? metadata.width : metadata.height };
   } catch (error) {
     if (error instanceof Error && /tim(?:eout|ed out)/i.test(error.message)) throw Errors.unavailable("Reference image verification timed out. Please try again.");
     throw Errors.conflict("This reference image cannot be used for generation. Choose another readable image.", sourceImageAssetId ? { sourceImageAssetId } : undefined);

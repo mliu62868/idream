@@ -231,7 +231,7 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
       conversationContext: turn.userContent,
       intent: effect.intent,
       controls: {
-        orientation: call.name === "generate_image_async" ? call.arguments.orientation : "4:5",
+        orientation: call.name === "generate_image_async" ? call.arguments.orientation : "original",
         outputCount: call.name === "generate_image_async" ? call.arguments.outputCount : 1,
         ...(sourceImageAssetId ? { sourceImageAssetId } : {}),
       },

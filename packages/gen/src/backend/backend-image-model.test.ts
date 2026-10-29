@@ -659,6 +659,19 @@ describe("BackendImageModel", () => {
 // portrait/landscape/square-only switch (which silently defaulted every real wire
 // value to 1024x1024) can't reopen unnoticed.
 describe("BackendImageModel orientation sizing (wire contract)", () => {
+  it("uses exact admitted source dimensions without applying a default aspect", async () => {
+    const backend = makeStubBackend();
+    await modelWith(backend).generate({ prompt: "Make only the mug red", count: 1, model: "m", orientation: "original", controls: { ...PIN, width: 832, height: 832 } });
+    expect(submittedSlots(backend)).toMatchObject({ width: 832, height: 832 });
+  });
+
+  it("refuses original sizing without both admitted dimensions before provider invocation", async () => {
+    const backend = makeStubBackend();
+    const result = await modelWith(backend).generate({ prompt: "Make only the mug red", count: 1, model: "m", orientation: "original", controls: { ...PIN, width: 832 } });
+    expect(result).toMatchObject({ ok: false, error: { code: "invalid_image_dimensions", retryable: false } });
+    expect(backend.submit).not.toHaveBeenCalled();
+  });
+
   it('"4:5" is taller than wide and is NOT the old 1024x1024 default', async () => {
     const backend = makeStubBackend();
     await modelWith(backend).generate({ prompt: "a cat", count: 1, model: "m", orientation: "4:5", controls: PIN });

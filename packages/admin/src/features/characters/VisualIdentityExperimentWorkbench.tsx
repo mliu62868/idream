@@ -271,7 +271,18 @@ export function VisualIdentityExperimentWorkbench({
   const profiles = calibration.profiles;
   const [mode, setMode] = useState<ExperimentMode>(lockedExperiment?.mode ?? "text_to_image");
   const compatibleProfiles = useMemo(
-    () => profiles.filter((profile) => profile.modes.includes(mode)),
+    () => profiles.flatMap((profile) => {
+      if (!profile.modes.includes(mode)) return [];
+      const allowedOrientations = profile.allowedOrientations.filter((value) => value !== "original");
+      if (!allowedOrientations.length) return [];
+      return [{
+        ...profile,
+        allowedOrientations,
+        orientation: allowedOrientations.includes(profile.orientation)
+          ? profile.orientation
+          : allowedOrientations[0],
+      }];
+    }),
     [mode, profiles],
   );
   const preferredProfile =

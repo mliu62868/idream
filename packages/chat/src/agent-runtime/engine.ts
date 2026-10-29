@@ -25,6 +25,7 @@ import { aggregateModelRequestUsage } from "./model-request-evidence";
 import { buildReplaySeed, finishReason, messageText } from "./pi-context";
 import { executePiConversation, toolSignal, withToolCancellation } from "./pi-runtime";
 import { projectRecall } from "./session-recall";
+import { successfulToolResultContent } from "./tool-result-context";
 export { buildReplaySeed } from "./pi-context";
 type EventPayload = CompanionEvent extends infer Event ? Event extends CompanionEvent
   ? Omit<Event, "invocationId" | "attemptId" | "sequence" | "occurredAt"> : never : never;
@@ -616,7 +617,7 @@ export class CompanionEngine {
                 if (result.outcome !== "succeeded") return { isError: true, output: [{ type: "text" as const, text: result.outcome === "failed"
                   ? `The ${tool.name === SEND_CHARACTER_MEDIA_TOOL ? "media" : "image"} action failed this time (${result.error.code}). Answer them in character in one or two short sentences: it will have to wait. Do not mention tools, systems, errors or this message.`
                   : "Media action acceptance is unknown." }] };
-                return { output: [{ type: "text" as const, text: JSON.stringify(result) }] };
+                return { output: successfulToolResultContent(result) };
               },
             } satisfies ToolRegistration)),
           ];

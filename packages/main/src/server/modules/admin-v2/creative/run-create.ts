@@ -178,6 +178,12 @@ export async function createCreativeRun(
     undefined,
     productionMode,
   );
+  const allowedOrientations = jsonStringArray(profile.allowedOrientations);
+  const orientation = body.orientation ?? allowedOrientations[0] ?? "4:5";
+  // Creative Runs do not derive dimensions from a verified source snapshot.
+  if (orientation === "original") {
+    throw Errors.badRequest("Creative Runs do not support original source dimensions. Choose an explicit aspect ratio.");
+  }
   const workflowKey = profile.workflowKey ?? profile.pipelineModel;
   const workflow = await generationWorkflowDescriptor(workflowKey);
   const configuredWorkflowVersion = jsonRecord(profile.runnerConfig).workflowVersion;
@@ -504,8 +510,6 @@ export async function createCreativeRun(
   if (presets.length !== body.presetIds.length) {
     throw Errors.badRequest("Production batch presets must be active built-in presets");
   }
-  const allowedOrientations = jsonStringArray(profile.allowedOrientations);
-  const orientation = body.orientation ?? allowedOrientations[0] ?? "4:5";
   if (allowedOrientations.length > 0 && !allowedOrientations.includes(orientation)) {
     throw Errors.badRequest("Orientation is not allowed for this profile", {
       orientation,
