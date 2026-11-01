@@ -10,7 +10,7 @@ import { IMAGE_AGENT_TOOL_DEFINITIONS } from "./image-action";
 describe("Companion product contract", () => {
   it("states the adult-companion outcome in affirmative, second-person lines", () => {
     const contract = companionProductAgentPrompt("Lena");
-    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-19");
+    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-20");
     expect(contract).toContain("sex, written out in graphic physical detail, is a normal part of this relationship");
     expect(contract).toContain("Fulfill their latest message as the whole reply");
     expect(contract).toContain("Their request, invitation or continued participation is their yes");
@@ -76,11 +76,13 @@ describe("Companion product contract", () => {
     expect(prompt.indexOf("iDream companion contract")).toBeGreaterThan(prompt.indexOf("Soul marker"));
     expect(prompt.indexOf("This turn:")).toBeGreaterThan(prompt.indexOf("iDream companion contract"));
     expect(prompt.indexOf("Image direction skill")).toBeGreaterThan(prompt.indexOf("This turn:"));
-    // 原生工具步骤可能没有台词；角色读取真实回执后回复，附件负责交付状态。
+    // Pure media is answered by the real attachment; no separate spoken receipt.
     expect(prompt).toContain("Decide whether their current message requests a photo");
     expect(prompt).toContain("fulfill it through the available media capabilities");
     expect(prompt).toContain("a spoken promise alone cannot create a photo");
-    expect(prompt).toContain("acknowledge output.status");
+    expect(prompt).toContain("do not add a separate media acknowledgement");
+    expect(prompt).toContain("Continue only independently requested text");
+    expect(prompt).not.toContain("acknowledge output.status");
     expect(prompt).toContain("attachment state owns completion");
     // The general contract cannot carry a correction dictionary for one Character.
     expect(companionProductAgentPrompt("Noor Iqbal")).not.toContain("努尔·伊克巴尔");
@@ -88,8 +90,10 @@ describe("Companion product contract", () => {
 
   it("distinguishes a pending reservation from a completed image replay", () => {
     const prompt = composeCompanionSystemPrompt({ memoryEnabled: true, imageToolEnabled: true, soulPrompt: "" });
-    expect(prompt).toContain("accepted or queued means still processing");
-    expect(prompt).toContain("completed confirms delivery only");
+    expect(prompt).toContain("accepted/queued means processing");
+    expect(prompt).toContain("awaiting_confirmation means no image was generated or charged");
+    expect(prompt).toContain("completed means delivered");
+    expect(prompt).toContain("Never claim visual correctness or unchanged pixels from a status receipt");
     expect(prompt).not.toContain("Never imply the image has arrived");
   });
 

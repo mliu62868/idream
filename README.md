@@ -174,6 +174,15 @@ attribution, is replayed exactly without another model request. There is no Pi
 session database or persistent inbox. Tools execute sequentially; model retries
 and background compaction are disabled.
 
+The final provider request uses one input estimate including tool schemas and
+pinned state. If compaction still leaves an oversized request, derived summaries
+can be removed and read-only results paged at whole source-chunk boundaries;
+`session_recall` retains exact source cursors and originals. This is a character
+estimate, not the provider tokenizer's exact count. `CHAT_MODEL_MAX_TOKENS`
+(default 8000) covers thinking and visible output together; reply-length
+preferences do not reserve that total for visible text. A thinking-only exhausted
+request fails without an automatic model retry.
+
 Main's committed Turns own long-term memory. Chat alone invokes official
 `mem ingest`, `maintain`, `wake`, `reproject`, and the neutral memory JSON API.
 Normal execution exposes read-only `memory_search`; normal and private attempts

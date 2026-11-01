@@ -1,7 +1,15 @@
 import { z } from "zod";
 import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL } from "../chat/media-library";
+import { imageEditOperationSchema } from "../chat/image-action";
 
 export const CHAT_PIN_LIMIT = 8;
+
+// Executed edit facts identify derived media without inventing a visual description.
+export const chatMediaEditProvenanceSchema = z.object({
+  sourceMediaAssetId: z.string().min(1).max(160),
+  requestedTarget: z.string().min(1).max(120),
+  operation: imageEditOperationSchema,
+}).strict();
 
 // Chat freezes the execution lifetime once. Main's recovery policy consumes
 // that commitment instead of guessing from another process's configuration.
@@ -200,6 +208,7 @@ export const chatExecutionSnapshotSchema = z.object({
     kind: z.enum(["image", "video"]),
     turnId: z.string().min(1).max(160),
     description: z.string().max(4_000).nullable(),
+    editProvenance: chatMediaEditProvenanceSchema.optional(),
   }).strict()).max(8).optional(),
   group: groupChatContextSchema.optional(),
   hasRecentImageContext: z.boolean().default(false),

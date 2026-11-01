@@ -68,6 +68,10 @@ Main 投影独占长期记忆 ingest/maintain，普通 attempt 首轮前只执�
 
 上下文压力与 provider overflow 由 Pi 公共 compaction 生命周期处理。宿主的 companion 摘要仅压缩既有观察，不把历史用户请求变成当前任务；指令要求至多 200 words 的最终笔记、合并重复信息，保留明确事实与归属，不从条目序号或重复次数推断事件和时间。既有 1024-token 硬上限不变，截断摘要仍判失败。任何必要 hook 失败先锁住后续模型与工具派发。Main 的 seed/omitted 原文与 Pi 公共 `Conversation.entries()`、context contributions 共同构成只读会话召回投影。每块按 attempt/source/block/byte 稳定标识并保留 UTF-8 字节、原角色和 speaker；query 走公共 igrep `search --stdin-format jsonl --mode ultra`，结果 ID 必须回查当前 attempt 的不可变原文，不能信任搜索摘要冒充原文。system、plugin 上下文、reasoning、压缩摘要和 recall 自身输出不进入原文档案。
 
+最终请求按 adapter 相同的消息和工具序列化估算输入预算。Pi 压缩后仍超限时，先移除可派生摘要，再把大只读工具结果替换为当前 attempt 内精确来源 cursor；召回结果只按完整原文 chunk 分页，保留未返回的 ID 与来源续页 cursor。最新回读至少保留一个完整 chunk，不能退化成不断回读自身的空页；不可容纳的固定输入仍拒绝。分页只改变发送副本，不修改 Main/Pi 原文；估算不等于 provider tokenizer 精确计数。
+
+已交付的确认式编辑可携带 `editProvenance`，绑定实际成功 attempt 的冻结 dispatch、源资产和已执行操作；它与视觉 `description` 分离。重发读取资产自己的来源链，不能把最近一次用户请求改写为该图片的事实。`requestedTarget` 仍是编辑意图，操作完成不证明选区完整或视觉语义达标；源资产引用也不扩大当前会话的可发送权限。
+
 当前 Scene、偏好、预召回和当前用户请求在每个实际模型请求边界重新投影，保持原有来源与固定授权，不能被摘要替代。每次物理模型请求独立进入 usage 和 modelRequests 证据，包括工具后的回复和被拒绝的摘要；不能用 Pi 默认的数字 usage 把未知上游回执当成零。attempt 结束后释放内存对话和临时 workspace；保留的历史 DSH archive 清理仅处理已证明本机 owner 退出的旧目录，不更改既有 canonical `deepseek-harness` intake/backup 格式。
 
 原生只读检索工具成功后，后续生成请求末尾附带一条静态回复上下文，提醒模型按原请求回答、保留事实归属并在完成后结束；空结果也属于成功检索。normal/private 均适用，工具本身的权限与来源边界不变。该上下文不改写当前用户原文，不进入 Pi conversation、压缩材料或召回档案，也不新增修复模型调用。成功标记仅在当前 attempt 内有效，自动预召回和失败查询不触发。Pi 提前预留该上下文的输入成本；因此临界上下文可能更早压缩，实际请求与用量仍逐次记录。

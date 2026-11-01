@@ -1168,8 +1168,8 @@ async function frozenExecutionSnapshot(
   const experience = experienceRow
     ? chatExperiencePreferenceSchema.parse({ ...experienceRow, conversationProfile: experienceRow.conversationProfile ?? undefined })
     : preservedExperience === undefined ? DEFAULT_PROFILE_EXPERIENCE : null;
-  const recentMedia = (await deliveredChatMedia(tx, { userId: turn.session.userId,
-    characterId: turn.session.characterId, sessionId: turn.sessionId, before: turn.createdAt })).slice(0, 8);
+  const recentMedia = await deliveredChatMedia(tx, { userId: turn.session.userId,
+    characterId: turn.session.characterId, sessionId: turn.sessionId, before: turn.createdAt, limit: 8 });
   const snapshot = chatExecutionSnapshotSchema.parse({
     version: 1,
     turnId: turn.id,
@@ -1206,8 +1206,9 @@ async function frozenExecutionSnapshot(
         attachmentAttempt(attachment.metadata) === item.attempt
       )
     ),
-    recentMedia: recentMedia.map(({ asset, attachment, description }) => ({
+    recentMedia: recentMedia.map(({ asset, attachment, description, editProvenance }) => ({
       mediaAssetId: asset.id, kind: asset.type, turnId: attachment.turnId, description,
+      ...(editProvenance ? { editProvenance } : {}),
     })),
     recentTurns: recent.map((item) => ({
       turnId: item.id,

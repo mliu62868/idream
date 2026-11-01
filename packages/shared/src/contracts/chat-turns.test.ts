@@ -56,6 +56,19 @@ describe("Chat execution snapshot", () => {
     ]) expect(chatExecutionSnapshotSchema.safeParse({ ...snapshot, recentMedia }).success).toBe(false);
   });
 
+  it("keeps executed edit provenance separate from observed media descriptions", () => {
+    const editProvenance = { sourceMediaAssetId: "original", requestedTarget: "the mug",
+      operation: { kind: "recolor", color: "#2563eb" } };
+    const media = { mediaAssetId: "blue-edit", kind: "image", turnId: "edit-turn", description: null, editProvenance };
+    expect(chatExecutionSnapshotSchema.parse({ ...snapshot, recentMedia: [media] }).recentMedia).toEqual([media]);
+    for (const invalid of [
+      { ...editProvenance, requestedTarget: "x".repeat(121) },
+      { ...editProvenance, sourceMediaAssetId: "" },
+      { ...editProvenance, operation: { kind: "recolor", color: "blue" } },
+      { ...editProvenance, description: "the whole mug is definitely blue" },
+    ]) expect(chatExecutionSnapshotSchema.safeParse({ ...snapshot, recentMedia: [{ ...media, editProvenance: invalid }] }).success).toBe(false);
+  });
+
   it("binds every group replay speaker to the pinned membership and the selected execution session", () => {
     const members = [{ characterId: "character-1", sessionId: "session-1", name: "Mira" }, { characterId: "character-2", sessionId: "session-2", name: "Briar" }];
     const grouped = { ...snapshot, group: { id: "group-1", ordinal: 2, members }, recentTurns: [{ turnId: "earlier", userMessageId: "old-user", assistantMessageId: "old-assistant", userContent: "Hi", assistantContent: "Briar here", createdAt: "2026-09-10T00:00:00.000Z", speaker: members[1] }] };

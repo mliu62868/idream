@@ -46,7 +46,7 @@ import { COMPANION_MEDIA_LIBRARY_GUIDANCE, COMPANION_MEDIA_RESEND_GUIDANCE } fro
  * v19: asynchronous edits acknowledge processing until delivery; no receipt
  * establishes visual correctness or pixel preservation.
  */
-export const COMPANION_PRODUCT_PROMPT_VERSION = "companion-product-19" as const;
+export const COMPANION_PRODUCT_PROMPT_VERSION = "companion-product-20" as const;
 
 export function companionProductAgentPrompt(characterName: string): string {
   const name = characterName.trim() || "the Character";
