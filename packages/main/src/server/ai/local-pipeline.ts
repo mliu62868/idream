@@ -1336,6 +1336,17 @@ async function refundGeneration(
   const isDebitedJob = sourceType !== "content_production_item";
   return prisma.$transaction(async (tx) => {
     await lockGenerationRequestForSettlement(tx, jobId);
+    // A duplicate finalizer can pause before locking while another execution
+    // settles this Attempt and an operator starts the next one. Only the latest
+    // Attempt may mutate the Request, attachments or settlement under this lock.
+    if (attemptId) {
+      const latest = await tx.generationAttempt.findFirst({
+        where: { requestId: jobId },
+        orderBy: [{ attemptNo: "desc" }, { createdAt: "desc" }],
+        select: { id: true },
+      });
+      if (latest?.id !== attemptId) return false;
+    }
     const transitioned = await transitionGenerationRequest(tx, {
       requestId: jobId,
       to: status,

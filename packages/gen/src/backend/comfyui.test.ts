@@ -390,6 +390,34 @@ describe("ComfyUIBackend", () => {
       outcome: "ambiguous",
     });
   });
+  it.each([500, 502, 503, 504])("keeps /prompt HTTP %s ambiguous after submission", async (status) => {
+    const fetchMock = mockFetch([
+      () => new Response("upstream response unavailable", { status }),
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(makeBackend().submit({
+      descriptor,
+      slots: { prompt: "cat" },
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject({
+      phase: "post_submit",
+      outcome: "ambiguous",
+      message: `ComfyUI /prompt HTTP ${status}`,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it.each([400, 401, 403, 404, 408, 422, 429])("keeps /prompt HTTP %s rejection definitive", async (status) => {
+    vi.stubGlobal("fetch", mockFetch([
+      () => new Response("request rejected", { status }),
+    ]));
+
+    await expect(makeBackend().submit({
+      descriptor,
+      slots: { prompt: "cat" },
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject({ phase: "pre_submit", outcome: "definitive" });
+  });
   it.each(["prompt", "upload/image"])("bounds the /%s response body after headers arrive", async (endpoint) => {
     vi.useFakeTimers();
     let responseBody: ReadableStreamDefaultController<Uint8Array> | undefined;
@@ -555,6 +583,52 @@ describe("ComfyUIBackend", () => {
     expect(queuePolls).toBe(13);
     await vi.advanceTimersByTimeAsync(1);
     await timedOut;
+  });
+
+  it.each(["fetch", "body"])("bounds an in-flight history %s after the prompt starts running", async (stalledPhase) => {
+    vi.useFakeTimers();
+    let historyCalls = 0;
+    let queueCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/prompt")) return Response.json({ prompt_id: "p-in-flight" });
+      if (url.endsWith("/queue")) {
+        queueCalls += 1;
+        return Response.json({ queue_running: [[0, "p-in-flight"]], queue_pending: [] });
+      }
+      historyCalls += 1;
+      if (historyCalls === 1) return Response.json({});
+      if (stalledPhase === "fetch") {
+        return await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+        });
+      }
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("{"));
+          init?.signal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")), { once: true });
+        },
+      }));
+    }));
+    const backend = new ComfyUIBackend({ apiUrl: "http://x", pollIntervalMs: 1, workflowSync: testWorkflowSync });
+    const handle = await backend.submit({ descriptor, slots: { prompt: "cat" }, timeoutMs: 10 });
+    let failure: unknown;
+    const polling = backend.poll(handle).catch((error: unknown) => { failure = error; });
+    try {
+      await vi.advanceTimersByTimeAsync(9);
+      expect(historyCalls).toBe(2);
+      expect(queueCalls).toBe(1);
+      expect(failure).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(failure).toMatchObject({
+        code: "timeout", phase: "post_submit", outcome: "ambiguous",
+        message: expect.stringContaining("10ms of execution (waited 10ms)"),
+      });
+    } finally {
+      // The old implementation only aborts at the outer 6x queue-wait cap.
+      await vi.advanceTimersByTimeAsync(60);
+      await polling;
+    }
   });
 
   it("marks a post-submit history connection reset as ambiguous", async () => {

@@ -154,6 +154,8 @@ describe("crash recovery request evidence", () => {
     await appendAgentRunModelRequest("turn-stop", 1, receipt());
     expect(await readAgentRunRecoveryEvidence("turn-stop", 1)).toEqual({ started: true, modelRequests: [receipt()] });
     await writeFile(join(root, "runs", "turn-stop", "1", "events.jsonl"), '{"kind":');
+    expect(await readAgentRunRecoveryEvidence("turn-stop", 1)).toEqual({ started: true, modelRequests: [] });
+    await writeFile(join(root, "runs", "turn-stop", "1", "events.jsonl"), '{"kind":\n');
     await expect(readAgentRunRecoveryEvidence("turn-stop", 1)).rejects.toThrow();
   });
 });

@@ -1,10 +1,11 @@
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { jobQueue } from "@/server/jobs/queue";
 import { reserveInitialGenerationAttempt } from "@/server/modules/generation/generation-attempt-authority";
 import { retryGenerationRequest } from "./generation-request-lifecycle";
 import { drainLocalAiPipeline } from "./local-pipeline";
+import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 
 function jsonRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -13,6 +14,127 @@ function jsonRecord(value: unknown): Record<string, unknown> {
 }
 
 describe("Generation finalize Attempt authority", () => {
+  it("does not let an in-flight old failure settle a retry created after its latest-Attempt read", async () => {
+    const suffix = crypto.randomUUID();
+    const userId = `finalize-race-user-${suffix}`;
+    const requestId = `finalize-race-request-${suffix}`;
+    const finalizeKeys = [`finalize-race-paused-${suffix}`, `finalize-race-replay-${suffix}`];
+    const sourceKeys: string[] = [];
+    let resumeOld = () => {};
+    const paused = new Promise<void>(resolve => { resumeOld = resolve; });
+    let reachedCleanup = () => {};
+    const atCleanup = new Promise<void>(resolve => { reachedCleanup = resolve; });
+    let oldFinalizer: ReturnType<typeof drainLocalAiPipeline> | undefined;
+    let cleanupSpy: { mockRestore(): void } | undefined;
+    try {
+      await prisma.user.create({ data: { id: userId, email: `${userId}@idream.internal`, status: "active" } });
+      await prisma.generationJob.create({ data: {
+        id: requestId, userId, mode: "image", controls: {}, presetIds: [], outputCount: 1,
+        status: "queued", provider: "mock", model: "mock-image-v2", costDreamcoins: 5,
+      } });
+      await prisma.$transaction(async tx => {
+        await postDreamcoinEntry(tx, { kind: "signup_bonus", userId, amount: 10, sourceId: userId, idempotencyKey: `${requestId}:grant` });
+        await postDreamcoinEntry(tx, { kind: "generation_spend", userId, amount: 5, sourceId: requestId, idempotencyKey: `${requestId}:reserve` });
+      });
+      const first = await prisma.$transaction(tx => reserveInitialGenerationAttempt(tx, {
+        requestId, dispatch: { outboxId: `${requestId}:dispatch:1`, eventType: "generation.retry.dispatch.v2" },
+      }));
+      const firstQueueInput = jsonRecord(jsonRecord(first.outbox.payload).queueInput);
+      if (firstQueueInput.queue !== "ai.image.generate" || typeof firstQueueInput.dedupeKey !== "string") {
+        throw new Error("Missing first Attempt dispatch authority");
+      }
+      sourceKeys.push(firstQueueInput.dedupeKey);
+      await jobQueue.enqueue({ queue: "ai.image.generate", dedupeKey: firstQueueInput.dedupeKey,
+        payload: firstQueueInput.payload as Prisma.InputJsonValue });
+      const payload = {
+        version: 1, kind: "generation.failed", requestId: `generation_dispatch_${first.attempt.id}`,
+        generationJobId: requestId, attemptId: first.attempt.id, attemptNo: 1, mode: "image",
+        terminalRecordRef: `gen/terminal-records/${first.attempt.id}/terminal.json`,
+        terminalRecordChecksum: "c".repeat(64),
+        error: { code: "provider_failed", message: "Definitive provider failure", retryable: true, retryability: "retryable" },
+      };
+      await prisma.generationAttempt.update({ where: { id: first.attempt.id }, data: { terminalRecordRef: payload.terminalRecordRef } });
+      await prisma.mainOutboxEvent.create({ data: {
+        id: `generation_terminal_record_${first.attempt.id}`, eventType: "generation.terminal_record.accepted.v1",
+        aggregateType: "generation_attempt", aggregateId: first.attempt.id, payload,
+      } });
+
+      const remove = jobQueue.removeByDedupeKey.bind(jobQueue);
+      // Simulate an in-flight finalizer resuming after a stalled redelivery.
+      // Both executions use the same immutable terminal payload and real
+      // settlement; only the first source-queue cleanup is paused, after its
+      // latest-Attempt read and before it takes financial authority locks.
+      cleanupSpy = vi.spyOn(jobQueue, "removeByDedupeKey").mockImplementationOnce(async (...args) => {
+        reachedCleanup();
+        await paused;
+        return remove(...args);
+      });
+      await jobQueue.enqueue({ queue: "app.ai.finalize", dedupeKey: finalizeKeys[0], payload });
+      oldFinalizer = drainLocalAiPipeline({ limit: 1, queues: ["app.ai.finalize"], workerId: `${requestId}:old` });
+      await Promise.race([
+        atCleanup,
+        oldFinalizer.then(() => { throw new Error("Old finalizer did not reach the cleanup barrier"); }),
+      ]);
+      await jobQueue.enqueue({ queue: "app.ai.finalize", dedupeKey: finalizeKeys[1], payload });
+      await expect(drainLocalAiPipeline({ limit: 1, queues: ["app.ai.finalize"], workerId: `${requestId}:replay` }))
+        .resolves.toMatchObject({ processed: 1 });
+      const failed = await prisma.generationJob.findUniqueOrThrow({ where: { id: requestId } });
+      expect(failed.status).toBe("failed");
+      const retry = await retryGenerationRequest({
+        requestId, expectedVersion: failed.version, actor: { id: userId, role: "admin" },
+        reason: "Retry the separately finalized failure", idempotencyKey: `${requestId}:retry`, traceId: `${requestId}:retry-trace`,
+      });
+      if (typeof retry !== "object" || retry === null || Array.isArray(retry) || typeof retry.attemptId !== "string") {
+        throw new Error("Retry did not return the next Attempt");
+      }
+      const second = await prisma.generationAttempt.findUniqueOrThrow({ where: { id: retry.attemptId } });
+      const secondOutbox = await prisma.mainOutboxEvent.findFirstOrThrow({ where: {
+        aggregateId: requestId, eventType: "generation.retry.dispatch.v2", payload: { path: ["attemptId"], equals: second.id },
+      } });
+      const secondQueueInput = jsonRecord(jsonRecord(secondOutbox.payload).queueInput);
+      if (secondQueueInput.queue !== "ai.image.generate" || typeof secondQueueInput.dedupeKey !== "string") {
+        throw new Error("Missing retry dispatch authority");
+      }
+      sourceKeys.push(secondQueueInput.dedupeKey);
+      await jobQueue.enqueue({ queue: "ai.image.generate", dedupeKey: secondQueueInput.dedupeKey,
+        payload: secondQueueInput.payload as Prisma.InputJsonValue });
+      const before = await prisma.generationJob.findUniqueOrThrow({ where: { id: requestId } });
+      const ledger = await prisma.dreamcoinLedger.findMany({ where: { sourceId: requestId }, orderBy: { id: "asc" } });
+      expect(ledger.filter(entry => entry.reason === "refund").map(entry => entry.delta)).toEqual([5]);
+      resumeOld();
+      await expect(oldFinalizer).resolves.toMatchObject({ processed: 1 });
+
+      expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: requestId } })).toMatchObject({
+        status: "queued", version: before.version, errorCode: null, finishedAt: null,
+      });
+      expect(await prisma.generationAttempt.findUniqueOrThrow({ where: { id: second.id } })).toEqual(second);
+      expect(await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: secondOutbox.id } })).toEqual(secondOutbox);
+      expect(await prisma.dreamcoinLedger.findMany({ where: { sourceId: requestId }, orderBy: { id: "asc" } })).toEqual(ledger);
+      expect(await prisma.generationAttemptEvent.count({ where: { attemptId: second.id, terminalScope: "terminal" } })).toBe(0);
+      expect(await jobQueue.getByDedupeKey("ai.image.generate", secondQueueInput.dedupeKey)).toMatchObject({ dedupeKey: secondQueueInput.dedupeKey });
+    } finally {
+      resumeOld();
+      if (oldFinalizer) await Promise.allSettled([oldFinalizer]);
+      cleanupSpy?.mockRestore();
+      for (const key of sourceKeys) await jobQueue.removeByDedupeKey("ai.image.generate", key);
+      for (const key of finalizeKeys) await jobQueue.removeByDedupeKey("app.ai.finalize", key);
+      const attempts = await prisma.generationAttempt.findMany({ where: { requestId }, select: { id: true } });
+      const ids = attempts.map(attempt => attempt.id);
+      await prisma.adminAuditLog.deleteMany({ where: { targetId: requestId } });
+      await prisma.controlPlaneCommand.deleteMany({ where: { targetId: requestId } });
+      await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: [requestId, ...ids] } } });
+      await prisma.generationDelivery.deleteMany({ where: { requestId } });
+      await prisma.generationArtifact.deleteMany({ where: { attemptId: { in: ids } } });
+      await prisma.generationAttemptEvent.deleteMany({ where: { attemptId: { in: ids } } });
+      await prisma.generationAttempt.deleteMany({ where: { id: { in: ids } } });
+      await prisma.generationJobEvent.deleteMany({ where: { jobId: requestId } });
+      await prisma.generationSettlementLink.deleteMany({ where: { requestId } });
+      await prisma.dreamcoinLedger.deleteMany({ where: { userId } });
+      await prisma.generationJob.deleteMany({ where: { id: requestId } });
+      await prisma.user.deleteMany({ where: { id: userId } });
+    }
+  });
+
   it("ACKs an old terminal replay after retry without projecting it onto the latest Attempt", async () => {
     const suffix = crypto.randomUUID();
     const userId = `finalize-authority-user-${suffix}`;

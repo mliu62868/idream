@@ -169,11 +169,15 @@ export class ComfyUIBackend implements GenBackend {
         signal: controller.signal,
       });
       if (!response.ok) {
+        // A server/gateway failure cannot prove the prompt was rejected before
+        // queue admission. Preserve the uncertainty so Main cannot refund and
+        // expose a business retry while the original prompt may still run.
+        const ambiguous = response.status >= 500;
         throw new BackendInvocationError(
           "backend_error",
           `ComfyUI /prompt HTTP ${response.status}`,
-          "pre_submit",
-          "definitive",
+          ambiguous ? "post_submit" : "pre_submit",
+          ambiguous ? "ambiguous" : "definitive",
         );
       }
       // The prompt may already be running when headers arrive. Keep the deadline
@@ -483,53 +487,68 @@ export class ComfyUIBackend implements GenBackend {
       startedAt + timeoutMs * COMFY_TOTAL_WAIT_BUDGET_MULTIPLIER;
     let executionDeadlineAt = startedAt + timeoutMs;
     let observedExecuting = false;
-    while (Date.now() < executionDeadlineAt && Date.now() < totalWaitDeadlineAt) {
-      if (signal.aborted) break;
-      const response = await fetch(`${this.apiUrl}/history/${encodeURIComponent(promptId)}`, { signal });
-      const history = (await response.json().catch(() => ({}))) as JsonRecord;
-      if (!response.ok) {
-        throw new BackendInvocationError(
-          "backend_error",
-          `ComfyUI /history HTTP ${response.status}`,
-          "post_submit",
-          "ambiguous",
-        );
-      }
-      const item = jsonRecord(history[promptId]);
-      const status = jsonRecord(item.status);
-      if (status.status_str === "error") {
-        throw new BackendInvocationError(
-          "backend_error",
-          `ComfyUI prompt failed: ${JSON.stringify(status.messages ?? status)}`,
-          "post_submit",
-          "definitive",
-        );
-      }
-      if (status.completed === true) {
-        const output = firstImageOutput(item);
-        if (!output) {
+    // The execution deadline must also interrupt an in-flight fetch/body read.
+    // Only fresh pending evidence renews the budget; the outer signal retains
+    // the total queue-wait cap, and observing running starts the final budget.
+    const executionController = new AbortController();
+    const deadlineSignal = AbortSignal.any([signal, executionController.signal]);
+    let executionTimeout = setTimeout(() => executionController.abort(), timeoutMs);
+    const deadlineReached = () => deadlineSignal.aborted ||
+      Date.now() >= executionDeadlineAt || Date.now() >= totalWaitDeadlineAt;
+    try {
+      while (!deadlineReached()) {
+        const response = await fetch(`${this.apiUrl}/history/${encodeURIComponent(promptId)}`, { signal: deadlineSignal });
+        const history = (await response.json().catch(() => ({}))) as JsonRecord;
+        if (deadlineReached()) break;
+        if (!response.ok) {
           throw new BackendInvocationError(
             "backend_error",
-            `ComfyUI prompt ${promptId} completed without media output`,
+            `ComfyUI /history HTTP ${response.status}`,
+            "post_submit",
+            "ambiguous",
+          );
+        }
+        const item = jsonRecord(history[promptId]);
+        const status = jsonRecord(item.status);
+        if (status.status_str === "error") {
+          throw new BackendInvocationError(
+            "backend_error",
+            `ComfyUI prompt failed: ${JSON.stringify(status.messages ?? status)}`,
             "post_submit",
             "definitive",
           );
         }
-        return { output, ...comfyExecutionEvidence(status.messages) };
-      }
-      if (!observedExecuting) {
-        const placement = await this.queuePlacement(promptId, signal);
-        if (placement === "pending") {
-          executionDeadlineAt = Date.now() + timeoutMs;
-        } else if (placement === "running") {
-          observedExecuting = true;
-          executionDeadlineAt = Date.now() + timeoutMs;
+        if (status.completed === true) {
+          const output = firstImageOutput(item);
+          if (!output) {
+            throw new BackendInvocationError(
+              "backend_error",
+              `ComfyUI prompt ${promptId} completed without media output`,
+              "post_submit",
+              "definitive",
+            );
+          }
+          return { output, ...comfyExecutionEvidence(status.messages) };
         }
-        // "absent" covers both "already finished" (the next /history read returns
-        // it) and "/queue unreadable" — neither is evidence of queue wait, so the
-        // budget stands and behaviour falls back to the plain execution deadline.
+        if (!observedExecuting) {
+          const placement = await this.queuePlacement(promptId, deadlineSignal);
+          if (deadlineReached()) break;
+          if (placement === "pending" || placement === "running") {
+            observedExecuting = placement === "running";
+            executionDeadlineAt = Date.now() + timeoutMs;
+            clearTimeout(executionTimeout);
+            executionTimeout = setTimeout(() => executionController.abort(), timeoutMs);
+          }
+          // "absent" covers both "already finished" and an unreadable queue.
+          // Neither proves queue wait, so it cannot extend the execution budget.
+        }
+        await sleep(Math.min(this.pollIntervalMs, Math.max(0, Math.min(executionDeadlineAt, totalWaitDeadlineAt) - Date.now())));
       }
-      await sleep(this.pollIntervalMs);
+    } catch (error) {
+      if (!deadlineReached()) throw error;
+    } finally {
+      clearTimeout(executionTimeout);
+      executionController.abort();
     }
     const waitedMs = Date.now() - startedAt;
     // 两条上限只会跳其中一条：没开始执行过、又把总等待耗光了，才是「一直没排上」。
@@ -559,6 +578,7 @@ export class ComfyUIBackend implements GenBackend {
       if (queueListsPrompt(queue.queue_pending, promptId)) return "pending";
       return "absent";
     } catch {
+      signal.throwIfAborted();
       return "absent";
     }
   }

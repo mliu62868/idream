@@ -340,7 +340,12 @@ export async function completeAgentRun(
       new Date(completion.completedAt).getTime() + FAILED_TRACE_RETENTION_MS,
     ).toISOString();
     await writeAgentRunIndex(input, true, expiresAt);
-    if (completion.outcome === "committed") {
+    // A recovered reply may succeed while its interrupted local write still
+    // needs diagnosis. Retain that diagnostic evidence for the same
+    // bounded window as failed traces; the accepted proposal is still removed.
+    const interruptedJournal = (await files(runDir(turnId, attempt)))
+      .some(name => name.startsWith("events.interrupted-"));
+    if (completion.outcome === "committed" && !interruptedJournal) {
       await rm(runDir(turnId, attempt), { recursive: true, force: true });
       return;
     }
@@ -417,18 +422,13 @@ export async function readAgentRunRecoveryEvidence(turnId: string, attempt: numb
   started: boolean;
   modelRequests: CompanionModelRequestEvidence[];
 }> {
-  let raw: string;
-  try {
-    raw = await readFile(eventsFile(turnId, attempt), "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { started: false, modelRequests: [] };
-    throw error;
-  }
-  let started = false;
+  const journal = await readAgentRunJournal(eventsFile(turnId, attempt));
+  // A torn last record cannot prove that dispatch never started. The marker
+  // keeps this uncertainty durable if another crash follows journal repair.
+  let started = journal.interrupted;
   const requests: Array<{ request: CompanionModelRequestEvidence; received: boolean }> = [];
-  for (const line of raw.split("\n").filter(Boolean)) {
-    const event = JSON.parse(line) as AgentRunEvent;
-    if (event.schemaVersion !== 1 || typeof event.kind !== "string") throw new Error("invalid AgentRun recovery event");
+  for (const event of journal.events) {
+    if (event.kind === "journal.interrupted") started = true;
     // Only the new runtime can prove an absent dispatch means no request was
     // sent. Historical pi.started traces had no awaited request journal.
     if (event.kind === "pi.started" && (!isRecord(event.payload) || event.payload.modelRequestJournalVersion !== 1)) started = true;
@@ -642,7 +642,7 @@ async function purgeAgentRunIndexes(
   }
 }
 
-async function atomicWrite(file: string, content: string): Promise<void> {
+async function atomicWrite(file: string, content: string | Buffer): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const temporary = `${file}.tmp-${process.pid}-${randomUUID()}`;
   await writeFile(temporary, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
@@ -656,16 +656,61 @@ async function atomicWrite(file: string, content: string): Promise<void> {
 }
 
 async function nextSequence(file: string): Promise<number> {
+  const journal = await readAgentRunJournal(file);
+  const sequence = (journal.events.at(-1)?.sequence ?? 0) + 1;
+  if (!journal.interrupted) return sequence;
+  // Only an unterminated last record can be an interrupted append. Preserve
+  // every original byte before replacing it; any malformed complete line is
+  // rejected by the reader and never repaired or silently skipped.
+  const digest = sha256(journal.raw);
+  await atomicWrite(path.join(path.dirname(file), `events.interrupted-${digest}.jsonl`), journal.raw);
+  const interrupted: AgentRunEvent = {
+    schemaVersion: 1, sequence, occurredAt: new Date().toISOString(),
+    kind: "journal.interrupted", payload: { digest, byteLength: journal.raw.byteLength },
+  };
+  await atomicWrite(file, Buffer.concat([
+    journal.complete,
+    Buffer.from(`${JSON.stringify(interrupted)}\n`),
+  ]));
+  return sequence + 1;
+}
+
+async function readAgentRunJournal(file: string): Promise<{
+  raw: Buffer;
+  complete: Buffer;
+  events: AgentRunEvent[];
+  interrupted: boolean;
+}> {
+  let raw: Buffer;
   try {
-    const raw = await readFile(file, "utf8");
-    const last = raw.trim().split("\n").at(-1);
-    if (!last) return 1;
-    const parsed = JSON.parse(last) as { sequence?: unknown };
-    return typeof parsed.sequence === "number" ? parsed.sequence + 1 : 1;
+    raw = await readFile(file);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 1;
-    throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    raw = Buffer.alloc(0);
   }
+  const boundary = raw.lastIndexOf(0x0a) + 1;
+  const interrupted = boundary < raw.byteLength;
+  let complete = raw.subarray(0, boundary);
+  const events = complete.toString("utf8").split("\n").filter(Boolean)
+    .map(line => parseAgentRunEvent(JSON.parse(line)));
+  if (interrupted) {
+    let tail: unknown;
+    try { tail = JSON.parse(raw.subarray(boundary).toString("utf8")); }
+    catch (error) { if (!(error instanceof SyntaxError)) throw error; }
+    if (tail !== undefined) {
+      events.push(parseAgentRunEvent(tail));
+      complete = Buffer.concat([raw, Buffer.from("\n")]);
+    }
+  }
+  return { raw, complete, events, interrupted };
+}
+
+function parseAgentRunEvent(value: unknown): AgentRunEvent {
+  if (!isRecord(value) || value.schemaVersion !== 1 || typeof value.kind !== "string"
+    || !Number.isSafeInteger(value.sequence) || Number(value.sequence) < 1) {
+    throw new Error("invalid AgentRun recovery event");
+  }
+  return value as unknown as AgentRunEvent;
 }
 
 async function directories(parent: string): Promise<string[]> {
@@ -749,7 +794,7 @@ async function exists(file: string): Promise<boolean> {
   }
 }
 
-function sha256(value: string): string {
+function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
 }
 

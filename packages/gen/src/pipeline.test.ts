@@ -23,6 +23,7 @@ import { createVideoMediaProbe } from "./backend/video-media-probe";
 import { BackendImageModel } from "./backend/backend-image-model";
 import { buildBackendRegistry } from "./backend/registry";
 import { CONFIRMED_IMAGE_EDIT_VERSION } from "@idream/shared/chat/image-action";
+import { ComfyUIBackend } from "./backend/comfyui";
 import { workflowDescriptorSchema } from "./backend/workflow";
 import { recordTransportExecution as recordMainTransportExecution } from "./transport-execution";
 
@@ -1459,6 +1460,38 @@ describe("processImageGenerate", () => {
         error: expect.objectContaining({ code: "ambiguous_non_replayable", retryability: "not_retryable" }),
       }),
     }));
+  });
+
+  it("persists an uncertain ComfyUI submission as unknown and replays it without another prompt", async () => {
+    process.env.GEN_IMAGE_PROVIDER = "backend";
+    const descriptor = workflowDescriptorSchema.parse({
+      workflowKey: "uncertain-submit", modelId: "uncertain-submit", backendKind: "comfyui",
+      comfyWorkflow: { id: "11111111-1111-4111-8111-111111111111", name: "Uncertain submit" },
+      version: 1, capabilities: ["textToImage"], apiPrompt: {}, inputs: [],
+    });
+    const backend = new ComfyUIBackend({
+      apiUrl: "http://comfy.invalid",
+      workflowSync: async () => ({}),
+    });
+    const image = new BackendImageModel({ resolveForModel: () => ({ descriptor, backend }) });
+    const providers = makeProviders({ image, blob: makeMemoryBlob() });
+    const fetchMock = vi.fn(async () => new Response("upstream response unavailable", { status: 502 }));
+    globalThis.fetch = fetchMock;
+    const payload = imagePayload({ count: 1, model: descriptor.modelId, controls: {
+      workflowKey: descriptor.workflowKey, workflowVersion: descriptor.version,
+    } });
+    const deps = makePipelineDeps(providers, { attemptsMade: 0, maxAttempts: 3 });
+
+    await processImageGenerate(payload, deps);
+    const original = vi.mocked(deps.acknowledgeTerminalRecord).mock.calls[0]![0];
+    expect(original.terminalRecord).toMatchObject({
+      outcome: "unknown", providerInvoked: true,
+      error: { code: "ambiguous_non_replayable", retryability: "not_retryable" },
+    });
+    await processImageGenerate(payload, { ...deps, attemptsMade: 1 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(deps.acknowledgeTerminalRecord).mock.calls[1]![0]).toEqual(original);
   });
 
   it.each(["image", "video"] as const)("keeps an exhausted deterministic %s timeout unknown", async (mode) => {
