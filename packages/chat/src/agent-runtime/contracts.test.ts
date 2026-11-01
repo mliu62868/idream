@@ -42,6 +42,16 @@ const preparedTurn = {
 };
 
 describe("embedded companion runtime contracts", () => {
+  it("accepts only Main's durable media recovery facts, not an unreserved failure", () => {
+    const recovered = { name: "edit_last_image", attachmentId: "prior-card", status: "awaiting_confirmation", costDreamcoins: 0,
+      generationJobId: null, mediaAssetId: null, sourceMediaAssetId: "source-image", instruction: "Change the mug to red." };
+    expect(preparedTurnSchema.parse({ ...preparedTurn, recoveredMediaAction: recovered }).recoveredMediaAction).toEqual(recovered);
+    expect(preparedTurnSchema.parse({ ...preparedTurn, recoveredMediaAction: { ...recovered, status: "cancelled" } }).recoveredMediaAction?.status).toBe("cancelled");
+    expect(preparedTurnSchema.safeParse({ ...preparedTurn, recoveredMediaAction: { ...recovered, status: "failed" } }).success).toBe(false);
+    expect(preparedTurnSchema.safeParse({ ...preparedTurn, recoveredMediaAction: { ...recovered, status: "requesting" } }).success).toBe(false);
+    expect(preparedTurnSchema.safeParse({ ...preparedTurn, recoveredMediaAction: { ...recovered, callId: "invented-current-call" } }).success).toBe(false);
+  });
+
   it("accepts omitted historical dialogue but refuses new authority or duplicate identities in that prefix", () => {
     const historical = { id: "old-user", sourceKind: "replay", role: "user", content: "My boat is Cedar Finch." };
     expect(preparedTurnSchema.safeParse({ ...preparedTurn, omittedMessages: [historical] }).success).toBe(true);

@@ -47,6 +47,59 @@ function terminal(snapshot: ChatExecutionSnapshot): ChatTerminalCommit {
 }
 
 describe("Main Scene terminal authority", () => {
+  it.each(["missing-evidence", "wrong-version", "missing-attachment", "foreign-turn", "wrong-attempt", "requesting", "unknown-status", "wrong-kind"] as const)("rejects fresh textless sent with %s media authority", async reason => {
+    const f = await fixture();
+    const snapshot = await f.begin();
+    const attachmentId = `${snapshot.turnId}-image`;
+    let turnId = snapshot.turnId;
+    if (reason === "foreign-turn") turnId = (await (await fixture()).begin()).turnId;
+    if (reason !== "missing-attachment") await prisma.chatTurnAttachment.create({ data: {
+      id: attachmentId, turnId, kind: reason === "wrong-kind" ? "forged_kind" : "generated_image",
+      status: reason === "requesting" ? "requesting" : reason === "unknown-status" ? "invented" : "accepted",
+      metadata: { attempt: reason === "wrong-attempt" ? snapshot.attempt + 1 : snapshot.attempt },
+    } });
+    const selected = { ...terminal(snapshot), content: "", terminalEvidence: {
+      ...terminal(snapshot).terminalEvidence,
+      ...(reason === "missing-evidence" ? {} : { mediaResponse: { version: reason === "wrong-version" ? 2 : 1, attachmentId } }),
+    } };
+    await expect(commitChatTerminal(selected)).rejects.toThrow("attachment");
+    await expect(prisma.chatTurn.findUniqueOrThrow({ where: { id: snapshot.turnId } }))
+      .resolves.toMatchObject({ assistantStatus: "pending", terminalAt: null });
+    await expect(prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: snapshot.turnId } }))
+      .resolves.toMatchObject({ consumedAt: null, voidedAt: null });
+  });
+
+  it.each(["accepted", "completed", "failed", "blocked", "refunded", "cancelled"])("commits textless %s media replies once and replays the immutable terminal", async status => {
+    const f = await fixture();
+    const snapshot = await f.begin();
+    const attachmentId = `${snapshot.turnId}-image`;
+    await prisma.chatTurnAttachment.create({ data: {
+      id: attachmentId, turnId: snapshot.turnId, kind: "generated_image", status, metadata: { attempt: snapshot.attempt },
+    } });
+    const selected = { ...terminal(snapshot), content: "", terminalEvidence: {
+      ...terminal(snapshot).terminalEvidence, mediaResponse: { version: 1, attachmentId },
+    } };
+    const first = await commitChatTerminal(selected);
+    await expect(prisma.chatTurn.findUniqueOrThrow({ where: { id: snapshot.turnId } }))
+      .resolves.toMatchObject({ assistantStatus: "sent", assistantContent: "", terminalEvidence: selected.terminalEvidence });
+    const fact = await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: snapshot.turnId } });
+    expect(fact.consumedAt).toBeInstanceOf(Date);
+    // The ACK replays a selected proposal. Later attachment changes do not
+    // retroactively change that exact immutable selection.
+    await prisma.chatTurnAttachment.delete({ where: { id: attachmentId } });
+    await expect(commitChatTerminal(selected)).resolves.toEqual({ ...first, duplicate: true });
+    await expect(prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: snapshot.turnId } })).resolves.toEqual(fact);
+  });
+
+  it("preserves exact historical empty terminal replay without accepting a new empty proposal", async () => {
+    const f = await fixture();
+    const snapshot = await f.begin();
+    const selected = terminal(snapshot);
+    const first = await commitChatTerminal(selected);
+    await prisma.chatTurn.update({ where: { id: snapshot.turnId }, data: { assistantContent: "" } });
+    await expect(commitChatTerminal({ ...selected, content: "" })).resolves.toEqual({ ...first, duplicate: true });
+  });
+
   it.each([
     { name: "unknown", promptTokens: null, completionTokens: null, reasoningTokens: null },
     { name: "measured zero", promptTokens: 0, completionTokens: 0, reasoningTokens: 0 },

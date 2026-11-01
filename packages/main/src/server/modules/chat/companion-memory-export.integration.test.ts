@@ -253,6 +253,61 @@ describe("Main to Chat memory export", () => {
     expect(downstream.promote).toHaveBeenCalledOnce();
   });
 
+  it("exports an attachment-only answer and the following exchange without blank or invented assistant text", async () => {
+    const userId = `${prefix}media-user`;
+    const characterId = `${prefix}media-character`;
+    const sessionId = `${prefix}media-session`;
+    const turnId = `${prefix}media-turn`;
+    const attachmentId = `${turnId}-image`;
+    await createUser({ id: userId });
+    await createCharacter({ id: characterId, creatorId: userId, source: "user", visibility: "private" });
+    await prisma.recentChat.create({ data: { sessionId, userId, characterId } });
+    const userContent = "Send me the picture.\n保留我的原话。";
+    await prisma.chatTurn.createMany({ data: [
+      { id: turnId, sessionId, idempotencyKey: "media", requestHash: "a".repeat(64),
+        userMessageId: `${turnId}-user`, assistantMessageId: `${turnId}-assistant`,
+        userContent, assistantContent: "", userStatus: "sent", assistantStatus: "sent", memoryEnabled: true,
+        terminalEvidence: { mediaResponse: { version: 1, attachmentId } },
+        createdAt: new Date(1_700_000_000_000), terminalAt: new Date(1_700_000_000_500) },
+      { id: `${turnId}-next`, sessionId, idempotencyKey: "next", requestHash: "b".repeat(64),
+        userMessageId: `${turnId}-next-user`, assistantMessageId: `${turnId}-next-assistant`,
+        userContent: "Let's talk about tea.", assistantContent: "I like oolong.",
+        userStatus: "sent", assistantStatus: "sent", memoryEnabled: true,
+        createdAt: new Date(1_700_000_001_000), terminalAt: new Date(1_700_000_001_500) },
+    ] });
+    await prisma.chatTurnAttachment.create({ data: {
+      id: attachmentId, turnId, kind: "generated_image", status: "accepted", metadata: { attempt: 1 },
+    } });
+    const eventId = await prisma.$transaction(tx => scheduleCompanionMemoryProjection(tx, { userId, characterId }));
+    const event = durableEventEnvelopeSchema.parse((await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: eventId } })).payload);
+    const staged: Array<{ role: string; content: string }> = [];
+    downstream.prepare.mockImplementation(async (source: CompanionWorkspaceRebuildSpool) => {
+      expect(source).toMatchObject({ messageCount: 3, sessionCount: 1 });
+      for await (const session of rebuildSpoolSessions(source)) {
+        staged.push(...(await readFile(session.transcriptPath, "utf8")).trimEnd().split("\n").map(line => JSON.parse(line)));
+      }
+      return { rebuildId: "11111111-1111-4111-8111-111111111111", sessions: source.sessionCount, messages: source.messageCount };
+    });
+    downstream.promote.mockResolvedValue({ sessions: 1, messages: 3 });
+    const headers: unknown[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const request = new Request(url, init);
+      if (request.url.endsWith("/prepare")) {
+        const frames = (await request.clone().text()).trimEnd().split("\n").map(line => JSON.parse(line));
+        headers.push(...frames.filter(frame => frame.type === "message_start").map(frame => frame.message));
+      }
+      return Response.json({ ok: true, rebuilt: request.url.endsWith("/prepare")
+        ? await prepareCompanionMemory(request) : await promoteCompanionMemory(request) });
+    });
+    await expect(syncCompanionMemoryFromMain(event)).resolves.toBeUndefined();
+    expect(headers[0]).toMatchObject({ role: "user", answeredByAttachment: true });
+    expect(staged.map(({ role, content }) => ({ role, content }))).toEqual([
+      { role: "user", content: userContent }, { role: "user", content: "Let's talk about tea." },
+      { role: "assistant", content: "I like oolong." },
+    ]);
+    expect(downstream.promote).toHaveBeenCalledOnce();
+  });
+
   // SPEC: 永久记忆记录的是两个人真正说过的话。
   // INTENT: 主动那一轮的 userContent 是让角色先开口的内部指令。把它当作用户发言
   //   导出，抽取器就会把角色答话里的属性记到用户头上 —— 线上真实数据里，用户只是

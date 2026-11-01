@@ -78,6 +78,7 @@ export function compilePreparedTurn(
           ? { speaker: message.speaker } : {}),
       })),
     tools: fitted.tools,
+    ...(context.recoveredMediaAction ? { recoveredMediaAction: context.recoveredMediaAction } : {}),
     profile,
     budget: fitted.budget,
     trace: {

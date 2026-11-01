@@ -1133,12 +1133,24 @@ export function createIgrepTools(options: {
     if (typeof args.query !== "string" || !args.query.trim() || args.query.length > 2000) throw new Error("invalid search query");
     return args.query;
   };
-  const observed = async (operation: "memory" | "search" | "session" | "web", action: () => Promise<unknown[]>) => {
+  // The opaque id already binds the attempt, source, block and byte offset.
+  // Keep original text and attribution, but do not repeat archive-only aliases
+  // and bookkeeping in the active tool tail, which Pi must retain in full.
+  const recallRows = (chunks: readonly import("./session-recall").Chunk[]) => chunks.map(chunk => ({
+    id: chunk.id, sourceId: chunk.sourceId, role: chunk.role, kind: chunk.kind,
+    ...(chunk.speaker ? { speaker: chunk.speaker } : {}),
+    ...(chunk.toolName ? { toolName: chunk.toolName } : {}),
+    ...(chunk.toolCallId ? { toolCallId: chunk.toolCallId } : {}),
+    content: chunk.content, byteStart: chunk.byteStart, byteEnd: chunk.byteEnd,
+  }));
+  const observed = async (operation: "memory" | "search" | "session" | "web", action: () => Promise<unknown>) => {
     const started = Date.now();
     try {
       const result = await action();
+      const rows = Array.isArray(result) ? result : objectRecord(result)?.results;
+      if (!Array.isArray(rows)) throw new Error("invalid lookup results");
       const matches = operation === "memory" ? new Set(JSON.stringify(result).match(/\bidreamrecall_[a-f0-9]{32}\b/giu) ?? []).size : 0;
-      options.observe?.({ operation, outcome: result.length ? "hit" : "empty", resultCount: result.length,
+      options.observe?.({ operation, outcome: rows.length ? "hit" : "empty", resultCount: rows.length,
         ...(matches > 0 ? { evidenceMatches: Math.min(matches, 8) } : {}), durationMs: Date.now() - started });
       return result;
     } catch (error) {
@@ -1161,18 +1173,23 @@ export function createIgrepTools(options: {
     }),
   }, {
     name: "session_recall",
-    description: "Recall original dialogue or tool records omitted from this attempt's current context. Supply query for search or ids for exact original chunks. With neither, list a bounded index. Summaries and reasoning are excluded.",
-    parameters: { type: "object", properties: { query: { type: "string", minLength: 1, maxLength: 2000 }, ids: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 8 }, offset: { type: "integer", minimum: 0 } }, additionalProperties: false },
+    description: "Read original dialogue or tool records from this attempt. Supply query for search, ids for exact chunks, or cursor to continue a source page. With none, list a bounded index. Follow remainingIds or nextCursor when a result is paged. Summaries and reasoning are excluded.",
+    parameters: { type: "object", properties: { query: { type: "string", minLength: 1, maxLength: 2000 }, ids: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 8 }, cursor: { type: "string", minLength: 1 }, offset: { type: "integer", minimum: 0 } }, additionalProperties: false },
     execute: (args, signal) => observed("session", async () => {
       signal.throwIfAborted();
-      if (args.query !== undefined && args.ids !== undefined) throw new Error("recall accepts query or ids, not both");
+      if ([args.query, args.ids, args.cursor].filter(value => value !== undefined).length > 1) throw new Error("recall accepts only one of query, ids or cursor");
       const projection = await options.recall();
       signal.throwIfAborted();
+      if (args.cursor !== undefined) {
+        if (typeof args.cursor !== "string" || !args.cursor) throw new Error("invalid recall cursor");
+        const page = projection.page(projection.attemptId, args.cursor);
+        return { results: recallRows(page.results), nextCursor: page.nextCursor };
+      }
       if (args.ids !== undefined) {
         if (!Array.isArray(args.ids) || !args.ids.every(id => typeof id === "string")) throw new Error("invalid recall ids");
-        return projection.read(projection.attemptId, args.ids);
+        return recallRows(projection.read(projection.attemptId, args.ids));
       }
-      if (args.query !== undefined) return projection.query(projection.attemptId, query(args), options.cli, run, signal);
+      if (args.query !== undefined) return recallRows(await projection.query(projection.attemptId, query(args), options.cli, run, signal));
       const offset = args.offset ?? 0;
       if (!Number.isSafeInteger(offset) || Number(offset) < 0) throw new Error("invalid recall offset");
       const rows: Array<Record<string, unknown>> = [];

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import sharp from "sharp";
 import { compileCharacterSoul } from "@idream/shared";
 import { MAIN_QUEUES } from "@idream/shared/contracts";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -9,6 +10,7 @@ import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
 import { api, createCharacter, createUser, dreamcoinBalance, expectError, expectOk, generationTestProviders, grantCoins, purgeTestData, runQueuedGenerationJobs } from "@/server/test/helpers";
 import * as generation from "../ourdream/service";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
+import { resolveGenerationRetryTarget, retryGenerationJobForUser } from "../ourdream/generation-job-retry";
 import { quoteAuthorityFor } from "../ourdream/generation-quote";
 import { parseGenerationRetryQuoteResponse } from "@/lib/public-api-contracts";
 import { applyChatToolEffect } from "./tool-effect";
@@ -39,7 +41,7 @@ async function fixture() {
   await prisma.character.update({ where: { id: character.id }, data: { currentContentVersionId: content.id } });
   const sourceKey = `${userId}-source.png`;
   sourceKeys.push(sourceKey);
-  await providers.blob.putPrivate({ key: sourceKey, body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlZlE0AAAAASUVORK5CYII=", "base64"), contentType: "image/png" });
+  await providers.blob.putPrivate({ key: sourceKey, body: await sharp({ create: { width: 1, height: 1, channels: 3, background: "#aabbcc" } }).png().toBuffer(), contentType: "image/png" });
   const source = await prisma.mediaAsset.create({ data: { id: `${userId}-source`, ownerId: userId, characterId: character.id, type: "image", url: `/api/media/${userId}-source/content.png`, storageKey: sourceKey, contentType: "image/png", visibility: "private", safetyStatus: "passed", width: 1, height: 1, metadata: {} } });
   const visual = await prisma.characterVisualProfile.create({ data: { characterId: character.id, identityPrompt: "Avery", faceTraits: {}, hairTraits: {}, bodyTraits: {}, signatureTraits: {}, styleTraits: {}, anchorAssetIds: [source.id], adapterRefs: {}, createdFrom: "test" } });
   const session = await createChatSession(userId, { characterId: character.id });
@@ -78,6 +80,73 @@ async function fixture() {
 }
 
 describe("Chat image retry delivery authority", () => {
+  it("rejects an explicitly non-retryable preparation failure before another job or debit, including an earlier quote", async () => {
+    const f = await fixture();
+    const originalId = f.accepted.generationJobId!;
+    await prisma.generationJob.update({ where: { id: originalId }, data: { errorCode: "preparation_failed" } });
+    await prisma.chatTurnAttachment.update({ where: { id: f.accepted.attachmentId }, data: { errorCode: "preparation_failed" } });
+    const earlierQuote = await api("POST", `generation/jobs/${originalId}/retry/quote`, { userId: f.userId, ageGate: true });
+    expectOk(earlierQuote);
+    const retryAuthority = quoteAuthorityFor(parseGenerationRetryQuoteResponse(earlierQuote.json).quote, 1)!;
+    const target = await resolveGenerationRetryTarget({ userId: f.userId, generationJobId: originalId, idempotencyKey: `${f.userId}:reserved-before-failure` });
+    if (target.kind !== "retryable") throw new Error("Expected a retry target before preparation evidence arrived");
+    await prisma.generationAttempt.create({ data: {
+      id: `${f.userId}-attempt`, requestId: originalId, attemptNo: 1, provider: "comfyui", status: "failed",
+      profileKey, profileVersion: 1, workflowKey: "qwen-image-edit-img2img", workflowVersion,
+      errorCode: "preparation_failed", retryability: "not_retryable", finishedAt: new Date(),
+    } });
+    const balance = await dreamcoinBalance(f.userId);
+    // The original failure has already settled. A stale quote must not open a
+    // replacement and charge for the same definitively rejected preparation.
+    await prisma.dreamcoinLedger.createMany({ data: [
+      { id: `${f.userId}-original-spend`, userId: f.userId, sourceId: originalId, reason: "generation_spend", delta: -5, balanceAfter: balance - 5 },
+      { id: `${f.userId}-original-refund`, userId: f.userId, sourceId: originalId, reason: "refund", delta: 5, balanceAfter: balance },
+    ] });
+    const quote = await api("POST", `generation/jobs/${originalId}/retry/quote`, { userId: f.userId, ageGate: true });
+    expect.soft(quote.status).toBe(409);
+    expect.soft(quote.json).toMatchObject({ error: { details: { code: "preparation_not_retryable" } } });
+    const retry = await api("POST", `generation/jobs/${originalId}/retry`, {
+      userId: f.userId, ageGate: true, headers: { "Idempotency-Key": `${f.userId}:not-retryable` }, body: { quoteAuthority: retryAuthority },
+    });
+    expect.soft(retry.status).toBe(409);
+    expect.soft(retry.json).toMatchObject({ error: { details: { code: "preparation_not_retryable" } } });
+    expect.soft((await f.retry(`${f.userId}:earlier-quote`)).status).toBe(409);
+    // A preflight that ran before the terminal evidence must be rechecked in
+    // admission, even when its exact quote and source version still match.
+    await expect.soft(retryGenerationJobForUser({ userId: f.userId, job: target.job, idempotencyKey: `${f.userId}:reserved-before-failure`, quoteAuthority: retryAuthority }))
+      .rejects.toMatchObject({ status: 409, details: { code: "preparation_not_retryable" } });
+    expect.soft(await prisma.generationJob.count({ where: { derivedFromJobId: originalId } })).toBe(0);
+    expect.soft(await prisma.dreamcoinLedger.count({ where: { userId: f.userId, reason: "generation_spend" } })).toBe(1);
+    expect.soft(await prisma.dreamcoinLedger.count({ where: { userId: f.userId, reason: "refund" } })).toBe(1);
+    expect.soft(await dreamcoinBalance(f.userId)).toBe(balance);
+    expect.soft(await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: f.accepted.attachmentId } }))
+      .toMatchObject({ generationJobId: originalId, status: "failed", errorCode: "preparation_failed" });
+    expect.soft((await getChatSession(f.userId, f.session.id)).messages.find(message => message.id === f.snapshot.assistantMessageId)?.attachments)
+      .toEqual([expect.objectContaining({ generationJobId: originalId, status: "failed", canRetry: false })]);
+  });
+
+  it("permits a fresh paid request after a transient preparation failure", async () => {
+    const f = await fixture();
+    const originalId = f.accepted.generationJobId!;
+    await prisma.generationJob.update({ where: { id: originalId }, data: { errorCode: "preparation_failed" } });
+    await prisma.generationAttempt.create({ data: {
+      id: `${f.userId}-attempt`, requestId: originalId, attemptNo: 1, provider: "comfyui", status: "failed",
+      profileKey, profileVersion: 1, workflowKey: "qwen-image-edit-img2img", workflowVersion,
+      errorCode: "preparation_failed", retryability: "retryable", finishedAt: new Date(),
+    } });
+    expect((await getChatSession(f.userId, f.session.id)).messages.find(message => message.id === f.snapshot.assistantMessageId)?.attachments)
+      .toEqual([expect.objectContaining({ generationJobId: originalId, canRetry: true })]);
+    const quote = await api("POST", `generation/jobs/${originalId}/retry/quote`, { userId: f.userId, ageGate: true });
+    expectOk(quote);
+    const retry = await api("POST", `generation/jobs/${originalId}/retry`, {
+      userId: f.userId, ageGate: true, headers: { "Idempotency-Key": `${f.userId}:retryable-preparation` },
+      body: { quoteAuthority: quoteAuthorityFor(parseGenerationRetryQuoteResponse(quote.json).quote, 1) },
+    });
+    expectOk(retry, 202);
+    expect(await prisma.generationJob.count({ where: { derivedFromJobId: originalId } })).toBe(1);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId: f.userId, reason: "generation_spend" } })).toBe(1);
+  });
+
   it("quotes historical attachment attempts consistently with Chat without admitting another reply version", async () => {
     const f = await fixture();
     const attachment = await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: f.accepted.attachmentId } });

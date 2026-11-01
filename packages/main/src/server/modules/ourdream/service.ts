@@ -17,6 +17,7 @@ import { isEnhanceEligible } from "./media-enhancement-source";
 import { videoSequenceRequestSchema } from "@idream/shared/contracts";
 import { createVideoSequence, quoteVideoSequence, readVideoSequence, readVideoSequenceByRequest, abandonVideoSequenceIntent, listVideoSequences, stopVideoSequence, retryVideoComposition, videoSequenceCapabilities } from "./video-sequence";
 import type { ChatImageRequestedPayload } from "@/server/ai/schemas";
+import { imageEditScopeSchema, type ConfirmedImageEdit } from "@idream/shared/chat/image-action";
 import {
   isProductionVideoProfile,
   productionVideoRecipeForProfile,
@@ -150,6 +151,8 @@ import { newPasswordProblem } from "@/lib/password-policy";
 import { dispatchAccountAccess, newRecoveryCode, storeRecoveryCode } from "./account-access";
 import { passwordAccountForUser } from "@/server/lib/auth/password-account";
 import { dispatchChatVideo } from "@/server/modules/chat/video-action";
+import { dispatchChatImageEditReview } from "@/server/modules/chat/image-edit-review";
+import type { GenerationJobOptions } from "./generation-job-create";
 import { dispatchComics } from "./comics";
 import { dispatchPacks, packLibrary } from "./packs";
 import { creatorStudio } from "./creator-studio";
@@ -568,6 +571,8 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
 
   const accountAccessResponse = await dispatchAccountAccess(request, segments);
   if (accountAccessResponse) return accountAccessResponse;
+  const editReviewResponse = await dispatchChatImageEditReview(request, segments);
+  if (editReviewResponse) return editReviewResponse;
   const videoResponse = await dispatchChatVideo(request, segments, generationJobResponse);
   if (videoResponse) return videoResponse;
   const comicResponse = await dispatchComics(request, segments);
@@ -2650,7 +2655,9 @@ async function resolveFeedRemixGenerationSource(
   };
 }
 
-export async function createChatImageGenerationJob(payload: ChatImageRequestedPayload, turnAttempt?: number) {
+export async function chatImageGenerationRequest(
+  payload: ChatImageRequestedPayload, turnAttempt?: number, confirmedEdit?: ConfirmedImageEdit, quoteOperation?: "recolor",
+): Promise<{ body: GenerationCreateBody; options: GenerationJobOptions }> {
   if (payload.subject !== "companion" && payload.subject !== "scene") {
     throw Errors.badRequest("Choose whether the requested image includes the companion before generating");
   }
@@ -2662,19 +2669,21 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
     throw Errors.forbidden("User cannot generate images");
   }
   const releasePin = await chatReleaseGenerationPin(payload);
-  const sceneOnly = payload.subject === "scene";
+  const recolor = confirmedEdit?.operation.kind === "recolor" || quoteOperation === "recolor";
+  const sceneOnly = payload.subject === "scene" || recolor;
   const prompt = compileChatImagePrompt(
     payload.promptHint ?? "candid in-character photo",
     sceneOnly ? "unspecified" : payload.intent.requestedNudity,
     { userInstruction: sceneOnly ? undefined : payload.conversationContext ?? undefined },
   );
   const sourceImageAssetId = payload.controls.sourceImageAssetId;
+  const editScope = payload.controls.editScope ? imageEditScopeSchema.parse(payload.controls.editScope) : undefined;
+  if (editScope && !sourceImageAssetId) throw Errors.badRequest("Image edit scope requires a delivered source image");
   // Editing has no crop/resize control. Main derives the output geometry from
   // the same verified source bytes that admission freezes for Gen.
   const orientation = sourceImageAssetId ? "original" : normalizeImageOrientation(payload.controls.orientation, "4:5");
-  return createGenerationJobForUser(
-    payload.userId,
-    {
+  return {
+    body: {
       mode: "image",
       characterId: sceneOnly ? undefined : payload.characterId,
       freeplay: sceneOnly,
@@ -2698,14 +2707,15 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
       // Explicit profile requests are fail-closed; source intent is never
       // silently discarded in favor of plain text-to-image generation.
       model:
-        sourceImageAssetId && sceneOnly
+        recolor ? "chat-image-recolor" : sourceImageAssetId && sceneOnly
           ? "chat-image-edit"
           : undefined,
     },
-    {
+    options: {
       idempotencyKey: idempotencyKeys.chatImage(payload.attachmentId),
+      ...(confirmedEdit ? { confirmedEdit, requireQuoteAuthority: true } : editScope?.mode === "local" ? { localizedEdit: editScope } : {}),
       chatAttachment: turnAttempt !== undefined && payload.exchangeId
-        ? { sessionId: payload.sessionId, turnId: payload.exchangeId, attempt: turnAttempt }
+        ? { sessionId: payload.sessionId, turnId: payload.exchangeId, attempt: turnAttempt, ...(confirmedEdit ? { confirmedEdit: true as const } : {}) }
         : undefined,
       source: {
         sourceType: "chat_image",
@@ -2717,6 +2727,7 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
           characterReleaseId: payload.characterReleaseId ?? null,
           chatCharacterId: payload.characterId,
           imageSubject: payload.subject,
+          ...(recolor ? { identityMode: "source_only" } : {}),
           promptHint: payload.promptHint,
           conversationContext: payload.conversationContext,
         }),
@@ -2732,7 +2743,12 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
         sceneOnly ? undefined : releasePin?.referenceSetRevisionId ?? undefined,
       requireCharacterVisualIdentity: !sceneOnly,
     },
-  );
+  };
+}
+
+export async function createChatImageGenerationJob(payload: ChatImageRequestedPayload, turnAttempt?: number) {
+  const { body, options } = await chatImageGenerationRequest(payload, turnAttempt);
+  return createGenerationJobForUser(payload.userId, body, options);
 }
 
 async function chatReleaseGenerationPin(payload: ChatImageRequestedPayload) {

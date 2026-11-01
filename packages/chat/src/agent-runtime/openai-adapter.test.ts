@@ -303,6 +303,24 @@ describe("OpenAI-compatible Pi adapter", () => {
     expect(evidence[0]?.bodyDigest).toBe(createHash("sha256").update(JSON.stringify(bodies[0])).digest("hex"));
   });
 
+  it.each(["media_extraction", "media_body"] as const)("keeps %s native reasoning and journals its purpose", async purpose => {
+    const bodies: Record<string, unknown>[] = [];
+    const evidence: unknown[] = [];
+    const adapter = adapterFor("https://provider.example/v1", async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response('data: {"choices":[{"delta":{"content":"{}"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+    }, { observeRequest: value => { evidence.push(value); }, profile: {
+        tier: "test", adapter: "openai-compatible-v1", provider: "local", baseUrl: "https://provider.example/v1",
+        model: "fixture", supportsTools: true, maxOutputTokens: 1_024, answerMaxOutputTokens: 256,
+        timeout: { firstTokenMs: 1_000, idleMs: 1_000 }, sampling: { temperature: 0.9, topP: 0.95, repetitionPenalty: 1.05 },
+      } });
+    await adapter.stream([], { purpose }).result();
+    expect(bodies[0]?.chat_template_kwargs).toEqual({ enable_thinking: true });
+    expect(bodies[0]?.max_tokens).toBe(1024);
+    expect(bodies[0]).not.toHaveProperty("response_format");
+    expect(evidence[0]).toHaveProperty("purpose", purpose);
+  });
+
   it("includes the structured schema in the total input budget before contacting a provider", async () => {
     const request = vi.fn<typeof fetch>();
     const adapter = adapterFor("https://provider.example/v1", request, {

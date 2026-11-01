@@ -2478,7 +2478,7 @@ function addGenBlobAuthorityProblems(
 // mapped to the legacy gateway adapter and retired with it on 2026-09-12, so a
 // profile still pinned to one no longer projects onto a buildable adapter.
 function imageAdapterForProfileRunner(runner: string | undefined) {
-  return runner === "comfyui" ? "backend" : runner;
+  return runner === "comfyui" || runner === "local-image" ? "backend" : runner;
 }
 
 function addBlobStorageProbeCheck(

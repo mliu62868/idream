@@ -1416,6 +1416,7 @@ const chatAttachmentSchema = z
     imageSubject: z.enum(["companion", "scene"]).optional(),
     generationJobId: z.string().nullable().optional(),
     canCancel: z.boolean().optional(),
+    canRetry: z.boolean().optional(),
     mediaAssetId: z.string().nullable().optional(),
     mediaUrl: renderableMediaSourceSchema.nullable().optional(),
     thumbnailUrl: renderableMediaSourceSchema.nullable().optional(),
@@ -1427,6 +1428,26 @@ const chatAttachmentSchema = z
     errorCode: z.string().nullable().optional(),
   })
   .passthrough();
+
+const chatEditQuoteAuthoritySchema = z.object({
+  profileId: nonEmptyString, profileVersion: z.number().int().positive(),
+  routeFingerprint: z.string().regex(/^[a-f0-9]{64}$/), pricingFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  outputCount: z.literal(1), costDreamcoins: nonNegativeInteger,
+}).strict();
+const chatImageEditReviewSchema = z.object({
+  attachmentId: nonEmptyString, turnId: nonEmptyString, attempt: z.number().int().positive(),
+  status: z.literal("awaiting_confirmation"), draftFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  instruction: z.string(), target: nonEmptyString,
+  source: z.object({ mediaAssetId: nonEmptyString, snapshotId: nonEmptyString, sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    width: z.number().int().positive(), height: z.number().int().positive(), contentType: z.literal("image/png"), url: renderableMediaSourceSchema }),
+  quotes: z.object({ generate: chatEditQuoteAuthoritySchema.nullable(), recolor: chatEditQuoteAuthoritySchema.nullable() }),
+  unavailable: z.object({ generate: z.string().optional(), recolor: z.string().optional() }).optional(),
+  limits: z.object({ maskMaxBytes: z.number().int().positive(), maxPixels: z.number().int().positive() }),
+});
+export type ChatImageEditReview = z.infer<typeof chatImageEditReviewSchema>;
+export function parseChatImageEditReviewResponse(payload: unknown): ChatImageEditReview {
+  return parseContract(successEnvelope(z.object({ review: chatImageEditReviewSchema })), payload, "chat image edit review").data.review;
+}
 
 const chatMessageSchema = z
   .object({

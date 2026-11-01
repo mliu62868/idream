@@ -57,7 +57,7 @@ async function loadNativeFlock(): Promise<NativeFlock> {
 // reclaimer to delete a successor's lock and lets two workers enter together.
 export async function withGenerationAcceleratorLease<T>(
   kind: GenerationKind,
-  run: () => Promise<T>,
+  run: (leaseFd: number) => Promise<T>,
   options: LeaseOptions = {},
 ): Promise<T> {
   // Native loading errors fail before entering the protected callback. Never
@@ -83,7 +83,7 @@ export async function withGenerationAcceleratorLease<T>(
     // authority. Updating the held inode does not replace it.
     await handle.truncate(0);
     await handle.writeFile(`${JSON.stringify({ pid: process.pid, token: randomUUID(), kind, acquiredAtMs: Date.now() })}\n`);
-    return await run();
+    return await run(handle.fd);
   } finally {
     await handle.close();
   }

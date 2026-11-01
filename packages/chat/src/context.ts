@@ -19,6 +19,7 @@ export interface BuiltContext {
   userLocale: string;
   hasRecentImageContext: boolean;
   recentMedia?: ChatExecutionSnapshot["recentMedia"];
+  recoveredMediaAction?: ChatExecutionSnapshot["recoveredMediaAction"];
   contextDirectives?: ChatContextDirective[];
   experience?: ChatExperiencePreference;
   userPersona?: UserChatPersona | null;
@@ -125,6 +126,7 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
     userLocale: authority.user.locale,
     hasRecentImageContext: snapshot.hasRecentImageContext,
     recentMedia: snapshot.recentMedia,
+    recoveredMediaAction: snapshot.recoveredMediaAction,
     contextDirectives: snapshot.contextDirectives ?? [],
     experience: snapshot.experience,
     userPersona: snapshot.userPersona,

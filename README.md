@@ -233,7 +233,15 @@ while preserving configured memory roots and retiring plugin/bootstrap paths.
 
 ## Character Chat Media Library
 
-Chat 的 `edit_last_image` 保留实际源文件尺寸；Main 在接纳事务中校验像素并冻结同一份源快照，Gen 不再套用新生成的默认画幅。已存在的开发/测试库需在受影响任务排空后执行 `db/sql/2026-10-29-image-edit-original-dimensions.sql`，为现有两个编辑档案发布支持 `original` 的新版本。原图须为单帧、宽高为 64 的倍数，且不超过所选档案已有尺寸预算；不符合时在扣费前拒绝。该迁移保留历史任务与旧档案；按既有重试规则，旧档案归档后，其失败任务不能再发起付费重试。保留尺寸不代表模型能保证未编辑区域逐像素不变。
+Chat 的 `edit_last_image` 保留实际源文件尺寸；Main 校验像素并冻结同一份源快照，Gen 不套用新生成的默认画幅。已存在的开发/测试库需在受影响任务排空后执行 `db/sql/2026-10-29-image-edit-original-dimensions.sql`，为现有两个编辑档案发布支持 `original` 的新版本。生成式编辑原图须为单帧、宽高为 64 的倍数，且不超过所选档案已有尺寸预算；不符合时在扣费前拒绝。该迁移保留历史任务与旧档案；按既有重试规则，旧档案归档后，其失败任务不能再发起付费重试。
+
+新编辑调用必须声明局部目标或整图范围。局部编辑先产生 `awaiting_confirmation` 卡片，Main 冻结原图，不创建生成任务或扣费。用户在原图上涂抹、擦除或按相邻颜色选区，查看预览后确认区域与操作；浏览器按账号、附件及源指纹保存草稿，网络中断后只检查同一份已保存确认。Main 重新校验权限、Turn/attempt、源图及二值遮罩，将确认内容固定为 `confirmed-mask-rgba-1`。取消未确认卡片不产生任务；回复重试恢复真实卡片，不重新选择媒体动作。
+
+“仅改色”使用 `local-image` 后端与 `local-recolor@1` 工作流，在 CPU 上替换选区色相/饱和度，保留明度、透明度及像素位置，预览和最终输出复用同一算法。此模式允许不超过四百万像素的原始尺寸，不要求 64 倍数，专用档案 `chat-image-recolor` 的价格倍率为零；仍经过真实 Job、Attempt、TerminalRecord、交付与结算，不制造零元扣费行。providerRequestId 为空，外部请求与模型调用为零；零 provider 费用不代表基础设施成本为零。“生成式修改”沿用当前图片报价与 Qwen 工作流，选区内部仍可能重画；Gen 在编码后重新解码，校验选区外所有像素完全不变。Main 校验确认指纹和执行证据后才能接纳产物。区域选择正确与修改语义成功仍须独立核验。
+
+历史已固定 `sam3-rgba-composite-1` 的任务保留原分割恢复契约，新局部编辑不再自动分割。仅恢复这类历史任务时，Gen 的 `COMFYUI_IMAGE_ROOT` 需要现有 Comfy 核心、Python 虚拟环境与 `models/checkpoints/sam3.1_multiplex_fp16.safetensors`（SHA256 `9ba99c92703c2e8b4f47de2d34a539bb8e18923049e238b780d70dbe6368eb03`）；不会在运行时下载。历史分割回归仍可用该虚拟环境运行 `bun run --filter @idream/gen test:segmentation`。分割一致性只用于保守拒绝，实测单候选也会误选手部，不能作为目标区域正确的证明。
+
+实际媒体动作的待确认、接纳、交付和失败由 Main 的持久附件卡片显示。纯媒体请求不生成额外承诺文字；混合请求保留逐字提取的独立问题或故事，正文沿正式聊天上下文和非媒体工具继续完成。Main 只允许同一 Turn、当前 attempt 的真实附件支撑空正文；回复重试在锁内重新绑定已有附件，以 `recoveredMediaAction` 交给 Chat，不伪造工具调用或再次购买。请求提取与正文调用计入真实模型用量；提取或独立正文失败不会因已有卡片而被当作整条回复成功。模型提取和自由正文仍需实际质量验收，不以另一个不可靠的语义审查器认证成功。
 
 Main owns reusable Character photos/videos and their delivery records. Before
 deploying this feature, confirm `DATABASE_URL` selects the intended database,

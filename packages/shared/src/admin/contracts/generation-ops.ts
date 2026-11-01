@@ -116,7 +116,7 @@ export const generationModelProfileCreateRequestSchema = z
     sampler: z.string().trim().min(1).max(80).default("euler"),
     scheduler: z.string().trim().min(1).max(80).default("model_default"),
     cfgScale: z.number().min(1).max(30).default(1),
-    costMultiplier: z.number().min(0.1).max(20).default(1),
+    costMultiplier: z.number().min(0).max(20).default(1),
     requiredEntitlement: z.string().trim().max(120).nullable().optional(),
     maxCount: imageGeneratePayloadSchema.shape.count.default(4),
     concurrencyLimit: z.number().int().min(1).max(100).default(1),
@@ -145,7 +145,7 @@ export const generationModelProfilePatchRequestSchema = z
     sampler: z.string().trim().min(1).max(80).optional(),
     scheduler: z.string().trim().min(1).max(80).optional(),
     cfgScale: z.number().min(1).max(30).optional(),
-    costMultiplier: z.number().min(0.1).max(20).optional(),
+    costMultiplier: z.number().min(0).max(20).optional(),
     requiredEntitlement: z.string().trim().max(120).nullable().optional(),
     maxCount: imageGeneratePayloadSchema.shape.count.optional(),
     concurrencyLimit: z.number().int().min(1).max(100).optional(),
@@ -647,7 +647,7 @@ const generationWorkflowSlotSchema = z
     target: z.union([
       z.object({ nodeId: z.string().min(1), field: z.string().min(1) }).strict(),
       z.object({ argFlag: z.string().min(1) }).strict(),
-    ]),
+    ]).optional(),
     default: z.union([z.string(), z.number()]).optional(),
     additionalTargets: z
       .array(z.object({ nodeId: z.string().min(1), field: z.string().min(1) }).strict())
@@ -663,7 +663,7 @@ const generationWorkflowSummarySchema = z
   .object({
     workflowKey: z.string().min(1),
     modelId: z.string().min(1),
-    backendKind: z.enum(["comfyui", "drawthings"]),
+    backendKind: z.enum(["comfyui", "drawthings", "local-image"]),
     version: z.number().int().positive(),
     capabilities: z.array(z.string().min(1)).readonly(),
     inputs: z.array(generationWorkflowSlotSchema).readonly(),
@@ -685,7 +685,7 @@ export const generationWorkflowDetailResponseSchema = z
       .object({
         workflowKey: z.string().min(1),
         modelId: z.string().min(1),
-        backendKind: z.enum(["comfyui", "drawthings"]),
+        backendKind: z.enum(["comfyui", "drawthings", "local-image"]),
         version: z.number().int().positive(),
         capabilities: z.array(z.string().min(1)).readonly(),
         negativePromptMode: z.enum(["conditioning", "positive_instruction"]),
@@ -708,6 +708,7 @@ export const generationWorkflowDetailResponseSchema = z
         comfyWorkflow: z.object({ id: z.string().min(1), name: z.string().min(1) }).strict().optional(),
         apiPrompt: adminJsonValueSchema.optional(),
         drawThings: z.object({ model: z.string().min(1) }).strict().optional(),
+        localImage: z.object({ operation: z.literal("recolor") }).strict().optional(),
       })
       .strict(),
   })

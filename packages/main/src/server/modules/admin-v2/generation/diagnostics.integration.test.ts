@@ -1,7 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
-import { adminV2 } from "@/server/test/admin-v2-http";
+import { adminV2 as sendAdminV2, type AdminV2CallOptions } from "@/server/test/admin-v2-http";
+import { BFF_HEADER, BFF_USER_HEADER, signBffContext } from "@idream/shared/bff";
+
+// Exercise the signed internal boundary even when a developer's environment
+// already configures the BFF secret; actor role headers alone are insufficient.
+async function adminV2(method: string, path: string, options: AdminV2CallOptions) {
+  const signed = signBffContext({ secret: process.env.ADMIN_BFF_SIGNING_SECRET!, userId: "admin-bff", method, path, body: "" });
+  return sendAdminV2(method, path, { ...options, headers: { ...options.headers, [BFF_HEADER]: signed.signature, [BFF_USER_HEADER]: JSON.stringify(signed.context) } });
+}
 
 // SPEC: read-only generation diagnostics over the real v2 route seam — the workflow descriptor
 //       catalogue, the backend probe, and per-profile health.
@@ -12,8 +20,10 @@ describe("generation diagnostics (v2, read-only)", () => {
   const adminId = `gen-diag-admin-${suffix}`;
   const deniedId = `gen-diag-denied-${suffix}`;
   const profileId = `gen-diag-profile-${suffix}`;
+  const previousSecret = process.env.ADMIN_BFF_SIGNING_SECRET;
 
   beforeAll(async () => {
+    process.env.ADMIN_BFF_SIGNING_SECRET = "diagnostics-bff-test-secret-0123456789";
     await prisma.user.createMany({
       data: [
         { id: adminId, email: `${adminId}@example.test`, role: "admin", status: "active" },
@@ -34,6 +44,8 @@ describe("generation diagnostics (v2, read-only)", () => {
   });
 
   afterAll(async () => {
+    if (previousSecret === undefined) delete process.env.ADMIN_BFF_SIGNING_SECRET;
+    else process.env.ADMIN_BFF_SIGNING_SECRET = previousSecret;
     await prisma.generationModelProfile.deleteMany({ where: { id: profileId } });
     await prisma.user.deleteMany({ where: { id: { in: [adminId, deniedId] } } });
     await prisma.$disconnect();
@@ -52,6 +64,7 @@ describe("generation diagnostics (v2, read-only)", () => {
     expect(keys).toContain("qwen-image-edit-img2img");
     expect(keys).toContain("qwen-image-edit-multi-identity");
     expect(keys).toContain("pornmaster-zimage-drawthings-txt2img");
+    expect(keys).toContain("local-recolor");
     for (const item of items) {
       expect(item).not.toHaveProperty("apiPrompt");
       expect(Object.keys(item).sort()).toEqual(
@@ -99,6 +112,13 @@ describe("generation diagnostics (v2, read-only)", () => {
     }
   });
 
+  it("exposes the real local recolor descriptor without an external endpoint", async () => {
+    const result = await adminV2("GET", "/api/v2/admin/generation/workflows/local-recolor", admin);
+    expect(result.status, JSON.stringify(result.error)).toBe(200);
+    expect(result.data.workflow).toMatchObject({ workflowKey: "local-recolor", version: 1, backendKind: "local-image", localImage: { operation: "recolor" } });
+    expect(result.data.workflow.apiPrompt).toBeUndefined();
+  });
+
   it.each(["does-not-exist", "redqw21"])("404s for an unavailable workflowKey: %s", async (workflowKey) => {
     const result = await adminV2(
       "GET",
@@ -109,7 +129,7 @@ describe("generation diagnostics (v2, read-only)", () => {
     expect(result.error?.code).toBe("not_found");
   });
 
-  it("lists comfyui + drawthings backends, each with a health object", async () => {
+  it("lists comfyui, drawthings and local-image with their actual health surfaces", async () => {
     const originalComfyUrl = process.env.COMFYUI_API_URL;
     const originalDrawThingsCli = process.env.DRAWTHINGS_CLI;
     // An unreachable port makes the comfyui probe deterministically ok:false instead of
@@ -126,7 +146,9 @@ describe("generation diagnostics (v2, read-only)", () => {
         health: { ok: boolean; detail?: string };
       };
       const items = result.data.items as BackendItem[];
-      expect(items).toHaveLength(2);
+      expect(items).toHaveLength(3);
+      expect(items.find(item => item.id === "local-image")).toMatchObject({ health: { ok: true } });
+      expect(items.find(item => item.id === "local-image")).not.toHaveProperty("endpoint");
       // gen has no sd.cpp backend left, so the catalogue must not advertise one.
       expect(items.map((item) => item.id)).not.toContain("sdcpp");
 

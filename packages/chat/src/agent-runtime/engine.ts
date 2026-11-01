@@ -2,12 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 import type { CompanionReadiness } from "@idream/shared/chat/companion-runtime";
 import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL } from "@idream/shared/chat/media-library";
 import { companionEventSchema, companionToolCallSchema, companionToolReservationSchema, companionToolResultSchema,
   type CompanionCommitAck, type CompanionEvent, type CompanionInvocation, type CompanionModelRequestEvidence,
-  type CompanionTerminalCandidate, type CompanionToolCall, type CompanionToolResult, type PreparedTurnProfile } from "./contracts";
+  type CompanionTerminalCandidate, type CompanionToolCall, type CompanionToolResult, type PreparedTurnProfile, type PreparedTurnMessage } from "./contracts";
 import { evaluateTerminalCandidate, type TerminalValidationCode } from "./terminal-candidate";
 import { companionIgrepConfig, createCompanionCompositionPlan } from "./composition";
 import { renderResidentProfile } from "./resident-profile";
@@ -20,12 +21,12 @@ import type { CompanionWorkspaceRebuildPromotion, CompanionWorkspaceRebuildSourc
 import { assertNotFenced, withDrainFence, type FenceScope } from "../fence.js";
 import { stableJson } from "../stable-json";
 import { describeRequestedReplyConstraints } from "../prompt.js";
-import { ProviderError, type OpenAiCompatibleAdapter, type TokenUsage } from "./openai-adapter";
+import { ProviderError, type OpenAiCompatibleAdapter, type OpenAiCompatibleAdapterOptions, type TokenUsage } from "./openai-adapter";
 import { aggregateModelRequestUsage } from "./model-request-evidence";
 import { buildReplaySeed, finishReason, messageText } from "./pi-context";
 import { executePiConversation, toolSignal, withToolCancellation } from "./pi-runtime";
 import { projectRecall } from "./session-recall";
-import { successfulToolResultContent } from "./tool-result-context";
+import { MEDIA_EXTRACTION_MAX_TOKENS, mediaAttachmentId, mediaBodySystemPrompt, mediaExtractionMessages, parseMediaTextRequests, prepareMediaBody } from "./media-response";
 export { buildReplaySeed } from "./pi-context";
 type EventPayload = CompanionEvent extends infer Event ? Event extends CompanionEvent
   ? Omit<Event, "invocationId" | "attemptId" | "sequence" | "occurredAt"> : never : never;
@@ -37,6 +38,7 @@ export interface CompanionEngineOptions {
     observeRequest?(evidence: CompanionModelRequestEvidence): void;
     observeUsage(usage: TokenUsage | undefined, request: CompanionModelRequestEvidence): void;
     samplingTemperature?: number;
+    responseFormat?: OpenAiCompatibleAdapterOptions["responseFormat"];
   }): OpenAiCompatibleAdapter;
   igrep: IgrepCommand;
   runIgrep?: RunJsonCommand;
@@ -235,6 +237,7 @@ function invocationFailure(input: {
 
 class ToolBridge {
   private readonly entries = new Map<string, {
+    call: CompanionToolCall;
     name: CompanionToolCall["name"];
     startedAt: number;
     reservation: ReturnType<typeof companionToolReservationSchema.parse>;
@@ -258,12 +261,18 @@ class ToolBridge {
     return [...this.entries.values()].map((entry) => entry.reservation);
   }
 
+  async mediaActions(signal: AbortSignal) {
+    return Promise.all([...this.entries.values()].filter(entry => entry.name !== SEARCH_CHARACTER_MEDIA_TOOL)
+      .map(async entry => ({ call: entry.call, result: await withToolCancellation(entry.pending, signal) })));
+  }
+
   async execute(call: CompanionToolCall, signal: AbortSignal): Promise<CompanionToolResult> {
     const key = `${call.attemptId}\0${call.callId}`;
     let entry = this.entries.get(key);
     if (!entry) {
       const startedAt = Date.now();
       entry = {
+        call,
         name: call.name,
         startedAt,
         reservation: companionToolReservationSchema.parse({
@@ -333,7 +342,7 @@ class ToolBridge {
 class ActiveInvocation {
   readonly cancellation = new AbortController();
   cancelReason?: "user" | "timeout" | "shutdown" | "transport";
-  /** Set once the Pi conversation is disposed. */
+  /** Set once native execution and any required independent media body have finished. */
   agentDisposed = false;
 
   constructor(readonly invocation: CompanionInvocation) {}
@@ -530,7 +539,11 @@ export class CompanionEngine {
       const modelRequests: CompanionModelRequestEvidence[] = [];
       let currentText = "";
       const bridge = new ToolBridge(port.executeTool, payload => { void event(payload); });
-      const adapter = this.options.adapter(invocation.preparedTurn.profile, {
+      // A model may introduce its action with an unsupported completion claim.
+      // Buffer capability-bearing steps before tool choice; never expose and
+      // retract that claim after the external action has already started.
+      const bufferText = invocation.preparedTurn.tools.some(tool => ["generate_image_async", "edit_last_image", SEND_CHARACTER_MEDIA_TOOL].includes(tool.name));
+      const requestPolicy: Parameters<CompanionEngineOptions["adapter"]>[1] = {
         maxInputTokens: invocation.preparedTurn.budget.maxInputTokens,
         observeRequest: evidence => event({ type: "model_request_started", request: {
           ...evidence, provider: invocation.preparedTurn.profile.provider,
@@ -544,6 +557,8 @@ export class CompanionEngine {
           const usage = wireUsage(receipt);
           if (usage) { void event({ type: "usage", usage }); if (usage.reasoningTokens !== null && usage.reasoningTokens > 0) void event({ type: "reasoning_usage", reasoningTokens: usage.reasoningTokens }); }
         },
+      };
+      const adapter = this.options.adapter(invocation.preparedTurn.profile, { ...requestPolicy,
         ...(needsFactualSampling(current.content) ? { samplingTemperature: Math.min(invocation.preparedTurn.profile.sampling.temperature, 0.2) } : {}),
       });
       const seed = buildReplaySeed(invocation, recallContext);
@@ -569,13 +584,18 @@ export class CompanionEngine {
         if (igrepFailure) throw new Error("companion memory evidence is unavailable");
         if (unconfirmedImageEffect) throw new Error("image action acceptance is unknown");
       };
-      const completed = await executePiConversation({ invocation, seed, pinned, systemPrompt, adapter,
+      const retrievalEvidence: PreparedTurnMessage[] = [];
+      const runConversation = (stage: {
+        invocation: CompanionInvocation; seed: readonly PreparedTurnMessage[]; pinned: readonly PreparedTurnMessage[];
+        systemPrompt: string; adapter: OpenAiCompatibleAdapter; maxSteps: number; purpose?: "media_body";
+        executionEvidence?: readonly PreparedTurnMessage[];
+      }) => executePiConversation({ ...stage,
         afterRetrievalContext: {
           content: COMPANION_RETRIEVAL_REPLY_CONTEXT + (mode === "private" ? PRIVATE_RETRIEVAL_UNCERTAINTY : ""),
           available: () => retrievalCompleted,
         },
-        signal: active.cancellation.signal, maxSteps: this.options.maxSteps ?? 8, assertContinuation,
-        text: delta => { currentText += delta; void event({ type: "text_delta", delta }); },
+        signal: active.cancellation.signal, assertContinuation,
+        text: delta => { if (!bufferText || stage.purpose === "media_body") { currentText += delta; void event({ type: "text_delta", delta }); } },
         reset: () => { if (currentText) { currentText = ""; void event({ type: "text_reset" }); } },
         compaction: (outcome, durationMs) => { void event({ type: "igrep_observation", operation: "compaction", outcome, durationMs, ...(outcome === "hit" ? { resultCount: 1 } : {}) }); },
         tools: conversation => {
@@ -583,17 +603,26 @@ export class CompanionEngine {
             recall: () => projectRecall(conversation(), BACKGROUND_CONTEXT, {
               attemptId: invocation.attemptId, conversationId: conversation().id,
               assistant: { name: invocation.preparedTurn.characterName, characterId: invocation.characterId, sessionId: invocation.sessionId },
-              seed: invocation.preparedTurn.messages, omitted: invocation.preparedTurn.omittedMessages ?? [],
+              seed: stage.invocation.preparedTurn.messages, omitted: stage.invocation.preparedTurn.omittedMessages ?? [], execution: stage.executionEvidence,
+              includeVisibleToolResults: true,
             }),
             observe: observation => { void event({ type: "igrep_observation", ...observation }); },
           });
           return [
             ...retrieval.map(tool => ({ ...tool, parameters: tool.parameters as ToolRegistration["parameters"], replay: "safe" as const, executionMode: "sequential" as const,
-              async execute(args, _api, context) {
+              async execute(args, api, context) {
                 try {
                   const value = await withToolCancellation(tool.execute(args as Record<string, unknown>, toolSignal(active.cancellation.signal, context)), active.cancellation.signal);
                   const text = JSON.stringify(value);
                   retrievalCompleted = true;
+                  // Keep exactly executed non-media evidence across the body boundary,
+                  // including calls made before Pi compacted its first conversation.
+                  retrievalEvidence.push(
+                    { id: `lookup-call:${api.callId}`, sourceKind: "plugin", role: "assistant", content: "", tool_calls: [
+                      { id: api.callId, type: "function", function: { name: tool.name, arguments: JSON.stringify(args) } },
+                    ] },
+                    { id: `lookup-result:${api.callId}`, sourceKind: "plugin", role: "tool", tool_call_id: api.callId, content: text },
+                  );
                   return { output: [{ type: "text" as const, text }] };
                 } catch (error) {
                   igrepFailure = tool.name === "memory_search" ? "memory" : "search";
@@ -602,7 +631,7 @@ export class CompanionEngine {
                 }
               },
             } satisfies ToolRegistration)),
-            ...invocation.preparedTurn.tools.map(tool => ({ ...tool, parameters: tool.parameters as ToolRegistration["parameters"], replay: tool.name === SEARCH_CHARACTER_MEDIA_TOOL ? "safe" as const : "unsafe" as const, executionMode: "sequential" as const,
+            ...stage.invocation.preparedTurn.tools.map(tool => ({ ...tool, parameters: tool.parameters as ToolRegistration["parameters"], replay: tool.name === SEARCH_CHARACTER_MEDIA_TOOL ? "safe" as const : "unsafe" as const, executionMode: "sequential" as const,
               async execute(args, api, context) {
                 const lookup = tool.name === SEARCH_CHARACTER_MEDIA_TOOL;
                 if (!lookup && bridge.actionCount > 0) throw new Error("only one media action may execute per Turn");
@@ -614,32 +643,89 @@ export class CompanionEngine {
                 if (!lookup) unconfirmedImageEffect = result.outcome === "unknown";
                 if (lookup && result.outcome !== "succeeded") return { isError: true, output: [{ type: "text" as const,
                   text: "Prepared media search is unavailable. No media was sent or generated. This is not evidence that the library is empty; do not claim a match or delivery." }] };
-                if (result.outcome !== "succeeded") return { isError: true, output: [{ type: "text" as const, text: result.outcome === "failed"
-                  ? `The ${tool.name === SEND_CHARACTER_MEDIA_TOOL ? "media" : "image"} action failed this time (${result.error.code}). Answer them in character in one or two short sentences: it will have to wait. Do not mention tools, systems, errors or this message.`
-                  : "Media action acceptance is unknown." }] };
-                return { output: successfulToolResultContent(result) };
+                return { ...(result.outcome !== "succeeded" ? { isError: true } : {}),
+                  output: [{ type: "text" as const, text: JSON.stringify(result) }] };
               },
             } satisfies ToolRegistration)),
           ];
         },
       });
-      active.agentDisposed = true;
+      const maxSteps = this.options.maxSteps ?? 8;
+      const recovered = invocation.preparedTurn.recoveredMediaAction;
+      // Main already rebound this durable action to the current attempt. A
+      // reply retry must not ask the model to select or buy it again.
+      const completed = recovered ? undefined : await runConversation({ invocation, seed, pinned, systemPrompt, adapter, maxSteps });
       assertContinuation();
-      const latestAssistant = completed.message;
-      const usage = aggregateModelRequestUsage(modelRequests);
-      const attribution = adapter.getAttribution(latestAssistant);
-      const decision = evaluateTerminalCandidate({ attemptId: invocation.attemptId, assistantContent: messageText(latestAssistant), finishReasonKind: finishReason(latestAssistant),
+      let latestAssistant = completed?.message;
+      let replyAdapter = adapter;
+      let steps = completed?.steps ?? 0;
+      let mediaResponse: CompanionTerminalCandidate["mediaResponse"];
+      let bodyText: string | undefined;
+      if (recovered || bridge.actionCount > 0 || completed?.selectedMediaCalls.length) {
+        terminalValidationCode = "media_response_incomplete";
+        let evidence: Parameters<typeof mediaExtractionMessages>[1];
+        let attachmentId: string;
+        if (recovered) {
+          evidence = { recoveredMediaAction: recovered };
+          attachmentId = recovered.attachmentId;
+        } else {
+          const actions = await bridge.mediaActions(active.cancellation.signal);
+          const action = actions[0];
+          const confirmedId = action ? mediaAttachmentId(action.result) : undefined;
+          // A rejected native selection or HTTP failure has no attachment proof.
+          if (actions.length !== 1 || !action || !confirmedId) throw new Error("media action has no confirmed Main attachment");
+          evidence = action;
+          attachmentId = confirmedId;
+        }
+        mediaResponse = { version: 1, attachmentId };
+        if (++steps > maxSteps) throw new Error("media extraction exceeds the invocation step budget");
+        const outputLimit = Math.min(invocation.preparedTurn.profile.maxOutputTokens, MEDIA_EXTRACTION_MAX_TOKENS);
+        const extractor = this.options.adapter({ ...invocation.preparedTurn.profile, maxOutputTokens: outputLimit, answerMaxOutputTokens: outputLimit }, {
+          ...requestPolicy, samplingTemperature: 0,
+          maxInputTokens: invocation.preparedTurn.budget.maxInputTokens + invocation.preparedTurn.profile.maxOutputTokens - outputLimit,
+        });
+        const extracted = await extractor.stream(mediaExtractionMessages(current.content, evidence), {
+          purpose: "media_extraction", signal: active.cancellation.signal,
+        }).result();
+        active.cancellation.signal.throwIfAborted();
+        if (extracted.stopReason !== "stop") throw extractor.getError(extracted) ?? new Error("media text extraction was incomplete");
+        const requests = parseMediaTextRequests(messageText(extracted), current.content);
+        if (requests.length === 0) bodyText = "";
+        else {
+          if (steps >= maxSteps) throw new Error("media body exceeds the invocation step budget");
+          const body = prepareMediaBody({ invocation, seed, requests });
+          // The separate native loop retains Soul, history and real lookup pairs;
+          // only this turn's media instruction, calls and receipts are absent.
+          const executionEvidence = [...retrievalEvidence];
+          await writeFile(join(knowledgePath, "conversation.jsonl"), [...body.seed, ...executionEvidence, body.current]
+            .map(message => JSON.stringify(message)).join("\n") + "\n", { mode: 0o600 });
+          replyAdapter = this.options.adapter(invocation.preparedTurn.profile, { ...requestPolicy, samplingTemperature: 0 });
+          const replied = await runConversation({ ...body, executionEvidence,
+            systemPrompt: mediaBodySystemPrompt(systemPrompt, mode === "normal"), adapter: replyAdapter,
+            purpose: "media_body", maxSteps: maxSteps - steps });
+          steps += replied.steps;
+          latestAssistant = replied.message;
+          // A truncated or empty independent answer cannot become card-only success.
+          if (replied.selectedMediaCalls.length > 0 || latestAssistant.stopReason !== "stop" || !messageText(latestAssistant).trim()) throw new Error("independent media body was incomplete");
+        }
+        terminalValidationCode = undefined;
+      }
+      const decision = evaluateTerminalCandidate({ attemptId: invocation.attemptId,
+        assistantContent: bodyText ?? (latestAssistant ? messageText(latestAssistant) : undefined),
+        finishReasonKind: bodyText === "" ? "stop" : latestAssistant ? finishReason(latestAssistant) : undefined,
         currentUserText: current.content, tools: invocation.preparedTurn.tools, toolCalls: bridge.callCount, reservations: bridge.reservations,
-        profile: invocation.preparedTurn.profile, usage, steps: completed.steps, completedAt: new Date().toISOString(), modelRequests,
-        ...(attribution ? { attribution } : {}),
+        profile: invocation.preparedTurn.profile, usage: aggregateModelRequestUsage(modelRequests),
+        steps, completedAt: new Date().toISOString(), modelRequests, ...(mediaResponse ? { mediaResponse } : {}),
+        ...(latestAssistant && replyAdapter.getAttribution(latestAssistant) ? { attribution: replyAdapter.getAttribution(latestAssistant) } : {}),
       });
       if (!decision.accepted) {
         terminalValidationCode = decision.code;
         if (decision.code === "unexecuted_tool_payload" && currentText) { currentText = ""; await event({ type: "text_reset" }); }
         throw new Error(decision.message);
       }
+      active.agentDisposed = true;
       const candidate = decision.candidate;
-      if (!currentText) { currentText = candidate.content; await event({ type: "text_delta", delta: currentText }); }
+      if (!currentText && candidate.content) { currentText = candidate.content; await event({ type: "text_delta", delta: currentText }); }
       else if (currentText !== candidate.content) throw new Error("streamed assistant text differs from terminal message");
       active.cancellation.signal.throwIfAborted();
       await event({ type: "terminal_candidate", candidate });

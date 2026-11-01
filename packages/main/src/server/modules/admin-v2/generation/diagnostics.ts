@@ -66,6 +66,7 @@ export function generationBackendHealth(
   backendKind: string,
   modality: ComfyUiModality,
 ): Promise<BackendHealth> {
+  if (backendKind === "local-image") return Promise.resolve({ ok: true, detail: "In-process deterministic image operations; no external endpoint." });
   if (backendKind === "comfyui") {
     return comfyuiHealth(comfyUiEndpoint(process.env, modality));
   }
@@ -95,6 +96,7 @@ export async function listGenerationBackends(request: Request) {
   return {
     items: [
       { id: "comfyui", kind: "comfyui", endpoint: comfyuiEndpoint, health: comfyui },
+      { id: "local-image", kind: "local-image", health: await generationBackendHealth("local-image", "image") },
       {
         id: "drawthings",
         kind: "drawthings",

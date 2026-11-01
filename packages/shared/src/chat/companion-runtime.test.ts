@@ -137,6 +137,21 @@ describe("shared companion authority contracts", () => {
     }).success).toBe(false);
   });
 
+  it("accepts attachment-answered users without inventing an assistant utterance", () => {
+    const media = { ...messages[0]!, id: "media-user", answeredByAttachment: true };
+    const payload = { scope: "relationship", userId: "user-1", characterId: "character-1", mode: "rebuild" };
+    expect(companionWorkspaceRebuildSchema.safeParse({ ...payload, messages: [media] }).success).toBe(true);
+    expect(companionWorkspaceRebuildSchema.safeParse({ ...payload, messages: [media, ...messages] }).success).toBe(true);
+    expect(companionWorkspaceRebuildSchema.safeParse({ ...payload, messages: [messages[0], ...messages] }).success).toBe(false);
+    expect(companionWorkspaceRebuildSchema.safeParse({ ...payload, messages: [{ ...media, role: "assistant" }] }).success).toBe(false);
+    expect(companionWorkspaceRebuildSchema.safeParse({ ...payload, messages: [media, messages[1]] }).success).toBe(false);
+    expect(() => encodeCompanionWorkspaceRebuildFrame({
+      protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION, type: "message_start",
+      message: { id: media.id, sessionId: media.sessionId, role: "assistant", createdAt: media.createdAt, answeredByAttachment: true },
+      contentLength: media.content.length,
+    })).toThrow();
+  });
+
   it("round-trips one strict NDJSON frame", () => {
     const frame = {
       protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,

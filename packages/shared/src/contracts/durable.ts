@@ -98,6 +98,13 @@ export const generationTerminalRecordSchema = z.discriminatedUnion("outcome", [
   generationTerminalRecordBaseSchema.extend({
     outcome: z.literal("failed"),
     error: generationTerminalErrorSchema,
+    // Replayable local preparation is not provider execution or provider cost.
+    // Optional preserves historical checksums while retaining rejected masks.
+    preparation: z.object({
+      code: z.string().min(1),
+      elapsedMs: z.number().nonnegative(),
+      details: z.record(z.string(), z.unknown()),
+    }).optional(),
     // Non-delivery evidence only. Omit on historical records to preserve their
     // checksum; Main validates exact attempt ownership before durable cleanup.
     cleanupKeys: z.array(z.string().min(1)).min(1).max(4).refine(
@@ -128,6 +135,9 @@ export const generationTerminalRecordSchema = z.discriminatedUnion("outcome", [
       path: ["providerInvoked"],
       message: "input moderation must block before provider invocation",
     });
+  }
+  if (record.outcome === "failed" && record.preparation && (record.providerInvoked || !failedPreparation)) {
+    context.addIssue({ code: "custom", path: ["preparation"], message: "preparation evidence requires a failure before provider invocation" });
   }
   if (!record.providerInvoked && !blockedAtInput && !failedPreparation) {
     context.addIssue({

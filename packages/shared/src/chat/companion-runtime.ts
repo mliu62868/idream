@@ -59,26 +59,32 @@ const credentialFreeHttpUrlSchema = z
 export const companionMemoryModeSchema = z.enum(["normal", "private"]);
 export const companionWorkspaceBuildModeSchema = z.enum(["project", "rebuild"]);
 
-export const companionWorkspaceRebuildMessageSchema = z
+const companionWorkspaceRebuildMessageHeaderSchema = z
   .object({
     id: nonEmptyStringSchema,
     sessionId: nonEmptyStringSchema,
     role: z.enum(["user", "assistant"]),
-    content: z.string().min(1),
     createdAt: isoDateTimeSchema,
     // SPEC: the Character spoke without a user message before it.
     // INTENT: the transcript is otherwise a strict user/assistant alternation,
     // and that check is what catches a reordered or truncated export. A
-    // proactive check-in is the one real exchange with no user side, so it is
-    // declared rather than silently tolerated — an unflagged assistant message
+    // proactive check-in has no user side, so it is explicitly declared
+    // rather than silently tolerated — an unflagged assistant message
     // out of turn stays an error.
     unprompted: z.literal(true).optional(),
+    // Main proved that this user message was answered by a durable attachment.
+    // Keep the user's exact words without fabricating an assistant utterance.
+    answeredByAttachment: z.literal(true).optional(),
   })
-  .strict();
+  .strict()
+  .refine(message => !message.answeredByAttachment || message.role === "user", {
+    path: ["answeredByAttachment"], message: "only a user message can be answered by an attachment",
+  });
+
+export const companionWorkspaceRebuildMessageSchema =
+  companionWorkspaceRebuildMessageHeaderSchema.safeExtend({ content: z.string().min(1) });
 
 export const COMPANION_WORKSPACE_REBUILD_CONTENT_CHUNK_CHARS = 16_384;
-const companionWorkspaceRebuildMessageHeaderSchema =
-  companionWorkspaceRebuildMessageSchema.omit({ content: true });
 
 export const companionWorkspaceRebuildFenceSchema = z.object({
   mutationId: nonEmptyStringSchema,
@@ -130,7 +136,7 @@ export const companionWorkspaceRebuildSchema = z
       }
       nextRoleBySession.set(
         message.sessionId,
-        message.role === "user" ? "assistant" : "user",
+        message.role === "user" && !message.answeredByAttachment ? "assistant" : "user",
       );
     }
     for (const [sessionId, expected] of nextRoleBySession) {

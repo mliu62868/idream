@@ -75,6 +75,19 @@ function context(): BuiltContext {
 }
 
 describe("PreparedTurn budget", () => {
+  it("preserves Main's recovered action as execution facts without rewriting the user message", () => {
+    const source = context();
+    const user = "Edit the green mug to red. Also tell me which path I chose.";
+    source.recentMessages = [{ id: "current", role: "user", content: user }];
+    source.recoveredMediaAction = { name: "edit_last_image", attachmentId: "rebound-card", status: "awaiting_confirmation", costDreamcoins: 0,
+      generationJobId: null, mediaAssetId: null, instruction: "Change only the green mug to red.", sourceMediaAssetId: "source-image" };
+    const prepared = compilePreparedTurn(source, "current");
+    expect(prepared.recoveredMediaAction).toEqual(source.recoveredMediaAction);
+    expect(prepared.messages.at(-1)).toMatchObject({ sourceKind: "current_user", content: user });
+    expect(JSON.stringify(prepared.messages)).not.toContain("rebound-card");
+    expect(JSON.stringify(prepared.messages)).not.toContain("Change only the green mug to red.");
+  });
+
   it("separates published media and resend capabilities from generation entitlement", () => {
     const source = context();
     source.policy = { ...source.policy, maxContextChars: 24_000, imageToolEnabled: false,
@@ -315,9 +328,10 @@ describe("PreparedTurn budget", () => {
     expect(state).not.toContain(`call ${name}`);
     expect(state).not.toContain("is sent with this reply");
     expect(state).not.toContain("answer as you send it");
-    expect(instructions).toContain("accepted or queued means still processing");
-    expect(instructions).toContain("use present/future tense throughout, never claim completion");
-    expect(instructions).toContain("completed confirms delivery only");
+    expect(instructions).toContain("awaiting_confirmation means no image was generated or charged");
+    expect(instructions).toContain("accepted/queued means processing, completed means delivered");
+    expect(instructions).toContain("do not add a separate media acknowledgement");
+    expect(instructions).not.toContain("Briefly acknowledge output.status");
     expect(instructions).toContain("Never claim visual correctness or unchanged pixels from a status receipt");
     expect(prepared.messages.at(-1)?.content).toBe(text);
   });
@@ -726,7 +740,8 @@ describe("PreparedTurn budget", () => {
     // The complete product contract plus the runtime reserve (Pi guidance, igrep
     // tools, recall notes) leaves room for some prior exchanges, depending on their
     // size; the provider must receive the bounded suffix.
-    { priorChars: 3_010, retainedStart: 4 },
+    // The explicit editScope schema now consumes the remaining exchange headroom.
+    { priorChars: 3_010, retainedStart: 6 },
     { priorChars: 2_750, retainedStart: 4 },
     { priorChars: 800, retainedStart: 0 },
   ])("fits a full free-tier image conversation through the native adapter ($priorChars history chars)", async ({ priorChars, retainedStart }) => {
@@ -773,8 +788,7 @@ describe("PreparedTurn budget", () => {
     for (const request of requests) {
       const wire = JSON.stringify(request.messages);
       for (let index = 0; index < retainedStart; index++) expect(wire).not.toContain(`Earlier established scene ${index}:`);
-      expect(wire).toContain("Earlier established scene 4:");
-      expect(wire).toContain("Earlier established scene 5:");
+      for (let index = retainedStart; index < 6; index++) expect(wire).toContain(`Earlier established scene ${index}:`);
       expect(wire).toContain("the library");
       expect(wire).toContain(source.recentMessages.at(-1)!.content);
       expect(request.messages.at(-1)?.content.endsWith(source.recentMessages.at(-1)!.content)).toBe(true);

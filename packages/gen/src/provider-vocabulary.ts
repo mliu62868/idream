@@ -57,6 +57,7 @@ export function workerAdapterForRecordedProvider(provider: string): GenAdapter {
     case "backend":
       return provider;
     case "comfyui":
+    case "local-image":
       return "backend";
     default:
       // `pipeline`, `mlx` and `external` all resolved to the legacy

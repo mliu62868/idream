@@ -32,7 +32,8 @@ export async function loadRecipeMatrix(db: Db, recipeId: string, profileId: stri
     recipe.mode === "negative" ? { recipeKey: recipe.recipeKey, version: recipe.version, body: recipe.body } : undefined) : null;
   const issues: string[] = [];
   if (profile.mode !== mode || profile.status === "archived") issues.push("Choose an available profile for this recipe's media type.");
-  if (profile.runner !== "comfyui") issues.push("Choose a workflow-native generation profile.");
+  if (!["comfyui", "local-image"].includes(profile.runner)) issues.push("Choose a workflow-native generation profile.");
+  if (profile.runner === "local-image") issues.push("Local recoloring requires an owner-confirmed Chat area and cannot run from a prompt-only recipe sample.");
   const workflow = await generationWorkflowDescriptor(profile.workflowKey ?? profile.pipelineModel);
   if (!workflow) issues.push("The selected profile has no executable workflow descriptor.");
   const allowed = jsonStrings(profile.allowedOrientations);

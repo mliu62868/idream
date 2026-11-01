@@ -21,6 +21,8 @@ import { env } from "./env";
 import { persistTerminalRecord, reserveGenerationInvocation } from "./terminal-record";
 import { createVideoMediaProbe } from "./backend/video-media-probe";
 import { BackendImageModel } from "./backend/backend-image-model";
+import { buildBackendRegistry } from "./backend/registry";
+import { CONFIRMED_IMAGE_EDIT_VERSION } from "@idream/shared/chat/image-action";
 import { workflowDescriptorSchema } from "./backend/workflow";
 import { recordTransportExecution as recordMainTransportExecution } from "./transport-execution";
 
@@ -253,6 +255,102 @@ function makeMemoryBlob(): GenProviders["blob"] {
 }
 
 describe("processImageGenerate", () => {
+  it.each(["regular", "uniformNoOp", "terminalRecovery"])("delivers and replays actual CPU recolor with zero external costs: %s", async scenario => {
+    process.env.GEN_IMAGE_PROVIDER = "backend";
+    const fetchSpy = vi.fn(async () => { throw new Error("Local recolor must not call an external endpoint"); });
+    globalThis.fetch = fetchSpy;
+    const width = 7, height = 5;
+    const source = scenario === "uniformNoOp"
+      ? await sharp({ create: { width, height, channels: 4, background: "black" } }).png().toBuffer()
+      : await sharp(patternedPng(width, height)).ensureAlpha().png().toBuffer();
+    const mask = await sharp({ create: { width, height, channels: 3, background: "white" } }).toColourspace("b-w").png().toBuffer();
+    const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+    fixtureSnapshots.set(hash(source), source);
+    const registry = await buildBackendRegistry({ workflowDir: new URL("../workflows", import.meta.url).pathname,
+      comfyImageApiUrl: "http://127.0.0.1:1", comfyVideoApiUrl: "http://127.0.0.1:1" });
+    const lease = vi.fn(async () => { throw new Error("Local recolor must not use an accelerator lease"); });
+    const model = new BackendImageModel(registry, lease);
+    const generate = vi.spyOn(model, "generate");
+    const blob = makeMemoryBlob();
+    const persist = blob.putPrivateIfAbsent;
+    let failTerminal = scenario === "terminalRecovery";
+    const imageWrites: Uint8Array[] = [];
+    blob.putPrivateIfAbsent = vi.fn(async request => {
+      if (request.key.endsWith("/image-1.png")) imageWrites.push(request.body);
+      if (request.key.endsWith("/terminal.json") && failTerminal) {
+        failTerminal = false;
+        return { ok: false as const, error: { code: "terminal_blob_unavailable", message: "terminal temporarily unavailable", retryable: true } };
+      }
+      return persist(request);
+    });
+    const providers = makeProviders({ image: model, blob });
+    const payload = imagePayload({ provider: "local-image", model: "local-recolor", count: 1, orientation: "original",
+      controls: { workflowKey: "local-recolor", workflowVersion: 1, width, height, orientation: "original", sourceImageAssetId: "source",
+        localizedEdit: { version: CONFIRMED_IMAGE_EDIT_VERSION, mode: "local", target: "selected region", selection: "all",
+          sourceSnapshotId: hash(source), sourceSha256: hash(source), width, height, maskPngBase64: mask.toString("base64"), maskSha256: hash(mask),
+          confirmationId: "confirmation", confirmedAt: "2026-10-31T01:00:00.000Z", operation: { kind: "recolor", color: "#ff0000" } } },
+      referenceImages: [{ assetId: "source", role: "source_image", sourceSnapshotId: hash(source), contentSha256: hash(source), contentType: "image/png", width, height }] });
+    const deps = makePipelineDeps(providers, { maxAttempts: 3 });
+    if (scenario === "terminalRecovery") {
+      await expect(processImageGenerate(payload, deps)).rejects.toThrow(/terminal/);
+      expect(deps.acknowledgeTerminalRecord).not.toHaveBeenCalled();
+    }
+    await processImageGenerate(payload, { ...deps, attemptsMade: scenario === "terminalRecovery" ? 1 : 0 });
+    await processImageGenerate(payload, deps);
+    expect(generate).toHaveBeenCalledTimes(scenario === "terminalRecovery" ? 2 : 1);
+    expect(lease).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const record = vi.mocked(deps.acknowledgeTerminalRecord).mock.calls.at(-1)![0].terminalRecord;
+    expect(record).toMatchObject({ outcome: "succeeded", provider: "local-image", providerRequestId: null,
+      accounting: { costMicros: 0, pricingVersion: "local-image-no-provider-fee-1", usage: { modelInvocations: 0, externalRequests: 0,
+        totalPixels: 35, selectedPixels: 35, providerRequestIds: [], executionId: expect.any(String) } } });
+    if (record.outcome !== "succeeded") return;
+    expect(record.assets[0]!.quality?.preservation).toMatchObject({ version: CONFIRMED_IMAGE_EDIT_VERSION, confirmationId: "confirmation",
+      sampling: "hsl-lightness-preserving-1", maskPngBase64: mask.toString("base64"), changedProtectedPixels: 0 });
+    if (scenario === "uniformNoOp") expect(record.assets[0]!.quality?.preservation).toMatchObject({ changedTargetPixels: 0 });
+    if (scenario === "terminalRecovery") expect(imageWrites[1]).toEqual(imageWrites[0]);
+  });
+
+  it("settles a definitive segmentation refusal once before provider entry without retrying preparation", async () => {
+    const providers = makeProviders({ blob: makeMemoryBlob() });
+    providers.image = { managesInvocationBoundary: true, generate: vi.fn(async () => ({ ok: false as const,
+      error: { code: "localized_image_edit_failed", message: "Target is absent", retryable: false, outcome: "definitive" as const },
+      invocation: { providerRequestId: null, usage: { segmentation: { status: "failed", code: "target_not_found" } }, costMicros: null, pricingVersion: null },
+    })) };
+    const deps = makePipelineDeps(providers, { attemptsMade: 0, maxAttempts: 3 });
+    const payload = imagePayload({ count: 1 });
+    await processImageGenerate(payload, deps);
+    await processImageGenerate(payload, deps);
+    expect(providers.image.generate).toHaveBeenCalledTimes(1);
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenLastCalledWith(expect.objectContaining({ terminalRecord: expect.objectContaining({
+      outcome: "failed", providerInvoked: false, usage: {}, error: expect.objectContaining({ code: "preparation_failed", retryability: "not_retryable" }),
+      preparation: expect.objectContaining({ code: "localized_image_edit_failed", details: { segmentation: { status: "failed", code: "target_not_found" } } }),
+    }) }));
+  });
+
+  it("persists the exact local edit mask with the asset and replays it without another render", async () => {
+    const body = patternedPng(4, 4);
+    const maskBody = patternedPng(4, 4);
+    const evidence = { version: "sam3-rgb-composite-1", changedProtectedPixels: 0, resultSha256: createHash("sha256").update(body).digest("hex"), intentVerified: false };
+    const providers = makeProviders({ blob: makeMemoryBlob() });
+    vi.mocked(providers.image.generate).mockResolvedValue({ ok: true, data: { assets: [{ width: 4, height: 4, contentType: "image/png", body, preservation: { maskBody, evidence } }] } });
+    const deps = makePipelineDeps(providers);
+    const payload = imagePayload({ count: 1, controls: { localizedEdit: { version: "sam3-rgb-composite-1" } } });
+    await processImageGenerate(payload, deps);
+    await processImageGenerate(payload, deps);
+    expect(providers.image.generate).toHaveBeenCalledTimes(1);
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenLastCalledWith(expect.objectContaining({ terminalRecord: expect.objectContaining({
+      outcome: "succeeded", assets: [expect.objectContaining({ quality: expect.objectContaining({ preservation: { ...evidence, maskPngBase64: Buffer.from(maskBody).toString("base64") } }) })],
+    }) }));
+  });
+
+  it("fails a local edit whose provider omitted preservation instead of publishing an unprotected image", async () => {
+    const providers = makeProviders();
+    const deps = makePipelineDeps(providers);
+    await processImageGenerate(imagePayload({ count: 1, controls: { localizedEdit: {} } }), deps);
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({ terminalRecord: expect.objectContaining({ outcome: "failed", error: expect.objectContaining({ code: "localized_image_edit_failed" }) }) }));
+  });
+
   it.each(["realesrgan-x2plus", "realesrgan-x2plus-enhance"])("pins Enhance %s to verified source bytes and persists the decoded two-times dimensions", async (model) => {
     const source = patternedPng(4, 5);
     const providers = makeProviders({ blob: makeMemoryBlob() });
@@ -1317,6 +1415,21 @@ describe("processImageGenerate", () => {
     expect(deps.acknowledgeTerminalRecord).not.toHaveBeenCalled();
     expect(recordTransportExecution).toHaveBeenNthCalledWith(1, expect.objectContaining({ transportAttemptNo: 1, status: "running", idempotencyKey: "generation:job_img_1:1:provider" }));
     expect(recordTransportExecution).toHaveBeenNthCalledWith(2, expect.objectContaining({ transportAttemptNo: 1, status: "failed" }));
+  });
+
+  it("uses request-bound replay authority even when a legacy static capability is broader", async () => {
+    const providers = makeProviders({ image: {
+      retryCapabilities: { deterministicIdempotencyKey: true, retryableFailureCodes: ["timeout"] },
+      retryCapabilitiesForRequest: vi.fn(async () => undefined),
+      generate: vi.fn(async () => ({ ok: false as const, error: { code: "timeout", message: "Provider outcome unknown", retryable: true } })),
+    } });
+    const deps = makePipelineDeps(providers, { maxAttempts: 3 });
+    const payload = imagePayload();
+    await processImageGenerate(payload, deps);
+    expect(providers.image.retryCapabilitiesForRequest).toHaveBeenCalledWith(payload);
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({ terminalRecord: expect.objectContaining({
+      outcome: "unknown", error: expect.objectContaining({ code: "ambiguous_non_replayable", retryability: "not_retryable" }),
+    }) }));
   });
 
   it("does not replay an ambiguous invocation when the provider lacks deterministic idempotency", async () => {

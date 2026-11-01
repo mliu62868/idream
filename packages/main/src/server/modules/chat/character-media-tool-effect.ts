@@ -159,7 +159,7 @@ export async function deliverChatCharacterMedia(input: {
       metadata: { source, description, costDreamcoins: 0,
         effect: { turnId: effect.turnId, attempt: effect.attempt, callId: effect.callId, name: effect.name,
           effectScope: effect.effectScope, intent: effect.intent, requestDigest },
-        request: { name: effect.name, subject: "companion",
+        request: { name: effect.name, subject: asset.characterId ? "companion" : "scene",
           ...(candidate ? { requestedNudity: candidate.requestedNudity } : {}) },
       },
     });

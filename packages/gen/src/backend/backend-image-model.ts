@@ -20,7 +20,9 @@
 import { env } from "../env";
 import { dimensionsForImageOrientation } from "@idream/shared/media/image-orientation";
 import { logger } from "../logger";
-import { stableNumericSeed, type ImageModel } from "../providers";
+import { stableNumericSeed, type ImageModel, type ProviderInvocationMetadata, type ProviderRetryCapabilities } from "../providers";
+import { confirmedImageEditSchema } from "@idream/shared/chat/image-action";
+import { IMAGE_RECOLOR_ALGORITHM } from "@idream/shared/media/image-recolor";
 import {
   assignWorkflowReferenceSlots,
   type SlotValues,
@@ -34,12 +36,13 @@ import {
   type ComfyUiRunner,
 } from "./registry";
 import { BackendInvocationError, type BackendPerformance } from "./types";
+import { prepareLocalizedImageEdit, compositeLocalizedImageEdit, LocalizedImageEditError } from "../localized-image-edit";
 
 type GenerateInput = Parameters<ImageModel["generate"]>[0];
 type GenerateResult = Awaited<ReturnType<ImageModel["generate"]>>;
 type SuccessData = Extract<GenerateResult, { ok: true }>["data"];
 type ImageAsset = SuccessData["assets"][number];
-type RunWithAcceleratorLease = <T>(run: () => Promise<T>, options?: { onWait?: () => Promise<void> }) => Promise<T>;
+type RunWithAcceleratorLease = <T>(run: (leaseFd?: number) => Promise<T>, options?: { onWait?: () => Promise<void> }) => Promise<T>;
 type PrepareComfyUiRunner = (runner: ComfyUiRunner) => Promise<void>;
 
 const runWithoutAcceleratorLease: RunWithAcceleratorLease = (run) => run();
@@ -113,6 +116,19 @@ export class BackendImageModel implements ImageModel {
       skipComfyUiMemoryTransition,
   ) {}
 
+  async retryCapabilitiesForRequest(input: { provider: string; model?: string; controls?: Record<string, unknown> }): Promise<ProviderRetryCapabilities | undefined> {
+    try {
+      const { descriptor } = (await this.registry).resolveForModel(input.model ?? env.PIPELINE_IMAGE_MODEL_DEFAULT);
+      const pin = confirmedImageEditSchema.safeParse(input.controls?.localizedEdit);
+      if (input.provider === "local-image" && descriptor.backendKind === "local-image" &&
+          descriptor.workflowKey === "local-recolor" && descriptor.modelId === "local-recolor" && descriptor.version === 1 &&
+          !validateWorkflowPin(descriptor, input.controls) && pin.success && pin.data.operation.kind === "recolor") {
+        return { deterministicIdempotencyKey: true, retryableFailureCodes: ["backend_error", "internal"] };
+      }
+    } catch { /* Normal generate admission reports unknown or invalid workflow pins. */ }
+    return undefined;
+  }
+
   async generate(input: GenerateInput): Promise<GenerateResult> {
     const modelId = input.model ?? env.PIPELINE_IMAGE_MODEL_DEFAULT;
     let resolved: ReturnType<BackendRegistry["resolveForModel"]>;
@@ -131,6 +147,12 @@ export class BackendImageModel implements ImageModel {
     }
 
     const { backend, descriptor } = resolved;
+    if ((descriptor.backendKind === "local-image") !== (input.provider === "local-image")) {
+      return { ok: false, error: { code: "workflow_provider_mismatch", message: "Local execution requires its actual provider authority", retryable: false, outcome: "definitive" } };
+    }
+    if (descriptor.backendKind === "local-image" && input.orientation !== "original") {
+      return { ok: false, error: { code: "invalid_image_dimensions", message: "Local pixel operations preserve original source dimensions", retryable: false, outcome: "definitive" } };
+    }
     const workflowPinError = validateWorkflowPin(descriptor, input.controls);
     if (workflowPinError) {
       return {
@@ -195,8 +217,9 @@ export class BackendImageModel implements ImageModel {
     const invocationPerformance = () => ({ resourceWaitMs, runnerPreparationMs, totalMs: performance.now() - startedAt, requests });
     let failurePhase: "pre_submit" | "post_submit" = "pre_submit";
     const assets: ImageAsset[] = [];
+    let localInvocation: ProviderInvocationMetadata | undefined;
     try {
-      await this.runWithAcceleratorLease(async () => {
+      const execute = async (leaseFd?: number) => {
         resourceWaitMs = performance.now() - startedAt;
         const preparationStartedAt = performance.now();
         if (descriptor.backendKind === "comfyui") {
@@ -205,6 +228,14 @@ export class BackendImageModel implements ImageModel {
           );
         }
         runnerPreparationMs = performance.now() - preparationStartedAt;
+        // Segmentation is replayable preparation, not a non-idempotent render.
+        // Recheck Main after it finishes, immediately before provider submission.
+        const localizedEdit = await prepareLocalizedImageEdit(input, undefined, {
+          leaseFd, onHeartbeat: input.executionBoundary?.onResourceWait,
+        });
+        if ((descriptor.backendKind === "local-image") !== (localizedEdit?.operation?.kind === "recolor")) {
+          throw new LocalizedImageEditError("The confirmed operation does not match the pinned workflow");
+        }
         await input.executionBoundary?.beforeProviderInvocation();
         for (let index = 0; index < count; index += 1) {
           if (index > 0) await input.executionBoundary?.beforeNextProviderInvocation();
@@ -222,14 +253,27 @@ export class BackendImageModel implements ImageModel {
             descriptor,
             slots,
             referenceImages: input.referenceImages,
+            ...(localizedEdit ? { localEditMask: localizedEdit.maskBody } : {}),
+            ...(localizedEdit?.operation?.kind === "recolor" ? { localRecolor: {
+              sourceRgba: localizedEdit.sourceRgba, mask: localizedEdit.mask, width: localizedEdit.width,
+              height: localizedEdit.height, color: localizedEdit.operation.color,
+            } } : {}),
             requestId: input.requestId,
             timeoutMs: env.IMAGE_TIMEOUT_MS,
           });
-          providerRequestIds.push(handle.id);
+          if (descriptor.backendKind !== "local-image") providerRequestIds.push(handle.id);
           failurePhase = "post_submit";
           const result = await backend.poll(handle);
+          if (descriptor.backendKind === "local-image") localInvocation = result.invocation;
           if (result.performance) requests.push({ providerRequestId: handle.id, ...result.performance });
           for (const asset of result.assets) {
+            if (localizedEdit) {
+              const composed = await compositeLocalizedImageEdit(localizedEdit, asset.body);
+              composed.preservation.evidence.sampling = descriptor.backendKind === "local-image"
+                ? IMAGE_RECOLOR_ALGORITHM : "source-latent-noise-mask-v1";
+              assets.push(composed);
+              continue;
+            }
             assets.push({
               width: asset.width,
               height: asset.height,
@@ -238,18 +282,25 @@ export class BackendImageModel implements ImageModel {
             });
           }
         }
-      }, { onWait: input.executionBoundary?.onResourceWait });
+      };
+      if (descriptor.backendKind === "local-image") await execute();
+      else await this.runWithAcceleratorLease(execute, { onWait: input.executionBoundary?.onResourceWait });
       return {
         ok: true,
         data: { assets },
         invocation: {
           providerRequestId: providerRequestIds[0] ?? null,
-          usage: { providerRequestIds, performance: invocationPerformance() },
-          costMicros: null,
-          pricingVersion: null,
+          usage: { ...localInvocation?.usage, providerRequestIds, performance: invocationPerformance(),
+            ...(assets.some(asset => asset.preservation) ? { imageEdits: assets.map(asset => asset.preservation?.evidence) } : {}) },
+          costMicros: localInvocation?.costMicros ?? null,
+          pricingVersion: localInvocation?.pricingVersion ?? null,
         },
       };
     } catch (error) {
+      if (error instanceof LocalizedImageEditError) {
+        return { ok: false, error: { code: error.code, message: error.message, retryable: false, outcome: "definitive" },
+          invocation: { providerRequestId: providerRequestIds[0] ?? null, usage: { providerRequestIds, performance: invocationPerformance(), ...(error.evidence ? { segmentation: error.evidence } : {}) }, costMicros: null, pricingVersion: null } };
+      }
       const failure = backendFailure(error, failurePhase);
       // A later native request cannot erase already completed images. Main
       // delivers this bounded subset and refunds only the missing product units;

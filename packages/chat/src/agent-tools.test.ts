@@ -32,7 +32,7 @@ describe("DSH image tool registry", () => {
       }),
       expect.objectContaining({
         name: EDIT_LAST_IMAGE_TOOL,
-        parameters: expect.objectContaining({ required: ["instruction"] }),
+        parameters: expect.objectContaining({ required: ["instruction", "editScope"] }),
       }),
       expect.objectContaining({ name: SEARCH_CHARACTER_MEDIA_TOOL }),
       expect.objectContaining({ name: SEND_CHARACTER_MEDIA_TOOL }),

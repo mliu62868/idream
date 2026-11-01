@@ -1,9 +1,14 @@
+import { createHash } from "node:crypto";
+import sharp from "sharp";
+import { z } from "zod";
 import { generationTerminalRecordChecksum } from "@idream/shared/contracts/durable-server";
+import { localizedImageEditSchema } from "@idream/shared/chat/image-action";
 import { Prisma } from "@prisma/client";
 import {
   aiFinalizePayloadSchema,
   generationTerminalFinalizeDedupeKey,
   generationTerminalRecordIngestSchema,
+  imageGeneratePayloadSchema,
   type GenerationTerminalRecordIngest,
 } from "@idream/shared/contracts";
 import { incrementCounter, setGauge } from "@idream/shared";
@@ -673,6 +678,9 @@ async function resolveTerminalRecordAuthority(
     ) {
       return { ok: false, code: "generation_terminal_asset_count_mismatch" };
     }
+    if (!await localizedEditEvidenceMatchesDispatch(payload, assets)) {
+      return { ok: false, code: "generation_terminal_localized_edit_evidence_mismatch" };
+    }
   }
   const maxOutputs = expectedMode === "video" ? 1 : Number(payload.count);
   if (input.terminalRecord.outcome === "failed" && input.terminalRecord.cleanupKeys?.length &&
@@ -683,6 +691,86 @@ async function resolveTerminalRecordAuthority(
     return { ok: false, code: "generation_terminal_cleanup_storage_authority_mismatch" };
   }
   return { ok: true, maxOutputs };
+}
+
+const preservationHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
+const preservationCountSchema = z.number().int().nonnegative().safe();
+const localizedEditEvidenceSchema = z.object({
+  status: z.literal("ok"), version: z.string(), modelSha256: preservationHashSchema.optional(),
+  target: z.string(), selection: z.enum(["one", "all"]),
+  sourceAssetId: z.string().min(1), sourceSnapshotId: z.string().min(1),
+  frozenSourceSha256: preservationHashSchema, sourceSha256: preservationHashSchema,
+  canonicalSourceSha256: preservationHashSchema,
+  decodeConvention: z.literal("sharp-auto-orient-srgb-rgba-v1"),
+  sampling: z.enum(["source-latent-noise-mask-v1", "hsl-lightness-preserving-1"]),
+  width: z.number().int().positive().safe(), height: z.number().int().positive().safe(),
+  maskSha256: preservationHashSchema, maskPngBase64: z.string().min(1).max(699_052),
+  maskPixels: preservationCountSchema, totalPixels: preservationCountSchema,
+  protectedPixels: preservationCountSchema, changedProtectedPixels: z.literal(0),
+  changedTargetPixels: preservationCountSchema,
+  candidateSha256: preservationHashSchema, resultSha256: preservationHashSchema,
+  intentVerified: z.literal(false),
+}).passthrough();
+
+async function localizedEditEvidenceMatchesDispatch(
+  payload: Readonly<Record<string, unknown>>,
+  assets: Extract<GenerationTerminalRecordIngest["terminalRecord"], { outcome: "succeeded" }>["assets"],
+): Promise<boolean> {
+  // Exact dispatch authority already validated controls. Historical whole-image
+  // requests carry no local preservation obligation, even if the mutable Job changes.
+  const controls = payload.controls as Record<string, unknown>;
+  if (controls.localizedEdit === undefined) return true;
+  const image = imageGeneratePayloadSchema.safeParse(payload);
+  const pin = localizedImageEditSchema.safeParse(controls.localizedEdit);
+  if (!image.success || !pin.success) return false;
+  const sources = image.data.referenceImages?.filter(item => item.role === "source_image") ?? [];
+  const source = sources[0];
+  const asset = assets[0];
+  const proof = localizedEditEvidenceSchema.safeParse(asset?.quality?.preservation);
+  if (image.data.count !== 1 || assets.length !== 1 || !asset || sources.length !== 1 || !source?.sourceSnapshotId ||
+    !source.contentSha256 || source.assetId !== controls.sourceImageAssetId ||
+    image.data.orientation !== "original" || controls.orientation !== "original" || !proof.success) return false;
+  const evidence = proof.data;
+  const totalPixels = evidence.width * evidence.height;
+  const confirmed = pin.data.version === "confirmed-mask-rgba-1" ? pin.data : null;
+  if (confirmed) {
+    if (evidence.regionAuthority !== "user_confirmation" || evidence.maskCorrectnessCertified !== false || evidence.mode !== "local" ||
+      evidence.confirmationId !== confirmed.confirmationId || evidence.confirmedAt !== confirmed.confirmedAt ||
+      JSON.stringify(evidence.operation) !== JSON.stringify(confirmed.operation) ||
+      evidence.sourceSnapshotId !== confirmed.sourceSnapshotId || evidence.sourceSha256 !== confirmed.sourceSha256 ||
+      evidence.width !== confirmed.width || evidence.height !== confirmed.height || evidence.maskSha256 !== confirmed.maskSha256 ||
+      evidence.maskPngBase64 !== confirmed.maskPngBase64 ||
+      evidence.sampling !== (confirmed.operation.kind === "recolor" ? "hsl-lightness-preserving-1" : "source-latent-noise-mask-v1")) return false;
+  } else if (pin.data.version !== "sam3-rgba-composite-1" || evidence.modelSha256 !== pin.data.modelSha256 || evidence.sampling !== "source-latent-noise-mask-v1") return false;
+  if (evidence.version !== pin.data.version ||
+    evidence.target !== pin.data.target || evidence.selection !== pin.data.selection ||
+    evidence.sourceAssetId !== source.assetId || evidence.sourceSnapshotId !== source.sourceSnapshotId ||
+    evidence.frozenSourceSha256 !== source.contentSha256 ||
+    // Confirmations bind the frozen PNG bytes. Historical SAM evidence instead
+    // binds Gen's re-encoded input; identical RGBA pixels can have different PNG hashes.
+    evidence.sourceSha256 !== (confirmed ? source.contentSha256 : evidence.canonicalSourceSha256) ||
+    evidence.width !== controls.width || evidence.height !== controls.height ||
+    asset.width !== evidence.width || asset.height !== evidence.height || asset.contentType !== "image/png" ||
+    totalPixels > 4_194_304 || evidence.totalPixels !== totalPixels || evidence.maskPixels === 0 ||
+    (!confirmed && evidence.maskPixels / totalPixels > 0.65) || evidence.protectedPixels !== totalPixels - evidence.maskPixels ||
+    evidence.changedTargetPixels > evidence.maskPixels || (evidence.changedTargetPixels === 0 && confirmed?.operation.kind !== "recolor")) return false;
+  const maskBody = Buffer.from(evidence.maskPngBase64, "base64");
+  if (maskBody.length > 512 * 1024 || maskBody.toString("base64") !== evidence.maskPngBase64 ||
+    createHash("sha256").update(maskBody).digest("hex") !== evidence.maskSha256) return false;
+  try {
+    // Validate Gen's proof against Main's frozen obligation. Only this bounded,
+    // inline mask is decoded under the transaction; no remote image I/O or SAM.
+    const maskImage = sharp(maskBody, { failOn: "warning", limitInputPixels: 4_194_304 });
+    const metadata = await maskImage.metadata();
+    if (metadata.format !== "png" || (metadata.pages ?? 1) !== 1 || metadata.hasAlpha ||
+      metadata.width !== evidence.width || metadata.height !== evidence.height) return false;
+    if (confirmed && (maskBody[24] !== 8 || maskBody[25] !== 0 || metadata.channels !== 1 || metadata.depth !== "uchar" || (metadata.orientation ?? 1) !== 1)) return false;
+    const mask = await maskImage.greyscale().raw().toBuffer();
+    if (mask.length !== totalPixels || mask.some(value => value !== 0 && value !== 255)) return false;
+    return mask.reduce((count, value) => count + Number(value === 255), 0) === evidence.maskPixels;
+  } catch {
+    return false;
+  }
 }
 
 // INVARIANT: a canonical processed Receipt is an immutable ACK. A conflicting

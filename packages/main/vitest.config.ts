@@ -135,6 +135,7 @@ export default defineConfig({
         "../shared/src/media/image-orientation.ts",
         import.meta.url,
       ).pathname,
+      "@idream/shared/media/image-recolor": new URL("../shared/src/media/image-recolor.ts", import.meta.url).pathname,
       "@idream/shared/media/video-probe": new URL("../shared/src/media/video-probe.ts", import.meta.url).pathname,
       "@idream/shared/media/image-references": new URL(
         "../shared/src/media/image-references.ts",

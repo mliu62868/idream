@@ -38,7 +38,7 @@ export function workflowPromptSlots(input: {
   };
 }
 
-export const workflowBackendKinds = ["comfyui", "drawthings"] as const;
+export const workflowBackendKinds = ["comfyui", "drawthings", "local-image"] as const;
 export const workflowBackendKindSchema = z.enum(workflowBackendKinds);
 export type WorkflowBackendKind = z.infer<typeof workflowBackendKindSchema>;
 
@@ -79,6 +79,13 @@ const comfySlotSchema = slotBaseSchema.extend({
 
 const commandSlotSchema = slotBaseSchema.extend({
   target: z.object({ argFlag: z.string() }),
+});
+
+const localImageSlotSchema = slotBaseSchema.extend({
+  key: z.literal("source_image"),
+  type: z.literal("image"),
+  referenceRoles: z.tuple([z.literal("source_image")]),
+  required: z.literal(true),
 });
 
 type WorkflowSlot = z.infer<typeof comfySlotSchema> | z.infer<typeof commandSlotSchema>;
@@ -193,9 +200,16 @@ const drawThingsWorkflowDescriptorSchema = workflowDescriptorBaseSchema.extend({
   inputs: z.array(commandSlotSchema),
 });
 
+const localImageWorkflowDescriptorSchema = workflowDescriptorBaseSchema.extend({
+  backendKind: z.literal("local-image"),
+  localImage: z.object({ operation: z.literal("recolor") }).strict(),
+  inputs: z.tuple([localImageSlotSchema]),
+});
+
 export const workflowDescriptorSchema = z.discriminatedUnion("backendKind", [
   comfyWorkflowDescriptorSchema,
   drawThingsWorkflowDescriptorSchema,
+  localImageWorkflowDescriptorSchema,
 ]).superRefine((descriptor, context) => {
   const inputIndexByKey = new Map<string, number>();
   for (const [index, slot] of descriptor.inputs.entries()) {
@@ -210,6 +224,16 @@ export const workflowDescriptorSchema = z.discriminatedUnion("backendKind", [
     } else {
       inputIndexByKey.set(slot.key, index);
     }
+  }
+  if (descriptor.backendKind === "local-image") {
+    if (descriptor.identity.mode !== "single_reference" || descriptor.identity.maxReferences !== 1 ||
+        descriptor.identity.acceptedRoles.length !== 1 || descriptor.identity.acceptedRoles[0] !== "source_image" ||
+        descriptor.identity.supportsSourceImageWithIdentity || descriptor.identity.supportsLookReference ||
+        !["img2img", "referenceImages", "recolor"].every(capability => descriptor.capabilities.includes(capability)) ||
+        descriptor.capabilities.includes("textToImage")) {
+      context.addIssue({ code: "custom", path: ["identity"], message: "Local recolor requires exactly one source image and cannot generate or use identity references" });
+    }
+    return;
   }
   if (descriptor.backendKind !== "comfyui") return;
   const imageSlots = descriptor.inputs.filter((slot) => slot.type === "image");
@@ -425,7 +449,7 @@ export function assignWorkflowReferenceSlots(
   descriptor: WorkflowReferenceContractView,
   referenceRoles: readonly WorkflowReferenceRole[],
 ): WorkflowReferenceSlotAssignment {
-  if (descriptor.backendKind !== "comfyui") {
+  if (descriptor.backendKind === "drawthings") {
     if (referenceRoles.length > descriptor.identity.maxReferences) {
       return {
         ok: false,
@@ -587,7 +611,7 @@ function removeComfyNode(prompt: Record<string, ComfyNode>, nodeId: string) {
 export function bindWorkflowArgs(d: WorkflowDescriptor, values: SlotValues): string[] {
   const args: string[] = [];
   for (const slot of d.inputs) {
-    if (!("argFlag" in slot.target)) continue;
+    if (!("target" in slot) || !("argFlag" in slot.target)) continue;
     args.push(slot.target.argFlag, String(resolveValue(slot, values)));
   }
   return args;

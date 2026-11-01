@@ -91,7 +91,7 @@ export function ChatVideoAttachmentCard({ attachment, ownerScope, retryPending, 
   const unknown = attachment.errorCode === "provider_outcome_unknown";
   const active = !unknown && ["requesting", "accepted", "queued", "running", "moderating_input", "moderating_output"].includes(attachment.status);
   const failed = ["failed", "refunded", "blocked", "rejected"].includes(attachment.status);
-  const retryable = Boolean(jobId) && ["failed", "refunded"].includes(attachment.status);
+  const retryable = Boolean(jobId) && attachment.canRetry !== false && ["failed", "refunded"].includes(attachment.status);
   const completed = attachment.status === "completed";
   const cancelled = attachment.status === "cancelled";
   const classes = "inline-flex min-h-11 items-center justify-center gap-2 rounded-full px-4 py-2 text-xs font-bold disabled:opacity-50";
@@ -101,7 +101,7 @@ export function ChatVideoAttachmentCard({ attachment, ownerScope, retryPending, 
       {active ? <Loader2 className="size-5 shrink-0 animate-spin" /> : <Video className="size-5 shrink-0" />}
       <div>
         <p className="text-sm font-bold">{unknown ? "Video result not confirmed yet" : cancelled ? "Video cancelled" : completed ? "Video playback unavailable" : failed ? "Video unavailable" : "Generating video"}</p>
-        <p className="mt-1 text-xs leading-5 text-white/70">{unknown ? unknownOutcomeCopy(attachment.costDreamcoins ?? 0) : cancelled ? "The request stopped before processing. Reserved Dreamcoins were returned." : completed ? "The video was delivered. Use the download link to open it." : failed ? "The video could not be completed. Check the retry price before starting another attempt." : "You can keep chatting or return later. This request will keep its place."}</p>
+        <p className="mt-1 text-xs leading-5 text-white/70">{unknown ? unknownOutcomeCopy(attachment.costDreamcoins ?? 0) : cancelled ? "The request stopped before processing. Reserved Dreamcoins were returned." : completed ? "The video was delivered. Use the download link to open it." : failed ? retryable ? "The video could not be completed. Check the retry price before starting another attempt." : "The video could not be completed. Change the source image or instructions and send a new request." : "You can keep chatting or return later. This request will keep its place."}</p>
       </div>
     </div>}
     <figcaption className="grid gap-2 border-t border-white/10 p-3">

@@ -24,6 +24,14 @@ describe("generated image sanity", () => {
     expect(() => assertGeneratedImageSanity(image, "black-test")).toThrow(/degenerate|blank/);
   });
 
+  it("allows a confirmed pixel operation to preserve a uniform image without certifying model quality or bypassing CRC checks", () => {
+    const image = pngFromRgb(4, 4, () => [0, 0, 0]);
+    expect(assertGeneratedImageSanity(image, "confirmed-recolor", { allowUniformPixels: true }).sanity.status).toBe("unscored");
+    expect(() => assertGeneratedImageSanity(image, "ordinary-generation")).toThrow(/degenerate|blank/);
+    image[image.length - 1] = image[image.length - 1]! ^ 0xff;
+    expect(() => assertGeneratedImageSanity(image, "corrupt-recolor", { allowUniformPixels: true })).toThrow(/invalid .* checksum/);
+  });
+
   it("allows visibly varied PNG outputs", () => {
     const image = pngFromRgb(4, 4, (x, y) => [
       (x * 40) % 256,

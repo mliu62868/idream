@@ -50,6 +50,7 @@ import { chatGenerationHref } from "@/lib/chat-generation-link";
 import { chatVideoSources, isExplicitChatVideoRequest } from "@/lib/chat-video";
 import { ChatVideoComposer, type ChatVideoSubmission } from "./chat/ChatVideoComposer";
 import { ChatVideoAttachmentCard } from "./chat/ChatVideoAttachmentCard";
+import { ChatImageEditReviewCard } from "./chat/ChatImageEditReviewCard";
 import {
   chatStreamLatestReplyFailed,
   chatStreamMessageIsInProgress,
@@ -1107,7 +1108,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     } finally { if (context.isCurrent()) refreshGenerationReceipts(); }
   }
 
-  async function refreshAfterVideoCancellation() {
+  async function refreshAfterAttachmentChange() {
     const context = generationReceiptContext();
     await delivery.context({ isCurrent: context.isCurrent }).refresh();
   }
@@ -1419,7 +1420,10 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
                         <div className="mt-3 space-y-2">
                           {message.attachments?.map((attachment) => attachment.kind === "generated_video" ? <ChatVideoAttachmentCard
                               attachment={attachment} key={attachment.id} ownerScope={receiptOwnerScope}
-                              retryPending={retryingImageIds.has(attachment.id)} onRetry={authority => retryImageAttachment(attachment, authority)} onCancelled={refreshAfterVideoCancellation}
+                              retryPending={retryingImageIds.has(attachment.id)} onRetry={authority => retryImageAttachment(attachment, authority)} onCancelled={refreshAfterAttachmentChange}
+                            /> : attachment.status === "awaiting_confirmation" ? <ChatImageEditReviewCard
+                              key={attachment.id} attachmentId={attachment.id} ownerScope={receiptOwnerScope}
+                              fetchForViewer={fetchForSession} onChanged={refreshAfterAttachmentChange}
                             /> : (
                             <ChatImageAttachmentCard
                               attachment={attachment}
@@ -1866,7 +1870,7 @@ function ChatImageAttachmentCard({
   const isWaiting = chatAttachmentIsActive(attachment.status, attachment.errorCode);
   const cancelled = attachment.status === "cancelled";
   const failed = ["failed", "blocked", "refunded", "rejected"].includes(attachment.status);
-  const canRetry = Boolean(attachment.generationJobId) && ["failed", "refunded"].includes(attachment.status);
+  const canRetry = Boolean(attachment.generationJobId) && attachment.canRetry !== false && ["failed", "refunded"].includes(attachment.status);
   const paymentRequired = failed && attachment.errorCode === "payment_required";
   // Main's active-job cap, not a broken image: nothing was charged or queued.
   const tooManyActive = failed && attachment.errorCode === "rate_limited";
@@ -1914,13 +1918,13 @@ function ChatImageAttachmentCard({
               {requiresReview
                 ? unknownOutcomeCopy(chargedCost)
                 : cancelled
-                ? "This image request was cancelled. Check your Dreamcoin history for refund details."
+                ? attachment.generationJobId ? "This image request was cancelled. Check your Dreamcoin history for refund details." : "Cancelled before editing. No coins used."
                 : failed || attachment.status === "proposed"
                 ? paymentRequired
                   ? "Add dreamcoins to generate this image."
                   : tooManyActive
                   ? "Wait for one to finish, then ask again. No coins used."
-                  : `The image could not be completed.${refundableCost ? ` Your ${refundableCost} were returned.` : ""} ${canRetry ? "Retry uses the current image price." : "You can send a new image request in this chat."}`
+                  : `The image could not be completed.${refundableCost ? ` Your ${refundableCost} were returned.` : ""} ${canRetry ? "Retry uses the current image price." : attachment.canRetry === false && attachment.errorCode === "preparation_failed" ? "Change the source image or instructions and send a new request." : "You can send a new image request in this chat."}`
                 : "Your image is being prepared. You can keep chatting while it finishes."}
             </p>
           )}

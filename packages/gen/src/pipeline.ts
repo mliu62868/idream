@@ -9,6 +9,8 @@
 //   - persisted terminal record is relayed before moderation/provider invocation
 //   - only provider-declared deterministic replay may retry provider invocation
 //   - unmeasured GPU time is absent, never inferred from output size or wall time
+import { createHash } from "node:crypto";
+import { confirmedImageEditSchema } from "@idream/shared/chat/image-action";
 import {
   imageGeneratePayloadSchema,
   videoGeneratePayloadSchema,
@@ -87,6 +89,9 @@ export async function processImageGenerate(
   const payload = imageGeneratePayloadSchema.parse(rawPayload);
   const providers = deps.providers ?? defaultProviders;
   const imageModel = providers.image;
+  const confirmedEdit = confirmedImageEditSchema.safeParse(payload.controls.localizedEdit);
+  const allowUniformPixels = payload.provider === "local-image" && payload.model === "local-recolor" &&
+    confirmedEdit.success && confirmedEdit.data.operation.kind === "recolor";
   await runGeneration(payload, {
     mode: "image",
     configuredAdapter: env.IMAGE_PROVIDER,
@@ -102,6 +107,7 @@ export async function processImageGenerate(
     },
     invoke: ({ prepared, providerIdempotencyKey, executionBoundary }) => imageModel.generate({
       executionBoundary,
+      provider: payload.provider,
       prompt: payload.prompt,
       count: payload.count,
       seed: payload.seed,
@@ -131,7 +137,12 @@ export async function processImageGenerate(
         // objects owned by this invocation and can roll them back exactly.
         const normalized = await Promise.all(output.assets.slice(0, payload.count).map(async (asset, index) => {
           const body = await imageAssetBody(asset);
-          const decoded = await decodedGeneratedImage(body);
+          if (payload.controls.localizedEdit !== undefined && (!asset.preservation ||
+            asset.preservation.evidence.resultSha256 !== createHash("sha256").update(body).digest("hex") ||
+            asset.preservation.evidence.changedProtectedPixels !== 0)) {
+            throw new GenerationArtifactError("localized_image_edit_failed", "Localized edit output is missing its preservation proof", false);
+          }
+          const decoded = await decodedGeneratedImage(body, allowUniformPixels);
           const dimensions = enhancement ? await enhancedImageDimensions(body, enhancement.pin) : decoded;
           if ((typeof payload.controls.width === "number" && dimensions.width !== payload.controls.width) ||
               (typeof payload.controls.height === "number" && dimensions.height !== payload.controls.height)) {
@@ -143,6 +154,7 @@ export async function processImageGenerate(
             decoded.sanityPng,
             `${payload.generationJobId} asset ${index + 1}`,
             {
+              allowUniformPixels,
               singleContinuousFrame:
                 payload.controls.compositionRequirement ===
                 "single_subject_single_frame",
@@ -168,7 +180,15 @@ export async function processImageGenerate(
             height: item.dimensions.height,
             contentType: item.contentType,
             providerKey: item.asset.key ?? null,
-            quality: generatedImageQuality(item.sanityEvidence),
+            quality: {
+              ...generatedImageQuality(item.sanityEvidence),
+              // Keep the exact mask with the existing private asset/terminal
+              // evidence, so recovery and erasure do not need orphan sidecars.
+              ...(item.asset.preservation ? { preservation: {
+                ...item.asset.preservation.evidence,
+                maskPngBase64: Buffer.from(item.asset.preservation.maskBody).toString("base64"),
+              } } : {}),
+            },
           });
         }
         return {
@@ -212,13 +232,13 @@ export async function processImageGenerate(
 // SPEC: provider annotations cannot certify the delivered file. Decode every
 // still image before persistence; use decoded pixels for all supported formats
 // and preserve the provider's original bytes with their actual MIME and size.
-async function decodedGeneratedImage(body: Uint8Array) {
+async function decodedGeneratedImage(body: Uint8Array, allowUniformPixels = false) {
   try {
     const image = sharp(body, { failOn: "warning", limitInputPixels: 16_777_216 });
     const metadata = await image.metadata();
     // Preserve the native PNG CRC and blankness checks before raster conversion
     // so a decoder cannot repair a corrupt file and certify the original bytes.
-    assertGeneratedImageSanity(Buffer.from(body), "provider image");
+    assertGeneratedImageSanity(Buffer.from(body), "provider image", { allowUniformPixels });
     if (!["png", "jpeg", "webp"].includes(metadata.format ?? "") ||
         (metadata.pages ?? 1) !== 1) {
       throw new Error("Generated image must be one PNG, JPEG or WebP still");

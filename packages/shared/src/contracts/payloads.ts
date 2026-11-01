@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { imageEditScopeSchema } from "../chat/image-action";
 
 export const modelMessageSchema = z.object({
   id: z.string().optional(),
@@ -124,6 +125,7 @@ export const chatImageRequestedPayloadSchema = z
         // last completed photo in the session. Absent for generate_image_async
         // (and for edit_last_image's no-source-photo fallback).
         sourceImageAssetId: z.string().optional(),
+        editScope: imageEditScopeSchema.optional(),
       })
       .passthrough()
       .default({ orientation: "4:5", outputCount: 1 }),

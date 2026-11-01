@@ -135,6 +135,7 @@ async function editFixture(text: string, instruction = "Change only the notebook
   expect(next.snapshot.hasRecentImageContext).toBe(true);
   const call: ChatToolEffect = { ...effect(next.snapshot), name: "edit_last_image", arguments: {
     instruction,
+    editScope: { mode: "whole_image" },
   } };
   return { ...fixtureData, snapshot: next.snapshot, call, asset };
 }
@@ -478,6 +479,7 @@ describe("Main image action authorization", () => {
     };
     expect(await applyChatToolEffect(call)).toEqual(rejection);
     const regenerated = await regenerateChatTurn(userId, snapshot.assistantMessageId);
+    expect(regenerated.snapshot.recoveredMediaAction).toMatchObject({ name: call.name, attachmentId: accepted.attachmentId, generationJobId: jobId, status: "cancelled", costDreamcoins: 8 });
     expect(await applyChatToolEffect({ ...call, attempt: regenerated.attempt, callId: randomUUID() })).toEqual(rejection);
     expect(await prisma.generationJob.count({ where: { userId } })).toBe(1);
     expect(await prisma.dreamcoinLedger.count({ where: { sourceId: jobId, reason: "generation_spend" } })).toBe(1);
@@ -531,6 +533,7 @@ describe("Main image action authorization", () => {
       };
       expect(await applyChatToolEffect(call)).toEqual(rejection);
       const regenerated = await regenerateChatTurn(userId, snapshot.assistantMessageId);
+      expect(regenerated.snapshot.recoveredMediaAction).toMatchObject({ name: call.name, attachmentId: accepted.attachmentId, generationJobId: jobId, status: outcome, costDreamcoins: 8 });
       expect(await applyChatToolEffect({ ...call, attempt: regenerated.attempt, callId: randomUUID() })).toEqual(rejection);
       expect(await prisma.generationJob.count({ where: { userId } })).toBe(1);
       expect(await prisma.dreamcoinLedger.count({ where: { sourceId: jobId, reason: "generation_spend" } })).toBe(1);
@@ -551,9 +554,11 @@ describe("Main image action authorization", () => {
     expect(generated).not.toHaveBeenCalled();
     const accepted = await applyChatToolEffect(call);
     expect(accepted).toMatchObject({ accepted: true, duplicate: false });
+    if (!accepted.accepted || !("generationJobId" in accepted) || !accepted.generationJobId) throw new Error("Missing generation receipt");
     await complete(snapshot);
     expect(await applyChatToolEffect(call)).toMatchObject({ accepted: true, duplicate: true });
     const regenerated = await regenerateChatTurn(userId, snapshot.assistantMessageId);
+    expect(regenerated.snapshot.recoveredMediaAction).toMatchObject({ attachmentId: accepted.attachmentId, status: "accepted", generationJobId: accepted.generationJobId });
     expect(await applyChatToolEffect({ ...call, attempt: regenerated.attempt, callId: randomUUID() })).toMatchObject({ accepted: true, duplicate: true });
     expect(generated).toHaveBeenCalledTimes(1);
     expect(await prisma.generationJob.count({ where: { userId } })).toBe(1);
@@ -752,6 +757,7 @@ describe("Main image action authorization", () => {
     await complete(snapshot);
 
     const regenerated = await regenerateChatTurn(userId, snapshot.assistantMessageId);
+    expect(regenerated.snapshot.recoveredMediaAction).toBeUndefined();
     const retried = await applyChatToolEffect({ ...call, attempt: regenerated.attempt, callId: randomUUID() });
     expect(retried).toMatchObject({ accepted: true, duplicate: false, attachmentId: refused.attachmentId });
     expect(generated).toHaveBeenCalledTimes(2);

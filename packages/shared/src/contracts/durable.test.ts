@@ -284,6 +284,12 @@ describe("durable cross-service contracts", () => {
       },
     };
     expect(generationTerminalRecordSchema.safeParse(preparationFailure).success).toBe(true);
+    const diagnostic = { code: "localized_image_edit_failed", elapsedMs: 4200, details: { segmentation: { code: "target_not_found", presence: 0.03 } } };
+    expect(generationTerminalRecordSchema.parse({ ...preparationFailure, preparation: diagnostic })).toHaveProperty("preparation", diagnostic);
+    expect(generationTerminalRecordSchema.parse(preparationFailure)).not.toHaveProperty("preparation");
+    expect(generationTerminalRecordSchema.safeParse({ ...preparationFailure, preparation: diagnostic, providerInvoked: true }).success).toBe(false);
+    expect(generationTerminalRecordSchema.safeParse({ ...preparationFailure, preparation: diagnostic, error: { ...preparationFailure.error, code: "provider_error" } }).success).toBe(false);
+    expect(generationTerminalRecordSchema.safeParse({ ...preparationFailure, preparation: { ...diagnostic, elapsedMs: -1 } }).success).toBe(false);
     for (const invalid of [
       { providerRequestId: "invented-provider-request" },
       { accounting: { usage: {}, latencyMs: 0, costMicros: null, pricingVersion: null } },

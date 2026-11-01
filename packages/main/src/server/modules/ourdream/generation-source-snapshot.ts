@@ -14,7 +14,7 @@ export async function withGenerationSnapshotSlot<T>(operation: () => Promise<T>)
   try { return await operation(); } finally { activeSnapshotReads--; }
 }
 
-/** The caller holds the account/media locks. Snapshot and debit commit together. */
+/** The caller holds account/media locks. A review draft may freeze before admission. */
 export async function freezeGenerationSource(
   tx: Prisma.TransactionClient,
   input: { userId: string; bytes: Uint8Array; contentType: string },

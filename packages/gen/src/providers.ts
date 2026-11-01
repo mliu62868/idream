@@ -66,8 +66,11 @@ export type GenerationInvocationBoundary = {
 
 export interface ImageModel {
   readonly retryCapabilities?: ProviderRetryCapabilities;
+  /** A workflow-native adapter may bind replay safety to this immutable request. */
+  retryCapabilitiesForRequest?(input: { provider: string; model?: string; controls?: Record<string, unknown> }): Promise<ProviderRetryCapabilities | undefined>;
   readonly managesInvocationBoundary?: true;
   generate(input: {
+    provider?: string;
     executionBoundary?: GenerationInvocationBoundary;
     prompt: string;
     count: number;
@@ -87,6 +90,7 @@ export interface ImageModel {
         contentType?: string;
         body?: Uint8Array;
         sourceUrl?: string;
+        preservation?: import("./localized-image-edit").ImageEditPreservation;
       }>;
     }>
   >;
@@ -450,10 +454,10 @@ function buildBackendImageModel(): ImageModel {
   );
 }
 
-function withBackendAcceleratorLease<T>(kind: "image" | "video", run: () => Promise<T>, options?: { onWait?: () => Promise<void> }) {
-  return withGenerationAcceleratorLease(kind, async () => {
+function withBackendAcceleratorLease<T>(kind: "image" | "video", run: (leaseFd?: number) => Promise<T>, options?: { onWait?: () => Promise<void> }) {
+  return withGenerationAcceleratorLease(kind, async (leaseFd) => {
     await waitForComfyUiAcceleratorIdle({ onWait: options?.onWait });
-    return run();
+    return run(leaseFd);
   }, options);
 }
 

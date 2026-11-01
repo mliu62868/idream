@@ -66,7 +66,7 @@ Gen
 
 #### 2.1.1 unknown 是独立终态，不是 failed 的一个可选字段
 
-`unknown`（provider 结果不明确，可能已扣费已产出）与 `failed`（确定失败）的处置相反：前者不退款、不重试、进运营裁决，后者退款且可重试。
+`unknown`（provider 结果不明确，可能已扣费已产出）与 `failed`（确定失败）的处置相反：前者不退款、不重试、进运营裁决，后者退款。普通确定 provider 失败仍可由用户重新报价、付费创建新的 Request；旧 Attempt 的 `not_retryable` 不单独禁止这种新请求。若最新 Attempt 同时为 `failed`、`preparation_failed`、`not_retryable`，则固定输入已被明确拒绝，不再提供原输入的重试报价或预扣费用，须修改源图或指令。Main 在报价与持有源 Request 锁的接纳事务中复核该事实，客户端只投影其重试资格；已接纳的精确幂等重放保留原结果。
 
 该区别一度被编码成 finalize payload 里 `generation.failed` variant 上的一个**可选**字段 `error.attemptOutcome`，解码端缺省落到 `"failed"` —— 漏传即对一次可能已扣费已产出的生成执行退款并重试。
 
@@ -93,6 +93,14 @@ provider 幂等键、dispatch requestId、terminal record 存储路径、finaliz
 实际后端由 workflow 描述符的 `backendKind` 决定，与 `payload.provider` 无关。后端身份的真 pin 是 `workflowKey@workflowVersion`，图片与视频**同强度强制**（图片侧曾有「两者都缺则跳过校验」的逃生口，已删）。
 
 Gen 只执行已发布的 workflow-native backend 与精确版本 pins；已退役的 runner 不映射回现行 backend，也不作为默认值或回退路径。
+
+2026-10-30 局部编辑改为用户确认区域。Main 将单帧原图规范化为 sRGB RGBA8 PNG，冻结快照、尺寸、SHA256 与原 Turn 内容，先保存 `awaiting_confirmation` 附件。确认 API 校验同一用户、会话、Turn/attempt、原图权限、草稿指纹、实际 PNG hash、同尺寸二值不透明遮罩及操作；规范化遮罩编码后固定 `confirmed-mask-rgba-1`、源/遮罩 hash 与确认身份。接纳与取消争用同一锁；相同确认复用已有任务，不同区域或操作不能覆盖已接纳的确认；未确认/已取消草稿无 Job、dispatch 或扣费。客户端传入的确认内容不等于内部可信 pin，公共生成 API 不能自行创建该信任。
+
+确认后的生成式修改支持已固定的两个 Qwen 编辑图：原图 VAE latent 加用户遮罩进入采样，保留原有 source/identity conditioning，随后按二值遮罩把候选 RGBA 合成到规范化原图。仅改色走 `local-image` / `local-recolor@1`，与浏览器共用 `hsl-lightness-preserving-1`；替换色相与饱和度，保留原明度、alpha 和位置，不采样、不取加速器租约、不调用模型。后者允许四百万像素内的任意原尺寸，零价格倍率仍沿用统一报价/接纳/结算，不产生零元 spend/refund；真实 provider 为 local-image、providerRequestId=null、外部费用为零、基础设施成本未知。有效同色或纯色输出可以保持零改动，不能套用扩散坏图判据，仍须通过像素与几何核验。
+
+Gen 编码后独立重解码检查所有保护像素；遮罩、源/候选/结果 hash、尺寸、确认身份、操作和变化计数进入私有产物元数据与 immutable TerminalRecord。Main 按 dispatch 原契约校验这些字段及有界 PNG 遮罩；不匹配进入 quarantine，不能 finalize。该证据证明确认区域外像素保留，不证明用户区域准确或目标修改成功，`intentVerified` 保持 false。后端的重试能力按实际 payload 的解析描述符决定；本地确定性重算与已成功终态重放都保留原 pin，不能把本地可重算误推广到 Comfy。
+
+历史 `sam3-rgba-composite-1` 已提交任务保留固定模型与分割恢复路径，新局部动作不再进入它。其 SAM3 以 IoU ≥ 0.5 分组、组内任意候选对 IoU < 0.8 时拒绝；单候选及一致候选不认证目标准确，实测会把手部纳入杯子。分割子进程继承租约、父进程死亡时退出，取消/超时等待其退出再释放租约。既有 provider unknown guard 优先于准备失败；不自动退回整图或改写历史 pins。共享 Comfy 服务不因短进程结束而重启或卸载。
 
 #### 2.1.4 dispatch envelope authority 与 refund cause
 

@@ -1430,6 +1430,22 @@ async function seedAdminControlPlane() {
     publishedAt: new Date("2026-06-24T00:00:00.000Z"),
   });
 
+  if (!existingProfileKeys.has("chat-image-recolor")) {
+    await prisma.generationModelProfile.create({ data: {
+      id: "seed-profile-chat-image-recolor-v1", profileKey: "chat-image-recolor", label: "Local image recolor",
+      mode: "image", runner: "local-image", pipelineModel: "local-recolor", workflowKey: "local-recolor",
+      modelFormat: "native", runnerConfig: {
+        workflowVersion: 1, publicSelection: { surface: "chat_image_recolor", explicitOnly: true },
+        capabilities: { textToImage: false, initImage: true, referenceImages: true, stableSeed: false, lora: false },
+      },
+      defaultWidth: 2048, defaultHeight: 2048, allowedOrientations: ["original"], steps: 1,
+      sampler: "native", scheduler: "native", cfgScale: 1, costMultiplier: 0, maxCount: 1,
+      status: "active", enabled: true, rolloutPercent: 100,
+      publishedAt: new Date("2026-10-30T00:00:00.000Z"),
+      dryRunSummary: { status: "not_run", source: "seed_configuration_state", notes: "Deterministic masked recoloring; only an owner-confirmed mask can admit this route." },
+    } });
+  }
+
   // The native 2× model was exercised on the shared MPS backend before this
   // route was published. It is never an automatic text/character generator.
   if (!existingProfileKeys.has("image-enhance-2x")) {

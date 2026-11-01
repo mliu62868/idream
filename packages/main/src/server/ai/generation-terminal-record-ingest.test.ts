@@ -1,4 +1,7 @@
+import { createHash } from "node:crypto";
+import sharp from "sharp";
 import { generationTerminalRecordChecksum } from "@idream/shared/contracts/durable-server";
+import { CONFIRMED_IMAGE_EDIT_VERSION, LOCAL_IMAGE_EDIT_MODEL_SHA256, LOCAL_IMAGE_EDIT_VERSION } from "@idream/shared/chat/image-action";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Prisma } from "@prisma/client";
 import { renderPrometheusMetrics, resetMetricsForTests } from "@idream/shared";
@@ -67,6 +70,59 @@ const terminalRecord = {
     providerKey: "provider-asset-1",
   }],
 };
+
+const localizedEditDispatch = {
+  orientation: "original",
+  controls: {
+    orientation: "original", width: 64, height: 64, sourceImageAssetId: "frozen-source-asset",
+    localizedEdit: { mode: "local", target: "mug", selection: "one", version: LOCAL_IMAGE_EDIT_VERSION, modelSha256: LOCAL_IMAGE_EDIT_MODEL_SHA256 },
+  },
+  referenceImages: [{ assetId: "frozen-source-asset", role: "source_image", contentSha256: "a".repeat(64), sourceSnapshotId: "frozen-source-snapshot" }],
+};
+
+async function localizedEditTerminalRecord() {
+  const pixels = Buffer.alloc(64 * 64);
+  pixels.fill(255, 0, 1024);
+  const mask = await sharp(pixels, { raw: { width: 64, height: 64, channels: 1 } }).png().toBuffer();
+  return {
+    ...terminalRecord,
+    assets: [{
+      ...terminalRecord.assets[0]!, key: `gen/${terminalRecordJobId()}/attempts/${attemptId}/image-1.png`,
+      width: 64, height: 64, contentType: "image/png",
+      quality: {
+        schemaVersion: "1" as const, evaluatorVersion: "test-preservation",
+        artifact: { status: "passed" as const }, faceCount: { status: "unscored" as const },
+        identity: { status: "unscored" as const }, intent: { status: "unscored" as const },
+        preservation: {
+          status: "ok", ...localizedEditDispatch.controls.localizedEdit,
+          sourceAssetId: "frozen-source-asset", sourceSnapshotId: "frozen-source-snapshot", frozenSourceSha256: "a".repeat(64),
+          sourceSha256: "b".repeat(64), canonicalSourceSha256: "b".repeat(64),
+          decodeConvention: "sharp-auto-orient-srgb-rgba-v1", sampling: "source-latent-noise-mask-v1",
+          width: 64, height: 64, maskPngBase64: mask.toString("base64"), maskSha256: createHash("sha256").update(mask).digest("hex"),
+          maskPixels: 1024, totalPixels: 4096, protectedPixels: 3072, changedProtectedPixels: 0, changedTargetPixels: 512,
+          candidateSha256: "c".repeat(64), resultSha256: "d".repeat(64), intentVerified: false,
+        },
+      },
+    }],
+  };
+}
+
+async function confirmedEditEvidence(kind: "generate" | "recolor", fullMask = false) {
+  const record = await localizedEditTerminalRecord();
+  const pixels = Buffer.alloc(4096); pixels.fill(255, 0, fullMask ? 4096 : 1024);
+  const mask = await sharp(pixels, { raw: { width: 64, height: 64, channels: 1 } }).toColourspace("b-w").png().toBuffer();
+  const pin = { version: CONFIRMED_IMAGE_EDIT_VERSION, mode: "local" as const, target: "mug", selection: "one" as const,
+    sourceSnapshotId: "frozen-source-snapshot", sourceSha256: "a".repeat(64), width: 64, height: 64,
+    maskPngBase64: mask.toString("base64"), maskSha256: createHash("sha256").update(mask).digest("hex"),
+    confirmationId: "confirmation-1", confirmedAt: "2026-10-30T00:00:00.000Z",
+    operation: kind === "recolor" ? { kind: "recolor" as const, color: "#123456" } : { kind: "generate" as const } };
+  const evidence = { ...record.assets[0]!.quality.preservation, ...pin, modelSha256: undefined,
+    regionAuthority: "user_confirmation", maskCorrectnessCertified: false, canonicalSourceSha256: "a".repeat(64),
+    sampling: kind === "recolor" ? "hsl-lightness-preserving-1" : "source-latent-noise-mask-v1",
+    maskPixels: fullMask ? 4096 : 1024, protectedPixels: fullMask ? 0 : 3072, changedTargetPixels: kind === "recolor" ? 0 : 512 };
+  return { dispatch: { ...localizedEditDispatch, controls: { ...localizedEditDispatch.controls, localizedEdit: pin } },
+    record: { ...record, assets: [{ ...record.assets[0]!, quality: { ...record.assets[0]!.quality, preservation: evidence } }] } };
+}
 
 beforeEach(async () => {
   await prisma.mainOutboxEvent.deleteMany({
@@ -999,6 +1055,159 @@ describe("generation terminal record durable ingest", () => {
     });
     expect(result).toEqual({ acknowledged: false, status: "quarantined", receiptId: null });
     expect(await prisma.generationAttempt.findUnique({ where: { id: attemptId } })).toBeNull();
+  });
+
+  it("quarantines a localized edit success without preservation evidence", async () => {
+    await reserveAttempt(localizedEditDispatch);
+    const result = await ingestGenerationTerminalRecord({
+      terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`,
+      terminalRecordChecksum: generationTerminalRecordChecksum(terminalRecord),
+      terminalRecord,
+    });
+
+    expect(result).toMatchObject({ acknowledged: false, status: "quarantined" });
+    expect(await prisma.inboundEventReceipt.findUniqueOrThrow({ where: { id: result.receiptId! } })).toMatchObject({
+      sourceService: "gen_quarantine", processingState: "quarantined",
+      error: { code: "generation_terminal_localized_edit_evidence_mismatch", canonicalAttemptId: attemptId },
+    });
+    expect(await prisma.generationAttempt.findUniqueOrThrow({ where: { id: attemptId } })).toMatchObject({ status: "queued", terminalRecordRef: null });
+    expect(await prisma.generationArtifact.count({ where: { attemptId } })).toBe(0);
+    expect(await prisma.mainOutboxEvent.findUnique({ where: { id: outboxId } })).toBeNull();
+  });
+
+  it("accepts and replays preservation evidence against the frozen local edit rather than mutable Job controls", async () => {
+    await reserveAttempt(localizedEditDispatch);
+    await prisma.generationJob.update({ where: { id: terminalRecordJobId() }, data: {
+      controls: { localizedEdit: { mode: "local", target: "cardigan", selection: "all" }, width: 128, height: 128 },
+    } });
+    const record = await localizedEditTerminalRecord();
+    const input = { terminalRecord: record, terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`, terminalRecordChecksum: generationTerminalRecordChecksum(record) };
+    expect(await ingestGenerationTerminalRecord(input)).toMatchObject({ acknowledged: true, status: "persisted" });
+    expect(await ingestGenerationTerminalRecord(input)).toMatchObject({ acknowledged: true, status: "duplicate" });
+    expect(await prisma.generationArtifact.count({ where: { attemptId } })).toBe(1);
+    expect((await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: outboxId } })).payload).toMatchObject({
+      assets: [{ quality: { preservation: record.assets[0]!.quality.preservation } }],
+    });
+  });
+
+  it.each(["generate", "recolor"] as const)("accepts a confirmed %s proof, including an explicitly selected whole frame", async kind => {
+    const { dispatch, record } = await confirmedEditEvidence(kind, true);
+    await reserveAttempt(dispatch);
+    const input = { terminalRecord: record, terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`, terminalRecordChecksum: generationTerminalRecordChecksum(record) };
+    expect(await ingestGenerationTerminalRecord(input)).toMatchObject({ acknowledged: true, status: "persisted" });
+    expect(await ingestGenerationTerminalRecord(input)).toMatchObject({ acknowledged: true, status: "duplicate" });
+    expect(await prisma.generationArtifact.count({ where: { attemptId } })).toBe(1);
+  });
+
+  it.each(["generate", "recolor"] as const)("accepts a confirmed %s result when PNG re-encoding changes the file hash", async kind => {
+    const { dispatch, record } = await confirmedEditEvidence(kind);
+    const pixels = Buffer.alloc(64 * 64 * 4, 127);
+    const source = await sharp(pixels, { raw: { width: 64, height: 64, channels: 4 } }).png({ compressionLevel: 9 }).toBuffer();
+    const canonical = await sharp(pixels, { raw: { width: 64, height: 64, channels: 4 } }).png().toBuffer();
+    const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+    expect(hash(source)).not.toBe(hash(canonical));
+    dispatch.controls.localizedEdit.sourceSha256 = hash(source);
+    dispatch.referenceImages[0]!.contentSha256 = hash(source);
+    Object.assign(record.assets[0]!.quality.preservation, {
+      sourceSha256: hash(source), frozenSourceSha256: hash(source), canonicalSourceSha256: hash(canonical),
+    });
+    await reserveAttempt(dispatch);
+    const input = { terminalRecord: record, terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`, terminalRecordChecksum: generationTerminalRecordChecksum(record) };
+    expect(await ingestGenerationTerminalRecord(input)).toMatchObject({ acknowledged: true, status: "persisted" });
+    expect(await ingestGenerationTerminalRecord(input)).toMatchObject({ acknowledged: true, status: "duplicate" });
+    expect(await prisma.generationArtifact.count({ where: { attemptId } })).toBe(1);
+  });
+
+  it.each([
+    { field: "confirmationId", value: "another-confirmation" },
+    { field: "confirmedAt", value: "2026-10-29T00:00:00.000Z" },
+    { field: "operation", value: { kind: "recolor", color: "#ffffff" } },
+    { field: "regionAuthority", value: "model_guess" },
+    { field: "maskCorrectnessCertified", value: true },
+    { field: "maskSha256", value: "e".repeat(64) },
+    { field: "sampling", value: "source-latent-noise-mask-v1" },
+    { field: "changedProtectedPixels", value: 1 },
+    { field: "sourceSha256", value: "e".repeat(64) },
+    { field: "frozenSourceSha256", value: "e".repeat(64) },
+    { field: "canonicalSourceSha256", value: "invalid" },
+  ])("rejects a confirmed recolor proof with changed $field", async ({ field, value }) => {
+    const { dispatch, record } = await confirmedEditEvidence("recolor");
+    await reserveAttempt(dispatch);
+    const asset = record.assets[0]!;
+    const changed = { ...record, assets: [{ ...asset, quality: { ...asset.quality, preservation: { ...asset.quality.preservation, [field]: value } } }] };
+    expect(await ingestGenerationTerminalRecord({ terminalRecord: changed, terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`, terminalRecordChecksum: generationTerminalRecordChecksum(changed) }))
+      .toMatchObject({ acknowledged: false, status: "quarantined" });
+    expect(await prisma.generationArtifact.count({ where: { attemptId } })).toBe(0);
+  });
+
+  it.each([
+    { field: "version", value: "sam3-rgb-composite-0" },
+    { field: "modelSha256", value: "e".repeat(64) },
+    { field: "target", value: "cardigan" },
+    { field: "selection", value: "all" },
+    { field: "sourceAssetId", value: "another-source" },
+    { field: "sourceSnapshotId", value: "another-snapshot" },
+    { field: "frozenSourceSha256", value: "e".repeat(64) },
+    { field: "canonicalSourceSha256", value: "e".repeat(64) },
+    { field: "decodeConvention", value: "sharp-srgb-rgb-v1" },
+    { field: "sampling", value: null },
+    { field: "width", value: 128 },
+    { field: "maskSha256", value: "e".repeat(64) },
+    { field: "maskPngBase64", value: "invalid-base64!" },
+    { field: "totalPixels", value: 8192 },
+    { field: "maskPixels", value: 0 },
+    { field: "protectedPixels", value: 3071 },
+    { field: "changedProtectedPixels", value: 1 },
+    { field: "changedTargetPixels", value: 0 },
+    { field: "changedTargetPixels", value: 1025 },
+    { field: "resultSha256", value: "invalid" },
+    { field: "intentVerified", value: true },
+  ])("quarantines localized preservation evidence with invalid $field ($value)", async ({ field, value }) => {
+    await reserveAttempt(localizedEditDispatch);
+    const record = await localizedEditTerminalRecord();
+    const asset = record.assets[0]!;
+    const changed = { ...record, assets: [{ ...asset, quality: { ...asset.quality, preservation: { ...asset.quality.preservation, [field]: value } } }] };
+    const result = await ingestGenerationTerminalRecord({ terminalRecord: changed,
+      terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`, terminalRecordChecksum: generationTerminalRecordChecksum(changed) });
+    expect(result).toMatchObject({ acknowledged: false, status: "quarantined" });
+    expect(await prisma.inboundEventReceipt.findUniqueOrThrow({ where: { id: result.receiptId! } })).toMatchObject({
+      error: { code: "generation_terminal_localized_edit_evidence_mismatch", canonicalAttemptId: attemptId },
+    });
+    expect(await prisma.generationArtifact.count({ where: { attemptId } })).toBe(0);
+    expect(await prisma.mainOutboxEvent.findUnique({ where: { id: outboxId } })).toBeNull();
+  });
+
+  it.each(["corrupt", "geometry", "alpha", "nonbinary", "area", "excessive"] as const)(
+    "quarantines a localized edit whose hash-valid mask is %s", async kind => {
+      await reserveAttempt(localizedEditDispatch);
+      const record = await localizedEditTerminalRecord();
+      const asset = record.assets[0]!;
+      const width = kind === "geometry" ? 32 : 64;
+      const pixels = Buffer.alloc(width * 64);
+      pixels.fill(255, 0, kind === "area" ? 512 : kind === "excessive" ? 3072 : 1024);
+      if (kind === "nonbinary") pixels[0] = 254;
+      let image = sharp(pixels, { raw: { width, height: 64, channels: 1 } });
+      if (kind === "alpha") image = image.ensureAlpha();
+      const mask = kind === "corrupt" ? Buffer.from("not a PNG") : await image.png().toBuffer();
+      const preservation = { ...asset.quality.preservation, maskPngBase64: mask.toString("base64"), maskSha256: createHash("sha256").update(mask).digest("hex"),
+        ...(kind === "excessive" ? { maskPixels: 3072, protectedPixels: 1024 } : {}) };
+      const changed = { ...record, assets: [{ ...asset, quality: { ...asset.quality, preservation } }] };
+      expect(await ingestGenerationTerminalRecord({ terminalRecord: changed,
+        terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`, terminalRecordChecksum: generationTerminalRecordChecksum(changed) }))
+        .toMatchObject({ acknowledged: false, status: "quarantined" });
+      expect(await prisma.generationArtifact.count({ where: { attemptId } })).toBe(0);
+      expect(await prisma.mainOutboxEvent.findUnique({ where: { id: outboxId } })).toBeNull();
+    },
+  );
+
+  it("quarantines a local edit whose delivered asset dimensions differ from the frozen source", async () => {
+    await reserveAttempt(localizedEditDispatch);
+    const record = await localizedEditTerminalRecord();
+    const changed = { ...record, assets: record.assets.map(asset => ({ ...asset, width: 128 })) };
+    expect(await ingestGenerationTerminalRecord({ terminalRecord: changed,
+      terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`, terminalRecordChecksum: generationTerminalRecordChecksum(changed) }))
+      .toMatchObject({ acknowledged: false, status: "quarantined" });
+    expect(await prisma.mainOutboxEvent.findUnique({ where: { id: outboxId } })).toBeNull();
   });
 
   it.each([
@@ -1941,8 +2150,8 @@ describe("generation terminal record durable ingest", () => {
   });
 });
 
-async function reserveAttempt() {
-  await ensureDispatchAuthority(terminalRecord);
+async function reserveAttempt(payloadOverrides: Prisma.InputJsonObject = {}) {
+  await ensureDispatchAuthority(terminalRecord, payloadOverrides);
   return prisma.generationAttempt.create({
     data: {
       id: attemptId,
@@ -1963,7 +2172,7 @@ async function ensureDispatchAuthority(record: {
   provider: string;
   model?: string;
   assets?: readonly unknown[];
-}) {
+}, payloadOverrides: Prisma.InputJsonObject = {}) {
   const existingJob = await prisma.generationJob.findUnique({
     where: { id: record.generationJobId },
     select: { userId: true },
@@ -2015,6 +2224,7 @@ async function ensureDispatchAuthority(record: {
     ...(record.mode === "image"
       ? { presetIds: [], orientation: "portrait", count: record.assets?.length ?? 1 }
       : { seconds: 4 }),
+    ...payloadOverrides,
   };
   await prisma.mainOutboxEvent.upsert({
     where: { id: `generation_dispatch_authority_${record.attemptId}` },

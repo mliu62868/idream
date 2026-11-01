@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { ToolRegistration } from "@earendil-works/pi-durable";
+import { createIgrepTools } from "./igrep";
+import { projectRecall } from "./session-recall";
 import type { CompanionInvocation, PreparedTurnMessage } from "./contracts";
 import { buildReplaySeed } from "./pi-context";
 import { executePiConversation } from "./pi-runtime";
 import { OpenAiCompatibleAdapter, type TokenUsage } from "./openai-adapter";
+import { IMAGE_AGENT_TOOL_DEFINITIONS } from "@idream/shared/chat/image-action";
+import { CHARACTER_MEDIA_TOOL_DEFINITIONS } from "@idream/shared/chat/media-library";
 
 const speaker = { name: "Briar", characterId: "briar", sessionId: "briar-session" };
 
@@ -39,8 +45,8 @@ function pinned(value: CompanionInvocation) {
     || (message.sourceKind === "plugin" && message.role === "user"));
 }
 
-function response(delta: object, finish = "stop") {
-  return new Response(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: finish }], usage: { prompt_tokens: 100, completion_tokens: 10 } })}\n\ndata: [DONE]\n\n`);
+function response(delta: object, finish = "stop", usage = { prompt_tokens: 100, completion_tokens: 10 }) {
+  return new Response(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: finish }], usage })}\n\ndata: [DONE]\n\n`);
 }
 
 type WireBody = { messages: Array<{ role: string; content: string; tool_call_id?: string; tool_calls?: Array<{ id: string }> }> };
@@ -157,4 +163,127 @@ describe("Pi execution boundaries", () => {
       expect(final.filter(message => message.role === "user" && message.content.includes(text))).toHaveLength(1);
     }
   });
+
+  it.each([0, 200, 1_600, 4_000, 8_000])("fits all eight recalled originals after a %i-character summary without losing exact source reads", async summaryChars => {
+    const value = invocation(6_000, 0, 0);
+    value.attemptId = "fbdd0712-d40d-40a9-a691-e138dbc771a4:1";
+    const current = "请把刚才蓝色杯子的同一张图片再发一次，不要生成新图片。另外，17 加 25 等于多少？请用一句友好的中文回答。";
+    value.preparedTurn.messages.at(-1)!.content = current;
+    value.preparedTurn.messages.find(message => message.id === "state:current")!.content += `\nMedia reference: media_blue_cup. ${"c".repeat(1_850)}`;
+    const originals = Array.from({ length: 8 }, (_, index): PreparedTurnMessage => ({
+      id: `00000000-0000-4000-8000-00000000000${index}`, sourceKind: "replay", role: index % 2 ? "assistant" : "user",
+      content: `Original ${index}: ${"b".repeat(150)}`,
+      ...(index % 2 ? { speaker: { ...speaker, characterId: "00000000-0000-4000-8000-000000000010", sessionId: "00000000-0000-4000-8000-000000000011" } } : {}),
+    }));
+    value.preparedTurn.omittedMessages = originals;
+    let purpose: string | undefined;
+    let generation = 0;
+    let recalled = false;
+    const requests: WireBody[] = [];
+    const readRows: Array<{ id: string; sourceId: string; content: string; role: string; speaker?: typeof speaker }>[] = [];
+    const adapter = new OpenAiCompatibleAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", maxInputTokens: 6_000,
+      observeRequest: request => { purpose = request.purpose; },
+      fetch: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as WireBody;
+        if (purpose === "compaction") return response({ content: `Earlier original records are available with session_recall. ${"s".repeat(summaryChars)}` });
+        requests.push(body);
+        if (++generation === 1) return response({ tool_calls: [{ index: 0, id: "recall-large", function: { name: "session_recall", arguments: '{"query":"earlier original words"}' } }] }, "tool_calls", { prompt_tokens: 4_324, completion_tokens: 518 });
+        return response({ content: "17 加 25 等于 42 哦！" });
+      },
+    });
+    const output = await executePiConversation({ invocation: value, seed: buildReplaySeed(value), pinned: pinned(value),
+      systemPrompt: `You are Mara. ${"s".repeat(9_450)}`, adapter, signal: AbortSignal.timeout(2_000), maxSteps: 8,
+      afterRetrievalContext: { content: `Reply scope: ${"r".repeat(660)}`, available: () => recalled },
+      assertContinuation() {}, text() {}, reset() {}, compaction() {},
+      tools: conversation => {
+        const tools = createIgrepTools({ cli: { command: "igrep", env: { IGREP_NO_CACHE: "1" } }, workspace: "/unused", knowledgePath: "/unused", mode: "private",
+          recall: () => projectRecall(conversation(), BACKGROUND_CONTEXT, { attemptId: value.attemptId, conversationId: conversation().id,
+            assistant: { name: "Mara", characterId: value.characterId, sessionId: value.sessionId }, seed: value.preparedTurn.messages, omitted: originals }),
+          run: async command => ({ results: command.stdin!.trim().split("\n").map(line => ({ record: JSON.parse(line) })) }),
+        });
+        return [...tools.map(tool => ({ ...tool, parameters: tool.parameters as ToolRegistration["parameters"], replay: "safe" as const,
+          execute: async (args: Record<string, unknown>) => {
+            const found = await tool.execute(args as Record<string, unknown>, AbortSignal.timeout(1_000)) as typeof readRows[number];
+            const exact = await tool.execute({ ids: found.map(row => row.id) }, AbortSignal.timeout(1_000));
+            expect(exact).toEqual(found);
+            readRows.push(found);
+            recalled = true;
+            return { output: [{ type: "text" as const, text: JSON.stringify(found) }] };
+          },
+        })), ...[...IMAGE_AGENT_TOOL_DEFINITIONS, ...CHARACTER_MEDIA_TOOL_DEFINITIONS].map(tool => ({ ...tool,
+          parameters: tool.parameters as ToolRegistration["parameters"], replay: "safe" as const,
+          execute: async () => { throw new Error("The budget regression must not execute media actions"); },
+        }))];
+      },
+    });
+    expect(output.message.stopReason).toBe("stop");
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      expect(request.messages).toContainEqual({ role: "user", content: current });
+      expect(JSON.stringify(request)).toContain("media_blue_cup");
+    }
+    expect(readRows[0]).toHaveLength(8);
+    expect(readRows[0]!.map(row => row.content)).toEqual(originals.map(row => row.content));
+    expect(readRows[0]!.map(row => row.sourceId)).toEqual(originals.map(row => `main:${row.id}`));
+    expect(readRows[0]!.map(row => row.role)).toEqual(originals.map(row => row.role));
+    expect(readRows[0]!.map(row => row.speaker)).toEqual(originals.map(row => "speaker" in row ? row.speaker : undefined));
+    const delivered = JSON.parse(requests[1]!.messages.find(message => message.role === "tool")!.content);
+    expect(delivered).toEqual(readRows[0]);
+  });
+});
+
+it("recalls transferred attempt tool originals after body compaction without promoting plugin background", async () => {
+  const value = invocation(6_000, 12, 1_800);
+  const original = "The original lookup found the cedar path, not the shoreline.";
+  const executionEvidence: PreparedTurnMessage[] = [
+    { id: "lookup-call:earlier", sourceKind: "plugin", role: "assistant", content: "", tool_calls: [
+      { id: "earlier", type: "function", function: { name: "memory_search", arguments: '{"query":"earlier route"}' } },
+    ] },
+    { id: "lookup-result:earlier", sourceKind: "plugin", role: "tool", tool_call_id: "earlier", content: original },
+  ];
+  const recalledId = `attempt:${value.attemptId}/execution:${encodeURIComponent("lookup-result:earlier")}/block:0/byte:0`;
+  let purpose: string | undefined;
+  let generations = 0;
+  let compactions = 0;
+  let recalled = false;
+  const bodyRequests: WireBody[] = [];
+  const adapter = new OpenAiCompatibleAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", maxInputTokens: value.preparedTurn.budget.maxInputTokens,
+    observeRequest: request => { purpose = request.purpose; },
+    fetch: async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as WireBody;
+      if (purpose === "compaction") return response({ content: `Fallible summary ${++compactions}; original tool wording must be recalled.` });
+      expect(purpose).toBe("media_body");
+      bodyRequests.push(body);
+      if (++generations === 1) return response({ tool_calls: [{ index: 0, id: "padding", function: { name: "read_padding", arguments: "{}" } }] }, "tool_calls");
+      if (generations === 2) {
+        expect(JSON.stringify(body.messages)).not.toContain(original);
+        expect(JSON.stringify(body.messages)).toContain("use session_recall to retrieve the omitted original messages");
+        return response({ tool_calls: [{ index: 0, id: "recall-original", function: { name: "session_recall", arguments: JSON.stringify({ ids: [recalledId] }) } }] }, "tool_calls");
+      }
+      const receipt = JSON.parse(body.messages.find(message => message.role === "tool" && message.tool_call_id === "recall-original")!.content);
+      expect(receipt).toEqual([expect.objectContaining({ content: original, role: "toolResult", toolName: "memory_search", sourceId: `execution:${encodeURIComponent("lookup-result:earlier")}` })]);
+      recalled = true;
+      return response({ content: "You chose the cedar path." });
+    },
+  });
+  const output = await executePiConversation({ invocation: value, seed: buildReplaySeed(value), pinned: pinned(value), executionEvidence,
+    systemPrompt: "You are Mara.", adapter, purpose: "media_body", signal: AbortSignal.timeout(3_000), maxSteps: 5,
+    assertContinuation() {}, text() {}, reset() {}, compaction() {},
+    tools: conversation => {
+      const tool = createIgrepTools({ cli: { command: "igrep", env: { IGREP_NO_CACHE: "1" } }, workspace: "/unused", knowledgePath: "/unused", mode: "private",
+        recall: () => projectRecall(conversation(), BACKGROUND_CONTEXT, { attemptId: value.attemptId, conversationId: conversation().id,
+          assistant: { name: "Mara", characterId: value.characterId, sessionId: value.sessionId }, seed: value.preparedTurn.messages, omitted: [], execution: executionEvidence }),
+      }).find(tool => tool.name === "session_recall")!;
+      return [
+        { name: "read_padding", description: "Read controlled long evidence", parameters: { type: "object", properties: {} }, replay: "safe",
+          execute: async () => ({ output: [{ type: "text", text: `Later lookup ${"b".repeat(19_000)}` }] }) },
+        { ...tool, parameters: tool.parameters as ToolRegistration["parameters"],
+          replay: "safe", execute: async args => ({ output: [{ type: "text", text: JSON.stringify(await tool.execute(args as Record<string, unknown>, AbortSignal.timeout(1_000))) }] }) },
+      ];
+    },
+  });
+  expect(compactions).toBeGreaterThanOrEqual(2);
+  expect(recalled).toBe(true);
+  expect(output.steps).toBe(3);
+  expect(bodyRequests).toHaveLength(3);
 });

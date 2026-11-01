@@ -11,6 +11,7 @@ const leaseModule = new URL("./generation-accelerator-lease.ts", import.meta.url
 describe("generation accelerator lease", () => {
   let dir: string | undefined;
   const children: Array<{ child: ChildProcess; done: Promise<{ code: number | null; stdout: string; stderr: string }> }> = [];
+  const inheritedChildren: number[] = [];
 
   function launch(code: string) {
     const child = spawn("bun", ["-e", `import { withGenerationAcceleratorLease as lease } from ${JSON.stringify(leaseModule)}; ${code}`], {
@@ -41,6 +42,8 @@ describe("generation accelerator lease", () => {
   }
 
   afterEach(async () => {
+    for (const pid of inheritedChildren) { try { process.kill(pid, "SIGKILL"); } catch { /* Already exited. */ } }
+    inheritedChildren.length = 0;
     for (const { child } of children) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     await Promise.allSettled(children.map(child => child.done));
     children.length = 0;
@@ -81,6 +84,35 @@ describe("generation accelerator lease", () => {
     }));`).done;
     expect(next.stderr).toBe(""); expect(next.code).toBe(0); expect(next.stdout.trim()).toBe("recovered");
     expect((await stat(lockPath)).ino).toBe(inode);
+  });
+
+  it("keeps the device locked while an inherited child survives a killed worker", async () => {
+    dir = await mkdtemp(path.join(tmpdir(), "idream-accelerator-"));
+    const lockPath = path.join(dir, "device.lock");
+    const holder = launch(`import { spawn } from "node:child_process";
+      await lease("image", async fd => {
+        const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: ["ignore", "ignore", "ignore", fd] });
+        console.log(child.pid); await new Promise(() => {});
+      }, { lockPath: ${JSON.stringify(lockPath)} });`);
+    const childPid = await new Promise<number>((resolve, reject) => {
+      holder.child.stdout!.once("data", chunk => resolve(Number(String(chunk).trim())));
+      holder.done.then(result => reject(new Error(`Holder exited before child launch: ${result.stderr}`)), reject);
+    });
+    expect(Number.isInteger(childPid)).toBe(true);
+    inheritedChildren.push(childPid);
+    holder.child.kill("SIGKILL"); await holder.done;
+    const blocked = await launch(`try { await lease("video", async () => console.log("MUST_NOT_ENTER"), {
+      lockPath: ${JSON.stringify(lockPath)}, pollMs: 2, waitTimeoutMs: 100
+    }); } catch (error) { console.log(error.message); }`).done;
+    expect(blocked.code).toBe(0);
+    expect(blocked.stdout).toContain("resource wait timed out");
+    expect(blocked.stdout).not.toContain("MUST_NOT_ENTER");
+    process.kill(childPid, "SIGKILL");
+    inheritedChildren.length = 0;
+    const next = await launch(`console.log(await lease("video", async () => "recovered", {
+      lockPath: ${JSON.stringify(lockPath)}, pollMs: 5, waitTimeoutMs: 1000
+    }));`).done;
+    expect(next.code).toBe(0); expect(next.stdout.trim()).toBe("recovered");
   });
 
   it.each(["deadline", "revoked"] as const)("stops resource waiting on %s without entering the live owner's device", async reason => {

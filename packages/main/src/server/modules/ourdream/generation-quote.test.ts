@@ -12,10 +12,14 @@ const authority = vi.hoisted(() => ({
   selectRecipe: vi.fn(),
   resolveImageRecipeNegative: vi.fn(),
   assertGenerationSourceImageAuthority: vi.fn(),
+  preflightGenerationReferences: vi.fn(),
 }));
 
 vi.mock("./generation-job-authority", () => ({
   assertGenerationSourceImageAuthority: authority.assertGenerationSourceImageAuthority,
+}));
+vi.mock("./generation-reference-snapshot", () => ({
+  preflightGenerationReferences: authority.preflightGenerationReferences,
 }));
 
 vi.mock("./subscription-lifecycle", () => ({

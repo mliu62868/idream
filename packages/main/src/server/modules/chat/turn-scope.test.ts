@@ -254,7 +254,8 @@ describe("chat scope lock ladder", () => {
 
 describe("tool effect attachment state machine", () => {
   const legal: Readonly<Record<ToolEffectAttachmentStatus, readonly ToolEffectAttachmentStatus[]>> = {
-    requesting: ["accepted", "failed", "completed"],
+    requesting: ["accepted", "failed", "completed", "awaiting_confirmation"],
+    awaiting_confirmation: ["accepted", "cancelled"],
     accepted: ["completed", "failed", "blocked", "refunded", "cancelled"],
     completed: [],
     failed: ["accepted", "requesting"],

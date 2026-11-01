@@ -95,6 +95,25 @@ async function fixture(kind: "image" | "video" = "image") {
   return { id, character, session, visual, entry, source, sourceOwnerId, sourceKey, libraryKey, bytes, begin };
 }
 
+async function deliveredScene(kind: "image" | "video" = "image") {
+  const f = await fixture(kind);
+  const snapshot = await f.begin("Send the scene.");
+  const sceneKey = `${f.id}/scene.${kind === "image" ? "png" : "mp4"}`;
+  keys.push(sceneKey);
+  await providers.blob.putPrivate({ key: sceneKey, body: f.bytes, contentType: f.source.contentType! });
+  const asset = await prisma.mediaAsset.create({ data: {
+    id: `${f.id}-scene`, ownerId: f.id, characterId: null, type: kind,
+    url: `/api/media/${f.id}-scene/content`, storageKey: sceneKey, contentType: f.source.contentType,
+    safetyStatus: "passed", metadata: { synthetic: false },
+  } });
+  const attachment = await prisma.chatTurnAttachment.create({ data: {
+    id: `${f.id}-scene-delivery`, turnId: snapshot.turnId, kind: kind === "image" ? "generated_image" : "generated_video",
+    status: "completed", mediaAssetId: asset.id, metadata: { attempt: snapshot.attempt, request: { subject: "scene" } },
+  } });
+  await complete(snapshot);
+  return { ...f, snapshot, asset, attachment };
+}
+
 function effect(snapshot: ChatExecutionSnapshot, name: ChatToolEffect["name"], args: Record<string, unknown>): ChatToolEffect {
   return { version: 2, turnId: snapshot.turnId, attempt: snapshot.attempt, callId: randomUUID(), name,
     effectScope: name === "search_character_media" ? "attempt" : "turn_action", intent: { requestedNudity: "unspecified" }, arguments: args };
@@ -108,16 +127,51 @@ async function search(snapshot: ChatExecutionSnapshot, kind: "image" | "video" =
 async function send(snapshot: ChatExecutionSnapshot, candidateToken: string) {
   return sendCharacterMediaResultSchema.parse(await applyChatToolEffect(effect(snapshot, "send_character_media", { candidateToken })));
 }
-async function complete(snapshot: ChatExecutionSnapshot) {
-  await commitChatTerminal({ version: 1, turnId: snapshot.turnId, sessionId: snapshot.sessionId, assistantMessageId: snapshot.assistantMessageId,
-    attempt: snapshot.attempt, status: "sent", content: "Here is one by the rainy window.", model: "fixture", promptTokens: 1, completionTokens: 1,
+async function complete(snapshot: ChatExecutionSnapshot, attachmentId?: string) {
+  return commitChatTerminal({ version: 1, turnId: snapshot.turnId, sessionId: snapshot.sessionId, assistantMessageId: snapshot.assistantMessageId,
+    attempt: snapshot.attempt, status: "sent", content: attachmentId ? "" : "Here is one by the rainy window.", model: "fixture", promptTokens: 1, completionTokens: 1,
     sceneVersion: snapshot.sceneVersion + 1, scene: { schemaVersion: 1, version: snapshot.sceneVersion + 1, location: "rainy window", time: null,
       participants: [], emotionalBeat: null, unresolvedThreads: [] },
-    terminalEvidence: { authority: "test", prompt: { productPromptVersion: "companion-product-1", preparedTurnVersion: 5,
+    terminalEvidence: { authority: "test", ...(attachmentId ? { mediaResponse: { version: 1, attachmentId } } : {}), prompt: { productPromptVersion: "companion-product-1", preparedTurnVersion: 5,
       systemPromptDigest: "a".repeat(64), soulFingerprint: "b".repeat(64) } } });
 }
 
 describe("Main Character media delivery authority", () => {
+  it.each(["image", "video"] as const)("recovers textless %s delivery before another tool call and without another charge", async kind => {
+    const f = await fixture(kind);
+    const snapshot = await f.begin();
+    const token = (await search(snapshot, kind)).matches[0]!.candidateToken;
+    const delivered = await send(snapshot, token);
+    await complete(snapshot, delivered.attachmentId);
+    expect((await getChatSession(f.id, f.session.id)).messages.find(message => message.id === snapshot.assistantMessageId))
+      .toMatchObject({ status: "sent", content: "", attachments: [expect.objectContaining({ id: delivered.attachmentId, mediaAssetId: delivered.mediaAssetId })] });
+
+    const regenerated = (await regenerateChatTurn(f.id, snapshot.assistantMessageId)).snapshot;
+    expect(regenerated.attempt).toBe(2);
+    expect(regenerated.recoveredMediaAction).toMatchObject({ name: "send_character_media", attachmentId: delivered.attachmentId, status: "completed", mediaAssetId: delivered.mediaAssetId, costDreamcoins: 0 });
+    await expect(complete(regenerated, delivered.attachmentId)).resolves.toMatchObject({ accepted: true, duplicate: false });
+    expect(await send(regenerated, token)).toMatchObject({ duplicate: true, attachmentId: delivered.attachmentId, mediaAssetId: delivered.mediaAssetId });
+    expect((await getChatSession(f.id, f.session.id)).messages.find(message => message.id === snapshot.assistantMessageId))
+      .toMatchObject({ status: "sent", content: "", attempt: 2, attachments: [expect.objectContaining({ id: delivered.attachmentId })] });
+
+    expect(await prisma.chatTurnAttachment.count({ where: { turnId: snapshot.turnId } })).toBe(1);
+    expect(await prisma.generationJob.count({ where: { userId: f.id } })).toBe(0);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId: f.id, reason: "generation_spend" } })).toBe(0);
+  });
+
+  it.each(["image", "video"] as const)("rejects the prior %s attachment as a textless answer after the user edits their request", async kind => {
+    const f = await fixture(kind);
+    const snapshot = await f.begin();
+    const delivered = await send(snapshot, (await search(snapshot, kind)).matches[0]!.candidateToken);
+    await complete(snapshot, delivered.attachmentId);
+    const edited = (await editChatTurn(f.id, snapshot.userMessageId, "Send a different picture beside the garden.")).snapshot;
+    if (!edited) throw new Error("Edited Turn was not admitted");
+    await expect(complete(edited, delivered.attachmentId)).rejects.toThrow("attachment");
+    expect(await prisma.chatTurnAttachment.count({ where: { turnId: snapshot.turnId } })).toBe(1);
+    expect(await prisma.generationJob.count({ where: { userId: f.id } })).toBe(0);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId: f.id, reason: "generation_spend" } })).toBe(0);
+  });
+
   it("projects prepared-media capability without requiring paid image generation or a model request", async () => {
     const f = await fixture();
     const snapshot = await f.begin();
@@ -197,6 +251,60 @@ describe("Main Character media delivery authority", () => {
     expect(next.recentMedia).toEqual([{ mediaAssetId: asset.id, kind, turnId: snapshot.turnId, description: f.entry.description }]);
     if (kind === "video") expect(next.hasRecentImageContext).toBe(false);
     expect(await search(next, kind)).toMatchObject({ status: "no_match", matches: [] });
+  });
+
+  it.each(["image", "video"] as const)("resends a delivered scene %s from the same conversation without changing its identity or charging", async kind => {
+    const f = await deliveredScene(kind);
+    const balance = await dreamcoinBalance(f.id);
+    const next = await f.begin("Resend the exact scene you just sent.");
+    expect(next.recentMedia).toEqual([{ mediaAssetId: f.asset.id, kind, turnId: f.snapshot.turnId, description: null }]);
+    expect(next.hasRecentImageContext).toBe(kind === "image");
+    const receipt = sendCharacterMediaResultSchema.parse(await applyChatToolEffect(effect(next, "send_character_media", { previousMediaAssetId: f.asset.id })));
+    expect(receipt).toMatchObject({ accepted: true, source: "previous_media", mediaAssetId: f.asset.id, costDreamcoins: 0 });
+    expect(await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: receipt.attachmentId } })).toMatchObject({
+      metadata: expect.objectContaining({ request: expect.objectContaining({ subject: "scene" }) }),
+    });
+    await complete(next, receipt.attachmentId);
+    expect((await getChatSession(f.id, f.session.id)).messages.find(item => item.id === next.assistantMessageId)?.attachments).toEqual([
+      expect.objectContaining({ mediaAssetId: f.asset.id, status: "completed", ...(kind === "image" ? { imageSubject: "scene" } : {}) }),
+    ]);
+    const regenerated = (await regenerateChatTurn(f.id, next.assistantMessageId)).snapshot;
+    expect(regenerated.recoveredMediaAction).toMatchObject({ name: "send_character_media", attachmentId: receipt.attachmentId,
+      mediaAssetId: f.asset.id, generationJobId: null, status: "completed", costDreamcoins: 0 });
+    expect(await applyChatToolEffect(effect(regenerated, "send_character_media", { previousMediaAssetId: f.asset.id })))
+      .toMatchObject({ duplicate: true, attachmentId: receipt.attachmentId, mediaAssetId: f.asset.id });
+    await complete(regenerated, receipt.attachmentId);
+    expect((await getChatSession(f.id, f.session.id)).messages.find(item => item.id === next.assistantMessageId)?.attachments)
+      .toEqual([expect.objectContaining({ id: receipt.attachmentId, mediaAssetId: f.asset.id, status: "completed" })]);
+    expect(await prisma.generationJob.count({ where: { userId: f.id } })).toBe(0);
+    expect(await dreamcoinBalance(f.id)).toBe(balance);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId: f.id, reason: "generation_spend" } })).toBe(0);
+  });
+
+  it.each(["deleted", "other-owner", "stale-attempt"])("does not expose a scene delivery after %s", async condition => {
+    const f = await deliveredScene();
+    if (condition === "deleted") await prisma.mediaAsset.update({ where: { id: f.asset.id }, data: { deletedAt: new Date() } });
+    if (condition === "other-owner") await prisma.mediaAsset.update({ where: { id: f.asset.id }, data: { ownerId: f.sourceOwnerId } });
+    if (condition === "stale-attempt") await prisma.chatTurnAttachment.update({ where: { id: f.attachment.id }, data: { metadata: { attempt: 2 } } });
+    const next = await f.begin("Resend that scene.");
+    expect(next.recentMedia).toEqual([]);
+    await expect(applyChatToolEffect(effect(next, "send_character_media", { previousMediaAssetId: f.asset.id }))).rejects.toMatchObject({ code: "forbidden" });
+  });
+
+  it("rejects a scene ID copied into another session's frozen snapshot", async () => {
+    const f = await deliveredScene();
+    const originalSession = await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: f.session.id } });
+    const otherSessionId = `${f.id}-other-scene-session`;
+    await prisma.recentChat.create({ data: { sessionId: otherSessionId, userId: f.id, characterId: f.character.id,
+      characterContentVersionId: originalSession.characterContentVersionId, characterVisualProfileId: f.visual.id,
+      characterVisualProfileVersion: f.visual.version, memoryEnabled: false } });
+    const next = (await beginChatTurn({ userId: f.id, sessionId: otherSessionId, content: "Resend that scene.", idempotencyKey: randomUUID() })).snapshot;
+    if (!next) throw new Error("No next snapshot");
+    expect(next.recentMedia).toEqual([]);
+    await prisma.chatTurn.update({ where: { id: next.turnId }, data: { executionSnapshot: JSON.parse(JSON.stringify({ ...next,
+      recentMedia: [{ mediaAssetId: f.asset.id, turnId: f.snapshot.turnId, kind: "image", description: null }],
+    })) } });
+    await expect(applyChatToolEffect(effect(next, "send_character_media", { previousMediaAssetId: f.asset.id }))).rejects.toMatchObject({ code: "not_found" });
   });
 
   it("preserves owned history and explicit resend after withdrawal and original source deletion", async () => {
@@ -307,14 +415,15 @@ describe("Main Character media delivery authority", () => {
     expect(await prisma.generationJob.count({ where: { userId: f.id } })).toBe(0);
   });
 
-  it.each(["discarded", "deleted", "cross-character"])("does not expose %s media as recent delivery", async condition => {
+  it.each(["edited", "deleted", "cross-character"])("does not expose %s media as recent delivery", async condition => {
     const f = await fixture();
     const snapshot = await f.begin();
     const original = await send(snapshot, (await search(snapshot)).matches[0]!.candidateToken);
     await complete(snapshot);
-    if (condition === "discarded") {
-      const regenerated = (await regenerateChatTurn(f.id, snapshot.assistantMessageId)).snapshot;
-      await complete(regenerated);
+    if (condition === "edited") {
+      const edited = (await editChatTurn(f.id, snapshot.userMessageId, "Actually just say hello.")).snapshot;
+      if (!edited) throw new Error("Missing edited turn");
+      await complete(edited);
     } else if (condition === "deleted") {
       await prisma.mediaAsset.update({ where: { id: original.mediaAssetId }, data: { deletedAt: new Date() } });
     } else {

@@ -11,6 +11,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:segmentation": "python3 -B scripts/test-segment-image.py",
     "build": "bun ../../scripts/build-bun-service.mjs src/image.ts src/video.ts",
     "dev:image": "bun src/image.ts",
     "dev:video": "bun src/video.ts",

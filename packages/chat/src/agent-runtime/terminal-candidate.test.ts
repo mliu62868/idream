@@ -63,6 +63,24 @@ describe("evaluateTerminalCandidate", () => {
     });
   });
 
+  it("accepts deterministic empty content only with a completed media-response boundary", () => {
+    const mediaResponse = { version: 1 as const, attachmentId: "real-attachment" };
+    expect(evaluateTerminalCandidate(imageActionFacts({ assistantContent: "", mediaResponse })))
+      .toMatchObject({ accepted: true, candidate: { content: "", finishReason: "stop", mediaResponse } });
+    expect(evaluateTerminalCandidate(imageActionFacts({ assistantContent: "", finishReasonKind: "max-tokens", mediaResponse })))
+      .toMatchObject({ accepted: false, code: "model_output_exhausted" });
+  });
+
+  it.each([
+    { currentUserText: "Make the mug red. Also explain what translation means.", assistantContent: "Translation means expressing meaning in another language." },
+    { currentUserText: "把杯子改成红色。Also write a short story in English.", assistantContent: "I found a small brass key beneath the oak and wondered which door it opened." },
+  ])("preserves independent requested content after the media action: $currentUserText", text => {
+    const mediaResponse = { version: 1 as const, attachmentId: "real-attachment" };
+    expect(evaluateTerminalCandidate(imageActionFacts({ ...text, mediaResponse }))).toMatchObject({
+      accepted: true, candidate: { content: text.assistantContent, mediaResponse },
+    });
+  });
+
   it("preserves unknown measured usage without changing a valid reply", () => {
     expect(evaluateTerminalCandidate(facts({ usage: null }))).toMatchObject({
       accepted: true, candidate: { content: "I missed you today.", usage: null },

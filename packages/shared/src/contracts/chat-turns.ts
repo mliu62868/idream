@@ -148,6 +148,30 @@ function refineSceneAuthority(
   }
 }
 
+// A recovered card is an existing Main product fact, never a classification of
+// the user's intent. Main has already rebound it to this selected attempt.
+export const recoveredMediaActionSchema = z.object({
+  name: z.enum(["generate_image_async", "edit_last_image", "send_character_media"]),
+  attachmentId: z.string().min(1).max(160),
+  status: z.enum(["awaiting_confirmation", "accepted", "completed", "failed", "refunded", "blocked", "cancelled"]),
+  costDreamcoins: z.number().int().nonnegative(),
+  generationJobId: z.string().min(1).max(160).nullable().optional(),
+  mediaAssetId: z.string().min(1).max(160).nullable().optional(),
+  sourceMediaAssetId: z.string().min(1).max(160).optional(),
+  instruction: z.string().max(1_200).optional(),
+  description: z.string().max(4_000).nullable().optional(),
+}).strict().superRefine((value, ctx) => {
+  const unpaidEditDraft = value.name === "edit_last_image" && Boolean(value.sourceMediaAssetId) &&
+    !value.generationJobId && !value.mediaAssetId && value.costDreamcoins === 0;
+  if ((value.status === "awaiting_confirmation" && !unpaidEditDraft) ||
+    (["accepted", "failed", "refunded", "blocked"].includes(value.status) && !value.generationJobId) ||
+    (value.status === "cancelled" && !value.generationJobId && !unpaidEditDraft) ||
+    (value.status === "completed" && !value.mediaAssetId)) {
+    ctx.addIssue({ code: "custom", message: "Recovered media action must represent a persisted draft, generation or delivered asset", path: ["status"] });
+  }
+});
+export type RecoveredMediaAction = z.infer<typeof recoveredMediaActionSchema>;
+
 export const chatExecutionSnapshotSchema = z.object({
   version: z.literal(1),
   turnId: z.string().min(1),
@@ -168,6 +192,7 @@ export const chatExecutionSnapshotSchema = z.object({
   userPersona: userChatPersonaSchema.nullable().optional(),
   contextRevision: z.number().int().nonnegative(),
   userContent: z.string(),
+  recoveredMediaAction: recoveredMediaActionSchema.optional(),
   // Actual delivered facts only. Generation prompts are intentions, never
   // descriptions of observed pixels. Historical snapshots omit this projection.
   recentMedia: z.array(z.object({

@@ -413,6 +413,7 @@ export function generationPricingFingerprint(
       ruleKey: authority.ruleKey,
       version: authority.version,
       baseCost: authority.baseCost,
+      multiplier: authority.multiplier,
       effectiveFrom: authority.effectiveFrom?.toISOString() ?? null,
       updatedAt: authority.updatedAt.toISOString(),
     }))
@@ -463,6 +464,12 @@ export async function quoteGeneration(input: {
   readonly source?: GenerationSource;
   /** Only shared by scenes of one sequence request. */
   readonly videoSourceChecks?: Set<string>;
+  /** Internal owner-confirmed edit review only; never parsed from public JSON. */
+  readonly frozenSourceAssetId?: string;
+  readonly expectedVisualProfileVersion?: number;
+  readonly expectedReferenceSetRevisionId?: string;
+  readonly requireCharacterVisualIdentity?: boolean;
+  readonly fallbackToActiveOnStaleVisualProfile?: boolean;
 }): Promise<{
   readonly plan: GenerationPlan;
   readonly pricingAuthority: GenerationPricingAuthority;
@@ -475,6 +482,10 @@ export async function quoteGeneration(input: {
     profileSelectionAuthority: input.profileSelectionAuthority,
     // 报价绝不产生副作用：不给遗留 Character 补建 visual profile。
     bootstrapVisualProfile: false,
+    expectedVisualProfileVersion: input.expectedVisualProfileVersion,
+    expectedReferenceSetRevisionId: input.expectedReferenceSetRevisionId,
+    requireCharacterVisualIdentity: input.requireCharacterVisualIdentity,
+    fallbackToActiveOnStaleVisualProfile: input.fallbackToActiveOnStaleVisualProfile,
   });
   if (input.body.mode === "video" && plan.requestedSourceImageAssetId) {
     const sourceImageAssetId = plan.requestedSourceImageAssetId;
@@ -495,6 +506,7 @@ export async function quoteGeneration(input: {
       controls: { sourceImageAssetId: plan.requestedSourceImageAssetId, lookReferenceAssetId: plan.requestedLookReferenceAssetId },
       referenceManifest: plan.referenceRequirements.map(reference => ({ mediaAssetId: reference.assetId, role: reference.role })),
       authorizedSourceImageAssetId: plan.context?.source.kind === "comic" ? plan.context.sourceMedia?.id : undefined,
+      frozenSourceAssetId: input.frozenSourceAssetId,
     });
   }
   const routeFingerprint = generationPlanRouteFingerprint(plan);

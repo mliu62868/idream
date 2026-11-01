@@ -7,8 +7,9 @@ import type {
   ChatContextDirective,
   ChatExperiencePreference,
   UserChatPersona,
+  RecoveredMediaAction,
 } from "@idream/shared/contracts";
-import { chatContextDirectivesSchema, chatExchangeCompletedV2Schema, chatExchangeCorrectionV2Schema, chatExecutionSnapshotSchema, chatExperiencePreferenceSchema, chatTerminalCommitSchema, MAIN_TO_CHAT_EVENTS, METRIC_PRODUCT_EVENTS } from "@idream/shared/contracts";
+import { chatContextDirectivesSchema, chatExchangeCompletedV2Schema, chatExchangeCorrectionV2Schema, chatExecutionSnapshotSchema, chatExperiencePreferenceSchema, chatTerminalCommitSchema, recoveredMediaActionSchema, MAIN_TO_CHAT_EVENTS, METRIC_PRODUCT_EVENTS } from "@idream/shared/contracts";
 import { Prisma, type RecentChat } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { AppError, Errors } from "@/server/lib/errors";
@@ -24,6 +25,7 @@ import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-ima
 import { directCharacterAudienceWhere, publicReadableMediaAssetWhere } from "@/server/modules/ourdream/public-content-audience";
 import { collectionMediaViewUrl } from "@/server/modules/ourdream/public-read-model";
 import { effectiveGenerationJobStatus, generationExecutionErrorCode } from "@/server/modules/ourdream/generation-job-read-model";
+import { generationPreparationPreventsRetry } from "@/server/modules/generation/generation-attempt-authority";
 import { entitlementMap } from "@/server/modules/ourdream/subscription-lifecycle";
 import {
   assertNoPendingCompanionMemoryRebuild,
@@ -32,10 +34,11 @@ import {
   scheduleCompanionMemoryRebuild,
 } from "./companion-memory-authority";
 import { attachmentAttempt, lockChatScope } from "./turn-scope";
-import { legacyTurnActionAttachmentId } from "./tool-effect-attachment";
+import { hasChatMediaResponseAttachment, transitionToolEffectAttachment } from "./tool-effect-attachment";
 import { userChatPersonaForTurn } from "./user-persona";
 import { DEFAULT_PROFILE_EXPERIENCE } from "./conversation-profiles";
-import { deliveredChatMedia } from "./chat-media-history";
+import { deliveredChatMedia, isReadableChatMedia, readableDeliveredChatMediaWhere } from "./chat-media-history";
+import { lockCharacterGenerationAuthority, lockMediaAssetAuthority } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 
 const BLOCKED_NOTICE = "I can’t help with that request.";
 const ACTIVE_ASSISTANT_STATES = ["pending", "generating"];
@@ -493,7 +496,8 @@ export async function regenerateChatTurn(userId: string, messageId: string) {
       characterId: turn.session.characterId,
       purgeRunAttempts: [{ turnId: turn.id, throughAttempt: previousAttempt }],
     });
-    return { turn: regenerated, snapshot: await frozenExecutionSnapshot(tx, regenerated.id, false, contextDirectives, experience, userPersona) };
+    const recoveredMediaAction = await rebindDurableTurnMedia(tx, userId, regenerated, previousAttempt);
+    return { turn: regenerated, snapshot: await frozenExecutionSnapshot(tx, regenerated.id, false, contextDirectives, experience, userPersona, recoveredMediaAction) };
   });
   return {
     assistantMessageId: updated.turn.assistantMessageId,
@@ -504,10 +508,58 @@ export async function regenerateChatTurn(userId: string, messageId: string) {
   };
 }
 
+/** Rebind existing product facts before the new immutable execution snapshot. */
+async function rebindDurableTurnMedia(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  turn: { id: string; attempt: number; userContent: string },
+  previousAttempt: number,
+): Promise<RecoveredMediaAction | undefined> {
+  const candidates = await tx.chatTurnAttachment.findMany({ where: { turnId: turn.id, kind: { in: ["generated_image", "generated_video"] } }, orderBy: { createdAt: "desc" } });
+  for (const candidate of candidates) {
+    if (attachmentAttempt(candidate.metadata) !== previousAttempt) continue;
+    const scope = await lockChatScope(tx, { userId, at: { attachment: candidate.id }, expect: { attempt: turn.attempt } });
+    const attachment = scope.attachment!;
+    const metadata = jsonRecord(attachment.metadata);
+    const effect = jsonRecord(metadata.effect ?? null);
+    if (metadata.turnActionInvalidatedByEdit === true || effect.effectScope !== "turn_action") continue;
+    if (["library", "previous_media"].includes(String(metadata.source))) {
+      await lockCharacterGenerationAuthority(tx, scope.session.characterId);
+      if (attachment.mediaAssetId) await lockMediaAssetAuthority(tx, attachment.mediaAssetId);
+      const media = attachment.mediaAssetId ? await tx.mediaAsset.findFirst({ where: {
+        id: attachment.mediaAssetId, ...readableDeliveredChatMediaWhere(userId, scope.session.characterId),
+      } }) : null;
+      if (!media || !isReadableChatMedia(media)) continue;
+    }
+    // A reservation failure with no Job is intentionally left to the Agent's
+    // existing retry authority after a user tops up. It is not an executed action.
+    const draft = jsonRecord(metadata.editDraft ?? null);
+    const draftSource = draft.version === 1 && draft.userContentDigest === createHash("sha256").update(turn.userContent).digest("hex") && typeof draft.sourceSnapshotId === "string" && typeof draft.sourceMediaAssetId === "string"
+      ? draft.sourceMediaAssetId : undefined;
+    if (attachment.generationJobId) {
+      const job = await tx.generationJob.findUnique({ where: { id: attachment.generationJobId }, select: { sourceMeta: true } });
+      if (jsonRecord(jsonRecord(job?.sourceMeta ?? null).privacyRedaction ?? null).reason === "logical_turn_edited") continue;
+    }
+    const parsed = recoveredMediaActionSchema.safeParse({
+      name: effect.name, attachmentId: attachment.id, status: attachment.status,
+      costDreamcoins: attachmentCost(attachment.metadata) ?? 0,
+      generationJobId: attachment.generationJobId, mediaAssetId: attachment.mediaAssetId,
+      ...(draftSource ? { sourceMediaAssetId: draftSource } : {}),
+      ...(attachment.promptHint ? { instruction: attachment.promptHint.slice(0, 1200) } : {}),
+      ...(typeof metadata.description === "string" ? { description: metadata.description } : {}),
+    });
+    if (!parsed.success) continue;
+    await tx.chatTurnAttachment.update({ where: { id: attachment.id }, data: { metadata: toJson({ ...metadata, attempt: turn.attempt, effect: { ...effect, attempt: turn.attempt } }) } });
+    return parsed.data;
+  }
+  return undefined;
+}
+
 export async function editChatTurn(userId: string, messageId: string, nextContent: string) {
   const content = requiredText(nextContent, "content", 20_000);
   const turn = await requireTurn(userId, messageId);
   if (turn.userMessageId !== messageId) throw Errors.badRequest("Only user messages can be edited");
+  if (content === turn.userContent) return regenerateChatTurn(userId, turn.assistantMessageId);
   if (ACTIVE_ASSISTANT_STATES.includes(turn.assistantStatus)) {
     throw Errors.conflict("A reply is already generating");
   }
@@ -525,16 +577,18 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
     if (!blocked) await reserveRevisedChatTurn(tx, userId, current);
     const sceneAnchor = await previousCommittedScene(tx, current);
     if (content !== current.userContent) {
-      // Old action IDs predate the user-content digest. Keep their receipts for
-      // retries of unchanged words, but never attach them to an edited request.
-      const legacy = await tx.chatTurnAttachment.findMany({
-        where: { turnId: current.id, id: { in: (["generate_image_async", "edit_last_image"] as const)
-          .map(name => legacyTurnActionAttachmentId(current.id, name)) } },
-      });
-      for (const attachment of legacy) await tx.chatTurnAttachment.update({
-        where: { id: attachment.id },
-        data: { metadata: toJson({ ...jsonRecord(attachment.metadata), turnActionInvalidatedByEdit: true }) },
-      });
+      // Edited user words invalidate every old action, including unpaid drafts.
+      // The old source remains a private snapshot, but no surviving card grants access.
+      const actions = await tx.chatTurnAttachment.findMany({ where: { turnId: current.id, kind: { in: ["generated_image", "generated_video"] } }, select: { id: true } });
+      for (const action of actions) {
+        const scope = await lockChatScope(tx, { userId, at: { attachment: action.id } });
+        const attachment = scope.attachment!;
+        if (attachment.status === "awaiting_confirmation") await transitionToolEffectAttachment(tx, attachment, { to: "cancelled", errorCode: "logical_turn_edited" });
+        await tx.chatTurnAttachment.update({ where: { id: action.id }, data: {
+          promptHint: null,
+          metadata: toJson({ ...jsonRecord(attachment.metadata), editDraft: null, turnActionInvalidatedByEdit: true }),
+        } });
+      }
     }
     await redactChatImageSourceText(tx, {
       userId,
@@ -629,6 +683,11 @@ export async function commitChatTerminal(input: ChatTerminalCommit) {
         throw Errors.conflict("Chat terminal has no matching frozen Scene anchor");
       }
       if (input.status === "sent") {
+        if (!input.content.trim() && !hasChatMediaResponseAttachment({
+          id: accepted.id, attempt: accepted.attempt, terminalEvidence: input.terminalEvidence,
+        }, await tx.chatTurnAttachment.findMany({ where: { turnId: accepted.id } }))) {
+          throw Errors.conflict("An empty Chat reply requires a current durable media attachment");
+        }
         if (input.sceneVersion !== anchor.data.sceneVersion + 1) {
           throw Errors.conflict("A sent Scene must advance exactly once from its frozen anchor");
         }
@@ -1056,6 +1115,7 @@ async function frozenExecutionSnapshot(
   preservedDirectives?: ChatContextDirective[],
   preservedExperience?: ChatExperiencePreference | null,
   preservedUserPersona?: UserChatPersona | null,
+  recoveredMediaAction?: RecoveredMediaAction,
 ): Promise<ChatExecutionSnapshot> {
   const turn = await tx.chatTurn.findUnique({ where: { id: turnId }, include: { session: true, groupTurn: true } });
   if (!turn) throw Errors.notFound("Chat turn not found");
@@ -1132,6 +1192,7 @@ async function frozenExecutionSnapshot(
       : preservedUserPersona,
     contextRevision: turn.session.contextRevision,
     userContent: turn.userContent,
+    ...(recoveredMediaAction ? { recoveredMediaAction } : {}),
     ...(turn.groupTurn && groupMembers ? { group: {
       id: turn.groupTurn.groupId,
       ordinal: turn.groupTurn.ordinal,
@@ -1900,7 +1961,7 @@ async function enrichAttachmentMedia(messages: Array<Record<string, unknown>>, u
       if (!isRecord(attachment)) continue;
       const mediaAssetId = typeof attachment.mediaAssetId === "string" ? attachment.mediaAssetId : null;
       if (mediaAssetId) ids.add(mediaAssetId);
-      if (typeof attachment.generationJobId === "string" && ["requesting", "accepted", "queued", "running"].includes(String(attachment.status))) {
+      if (typeof attachment.generationJobId === "string" && ["requesting", "accepted", "queued", "running", "failed", "refunded"].includes(String(attachment.status))) {
         jobIds.add(attachment.generationJobId);
       }
     }
@@ -1913,7 +1974,7 @@ async function enrichAttachmentMedia(messages: Array<Record<string, unknown>>, u
   }) : [];
   const attempts = jobs.length ? await prisma.generationAttempt.findMany({
     where: { requestId: { in: jobs.map(job => job.id) } },
-    select: { id: true, requestId: true, status: true, startedAt: true },
+    select: { id: true, requestId: true, status: true, startedAt: true, errorCode: true, retryability: true },
     orderBy: [{ requestId: "asc" }, { attemptNo: "desc" }],
   }) : [];
   const latestAttempts = new Map<string, (typeof attempts)[number]>();
@@ -1933,6 +1994,7 @@ async function enrichAttachmentMedia(messages: Array<Record<string, unknown>>, u
     job.id, {
       status: effectiveGenerationJobStatus(job.status, latestAttempts.get(job.id)?.status ?? null),
       errorCode: generationExecutionErrorCode(job.status, latestAttempts.get(job.id)?.status ?? null, job.errorCode),
+      canRetry: job.status === "failed" && !generationPreparationPreventsRetry(latestAttempts.get(job.id)),
       canCancel: job.sourceType === "chat_video" && canCancelGenerationBeforeDispatch(job, latestAttempts.get(job.id) ?? null, dispatchesByJob.get(job.id) ?? []),
     },
   ]));
@@ -1963,12 +2025,15 @@ async function enrichAttachmentMedia(messages: Array<Record<string, unknown>>, u
         const job = typeof attachment.generationJobId === "string"
           ? jobProjections.get(attachment.generationJobId)
           : null;
-        // Liveness and cancellation are read projections; delivery remains the
+        // Liveness, retry and cancellation are read projections; delivery remains the
         // persisted attachment authority, including its terminal and media facts.
         const activeVideo = attachment.kind === "generated_video" && ["requesting", "accepted", "queued", "running"].includes(String(attachment.status));
-        const projected = attachment.kind === "generated_video"
-          ? { ...attachment, canCancel: activeVideo && job?.canCancel === true, ...(activeVideo && job?.status === "running" ? { status: "running" } : {}) }
-          : attachment;
+        const mediaAttachment = ["generated_image", "generated_video"].includes(String(attachment.kind));
+        const projected: Record<string, unknown> = {
+          ...attachment,
+          ...(mediaAttachment ? { canRetry: ["failed", "refunded"].includes(String(attachment.status)) && job?.canRetry === true } : {}),
+          ...(attachment.kind === "generated_video" ? { canCancel: activeVideo && job?.canCancel === true, ...(activeVideo && job?.status === "running" ? { status: "running" } : {}) } : {}),
+        };
         if (job?.errorCode === "provider_outcome_unknown") return { ...projected, errorCode: job.errorCode };
         const mediaAssetId = typeof projected.mediaAssetId === "string" ? projected.mediaAssetId : null;
         const asset = mediaAssetId ? byId.get(mediaAssetId) : null;

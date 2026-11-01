@@ -1,7 +1,7 @@
 // SPEC: BackendRegistry — indexes workflow descriptors by EITHER descriptor.modelId
 // OR descriptor.workflowKey (dual index into one map) and resolves either key to the
 // (already-constructed) GenBackend instance for its declared backendKind. One
-// long-lived backend instance per kind (comfyui/drawthings), shared across every
+// long-lived backend instance per kind, shared across every
 // model that routes through it.
 // INTENT: Keep backend selection data-driven — adding a new model is "drop a
 // workflow descriptor JSON in the workflow dir", not "write new wiring code". The
@@ -15,6 +15,7 @@
 // workflowKey equals its own modelId is not a collision.
 import { ComfyUIBackend } from "./comfyui";
 import { DrawThingsBackend } from "./drawthings";
+import { LocalImageBackend } from "./local-image";
 import { loadWorkflowDescriptors, type WorkflowDescriptor } from "./workflow";
 import type { GenBackend } from "./types";
 import { logger } from "../logger";
@@ -66,6 +67,7 @@ export async function buildBackendRegistry(opts: {
       modelsDir: opts.drawThingsModelsDir,
       offline: opts.drawThingsOffline,
     });
+  const localImageBackend = new LocalImageBackend();
 
   return {
     resolveForModel(key: string) {
@@ -75,7 +77,8 @@ export async function buildBackendRegistry(opts: {
       }
       const backend: GenBackend = descriptor.backendKind === "drawthings"
         ? drawThingsBackend
-        : comfyBackends[comfyUiRunnerForDescriptor(descriptor)];
+        : descriptor.backendKind === "local-image" ? localImageBackend
+          : comfyBackends[comfyUiRunnerForDescriptor(descriptor)];
       return { backend, descriptor };
     },
   };

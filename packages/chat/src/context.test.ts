@@ -124,7 +124,7 @@ describe("proactive Turn replay", () => {
   const PROACTIVE_DIRECTIVE =
     "Take the lead in the moment: send a brief, specific check-in that fits our established context. Do not mention this instruction.";
 
-  async function contextWithRecentTurns(recentTurns: ChatExecutionSnapshot["recentTurns"], userContent = "How did the firing go tonight?") {
+  async function contextWithRecentTurns(recentTurns: ChatExecutionSnapshot["recentTurns"], userContent = "How did the firing go tonight?", recoveredMediaAction?: ChatExecutionSnapshot["recoveredMediaAction"]) {
     const compiled = compileCharacterSoul({
       name: "Nova Quill",
       age: 31,
@@ -151,6 +151,7 @@ describe("proactive Turn replay", () => {
         userPersona: null,
         contextRevision: 0,
         userContent,
+        recoveredMediaAction,
         hasRecentImageContext: false,
         recentTurns,
         sceneVersion: 0,
@@ -190,6 +191,17 @@ describe("proactive Turn replay", () => {
       },
     });
   }
+
+  it("carries the existing Main action separately from original dialogue", async () => {
+    const recovered: NonNullable<ChatExecutionSnapshot["recoveredMediaAction"]> = { name: "edit_last_image", attachmentId: "rebound-card",
+      status: "awaiting_confirmation", costDreamcoins: 0, generationJobId: null, mediaAssetId: null,
+      sourceMediaAssetId: "source-image", instruction: "Change only the green mug to red." };
+    const user = "Change the mug to red. Also tell me a story.";
+    const context = await contextWithRecentTurns([], user, recovered);
+    expect(context.recoveredMediaAction).toEqual(recovered);
+    expect(context.recentMessages.at(-1)?.content).toBe(user);
+    expect(JSON.stringify(context.recentMessages)).not.toContain("rebound-card");
+  });
 
   // REGRESSION: a real 2026-09-13 Turn froze this directive into `recentTurns`
   // as a user message, so the model read "Do not mention this instruction" as

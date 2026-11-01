@@ -32,6 +32,7 @@ import type {
   GenerationInvocationBoundary,
   ProviderFailure,
   ProviderInvocationMetadata,
+  ProviderRetryCapabilities,
   ModerationProvider,
   ProviderResult,
   VideoModel,
@@ -160,6 +161,7 @@ class GenerationExecution {
       outcome?: "failed" | "unknown";
       retryability?: TerminalRetryability;
       cleanupKeys?: readonly string[];
+      preparation?: { code: string; elapsedMs: number; details: Record<string, unknown> };
     } = {},
     evidence: TerminalEvidence = {},
   ): Promise<void> {
@@ -168,6 +170,7 @@ class GenerationExecution {
       ...this.terminalRecordBase(evidence),
       outcome,
       ...(outcome === "failed" && terminal.cleanupKeys?.length ? { cleanupKeys: [...terminal.cleanupKeys] } : {}),
+      ...(outcome === "failed" && terminal.preparation ? { preparation: terminal.preparation } : {}),
       error: {
         code,
         message,
@@ -230,8 +233,18 @@ class GenerationExecution {
   async execute<TProviderOutput>(
     adapter: GenerationAdapter<TProviderOutput>,
   ): Promise<void> {
+    const declaredCapabilities = "retryCapabilitiesForRequest" in adapter.model
+      ? await adapter.model.retryCapabilitiesForRequest?.(this.options.payload)
+      : adapter.model.retryCapabilities;
+    // A request resolver replaces the static declaration; an unresolved pin
+    // cannot inherit another workflow's replay authority. Freeze the decision
+    // before any asynchronous invocation so failure handling uses the same facts.
+    const retryCapabilities = declaredCapabilities ? {
+      deterministicIdempotencyKey: declaredCapabilities.deterministicIdempotencyKey,
+      retryableFailureCodes: [...declaredCapabilities.retryableFailureCodes],
+    } : undefined;
     const providerReplayIsSafe =
-      adapter.model.retryCapabilities?.deterministicIdempotencyKey === true;
+      retryCapabilities?.deterministicIdempotencyKey === true;
     let invocationStartedAt: number | undefined;
     let boundaryError: { cause: unknown; phase: "waiting" | "invocation" } | undefined;
     let terminalSettled = false;
@@ -286,6 +299,7 @@ class GenerationExecution {
         throw error;
       }
     }
+    const adapterStartedAt = performance.now();
     const result = await adapter.invoke({
       providerIdempotencyKey: this.#identity.idempotencyKey,
       ...(adapter.model.managesInvocationBoundary ? { executionBoundary } : {}),
@@ -307,6 +321,16 @@ class GenerationExecution {
     }
     if (invocationStartedAt === undefined) {
       if (result.ok) throw new Error("Backend returned success without provider invocation authority");
+      if (result.error.outcome === "definitive" && result.error.retryable === false) {
+        // A semantic preparation refusal cannot improve by repeating SAM3.
+        // An earlier interrupted render still wins over this newer refusal.
+        if (await this.reconcilePriorInvocation()) return;
+        await this.fail("preparation_failed", result.error.message, {
+          retryability: "not_retryable",
+          preparation: { code: result.error.code, elapsedMs: performance.now() - adapterStartedAt, details: { ...result.invocation?.usage } },
+        }, { providerInvoked: false });
+        return;
+      }
       await this.failPreparation(new Error(result.error.message));
       return;
     }
@@ -314,7 +338,7 @@ class GenerationExecution {
 
     if (!result.ok) {
       await this.handleProviderFailure(
-        adapter.model,
+        retryCapabilities,
         result.error,
         result.invocation,
         invocationLatencyMs,
@@ -385,12 +409,12 @@ class GenerationExecution {
   }
 
   private async handleProviderFailure(
-    model: GenerationModel,
+    retryCapabilities: ProviderRetryCapabilities | undefined,
     error: ProviderFailure,
     invocation: ProviderInvocationMetadata | undefined,
     invocationLatencyMs: number,
   ): Promise<void> {
-    const safeRetry = canAutomaticallyRetry(model, error);
+    const safeRetry = canAutomaticallyRetry(retryCapabilities, error);
     // Replay safety cannot establish whether the provider completed. Explicit
     // backend evidence wins; an exhausted legacy timeout remains unknown even
     // when earlier transports could safely retry the same idempotency key.
@@ -411,7 +435,7 @@ class GenerationExecution {
         accounting,
         providerInvoked: true,
         providerReplayIsSafe:
-          model.retryCapabilities?.deterministicIdempotencyKey === true,
+          retryCapabilities?.deterministicIdempotencyKey === true,
       });
       return;
     }
@@ -429,7 +453,7 @@ class GenerationExecution {
       accounting,
       providerInvoked: true,
       providerReplayIsSafe:
-        model.retryCapabilities?.deterministicIdempotencyKey === true,
+        retryCapabilities?.deterministicIdempotencyKey === true,
     };
     if (ambiguous) {
       await this.fail(
@@ -567,10 +591,9 @@ class GenerationExecution {
 }
 
 function canAutomaticallyRetry(
-  model: GenerationModel,
+  capabilities: ProviderRetryCapabilities | undefined,
   error: ProviderFailure,
 ): boolean {
-  const capabilities = model.retryCapabilities;
   return (
     error.retryable &&
     capabilities?.deterministicIdempotencyKey === true &&

@@ -1,9 +1,13 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import sharp from "sharp";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { stableNumericSeed } from "../providers";
 import { BackendImageModel } from "./backend-image-model";
 import { BackendInvocationError, type GenBackend } from "./types";
 import { workflowDescriptorSchema } from "./workflow";
+import { CONFIRMED_IMAGE_EDIT_VERSION, LOCAL_IMAGE_EDIT_VERSION, LOCAL_IMAGE_EDIT_MODEL_SHA256 } from "@idream/shared/chat/image-action";
+import { LocalImageBackend } from "./local-image";
 
 // 2x2 PNG (checkerboard black/white) — same fixture used by comfyui.test.ts.
 // These tests inject a stub GenBackend directly (no real sanity
@@ -139,6 +143,130 @@ function modelWithDescriptor(
 }
 
 describe("BackendImageModel", () => {
+  async function confirmedEdit() {
+    const width = 7, height = 5;
+    const rgba = Buffer.alloc(width * height * 4);
+    const maskPixels = Buffer.alloc(width * height);
+    for (let pixel = 0; pixel < maskPixels.length; pixel += 1) {
+      rgba.set([25 + pixel * 2, 92 + pixel, 53 + pixel, 40 + pixel * 5], pixel * 4);
+      if (pixel % 3 === 0) maskPixels[pixel] = 255;
+    }
+    const source = await sharp(rgba, { raw: { width, height, channels: 4 } }).png().toBuffer();
+    const mask = await sharp(maskPixels, { raw: { width, height, channels: 1 } }).toColourspace("b-w").png().toBuffer();
+    const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+    const local = workflowDescriptorSchema.parse(JSON.parse(readFileSync(new URL("../../workflows/local-recolor.json", import.meta.url), "utf8")));
+    const input = { provider: "local-image", model: local.modelId, prompt: "Recolor the selected region", count: 1, orientation: "original",
+      controls: { workflowKey: local.workflowKey, workflowVersion: local.version, width, height, orientation: "original", sourceImageAssetId: "source",
+        localizedEdit: { mode: "local", target: "selected region", selection: "one", version: CONFIRMED_IMAGE_EDIT_VERSION,
+          sourceSnapshotId: "snapshot", sourceSha256: hash(source), width, height, maskPngBase64: mask.toString("base64"), maskSha256: hash(mask),
+          confirmationId: "confirmation", confirmedAt: "2026-10-31T01:00:00.000Z", operation: { kind: "recolor", color: "#cc3311" } } },
+      referenceImages: [{ role: "source_image" as const, assetId: "source", sourceSnapshotId: "snapshot", contentSha256: hash(source), b64Json: source.toString("base64") }] };
+    return { input, local, source, rgba, mask, maskPixels };
+  }
+
+  it("recolors non-grid source pixels without an accelerator, model, endpoint or invented provider request", async () => {
+    const { input, local, rgba, maskPixels } = await confirmedEdit();
+    const backend = new LocalImageBackend();
+    const lease = vi.fn(async () => { throw new Error("Local recolor must not acquire the accelerator"); });
+    const prepare = vi.fn(async () => { throw new Error("Local recolor must not prepare ComfyUI"); });
+    const boundary = { beforeProviderInvocation: vi.fn(async () => {}), beforeNextProviderInvocation: vi.fn(async () => {}), onResourceWait: vi.fn(async () => {}) };
+    const model = new BackendImageModel({ resolveForModel: () => ({ backend, descriptor: local }) }, lease, prepare);
+    const result = await model.generate({ ...input, executionBoundary: boundary });
+    expect(result.ok).toBe(true);
+    expect(lease).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
+    expect(boundary.beforeProviderInvocation).toHaveBeenCalledTimes(1);
+    expect(result.invocation).toMatchObject({ providerRequestId: null, costMicros: 0, pricingVersion: "local-image-no-provider-fee-1",
+      usage: { providerRequestIds: [], modelInvocations: 0, externalRequests: 0, totalPixels: 35, selectedPixels: 12, operation: "recolor", algorithm: "hsl-lightness-preserving-1" } });
+    if (!result.ok) return;
+    expect(result.data.assets).toHaveLength(1);
+    const output = result.data.assets[0]!;
+    const actual = await sharp(output.body!).raw().toBuffer();
+    for (let pixel = 0; pixel < maskPixels.length; pixel += 1) {
+      expect(actual[pixel * 4 + 3]).toBe(rgba[pixel * 4 + 3]);
+      if (!maskPixels[pixel]) expect(actual.subarray(pixel * 4, pixel * 4 + 4)).toEqual(rgba.subarray(pixel * 4, pixel * 4 + 4));
+      else {
+        const oldRgb = rgba.subarray(pixel * 4, pixel * 4 + 3), newRgb = actual.subarray(pixel * 4, pixel * 4 + 3);
+        expect(Math.max(...newRgb) + Math.min(...newRgb)).toBe(Math.max(...oldRgb) + Math.min(...oldRgb));
+        expect(newRgb).not.toEqual(oldRgb);
+      }
+    }
+    expect(output.preservation?.evidence).toMatchObject({ confirmationId: "confirmation", sampling: "hsl-lightness-preserving-1", changedProtectedPixels: 0, changedTargetPixels: 12 });
+  });
+
+  it("permits no-op recoloring while preserving the exact source pixels", async () => {
+    const { input, local, source } = await confirmedEdit();
+    const prepared = modelWithDescriptor(new LocalImageBackend(), local);
+    const first = await prepared.generate(input);
+    if (!first.ok) throw new Error(first.error.message);
+    const output = first.data.assets[0]!.body!;
+    const hash = createHash("sha256").update(output).digest("hex");
+    const again = await prepared.generate({ ...input, controls: { ...input.controls,
+      localizedEdit: { ...input.controls.localizedEdit, sourceSha256: hash } },
+      referenceImages: [{ ...input.referenceImages[0]!, b64Json: Buffer.from(output).toString("base64"), contentSha256: hash }] });
+    expect(again.ok).toBe(true);
+    if (!again.ok) return;
+    expect(again.data.assets[0]!.body).toEqual(output);
+    expect(again.data.assets[0]!.body).not.toEqual(source);
+    expect(again.data.assets[0]!.preservation?.evidence.changedTargetPixels).toBe(0);
+  });
+
+  it("binds deterministic replay only to the confirmed local-recolor workflow and actual provider", async () => {
+    const { input, local } = await confirmedEdit();
+    const model = modelWithDescriptor(new LocalImageBackend(), local);
+    expect(await model.retryCapabilitiesForRequest(input)).toMatchObject({ deterministicIdempotencyKey: true });
+    for (const changed of [
+      { ...input, provider: "comfyui" },
+      { ...input, controls: { ...input.controls, workflowVersion: 2 } },
+      { ...input, controls: { ...input.controls, localizedEdit: undefined } },
+      { ...input, controls: { ...input.controls, localizedEdit: { ...input.controls.localizedEdit, operation: { kind: "generate" } } } },
+    ]) expect(await model.retryCapabilitiesForRequest(changed)).toBeUndefined();
+    expect(await modelWith(makeStubBackend()).retryCapabilitiesForRequest({ ...input, controls: { ...input.controls, ...PIN } })).toBeUndefined();
+  });
+
+  it.each(["wrongProvider", "wrongOperation", "missingMask", "multipleOutputs", "identityReference"])("rejects local recolor %s before execution", async kind => {
+    const { input, local } = await confirmedEdit();
+    const submit = vi.spyOn(LocalImageBackend.prototype, "submit");
+    const changed = { ...input, provider: kind === "wrongProvider" ? "comfyui" : input.provider, count: kind === "multipleOutputs" ? 2 : 1,
+      controls: { ...input.controls, localizedEdit: kind === "missingMask" ? undefined : kind === "wrongOperation"
+        ? { ...input.controls.localizedEdit, operation: { kind: "generate" } } : input.controls.localizedEdit },
+      referenceImages: kind === "identityReference" ? [...input.referenceImages, { ...input.referenceImages[0]!, role: "identity_anchor" as const }] : input.referenceImages };
+    const result = await modelWithDescriptor(new LocalImageBackend(), local).generate(changed);
+    expect(result.ok).toBe(false);
+    expect(submit).not.toHaveBeenCalled();
+    submit.mockRestore();
+  });
+
+  it("passes a confirmed generate mask directly into the existing render then restores every unselected pixel", async () => {
+    const { input, source, rgba, mask, maskPixels } = await confirmedEdit();
+    const workflow = workflowDescriptorSchema.parse(JSON.parse(readFileSync(new URL("../../workflows/qwen-image-edit-img2img.json", import.meta.url), "utf8")));
+    const candidate = await sharp(source).modulate({ hue: 120 }).png().toBuffer();
+    const backend = makeStubBackend({ poll: vi.fn(async () => ({ assets: [{ body: candidate, width: 7, height: 5, contentType: "image/png" }] })) });
+    const lease = vi.fn();
+    const model = new BackendImageModel({ resolveForModel: () => ({ backend, descriptor: workflow }) }, async run => { lease(); return run(); });
+    const result = await model.generate({ ...input, provider: "comfyui", model: workflow.modelId, controls: { ...input.controls,
+      workflowKey: workflow.workflowKey, workflowVersion: workflow.version, localizedEdit: { ...input.controls.localizedEdit, operation: { kind: "generate" } } } });
+    expect(result.ok).toBe(true);
+    expect(lease).toHaveBeenCalledTimes(1);
+    expect(backend.submit).toHaveBeenCalledWith(expect.objectContaining({ localEditMask: mask }));
+    if (!result.ok) return;
+    const actual = await sharp(result.data.assets[0]!.body!).raw().toBuffer();
+    for (let pixel = 0; pixel < maskPixels.length; pixel += 1) if (!maskPixels[pixel]) expect(actual.subarray(pixel * 4, pixel * 4 + 4)).toEqual(rgba.subarray(pixel * 4, pixel * 4 + 4));
+    expect(result.data.assets[0]!.preservation?.evidence).toMatchObject({ sampling: "source-latent-noise-mask-v1", changedProtectedPixels: 0 });
+  });
+
+  it("rejects missing local source evidence before submitting the non-idempotent render", async () => {
+    const workflow = workflowDescriptorSchema.parse(JSON.parse(readFileSync(new URL("../../workflows/qwen-image-edit-img2img.json", import.meta.url), "utf8")));
+    const backend = makeStubBackend();
+    const result = await modelWithDescriptor(backend, workflow).generate({ prompt: "Change scarf color", count: 1, orientation: "original",
+      controls: { workflowKey: workflow.workflowKey, workflowVersion: workflow.version, width: 64, height: 64, orientation: "original", sourceImageAssetId: "source",
+        localizedEdit: { mode: "local", target: "scarf", selection: "one", version: LOCAL_IMAGE_EDIT_VERSION, modelSha256: LOCAL_IMAGE_EDIT_MODEL_SHA256 } },
+      referenceImages: [{ role: "source_image", assetId: "source", b64Json: Buffer.from(PNG).toString("base64") }],
+    });
+    expect(result).toMatchObject({ ok: false, error: { code: "localized_image_edit_failed", retryable: false, outcome: "definitive" } });
+    expect(backend.submit).not.toHaveBeenCalled();
+  });
+
   it("identifies the edit source separately from the identity portrait for Qwen's numbered image inputs", async () => {
     const workflow = workflowDescriptorSchema.parse(JSON.parse(readFileSync(
       new URL("../../workflows/qwen-image-edit-multi-reference.json", import.meta.url), "utf8",

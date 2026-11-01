@@ -154,6 +154,15 @@ describe("Chat video confirmation and history", () => {
     expect(retry).toHaveBeenCalledExactlyOnceWith(authority);
   });
 
+  it("keeps an explicitly rejected preparation out of the video retry flow", async () => {
+    const retry = vi.fn();
+    await render(createElement(ChatVideoAttachmentCard, { attachment: { id: "video-attachment", kind: "generated_video", status: "failed", generationJobId: "video-job", errorCode: "preparation_failed", canRetry: false }, ownerScope: "user:viewer", retryPending: false, onRetry: retry, onCancelled: vi.fn() }));
+    expect(container.textContent).toContain("Change the source image or instructions");
+    expect(container.textContent).not.toContain("Check video retry price");
+    expect(retry).not.toHaveBeenCalled();
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
   it("keeps the active attachment intact when processing has already started", async () => {
     const cancelled = vi.fn(async () => {});
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: false, error: { code: "conflict", message: "This video has already entered processing." } }, { status: 409 })));

@@ -9,6 +9,8 @@ import { prisma } from "@/server/lib/db";
 export async function preflightGenerationReferences(input: {
   userId: string; characterId: string | null; controls: Record<string, unknown>;
   referenceManifest: Prisma.JsonValue; authorizedSourceImageAssetId?: string;
+  /** The confirmation authority already froze this exact source. ACL still revalidates. */
+  frozenSourceAssetId?: string;
 }) {
   const references = await imageReferenceInputsForGenerationJob({ ...input, maxReferences: Number.MAX_SAFE_INTEGER, db: prisma });
   const expected = generationReferenceRequests({
@@ -28,9 +30,10 @@ export async function preflightGenerationReferences(input: {
       if (Date.now() >= deadline) throw Errors.unavailable("Reference image verification timed out. Please try again.");
       const verified = await assertGenerationSourceImageAuthority(prisma, {
         sourceImageAssetId: reference.assetId, userId: input.userId, characterId: input.characterId,
-        verifyImagePixels: true,
+        verifyImagePixels: reference.assetId !== input.frozenSourceAssetId,
         authorizedComicSourceMediaId: reference.role === "source_image" ? input.authorizedSourceImageAssetId : undefined,
       });
+      if (reference.assetId === input.frozenSourceAssetId) { verifiedIds.add(reference.assetId); continue; }
       if (!verified) throw new Error("Verified reference image bytes are missing");
       if (Date.now() >= deadline) throw Errors.unavailable("Reference image verification timed out. Please try again.");
       total += verified.bytes.byteLength;

@@ -225,6 +225,9 @@ export const env = {
   get COMFYUI_MODEL_ROOT(): string {
     return process.env.COMFYUI_MODEL_ROOT ?? "/Users/kk/ComfyUI-Shared/models";
   },
+  /** Source/runtime used by the short-lived SAM3 segmenter; never the video env. */
+  get COMFYUI_IMAGE_ROOT(): string | undefined { return process.env.COMFYUI_IMAGE_ROOT; },
+  get COMFYUI_IMAGE_VENV_PYTHON(): string | undefined { return process.env.COMFYUI_IMAGE_VENV_PYTHON; },
   /** Official Draw Things automation CLI, used by drawthings workflows. */
   get DRAWTHINGS_CLI(): string {
     return process.env.DRAWTHINGS_CLI ?? "draw-things-cli";

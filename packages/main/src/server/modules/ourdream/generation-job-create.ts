@@ -21,6 +21,7 @@ import {
 import { isRecord, toInputJson } from "@/server/lib/request-json";
 import { jsonStringArray, pruneUndefined } from "./json-values";
 import { dimensionsForImageOrientation } from "@idream/shared/media/image-orientation";
+import { localizedImageEditSchema, confirmedImageEditSchema, LOCAL_IMAGE_EDIT_VERSION, LOCAL_IMAGE_EDIT_MODEL_SHA256, type ImageEditScope, type ConfirmedImageEdit } from "@idream/shared/chat/image-action";
 import { REDGRAFT_VIDEO_OPTIONS } from "@idream/shared/contracts";
 import {
   resolveGenerationVisualProfile,
@@ -60,6 +61,7 @@ import type {
 import { generationContextToken, lockGenerationContext, resolveGenerationContext } from "./generation-context";
 import { freezeGenerationSource, withGenerationSnapshotSlot, type FrozenGenerationSource } from "./generation-source-snapshot";
 import { freezeGenerationReferences } from "./generation-reference-snapshot";
+import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency";
 
 // SPEC: 用户侧「发起一次生成」的完整业务动作 —— 定路线、验报价、锁身份与素材权威、
 // 扣币、落 Generation Job、预留首个 Attempt 并唤醒投递。
@@ -97,11 +99,15 @@ export function fitChatImageRequestToRoute(
   };
 }
 
-type GenerationJobOptions = {
+export type GenerationJobOptions = {
     idempotencyKey?: string | null;
     requestFingerprint?: string;
     source?: GenerationSource;
-    chatAttachment?: { sessionId: string; turnId: string; attempt: number };
+    chatAttachment?: { sessionId: string; turnId: string; attempt: number; confirmedEdit?: true };
+    localizedEdit?: Extract<ImageEditScope, { mode: "local" }>;
+    /** Only the owner-confirmation authority constructs these trusted pins. */
+    confirmedEdit?: ConfirmedImageEdit;
+    frozenImageSource?: FrozenGenerationSource & { width: number; height: number };
     fallbackToActiveOnStaleVisualProfile?: boolean;
     requireCharacterVisualIdentity?: boolean;
     profileSelectionAuthority?: GenerationProfileSelectionAuthority;
@@ -122,12 +128,32 @@ export async function createGenerationJobForUser(userId: string, body: Generatio
   return admit(options.admissionTx);
 }
 
+/** Original geometry is an admission constraint, shared by review and submit. */
+export function assertOriginalImageGeometry(
+  source: { width: number; height: number },
+  profile: { defaultWidth: number; defaultHeight: number; allowedOrientations: unknown },
+  recolor = false,
+) {
+  if (recolor) {
+    if (source.width * source.height > 4_194_304) throw Errors.conflict("Local recoloring supports at most four megapixels.");
+    return;
+  }
+  const envelope = jsonStringArray(profile.allowedOrientations).filter(value => value !== "original")
+    .map(orientation => dimensionsForImageOrientation({ orientation, defaultWidth: profile.defaultWidth, defaultHeight: profile.defaultHeight }));
+  if (!envelope.length) envelope.push({ width: profile.defaultWidth, height: profile.defaultHeight });
+  const maxPixels = Math.max(...envelope.map(size => size.width * size.height));
+  const maxSide = Math.max(...envelope.flatMap(size => [size.width, size.height]));
+  if (source.width % 64 !== 0 || source.height % 64 !== 0 || source.width * source.height > maxPixels || Math.max(source.width, source.height) > maxSide) {
+    throw Errors.conflict("This edit route cannot preserve the source image dimensions. Choose a smaller image with dimensions divisible by 64.", { ...source, maxPixels, maxSide });
+  }
+}
+
 // Resolve the pre-admission snapshot before a caller opens its transaction.
 // The returned closure rechecks mutable authorities under that transaction.
 export async function prepareGenerationJobForUser(userId: string, body: GenerationCreateBody, options: GenerationJobOptions = {}) {
   const preexisting = await findExistingGenerationJob(userId, options, options.admissionTx);
   if (preexisting) {
-    if (!options.admissionTx) await wakeQueuedGenerationDispatch(preexisting);
+    if (!options.admissionTx && !options.confirmedEdit) await wakeQueuedGenerationDispatch(preexisting);
     return async () => preexisting;
   }
   if (
@@ -189,6 +215,19 @@ export async function prepareGenerationJobForUser(userId: string, body: Generati
   const preserveSourceGeometry = body.mode === "image" && orientation === "original";
   if (orientation === "original" && (!preserveSourceGeometry || !requestedSourceImageAssetId)) {
     throw Errors.badRequest("Original dimensions require an image edit source.");
+  }
+  const localizedEdit = options.confirmedEdit ? confirmedImageEditSchema.parse(options.confirmedEdit) : options.localizedEdit ? localizedImageEditSchema.parse({
+    ...options.localizedEdit,
+    version: LOCAL_IMAGE_EDIT_VERSION,
+    modelSha256: LOCAL_IMAGE_EDIT_MODEL_SHA256,
+  }) : undefined;
+  const recolor = options.confirmedEdit?.operation.kind === "recolor";
+  if (profile.runner === "local-image" && (!recolor || profile.costMultiplier !== 0)) {
+    throw Errors.conflict("Local recoloring requires a confirmed area and its zero-cost profile.");
+  }
+  if (localizedEdit && (!preserveSourceGeometry || !requestedSourceImageAssetId || body.outputCount !== 1 ||
+    !(recolor ? ["local-recolor"] : ["qwen-image-edit-img2img", "qwen-image-edit-multi-reference"]).includes(workflowDescriptor?.workflowKey ?? ""))) {
+    throw Errors.conflict("This route cannot preserve pixels outside a localized edit.");
   }
   const pricingAuthority = await resolveGenerationPricingAuthority(body.mode);
   const pricingFingerprint = generationPricingFingerprint(pricingAuthority);
@@ -328,6 +367,17 @@ export async function prepareGenerationJobForUser(userId: string, body: Generati
     chatAttachment: options.chatAttachment,
     sequenceId: options.sequenceId,
     prepare: async (tx) => {
+      if (options.confirmedEdit) {
+        // Revalidate price and route after the account lock. Configuration
+        // writes cannot change either row between this check and reservation.
+        await tx.$queryRaw`SELECT id FROM pricing_rules WHERE mode = ${body.mode} FOR SHARE`;
+        await tx.$queryRaw`SELECT id FROM generation_model_profiles WHERE id = ${profile.id} FOR SHARE`;
+        const currentPricing = await resolveGenerationPricingAuthority(body.mode, tx);
+        const currentProfile = await tx.generationModelProfile.findUnique({ where: { id: profile.id } });
+        if (generationPricingFingerprint(currentPricing) !== pricingFingerprint || !currentProfile || canonicalJsonHash(currentProfile) !== canonicalJsonHash(profile)) {
+          throw Errors.conflict("Generation quote changed. Refresh the exact quote before submitting.");
+        }
+      }
       if (recipeNegative && (await resolveImageRecipeNegative(recipe, tx)).promptRecipeFingerprint !== recipeNegative.promptRecipeFingerprint) {
         throw Errors.conflict("Generation negative recipe changed. Refresh the exact quote before submitting.");
       }
@@ -434,16 +484,27 @@ export async function prepareGenerationJobForUser(userId: string, body: Generati
       let outputDimensions = dimensions;
       let frozenSource: FrozenGenerationSource | undefined;
       if (sourceImageAssetId) {
-        frozenSource = options.videoSourceSnapshots?.get(sourceImageAssetId);
+        frozenSource = options.frozenImageSource ?? options.videoSourceSnapshots?.get(sourceImageAssetId);
         const verify = async () => assertGenerationSourceImageAuthority(tx, {
           sourceImageAssetId,
           userId,
           characterId: character?.id ?? null,
           verifyVideoPixels: body.mode === "video" && !frozenSource,
-          verifyImagePixels: preserveSourceGeometry,
+          verifyImagePixels: preserveSourceGeometry && !options.frozenImageSource,
           authorizedComicSourceMediaId: lockedContext?.source.kind === "comic" ? lockedContext.sourceMedia?.id : undefined,
         });
-        if ((body.mode === "video" && !frozenSource) || preserveSourceGeometry) {
+        if (options.frozenImageSource) {
+          await verify();
+          const frozen = options.frozenImageSource;
+          const stored = await tx.generationSourceSnapshot.findFirst({ where: {
+            id: frozen.id, userId, sha256: frozen.sha256, sizeBytes: frozen.sizeBytes, contentType: frozen.contentType,
+          } });
+          if (!stored || options.confirmedEdit?.sourceSnapshotId !== frozen.id || options.confirmedEdit.sourceSha256 !== frozen.sha256 || options.confirmedEdit.width !== frozen.width || options.confirmedEdit.height !== frozen.height) {
+            throw Errors.conflict("The confirmed edit source is no longer available.");
+          }
+          assertOriginalImageGeometry(frozen, profile, recolor);
+          outputDimensions = { width: frozen.width, height: frozen.height };
+        } else if ((body.mode === "video" && !frozenSource) || preserveSourceGeometry) {
           frozenSource = await withGenerationSnapshotSlot(async () => {
             const source = await verify();
             if (!source) throw new Error("Verified generation source bytes are missing");
@@ -452,13 +513,7 @@ export async function prepareGenerationJobForUser(userId: string, body: Generati
               // Preserve actual pixels without silently stretching or cropping.
               // Keep the admitted workload within this profile's published size
               // envelope; an arbitrary imported source must not expand its budget.
-              const envelope = allowedOrientations.filter(value => value !== "original").map(value => dimensionsForImageOrientation({ orientation: value, defaultWidth: profile.defaultWidth, defaultHeight: profile.defaultHeight }));
-              if (!envelope.length) envelope.push({ width: profile.defaultWidth, height: profile.defaultHeight });
-              const maxPixels = Math.max(...envelope.map(size => size.width * size.height));
-              const maxSide = Math.max(...envelope.flatMap(size => [size.width, size.height]));
-              if (source.width % 64 !== 0 || source.height % 64 !== 0 || source.width * source.height > maxPixels || Math.max(source.width, source.height) > maxSide) {
-                throw Errors.conflict("This edit route cannot preserve the source image dimensions. Choose a smaller image with dimensions divisible by 64.", { width: source.width, height: source.height, maxPixels, maxSide });
-              }
+              assertOriginalImageGeometry(source, profile);
               outputDimensions = { width: source.width, height: source.height };
             }
             return freezeGenerationSource(tx, { userId, ...source });
@@ -520,6 +575,7 @@ export async function prepareGenerationJobForUser(userId: string, body: Generati
       }
       const controls = pruneUndefined({
         ...body.controls,
+        ...(localizedEdit ? { localizedEdit } : {}),
         seconds: videoEnvelope?.seconds ?? videoRecipe?.durationSeconds ?? body.controls.seconds,
         videoOptionsVersion: videoEnvelope ? REDGRAFT_VIDEO_OPTIONS.version : undefined,
         orientation,

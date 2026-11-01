@@ -14,6 +14,8 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      "@idream/shared/media/image-recolor": new URL("../shared/src/media/image-recolor.ts", import.meta.url).pathname,
+      "@idream/shared/chat/image-action": new URL("../shared/src/chat/image-action.ts", import.meta.url).pathname,
       "@idream/shared/contracts/durable-server": new URL(
         "../shared/src/contracts/durable-server.ts", import.meta.url,
       ).pathname,

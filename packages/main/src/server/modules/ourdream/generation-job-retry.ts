@@ -5,6 +5,7 @@ import {
   legacyCharacterGenerationAuthorityFromControls,
 } from "@/server/modules/generation/attempt-dispatch";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
+import { assertGenerationPreparationCanRetry } from "@/server/modules/generation/generation-attempt-authority";
 import { isProductionVideoProfile } from "@/server/modules/generation/production-video-profile";
 import {
   lockCharacterGenerationAuthority,
@@ -118,6 +119,7 @@ export async function resolveGenerationRetryTarget(input: {
     return { kind: "replay", job: existing };
   }
   assertGenerationJobIsRetryable(job);
+  await assertGenerationPreparationCanRetry(prisma, job.id);
   return { kind: "retryable", job };
 }
 
@@ -133,6 +135,7 @@ export async function quoteGenerationRetry(input: {
   });
   if (!job) throw Errors.notFound("Generation job not found");
   assertGenerationJobIsRetryable(job);
+  await assertGenerationPreparationCanRetry(prisma, job.id);
   if (job.sourceType === "chat_image" || job.sourceType === "chat_video") {
     // A failed Job remains history after its attachment adopts a replacement.
     // Do not advertise another paid retry; reservation still rechecks this

@@ -1,8 +1,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { ComfyUIBackend, comfyExecutionEvidence } from "./comfyui";
+import { ComfyUIBackend, comfyExecutionEvidence, bindLocalizedEditSampling } from "./comfyui";
+import { readFileSync } from "node:fs";
 import { BackendInvocationError } from "./types";
 import { workflowDescriptorSchema } from "./workflow";
 import type { VideoMediaProbe } from "./video-media-probe";
+
+it.each(["qwen-image-edit-img2img", "qwen-image-edit-multi-reference"])("constrains %s to the source latent and a distinct edit mask", name => {
+  const workflow = workflowDescriptorSchema.parse(JSON.parse(readFileSync(new URL(`../../workflows/${name}.json`, import.meta.url), "utf8")));
+  if (workflow.backendKind !== "comfyui") throw new Error("Expected ComfyUI");
+  const graph = structuredClone(workflow.apiPrompt);
+  bindLocalizedEditSampling(graph, workflow, "mask.png");
+  expect(graph["2"].inputs.latent_image).toEqual(["local-edit:latent", 0]);
+  expect(graph["local-edit:latent"].inputs).toEqual({ samples: ["local-edit:source", 0], mask: ["local-edit:mask", 0] });
+  expect(graph["local-edit:source"].inputs).toEqual({ pixels: ["9", 0], vae: ["5", 0] });
+  expect(graph["local-edit:mask"].inputs).toEqual({ image: "mask.png", channel: "red" });
+  expect(workflow.apiPrompt["2"].inputs.latent_image).toEqual(["3", 2]);
+});
 
 describe("ComfyUI execution evidence", () => {
   it("uses only provider timestamps and deduplicates cached node evidence", () => {

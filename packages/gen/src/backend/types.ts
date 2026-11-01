@@ -4,6 +4,7 @@
 import type { ImageGeneratePayload } from "@idream/shared/contracts";
 import type { SlotValues, WorkflowBackendKind, WorkflowDescriptor } from "./workflow";
 import type { VerifiedVideoMedia } from "./video-media-probe";
+import type { ProviderInvocationMetadata } from "../providers";
 
 export interface Capabilities {
   textToImage: boolean;
@@ -17,6 +18,10 @@ export interface ResolvedGenJob {
   descriptor: WorkflowDescriptor;
   slots: SlotValues;
   referenceImages?: NonNullable<ImageGeneratePayload["referenceImages"]>;
+  /** Gen-produced region evidence, separate from Character reference identity. */
+  localEditMask?: Uint8Array;
+  /** Validated, confirmed CPU operation; never interpreted as a model prompt. */
+  localRecolor?: { sourceRgba: Uint8Array; mask: Uint8Array; width: number; height: number; color: string };
   requestId?: string;
   timeoutMs: number;
 }
@@ -42,6 +47,7 @@ export interface BackendPerformance {
 export interface BackendResult {
   assets: BackendAsset[];
   performance?: BackendPerformance;
+  invocation?: ProviderInvocationMetadata;
 }
 export type BackendHandle = { id: string };
 export interface BackendHealth { ok: boolean; detail?: string }

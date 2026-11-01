@@ -1,0 +1,84 @@
+{
+  "provenance": "Metrics from controlled SAM3 mug, green mug, multiple-instance and absent-target runs. Original individual proposal masks were not retained. Tests reconstruct equivalent areas/intersections only; this fixture cannot certify spatial or semantic mask correctness.",
+  "cases": {
+    "mug": {
+      "selection": "one",
+      "totalPixels": 692224,
+      "maskPixels": 15336,
+      "intersectionPixels": 7817,
+      "candidates": [
+        {
+          "index": 98,
+          "score": 0.5476898550987244,
+          "maskPixels": 7851
+        },
+        {
+          "index": 104,
+          "score": 0.5964478850364685,
+          "maskPixels": 15302
+        }
+      ]
+    },
+    "green-mug": {
+      "selection": "one",
+      "totalPixels": 692224,
+      "maskPixels": 15383,
+      "intersectionPixels": 7818,
+      "candidates": [
+        {
+          "index": 98,
+          "score": 0.673849880695343,
+          "maskPixels": 7841
+        },
+        {
+          "index": 104,
+          "score": 0.6428750157356262,
+          "maskPixels": 15360
+        }
+      ]
+    },
+    "multiple-one": {
+      "selection": "one",
+      "totalPixels": 1384448,
+      "maskPixels": 30623,
+      "intersectionPixels": 0,
+      "candidates": [
+        {
+          "index": 25,
+          "score": 0.7822063565254211,
+          "maskPixels": 15338
+        },
+        {
+          "index": 104,
+          "score": 0.7076156139373779,
+          "maskPixels": 15285
+        }
+      ]
+    },
+    "multiple-all": {
+      "selection": "all",
+      "totalPixels": 1384448,
+      "maskPixels": 30623,
+      "intersectionPixels": 0,
+      "candidates": [
+        {
+          "index": 25,
+          "score": 0.7822063565254211,
+          "maskPixels": 15338
+        },
+        {
+          "index": 104,
+          "score": 0.7076156139373779,
+          "maskPixels": 15285
+        }
+      ]
+    },
+    "absent": {
+      "selection": "one",
+      "totalPixels": 692224,
+      "maskPixels": 0,
+      "intersectionPixels": 0,
+      "candidates": []
+    }
+  }
+}

@@ -8,6 +8,7 @@
 // modules/ourdream/generation-quote.ts。本文件只回答"多少钱"。
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
+import type { Prisma } from "@prisma/client";
 
 export type BillableGenerationMode = "image" | "video" | "voice";
 
@@ -23,9 +24,10 @@ export type GenerationPricingAuthority = {
 
 export async function resolveGenerationPricingAuthority(
   mode: BillableGenerationMode,
+  db: Pick<Prisma.TransactionClient, "pricingRule"> = prisma,
 ): Promise<GenerationPricingAuthority> {
   const now = new Date();
-  const activeRules = await prisma.pricingRule.findMany({
+  const activeRules = await db.pricingRule.findMany({
     where: {
       mode,
       status: "active",

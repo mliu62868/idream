@@ -11,7 +11,7 @@ import {
   searchCharacterMediaResultSchema, sendCharacterMediaResultSchema,
 } from "@idream/shared/chat/media-library";
 import { companionMemoryModeSchema } from "@idream/shared/chat/companion-runtime";
-import { groupChatMemberSchema } from "@idream/shared/contracts";
+import { groupChatMemberSchema, recoveredMediaActionSchema } from "@idream/shared/contracts";
 
 const nonEmptyString = z.string().trim().min(1);
 const isoDateTime = z.string().datetime({ offset: true });
@@ -109,6 +109,7 @@ export const preparedTurnSchema = z.object({
   messages: z.array(preparedTurnMessageSchema).min(1),
   omittedMessages: z.array(preparedTurnMessageSchema).optional(),
   tools: z.array(preparedToolDefinition),
+  recoveredMediaAction: recoveredMediaActionSchema.optional(),
   profile: preparedTurnProfileSchema,
   budget: preparedBudget,
   trace: preparedTrace,
@@ -172,7 +173,7 @@ export const companionToolReservationSchema = z.object({
 const companionError = z.object({ code: nonEmptyString, message: nonEmptyString, retryable: z.boolean() }).strict();
 export const companionToolResultSchema = z.discriminatedUnion("outcome", [
   z.object({ ...toolIdentity, name: toolName, outcome: z.literal("succeeded"), output: jsonValue }).strict(),
-  z.object({ ...toolIdentity, name: toolName, outcome: z.literal("failed"), error: companionError }).strict(),
+  z.object({ ...toolIdentity, name: toolName, outcome: z.literal("failed"), attachmentId: nonEmptyString.optional(), error: companionError }).strict(),
   z.object({ ...toolIdentity, name: toolName, outcome: z.literal("unknown"), error: companionError }).strict(),
 ]).superRefine((result, context) => {
   if (result.outcome !== "succeeded") return;
@@ -201,7 +202,7 @@ export const companionModelRequestEvidenceSchema = z.object({
   systemPromptDigest: sha256,
   estimatedInputTokens: positiveInteger,
   maxInputTokens: positiveInteger.optional(),
-  purpose: z.literal("compaction").optional(),
+  purpose: z.enum(["compaction", "media_extraction", "media_body"]).optional(),
   droppedReplayMessageIds: z.array(nonEmptyString).optional(),
   // Older immutable proposals contain request digests only. New receipts retain
   // physical usage independently of whether a terminal answer was accepted.
@@ -213,7 +214,7 @@ export type CompanionModelRequestEvidence = z.infer<typeof companionModelRequest
 
 export const companionTerminalCandidateSchema = z.object({
   attemptId: nonEmptyString,
-  content: z.string().min(1).superRefine((value, context) => {
+  content: z.string().superRefine((value, context) => {
     if (new TextEncoder().encode(value).byteLength > COMPANION_TERMINAL_CONTENT_MAX_BYTES) {
       context.addIssue({ code: "custom", message: "terminal candidate content exceeds limit" });
     }
@@ -226,6 +227,7 @@ export const companionTerminalCandidateSchema = z.object({
   tools: z.array(companionToolReservationSchema),
   completedAt: isoDateTime,
   modelRequests: z.array(companionModelRequestEvidenceSchema).optional(),
+  mediaResponse: z.object({ version: z.literal(1), attachmentId: nonEmptyString }).strict().optional(),
   attribution: z.object({
     requestId: nonEmptyString.optional(),
     actualProvider: nonEmptyString.optional(),
@@ -234,6 +236,9 @@ export const companionTerminalCandidateSchema = z.object({
     "provider attribution must contain a request id or actual provider",
   ).optional(),
 }).strict().superRefine((candidate, context) => {
+  if (!candidate.content.trim() && (!candidate.mediaResponse || candidate.finishReason !== "stop")) {
+    context.addIssue({ code: "custom", path: ["content"], message: "empty terminal content requires a media attachment" });
+  }
   if (candidate.execution.toolCalls !== candidate.tools.length) {
     context.addIssue({ code: "custom", path: ["tools"], message: "terminal tools must match execution count" });
   }

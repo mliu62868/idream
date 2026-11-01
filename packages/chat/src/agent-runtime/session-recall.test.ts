@@ -68,6 +68,22 @@ try {
     assert(page.items.some(AssistantEntry.is)); assert(page.items.some(ToolResultEntry.is));
     return { nativeEntries: page.items.filter(item => AssistantEntry.is(item) || ToolResultEntry.is(item)).length, archivedChunks: projected.chunks.length };
   });
+  await check('request-window-tool-cursors-read-intact-visible-results-without-exposing-current-dialogue', async () => {
+    const projected = await projectRecall(conversation, context, { ...authority, includeVisibleToolResults: true }, 16);
+    const chunks = projected.chunks.filter(item => item.toolName === 'inventory');
+    assert(chunks.length > 1);
+    assert(!projected.chunks.some(item => item.content.includes('Current visible answer')));
+    const tools = createIgrepTools({ cli, workspace:'/authorized', knowledgePath:'/authorized/knowledge', mode:'private', recall:async()=>projected,
+      run: async () => { throw new Error('exact source cursor must not search or call a model'); } });
+    const recall = tools.find(tool=>tool.name==='session_recall')!;
+    const page = await recall.execute({cursor:chunks[0]!.id},new AbortController().signal) as {results: Array<{id:string;content:string;sourceId:string;toolName:string}>,nextCursor:string|null};
+    assert.equal(page.results.map(item=>item.content).join(''), 'Inventory sensor failed: the brass key was last seen under the red cushion.\n');
+    assert(page.results.every(item=>item.sourceId===chunks[0]!.sourceId && item.toolName==='inventory'));
+    assert.deepEqual(page.results.map(item=>item.id), chunks.map(item=>item.id));
+    assert.equal(page.nextCursor,null);
+    await assert.rejects(recall.execute({cursor:'attempt:foreign/pi:1/message:0/block:0/byte:0'},new AbortController().signal),/unavailable/);
+    await assert.rejects(recall.execute({cursor:chunks[0]!.id,ids:[chunks[0]!.id]},new AbortController().signal),/only one/);
+  });
   await check('native-compaction-restores-raw-seed-and-attempt-originals', async () => {
     await conversation.commit(async tx => {
       for (const stopReason of ['aborted','error'] as const) await tx.appendEntry(conversation.id,{kind:AssistantEntry.kind,model:[fauxAssistantMessage('ABORTED_OR_ERROR_MUST_NOT_APPEAR',{stopReason})]});
@@ -117,6 +133,20 @@ try {
     const mutated = rebuilt.read(attemptId, [chosen[0]!.id]);
     (mutated[0] as { content: string }).content = 'tampered';
     assert.equal(rebuilt.read(attemptId, [chosen[0]!.id])[0]!.content, chosen[0]!.content);
+  });
+  await check('source-pages-retain-all-eight-large-search-hits-and-reconstruct-every-original-byte', async () => {
+    const projected = await projectRecall(conversation,context,authority,1024);
+    const chunks = projected.chunks.filter(item=>item.sourceId==='main:long-user');
+    assert(chunks.length > 8);
+    const found = await projected.query(attemptId,'long original',cli,async()=>({results:chunks.slice(0,8).map(item=>({ref:item.id}))}));
+    assert.equal(found.length,8);
+    assert(found.reduce((bytes,item)=>bytes+Buffer.byteLength(item.content),0)>8000);
+    const parts: typeof chunks = [];
+    let cursor: string|null = chunks[0]!.id;
+    while(cursor){const page=projected.page(attemptId,cursor);assert(page.results.length>0);parts.push(...page.results);cursor=page.nextCursor;}
+    assert.deepEqual(parts,chunks);
+    assert.deepEqual(Buffer.from(parts.map(item=>item.content).join('')),Buffer.from(unicode));
+    assert.throws(()=>projected.page('other-attempt',chunks[0]!.id),/attempt authority/);
   });
   await check('attempt-and-source-fences-reject-before-dispatch', async () => {
     assert.throws(() => finalProjection!.read('other-attempt', [finalProjection!.chunks[0]!.id]), /attempt authority/);

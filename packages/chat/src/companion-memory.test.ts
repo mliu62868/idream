@@ -109,6 +109,32 @@ afterEach(async () => {
 });
 
 describe("Chat memory transcript staging", () => {
+  it("stages attachment-answered users followed by ordinary exchanges without adding text", async () => {
+    const media = { ...messagesFor("media-session", 1)[0]!, content: "Send the picture. 我的原话保持完整。", answeredByAttachment: true as const };
+    const messages = [media, ...messagesFor("media-session", 2)];
+    observed.prepare.mockImplementation(async (source: CompanionWorkspaceRebuildSpool) => {
+      expect(source).toMatchObject({ messageCount: 3, sessionCount: 1 });
+      const rows: unknown[] = [];
+      for await (const session of rebuildSpoolSessions(source)) {
+        rows.push(...(await readFile(session.transcriptPath, "utf8")).trimEnd().split("\n").map(line => JSON.parse(line)));
+      }
+      expect(rows).toEqual(messages.map(message => ({ role: message.role, content: message.content, source_at: message.createdAt, source_timezone: "UTC" })));
+    });
+    await prepareCompanionMemory(rebuildRequest(messages));
+    expect(observed.prepare).toHaveBeenCalledOnce();
+    await expectDisposed();
+  });
+
+  it("rejects an unmarked adjacent user and an assistant misusing the attachment marker", async () => {
+    const messages = messagesFor("invalid-media-session", 2);
+    await expect(prepareCompanionMemory(rebuildRequest([messages[0]!, ...messages])))
+      .rejects.toThrow("expected assistant message");
+    const invalid = { ...messages[1]!, answeredByAttachment: true as const };
+    await expect(prepareCompanionMemory(rebuildRequest([invalid]))).rejects.toThrow();
+    expect(observed.prepare).not.toHaveBeenCalled();
+    await expectDisposed();
+  });
+
   it("keeps plaintext request spools inside the erasable user scope", async () => {
     observed.prepare.mockImplementation(async (source: CompanionWorkspaceRebuildSpool) => {
       const userHash = createHash("sha256").update("owned-user").digest("hex");

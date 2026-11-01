@@ -2,6 +2,8 @@ import type { AssistantMessage, JsonObject, Message, Tool } from "@earendil-work
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import type { CompanionInvocation, PreparedTurnMessage, PreparedTurnProfile } from "./contracts";
 import { formatModelRequestInput, type ModelInputMessage } from "./model-request-format";
+import { estimatePiModelRequestInputTokens } from "./openai-adapter";
+import type { Chunk } from "./session-recall";
 
 export function messageText(message: Message): string {
   return typeof message.content === "string" ? message.content
@@ -36,7 +38,7 @@ export function projectPiMessage(entry: EntryRecord, message: Message, index: nu
     owner?: string; id?: string; sourceKind?: PreparedTurnMessage["sourceKind"];
     speaker?: Extract<PreparedTurnMessage, { role: "assistant" }>["speaker"];
   } | undefined;
-  if (entry.kind === "idream.input" || entry.kind === "idream.replay") {
+  if (entry.kind === "idream.input" || entry.kind === "idream.replay" || entry.kind === "idream.execution") {
     if (data?.owner !== invocation.attemptId || !data.id || !data.sourceKind) throw new Error("entry is not bound to the current attempt");
   }
   const id = data?.id ?? `${entry.kind}:${entry.id}:${index}`;
@@ -103,6 +105,74 @@ export function formatCompanionMessages(
     { role: "system", content: systemPrompt, toolsAdded: [...tools], timestamp: 1 },
     ...wire.map((message, index) => toPiMessage({ ...message, id: `wire:${index}`, sourceKind: "plugin", content: message.content ?? "" } as ModelInputMessage)),
   ];
+}
+
+/** Budget the complete wire request, including pinned state and current tool schemas. */
+export function fitCompanionMessages(input: {
+  messages: readonly ModelInputMessage[]; pinned: readonly ModelInputMessage[];
+  systemPrompt: string; tools: readonly Tool[]; respondingCharacterId: string;
+  maxInputTokens: number; afterRetrievalContext?: string;
+  toolSources: ReadonlyMap<string, readonly Chunk[]>;
+}): Message[] {
+  let projected = input.messages.map(message => ({ ...message }));
+  const render = () => {
+    const messages = formatCompanionMessages(projected, input.pinned, input.systemPrompt, input.tools, input.respondingCharacterId);
+    if (input.afterRetrievalContext) messages.push({ role: "user", content: input.afterRetrievalContext, timestamp: 1 });
+    return messages;
+  };
+  let messages = render();
+  const fits = () => estimatePiModelRequestInputTokens(messages) <= input.maxInputTokens;
+  if (fits()) return messages;
+
+  // Summaries are derived, optional context. Current words, media references and
+  // original records remain pinned or source-addressable, never clipped to fit.
+  projected = projected.filter(message => !message.id.startsWith("pi.compaction:"));
+  messages = render();
+  if (fits()) return messages;
+
+  const names = new Map(projected.flatMap(message => message.role === "assistant"
+    ? (message.tool_calls ?? []).map(call => [call.id, call.function.name] as const) : []));
+  // Pi keeps a parallel tool round intact. Replace bulky read-only results with
+  // exact source cursors; the untouched Pi entries are still the recall authority.
+  for (const result of projected.filter(message => message.role === "tool"
+    && ["igrep_search", "memory_search", "igrep_web_search"].includes(names.get(message.tool_call_id) ?? ""))) {
+    const chunks = input.toolSources.get(result.id);
+    if (!chunks?.length) continue;
+    const reference = JSON.stringify({ sourceId: chunks[0]!.sourceId,
+      status: "paged_for_context", totalBytes: chunks.reduce((sum, chunk) => sum + chunk.byteEnd - chunk.byteStart, 0),
+      next: { tool: "session_recall", arguments: { cursor: chunks[0]!.id } } });
+    if (reference.length >= result.content.length) continue;
+    result.content = reference;
+    messages = render();
+    if (fits()) return messages;
+  }
+
+  // Page only at complete original-chunk boundaries. Every withheld ID and the
+  // source page cursor remain explicit, so the next call can read exact bytes.
+  const recallResults = projected.filter(message => message.role === "tool" && names.get(message.tool_call_id) === "session_recall");
+  for (const result of recallResults) {
+    let value: unknown;
+    try { value = JSON.parse(result.content); } catch { continue; }
+    const page = !Array.isArray(value) && typeof value === "object" && value !== null ? value as Record<string, unknown> : undefined;
+    const rows: unknown = Array.isArray(value) ? value : page?.results;
+    if (!Array.isArray(rows) || !rows.every(row => row && typeof row === "object" && typeof row.id === "string")) continue;
+    // The newest read must deliver at least one complete chunk. Returning only
+    // its own IDs would tell the model to repeat a read that can never progress.
+    for (let count = rows.length - 1; count >= (result === recallResults.at(-1) ? 1 : 0); count--) {
+      const remainingIds = rows.slice(count).map(row => row.id as string);
+      const content = JSON.stringify({ results: rows.slice(0, count), remainingIds,
+        ...(typeof page?.nextCursor === "string" ? { nextCursor: page.nextCursor } : {}),
+        next: { tool: "session_recall", arguments: page && "nextCursor" in page
+          ? { cursor: remainingIds[0] } : { ids: remainingIds.slice(0, 8) } } });
+      if (content.length >= result.content.length) continue;
+      result.content = content;
+      messages = render();
+      if (fits()) return messages;
+    }
+  }
+  // Keep the adapter's hard guard: irreducible fixed input must still fail, and
+  // an uncompacted replay can still enter Pi's ordinary overflow compaction.
+  return messages;
 }
 
 export function finishReason(message: AssistantMessage): "stop" | "max-tokens" | "tool-calls" | "error" {

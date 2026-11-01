@@ -12,6 +12,17 @@ export function readableOwnedChatMediaWhere(userId: string, characterId: string)
   return { ownerId: userId, characterId, deletedAt: null, safetyStatus: "passed", type: { in: ["image", "video"] } };
 }
 
+/** Requires a selected attachment from the owner's current conversation. */
+export function readableDeliveredChatMediaWhere(userId: string, characterId: string): Prisma.MediaAssetWhereInput {
+  return {
+    ...readableOwnedChatMediaWhere(userId, characterId),
+    // Scene assets have no Character identity pin; their delivery is the
+    // conversation authority. Rebinding must use the same filter as resend.
+    characterId: undefined,
+    OR: [{ characterId }, { characterId: null }],
+  };
+}
+
 export function isReadableChatMedia(asset: { metadata: Prisma.JsonValue; storageKey: string | null; url: string }) {
   return isMediaAssetOperationalForAuthority(asset.metadata)
     && !isSyntheticMediaAsset(asset.metadata) && hasHydratableMediaBlobAuthority(asset);
@@ -34,7 +45,10 @@ export async function deliveredChatMedia(
   });
   const selected = attachments.filter(item => item.mediaAssetId && attachmentAttempt(item.metadata) === item.turn.attempt);
   const assets = selected.length ? await db.mediaAsset.findMany({
-    where: { id: { in: selected.map(item => item.mediaAssetId!) }, ...readableOwnedChatMediaWhere(input.userId, input.characterId) },
+    where: {
+      ...readableDeliveredChatMediaWhere(input.userId, input.characterId),
+      id: { in: selected.map(item => item.mediaAssetId!) },
+    },
   }) : [];
   const byId = new Map(assets.filter(isReadableChatMedia).map(asset => [asset.id, asset]));
   const seen = new Set<string>();

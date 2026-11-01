@@ -30,6 +30,8 @@ export const GENERATED_IMAGE_SANITY_EVALUATOR_VERSION =
 
 export type GeneratedImageSanityRequirements = {
   readonly singleContinuousFrame?: boolean;
+  /** A confirmed pixel operation can validly preserve a uniform source frame. */
+  readonly allowUniformPixels?: boolean;
 };
 
 export type GeneratedImageSanityEvidence = {
@@ -96,13 +98,13 @@ export function assertGeneratedImageSanity(
   if (stats.pixelCount === 0) {
     throw new GeneratedImageSanityError(`Generated image is empty: ${source}`);
   }
-  if (stats.range <= 1) {
+  if (!requirements.allowUniformPixels && stats.range <= 1) {
     throw new GeneratedImageSanityError(
       `Generated image is degenerate: ${source} has near-uniform pixels ` +
         `(luminance range ${stats.range}, min ${stats.min}, max ${stats.max})`,
     );
   }
-  if (stats.range <= 4 && (stats.min >= 250 || stats.max <= 5)) {
+  if (!requirements.allowUniformPixels && stats.range <= 4 && (stats.min >= 250 || stats.max <= 5)) {
     throw new GeneratedImageSanityError(
       `Generated image is blank: ${source} is nearly all ${stats.min >= 250 ? "white" : "black"} ` +
         `(luminance range ${stats.range})`,
@@ -121,6 +123,7 @@ export function assertGeneratedImageSanity(
     requirements.singleContinuousFrame
       ? "single_continuous_frame_detected"
       : "single_continuous_frame_not_required",
+    requirements.allowUniformPixels ? "unscored" : "passed",
   );
 }
 

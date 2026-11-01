@@ -1,0 +1,19 @@
+{
+  "workflowKey": "local-recolor",
+  "modelId": "local-recolor",
+  "backendKind": "local-image",
+  "version": 1,
+  "capabilities": ["img2img", "referenceImages", "recolor"],
+  "identity": {
+    "mode": "single_reference",
+    "maxReferences": 1,
+    "acceptedRoles": ["source_image"],
+    "supportsLookReference": false,
+    "supportsSourceImageWithIdentity": false
+  },
+  "quality": { "maxCandidates": 1, "evaluatorDimensions": [] },
+  "localImage": { "operation": "recolor" },
+  "inputs": [
+    { "key": "source_image", "type": "image", "referenceRoles": ["source_image"], "required": true }
+  ]
+}

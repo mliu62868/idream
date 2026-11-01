@@ -30,29 +30,39 @@ Agent 自己编写生成或编辑方向及 `requestedNudity`，Main 不再次解
 
 群聊历史的 Character 归属必须穿过 Pi 的不可变消息投影到达实际 provider 请求。Agent 从当前 Character 的已提交历史理解图片邀约与短确认，宿主不合成确认事实。跨 attempt 的 turn_action 重放遵循统一 user→conversation→Turn→attachment 锁序，并在锁内重读 Job、状态与费用；requesting 只是动作身份已保存，不能作为成功预留 ACK。中断后恢复该动作先绑定当前 attempt，再进入原有 Generation 原子预留，以同一动作身份防止重复扣费。
 
-产品契约要求整条回复完成当前用户请求，并在完成后结束；“先回答”不能变成随后追加无关剧情的许可。角色语气与动作保持在用户指定的语言、长度、句数和内容范围内，不依靠输出后裁剪或额外重试补救。
+产品契约要求整条回复完成当前用户请求，并在完成后结束；“先回答”不能变成随后追加无关剧情的许可。角色语气与动作保持在用户指定的语言、长度、句数和内容范围内，不依靠输出后裁剪或通用格式重试补救。媒体附件与独立正文可以共同完成回复，但附件存在不能掩盖独立问题或故事的遗漏。
 
 模型请求的普通历史对话按响应 Character 的 ID 投影：自己的话使用 `assistant` 且不加姓名前缀，其他 Character 的话使用带原姓名的 `user` 输入；原生工具调用与结果保留协议要求的角色。此前所有 Character 都使用 `assistant`，长对话实测会诱导模型续写多角色剧本、编造本应检索的旧对白。这个变化仅作用于 provider 视角，不改 Main 原角色、speaker 归属或召回原文。预估预算与实际发送共用此投影。仅在本角色最后一条完整回复之后，对另一 Character 已回答的历史用户消息标注已回答；本角色的原生 assistant 回复已闭合更早的输入，无需重复标记。这样避免末尾连续输入角色把旧问题重新解释为待办，也不把长期重复历史改造成带重复标记的新模式。Soul 中规范的 `## Dialogue examples` 标题仅在模型视图中注明为语气示例，不改不可变 Soul 内容及例句。
 
-长期记忆的 resident profile 即使通过事实支持校验，也只作为历史上下文进入 `<context>`，不得把其中引用的旧用户指令提升到 system；system 仅保留静态记忆策略。 Chat 发出的请求把背景上下文和逐字保留的当前用户原文放在两个 `user` 消息中，工具往返仍在其后。这仅证明 HTTP 请求投影；本机 oMLX 0.7.1rc1 在模板前合并连续同角色消息，不能把独立请求元素当成模型侧独立轮次。背景仍有文本定界与历史状态说明。自动预召回 empty 只记录观察，不额外指导角色声称没有记忆；用户需要的原文仍可由 Agent 自选 session_recall 或 memory_search 取回。去重后的空 notes 或 profile-only hit 不代表没有记忆，任何检索状态都不能否定当前原文、历史及已验证 profile。显式 memory_search 返回的 profile 行与驻留画像使用相同的来源支持校验，不能绕过被拒绝的画像事实。空正文按正常结束或输出预算耗尽分类；物理用量回执以纯数字保留在 AgentRun journal，失败也不丢弃。
+长期记忆的 resident profile 即使通过事实支持校验，也只作为历史上下文进入 `<context>`，不得把其中引用的旧用户指令提升到 system；system 仅保留静态记忆策略。 Chat 发出的请求把背景上下文和逐字保留的当前用户原文放在两个 `user` 消息中，工具往返仍在其后。这仅证明 HTTP 请求投影；本机 oMLX 0.7.1rc1 在模板前合并连续同角色消息，不能把独立请求元素当成模型侧独立轮次。背景仍有文本定界与历史状态说明。自动预召回 empty 只记录观察，不额外指导角色声称没有记忆；用户需要的原文仍可由 Agent 自选 session_recall 或 memory_search 取回。去重后的空 notes 或 profile-only hit 不代表没有记忆，任何检索状态都不能否定当前原文、历史及已验证 profile。显式 memory_search 返回的 profile 行与驻留画像使用相同的来源支持校验，不能绕过被拒绝的画像事实。没有真实媒体附件证明的空正文按正常结束或输出预算耗尽分类；物理用量回执以纯数字保留在 AgentRun journal，失败也不丢弃。
 
 精确编号问答沿用结构化采样上限 0.2；编号名词前的短修饰语不应把同一事实请求误路由到表达性采样，普通角色扮演保留配置值。
 
-2026-10-23 决策调整：按用户选择，Ornith 8-bit 的普通 Companion 生成开启隐藏推理，取代此前全部关闭的策略；摘要、结构化提取、预热和 igrep 辅助模型保持关闭。推理和正文共同受 PreparedTurn 的模型总输出预算及请求显式上限约束，不再把 Quick 的 256-token 回答设置误作二者的共享总预算。回答档位仍通过原产品偏好约束长度；当前 provider 不支持同时硬保证独立的可见 token 上限，不能声称已实现此能力，也不以输出后裁剪补救。工具选择仍为 auto，不强制工具或补写答案。强制提前闭合 thinking 曾将未结束的分析续文交付给用户，该做法继续禁止；推理不交付或写入记忆。上游不报告 reasoning 子计数时保持未知，已报告的 completion 总数不重复加算推理。
+2026-10-23 决策调整：按用户选择，Ornith 8-bit 的普通 Companion 生成开启隐藏推理，取代此前全部关闭的策略；摘要、一般结构化提取、预热和 igrep 辅助模型保持关闭；媒体独立要求提取采用下述原生推理例外。推理和正文共同受 PreparedTurn 的模型总输出预算及请求显式上限约束，不再把 Quick 的 256-token 回答设置误作二者的共享总预算。回答档位仍通过原产品偏好约束长度；当前 provider 不支持同时硬保证独立的可见 token 上限，不能声称已实现此能力，也不以输出后裁剪补救。工具选择仍为 auto，不强制工具或补写答案。强制提前闭合 thinking 曾将未结束的分析续文交付给用户，该做法继续禁止；推理不交付或写入记忆。上游不报告 reasoning 子计数时保持未知，已报告的 completion 总数不重复加算推理。
 
 legacy 图片动作收据只有在用户原文未变时可跨 attempt 重放；编辑在同一事务持久标记旧身份失效，包括没有 Job 的旧收据。已有 Job 的旧编辑清除证据也使该收据失效。Gen 完成、失败、取消与运营退款都先取得与 Chat 相同的 user 锁，再取得 Request 和附件锁；批量结算先按 userId 排序取得全部用户锁，避免钱包与附件的反向等待。金额与资格仍由锁内事实和现有幂等账本决定。
 
-OpenAI-compatible provider 仅以原生 tool call 进入动作执行；普通文本或参数 JSON 不转换成工具，也不通过兼容重试强迫调用。Agent 在 Main 返回结果后继续正常执行循环，自行给出角色回复；不合成固定媒体回执。准备提示明确区分生成 `accepted` 与 `completed`：前者仍在制作，后者才已交付；库存检索的 `matches` / `no_match` 均不表示交付，检索失败也不能冒充 no_match。工具 schema 不要求预写 caption；生成的异步交付仍以实际收据和附件状态为准，库存发送的回复只能描述已确认成品，不能声称刚刚定制或生成。工具前文本是暂态，下一步重置后才交付最终回复。Main 已拒绝的媒体动作可以产生自然的失败说明；发送或生成接纳结果未知则停止，不能提交成功回复或再次购买。实际 provider 归属与每次物理请求用量仍必须可核验。契约与原生工具循环回归不替代同一 source revision 的真实运营、交付、恢复与计费旅程验证。
+OpenAI-compatible provider 仅以原生 tool call 进入动作执行；普通文本或参数 JSON 不转换成工具，也不通过兼容重试强迫调用。媒体动作仍由 Agent 的原生工具循环选择；接纳、交付与失败由 Main 的附件状态表达，不合成角色口吻的媒体回执。`accepted` 只证明请求已被接纳，`completed` 证明已有交付，均不证明修改语义或保真质量。库存检索的 `matches` / `no_match` 均不表示交付，检索失败也不能冒充 no_match。发送或生成接纳结果未知则停止，不能提交成功回复或再次购买。实际 provider 归属与每次物理请求用量仍必须可核验。契约与原生工具循环回归不替代同一 source revision 的真实运营、交付、恢复与计费旅程验证。
+
+2026-10-30 决策调整：媒体状态和角色正文分离。开放媒体动作工具的 step 暂存正文；实际选择媒体动作后，工具前后生成的承诺文字不进入公开流。以当前用户原文和真实动作回执提取仍需回答的逐字独立要求；没有独立要求时，真实附件卡片就是回复，正文为空。有独立要求时，复用正式 native 消息投影、Soul、历史和实际非媒体工具证据继续生成正文，当前媒体命令、动作回执和媒体工具不进入该正文阶段。跨阶段继承的真实非媒体工具调用和结果以当前 attempt 的执行来源保留，校验原文、role、callId 与 owner，压缩后仍可召回；不冒充 Main 历史或普通 plugin 背景。当前消息保留 `current_user` 身份，使背景上下文仍进入 `<context>`；不能删除身份后追加普通 user 消息而绕过正式封装。未实际选择动作时释放普通正文；未开放媒体动作工具的对话保持原生流式。
+
+Main 仅在 `mediaResponse` 指向同一 Turn、当前 attempt 的真实非 requesting 媒体附件时接纳空正文；历史已选中的不可变 proposal 仍可原样重放。HTTP 错误或未确认动作不能伪造附件证明。混合请求的独立正文失败仍是回复失败，不能退化为卡片存在即成功。提取与正文请求沿用同一 provider/profile、物理请求 journal、用量、deadline 和取消边界；不重放媒体动作。提取接受完整 JSON 对象或唯一完整 JSON 代码围栏，拒绝额外正文、截断与自动修补；该原生推理调用不叠加本机会约束 thinking 的 JSON grammar。逐字来源只证明文字归属，不证明语义提取完整。
+
+此前“语义审查、一次改写、再次审查”的实验同时出现漏检和误拒，未成为可用的交付真值，因此不保留线上 critic 门禁。纯媒体空正文可确定地消除额外承诺；混合请求仍保留自由文本能力及其经验性风险，必须记录实际模型输出的资格范围，不能宣称任何故事或历史上下文下都绝无媒体断言。
+
+局部图片编辑的 `editScope` 由 Agent 按当前意图填写，Main 不引入关键词分类。新动作缺少 scope 时拒绝；历史整图动作不追溯改写。新局部动作只产生 `awaiting_confirmation` 附件与规范化原图快照，不创建 Job 或扣费；目标词不再自动变成分割遮罩。用户确认具体区域、改色或生成操作及报价后，Main 才按冻结的 `confirmed-mask-rgba-1` 接纳任务。浏览器预览、Gen 的确定性改色、局部采样和保护区证据按 ADR-17 执行；交付状态不能替代区域准确性或视觉验收。
+
+回复重试在 Main 锁内校验并重绑已有媒体附件，执行快照的 `recoveredMediaAction` 是已有动作的持久事实，不是预选意图。其状态必须有相应 Job、交付资产或未付费编辑草稿支撑；已取消草稿也不能被复活。Chat 直接进入媒体请求提取及独立正文阶段，不再开放媒体工具、不伪造执行记录；实际提取与正文仍计入同一预算。刷新与后续确认始终读取 Main 当前附件与 attempt，客户端旧身份不能覆盖新状态。
 
 provider 的工具名分片先累计为完整当前名称，再交给 Pi；参数仍按 delta 累积。SSE `[DONE]` 结束当前响应读取，不等待 HTTP EOF，也不放宽 finish reason、provider attribution 或用量核验。
 
 非成功 HTTP 响应的正文取消只负责释放资源，不能使原 HTTP 错误等待一个永不收敛的 cleanup promise。执行截止时间校验留在执行与接纳边界；账号擦除读取所有者时不以历史执行证据完整为前提。
 
-陪伴记忆只从 Main 已提交产品 Turn 异步投影。Main outbox 使用至少一次投递；Chat 在独立候选 workspace 中幂等 prepare，再以单调 authority version 原子 promote。prepare/promote 不持有 relationship-wide Agent 执行锁，也不取消已经运行的 Turn。普通投影延迟不阻塞新 Turn；破坏性修订期间，由 Main 把受影响的新 Agent attempt 固定为 private execution，直到重建切换完成。基于旧 Main 权威快照返回的终态候选必须被 Main CAS 拒绝。
+陪伴记忆只从 Main 已提交产品 Turn 异步投影。Main outbox 使用至少一次投递；Chat 在独立候选 workspace 中幂等 prepare，再以单调 authority version 原子 promote。附件已回答的空正文 Turn 保留原用户文字，并由 Main 核验后标记 `answeredByAttachment`；不伪造 assistant 台词，也不删除用户消息。该标记只允许用于 user 记录，其他记录继续遵循既有顺序与完整性校验。prepare/promote 不持有 relationship-wide Agent 执行锁，也不取消已经运行的 Turn。普通投影延迟不阻塞新 Turn；破坏性修订期间，由 Main 把受影响的新 Agent attempt 固定为 private execution，直到重建切换完成。基于旧 Main 权威快照返回的终态候选必须被 Main CAS 拒绝。
 
 2026-10-17 执行内核决策：`@earendil-works/pi-ai`、`pi-durable`、`chord` 固定 `1.3.0`，igrep CLI 固定 `0.1.161`。Pi 只负责单次 Agent 运行的 model/tool loop、公共事件和上下文压缩，igrep 通过 provider-neutral CLI 承接记忆与检索；删除 DSH/Cordis 服务注册、插件 bundle、peer 与 profile bootstrap。setup/check 核验精确包版本、公共 MemoryStorage API 与 CLI surface，不能替代 full readiness 或真实产品旅程资格。
 
-每个 attempt 创建独立 Pi `Harness`/`MemoryStorage`，工具串行，关闭自动模型重试和后台压缩。`MemoryStorage` 不跨进程持久化，不承担产品恢复：Chat 重启读取 Main 固定快照与 AgentRun 输入，已写入的不可变 proposal 只能原样重放 Main ACK，包含旧 `embedded_dsh`/plugin 字段的历史 proposal 也不改写。2026-10-23 的真实 SIGKILL 实验发现，无 proposal 时重跑同一 attempt 会再次调用模型，并丢失第一次请求的用量证据，因此收紧原恢复规则：每次物理请求前先等待无正文请求意图写盘；只有可证明尚未发出请求的运行才能自动继续。已发出请求但没有 proposal 的运行提交 `agent_run_interrupted` 失败，保留 Main 用户消息、释放尚未消费的额度，由用户显式重新生成新 attempt。存活回执保留实测用量，未确认请求保持 null；历史未记录请求意图的 `pi.started` 运行也按未知结果处理。当前模型接口没有原请求结果重取契约，故不承诺恢复尚未持久化的原回复。不新增持久 Pi inbox、session log 或第二个状态机，取消、删除、deadline 与 ToolEffect 幂等边界不变。
+每个 attempt 的原生执行阶段使用独立、临时的 Pi `Harness`/`MemoryStorage`；媒体独立正文阶段复用同一执行入口和剩余总步数，额外的请求提取也占用该预算。工具串行，关闭自动模型重试和后台压缩。`MemoryStorage` 不跨进程持久化，不承担产品恢复：Chat 重启读取 Main 固定快照与 AgentRun 输入，已写入的不可变 proposal 只能原样重放 Main ACK，包含旧 `embedded_dsh`/plugin 字段的历史 proposal 也不改写。2026-10-23 的真实 SIGKILL 实验发现，无 proposal 时重跑同一 attempt 会再次调用模型，并丢失第一次请求的用量证据，因此收紧原恢复规则：每次物理请求前先等待无正文请求意图写盘；只有可证明尚未发出请求的运行才能自动继续。已发出请求但没有 proposal 的运行提交 `agent_run_interrupted` 失败，保留 Main 用户消息、释放尚未消费的额度，由用户显式重新生成新 attempt。存活回执保留实测用量，未确认请求保持 null；历史未记录请求意图的 `pi.started` 运行也按未知结果处理。当前模型接口没有原请求结果重取契约，故不承诺恢复尚未持久化的原回复。不新增持久 Pi inbox、session log 或第二个状态机，取消、删除、deadline 与 ToolEffect 幂等边界不变。
 
 Main 投影独占长期记忆 ingest/maintain，普通 attempt 首轮前只执行一次可观测的官方 wake，并按当前消息执行 fast recall。normal 开放只读 `memory_search`，normal/private 都开放本 attempt 授权快照的 `igrep_search` 和 `session_recall`，显式配置 web provider 时保留 `igrep_web_search`；private 不读写跨会话记忆。`igrep_search` 只索引保留的对话，不重复索引 system 契约或已省略原文；已省略原文经 `session_recall` 的来源绑定返回。可用工具提示与真实注册保持一致，显式要求的只读查询不能被自动预召回取代，检索成功也不产生保存或未来记忆承诺。每个 CLI 子进程只接收明确绑定的 LLM/ASK/final-sort、embedding、rerank 路由和必要进程环境，未配置能力显式禁用，`IGREP_NO_CACHE=1` 禁用共享结果缓存，不借用个人默认配置或临时更换 HOME。
 

@@ -979,7 +979,7 @@ model GenerationPreset {
   @@map("generation_presets")
 }
 
-// Byte chunks commit with the paid request; retries and scenes share the same
+// Byte chunks commit with the request or its unpaid edit draft; retries and scenes share the same
 // user-scoped digest without depending on mutable Blob or external URLs.
 model GenerationSourceSnapshot {
   id          String   @id @default(cuid())
@@ -1931,11 +1931,11 @@ model GenerationModelProfile {
   profileKey          String
   label               String
   mode                String    @default("image") // enum: image | video
-  // SPEC: runner 只选 gen 的适配器层（comfyui→backend / mlx|external→pipeline / pipeline|mock 直通），
-  // 不决定具体后端 —— 后端由 workflow 描述符的 backendKind 决定（comfyui / drawthings）。
+  // SPEC: runner 只选 gen 的适配器层（comfyui / local-image → backend），
+  // 具体后端由 workflow 描述符的 backendKind 决定（comfyui / drawthings / local-image）。
   // INVARIANT: 这行注释里的 enum 就是合法取值的唯一清单，且必须全部能被 gen 的
   // workerAdapterForRecordedProvider 映射；由 generation-runner-vocabulary.test.ts 断言集合相等。
-  runner              String    @default("comfyui") // enum: comfyui
+  runner              String    @default("comfyui") // enum: comfyui | local-image
   pipelineModel       String
   workflowKey         String?
   sourceModelPath     String?

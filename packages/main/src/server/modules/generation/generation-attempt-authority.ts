@@ -548,6 +548,33 @@ function generationAttemptDedupeKey(
   return idempotencyKeys.generationAttempt(attempt.requestId, attempt.attemptNo);
 }
 
+export function generationPreparationPreventsRetry(
+  attempt: Pick<GenerationAttempt, "status" | "errorCode" | "retryability"> | null | undefined,
+) {
+  // A new paid Request can follow a definitive provider failure even when the
+  // old Attempt cannot be replayed. Reusing inputs explicitly rejected during
+  // preparation cannot recover that request and must not reserve another charge.
+  return attempt?.status === "failed" && attempt.errorCode === "preparation_failed"
+    && attempt.retryability === "not_retryable";
+}
+
+export async function assertGenerationPreparationCanRetry(
+  db: Pick<Prisma.TransactionClient, "generationAttempt">,
+  requestId: string,
+) {
+  const latest = await db.generationAttempt.findFirst({
+    where: { requestId },
+    orderBy: { attemptNo: "desc" },
+    select: { id: true, status: true, errorCode: true, retryability: true },
+  });
+  if (latest && generationPreparationPreventsRetry(latest)) {
+    throw Errors.conflict(
+      "This request cannot be retried with the same inputs. Change the source image or instructions and send a new request.",
+      { code: "preparation_not_retryable", requestId, attemptId: latest.id },
+    );
+  }
+}
+
 // SPEC: An unknown Attempt is an immutable transport fact. A later
 // confirm_failed event is separate, append-only business authority to create a
 // new Attempt; it never rewrites or replays the unknown Attempt itself.

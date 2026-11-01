@@ -23,6 +23,7 @@ import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { settleChatTurnUsage } from "./turn-ledger";
+import { hasChatMediaResponseAttachment } from "./tool-effect-attachment";
 
 const DESTRUCTIVE_MEMORY_EVENT_TYPES = [
   MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1,
@@ -458,11 +459,15 @@ async function memorySourceMetrics(userId: string, characterId: string): Promise
     contentChars: bigint;
   }>>`
     SELECT
-      -- A proactive Turn exports one message, not two: its "userContent" is the
-      -- internal directive that made the Character speak and never ships.
-      COALESCE(SUM(CASE WHEN turn."origin" = 'proactive' THEN 1 ELSE 2 END), 0)::bigint
-        AS "messageCount",
-      COUNT(DISTINCT turn."sessionId")::bigint AS "sessionCount",
+      -- Export only actual utterances. A media-only reply has no assistant text;
+      -- a proactive Turn's userContent is an internal directive and never ships.
+      COALESCE(SUM(
+        CASE WHEN turn."origin" = 'proactive' THEN 0 ELSE 1 END
+        + CASE WHEN turn."assistantContent" = '' THEN 0 ELSE 1 END
+      ), 0)::bigint AS "messageCount",
+      COUNT(DISTINCT turn."sessionId") FILTER (
+        WHERE turn."origin" != 'proactive' OR turn."assistantContent" != ''
+      )::bigint AS "sessionCount",
       COALESCE(SUM(
         CASE WHEN turn."origin" = 'proactive' THEN 0 ELSE char_length(turn."userContent") END
         + char_length(turn."assistantContent")
@@ -516,6 +521,9 @@ async function* memorySourceMessages(
         assistantMessageId: true,
         userContent: true,
         assistantContent: true,
+        attempt: true,
+        terminalEvidence: true,
+        attachments: { select: { id: true, turnId: true, kind: true, status: true, metadata: true } },
         origin: true,
         createdAt: true,
         updatedAt: true,
@@ -524,6 +532,10 @@ async function* memorySourceMessages(
     });
     if (rows.length === 0) return;
     for (const turn of rows) {
+      const attachmentOnly = turn.assistantContent === "";
+      if (attachmentOnly && !hasChatMediaResponseAttachment(turn, turn.attachments)) {
+        throw Errors.conflict("An empty canonical Chat reply has no current durable media attachment");
+      }
       // INVARIANT: canonical memory records what the two of them actually said.
       // A proactive Turn's `userContent` is the internal directive that made the
       // Character speak first, so exporting it would file an instruction the user
@@ -536,8 +548,10 @@ async function* memorySourceMessages(
           role: "user",
           content: turn.userContent,
           createdAt: turn.createdAt.toISOString(),
+          ...(attachmentOnly ? { answeredByAttachment: true as const } : {}),
         };
       }
+      if (attachmentOnly) continue;
       yield {
         id: turn.assistantMessageId,
         sessionId: turn.sessionId,

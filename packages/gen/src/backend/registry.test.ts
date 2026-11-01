@@ -232,6 +232,25 @@ describe("buildBackendRegistry", () => {
     expect(assignWorkflowReferenceSlots(descriptor, ["source_image"])).toMatchObject({ ok: true });
   });
 
+  it("routes the shipped local recolor descriptor to an endpoint-free source-only backend", async () => {
+    const registry = await buildBackendRegistry({
+      comfyImageApiUrl: "http://127.0.0.1:1", comfyVideoApiUrl: "http://127.0.0.1:1",
+      workflowDir: path.resolve(import.meta.dirname, "../../workflows"),
+    });
+    const resolved = registry.resolveForModel("local-recolor");
+    const fetch = vi.fn(async () => { throw new Error("Unexpected external health probe"); });
+    vi.stubGlobal("fetch", fetch);
+    expect(resolved.backend.kind).toBe("local-image");
+    expect(resolved.descriptor).toMatchObject({ version: 1, localImage: { operation: "recolor" } });
+    expect(resolved.backend.capabilities()).toMatchObject({ textToImage: false, img2img: true, referenceImages: true, stableSeed: false });
+    expect(await resolved.backend.health()).toMatchObject({ ok: true });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(assignWorkflowReferenceSlots(resolved.descriptor, ["source_image"])).toMatchObject({ ok: true });
+    for (const roles of [[], ["identity_anchor"], ["source_image", "source_image"]] as const) {
+      expect(assignWorkflowReferenceSlots(resolved.descriptor, roles)).toMatchObject({ ok: false });
+    }
+  });
+
   it("binds production Qwen workflow slots, including both identity references", async () => {
     const registry = await buildBackendRegistry({
       comfyImageApiUrl: "http://127.0.0.1:8189",

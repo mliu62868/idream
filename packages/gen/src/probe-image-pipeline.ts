@@ -180,6 +180,9 @@ async function resolveProbeBackendBinding(
       `Image launch probe model ${model} has no workflow descriptor in ${env.GEN_WORKFLOW_DIR}`,
     );
   }
+  if (descriptor.backendKind === "local-image") {
+    throw new Error("The image launch probe does not accept user-confirmed local edit inputs");
+  }
 
   return {
     backendKind: descriptor.backendKind,

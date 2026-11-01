@@ -24,7 +24,7 @@ export interface OpenAiCompatibleAdapterOptions {
 }
 export interface InvocationOptions {
   signal?: AbortSignal;
-  purpose?: "compaction" | "warmup";
+  purpose?: "compaction" | "warmup" | "media_extraction" | "media_body";
   maxTokens?: number;
   stop?: readonly string[];
 }
@@ -234,6 +234,17 @@ function wireMessages(messages: readonly Message[]): unknown[] {
   ];
 }
 
+function modelRequestInput(messages: readonly Message[]) {
+  return { messages: wireMessages(messages), tools: getCurrentTools(messages).map(tool => ({
+    type: "function", function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+  })) };
+}
+
+/** Use the same serialization estimate as the final transport guard. */
+export function estimatePiModelRequestInputTokens(messages: readonly Message[]): number {
+  return estimateModelRequestInputTokens(modelRequestInput(messages));
+}
+
 interface BlockState {
   index: number;
   text: string;
@@ -273,7 +284,7 @@ export class OpenAiCompatibleAdapter {
     });
   }
 
-  asProvider(options: { purpose?: "compaction" } = {}): Provider {
+  asProvider(options: { purpose?: "compaction" | "media_body" } = {}): Provider {
     const profile = this.config.profile;
     if (this.config.maxInputTokens === undefined) throw new Error("asProvider requires the prepared maxInputTokens");
     const model: Model<"openai-completions"> = {
@@ -333,28 +344,27 @@ export class OpenAiCompatibleAdapter {
     stream: AssistantMessageEventStream, output: AssistantMessage): Promise<void> {
     const { profile, maxInputTokens, responseFormat, observeRequest, observeUsage } = this.config;
     const compacting = options.purpose === "compaction";
-    const thinking = !options.purpose && !responseFormat;
-    const tools = getCurrentTools(messages);
+    const thinking = options.purpose === "media_extraction" || options.purpose === "media_body"
+      || (!options.purpose && !responseFormat);
+    const input = modelRequestInput(messages);
     // The provider's output cap covers reasoning and visible text together.
     // Answer preferences cannot cap that shared budget for thinking requests.
     const maxTokens = compacting ? options.maxTokens ?? profile.maxOutputTokens : Math.min(
       options.maxTokens ?? profile.maxOutputTokens, profile.maxOutputTokens,
       thinking ? profile.maxOutputTokens : profile.answerMaxOutputTokens ?? profile.maxOutputTokens);
     const body = {
-      model: profile.model, messages: wireMessages(messages), stream: true,
+      model: profile.model, messages: input.messages, stream: true,
       stream_options: { include_usage: true },
       temperature: compacting ? 0 : this.config.samplingTemperature ?? profile.sampling.temperature,
       top_p: profile.sampling.topP, repetition_penalty: profile.sampling.repetitionPenalty,
       max_tokens: maxTokens,
       // Companion replies use the selected model's private reasoning. It shares
       // the request's total output budget; never force-close it into visible text.
-      // Bounded summaries and structured extraction keep their non-thinking mode.
+      // Bounded summaries stay non-thinking; media extraction uses native thinking without grammar.
       chat_template_kwargs: { enable_thinking: thinking },
       ...(responseFormat ? { response_format: responseFormat } : {}),
       ...(options.stop?.length ? { stop: options.stop } : {}),
-      ...(tools.length ? { tools: tools.map(tool => ({ type: "function", function: {
-        name: tool.name, description: tool.description, parameters: tool.parameters,
-      } })), tool_choice: compacting ? "none" : "auto" } : {}),
+      ...(input.tools.length ? { tools: input.tools, tool_choice: compacting ? "none" : "auto" } : {}),
       ...(this.openRouter ? { provider: { only: [...this.providerOnly!], allow_fallbacks: false } } : {}),
     };
     const timeout = linkedSignal(options.signal);
@@ -373,7 +383,9 @@ export class OpenAiCompatibleAdapter {
       const serializedBody = JSON.stringify(body);
       requestEvidence = { bodyDigest: createHash("sha256").update(serializedBody).digest("hex"),
         systemPromptDigest: createHash("sha256").update(getCurrentSystemPrompt(messages)).digest("hex"),
-        estimatedInputTokens, ...(compacting ? { purpose: "compaction" } : maxInputTokens === undefined ? {} : { maxInputTokens }),
+        estimatedInputTokens,
+        ...(options.purpose && options.purpose !== "warmup" ? { purpose: options.purpose } : {}),
+        ...(!compacting && maxInputTokens !== undefined ? { maxInputTokens } : {}),
       };
       // Persist dispatch intent before crossing the external request boundary.
       // A process crash after this point must never silently resend it.

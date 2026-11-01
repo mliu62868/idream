@@ -267,6 +267,9 @@ async function resolveBackendBinding(model: string) {
       `Video launch probe model ${model} has no workflow descriptor in ${env.GEN_WORKFLOW_DIR}`,
     );
   }
+  if (descriptor.backendKind === "local-image") {
+    throw new Error("Local image operations cannot execute a video launch probe");
+  }
   const recipe = characterVideoProductionRecipeForWorkflow(
     descriptor.workflowKey,
   );

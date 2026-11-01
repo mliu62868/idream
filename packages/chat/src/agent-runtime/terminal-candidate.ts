@@ -12,7 +12,8 @@ export type TerminalValidationCode =
   | "empty_model_response"
   | "unexecuted_tool_payload"
   | "image_reply_language_mismatch"
-  | "image_reply_exposed_process";
+  | "image_reply_exposed_process"
+  | "media_response_incomplete";
 
 export interface TerminalCandidateFacts {
   attemptId: string;
@@ -31,6 +32,7 @@ export interface TerminalCandidateFacts {
   steps: number;
   completedAt: string;
   modelRequests?: readonly CompanionModelRequestEvidence[];
+  mediaResponse?: CompanionTerminalCandidate["mediaResponse"];
   attribution?: CompanionTerminalCandidate["attribution"];
 }
 
@@ -50,7 +52,7 @@ export function evaluateTerminalCandidate(
     return { accepted: false, message: "turn stopped without a terminal assistant candidate" };
   }
   const content = facts.assistantContent;
-  if (!content.trim()) {
+  if (!content.trim() && (!facts.mediaResponse || facts.finishReasonKind !== "stop")) {
     return { accepted: false, code: facts.finishReasonKind === "max-tokens" ? "model_output_exhausted" : "empty_model_response",
       message: "terminal assistant candidate is empty" };
   }
@@ -64,7 +66,9 @@ export function evaluateTerminalCandidate(
       message: "terminal assistant candidate contained an unexecuted tool payload",
     };
   }
-  if (facts.toolCalls > 0) {
+  // Independent text after a media action is ordinary requested content, not
+  // a media acknowledgement. Its words and language may differ from the action.
+  if (facts.toolCalls > 0 && !facts.mediaResponse && content.trim()) {
     if (!imageReplyMatchesUserScript(facts.currentUserText, content)) {
       return {
         accepted: false,
@@ -98,6 +102,7 @@ export function evaluateTerminalCandidate(
       execution: { steps: facts.steps, toolCalls: facts.toolCalls },
       tools: facts.reservations,
       completedAt: facts.completedAt,
+      ...(facts.mediaResponse ? { mediaResponse: facts.mediaResponse } : {}),
       ...(facts.modelRequests?.length ? { modelRequests: [...facts.modelRequests] } : {}),
       ...(facts.attribution ? { attribution: facts.attribution } : {}),
     },

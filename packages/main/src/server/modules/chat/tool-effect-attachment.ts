@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { ChatToolEffect } from "@idream/shared/contracts";
 import type { ChatTurnAttachment, Prisma } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
-import { attachmentLockedByInsert, type LockedChatTurn, type LockedChatTurnAttachment } from "./turn-scope";
+import { attachmentAttempt, attachmentLockedByInsert, type LockedChatTurn, type LockedChatTurnAttachment } from "./turn-scope";
 
 /** Identity of persisted actions created before the user-content digest. */
 export function legacyTurnActionAttachmentId(turnId: string, name: ChatToolEffect["name"]): string {
@@ -19,6 +19,7 @@ export function legacyTurnActionAttachmentId(turnId: string, name: ChatToolEffec
 //   是编译错误，运行期一律 fail-closed 抛冲突，绝不静默写入。
 export const TOOL_EFFECT_ATTACHMENT_STATUSES = [
   "requesting",
+  "awaiting_confirmation",
   "accepted",
   "completed",
   "failed",
@@ -31,13 +32,32 @@ export type ToolEffectAttachmentStatus = (typeof TOOL_EFFECT_ATTACHMENT_STATUSES
 export const TOOL_EFFECT_ATTACHMENT_KINDS = ["generated_image", "generated_video"] as const;
 export type ToolEffectAttachmentKind = (typeof TOOL_EFFECT_ATTACHMENT_KINDS)[number];
 
+/** Main's durable card can answer a Turn without inventing a spoken sentence. */
+export function hasChatMediaResponseAttachment(
+  turn: { id: string; attempt: number; terminalEvidence: unknown },
+  attachments: readonly Pick<ChatTurnAttachment, "id" | "turnId" | "kind" | "status" | "metadata">[],
+): boolean {
+  const evidence = record(turn.terminalEvidence);
+  const media = record(evidence?.mediaResponse);
+  if (media?.version !== 1 || typeof media.attachmentId !== "string" || !media.attachmentId) return false;
+  return attachments.some(attachment => attachment.id === media.attachmentId
+    && attachment.turnId === turn.id
+    && (TOOL_EFFECT_ATTACHMENT_KINDS as readonly string[]).includes(attachment.kind)
+    && isToolEffectAttachmentStatus(attachment.status) && attachment.status !== "requesting"
+    // Regenerate must replay the action through its existing rebind authority.
+    // Accepting a stale receipt here would create a reply with no visible card.
+    && attachmentAttempt(attachment.metadata) === turn.attempt);
+}
+
 // INTENT: `blocked` / `refunded` 不是设想中的扩展——ai/local-pipeline.ts 的终态投影
 //   直接把 Generation Request 的终态状态名写进附件，实测会写出这两个值。表必须描述
 //   真实系统，否则 fail-closed 会在正常终态上误伤。
 export const TOOL_EFFECT_ATTACHMENT_TRANSITIONS = {
   // 库存或历史媒体不生成、不预扣费用，在同一事务内直接完成免费交付。
   // transitionToolEffectAttachment 单独验证这条边，付费生成仍必须先 accepted。
-  requesting: ["accepted", "failed", "completed"],
+  requesting: ["accepted", "failed", "completed", "awaiting_confirmation"],
+  // The owner confirms a frozen source and mask before any Generation request.
+  awaiting_confirmation: ["accepted", "cancelled"],
   // 已接纳即已扣费：它的每一种去向都必须对应一次结算（交付或退款/取消）。
   accepted: ["completed", "failed", "blocked", "refunded", "cancelled"],
   completed: [],
@@ -207,4 +227,9 @@ export async function reopenUnreservedFailedToolEffectAttachment(
 
 function toJson(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : null;
 }

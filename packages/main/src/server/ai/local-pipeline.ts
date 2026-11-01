@@ -1420,7 +1420,7 @@ async function refundGeneration(
     await appendGenerationEvent(tx, jobId, status, `Generation job ${status}`, {
       errorCode,
     });
-    await appendGenerationEvent(tx, jobId, "refunded", "Dreamcoins refunded", {
+    if (refundAmount > 0) await appendGenerationEvent(tx, jobId, "refunded", "Dreamcoins refunded", {
       amount: refundAmount,
     });
     return true;

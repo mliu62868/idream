@@ -623,7 +623,7 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
         if (!recovery.isCurrent() || !applySession(session)) return "in_progress";
         const assistant = session.messages.find(message => message.id === assistantId);
         if (!assistant || !chatStreamMessageIsTerminal(assistant)) continue;
-        return assistant.content.trim() ? "terminal_content" : "terminal_empty";
+        return assistant.content.trim() || assistant.attachments?.length ? "terminal_content" : "terminal_empty";
       } catch {
         // Transient reads do not change the durable attempt; retry, then leave
         // the regular conversation poll in charge of recovery.

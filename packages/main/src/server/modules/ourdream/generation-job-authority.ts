@@ -16,6 +16,7 @@ import { isRecord, toInputJson } from "@/server/lib/request-json";
 import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency";
 import { dreamcoinBalance, postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import {
+  assertGenerationPreparationCanRetry,
   dispatchGenerationAttemptOutbox,
   reserveInitialGenerationAttempt as reserveInitialGenerationAttemptAuthority,
 } from "@/server/modules/generation/generation-attempt-authority";
@@ -48,7 +49,7 @@ type GenerationAdmission = {
   identity: GenerationJobIdentity;
   transactionTimeoutMs?: number;
   retryOf?: Pick<GenerationJobRow, "id" | "version">;
-  chatAttachment?: { sessionId: string; turnId: string; attempt: number };
+  chatAttachment?: { sessionId: string; turnId: string; attempt: number; confirmedEdit?: true };
   sequenceId?: string;
   // This is the only varying step: lock and revalidate the entry's Character,
   // references or source image, then return its exact immutable request pins.
@@ -162,6 +163,7 @@ export async function acceptGenerationJobForUser(input: GenerationAdmission, adm
         // locks. Retrying never mutates the original failed request.
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`generation-retry-idempotency:${input.userId}:${input.identity.idempotencyKey}`}))`;
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`generation-retry-authority:${input.retryOf.id}`}))`;
+        await tx.$queryRaw`SELECT id FROM generation_jobs WHERE id = ${input.retryOf.id} FOR UPDATE`;
         retrySource = await tx.generationJob.findFirst({
           where: { id: input.retryOf.id, userId: input.userId },
         });
@@ -175,6 +177,9 @@ export async function acceptGenerationJobForUser(input: GenerationAdmission, adm
       const replay = await findAdmissionReplay(tx, input);
       if (replay) return { job: replay, outboxId: null };
       if (retrySource) {
+        // Recheck immutable preparation evidence under the Request lock before
+        // reserving a replacement, even when the quote predates the terminal.
+        await assertGenerationPreparationCanRetry(tx, retrySource.id);
         const retries = await tx.generationJob.count({ where: { derivedFromJobId: retrySource.id } });
         if (retries >= 3) {
           throw Errors.rateLimited("Retry limit reached for this generation job", { retries, max: 3 });
@@ -231,11 +236,13 @@ export async function acceptGenerationJobForUser(input: GenerationAdmission, adm
           referenceSetRevisionId: job.referenceSetRevisionId, consistencyMode: job.consistencyMode,
           idempotencyKey: input.identity.idempotencyKey ?? null, sourceType: job.sourceType, sourceId: job.sourceId,
         });
-      await postDreamcoinEntry(tx, {
-        kind: "generation_spend", userId: input.userId, amount: job.costDreamcoins,
-        sourceId: job.id, idempotencyKey: `generation:${job.id}:reserve`,
-      });
-      await appendGenerationEvent(tx, job.id, "reserved", "Dreamcoins reserved", { amount: job.costDreamcoins });
+      if (job.costDreamcoins > 0) {
+        await postDreamcoinEntry(tx, {
+          kind: "generation_spend", userId: input.userId, amount: job.costDreamcoins,
+          sourceId: job.id, idempotencyKey: `generation:${job.id}:reserve`,
+        });
+        await appendGenerationEvent(tx, job.id, "reserved", "Dreamcoins reserved", { amount: job.costDreamcoins });
+      }
       await appendGenerationEvent(tx, job.id, "queued",
         retrySource ? "Retry generation job queued" : enhancement ? "Image enhancement queued" : "Generation job queued", {});
       const dispatch = await reserveInitialGenerationAttempt(tx, job);
@@ -339,7 +346,7 @@ async function lockGenerationChatAttachment(
     expect: {
       characterId: generationChatCharacterId(data),
       attempt: binding.attempt,
-      assistantStatus: ["pending", "generating"],
+      assistantStatus: binding.confirmedEdit ? ["pending", "generating", "sent", "failed", "cancelled", "partial"] : ["pending", "generating"],
       attachmentAttemptMatchesTurn: true,
       conflictMessage: imageConflict,
     },
@@ -348,7 +355,7 @@ async function lockGenerationChatAttachment(
   if (
     !current ||
     current.kind !== "generated_image" ||
-    current.status !== "requesting" ||
+    current.status !== (binding.confirmedEdit ? "awaiting_confirmation" : "requesting") ||
     current.generationJobId !== null ||
     current.turnId !== binding.turnId ||
     scope.session.sessionId !== binding.sessionId

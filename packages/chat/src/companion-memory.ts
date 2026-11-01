@@ -181,7 +181,7 @@ async function stageWorkspaceRebuild(request: Request): Promise<StagedWorkspaceR
     contentLength: number;
     received: number;
     createdAt: string;
-    unprompted: boolean;
+    completeExchange: boolean;
   } | undefined;
   const seenSessions = new Set<string>();
   const transcriptBuffer = Buffer.allocUnsafe(TRANSCRIPT_BUFFER_BYTES);
@@ -274,7 +274,7 @@ async function stageWorkspaceRebuild(request: Request): Promise<StagedWorkspaceR
           contentLength: frame.contentLength,
           received: 0,
           createdAt: frame.message.createdAt,
-          unprompted,
+          completeExchange: unprompted || frame.message.answeredByAttachment === true,
         };
         await writeTranscript(`{"role":${JSON.stringify(frame.message.role)},"content":"`);
         continue;
@@ -297,9 +297,9 @@ async function stageWorkspaceRebuild(request: Request): Promise<StagedWorkspaceR
           `","source_at":${JSON.stringify(activeMessage.createdAt)},"source_timezone":"UTC"}\n`,
         );
         currentSession.messages += 1;
-        // An unprompted reply consumed no user message, so the session still
-        // owes one and the alternation check stays armed for everything else.
-        if (!activeMessage.unprompted) {
+        // A proactive reply or a user answered by a durable attachment is a
+        // complete exchange on its own. Every ordinary message still alternates.
+        if (!activeMessage.completeExchange) {
           currentSession.expectedRole = currentSession.expectedRole === "user" ? "assistant" : "user";
         }
         activeMessage = undefined;

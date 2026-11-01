@@ -452,6 +452,27 @@ describe("AgentRun account-erasure drain", () => {
     expect(vi.mocked(fetch).mock.calls[1]?.[1]?.body).toBe(request?.body);
   });
 
+  it("replays an immutable empty media proposal without another model or action", async () => {
+    const proposal: AgentRunProposal = { schemaVersion: 1, attemptId: "assistant-1:1", proposedAt: "2026-08-28T12:00:00.000Z", terminal: {
+      version: 1, turnId: "turn-1", sessionId: "session-1", assistantMessageId: "assistant-1", attempt: 1,
+      status: "sent", content: "", model: "test-model", promptTokens: 15, completionTokens: 3, sceneVersion: 0, scene: null,
+      terminalEvidence: { authority: "pi_terminal_candidate", prompt: { productPromptVersion: "companion-product-1", preparedTurnVersion: 6, systemPromptDigest: "a".repeat(64), soulFingerprint: "b".repeat(64) },
+        mediaResponse: { version: 1, attachmentId: "real-attachment" },
+        modelRequests: [{ purpose: "media_extraction", bodyDigest: "e".repeat(64), systemPromptDigest: "f".repeat(64), estimatedInputTokens: 10 }],
+      },
+    } };
+    store.listIncompleteAgentRuns.mockResolvedValueOnce({ runs: [{ turnId: "turn-1", attempt: 1, userId: "user-1" }], failures: [] });
+    store.readAgentRunProposal.mockResolvedValueOnce(proposal);
+    await recoverIncompleteAgentRuns();
+    await cancelAgentRunsForUser("user-1");
+    expect(runtime.runCompanion).not.toHaveBeenCalled();
+    expect(store.writeAgentRunProposal).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0]?.[1]?.body))).toEqual(proposal.terminal);
+    expect(store.completeAgentRun).toHaveBeenCalledWith("turn-1", 1, expect.objectContaining({ outcome: "committed" }));
+    expect(stream.appendStreamEvent).toHaveBeenCalledWith("stream:assistant-1", expect.objectContaining({ type: "done" }));
+  });
+
   it.each([true, false])("carries the Scene forward one version without projecting (reply usage known=%s)", async (replyKnown) => {
     const input = agentRunInput("Now we are at the beach.");
     input.snapshot.scene = { schemaVersion: 1, version: 4, location: "the kitchen", time: "tonight", participants: ["Mina"], emotionalBeat: "calm", unresolvedThreads: ["call the hotel"] };
@@ -531,12 +552,15 @@ describe("AgentRun account-erasure drain", () => {
     await expect(cancelAgentRunsForUser("user-1")).resolves.toBe(0);
   });
 
-  it("records Agent-authored image direction and its terminal evidence", async () => {
+  it("persists a pure media reply with empty content and its real attachment evidence", async () => {
     const completed = Promise.withResolvers<void>();
     store.completeAgentRun.mockImplementationOnce(async () => {
       completed.resolve();
     });
     store.readAgentRunInput.mockResolvedValue(agentRunInput("给我一个你的裸照"));
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request) => Response.json(String(url).endsWith("/api/internal/chat/tool-effects")
+      ? { accepted: true, duplicate: false, status: "accepted", attachmentId: "attachment-real", generationJobId: "job-real" }
+      : { accepted: true, duplicate: false, terminalMessageId: "assistant-1", committedAt: "2026-08-28T12:00:00.000Z" })));
     runtime.runCompanion.mockImplementation(async (invocation, port) => {
       await port.executeTool({
         attemptId: invocation.attemptId,
@@ -550,15 +574,7 @@ describe("AgentRun account-erasure drain", () => {
           outputCount: 1,
         },
       });
-      const content = "等我一下……";
-      await port.emit({
-        invocationId: invocation.invocationId,
-        attemptId: invocation.attemptId,
-        sequence: 1,
-        occurredAt: "2026-08-28T12:00:00.000Z",
-        type: "text_delta",
-        delta: content,
-      });
+      const content = "";
       await port.commit({
         attemptId: invocation.attemptId,
         content,
@@ -566,7 +582,7 @@ describe("AgentRun account-erasure drain", () => {
         provider: "openai",
         model: "test-model",
         usage: { promptTokens: 20, completionTokens: 8, reasoningTokens: 0 },
-        execution: { steps: 2, toolCalls: 1 },
+        execution: { steps: 3, toolCalls: 1 },
         tools: [{
           attemptId: invocation.attemptId,
           callId: "model-tool-call-1",
@@ -579,7 +595,11 @@ describe("AgentRun account-erasure drain", () => {
         modelRequests: [{
           systemPromptDigest: "d".repeat(64), bodyDigest: "e".repeat(64),
           estimatedInputTokens: 100, maxInputTokens: 2_000,
+        }, {
+          systemPromptDigest: "f".repeat(64), bodyDigest: "a".repeat(64),
+          estimatedInputTokens: 200, maxInputTokens: 3_000, purpose: "media_extraction",
         }],
+        mediaResponse: { version: 1, attachmentId: "attachment-real" },
       });
     });
 
@@ -590,17 +610,14 @@ describe("AgentRun account-erasure drain", () => {
     await completed.promise;
 
     const streamPayloads = stream.appendStreamEvent.mock.calls.map(([, event]) => event);
-    expect(streamPayloads).toContainEqual(expect.objectContaining({
-      type: "delta",
-      delta: "等我一下……",
-    }));
+    expect(streamPayloads).not.toContainEqual(expect.objectContaining({ type: "delta" }));
     expect(store.writeAgentRunProposal).toHaveBeenCalledWith(
       "turn-1",
       1,
       expect.objectContaining({
         terminal: expect.objectContaining({
           status: "sent",
-          content: "等我一下……",
+          content: "",
           model: "test-model",
           terminalEvidence: expect.objectContaining({
             authority: "pi_terminal_candidate",
@@ -609,7 +626,8 @@ describe("AgentRun account-erasure drain", () => {
               systemPromptDigest: "d".repeat(64),
             }),
             preparedSystemPromptDigest: expect.any(String),
-            modelRequests: [expect.objectContaining({ bodyDigest: "e".repeat(64) })],
+            modelRequests: [expect.objectContaining({ bodyDigest: "e".repeat(64) }), expect.objectContaining({ purpose: "media_extraction", bodyDigest: "a".repeat(64) })],
+            mediaResponse: { version: 1, attachmentId: "attachment-real" },
             tools: [expect.objectContaining({
               callId: "model-tool-call-1",
               name: "generate_image_async",
@@ -861,7 +879,44 @@ describe("AgentRun account-erasure drain", () => {
       arguments: { previousMediaAssetId: "earlier-video" } });
   });
 
+  it("replays the exact pending edit after its HTTP acknowledgement is lost", async () => {
+    const completed = Promise.withResolvers<void>();
+    store.completeAgentRun.mockImplementationOnce(async () => { completed.resolve(); });
+    const input = agentRunInput("Change only the green mug to red.");
+    store.readAgentRunInput.mockResolvedValue(input);
+    let observed: CompanionToolResult | undefined;
+    runtime.runCompanion.mockImplementation(async (invocation, port) => {
+      observed = await port.executeTool({ attemptId: invocation.attemptId, callId: "pending-edit-1", name: "edit_last_image",
+        effectScope: "turn_action", intent: { requestedNudity: "unspecified" },
+        arguments: { instruction: "Change only the green mug to red.", editScope: { mode: "local", target: "the green mug", selection: "one" } } });
+      await port.commit({ ...terminalCandidate(invocation.attemptId), content: "", mediaResponse: { version: 1, attachmentId: "pending-attachment" } });
+    });
+    let requests = 0;
+    const receipt = { accepted: true, duplicate: true, status: "awaiting_confirmation", attachmentId: "pending-attachment",
+      generationJobId: null, mediaAssetId: null, costDreamcoins: 0 };
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request) => {
+      if (String(url).endsWith("/api/internal/chat/tool-effects")) {
+        if (++requests === 1) throw new Error("Main persisted confirmation before response was lost");
+        return Response.json(receipt);
+      }
+      return Response.json({ accepted: true, duplicate: false, terminalMessageId: "assistant-1", committedAt: "2026-08-28T12:00:00.000Z" });
+    }));
+    await acceptAgentRun(input);
+    await completed.promise;
+    expect(observed).toMatchObject({ name: "edit_last_image", outcome: "succeeded", output: receipt });
+    const bodies = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/api/internal/chat/tool-effects"))
+      .map(([, init]) => JSON.parse(String(init?.body)));
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]).toEqual(bodies[1]);
+    expect(bodies[0]).toMatchObject({ turnId: "turn-1", attempt: 1, callId: "pending-edit-1", effectScope: "turn_action" });
+    expect(store.writeAgentRunProposal).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({
+      terminal: expect.objectContaining({ content: "", terminalEvidence: expect.objectContaining({ mediaResponse: { version: 1, attachmentId: "pending-attachment" } }) }),
+    }));
+  });
+
   it.each([
+    { name: "generate_image_async", status: 200, body: { accepted: false, status: "failed", attachmentId: "real-failed", error: "rejected" }, outcome: "failed", requests: 1, attachmentId: "real-failed" },
+    { name: "generate_image_async", status: 400, body: { accepted: false, status: "failed", attachmentId: "untrusted-http-id", error: "rejected" }, outcome: "failed", requests: 1 },
     { name: "search_character_media", status: 200, body: { accepted: true, status: "no_match", matches: [] }, outcome: "succeeded", requests: 1 },
     { name: "search_character_media", status: 200, body: { accepted: true, status: "no_match", matches: [], attachmentId: "fake" }, outcome: "failed", requests: 2 },
     { name: "search_character_media", status: 503, body: { error: "unavailable" }, outcome: "failed", requests: 2 },
@@ -877,7 +932,8 @@ describe("AgentRun account-erasure drain", () => {
       observed = await port.executeTool({ attemptId: invocation.attemptId, callId: "media-1", name: test.name,
         effectScope: test.name === "search_character_media" ? "attempt" : "turn_action",
         intent: { requestedNudity: "unspecified" },
-        arguments: test.name === "search_character_media" ? { kind: "image", query: "A seaside photo" } : { candidateToken: "signed" },
+        arguments: test.name === "search_character_media" ? { kind: "image", query: "A seaside photo" }
+          : test.name === "generate_image_async" ? { prompt: "Mina at the seaside", subject: "companion" } : { candidateToken: "signed" },
       });
     });
     vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request) => {
@@ -887,6 +943,8 @@ describe("AgentRun account-erasure drain", () => {
     await acceptAgentRun(input);
     await completed.promise;
     expect(observed).toMatchObject({ name: test.name, outcome: test.outcome });
+    if (test.attachmentId) expect(observed).toHaveProperty("attachmentId", test.attachmentId);
+    else expect(observed).not.toHaveProperty("attachmentId");
     if (test.outcome === "succeeded") expect(observed).toHaveProperty("output", test.body);
     else expect(observed).not.toHaveProperty("output");
     const bodies = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/api/internal/chat/tool-effects"))

@@ -201,6 +201,33 @@ describe("reply delivery through its public hook boundary", () => {
     return FakeEventSource.instances.at(-1)!;
   }
 
+  it.each(["accepted", "completed", "failed"])("keeps a textless %s attachment reply after done and refresh", async attachmentStatus => {
+    const stream = await startReply();
+    const terminal = {
+      ...streamingReply, status: "sent", content: "",
+      attachments: [{ id: "image-1", kind: "generated_image", status: attachmentStatus, mediaUrl: attachmentStatus === "completed" ? "/media/image-1.webp" : null }],
+    };
+    readSession.mockResolvedValue(session([opening, userTurn, terminal]));
+    await act(async () => stream.emit("done", { attempt: 1 }));
+
+    expect(messages).toEqual([opening, userTurn, terminal]);
+    expect(stream.closed).toBe(true);
+    expect(onStatus).not.toHaveBeenCalledWith("Reply failed to load. Please try again.");
+    await act(async () => { await delivery.refresh(); });
+    expect(messages).toEqual([opening, userTurn, terminal]);
+    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("still rejects a textless terminal reply with no attachment", async () => {
+    const stream = await startReply();
+    readSession.mockResolvedValue(session([opening, userTurn, { ...streamingReply, status: "failed" }]));
+    await act(async () => stream.emit("done", { attempt: 1 }));
+    expect(messages.some(message => message.id === streamingReply.id)).toBe(false);
+    expect(onStatus).toHaveBeenCalledWith("Reply failed to load. Please try again.");
+    expect(stream.closed).toBe(true);
+  });
+
   it("keeps streamed text when the authority poll still has an empty generating row", async () => {
     const stream = await startReply();
     await act(async () => stream.emit("delta", { delta: "Once upon" }));

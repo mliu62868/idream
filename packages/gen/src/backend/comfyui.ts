@@ -8,6 +8,7 @@
 // wait loop with its own AbortController + job.timeoutMs. health() is a readiness
 // probe, bounded by a fixed HEALTH_TIMEOUT_MS regardless of job timeout config.
 import { createHash, randomUUID } from "node:crypto";
+import { LOCAL_IMAGE_EDIT_VERSION } from "@idream/shared/chat/image-action";
 import { assertGeneratedImageSanity } from "@idream/shared/media/generated-image-sanity";
 import { logger } from "../logger";
 import { syncComfyUiWorkflow } from "./comfyui-workflow";
@@ -37,6 +38,26 @@ type WorkflowSync = (input: {
   descriptor: ComfyDescriptor;
   timeoutMs: number;
 }) => Promise<JsonRecord>;
+
+/** The local-edit algorithm is separately pinned in Main's immutable controls.
+ * Preserve the existing recipe for whole-image calls, but constrain local
+ * sampling to an encoded source latent. Masking Qwen's empty latent would
+ * preserve zeroes instead of the source and cannot constrain object placement.
+ */
+export function bindLocalizedEditSampling(
+  graph: ComfyDescriptor["apiPrompt"], descriptor: ComfyDescriptor, maskFilename: string,
+) {
+  const supported = (descriptor.workflowKey === "qwen-image-edit-img2img" && descriptor.version === 6)
+    || (descriptor.workflowKey === "qwen-image-edit-multi-reference" && descriptor.version === 8);
+  if (!supported || graph["2"]?.class_type !== "KSampler" || graph["9"]?.class_type !== "ImageScale" ||
+    graph["5"]?.class_type !== "IDreamQwen21VAELoader" || JSON.stringify(graph["2"].inputs.latent_image) !== '["3",2]') {
+    throw new Error("Localized sampling requires the pinned Qwen source/VAE/sampler graph");
+  }
+  graph["local-edit:mask"] = { class_type: "LoadImageMask", inputs: { image: maskFilename, channel: "red" } };
+  graph["local-edit:source"] = { class_type: "VAEEncode", inputs: { pixels: ["9", 0], vae: ["5", 0] } };
+  graph["local-edit:latent"] = { class_type: "SetLatentNoiseMask", inputs: { samples: ["local-edit:source", 0], mask: ["local-edit:mask", 0] } };
+  graph["2"].inputs.latent_image = ["local-edit:latent", 0];
+}
 
 // health() is a readiness probe (launch checks, monitoring), not a generation
 // request — bound it to a short fixed timeout instead of the (much larger) per-job
@@ -116,6 +137,11 @@ export class ComfyUIBackend implements GenBackend {
     const workflow = await this.getWorkflowGraph(descriptor, job.timeoutMs);
     const slots = await this.bindReferenceImageSlots(job);
     const prompt = bindComfySlots(descriptor, slots);
+    if (job.localEditMask) {
+      const name = `idream-edit-mask-${createHash("sha256").update(job.localEditMask).digest("hex")}.png`;
+      const mask = await this.uploadImage(job.localEditMask, name, "image/png", job.timeoutMs);
+      bindLocalizedEditSampling(prompt, descriptor, mask.subfolder ? `${mask.subfolder}/${mask.name}` : mask.name);
+    }
     const prepareMs = performance.now() - prepareStartedAt;
     const submitStartedAt = performance.now();
     const controller = new AbortController();
@@ -136,6 +162,7 @@ export class ComfyUIBackend implements GenBackend {
               key: descriptor.workflowKey,
               model_id: descriptor.modelId,
               version: descriptor.version,
+              ...(job.localEditMask ? { localizedEditVersion: LOCAL_IMAGE_EDIT_VERSION } : {}),
             },
           },
         }),

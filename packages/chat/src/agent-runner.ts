@@ -533,6 +533,8 @@ async function executeMainTool(
         callId: call.callId,
         name: call.name,
         outcome: "failed",
+        ...(response.ok && !lookup && value.status === "failed" && typeof value.attachmentId === "string" && value.attachmentId.trim()
+          ? { attachmentId: value.attachmentId } : {}),
         error: {
           code: typeof error?.code === "string"
             ? error.code
@@ -682,10 +684,11 @@ function terminalEvidence(
     profileDigest,
     prompt: {
       ...prompt,
-      systemPromptDigest: candidate.modelRequests?.at(-1)?.systemPromptDigest ?? prompt.systemPromptDigest,
+      systemPromptDigest: candidate.modelRequests?.findLast(request => request.purpose === undefined || request.purpose === "media_body")?.systemPromptDigest ?? prompt.systemPromptDigest,
     },
     preparedSystemPromptDigest: prompt.systemPromptDigest,
     ...(candidate.modelRequests ? { modelRequests: candidate.modelRequests } : {}),
+    ...(candidate.mediaResponse ? { mediaResponse: candidate.mediaResponse } : {}),
     memoryMode,
     runtime: "embedded_pi",
     runtimeInstance: runtimeInstance ?? null,

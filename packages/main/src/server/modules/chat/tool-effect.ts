@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   parseImageAgentToolCall,
+  imageEditScopeSchema,
   type ImageAgentToolCall,
 } from "@idream/shared/chat/image-action";
 import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL, type SearchCharacterMediaResult } from "@idream/shared/chat/media-library";
@@ -25,15 +26,16 @@ import {
 import { chatTurnForEffect } from "./turn-ledger";
 import { attachmentAttempt, lockChatScope } from "./turn-scope";
 import { characterMediaReceipt, deliverChatCharacterMedia, searchChatCharacterMedia } from "./character-media-tool-effect";
-import { isReadableChatMedia, readableOwnedChatMediaWhere } from "./chat-media-history";
+import { isReadableChatMedia, readableDeliveredChatMediaWhere } from "./chat-media-history";
 import { lockCharacterGenerationAuthority, lockMediaAssetAuthority } from "@/server/modules/admin-v2/characters/generation-authority-lock";
+import { createChatImageEditDraft } from "./image-edit-review";
 
 export type ChatToolEffectResult =
   | {
       accepted: true;
       duplicate: boolean;
       attachmentId: string;
-      status: "accepted" | "completed";
+      status: "accepted" | "completed" | "awaiting_confirmation";
       generationJobId: string | null;
       mediaAssetId: string | null;
       costDreamcoins: number;
@@ -89,9 +91,18 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
   }
   // An exact historical ACK is a read, with no execution or reattachment.
   if (prior && prior.status !== "requesting" && turn.attempt === effect.attempt && attachmentAttempt(prior.metadata) === effect.attempt) {
-    if (effect.effectScope === "attempt") assertEffectRequest(prior, requestDigest);
-    else assertTurnActionIntent(prior, effect);
-    return existingEffect(prior, requestDigest, effect.effectScope);
+    const receiptId = prior.id;
+    return prisma.$transaction(async tx => {
+      const scope = await lockChatScope(tx, { userId: turn.session.userId, at: { attachment: receiptId }, expect: {
+        attempt: effect.attempt, attachmentAttemptMatchesTurn: true,
+      } });
+      const current = scope.attachment!;
+      if (effect.effectScope === "attempt") assertEffectRequest(current, requestDigest);
+      else assertTurnActionIntent(current, effect);
+      // A paid retry can replace this pointer after the initial unlocked read.
+      // The ACK always describes the locked, current product receipt.
+      return existingEffect(current, requestDigest, effect.effectScope);
+    });
   }
   assertBoundImageEffect(turn, effect);
   // INVARIANT: an accepted effect remains replayable after its Turn becomes
@@ -130,6 +141,9 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
     : effect.arguments;
   const parsedCall = parseImageAgentToolCall(effect.name, argumentsToParse);
   if (!parsedCall) throw Errors.badRequest("Invalid image tool arguments");
+  if (!prior && parsedCall.name === "edit_last_image" && !parsedCall.arguments.editScope) {
+    throw Errors.badRequest("Choose the local target or explicitly request a whole-image edit before editing");
+  }
   if (parsedCall.arguments.requestedNudity !== undefined && parsedCall.arguments.requestedNudity !== effect.intent.requestedNudity) {
     throw Errors.badRequest("Image arguments and effect wardrobe intent differ");
   }
@@ -234,6 +248,7 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
         orientation: call.name === "generate_image_async" ? call.arguments.orientation : "original",
         outputCount: call.name === "generate_image_async" ? call.arguments.outputCount : 1,
         ...(sourceImageAssetId ? { sourceImageAssetId } : {}),
+        ...(call.name === "edit_last_image" && call.arguments.editScope ? { editScope: call.arguments.editScope } : {}),
       },
       ...(turn.characterVisualProfileId && turn.characterVisualProfileVersion
         ? {
@@ -254,7 +269,11 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
     // curated asset matches its scene or wardrobe; only the prior ACK above is reusable.
     // Existing generation authority performs pricing, balance check, wallet
     // reservation, Request/Attempt creation and dispatch under attachment idempotency.
-    await createChatImageGenerationJob(payload, effect.attempt);
+    if (call.name === "edit_last_image" && call.arguments.editScope?.mode === "local") {
+      await createChatImageEditDraft(payload, effect.attempt);
+    } else {
+      await createChatImageGenerationJob(payload, effect.attempt);
+    }
     // Generation binds the attachment in its acceptance transaction. Its
     // terminal (or a user retry) may already have advanced this exact pointer;
     // a late reservation ACK must never write it back to the original Job.
@@ -350,7 +369,7 @@ function effectRequestSnapshot(call: ImageAgentToolCall) {
         orientation: call.arguments.orientation,
         outputCount: call.arguments.outputCount,
       }
-    : { name: call.name };
+    : { name: call.name, ...(call.arguments.editScope ? { editScope: call.arguments.editScope } : {}) };
 }
 
 function persistedTurnActionCall(
@@ -366,6 +385,9 @@ function persistedTurnActionCall(
       arguments: {
         ...fallback.arguments,
         instruction: hint,
+        // Recovery uses the original accepted scope, including an absent legacy
+        // scope; a new model choice cannot widen the already admitted edit.
+        editScope: imageEditScopeSchema.parse(request?.editScope ?? { mode: "whole_image" }),
       },
     };
   }
@@ -449,7 +471,7 @@ async function rebindTurnActionAttempt(
       await lockCharacterGenerationAuthority(tx, scope.session.characterId);
       if (lockedAttachment.mediaAssetId) await lockMediaAssetAuthority(tx, lockedAttachment.mediaAssetId);
       const asset = lockedAttachment.mediaAssetId ? await tx.mediaAsset.findFirst({ where: {
-        id: lockedAttachment.mediaAssetId, ...readableOwnedChatMediaWhere(scope.userId, scope.session.characterId),
+        id: lockedAttachment.mediaAssetId, ...readableDeliveredChatMediaWhere(scope.userId, scope.session.characterId),
       } }) : null;
       if (!asset || !isReadableChatMedia(asset)) throw Errors.gone("The previously delivered media is no longer available");
     }
@@ -509,7 +531,7 @@ function existingEffect(
     accepted: true,
     duplicate: true,
     attachmentId: attachment.id,
-    status: attachment.status === "completed" ? "completed" : "accepted",
+    status: attachment.status === "awaiting_confirmation" ? "awaiting_confirmation" : attachment.status === "completed" ? "completed" : "accepted",
     generationJobId: attachment.generationJobId,
     mediaAssetId: attachment.mediaAssetId,
     costDreamcoins: Number(record(attachment.metadata)?.costDreamcoins ?? 0),

@@ -1,4 +1,4 @@
-export const COMPANION_IMAGE_SKILL_VERSION = "companion-image-director-10" as const;
+export const COMPANION_IMAGE_SKILL_VERSION = "companion-image-director-11" as const;
 
 /**
  * SPEC: The Companion Agent authors the mutable visual moment. Main/Gen owns
@@ -19,6 +19,7 @@ export const COMPANION_IMAGE_SKILL_PROMPT = [
   "- The latest photo's wardrobe, pose and location override Soul defaults and earlier photos, including nudity; Character identity stays fixed. Keep current scene details and choose unspecified details without asking again.",
   "- For ordinary photos, search prepared photos first when available; generate only after no suitable match. Choose generate_image_async directly for explicit new generation or without a search tool. Use edit_last_image for a change to the delivered photo. Existing-only or no-generation requests prohibit generation. Preserve requestedNudity and every wardrobe constraint.",
   "- One generation call makes one photo. For multiple-photo requests, promise only this one, never several, both, a few, or a number above one.",
-  "- Briefly acknowledge output.status in Character and the user's requested format. accepted or queued means still processing: use present/future tense throughout, never claim completion. completed confirms delivery only. outcome=succeeded confirms the call, not completion.",
+  "- edit_last_image must choose editScope: local names the existing object/region and returns a card where the user chooses and confirms editable pixels. The model's noun phrase is not an approved region. Use whole_image only for explicitly requested overall restyling, redo, viewpoint, pose or composition changes. Never broaden a local request or bypass its confirmation.",
+  "- The actual attachment card owns media status; do not add a separate media acknowledgement or claim visual correctness. awaiting_confirmation means no image was generated or charged: the user must choose and confirm the area first. accepted/queued means processing, completed means delivered. Continue only independently requested text; outcome=succeeded confirms the tool call, not the image.",
   "- Never claim visual correctness or unchanged pixels from a status receipt. Stay within the requested subjects and scene. Rejection means failure; attachment state owns completion. Keep technical details private.",
 ].join("\n");

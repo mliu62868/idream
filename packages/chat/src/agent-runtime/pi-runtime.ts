@@ -1,11 +1,11 @@
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { createAssistantMessageEventStream, createModels, getCurrentTools,
-  type AssistantMessage, type Models } from "@earendil-works/pi-ai";
+  type AssistantMessage, type Message, type Models } from "@earendil-works/pi-ai";
 import { CompactionTask, GenerationTask, Harness, MemoryStorage, ToolTask, createRegistry, defineExtension, hook,
   type Conversation, type GenerationCheckpoint, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { CompanionInvocation, PreparedTurnMessage } from "./contracts";
 import { COMPANION_COMPACTION_CONFIG } from "./composition";
-import { formatCompanionMessages, messageText, projectPiMessage, toPiMessage } from "./pi-context";
+import { fitCompanionMessages, messageText, projectPiMessage, toPiMessage } from "./pi-context";
 import { ProviderError, type OpenAiCompatibleAdapter } from "./openai-adapter";
 import { projectRecall } from "./session-recall";
 import { estimateModelRequestInputTokens } from "./model-request-format";
@@ -19,6 +19,8 @@ export interface PiExecutionOptions {
   adapter: OpenAiCompatibleAdapter;
   signal: AbortSignal;
   maxSteps: number;
+  purpose?: "media_body";
+  executionEvidence?: readonly PreparedTurnMessage[];
   tools(conversation: () => Conversation): readonly ToolRegistration[];
   assertContinuation(): void;
   text(delta: string): void;
@@ -39,7 +41,10 @@ const SUMMARY_PROMPT = [
  * One ephemeral Pi conversation per admitted attempt. Main owns product state;
  * no Pi inbox, checkpoint, partial stream, or usage total survives this call.
  */
-export async function executePiConversation(options: PiExecutionOptions): Promise<{ message: AssistantMessage; steps: number }> {
+export async function executePiConversation(options: PiExecutionOptions): Promise<{
+  message: AssistantMessage; context: readonly Message[]; steps: number;
+  selectedMediaCalls: { callId: string; name: string; arguments: unknown }[];
+}> {
   const { invocation, adapter, signal } = options;
   let fatal: Error | undefined;
   const fail = (error: unknown): never => {
@@ -49,10 +54,12 @@ export async function executePiConversation(options: PiExecutionOptions): Promis
   const guard = () => { if (fatal) throw fatal; signal.throwIfAborted(); options.assertContinuation(); };
   let conversation: Conversation;
   let latest: AssistantMessage | undefined;
+  let latestContext: readonly Message[] = [];
+  const selectedMediaCalls = new Map<string, { callId: string; name: string; arguments: unknown }>();
   let steps = 0;
   let streamed = false;
   const providerModels = createModels();
-  providerModels.setProvider(adapter.asProvider());
+  providerModels.setProvider(adapter.asProvider({ purpose: options.purpose }));
 
   // Pi reports ordinary hook exceptions and may continue. Every generation and
   // upstream summary fallback crosses this public Models boundary, where a
@@ -67,7 +74,14 @@ export async function executePiConversation(options: PiExecutionOptions): Promis
       void (async () => {
         for await (const event of incoming) {
           if (event.type === "text_delta") { streamed = true; options.text(event.delta); }
-          if (event.type === "done" || event.type === "error") latest = event.type === "done" ? event.message : event.error;
+          if (event.type === "done" || event.type === "error") {
+            latest = event.type === "done" ? event.message : event.error;
+            for (const block of latest.content) {
+              if (block.type === "toolCall" && ["generate_image_async", "edit_last_image", "send_character_media"].includes(block.name)) {
+                selectedMediaCalls.set(block.id, { callId: block.id, name: block.name, arguments: block.arguments });
+              }
+            }
+          }
           output.push(event);
         }
         output.end(await incoming.result());
@@ -98,13 +112,21 @@ export async function executePiConversation(options: PiExecutionOptions): Promis
           const checkpoint = task?.state.status === "running" ? task.state.checkpoint as GenerationCheckpoint : undefined;
           if (!checkpoint || checkpoint.phase !== "request") throw new Error("generation request boundary is missing");
           const view = await conversation.context(context, { at: checkpoint.cutoff });
+          const sourceIds = new Map<string, string>();
           const projected = view.entries.flatMap((entry, index) => view.contributions[index]!
             .filter(message => message.role !== "system")
-            .map((message, messageIndex) => projectPiMessage(entry, message, messageIndex, invocation)));
+            .map((message, messageIndex) => {
+              const projected = projectPiMessage(entry, message, messageIndex, invocation);
+              if (projected.role === "tool") sourceIds.set(projected.id, entry.kind === "idream.execution"
+                ? `execution:${encodeURIComponent(projected.id)}` : entry.kind === "idream.replay"
+                  ? `main:${encodeURIComponent(projected.id)}` : `pi:${encodeURIComponent(entry.id)}/message:${messageIndex}`);
+              return projected;
+            }));
           const archive = await projectRecall(conversation, context, {
             attemptId: invocation.attemptId, conversationId: conversation.id,
             assistant: { name: invocation.preparedTurn.characterName, characterId: invocation.characterId, sessionId: invocation.sessionId },
-            seed: invocation.preparedTurn.messages, omitted: invocation.preparedTurn.omittedMessages ?? [],
+            seed: invocation.preparedTurn.messages, omitted: invocation.preparedTurn.omittedMessages ?? [], execution: options.executionEvidence,
+            includeVisibleToolResults: true,
           });
           // Main may omit originals before Pi can summarize them. Advertise that
           // gap from the same authority as the tool, without leaking a preview or
@@ -113,12 +135,13 @@ export async function executePiConversation(options: PiExecutionOptions): Promis
             id: `archive-status:${invocation.attemptId}`, sourceKind: "plugin", role: "user",
             content: "Earlier dialogue is incomplete here: use session_recall to retrieve the omitted original messages. Summaries and repeated recent lines cannot establish the wording of an omitted passage. For an exact quotation, retrieve the original passage before quoting it.",
           }] : options.pinned;
-          const messages = formatCompanionMessages(projected, pinned, options.systemPrompt, getCurrentTools(request.messages), invocation.characterId);
-          // Request-only context never becomes conversation or recall evidence.
-          // Rebuild it after each successful lookup/compaction without duplication.
-          if (options.afterRetrievalContext?.available()) {
-            messages.push({ role: "user", content: options.afterRetrievalContext.content, timestamp: 1 });
-          }
+          const messages = fitCompanionMessages({ messages: projected, pinned, systemPrompt: options.systemPrompt,
+            tools: getCurrentTools(request.messages), respondingCharacterId: invocation.characterId,
+            maxInputTokens: invocation.preparedTurn.budget.maxInputTokens,
+            afterRetrievalContext: options.afterRetrievalContext?.available() ? options.afterRetrievalContext.content : undefined,
+            toolSources: new Map([...sourceIds].map(([id, sourceId]) => [id, archive.chunks.filter(chunk => chunk.sourceId === sourceId)])),
+          });
+          latestContext = messages;
           return { messages };
         } catch (error) { return fail(error); }
       },
@@ -185,6 +208,12 @@ export async function executePiConversation(options: PiExecutionOptions): Promis
         model: [toPiMessage(item, profile)],
       }), context);
     }
+    for (const item of options.executionEvidence ?? []) {
+      if (item.sourceKind !== "plugin" || (item.role !== "assistant" && item.role !== "tool")) throw new Error("invalid transferred execution evidence");
+      await conversation.commit(tx => tx.appendEntry(conversation.id, { kind: "idream.execution",
+        data: { id: item.id, sourceKind: item.sourceKind, owner: invocation.attemptId }, model: [toPiMessage(item, profile)],
+      }), context);
+    }
     const current = invocation.preparedTurn.messages.find(item => item.sourceKind === "current_user");
     if (!current || current.role !== "user") throw new Error("current user message is missing");
     const submission = await conversation.submit({ type: "input", whenBusy: "reject", requestId: invocation.attemptId, content: current.content,
@@ -194,7 +223,7 @@ export async function executePiConversation(options: PiExecutionOptions): Promis
     guard();
     if (!latest) throw new Error("Pi ended without a provider response");
     if (latest.stopReason === "error" || latest.stopReason === "aborted") throw adapter.getError(latest) ?? new ProviderError("provider response failed", "PROVIDER_STREAM_ERROR");
-    return { message: latest, steps };
+    return { message: latest, context: latestContext, steps, selectedMediaCalls: [...selectedMediaCalls.values()] };
   } finally {
     signal.removeEventListener("abort", abort);
     await aborting;

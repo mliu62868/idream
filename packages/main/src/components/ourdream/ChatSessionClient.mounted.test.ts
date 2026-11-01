@@ -1268,6 +1268,22 @@ describe("ChatSessionClient streaming composer", () => {
       .toContain("Get more dreamcoins");
   });
 
+  it("renders an unpaid edit confirmation card without announcing generation or an unavailable reply", async () => {
+    sessionMessages = [{ ...opening, content: "", status: "sent", attachments: [{ id: "edit-draft", kind: "generated_image", status: "awaiting_confirmation", costDreamcoins: 0 }] }];
+    await mountSession();
+    expect(container.querySelector('[data-testid="chat-image-edit-review-card"]')?.textContent).toContain("Review edit area");
+    expect(container.textContent).not.toMatch(/Generating image|Reply unavailable|Play voice/);
+    expect(vi.mocked(fetch).mock.calls.some(([url, init]) => String(url).includes("/edit-review") || init?.method === "POST")).toBe(false);
+  });
+
+  it("shows an unpaid cancellation without suggesting a refund or a paid retry", async () => {
+    sessionMessages = [{ ...opening, content: "", status: "sent", attachments: [{ id: "edit-draft", kind: "generated_image", status: "cancelled", costDreamcoins: 0, errorCode: "edit_discarded" }] }];
+    await mountSession();
+    const card = container.querySelector('[data-testid="chat-image-attachment-card"]');
+    expect(card?.textContent).toContain("Cancelled before editing. No coins used.");
+    expect(card?.textContent).not.toMatch(/refund|Retry image|Generating image/);
+  });
+
   it("explains the active-image cap on a failed image turn instead of an unavailable reply", async () => {
     sessionMessages = [{
       ...opening,
@@ -1322,6 +1338,39 @@ describe("ChatSessionClient streaming composer", () => {
     expect(JSON.parse(String(writes[0]?.body)).quoteAuthority).toMatchObject({ profileId: "image-profile", profileVersion: 2, costDreamcoins: 5 });
     await waitUntil(() => Boolean(container.querySelector('img[data-asset-id="new-image"]')));
     expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/attachments/"))).toBe(false);
+  });
+
+  it("does not offer an unchanged retry when Main rejected the preparation inputs", async () => {
+    sessionMessages = [{ ...opening, attachments: [{
+      id: "failed-preparation", kind: "generated_image", status: "failed", generationJobId: "job-preparation",
+      errorCode: "preparation_failed", canRetry: false, costDreamcoins: 8,
+    }] }];
+    await mountSession();
+    const card = container.querySelector('[data-testid="chat-image-attachment-card"]');
+    expect(card?.textContent).toContain("Image unavailable");
+    expect(card?.textContent).toContain("8 coins were returned");
+    expect(card?.textContent).not.toMatch(/Retry image|Generating image|being prepared/);
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/retry"))).toBe(false);
+  });
+
+  it("keeps the failed image visible while retry admission is pending or rejected", async () => {
+    sessionMessages = [{ ...opening, attachments: [{ id: "failed-image", kind: "generated_image", status: "failed", generationJobId: "job-old", errorCode: "provider_error" }] }];
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    const response = Promise.withResolvers<Response>();
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/generation/jobs/job-old/retry/quote") return response.promise;
+      return originalFetch(input, init);
+    });
+    await mountSession();
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Retry image")!.click());
+    const card = () => container.querySelector('[data-testid="chat-image-attachment-card"]');
+    expect(card()?.textContent).toContain("Checking image request");
+    expect(card()?.textContent).toContain("Image unavailable");
+    expect(card()?.textContent).not.toMatch(/Generating image|being prepared/);
+    await act(async () => response.resolve(Response.json({ ok: false, error: { code: "CONFLICT", message: "This request cannot be retried with the same inputs." } }, { status: 409 })));
+    expect(card()?.textContent).toContain("Image unavailable");
+    expect(card()?.textContent).not.toMatch(/Generating image|being prepared/);
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).endsWith("/retry"))).toBe(false);
   });
 
   it("clears another tab's generation warning once that original request is accepted", async () => {

@@ -9,6 +9,6 @@
 //   gen 的 legacy OpenAI-compatible 网关适配器，而那个适配器零调用方、保留理由
 //   （10-operations.md 的回滚 runbook）经核实不存在，已删除。退役方式与 `sd_cpp`
 //   相同：词表先收敛，库里仅有的一行 `pipeline` 由 db/sql 改写为 `comfyui`。
-export const GENERATION_PROFILE_RUNNERS = ["comfyui"] as const;
+export const GENERATION_PROFILE_RUNNERS = ["comfyui", "local-image"] as const;
 
 export type GenerationProfileRunner = (typeof GENERATION_PROFILE_RUNNERS)[number];
