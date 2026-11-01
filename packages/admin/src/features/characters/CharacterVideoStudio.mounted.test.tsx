@@ -936,6 +936,8 @@ describe("Character Video Studio", () => {
     expect(creates[1].key).toBeTruthy();
     expect(creates[1].key).not.toBe(creates[0].key);
     expect(creates[1].body).toEqual(creates[0].body);
+    // The projection render precedes the effect that releases its durable receipt.
+    await waitUntil(() => readActiveDurableMutationIntent({ scope }) === null);
     expect(readActiveDurableMutationIntent({ scope })).toBeNull();
   });
 

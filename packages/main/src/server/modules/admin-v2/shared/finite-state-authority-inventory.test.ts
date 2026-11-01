@@ -912,7 +912,6 @@ describe("Admin v2 finite-state authority inventory", { timeout: 30_000 }, () =>
     );
     expect(writers.sort()).toEqual([
       "src/server/modules/admin-v2/creative/placement.ts",
-      "src/server/modules/admin-v2/creative/retry-executor.ts",
       "src/server/modules/admin-v2/creative/review-decision.ts",
       "src/server/modules/content-production-state.ts",
     ]);
@@ -922,6 +921,12 @@ describe("Admin v2 finite-state authority inventory", { timeout: 30_000 }, () =>
       expect(contents, path).toContain("contentProductionItem.updateMany");
       expect(contents, path).toContain("version:");
     }
+    // Retry now reserves through Generation Attempt authority, which owns the
+    // shared versioned item transition instead of writing status in the executor.
+    expect(source("src/server/modules/admin-v2/creative/retry-executor.ts"))
+      .toContain("reserveRetryGenerationAttempt(tx,");
+    expect(source("src/server/modules/generation/generation-attempt-authority.ts"))
+      .toContain("markProductionItemRetryRequested(tx,");
   });
 
   it("funnels every ControlPlaneCommandAttempt mutation through one CAS authority", () => {

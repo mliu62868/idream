@@ -8,12 +8,13 @@ describe("image receipt grounding contract", () => {
     const prompt = composeCompanionSystemPrompt({ memoryEnabled: false, imageToolEnabled: true, soulPrompt: "Speak warmly.", characterName: "Sophie" });
     expect(prompt).toContain(COMPANION_IMAGE_SKILL_PROMPT);
     expect(prompt).toContain(`Image direction skill (${COMPANION_IMAGE_SKILL_VERSION})`);
-    expect(prompt).toContain("acknowledge output.status");
-    expect(prompt).toContain("the user's requested format");
-    expect(prompt).toContain("accepted or queued means still processing");
-    expect(prompt).toContain("use present/future tense throughout, never claim completion");
-    expect(prompt).toContain("completed confirms delivery only");
-    expect(prompt).toContain("outcome=succeeded confirms the call, not completion");
+    expect(prompt).toContain("The actual attachment card owns media status");
+    expect(prompt).toContain("do not add a separate media acknowledgement or claim visual correctness");
+    expect(prompt).toContain("awaiting_confirmation means no image was generated or charged");
+    expect(prompt).toContain("the user must choose and confirm the area first");
+    expect(prompt).toContain("accepted/queued means processing, completed means delivered");
+    expect(prompt).toContain("Continue only independently requested text");
+    expect(prompt).toContain("outcome=succeeded confirms the tool call, not the image");
   });
 
   it("keeps image descriptions within the request and the evidence returned", () => {
@@ -25,11 +26,21 @@ describe("image receipt grounding contract", () => {
     expect(unavailable).not.toContain(COMPANION_IMAGE_SKILL_PROMPT);
   });
 
-  it("advertises editing as an asynchronous request with no visual proof in its receipt", () => {
+  it("requires local confirmation and keeps asynchronous delivery separate from visual proof", () => {
     const edit = IMAGE_AGENT_TOOL_DEFINITIONS.find(tool => tool.name === EDIT_LAST_IMAGE_TOOL)!;
-    expect(edit.description).toContain("asynchronous edit of the LAST delivered photo");
-    expect(edit.description).toContain("accepted/queued means still processing");
-    expect(edit.description).toContain("completed confirms delivery only, not visual correctness");
-    expect(edit.description).toContain("not unrelated scenes; preserve identity");
+    expect(edit.description).toContain("edit of the LAST delivered photo");
+    expect(edit.description).toContain("Local edits return an area-confirmation card");
+    expect(edit.description).toContain("no generation or charge occurs until the user confirms");
+    expect(edit.description).toContain("Whole-image edits run asynchronously");
+    expect(edit.description).toContain("completed confirms delivery, not visual correctness");
+    expect(edit.parameters).toMatchObject({
+      required: expect.arrayContaining(["editScope"]),
+      properties: {
+        editScope: {
+          description: expect.stringContaining("Never use whole_image to bypass confirmation for a localized request"),
+        },
+      },
+    });
+    expect(COMPANION_IMAGE_SKILL_PROMPT).toContain("Character identity stays fixed");
   });
 });

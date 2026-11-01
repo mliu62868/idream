@@ -5,13 +5,21 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { adminV2Operation, apiGet, bulkArchiveAssets } = vi.hoisted(() => ({
+const { adminV2Operation, chatLibraryOperation, apiGet, bulkArchiveAssets } = vi.hoisted(() => ({
   adminV2Operation: vi.fn(),
+  chatLibraryOperation: vi.fn(),
   apiGet: vi.fn(),
   bulkArchiveAssets: vi.fn(),
 }));
 
-vi.mock("@/lib/admin-v2-operation", () => ({ adminV2Operation }));
+// The real chat panel loads independently and must not consume source-library
+// response queues, including the failures and stale responses under test.
+vi.mock("@/lib/admin-v2-operation", () => ({
+  adminV2Operation: (operationId: string, ...args: unknown[]) =>
+    operationId === "GET /api/v2/admin/characters/:id/media-library"
+      ? chatLibraryOperation(operationId, ...args)
+      : adminV2Operation(operationId, ...args),
+}));
 vi.mock("@/components/admin/api", () => ({ apiGet }));
 vi.mock("@/components/admin/assets/assets-api", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/components/admin/assets/assets-api")>(),
@@ -42,6 +50,7 @@ vi.mock("./CharacterVideoStudio", () => ({
 }));
 
 import { characterWorkspaceDetail } from "./character-workspace-fixture";
+import { emptyCharacterMediaLibrary } from "./character-media-library-fixture";
 import { CharacterImageLibrary } from "./CharacterImageLibrary";
 import { CharacterVideoLibrary } from "./CharacterVideoLibrary";
 import { CharacterPlacementEditor } from "./CharacterPlacementEditor";
@@ -117,6 +126,7 @@ describe("Character media availability", () => {
     document.body.append(container);
     root = createRoot(container);
     adminV2Operation.mockReset();
+    chatLibraryOperation.mockReset().mockImplementation(async () => emptyCharacterMediaLibrary());
     apiGet.mockReset();
     bulkArchiveAssets.mockReset();
   });
@@ -169,6 +179,9 @@ describe("Character media availability", () => {
         />
       ));
     });
+    await waitUntil(() => container.querySelector('[aria-label="Chat media library"]')?.textContent
+      ?.includes("No chat media in this view.") === true);
+    expect(container.querySelector('[aria-label="Chat media library"] [role="alert"]')).toBeNull();
   }
 
   async function renderPlacement() {
@@ -197,9 +210,12 @@ describe("Character media availability", () => {
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "retained");
       search.dispatchEvent(new Event("input", { bubbles: true }));
-      window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT));
     });
     await waitUntil(() => apiGet.mock.calls.length === 2);
+    expect(new URL(apiGet.mock.calls[1][0], "http://admin.test").searchParams.get("search")).toBe("retained");
+    await act(async () => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)));
+    await waitUntil(() => apiGet.mock.calls.length === 3);
+    expect(new URL(apiGet.mock.calls[2][0], "http://admin.test").searchParams.get("search")).toBe("retained");
     await waitUntil(() => container.querySelector("video") !== null);
     await act(async () => finishOld({ items: [] }));
     expect(container.querySelector("video")?.getAttribute("src")).toBe(video.url);
@@ -257,9 +273,12 @@ describe("Character media availability", () => {
     });
 
     it(`${kind}: unmatched search has a clear action and keeps the existing library`, async () => {
-      request().mockImplementation(async (_operation, options) => ({
-        items: kind === "images" && options?.query?.get("search") ? [] : [asset],
-      }));
+      request().mockImplementation(async (operation, options) => {
+        const search = kind === "images"
+          ? options?.query?.get("search")
+          : new URL(operation, "http://admin.test").searchParams.get("search");
+        return { items: search ? [] : [asset] };
+      });
       await renderLibrary(kind);
       await waitUntil(() => container.querySelector("article") !== null);
       const search = container.querySelector<HTMLInputElement>(`input[placeholder="Search ${kind}"]`);
@@ -274,7 +293,7 @@ describe("Character media availability", () => {
       await act(async () => button("Clear search").click());
       await waitUntil(() => container.querySelectorAll("article").length === 1);
       expect(search?.value).toBe("");
-      expect(request()).toHaveBeenCalledTimes(kind === "images" ? 3 : 1);
+      expect(request()).toHaveBeenCalledTimes(3);
     });
 
     it(`${kind}: a refresh failure preserves loaded assets with a stale-data notice`, async () => {

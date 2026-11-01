@@ -1,9 +1,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { expect } from "vitest";
 import type { Prisma } from "@prisma/client";
+import sharp from "sharp";
 import { idempotencyKeys, MAIN_QUEUES } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
+import { providers } from "@/server/providers";
 import { AGE_GATE_COOKIE, type ActorRole } from "@/server/lib/auth";
 import { dispatchV1 } from "@/server/modules/ourdream/service";
 import { quoteAuthorityFor } from "@/server/modules/ourdream/generation-quote";
@@ -361,6 +363,7 @@ export async function publishCharacterForPublicAudience(input: {
   const releaseId = `${input.characterId}-public-release`;
   const snapshotHash = `${releaseId}-snapshot`;
   const dataset = "integration-test-editorial";
+  const storageKey = `test-fixtures/${assetId}.webp`;
 
   await prisma.$transaction(async (tx) => {
     const character = await tx.character.findUnique({
@@ -391,7 +394,9 @@ export async function publishCharacterForPublicAudience(input: {
         type: "image",
         url: `/user-content/${assetId}/content.webp`,
         thumbnailUrl: `/user-content/${assetId}/thumbnail.webp`,
-        storageKey: `test-fixtures/${assetId}.webp`,
+        storageKey,
+        width: 448,
+        height: 768,
         contentType: "image/webp",
         visibility: "public_pack",
         safetyStatus: "passed",
@@ -474,6 +479,13 @@ export async function publishCharacterForPublicAudience(input: {
     });
   });
 
+  // A published image is also a generation source. Admission now verifies its
+  // actual pixels; a database locator alone is not a usable source fixture.
+  const pixels = await sharp({ create: {
+    width: 448, height: 768, channels: 3, background: "#7296b0",
+  } }).webp().toBuffer();
+  const stored = await providers.blob.putPrivate({ key: storageKey, body: pixels, contentType: "image/webp" });
+  expect(stored.ok).toBe(true);
   return { assetId, projectId, releaseId };
 }
 
@@ -1150,8 +1162,13 @@ export async function purgeTestData(prefix: string) {
   // a snapshot that makes fixture cleanup order-dependent.
   const purgeMedia = await prisma.mediaAsset.findMany({
     where: { OR: [{ id: sw }, { ownerId: sw }] },
-    select: { id: true },
+    select: { id: true, storageKey: true },
   });
+  for (const asset of purgeMedia) {
+    if (asset.id.endsWith("-public-avatar") && asset.storageKey === `test-fixtures/${asset.id}.webp`) {
+      await providers.blob.delete({ key: asset.storageKey });
+    }
+  }
   const purgeMediaIds = purgeMedia.map((asset) => asset.id);
   if (purgeMediaIds.length > 0) {
     await prisma.characterVisualReferenceSnapshot.deleteMany({
