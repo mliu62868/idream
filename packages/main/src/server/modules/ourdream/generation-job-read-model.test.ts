@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { refundGenerationRequest } from "@/server/ai/generation-refund";
 import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
+import { appendGenerationEvent } from "./generation-job-authority";
 import {
   api,
   createUser,
@@ -26,6 +27,38 @@ afterAll(async () => {
 });
 
 describe("customer generation job read model", () => {
+  it("keeps same-time admission events in CUID order after reverse physical insertion", async () => {
+    const userId = `${P}event-order-user`;
+    const jobId = `${P}event-order-job`;
+    const createdAt = new Date("2026-08-11T16:06:30.000Z");
+    await createUser({ id: userId });
+    await prisma.generationJob.create({ data: {
+      id: jobId, userId, mode: "image", controls: {}, presetIds: [], status: "queued",
+    } });
+    const emitted = await prisma.$transaction(async tx => {
+      const events = [];
+      for (const type of ["created", "reserved", "queued"]) {
+        events.push(await appendGenerationEvent(tx, jobId, type, `Admission ${type}`, {}));
+      }
+      return events;
+    });
+    const ids = emitted.map(event => event.id);
+    // Use the actual writer's default IDs, not handcrafted sortable fixture IDs.
+    expect(ids).toEqual([...ids].sort());
+    await prisma.$transaction(async tx => {
+      await tx.generationJobEvent.deleteMany({ where: { jobId } });
+      for (const event of [...emitted].reverse()) {
+        await tx.generationJobEvent.create({ data: { ...event, metadata: {}, createdAt } });
+      }
+    });
+
+    const detail = await api("GET", `generation/jobs/${jobId}`, { userId, ageGate: true });
+    expectOk(detail);
+    expect(detail.data.events).toEqual(emitted.map(event => ({
+      id: event.id, type: event.type, message: event.message, metadata: {}, createdAt: createdAt.toISOString(),
+    })));
+  });
+
   it("reads actual settlement without treating quotes or refund events as ledger facts", async () => {
     const userId = `${P}settlement-user`;
     const chargedId = `${P}settlement-charged`;
