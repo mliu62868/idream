@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import sharp from "sharp";
 import {
   characterRouteEvaluationMatrixDirections,
   characterRouteEvaluationMatrixKey,
@@ -13,6 +14,7 @@ import { POST as createCreativeRun } from "@/app/api/v2/admin/creative/runs/rout
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
+import { providers } from "@/server/providers";
 import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
 import { evaluateGenerationRouteQualification } from "./route-qualification";
 import { findQualifiedGenerationRoute } from "./visual-authority";
@@ -39,6 +41,7 @@ describe("production Generation Route Qualification writer", () => {
   const batchId = `${prefix}batch`;
   const matrixKey = characterRouteEvaluationMatrixKey("realistic");
   const anchorAssetId = `${prefix}anchor`;
+  const anchorStorageKey = `tests/${anchorAssetId}.webp`;
   const referenceSetId = `${prefix}reference-set`;
   const recipeKey = `${prefix}character-recipe`;
   let evaluationBatchId: string | null = null;
@@ -48,6 +51,11 @@ describe("production Generation Route Qualification writer", () => {
     await createUser({ id: actorId, role: "admin" });
     await createUser({ id: supportId, role: "support" });
     await createCharacter({ id: characterId, creatorId: actorId, status: "draft", visibility: "private" });
+    const anchorBytes = await sharp({ create: {
+      width: 768, height: 1024, channels: 3, background: "#7296b0",
+    } }).webp().toBuffer();
+    const storedAnchor = await providers.blob.putPrivate({ key: anchorStorageKey, body: anchorBytes, contentType: "image/webp" });
+    expect(storedAnchor.ok).toBe(true);
     await prisma.mediaAsset.create({
       data: {
         id: anchorAssetId,
@@ -55,7 +63,10 @@ describe("production Generation Route Qualification writer", () => {
         characterId,
         type: "image",
         url: `/test/${anchorAssetId}.webp`,
-        storageKey: `tests/${anchorAssetId}.webp`,
+        storageKey: anchorStorageKey,
+        contentType: "image/webp",
+        width: 768,
+        height: 1024,
         visibility: "private",
         safetyStatus: "passed",
         metadata: { operational: true },
@@ -295,6 +306,7 @@ describe("production Generation Route Qualification writer", () => {
     await prisma.generationRouteQualification.deleteMany({ where: { id: { in: qualificationIds } } });
     await prisma.generationRecipe.deleteMany({ where: { recipeKey } });
     await prisma.generationModelProfile.deleteMany({ where: { id: modelProfileId } });
+    await providers.blob.delete({ key: anchorStorageKey });
     await purgeTestData(prefix);
     await prisma.$disconnect();
   });
@@ -515,8 +527,8 @@ describe("production Generation Route Qualification writer", () => {
         }),
       },
     ));
-    expect(response.status).toBe(202);
     const payload = await response.json();
+    expect(response.status, JSON.stringify(payload)).toBe(202);
     evaluationBatchId = payload.data.batch.id as string;
     const jobs = await prisma.generationJob.findMany({
       where: {

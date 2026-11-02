@@ -42,8 +42,27 @@ const { createMockGenProviders } = await import(genProviderModulePath) as {
 };
 const imageModel = createMockGenProviders().image;
 
+function fixtureMediaToolName(text: unknown) {
+  return typeof text === "string" && (text === "Send a portrait." || /^please make an image from this chat \d+$/.test(text))
+    ? "generate_image_async" : text === "Edit the last portrait." ? "edit_last_image" : null;
+}
+
 function fixtureChatMessage(body: Record<string, unknown>) {
   const messages = Array.isArray(body.messages) ? body.messages : [];
+  const system = messages.filter(message => message?.role === "system")
+    .map(message => typeof message.content === "string" ? message.content : "").join("\n");
+  if (system.startsWith("Identify the independent text requests that remain to be answered after the supplied media action.")) {
+    const source = messages.findLast(message => message?.role === "user");
+    const input = JSON.parse(typeof source?.content === "string" ? source.content : "null") as {
+      originalUserRequest?: unknown; existingAttachmentCard?: { attachmentId?: unknown };
+    } | null;
+    // These scripted requests ask only for media. Unknown or mixed requests
+    // need an explicit fixture instead of silently losing a requested answer.
+    if (!fixtureMediaToolName(input?.originalUserRequest)
+      || typeof input?.existingAttachmentCard?.attachmentId !== "string"
+      || !input.existingAttachmentCard.attachmentId.trim()) throw new Error("Unsupported media extraction fixture input");
+    return { role: "assistant", content: JSON.stringify({ requests: [] }) };
+  }
   const format = body.response_format as { type?: string; json_schema?: { name?: string } } | undefined;
   if (format?.type === "json_schema" && format.json_schema?.name === "scene_changes") {
     // This fixture supplies no narrative facts; it does not qualify extraction.
@@ -79,8 +98,7 @@ function fixtureChatMessage(body: Record<string, unknown>) {
   }
   // These fixed test messages select a scripted model response; this fixture
   // does not classify arbitrary user intent or qualify the real model's choice.
-  const name = typeof currentUser === "string" && (currentUser === "Send a portrait." || /^please make an image from this chat \d+$/.test(currentUser))
-    ? "generate_image_async" : currentUser === "Edit the last portrait." ? "edit_last_image" : null;
+  const name = fixtureMediaToolName(currentUser);
   const tools = Array.isArray(body.tools) ? body.tools : [];
   const offered = tools.some(tool => tool?.function?.name === name);
   if (body.tool_choice === "auto" && offered && name) {
@@ -94,8 +112,6 @@ function fixtureChatMessage(body: Record<string, unknown>) {
       } }],
     };
   }
-  const system = messages.filter(message => message?.role === "system")
-    .map(message => typeof message.content === "string" ? message.content : "").join("\n");
   // The official igrep maintenance protocol is plain text, not JSON: no
   // profile observations => NONE; no reconciliation changes => empty output.
   const content = system.includes("You are Dream, the only writer")

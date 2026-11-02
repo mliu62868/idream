@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import sharp from "sharp";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
+import * as remoteImage from "@/server/lib/safe-remote-image";
 import { dispatchV1 } from "@/server/modules/ourdream/service";
 import { getCharacterWorkspace } from "./workspace";
 import { issueCharacterPreviewToken } from "./preview-token";
@@ -354,6 +356,8 @@ describe.sequential("Character renderer preview Serving authority", () => {
       where: { id: assetPack.character_cover },
       data: { url: "https://cdn.example/renderer-cover.webp" },
     });
+    const bytes = await sharp({ create: { width: 16, height: 16, channels: 3, background: "#345678" } }).webp().toBuffer();
+    const readRemote = vi.spyOn(remoteImage, "readRemoteImage").mockResolvedValue({ bytes, contentType: "image/webp" });
     try {
       const response = await dispatchV1(
         new Request(
@@ -361,10 +365,12 @@ describe.sequential("Character renderer preview Serving authority", () => {
         ),
         ["media", assetPack.character_cover, "content"],
       );
-      expect(response.status).toBe(302);
-      expect(response.headers.get("location")).toBe(
-        "https://cdn.example/renderer-cover.webp",
-      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("location")).toBeNull();
+      expect(response.headers.get("content-type")).toBe("image/webp");
+      expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
+      expect(readRemote).toHaveBeenCalledExactlyOnceWith("https://cdn.example/renderer-cover.webp");
 
       const unpinned = await dispatchV1(
         new Request(
@@ -373,7 +379,9 @@ describe.sequential("Character renderer preview Serving authority", () => {
         ["media", "not-in-preview", "content"],
       );
       expect(unpinned.status).toBe(404);
+      expect(readRemote).toHaveBeenCalledTimes(1);
     } finally {
+      readRemote.mockRestore();
       await prisma.mediaAsset.update({
         where: { id: assetPack.character_cover },
         data: { url: originalUrl },

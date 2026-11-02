@@ -11,7 +11,10 @@ const db = vi.hoisted(() => ({
   comic: { findUnique: vi.fn() }, generationJob: { findFirst: vi.fn() }, mediaAsset: { findFirst: vi.fn() },
 }));
 vi.mock("@/server/lib/db", () => ({ prisma: db }));
-vi.mock("@/server/lib/env", () => ({ env: { BETTER_AUTH_SECRET: "handoff-test-secret-no-provider" } }));
+vi.mock("@/server/lib/env", async importOriginal => {
+  const actual = await importOriginal<typeof import("@/server/lib/env")>();
+  return { ...actual, env: { ...actual.env, BETTER_AUTH_SECRET: "handoff-test-secret-no-provider" } };
+});
 
 import { applyGenerationContext, generationContextSource, loadGenerationContext, readGenerationContextToken, resolveGenerationContext, signGenerationContext } from "./generation-context";
 import { generationJobSchema } from "./generation-request-schema";

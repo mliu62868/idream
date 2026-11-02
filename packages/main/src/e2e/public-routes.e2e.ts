@@ -587,6 +587,14 @@ test.describe("public route smoke", () => {
     };
     await page.goto("/upgrade");
     for (const plan of plansPayload.data.items) {
+      if (new Set(plansPayload.data.items.map((item) => item.billingPeriod)).size > 1) {
+        const periodButton = page.getByRole("group", { name: "Access period" }).getByRole("button", {
+          name: plan.billingPeriod === "monthly" ? "Monthly" : "Yearly",
+          exact: true,
+        });
+        await periodButton.click();
+        await expect(periodButton).toHaveAttribute("aria-pressed", "true");
+      }
       const planCard = page.locator("article").filter({
         has: page.getByRole("heading", {
           name: `${plan.name} ${plan.billingPeriod}`,

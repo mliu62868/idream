@@ -2701,6 +2701,11 @@ test("mobile explore keeps bottom nav fixed and cards unobscured", async ({ page
     "rgb(255, 255, 255)",
   );
 
+  const filtersButton = page.getByRole("button", { name: "Filters", exact: true });
+  await expect(filtersButton).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("combobox", { name: "Gender filter" })).toBeHidden();
+  await filtersButton.click();
+  await expect(filtersButton).toHaveAttribute("aria-expanded", "true");
   for (const name of ["Gender filter", "Style filter", "Age filter"] as const) {
     const box = await page.getByRole("combobox", { name }).boundingBox();
     expect(box).not.toBeNull();
@@ -3734,19 +3739,20 @@ test("chat UI opens Generate with character context and renders chat image attac
 
   const firstTerminal = await prisma.chatTurn.findUniqueOrThrow({
     where: { assistantMessageId: assistantMessageId! },
-    select: { id: true, attempt: true, assistantStatus: true, terminalEvidence: true },
+    select: { id: true, attempt: true, assistantStatus: true, assistantContent: true, terminalEvidence: true },
   });
   await testInfo.attach("chat-image-first-terminal-accounting", {
     body: JSON.stringify(firstTerminal, null, 2), contentType: "application/json",
   });
-  // The fixture uses a native image call, then reads Main's receipt before
-  // replying. Both physical requests report totals without reasoning subtotals.
+  // The native call and receipt follow-up are followed by media extraction.
+  // This request needs only the attachment card, so no spoken reply is saved.
   expect(firstTerminal).toMatchObject({
     attempt: 1,
     assistantStatus: "sent",
+    assistantContent: "",
     terminalEvidence: {
-      replyUsage: { promptTokens: 24, completionTokens: 16, reasoningTokens: null },
-      execution: { steps: 2, toolCalls: 1 },
+      replyUsage: { promptTokens: 36, completionTokens: 24, reasoningTokens: null },
+      execution: { steps: 3, toolCalls: 1 },
       tools: [{
         name: "generate_image_async",
         callId: expect.stringMatching(/^call_/),
@@ -3755,13 +3761,15 @@ test("chat UI opens Generate with character context and renders chat image attac
       }],
     },
   });
-  expect(firstTerminal.terminalEvidence).toHaveProperty("modelRequests.length", 2);
+  expect(firstTerminal.terminalEvidence).toHaveProperty("modelRequests.length", 3);
+  expect(firstTerminal.terminalEvidence).toHaveProperty("modelRequests.2.purpose", "media_extraction");
 
   const attachment = await prisma.chatTurnAttachment.findFirstOrThrow({
     where: { turn: { assistantMessageId: assistantMessageId! }, kind: "generated_image" },
     select: { id: true, generationJobId: true, status: true, errorCode: true, metadata: true },
   });
   expect(attachment.generationJobId, JSON.stringify(attachment)).toBeTruthy();
+  expect(firstTerminal.terminalEvidence).toHaveProperty("mediaResponse", { version: 1, attachmentId: attachment.id });
   await drainWorker(page.request, attachment.generationJobId!);
   const { id: mediaId } = await expectGeneratedAssetServed(page.request, attachment.generationJobId!);
   await page.reload();
@@ -3769,7 +3777,7 @@ test("chat UI opens Generate with character context and renders chat image attac
   const completedImage = page.getByTestId("chat-image-attachment");
   await expect(completedImage).toBeVisible({ timeout: 10_000 });
   await expect(completedImage).toHaveAttribute("src", /\/user-content\/.+\/content\.(?:jpg|png|webp)/);
-  await expect(completedImage).toHaveAttribute("alt", "Generated character image from this chat");
+  await expect(completedImage).toHaveAttribute("alt", "Character image from this chat");
   const generatedJob = await prisma.generationJob.findUniqueOrThrow({ where: { id: attachment.generationJobId! } });
   expect(generatedJob.characterId).toBe(characterId);
   expect(generatedJob.sourceType).toBe("chat_image");
@@ -3781,7 +3789,8 @@ test("chat UI opens Generate with character context and renders chat image attac
   expect(debits).toHaveLength(1);
   expect(debits[0]?.delta).toBe(-generatedJob.costDreamcoins);
 
-  // Regenerating the prose must keep the accepted image effect and its debit.
+  // Reply regeneration recovers the existing card and runs only extraction;
+  // it must neither select another media action nor charge for the image again.
   const regenerateResponse = page.waitForResponse((response) =>
     response.request().method() === "POST" && response.url().includes(`/messages/${assistantMessageId}/regenerate`),
   );
@@ -3794,7 +3803,7 @@ test("chat UI opens Generate with character context and renders chat image attac
 
   const regeneratedTerminal = await prisma.chatTurn.findUniqueOrThrow({
     where: { assistantMessageId: assistantMessageId! },
-    select: { id: true, attempt: true, assistantStatus: true, terminalEvidence: true },
+    select: { id: true, attempt: true, assistantStatus: true, assistantContent: true, terminalEvidence: true },
   });
   await testInfo.attach("chat-image-regenerated-terminal-accounting", {
     body: JSON.stringify(regeneratedTerminal, null, 2), contentType: "application/json",
@@ -3802,19 +3811,17 @@ test("chat UI opens Generate with character context and renders chat image attac
   expect(regeneratedTerminal).toMatchObject({
     attempt: 2,
     assistantStatus: "sent",
+    assistantContent: "",
     terminalEvidence: {
-      replyUsage: { promptTokens: 24, completionTokens: 16, reasoningTokens: null },
-      execution: { steps: 2, toolCalls: 1 },
-      tools: [{
-        name: "generate_image_async",
-        callId: expect.stringMatching(/^call_/),
-        effectScope: "turn_action",
-        intent: { requestedNudity: "unspecified" },
-      }],
+      replyUsage: { promptTokens: 12, completionTokens: 8, reasoningTokens: null },
+      execution: { steps: 1, toolCalls: 0 },
+      tools: [],
+      mediaResponse: { version: 1, attachmentId: attachment.id },
     },
   });
-  expect(regeneratedTerminal.terminalEvidence).toHaveProperty("modelRequests.length", 2);
-  await expect(assistantBubble).toContainText("Your image is ready.");
+  expect(regeneratedTerminal.terminalEvidence).toHaveProperty("modelRequests.length", 1);
+  expect(regeneratedTerminal.terminalEvidence).toHaveProperty("modelRequests.0.purpose", "media_extraction");
+  await expect(assistantBubble.getByTestId("chat-image-attachment")).toHaveAttribute("data-asset-id", mediaId);
   expect(await prisma.chatTurnAttachment.findMany({
     where: { turn: { assistantMessageId: assistantMessageId! } },
     select: { id: true, generationJobId: true, mediaAssetId: true, status: true },

@@ -1042,6 +1042,7 @@ describe("generation config control plane", () => {
       where: { mode: "image" },
       select: {
         id: true,
+        profileKey: true,
         allowedOrientations: true,
         enabled: true,
         maxCount: true,
@@ -1102,8 +1103,10 @@ describe("generation config control plane", () => {
         await prisma.characterVisualProfile.count({ where: { characterId } }),
       ).toBe(beforeVisualProfiles);
 
+      // Reference-only image profiles are also active. This scenario needs the
+      // public text-to-image model regardless of earlier suites' row updates.
       const unavailableProfile = previousProfiles.find(
-        (profile) => profile.status === "active",
+        (profile) => profile.profileKey === "profile_image_default_v1" && profile.status === "active",
       );
       expect(unavailableProfile).toBeDefined();
       await prisma.generationModelProfile.update({
