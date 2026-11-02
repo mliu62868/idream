@@ -8,7 +8,8 @@ import {
 
 const workflow = {
   version: 1,
-  backendKind: "capability_only",
+  // DrawThings declares reference capacity without concrete ComfyUI graph slots.
+  backendKind: "drawthings",
   capabilities: ["referenceImages"],
   inputs: [],
   identity: {

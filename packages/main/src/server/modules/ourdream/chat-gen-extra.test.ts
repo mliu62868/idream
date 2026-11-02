@@ -2,8 +2,10 @@ import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { characterVideoProductionRecipe } from "@idream/shared";
+import sharp from "sharp";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
+import * as remoteImage from "@/server/lib/safe-remote-image";
 import { dispatchV1 } from "@/server/modules/ourdream/service";
 import { providers } from "@/server/providers";
 import {
@@ -30,7 +32,7 @@ const CHAR = `${P}char`;
 const PINNED_RETRY_JOB_AUTHORITY = {
   model: "redcraft-qw21t",
   profileId: "profile_image_default_v1",
-  profileVersion: 7,
+  profileVersion: 8,
   orientation: "1:1",
   outputCount: 1,
   provider: "comfyui",
@@ -193,16 +195,17 @@ describe("media download (signed URL)", () => {
     expect(content.status).toBe(503);
   });
 
-  it("serves an absolute remote media authority without treating providerKey as storage", async () => {
-    const userId = `${P}dl-remote`;
-    const mediaId = `${P}dl-remote-media`;
+  it.each(["image", "video"] as const)("serves remote %s authority without treating providerKey as storage", async (type) => {
+    const userId = `${P}dl-remote-${type}`;
+    const mediaId = `${P}dl-remote-media-${type}`;
     const remoteUrl =
-      "https://cdn.example.test/idream/remote-authority.webp";
+      `https://cdn.example.test/idream/remote-authority.${type === "image" ? "webp" : "mp4"}`;
     await createUser({ id: userId });
     await createMedia({
       id: mediaId,
       ownerId: userId,
       storageKey: null,
+      type,
     });
     await prisma.mediaAsset.update({
       where: { id: mediaId },
@@ -219,19 +222,40 @@ describe("media download (signed URL)", () => {
       ageGate: true,
     });
     expectOk(download);
-    expect(download.data.url).toBe(remoteUrl);
-
-    const content = await dispatchV1(
-      new Request(`http://localhost/api/v1/media/${mediaId}/content`, {
-        headers: {
-          "x-idream-user-id": userId,
-          cookie: AGE_GATE_COOKIE_HEADER,
-        },
-      }),
-      ["media", mediaId, "content"],
-    );
-    expect(content.status).toBe(302);
-    expect(content.headers.get("location")).toBe(remoteUrl);
+    if (type === "image") {
+      expect(download.data.url).toBe(`/user-content/${Buffer.from(mediaId).toString("base64url")}/content.webp?download=1`);
+    } else {
+      expect(download.data.url).toBe(remoteUrl);
+    }
+    const bytes = await sharp({ create: { width: 16, height: 16, channels: 3, background: "#345678" } }).webp().toBuffer();
+    // Stub only network retrieval; the image response still fully decodes and
+    // verifies the real bytes before serving the authenticated proxy route.
+    const readRemote = vi.spyOn(remoteImage, "readRemoteImage").mockResolvedValue({ bytes, contentType: "image/webp" });
+    try {
+      const content = await dispatchV1(
+        new Request(`http://localhost/api/v1/media/${mediaId}/content`, {
+          headers: {
+            "x-idream-user-id": userId,
+            cookie: AGE_GATE_COOKIE_HEADER,
+          },
+        }),
+        ["media", mediaId, "content"],
+      );
+      if (type === "image") {
+        expect(content.status).toBe(200);
+        expect(content.headers.get("location")).toBeNull();
+        expect(content.headers.get("content-type")).toBe("image/webp");
+        expect(content.headers.get("x-content-type-options")).toBe("nosniff");
+        expect(Buffer.from(await content.arrayBuffer())).toEqual(bytes);
+        expect(readRemote).toHaveBeenCalledExactlyOnceWith(remoteUrl);
+      } else {
+        expect(content.status).toBe(302);
+        expect(content.headers.get("location")).toBe(remoteUrl);
+        expect(readRemote).not.toHaveBeenCalled();
+      }
+    } finally {
+      readRemote.mockRestore();
+    }
   });
 
   it("fails closed when the private blob signer is unavailable", async () => {

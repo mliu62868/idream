@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import sharp from "sharp";
 import type { Prisma } from "@prisma/client";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { parseGenerationConfigResponse } from "@/lib/public-api-contracts";
@@ -11,6 +12,8 @@ import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
+import { providers } from "@/server/providers";
+import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import { ACCOUNT_DELETION_GRACE_PERIOD_MS } from "@/server/account-deletion-authority";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-validation";
 import { POST as createCreativeRunV2 } from "@/app/api/v2/admin/creative/runs/route";
@@ -41,8 +44,12 @@ import { adminV2Route } from "@/server/test/admin-v2-route-client";
 const { version: imageEditWorkflowVersion }: { version: number } = JSON.parse(
   readFileSync(new URL("../../../../../gen/workflows/qwen-image-edit-img2img.json", import.meta.url), "utf8"),
 );
+const { version: imageWorkflowVersion }: { version: number } = JSON.parse(
+  readFileSync(new URL("../../../../../gen/workflows/redcraft-qw21t.json", import.meta.url), "utf8"),
+);
 
 const P = "zt-admin-";
+const fixtureBlobKeys: string[] = [];
 const seedPricingAuthorities = [
   { id: "seed-pricing-image-default-v1", mode: "image" },
   { id: "seed-pricing-video-default-v1", mode: "video" },
@@ -75,6 +82,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  for (const key of fixtureBlobKeys) await providers.blob.delete({ key });
   await purgeTestData(P);
   await restoreSeedPricingAuthorities();
   await prisma.$disconnect();
@@ -1010,8 +1018,8 @@ describe("generation config control plane", () => {
       expect(gen.data.job).toMatchObject({
         status: "queued",
         profileId: "profile_image_default_v1",
-        // The published RedCraft seed is v7; jobs must retain its exact pin.
-        profileVersion: 7,
+        // The published RedCraft seed is v8; jobs must retain its exact pin.
+        profileVersion: 8,
         recipeId: "template_image_character_default",
         recipeVersion: 1,
       });
@@ -1034,6 +1042,7 @@ describe("generation config control plane", () => {
       where: { mode: "image" },
       select: {
         id: true,
+        profileKey: true,
         allowedOrientations: true,
         enabled: true,
         maxCount: true,
@@ -1094,8 +1103,10 @@ describe("generation config control plane", () => {
         await prisma.characterVisualProfile.count({ where: { characterId } }),
       ).toBe(beforeVisualProfiles);
 
+      // Reference-only image profiles are also active. This scenario needs the
+      // public text-to-image model regardless of earlier suites' row updates.
       const unavailableProfile = previousProfiles.find(
-        (profile) => profile.status === "active",
+        (profile) => profile.profileKey === "profile_image_default_v1" && profile.status === "active",
       );
       expect(unavailableProfile).toBeDefined();
       await prisma.generationModelProfile.update({
@@ -1410,14 +1421,14 @@ describe("generation config control plane", () => {
         runner: "comfyui",
         pipelineModel: "mock-image-workflow",
         allowedOrientations: ["1:1"],
-        workflowKey: "redqw21",
+        workflowKey: "redcraft-qw21t",
       },
     });
     expectOk(draft);
-    expect(draft.data.profile.workflowKey).toBe("redqw21");
+    expect(draft.data.profile.workflowKey).toBe("redcraft-qw21t");
     expect(
       await prisma.generationModelProfile.findUnique({ where: { id: draft.data.profile.id } }),
-    ).toMatchObject({ workflowKey: "redqw21" });
+    ).toMatchObject({ workflowKey: "redcraft-qw21t" });
 
     const unknownPatch = await adminV2(
       "PATCH",
@@ -1447,11 +1458,11 @@ describe("generation config control plane", () => {
       {
         userId: admin,
         role: "admin",
-        body: { workflowKey: "redqw21" },
+        body: { workflowKey: "redcraft-qw21t" },
       },
     );
     expectOk(restorePatch);
-    expect(restorePatch.data.profile.workflowKey).toBe("redqw21");
+    expect(restorePatch.data.profile.workflowKey).toBe("redcraft-qw21t");
   });
 
   it("routes a generation job through workflowKey when the selected profile has one", async () => {
@@ -1475,7 +1486,11 @@ describe("generation config control plane", () => {
         mode: "image",
         runner: "comfyui",
         pipelineModel: "mock-image-workflow-route",
-        workflowKey: "redqw21",
+        workflowKey: "redcraft-qw21t",
+        runnerConfig: {
+          workflowVersion: imageWorkflowVersion,
+          capabilities: { textToImage: true },
+        },
         allowedOrientations: ["1:1"],
         version: 1,
         status: "active",
@@ -1494,7 +1509,7 @@ describe("generation config control plane", () => {
     expect(gen.data.job.profileId).toBe(profileKey);
 
     const stored = await prisma.generationJob.findUnique({ where: { id: gen.data.job.id } });
-    expect(stored?.model).toBe("redqw21");
+    expect(stored?.model).toBe("redcraft-qw21t");
 
     await runQueuedGenerationJobs(4);
   });
@@ -2112,13 +2127,23 @@ describe("generation config control plane", () => {
       visibility: "public",
       status: "approved",
     });
+    const referenceKey = `test-fixtures/${P}production-variation-reference.webp`;
+    fixtureBlobKeys.push(referenceKey);
+    const referenceBytes = await sharp({ create: {
+      width: 768, height: 1024, channels: 3, background: "#7296b0",
+    } }).webp().toBuffer();
+    const storedReference = await providers.blob.putPrivate({ key: referenceKey, body: referenceBytes, contentType: "image/webp" });
+    expect(storedReference.ok).toBe(true);
     const variationReference = await prisma.mediaAsset.create({
       data: {
         id: `${P}production-variation-reference`,
         ownerId: admin,
         characterId: character.id,
         type: "image",
-        url: `https://assets.test/${P}production-variation-reference.webp`,
+        url: `/user-content/${P}production-variation-reference/content.webp`,
+        storageKey: referenceKey,
+        width: 768,
+        height: 1024,
         contentType: "image/webp",
         safetyStatus: "passed",
         metadata: {},
@@ -2131,7 +2156,7 @@ describe("generation config control plane", () => {
         label: "Production profile",
         mode: "image",
         runner: "comfyui",
-        pipelineModel: "redqw21-image-edit",
+        pipelineModel: "redcraft-image-edit",
         workflowKey: "qwen-image-edit-img2img",
         runnerConfig: {
           workflowVersion: imageEditWorkflowVersion,
@@ -2489,10 +2514,10 @@ describe("generation config control plane", () => {
         label: "Production refund profile",
         mode: "image",
         runner: "comfyui",
-        pipelineModel: "redqw21",
-        workflowKey: "redqw21",
+        pipelineModel: "redcraft-qw21t",
+        workflowKey: "redcraft-qw21t",
         runnerConfig: {
-          workflowVersion: 2,
+          workflowVersion: imageWorkflowVersion,
           capabilities: { textToImage: true },
         },
         allowedOrientations: ["4:5"],
@@ -3057,6 +3082,11 @@ describe("dead-letter operations console", () => {
     await makeJob(`${P}dl-failed`, owner, "failed", 10, "provider_timeout");
     await makeJob(`${P}dl-blocked`, owner, "blocked", 10);
     await makeJob(`${P}dl-done`, owner, "completed", 10);
+    await grantCoins(owner, 100, "seed");
+    await prisma.$transaction(tx => postDreamcoinEntry(tx, {
+      kind: "generation_spend", userId: owner, amount: 10, sourceId: `${P}dl-failed`,
+      idempotencyKey: `generation:${P}dl-failed:reserve`,
+    }));
 
     expectError(
       await adminV2("GET", "/api/v2/admin/generation/dead-letter", { userId: analyst, role: "analyst" }),
@@ -3070,6 +3100,7 @@ describe("dead-letter operations console", () => {
     expect(ids).toEqual(expect.arrayContaining([`${P}dl-failed`, `${P}dl-blocked`]));
     expect(ids).not.toContain(`${P}dl-done`);
     expect(items.find((item) => item.id === `${P}dl-failed`)?.ledgerState).toBe("reserved");
+    expect(items.find((item) => item.id === `${P}dl-blocked`)?.ledgerState).toBe("not_charged");
   });
 
   it("batch requeues failed jobs, skips refunded/missing, writes one audit", async () => {

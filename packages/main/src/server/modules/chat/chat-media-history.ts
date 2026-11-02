@@ -40,13 +40,14 @@ async function deliveredEditProvenance(db: Prisma.TransactionClient, assets: rea
   } });
   if (!attempts.length) return result;
   const requestIds = [...new Set(attempts.map(attempt => attempt.requestId))];
-  const [jobs, outboxes] = await Promise.all([
-    db.generationJob.findMany({ where: { id: { in: requestIds } }, select: { id: true, userId: true, mode: true } }),
-    db.mainOutboxEvent.findMany({ where: { OR: [
-      { aggregateType: "generation_request", aggregateId: { in: requestIds }, eventType: { in: [...MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES] } },
-      { aggregateType: "generation_attempt", aggregateId: { in: attempts.map(attempt => attempt.id) }, eventType: "generation.terminal_record.accepted.v1" },
-    ] } }),
-  ]);
+  // A transaction owns one pg client; keep its evidence reads sequential.
+  const jobs = await db.generationJob.findMany({
+    where: { id: { in: requestIds } }, select: { id: true, userId: true, mode: true },
+  });
+  const outboxes = await db.mainOutboxEvent.findMany({ where: { OR: [
+    { aggregateType: "generation_request", aggregateId: { in: requestIds }, eventType: { in: [...MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES] } },
+    { aggregateType: "generation_attempt", aggregateId: { in: attempts.map(attempt => attempt.id) }, eventType: "generation.terminal_record.accepted.v1" },
+  ] } });
   for (const asset of candidates) {
     const bound = artifacts.filter(artifact => artifact.assetId === asset.id);
     if (bound.length !== 1) continue;

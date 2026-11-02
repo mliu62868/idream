@@ -307,7 +307,7 @@ describe("seed data provenance", () => {
         sampler: "er_sde",
         scheduler: "simple",
         cfgScale: 1,
-        version: 8,
+        version: 9,
         runnerConfig: expect.objectContaining({
           workflowVersion: 8,
           vaeTemporalPadding: "torch_cat",
@@ -329,7 +329,7 @@ describe("seed data provenance", () => {
         sampler: "er_sde",
         scheduler: "simple",
         cfgScale: 1,
-        version: 6,
+        version: 7,
         runnerConfig: expect.objectContaining({
           workflowVersion: 6,
           vaeTemporalPadding: "torch_cat",

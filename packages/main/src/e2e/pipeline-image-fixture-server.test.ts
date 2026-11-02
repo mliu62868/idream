@@ -1,6 +1,7 @@
 import { once } from "node:events";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { generationBackendHealth } from "@/server/modules/admin-v2/generation/diagnostics";
+import { mediaExtractionMessages, parseMediaTextRequests } from "../../../chat/src/agent-runtime/media-response";
 import { server } from "./pipeline-image-fixture-server";
 
 let base: string;
@@ -64,6 +65,39 @@ it("does not invent image actions from an offered tool or an unoffered forced na
     const response = await completion({ ...body, messages: [{ role: "user", content: "What would you photograph?" }] });
     expect((await response.json()).choices[0]).toMatchObject({ finish_reason: "stop" });
   }
+});
+
+it.each([false, true].flatMap(recovered => [false, true].map(stream => ({ recovered, stream }))))(
+  "handles the runtime's pure-media extraction (recovered=$recovered, stream=$stream)", async ({ recovered, stream }) => {
+    const text = "please make an image from this chat 1720000000000";
+    const identity = { attemptId: "fixture-attempt", callId: "fixture-call", name: "generate_image_async" as const };
+    const messages = mediaExtractionMessages(text, recovered ? { recoveredMediaAction: {
+      name: "generate_image_async", attachmentId: "fixture-attachment", status: "completed",
+      generationJobId: "fixture-image", mediaAssetId: "fixture-asset", costDreamcoins: 8,
+    } } : {
+      call: { ...identity, effectScope: "turn_action", intent: { requestedNudity: "unspecified" },
+        arguments: { subject: "companion", prompt: "An adult companion beside a rainy cafe window.", outputCount: 1, orientation: "4:5" } },
+      result: { ...identity, outcome: "succeeded", output: { accepted: true, status: "accepted", attachmentId: "fixture-attachment", generationJobId: "fixture-image" } },
+    });
+    const response = await completion({ stream, messages });
+    expect(response.status).toBe(200);
+    const event = stream ? JSON.parse((await response.text()).split("\n")[0]!.slice(6)) : await response.json();
+    const message = stream ? event.choices[0].delta : event.choices[0].message;
+    expect(parseMediaTextRequests(message.content, text)).toEqual([]);
+    expect(event.choices[0].finish_reason).toBe("stop");
+    expect(message.tool_calls).toBeUndefined();
+    expect(event.usage).toEqual({ prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 });
+  },
+);
+
+it("does not silently discard independent text from an unscripted media request", async () => {
+  const messages = mediaExtractionMessages("Send a portrait. Also tell me a story.", { recoveredMediaAction: {
+    name: "generate_image_async", attachmentId: "fixture-attachment", status: "completed",
+    generationJobId: "fixture-image", mediaAssetId: "fixture-asset", costDreamcoins: 8,
+  } });
+  const response = await completion({ messages });
+  expect(response.status).toBe(400);
+  expect((await response.json()).error.message).toBe("Unsupported media extraction fixture input");
 });
 
 it("speaks the official igrep non-stream profile-maintenance protocol", async () => {

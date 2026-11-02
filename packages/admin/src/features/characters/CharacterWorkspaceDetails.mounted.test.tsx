@@ -5,18 +5,26 @@ import type { AdminPermissionKey } from "@idream/shared/admin";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { adminV2Request } = vi.hoisted(() => ({
+const { adminV2Request, chatLibraryRequest } = vi.hoisted(() => ({
   adminV2Request: vi.fn(),
+  chatLibraryRequest: vi.fn(),
 }));
 
 vi.mock("@/lib/admin-v2-api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/admin-v2-api")>();
-  return { ...actual, adminV2Request };
+  return {
+    ...actual,
+    adminV2Request: (path: string, ...args: unknown[]) =>
+      new URL(path, "http://admin.test").pathname === "/api/v2/admin/characters/character-detail/media-library"
+        ? chatLibraryRequest(path, ...args)
+        : adminV2Request(path, ...args),
+  };
 });
 
 import { AdminI18nProvider } from "@/components/admin/i18n";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { characterWorkspaceDetail, withCharacterWorkspaceDetail } from "./character-workspace-fixture";
+import { emptyCharacterMediaLibrary } from "./character-media-library-fixture";
 import { CharacterWorkspace } from "./CharacterWorkspace";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
@@ -71,6 +79,7 @@ describe("Character workspace details", () => {
     root = createRoot(container);
     window.history.replaceState(null, "", "/admin/characters/character-detail");
     adminV2Request.mockReset();
+    chatLibraryRequest.mockReset().mockImplementation(async () => emptyCharacterMediaLibrary());
     // INTENT: 这份 mock 此前对所有路径一律返回 workspace，于是协作活动流拿到的 response.items
     //         是 undefined，只是因为它的 promise 落在断言窗口之后才没炸。详情页每多一个自取数
     //         面板都会改变 flush 顺序、把它掀出来。按路径给形状，别再让顺序决定成败。

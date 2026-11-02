@@ -212,7 +212,7 @@ describe("createGenerationJobForUser", () => {
     );
     const events = await prisma.generationJobEvent.findMany({
       where: { jobId: job.id },
-      orderBy: { createdAt: "asc" },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       select: { type: true },
     });
     expect(events.map((event) => event.type)).toEqual([
