@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { z } from "zod";
-import type { GenerationTerminalRecordIngest } from "@idream/shared/contracts";
+import { GENERATION_CLEANUP_KEYS_MAX, generationAssetDerivativeKey, type GenerationTerminalRecordIngest } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { providers } from "@/server/providers";
 import type { BlobStore } from "@/server/providers/types";
@@ -16,7 +16,7 @@ const cleanupPayloadSchema = z.object({
   version: z.literal(1), userId: z.string().min(1), requestId: z.string().min(1),
   attemptId: z.string().min(1), mode: z.enum(["image", "video"]),
   maxOutputs: z.number().int().min(1).max(4),
-  cleanupKeys: z.array(z.string().min(1)).min(1).max(4),
+  cleanupKeys: z.array(z.string().min(1)).min(1).max(GENERATION_CLEANUP_KEYS_MAX),
   terminalRecordRef: z.string().min(1), terminalRecordChecksum: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
 
@@ -28,15 +28,22 @@ export function generationCleanupKeysMatchDispatch(input: {
   const maxOutputs = input.maxOutputs;
   if (input.outputPrefix !== prefix || typeof maxOutputs !== "number" ||
       !Number.isSafeInteger(maxOutputs) || maxOutputs < 1 || maxOutputs > 4 ||
-      !input.cleanupKeys.length || input.cleanupKeys.length > maxOutputs ||
+      !input.cleanupKeys.length ||
       new Set(input.cleanupKeys).size !== input.cleanupKeys.length) return false;
-  return input.cleanupKeys.every((key) => {
-    if (!key.startsWith(prefix)) return false;
-    const name = key.slice(prefix.length);
-    if (input.mode === "video") return maxOutputs === 1 && name === "video.mp4";
-    const match = /^image-([1-4])\.(png|jpg|webp)$/.exec(name);
-    return match !== null && Number(match[1]) <= maxOutputs;
-  });
+  // Each output writes one asset and one derivative, so the two budgets are separate:
+  // a shared 2n total would let one output claim two assets under different extensions.
+  const derivativeCount = input.cleanupKeys.filter((key) => key.endsWith(".preview.webp")).length;
+  if (derivativeCount > maxOutputs || input.cleanupKeys.length - derivativeCount > maxOutputs) return false;
+  if (input.mode === "video" && maxOutputs !== 1) return false;
+  const assetNames = input.mode === "video"
+    ? ["video.mp4"]
+    : Array.from({ length: maxOutputs }, (_, index) => ["png", "jpg", "webp"].map((extension) => `image-${index + 1}.${extension}`)).flat();
+  const authorized = new Set(assetNames.flatMap((name) => {
+    const key = `${prefix}${name}`;
+    const derivative = generationAssetDerivativeKey(key);
+    return derivative ? [key, derivative] : [key];
+  }));
+  return input.cleanupKeys.every((key) => authorized.has(key));
 }
 
 export async function recordGenerationBlobCleanup(

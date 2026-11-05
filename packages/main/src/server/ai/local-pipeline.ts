@@ -39,6 +39,7 @@ import {
   MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES,
 } from "@/server/events/main-outbox-transport";
 import { removeGenerationAttemptQueueJob } from "./generation-attempt-queue";
+import { createDeliveredGenerationAsset, generatedAssetQuality } from "./generation-asset-delivery";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import { consumeGenerationTerminalRelay } from "./generation-terminal-relay";
 import { validateGenerationTerminalRelaySnapshot } from "./generation-terminal-relay-validation";
@@ -67,27 +68,6 @@ export interface LocalAiDrainResult {
     error?: string;
   }>;
   processed: number;
-}
-
-function unscoredGeneratedImageQuality() {
-  return generatedImageQualityEvidence(
-    "not_provided",
-    { status: "unscored" as const, reason: "worker_did_not_provide_evidence" },
-  );
-}
-
-function generatedImageQualityEvidence(
-  evaluatorVersion: string,
-  artifact: { status: "unscored"; reason: string },
-) {
-  return {
-    schemaVersion: "1" as const,
-    evaluatorVersion,
-    artifact,
-    faceCount: { status: "unscored" as const, reason: "evaluator_unavailable" },
-    identity: { status: "unscored" as const, reason: "evaluator_unavailable" },
-    intent: { status: "unscored" as const, reason: "evaluator_unavailable" },
-  };
 }
 
 export async function drainLocalAiPipeline(input: {
@@ -877,54 +857,19 @@ async function finalizeGenerationCompleted(
     if (existingAssets === 0) {
       for (const [index, asset] of payload.assets.entries()) {
         const mediaId = `media_${cryptoRandomId()}`;
-        const providerKey = typeof asset.providerKey === "string" ? asset.providerKey : asset.key;
-        const displayUrl =
-          `/user-content/${mediaRouteToken(mediaId)}/content${mediaFileExtension(asset.contentType)}`;
-        await tx.mediaAsset.create({
-          data: {
-            id: mediaId,
-            ownerId: job.userId,
-            sourceJobId: job.id,
-            characterId: job.characterId,
-            type: payload.mode,
-            url: displayUrl,
-            thumbnailUrl: payload.mode === "image" ? displayUrl : null,
-            storageKey: asset.key,
-            contentType: asset.contentType,
-            width: asset.width,
-            height: asset.height,
-            providerAssetId: providerKey,
-            sourcePromptHash: job.prompt ? promptHash(job.prompt) : null,
-            prompt: job.prompt,
-            visibility: "private",
-            safetyStatus: outputModeration.status,
-            metadata: toInputJson({
-              index,
-              provider: payload.provider ?? job.provider ?? "unknown",
-              providerKey,
-              synthetic: payload.provider?.startsWith("mock") ?? false,
-              contentType: asset.contentType,
-              width: asset.width,
-              height: asset.height,
-              seconds: asset.seconds,
-              usage: payload.usage,
-              storageKey: asset.key,
-              ...(job.sourceType === "character_preview"
-                ? { source: "character_preview" }
-                : {}),
-              visualProfileId: job.visualProfileId,
-              visualProfileVersion: job.visualProfileVersion,
-              consistencyMode: job.consistencyMode,
-              seed: job.seed,
-              referenceAssetIds: job.referenceAssetIds,
-              quality: asset.quality ?? unscoredGeneratedImageQuality(),
-            }),
-          },
+        await createDeliveredGenerationAsset(tx, {
+          id: mediaId,
+          request: job,
+          payload,
+          provider: payload.provider ?? job.provider ?? "unknown",
+          asset,
+          ordinal: index,
+          safetyStatus: outputModeration.status,
         });
         await appendGenerationEvent(tx, job.id, "image_quality_scored", "Image quality evidence recorded", {
           mediaAssetId: mediaId,
           assetIndex: index,
-          quality: asset.quality ?? unscoredGeneratedImageQuality(),
+          quality: generatedAssetQuality(asset),
         });
       }
     }
@@ -1495,12 +1440,6 @@ async function appendGenerationEvent(
 }
 
 
-function promptHash(value: string) {
-  let hash = 5381;
-  for (const char of value) hash = (hash * 33) ^ char.charCodeAt(0);
-  return `prompt_${Math.abs(hash)}`;
-}
-
 async function trackEvent(
   name: string,
   props: unknown,
@@ -1531,20 +1470,4 @@ function mediaAssetGenerationOrdinal(metadata: Prisma.JsonValue | null) {
 
 function cryptoRandomId() {
   return `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
-}
-
-function mediaFileExtension(contentType: string | undefined) {
-  const extensions: Record<string, string> = {
-    "image/gif": ".gif",
-    "image/jpeg": ".jpg",
-    "image/png": ".png",
-    "image/webp": ".webp",
-    "video/mp4": ".mp4",
-    "video/webm": ".webm",
-  };
-  return contentType ? (extensions[contentType] ?? "") : "";
-}
-
-function mediaRouteToken(id: string) {
-  return Buffer.from(id, "utf8").toString("base64url");
 }

@@ -126,7 +126,7 @@ Gen 编码后独立重解码检查所有保护像素；遮罩、源/候选/结�
 
 Gen 的 failed TerminalRecord 可携带 `cleanupKeys`；这些对象没有交付资格，不能被写成 succeeded assets 来换取清理入口。字段无默认值，历史记录的 checksum 格式保持不变。每次 put 调用前记录精确 key，即使存储写成功但 ACK 丢失也进入回滚范围；确认 `created: false` 的既存对象排除。立即删除的 throw 和 `ok: false` 都保留清理意图。
 
-Main 在不可变 dispatch 校验后，验证 `gen/{requestId}/attempts/{attemptId}/`、规范文件名及 dispatch 数量预算；与 terminal receipt 原子提交 `generation.blob_cleanup.requested.v1` outbox。独立 event-consumer lane 持 lease/CAS 重试，全部删除确认成功才标 delivered。取消或旧 attempt 的 failed 终态也能持久化清理，不恢复用户交付。账号擦除枚举该 outbox（包括 delivered）和 failed finalize 的 keys，最后再次枚举，未删除的 receipt 阻止 completion。
+Main 在不可变 dispatch 校验后，验证 `gen/{requestId}/attempts/{attemptId}/`、规范文件名（含 §2.1.7 的派生文件）及 dispatch 数量预算；与 terminal receipt 原子提交 `generation.blob_cleanup.requested.v1` outbox。独立 event-consumer lane 持 lease/CAS 重试，全部删除确认成功才标 delivered。取消或旧 attempt 的 failed 终态也能持久化清理，不恢复用户交付。账号擦除枚举该 outbox（包括 delivered）和 failed finalize 的 keys，最后再次枚举，未删除的 receipt 阻止 completion。
 
 有待清理 key 的同一 attempt 不自动重放 provider；精确终态重放保留原 checksum 与 keys。新 attempt 仍使用独立前缀。本协议不证明成功 put 后、首次 terminal record 持久化前的任意崩溃已自动补偿；queued/running/unknown Attempt 或 running/unknown TransportExecution 阻止账号硬删，未决产物须与运营裁决一起收敛。
 
@@ -144,7 +144,18 @@ Main 在不可变 dispatch 校验后，验证 `gen/{requestId}/attempts/{attempt
 
 Main 一侧的同类误判：Gen 在 `running` 之后到终态之前不发任何事件，长任务与死任务在 Main 看来一样。Bull `active` 能区分二者：worker 死后该行在一个 stall 周期内回到 waiting，所以 `active` 就是原始调用仍在运行，不存在重放风险。隔离因此推迟到 stale 阈值的 6 倍（与 Gen 总等待预算一致），兜底所有 worker 都消失、无人回收该行的情况。
 
-### 2.2 Dreamcoin Ledger 只有一个类型化写入口
+#### 2.1.7 展示派生文件由资产 key 推导（2026-11-05）
+
+网格加载原图曾是用户侧最明显的体积问题：`thumbnailUrl` 等于原图，视频没有 poster。现在 Gen 在 `normalizeArtifacts` 内（设备租约之外）为图片写长边 640px 的 WebP、为视频写首帧 WebP，与资产同前缀。原图逐字节不变，下载、编辑与 i2v 来源继续读原图；局部编辑的保留证明只绑定原图 hash。
+
+派生 key 只由 `generationAssetDerivativeKey(assetKey)` 这一个纯函数构造（§2.1.2），不新增列，也无 migration。这是有意的：`MediaAsset.storageKey` 的所有枚举点因此自动有了答案，不存在一个可能被遗漏或漂移的第二指针。TerminalRecord 资产只增加可选 `derivative`，历史记录 checksum 不变；它是 Main 同一 shared schema 解析的字段，因此发布须遵守 §6 的 receiver-first：旧 Main 会剥掉该字段，checksum 不符，隔离新记录。
+
+- **失败不影响交付**：派生文件渲染或写入失败时仍然交付已付费的成功结果，`derivative.status = "failed"` 记入 TerminalRecord 与 `MediaAsset.metadata`，网格回退原图。
+- **回滚**：派生文件的 put 与资产相同，调用前登记。后续资产失败时一并回滚，未确认删除的进入 `cleanupKeys`；预算为资产、派生各不超过 dispatch 输出数，因此一个输出不能借派生额度多写一个资产。
+- **摄取**：`ready` 的 key 必须等于推导值，否则隔离。
+- **擦除**：`materializeCurrentBlobDeletes` 在枚举结束后对全部 key 再推导一遍，因此 MediaAsset、被抑制的迟到产物、已恢复的 unknown 与 cleanup 意图都覆盖，也覆盖「ACK 丢失后记录为 failed、对象却已写入」。历史资产多一次对不存在对象的删除，是幂等空操作。Blob 删除只有这条路径涉及生成资产：媒体软删除只写 `deletedAt`，字节由账号擦除回收。
+- **读取**：`/user-content/{token}/thumbnail.webp` 与原图走同一组访问分支，只换读取的对象。门控是 `thumbnailUrl` 列等于该路由且行自有 `storageKey`：历史行、经 `shared_immutable` locator 借字节的行都回退原图，不回写。
+
 
 业务调用方不得自由组合 `(delta, reason: string)`，也不得直接写 `DreamcoinLedger`。
 

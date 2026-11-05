@@ -586,8 +586,8 @@ function CollectionFeedCard({
                 fill
                 loading={eager && previewIndex === 0 ? "eager" : "lazy"}
                 sizes="240px"
-                src={preview.url}
-                unoptimized={shouldBypassNextImageOptimizer(preview.url)}
+                src={preview.thumbnailUrl ?? preview.url}
+                unoptimized={shouldBypassNextImageOptimizer(preview.thumbnailUrl ?? preview.url)}
               /> : <span className="grid h-full place-items-center text-sm text-white/70">{preview.type === "video" ? "Video" : "Audio"}</span>}
             </div>
           ))}

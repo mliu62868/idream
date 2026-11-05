@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { generationQualitySchema } from "./payloads";
+import { GENERATION_CLEANUP_KEYS_MAX, generationAssetDerivativeSchema, generationQualitySchema } from "./payloads";
 
 export const durableEventEnvelopeSchema = z.object({
   sourceService: z.string().min(1),
@@ -44,6 +44,9 @@ const generationTerminalAssetSchema = z.object({
   seconds: z.number().positive().optional(),
   providerKey: z.string().nullable(),
   quality: generationQualitySchema.optional(),
+  // Absent on every record persisted before derivatives existed. The checksum
+  // hashes the parsed record, so this must never default to a value.
+  derivative: generationAssetDerivativeSchema.optional(),
 });
 
 export const generationProviderAccountingSchema = z.object({
@@ -107,7 +110,7 @@ export const generationTerminalRecordSchema = z.discriminatedUnion("outcome", [
     }).optional(),
     // Non-delivery evidence only. Omit on historical records to preserve their
     // checksum; Main validates exact attempt ownership before durable cleanup.
-    cleanupKeys: z.array(z.string().min(1)).min(1).max(4).refine(
+    cleanupKeys: z.array(z.string().min(1)).min(1).max(GENERATION_CLEANUP_KEYS_MAX).refine(
       (keys) => new Set(keys).size === keys.length,
       "cleanup keys must be unique",
     ).optional(),

@@ -1,5 +1,6 @@
 import { generationTerminalRecordChecksum } from "@idream/shared/contracts/durable-server";
 import { resolveGenerationAssetSuccessAttempts } from "@/server/ai/generation-asset-success-authority";
+import { mediaThumbnailViewUrl } from "@/server/modules/ourdream/public-read-model";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -562,11 +563,15 @@ describe("unknown Generation Attempt operator reconciliation", () => {
         usage: { images: 1, providerRequestIds: [providerRequestId] },
         assets: [{
           ordinal: 0,
-          key: `${queuePayload.outputPrefix as string}recovered.webp`,
+          key: `${queuePayload.outputPrefix as string}image-1.webp`,
           contentType: "image/webp",
           width: 768,
           height: 1024,
           providerKey: `unknown-adopt-asset-${suffix}`,
+          derivative: {
+            status: "ready", key: `${queuePayload.outputPrefix as string}image-1.preview.webp`,
+            contentType: "image/webp", width: 480, height: 640, sizeBytes: 100,
+          },
         }],
       });
       if (terminalRecord.outcome !== "succeeded") {
@@ -754,6 +759,14 @@ describe("unknown Generation Attempt operator reconciliation", () => {
         safetyStatus: "passed",
       });
       expect(asset.sourcePromptHash).toMatch(/^prompt_/);
+      // Adoption shares finalize's writer, so it no longer drops what finalize records.
+      expect(asset.thumbnailUrl).toBe(mediaThumbnailViewUrl(asset));
+      expect(asset.metadata).toMatchObject({
+        recoveredUnknown: true,
+        synthetic: expect.any(Boolean),
+        quality: { evaluatorVersion: "not_provided" },
+        derivative: { status: "ready" },
+      });
       await expect(prisma.generationArtifact.findFirstOrThrow({
         where: { attemptId: adoptAttemptId },
       })).resolves.toMatchObject({

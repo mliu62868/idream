@@ -11,6 +11,7 @@ import { ok } from "@/server/lib/http";
 import { jsonBody, toInputJson } from "@/server/lib/request-json";
 import { resolveMediaAssetBlobLocator } from "@/server/lib/media-asset-authority";
 import { mediaByteResponse } from "@/server/lib/media-byte-response";
+import { mediaGridUrl } from "./public-read-model";
 import { providers } from "@/server/providers";
 import { lockCharacterMediaAssetAuthorities } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { canonicalJsonHash, requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
@@ -270,7 +271,7 @@ async function sources(request: Request, viewerId: string) {
   const after = cursor(new URL(request.url).searchParams.get("cursor"), scope);
   const rows = await prisma.mediaAsset.findMany({ where: { ownerId: viewerId, deletedAt: null, ...(after ? { OR: [{ createdAt: { lt: new Date(after.at) } }, { createdAt: new Date(after.at), id: { lt: after.id } }] } : {}) }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 41 });
   const selected = rows.slice(0, 40), last = selected.at(-1);
-  return ok({ items: selected.filter(asset => packSourceUsable(asset, viewerId)).map(asset => ({ id: asset.id, type: asset.type, url: `/api/v1/media/${encodeURIComponent(asset.id)}/content` })), nextCursor: rows.length > 40 && last ? Buffer.from(JSON.stringify({ scope, id: last.id, at: last.createdAt.toISOString() })).toString("base64url") : null }, { headers: noStore });
+  return ok({ items: selected.filter(asset => packSourceUsable(asset, viewerId)).map(asset => ({ id: asset.id, type: asset.type, url: `/api/v1/media/${encodeURIComponent(asset.id)}/content`, thumbnailUrl: mediaGridUrl(asset, null) })), nextCursor: rows.length > 40 && last ? Buffer.from(JSON.stringify({ scope, id: last.id, at: last.createdAt.toISOString() })).toString("base64url") : null }, { headers: noStore });
 }
 
 export async function packLibrary(viewerId: string) {

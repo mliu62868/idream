@@ -1230,7 +1230,7 @@ describe("processImageGenerate", () => {
     const first = vi.mocked(deps.acknowledgeTerminalRecord).mock.calls[0]![0];
     const replay = vi.mocked(deps.acknowledgeTerminalRecord).mock.calls[1]![0];
     expect(first.terminalRecord).toMatchObject({ outcome: "failed", cleanupKeys: [
-      `${payload.outputPrefix}image-1.png`, `${payload.outputPrefix}image-2.png`,
+      `${payload.outputPrefix}image-1.png`, `${payload.outputPrefix}image-1.preview.webp`, `${payload.outputPrefix}image-2.png`,
     ] });
     expect(first.terminalRecord).not.toHaveProperty("assets");
     expect(replay).toEqual(first);
@@ -1260,6 +1260,7 @@ describe("processImageGenerate", () => {
     const payload = imagePayload({ outputPrefix: "gen/job_img_1/attempts/job_img_1:1/" });
     const blob = makeMemoryBlob();
     await blob.putPrivateIfAbsent({ key: `${payload.outputPrefix}image-1.png`, body: patternedPng(4, 4), contentType: "image/png" });
+    await blob.putPrivateIfAbsent({ key: `${payload.outputPrefix}image-1.preview.webp`, body: patternedPng(4, 4), contentType: "image/webp" });
     const put = blob.putPrivateIfAbsent;
     blob.putPrivateIfAbsent = vi.fn(async (input) => {
       const written = await put(input);

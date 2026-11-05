@@ -168,10 +168,10 @@ export function CollectionDetail({ id, onChanged }: { id: string; onChanged?: ()
         </form>}
         {detail.items.length === 0 ? <p className="text-sm">This collection is empty.{detail.canManage ? <> Add media from <Link className="underline" href="/custom?tab=media">your Gallery</Link>.</> : null}</p> : <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {detail.items.map((item, index) => <article className="overflow-hidden rounded-xl border border-white/10 p-2" data-testid="collection-detail-item" data-media-id={item.id} key={item.id}>
-            {!item.url ? <div className="grid aspect-square place-items-center text-sm text-white/60">Media unavailable</div> : item.type === "video" ? <video aria-label={`Collection video ${index + 1}`} className="aspect-square w-full object-contain" controls playsInline preload="metadata" src={item.url} /> : item.type === "voice" ? <audio aria-label={`Collection audio ${index + 1}`} className="w-full" controls preload="metadata" src={item.url} /> : (
+            {!item.url ? <div className="grid aspect-square place-items-center text-sm text-white/60">Media unavailable</div> : item.type === "video" ? <video aria-label={`Collection video ${index + 1}`} className="aspect-square w-full object-contain" controls playsInline poster={item.thumbnailUrl ?? undefined} preload={item.thumbnailUrl ? "none" : "metadata"} src={item.url} /> : item.type === "voice" ? <audio aria-label={`Collection audio ${index + 1}`} className="w-full" controls preload="metadata" src={item.url} /> : (
               // Native media keeps the same authenticated content URL as Gallery and supports mixed collections.
               // eslint-disable-next-line @next/next/no-img-element
-              <img alt={`Collection image ${index + 1}`} className="aspect-square w-full object-contain" loading="lazy" src={item.url} />
+              <img alt={`Collection image ${index + 1}`} className="aspect-square w-full object-contain" loading="lazy" src={item.thumbnailUrl ?? item.url} />
             )}
             {detail.canManage && <button aria-label={`Remove item ${index + 1} from collection`} className="mt-2 text-sm text-rose-300" disabled={busy} onClick={() => void mutate(item.id)} type="button">Remove from collection</button>}
           </article>)}

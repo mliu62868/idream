@@ -40,3 +40,22 @@ export function generationProviderInvocationRef(attemptId: string): string {
 export function generationTerminalFinalizeDedupeKey(attemptId: string): string {
   return `generation-terminal-record-finalize:${attemptId}`;
 }
+
+// SPEC: the only asset names Gen writes under an Attempt's output prefix.
+// Historical keys (no `attempts/` segment) and every non-generation key do not
+// match, so they have no derivative and can never gain a delete capability here.
+const GENERATION_DERIVATIVE_SOURCE_KEY =
+  /^(gen\/[^/]+\/attempts\/[^/]+\/(?:image-[1-4](?=\.(?:png|jpg|webp)$)|video(?=\.mp4$)))\.[a-z0-9]+$/;
+
+/**
+ * Blob key of an asset's display derivative (WebP preview or video poster).
+ * INVARIANT: pure, and the only construction of this name. Erasure derives it
+ * from the asset key instead of reading a stored pointer, so a derivative stays
+ * reachable even when its record says "failed" after a lost put acknowledgement;
+ * there is no second key column that could drift from storageKey or be forgotten
+ * beside it. A derivative key returns null: derivatives have no derivatives.
+ */
+export function generationAssetDerivativeKey(assetKey: string): string | null {
+  const match = GENERATION_DERIVATIVE_SOURCE_KEY.exec(assetKey);
+  return match ? `${match[1]}.preview.webp` : null;
+}

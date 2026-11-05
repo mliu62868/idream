@@ -5,7 +5,7 @@ import {
   accountDeletionRequestedV2PayloadSchema,
   durableEventEnvelopeSchema,
 } from "@idream/shared/contracts";
-import type { ChatAccountErasureCompletedV2Payload } from "@idream/shared/contracts";
+import { generationAssetDerivativeKey, type ChatAccountErasureCompletedV2Payload } from "@idream/shared/contracts";
 import { recordMainToChatEvent } from "@/processes/chat-outbox";
 import type { BlobStore, VoiceClipPort, VoiceProviderKey } from "@/server/providers/types";
 import { providers } from "@/server/providers";
@@ -875,6 +875,16 @@ async function materializeCurrentBlobDeletes(
   }
   for (const row of lateEvents) {
     for (const key of generationBlobKeys(row.metadata)) keys.add(key);
+  }
+  // INVARIANT: every generated asset key this pass found also erases its derivative,
+  // whichever source found it: a MediaAsset row, a suppressed late artifact or a
+  // recovered unknown with no row at all, or a failed Attempt's cleanup intent. The
+  // key derives from the asset key rather than from the record, because a lost put
+  // acknowledgement can leave an object behind a record that says "failed". Deleting
+  // an absent derivative of a historical asset is a no-op, never a false failure.
+  for (const key of [...keys]) {
+    const derivative = generationAssetDerivativeKey(key);
+    if (derivative) keys.add(derivative);
   }
   const data = [...keys].map((storageKey) => {
     const storageKeyHash = sha256(storageKey);

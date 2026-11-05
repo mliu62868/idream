@@ -156,8 +156,8 @@ function StripCard({ card, eager }: Readonly<{ card: CharacterCardData; eager: b
           fill
           loading={eager ? "eager" : "lazy"}
           sizes="(max-width: 767px) 50vw, 220px"
-          src={card.image}
-          unoptimized={shouldBypassNextImageOptimizer(card.image)}
+          src={card.thumbnailUrl ?? card.image}
+          unoptimized={shouldBypassNextImageOptimizer(card.thumbnailUrl ?? card.image)}
         />
         <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(0,0,0,.78),rgba(0,0,0,.18)_58%,transparent)]" />
         <div className="absolute inset-x-0 bottom-0 p-3">

@@ -16,6 +16,7 @@
 //
 // INVARIANT: 这里的字段名与取值就是 v1 的对外契约，改动等于改 API。
 import { Prisma } from "@prisma/client";
+import { generationAssetDerivativeKey } from "@idream/shared/contracts";
 // 直接引原处而不是 ./public-content-audience 的再导出：那个模块要连 prisma client
 // 才能判定 actor，读模型不需要，也不该因为一个 where 常量被拖进运行时依赖。
 import { nonSyntheticMediaAssetWhere } from "@/server/lib/media-asset-authority";
@@ -215,6 +216,7 @@ export function mediaCollectionDTO(collection: MediaCollectionWithRelations) {
       id: mediaAsset.id,
       type: mediaAsset.type,
       url: collectionMediaViewUrl(mediaAsset),
+      thumbnailUrl: mediaGridUrl(mediaAsset, null),
     })),
     createdAt: collection.createdAt.toISOString(),
   };
@@ -247,6 +249,36 @@ export function mediaViewUrl(asset: {
 
 function mediaRouteToken(id: string) {
   return Buffer.from(id, "utf8").toString("base64url");
+}
+
+/** The /user-content filename that selects an asset's display derivative. */
+export const MEDIA_THUMBNAIL_FILENAME = "thumbnail.webp";
+
+export function mediaThumbnailViewUrl(asset: { id: string }) {
+  return `/user-content/${mediaRouteToken(asset.id)}/${MEDIA_THUMBNAIL_FILENAME}`;
+}
+
+/**
+ * SPEC: the Blob key of a delivered derivative, or null for every other asset.
+ * INVARIANT: `thumbnailUrl` is what finalize writes when Gen's derivative is ready,
+ * and the key derives from the row's own `storageKey`. Rows that only borrow bytes
+ * through a shared locator, and every historical row, keep serving the original.
+ */
+export function mediaDerivativeKey(asset: {
+  id: string;
+  storageKey?: string | null;
+  thumbnailUrl?: string | null;
+}) {
+  if (!asset.storageKey || asset.thumbnailUrl !== mediaThumbnailViewUrl(asset)) return null;
+  return generationAssetDerivativeKey(asset.storageKey);
+}
+
+/** What a grid or list should load: the derivative when there is one, else `fallback`. */
+export function mediaGridUrl<Fallback extends string | null>(
+  asset: Parameters<typeof mediaDerivativeKey>[0],
+  fallback: Fallback,
+): string | Fallback {
+  return mediaDerivativeKey(asset) ? mediaThumbnailViewUrl(asset) : fallback;
 }
 
 // INTENT: 与 mediaViewUrl 同住。view URL 的后缀和下载文件名的后缀必须是同一个答案，

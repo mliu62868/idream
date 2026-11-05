@@ -48,6 +48,7 @@ export const publicCharacterCardSchema = z
     creatorName: z.string().nullable().optional(),
     canEditIdentity: z.boolean().optional(),
     image: renderableMediaSourceSchema,
+    thumbnailUrl: renderableMediaSourceSchema.optional(),
     imageAssetId: z.string().nullable().optional(),
     heroImage: renderableMediaSourceSchema.optional(),
     heroThumbnailUrl: renderableMediaSourceSchema.optional(),
@@ -450,6 +451,7 @@ const collectionMediaSchema = z.object({
   id: nonEmptyString,
   type: z.enum(["image", "video", "voice"]),
   url: renderableMediaSourceSchema,
+  thumbnailUrl: renderableMediaSourceSchema.nullable().optional(),
 }).strict();
 
 const feedCollectionItemSchema = z

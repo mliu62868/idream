@@ -304,6 +304,7 @@ export function CharacterVideoLibrary({
                   aria-label={t("Video for {name}", { name: data.character.name })}
                   className="aspect-video w-full bg-black object-contain"
                   controls
+                  poster={asset.thumbnailUrl && asset.thumbnailUrl !== asset.url ? asset.thumbnailUrl : undefined}
                   preload="metadata"
                   src={asset.url}
                 />

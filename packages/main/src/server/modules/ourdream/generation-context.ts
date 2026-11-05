@@ -15,7 +15,7 @@ import type { GenerationPromptCharacter } from "./generation-character-authority
 import type { GenerationCreateBody, GenerationSource } from "./generation-request-schema";
 import { loadReadableComic, comicContentUrl } from "./comic-authority";
 import { directCharacterAudienceWhere, publicCharacterAudienceWhere } from "./public-content-audience";
-import { collectionMediaViewUrl } from "./public-read-model";
+import { collectionMediaViewUrl, mediaGridUrl } from "./public-read-model";
 import { jsonRecord } from "./json-values";
 
 const chatSelectorSchema = z.object({
@@ -163,7 +163,7 @@ async function loadChatContext(userId: string, selector: z.infer<typeof chatSele
       const url = collectionMediaViewUrl(asset);
       return { ...selector, source: { kind: "chat" as const, ...selector }, identityMode: "source_only" as const,
         digest, pins: null, character: null, characterId: null, characterName: null, chatCharacterId: character.id,
-        scene, prompt, sourceMedia: { id: asset.id, url, thumbnailUrl: url }, sourceGenerationJobId: job.id, legacyRelease: false,
+        scene, prompt, sourceMedia: { id: asset.id, url, thumbnailUrl: mediaGridUrl(asset, url) }, sourceGenerationJobId: job.id, legacyRelease: false,
         authorityMediaAssetIds: [asset.id], returnHref, sourceLabel: "your chat" };
     }
   }
@@ -231,7 +231,7 @@ async function loadChatContext(userId: string, selector: z.infer<typeof chatSele
       acceptedBrief = chatMediaDescription(asset.metadata);
     }
     const url = collectionMediaViewUrl(asset);
-    sourceMedia = { id: asset.id, url, thumbnailUrl: url };
+    sourceMedia = { id: asset.id, url, thumbnailUrl: mediaGridUrl(asset, url) };
   }
   const scene = parsedScene.data;
   const sceneDirection = scene ? [

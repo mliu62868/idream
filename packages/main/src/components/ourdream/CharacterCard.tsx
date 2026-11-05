@@ -33,6 +33,7 @@ export function CharacterCard({
     hasLikes ? `${card.likes} likes` : null,
     hasChats ? `${card.chats} chats` : null,
   ].filter((value): value is string => Boolean(value)).join(". ");
+  const imageSource = card.thumbnailUrl ?? card.image;
 
   return (
     <Link
@@ -52,13 +53,13 @@ export function CharacterCard({
       )}
 
       <Image
-        src={card.image}
+        src={imageSource}
         alt=""
         fill
         loading={imageLoading}
         sizes="(max-width: 767px) calc((100vw - 24px) / 2), (max-width: 1023px) calc((100vw - 320px) / 3), (max-width: 1279px) calc((100vw - 332px) / 4), calc((100vw - 344px) / 5)"
         className="object-cover object-top"
-        unoptimized={imageUnoptimized || shouldBypassNextImageOptimizer(card.image)}
+        unoptimized={imageUnoptimized || shouldBypassNextImageOptimizer(imageSource)}
       />
       <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(0,0,0,.72),rgba(0,0,0,.58)_24%,rgba(0,0,0,.22)_48%,rgba(0,0,0,0)_70%)]" />
 

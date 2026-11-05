@@ -1188,7 +1188,10 @@ describe("account deletion authority", () => {
     });
     const requestId = `${P}late-generation-request`;
     const attemptId = `${P}late-generation-attempt`;
-    const lateStorageKey = `${P}late-generation/private.webp`;
+    // A canonical key: its record mentions no derivative, as after a lost put
+    // acknowledgement, and the object must still be enumerated by derivation.
+    const lateStorageKey = `gen/${requestId}/attempts/${attemptId}/image-1.webp`;
+    const lateDerivativeKey = `gen/${requestId}/attempts/${attemptId}/image-1.preview.webp`;
     const terminalRecordKey = `gen/terminal-records/${attemptId}/terminal.json`;
     await prisma.generationJob.create({
       data: {
@@ -1295,6 +1298,7 @@ describe("account deletion authority", () => {
       where: { deletionId: deletion.id },
     })).resolves.toEqual(expect.arrayContaining([
       expect.objectContaining({ storageKey: lateStorageKey, status: "pending" }),
+      expect.objectContaining({ storageKey: lateDerivativeKey, status: "pending" }),
       expect.objectContaining({ storageKey: terminalRecordKey, status: "pending" }),
     ]));
 
@@ -1315,8 +1319,8 @@ describe("account deletion authority", () => {
       blob,
       now: new Date(now.getTime() + 2_000),
       deletionIds: [deletion.id],
-    })).resolves.toEqual({ deleted: 2, failed: 0, completed: 1 });
-    expect(deletedKeys.sort()).toEqual([lateStorageKey, terminalRecordKey].sort());
+    })).resolves.toEqual({ deleted: 3, failed: 0, completed: 1 });
+    expect(deletedKeys.sort()).toEqual([lateStorageKey, lateDerivativeKey, terminalRecordKey].sort());
     await expect(prisma.user.findUnique({ where: { id: user.id } })).resolves.toBeNull();
     await expect(prisma.generationJob.findUnique({
       where: { id: requestId },
