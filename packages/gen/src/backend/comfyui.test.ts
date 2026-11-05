@@ -245,7 +245,7 @@ function makeBackend(videoMediaProbe?: VideoMediaProbe) {
   return new ComfyUIBackend({
     apiUrl: "http://x",
     workflowSync: testWorkflowSync,
-    ...(videoMediaProbe ? { videoMediaProbe, videoSoundtrackNormalizer: async (bytes: Uint8Array) => bytes } : {}),
+    ...(videoMediaProbe ? { videoMediaProbe, videoContainerFinalizer: async (bytes: Uint8Array) => bytes } : {}),
   });
 }
 
@@ -274,6 +274,195 @@ function videoOutputFetch() {
     }),
   ]);
 }
+
+describe("ComfyUIBackend prompt lifecycle", () => {
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+  const FINISHED = { status: { completed: true }, outputs: { "9": { images: [{ filename: "a.png", subfolder: "", type: "output" }] } } };
+  const NOT_FINISHED = {};
+  const refused = () => Object.assign(new TypeError("Unable to connect. Is the computer able to access the url?"), { code: "ConnectionRefused" });
+  const queueWith = (running: string[] = [], pending: string[] = []) => ({
+    queue_running: running.map((id, index) => [index, id]),
+    queue_pending: pending.map((id, index) => [index, id]),
+  });
+
+  // Routed rather than ordered, so a test states what the runner answers and not
+  // how often this implementation happens to ask.
+  function scriptedRunner(id: string, answers: { history: () => unknown; queue: () => unknown }) {
+    const cancellations: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/prompt")) return Response.json({ prompt_id: id });
+      if (url.includes("/history/")) {
+        const entry = answers.history();
+        return Response.json(entry === NOT_FINISHED ? {} : { [id]: entry });
+      }
+      if (url.endsWith("/interrupt") || (url.endsWith("/queue") && init?.method === "POST")) {
+        cancellations.push([url.slice("http://x".length), JSON.parse(String(init?.body))]);
+        return new Response(null);
+      }
+      if (url.endsWith("/queue")) {
+        const queue = answers.queue();
+        return queue instanceof Response ? queue : Response.json(queue);
+      }
+      return new Response(PNG, { headers: { "content-type": "image/png" } });
+    }));
+    return cancellations;
+  }
+
+  function backendFor(overrides: { runnerOutageGraceMs?: number; promptCancelGraceMs?: number } = {}) {
+    return new ComfyUIBackend({ apiUrl: "http://x", pollIntervalMs: 1, promptCancelGraceMs: 0, workflowSync: testWorkflowSync, ...overrides });
+  }
+
+  async function settle(backend: ComfyUIBackend, advanceMs: number, timeoutMs = 100) {
+    vi.useFakeTimers();
+    const handle = await backend.submit({ descriptor, slots: { prompt: "cat" }, timeoutMs });
+    let outcome: { ok: true; assets: number } | { ok: false; error: BackendInvocationError } | undefined;
+    const polling = backend.poll(handle).then(
+      (result) => { outcome = { ok: true, assets: result.assets.length }; },
+      (error: BackendInvocationError) => { outcome = { ok: false, error }; },
+    );
+    await vi.advanceTimersByTimeAsync(advanceMs);
+    vi.useRealTimers();
+    await polling;
+    return { outcome: outcome! };
+  }
+
+  it.each([
+    ["Bun", refused()],
+    ["Node", new TypeError("fetch failed", { cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }) })],
+  ])("treats a refused /prompt connection as never submitted (%s)", async (_runtime, failure) => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw failure; }));
+    await expect(backendFor().submit({ descriptor, slots: { prompt: "cat" }, timeoutMs: 5_000 })).rejects.toMatchObject({
+      phase: "pre_submit", outcome: "definitive", retryable: true,
+    });
+  });
+
+  it("keeps any other /prompt transport failure ambiguous", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("connection reset by peer"); }));
+    await expect(backendFor().submit({ descriptor, slots: { prompt: "cat" }, timeoutMs: 5_000 })).rejects.toMatchObject({
+      phase: "post_submit", outcome: "ambiguous",
+    });
+  });
+
+  it("fails as soon as the runner no longer tracks the prompt, without spending the budget", async () => {
+    scriptedRunner("p-gone", { history: () => NOT_FINISHED, queue: () => queueWith() });
+    const { outcome } = await settle(backendFor(), 5, 60_000);
+    expect(outcome).toMatchObject({ ok: false, error: {
+      code: "backend_error", phase: "post_submit", outcome: "definitive", retryable: true,
+      message: expect.stringContaining("no longer tracks prompt p-gone"),
+    } });
+  });
+
+  it("notices a running prompt vanish after a runner restart", async () => {
+    let queueReads = 0;
+    scriptedRunner("p-restart", { history: () => NOT_FINISHED, queue: () => (queueReads++ === 0 ? queueWith(["p-restart"]) : queueWith()) });
+    const { outcome } = await settle(backendFor(), 11_000, 60_000);
+    expect(outcome).toMatchObject({ ok: false, error: { outcome: "definitive", retryable: true } });
+    expect(queueReads).toBe(3);
+  });
+
+  it("does not call one missing queue read a lost prompt when history then has the result", async () => {
+    let historyReads = 0;
+    scriptedRunner("p-race", { history: () => (historyReads++ === 0 ? NOT_FINISHED : FINISHED), queue: () => queueWith() });
+    const { outcome } = await settle(backendFor(), 5, 60_000);
+    expect(outcome).toEqual({ ok: true, assets: 1 });
+  });
+
+  it("does not mistake an unreadable queue for a lost prompt", async () => {
+    scriptedRunner("p-queue-503", { history: () => NOT_FINISHED, queue: () => new Response(null, { status: 503 }) });
+    const { outcome } = await settle(backendFor(), 150);
+    expect(outcome).toMatchObject({ ok: false, error: { code: "timeout", outcome: "ambiguous" } });
+  });
+
+  it("rides out a runner outage and reports the prompt the restarted runner lost", async () => {
+    let historyReads = 0;
+    scriptedRunner("p-outage", {
+      history: () => { if (historyReads++ < 3) throw refused(); return NOT_FINISHED; },
+      queue: () => queueWith(),
+    });
+    const { outcome } = await settle(backendFor(), 20, 60_000);
+    expect(outcome).toMatchObject({ ok: false, error: { outcome: "definitive", retryable: true } });
+    expect(historyReads).toBeGreaterThan(3);
+  });
+
+  it("delivers output when the runner answers again after an outage", async () => {
+    let historyReads = 0;
+    scriptedRunner("p-back", {
+      history: () => { if (historyReads++ < 3) throw refused(); return FINISHED; },
+      queue: () => queueWith(["p-back"]),
+    });
+    const { outcome } = await settle(backendFor(), 20, 60_000);
+    expect(outcome).toEqual({ ok: true, assets: 1 });
+  });
+
+  it("stays ambiguous when the runner stays silent past the outage grace", async () => {
+    scriptedRunner("p-silent", { history: () => { throw refused(); }, queue: () => queueWith() });
+    const { outcome } = await settle(backendFor({ runnerOutageGraceMs: 20 }), 30, 60_000);
+    expect(outcome).toMatchObject({ ok: false, error: { code: "backend_error", phase: "post_submit", outcome: "ambiguous" } });
+  });
+
+  it("cancels an expired running prompt and refunds on the runner's own interrupted record", async () => {
+    let cancelled = false;
+    const cancellations = scriptedRunner("p-expired", {
+      history: () => (cancelled ? { status: { status_str: "error", completed: false, messages: [["execution_interrupted", {}]] } } : NOT_FINISHED),
+      queue: () => queueWith(["p-expired"]),
+    });
+    const backend = backendFor({ promptCancelGraceMs: 1_000 });
+    vi.useFakeTimers();
+    const handle = await backend.submit({ descriptor, slots: { prompt: "cat" }, timeoutMs: 50 });
+    let failure: BackendInvocationError | undefined;
+    const polling = backend.poll(handle).catch((error: BackendInvocationError) => { failure = error; });
+    await vi.advanceTimersByTimeAsync(70);
+    cancelled = true;
+    await vi.advanceTimersByTimeAsync(5);
+    vi.useRealTimers();
+    await polling;
+    expect(cancellations).toEqual(expect.arrayContaining([
+      ["/queue", { delete: ["p-expired"] }],
+      ["/interrupt", { prompt_id: "p-expired" }],
+    ]));
+    expect(failure).toMatchObject({
+      code: "timeout", phase: "post_submit", outcome: "definitive", retryable: true,
+      message: expect.stringContaining("cancelled on the runner"),
+    });
+  });
+
+  it("treats an expired queued prompt the runner dropped as stopped", async () => {
+    let queueReads = 0;
+    scriptedRunner("p-dropped", {
+      history: () => NOT_FINISHED,
+      // Pending through the wait, gone once the cancellation has removed it.
+      queue: () => (queueReads++ < 200 ? queueWith([], ["p-dropped"]) : queueWith()),
+    });
+    const { outcome } = await settle(backendFor({ promptCancelGraceMs: 500 }), 800, 10);
+    expect(outcome).toMatchObject({ ok: false, error: { code: "timeout", outcome: "definitive" } });
+  });
+
+  it("delivers a prompt that finished while it was being cancelled", async () => {
+    let finished = false;
+    scriptedRunner("p-late", {
+      history: () => (finished ? FINISHED : NOT_FINISHED),
+      queue: () => queueWith(["p-late"]),
+    });
+    const backend = backendFor({ promptCancelGraceMs: 1_000 });
+    vi.useFakeTimers();
+    const handle = await backend.submit({ descriptor, slots: { prompt: "cat" }, timeoutMs: 50 });
+    const polling = backend.poll(handle);
+    const delivered = expect(polling).resolves.toMatchObject({ assets: [{ contentType: "image/png" }] });
+    await vi.advanceTimersByTimeAsync(70);
+    finished = true;
+    await vi.advanceTimersByTimeAsync(5);
+    vi.useRealTimers();
+    await delivered;
+  });
+
+  it("stays ambiguous when a cancelled prompt keeps running past the grace", async () => {
+    scriptedRunner("p-stuck-running", { history: () => NOT_FINISHED, queue: () => queueWith(["p-stuck-running"]) });
+    const { outcome } = await settle(backendFor({ promptCancelGraceMs: 50 }), 200, 50);
+    expect(outcome).toMatchObject({ ok: false, error: { code: "timeout", outcome: "ambiguous", message: expect.not.stringContaining("cancelled") } });
+  });
+});
 
 describe("ComfyUIBackend", () => {
   beforeEach(() => vi.restoreAllMocks());
@@ -524,6 +713,7 @@ describe("ComfyUIBackend", () => {
     const backend = new ComfyUIBackend({
       apiUrl: "http://x",
       pollIntervalMs: 1,
+      promptCancelGraceMs: 0,
       workflowSync: testWorkflowSync,
     });
     const handle = await backend.submit({
@@ -563,6 +753,7 @@ describe("ComfyUIBackend", () => {
     const backend = new ComfyUIBackend({
       apiUrl: "http://x",
       pollIntervalMs: 1,
+      promptCancelGraceMs: 0,
       workflowSync: testWorkflowSync,
     });
     const handle = await backend.submit({
@@ -610,7 +801,7 @@ describe("ComfyUIBackend", () => {
         },
       }));
     }));
-    const backend = new ComfyUIBackend({ apiUrl: "http://x", pollIntervalMs: 1, workflowSync: testWorkflowSync });
+    const backend = new ComfyUIBackend({ apiUrl: "http://x", pollIntervalMs: 1, promptCancelGraceMs: 0, workflowSync: testWorkflowSync });
     const handle = await backend.submit({ descriptor, slots: { prompt: "cat" }, timeoutMs: 10 });
     let failure: unknown;
     const polling = backend.poll(handle).catch((error: unknown) => { failure = error; });
@@ -631,12 +822,12 @@ describe("ComfyUIBackend", () => {
     }
   });
 
-  it("marks a post-submit history connection reset as ambiguous", async () => {
+  it("marks a post-submit history connection reset as ambiguous once the outage grace is spent", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ prompt_id: "p-reset" }), { status: 200 }))
       .mockRejectedValueOnce(new TypeError("connection reset by peer"));
     vi.stubGlobal("fetch", fetchMock);
-    const backend = makeBackend();
+    const backend = new ComfyUIBackend({ apiUrl: "http://x", runnerOutageGraceMs: 0, workflowSync: testWorkflowSync });
     const handle = await backend.submit({
       descriptor,
       slots: { prompt: "cat" },

@@ -133,7 +133,9 @@ On macOS the CLI automatically reuses the Draw Things app model directory;
 (`DRAWTHINGS_OFFLINE=true`) so missing models fail instead of downloading at
 request time.
 
-The host defaults to one image worker. Image and video backend calls also share
+The host defaults to one image worker, and `gen-video` takes one job at a time so
+a queued video stays out of the lease race and an image waits behind only the video
+already running. Image and video backend calls also share
 `GEN_ACCELERATOR_LOCK_PATH`, so separate ComfyUI processes cannot execute large
 MPS jobs concurrently on the same unified-memory GPU. Bun holds an OS `flock`
 on one permanent inode for the full submit/poll window; closing the descriptor
@@ -397,7 +399,30 @@ these values are operating baselines rather than a controlled model benchmark.
 The PM2 `gen-video` process intentionally runs with `watch: false` in both
 development and production. A source-file restart can otherwise interrupt an
 in-flight clip after coins were reserved. Main's video stale timeout is 35
-minutes, deliberately longer than this provider timeout.
+minutes, deliberately longer than this provider timeout, and Main does not
+quarantine an attempt while a worker still holds its Bull source row, up to six
+times that threshold.
+
+### What a runner failure becomes
+
+ComfyUI is ours, so its own record decides an outcome wherever it can. `unknown`
+holds a user's coins for operator review, so it is kept for what truly cannot be
+established.
+
+| Situation | Outcome |
+| --- | --- |
+| Runner down when a job reaches it | Waits up to `GEN_COMFYUI_READY_TIMEOUT_MS` before the invocation boundary, outside the device lease; then a safe transport retry |
+| `/prompt` connection refused | Definitive and retryable: no prompt can exist |
+| Runner restarted, or its queue was cleared, mid-prompt | Definitive and retryable, as soon as two reads find the prompt in neither `/history` nor `/queue` |
+| `/history` unreachable | Keeps polling for 3 minutes so the restarted runner can answer |
+| Execution budget expired | Cancels the prompt and waits up to 3 minutes under the lease. Finished output is delivered; a stopped prompt is definitive and retryable |
+| Prompt still running after cancellation, or the runner stays silent | `unknown` |
+
+Nothing crosses into blob storage with provider metadata. ComfyUI writes the full
+prompt and workflow into PNG text chunks and MP4 tags, so the pipeline strips PNG
+chunks without touching pixels and the backend remuxes every MP4 (no metadata, moov
+first, identical video packets). Copies in the runner's own output directory keep
+theirs, and nothing cleans that directory yet.
 
 **Checkpoint format:** use the exact format and bytes pinned by the selected
 workflow descriptor and checked by `preflight`. Current image routes pin the

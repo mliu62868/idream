@@ -346,6 +346,23 @@ async function inspectAndQuarantineStaleGeneration(input: {
     ) {
       return { kind: "none" };
     }
+    // SPEC: Main hears nothing between `running` and the terminal record, so a long
+    // render looks exactly like a dead one. An active source row tells them apart:
+    // Bull returns a dead worker's row to waiting within one stall interval, so this
+    // is the original invocation still running, not a candidate for replay.
+    // Quarantining it discarded finished renders as late artifacts and held the
+    // user's coins for operator review.
+    const staleThresholdMs = job.mode === "video" ? input.videoTimeoutMs : input.timeoutMs;
+    const executionCeiling = new Date(
+      staleCutoff.getTime() - staleThresholdMs * (ACTIVE_SOURCE_STALE_MULTIPLIER - 1),
+    );
+    if (
+      input.recoveryProbe.attemptId === attempt.id &&
+      input.recoveryProbe.sourceExecuting &&
+      evidenceAt >= executionCeiling
+    ) {
+      return { kind: "none" };
+    }
     if (
       input.recoveryProbe.attemptId === attempt.id &&
       input.recoveryProbe.sourceExhausted
@@ -438,6 +455,11 @@ async function inspectAndQuarantineStaleGeneration(input: {
   });
 }
 
+// How far past the stale threshold a live execution may run before Main stops
+// trusting its Bull lock. Matches Gen's own total wait budget (6x the execution
+// budget), so this only fires when every worker is gone and nothing can reclaim the row.
+const ACTIVE_SOURCE_STALE_MULTIPLIER = 6;
+
 const RECOVERABLE_QUEUE_STATES = new Set([
   "waiting",
   "prioritized",
@@ -453,6 +475,8 @@ type RecoverableTerminalProbe = {
   readonly defer: boolean;
   readonly sourceDispatchRecoverable: boolean;
   readonly sourceExhausted: boolean;
+  /** A worker holds this Attempt's exact source row under its Bull lock right now. */
+  readonly sourceExecuting: boolean;
 };
 
 // INTENT: Redis and Blob probes must never run while PostgreSQL authority rows
@@ -495,6 +519,7 @@ export async function probeRecoverableTerminalEvidence(
       defer: false,
       sourceDispatchRecoverable: false,
       sourceExhausted: false,
+      sourceExecuting: false,
     };
   }
   const dispatch = generationDispatchForAttempt(dispatchRows, attempt.id);
@@ -511,6 +536,7 @@ export async function probeRecoverableTerminalEvidence(
       defer: true,
       sourceDispatchRecoverable: false,
       sourceExhausted: false,
+      sourceExecuting: false,
     };
   }
 }
@@ -532,7 +558,7 @@ async function hasRecoverableTerminalEvidence(input: {
       })
     : null;
   if (!input.dispatch || !resolved?.ok) {
-    return { defer: false, sourceDispatchRecoverable: false, sourceExhausted: false };
+    return { defer: false, sourceDispatchRecoverable: false, sourceExhausted: false, sourceExecuting: false };
   }
   const { authority } = resolved;
   const envelope = {
@@ -544,6 +570,7 @@ async function hasRecoverableTerminalEvidence(input: {
 
   let sourceDispatchRecoverable = false;
   let sourceExhausted = false;
+  let sourceExecuting = false;
   // Source first, relay last: if recovery changes failed -> waiting ->
   // completed while this probe runs, the final relay read observes the durable
   // admission that allowed source completion.
@@ -561,8 +588,9 @@ async function hasRecoverableTerminalEvidence(input: {
   ) {
     if (source.state !== "failed") {
       sourceDispatchRecoverable = true;
+      sourceExecuting = source.state === "active";
     } else if (await hasExactBlobTerminal(envelope)) {
-      return { defer: true, sourceDispatchRecoverable: false, sourceExhausted: false };
+      return { defer: true, sourceDispatchRecoverable: false, sourceExhausted: false, sourceExecuting: false };
     } else {
       // A failed source already replaced once is not replaced again.
       sourceExhausted = source.attemptsMade >= source.maxAttempts ||
@@ -578,7 +606,7 @@ async function hasRecoverableTerminalEvidence(input: {
     idempotencyKeys.generationTerminalRelay(input.attempt.id),
   );
   if (!relay || !RECOVERABLE_QUEUE_STATES.has(relay.state)) {
-    return { defer: false, sourceDispatchRecoverable, sourceExhausted };
+    return { defer: false, sourceDispatchRecoverable, sourceExhausted, sourceExecuting };
   }
   const validation = validateGenerationTerminalRelaySnapshot(relay);
   return {
@@ -586,6 +614,7 @@ async function hasRecoverableTerminalEvidence(input: {
       exactAttemptTerminalEvidence(envelope, validation.payload.terminalRecord),
     sourceDispatchRecoverable,
     sourceExhausted,
+    sourceExecuting,
   };
 }
 

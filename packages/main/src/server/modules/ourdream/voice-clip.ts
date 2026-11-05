@@ -111,7 +111,9 @@ export const pinnedVoiceProviderPayloadSchema = z
   });
 
 const VOICE_CLIP_CACHE_VERSION = 8;
-const VOICE_CLIP_POLL_MS = 25;
+// Each poll is a transaction that locks the user, session and turn rows, and renders
+// take seconds. At 25ms one waiter issued about 11k write transactions per render.
+const VOICE_CLIP_POLL_MS = 500;
 
 type VoiceCharacter = {
   id: string;

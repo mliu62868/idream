@@ -31,6 +31,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 try:
     from scripts.voice_erasure import AccountErasureRequest, VoiceErasureRegistry
+    from scripts.voice_render_lane import RenderLane
     from scripts.ming_voice_runtime import (
         CAMPLUS_SHA256, MLX_AUDIO_VERSION, MODEL_ID as MING_MODEL_ID,
         MingGenerationOptions, MingReferenceError, MingSynthesisError, MingVoiceRuntime,
@@ -38,6 +39,7 @@ try:
     )
 except ModuleNotFoundError:
     from voice_erasure import AccountErasureRequest, VoiceErasureRegistry
+    from voice_render_lane import RenderLane
     from ming_voice_runtime import (
         CAMPLUS_SHA256, MLX_AUDIO_VERSION, MODEL_ID as MING_MODEL_ID,
         MingGenerationOptions, MingReferenceError, MingSynthesisError, MingVoiceRuntime,
@@ -93,6 +95,8 @@ SYSTEM_VOICE_IDS = BUILTIN_VOICES | {DEFAULT_VOICE}
 registry_lock = threading.RLock()
 idempotency_lock = threading.RLock()
 generation_lock = threading.Lock()
+# Ming's median render is about 8s and its slowest about 90s against Main's 240s budget.
+render_lane = RenderLane(max_pending=8)
 runtime_model: Any | None = None
 ming_runtime: MingVoiceRuntime | None = None
 
@@ -170,7 +174,7 @@ def clear_reference_cache() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    load_runtime_model()
+    await render_lane.run(load_runtime_model)
     yield
 
 
@@ -290,18 +294,24 @@ def resolve_reference(voice_id: str) -> tuple[Path, dict[str, Any]]:
 
 
 def system_voice_status() -> tuple[bool, str | None]:
+    # A render holds registry_lock throughout, and this runs on the event loop inside
+    # Main's 2s probe. The system voice is never mutated by the registry operations
+    # that lock protects, so a busy lock is no reason to stop reading it.
+    locked = registry_lock.acquire(blocking=False)
     try:
-        with registry_lock:
-            path, manifest = resolve_reference(safe_voice_id(DEFAULT_VOICE))
-            reference = path.read_bytes()
-            validate_wav(reference)
-            if MODEL_ID == MING_MODEL_ID:
-                validate_prompt_metadata(reference, manifest.get("ming_prompt"))
-                load_ming_runtime().embedding(reference)
+        path, manifest = resolve_reference(safe_voice_id(DEFAULT_VOICE))
+        reference = path.read_bytes()
+        validate_wav(reference)
+        if MODEL_ID == MING_MODEL_ID:
+            validate_prompt_metadata(reference, manifest.get("ming_prompt"))
+            load_ming_runtime().embedding(reference)
     except HTTPException as error:
         return False, str(error.detail)
     except (OSError, ValueError, RuntimeError, ImportError) as error:
         return False, str(error)
+    finally:
+        if locked:
+            registry_lock.release()
     return True, None
 
 
@@ -629,7 +639,8 @@ def render_wav(request: SpeechRequest) -> bytes:
 async def health() -> JSONResponse:
     model, model_error = None, None
     try:
-        model = load_runtime_model()
+        # Loading belongs on the render thread; a loaded model must not queue behind a render.
+        model = runtime_model if runtime_model is not None else await render_lane.run(load_runtime_model)
     except (OSError, ValueError, RuntimeError, ImportError, PackageNotFoundError) as error:
         model_error = str(error)
     system_voice_ready, system_voice_error = system_voice_status()
@@ -677,6 +688,16 @@ async def synthesize(
     request_id: str | None = Header(default=None, alias="X-Idream-Request-Id"),
     attempt_no: int | None = Header(default=None, alias="X-Idream-Attempt-No"),
     owner_hash: Annotated[str | None, Header(alias="X-Idream-Owner-Hash")] = None,
+) -> Response:
+    return await render_lane.admit(speech_response, request, idempotency_key, request_id, attempt_no, owner_hash)
+
+
+def speech_response(
+    request: SpeechRequest,
+    idempotency_key: str | None,
+    request_id: str | None,
+    attempt_no: int | None,
+    owner_hash: str | None,
 ) -> Response:
     erasure_registry.check(owner_hash, idempotency_key, request.voice)
     if request.response_format != "wav":

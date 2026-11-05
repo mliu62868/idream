@@ -22,7 +22,7 @@ import {
 import { BackendImageModel } from "./backend/backend-image-model";
 import { BackendVideoModel } from "./backend/backend-video-model";
 import { createVideoMediaProbe } from "./backend/video-media-probe";
-import { prepareComfyUiRunnerMemory, waitForComfyUiAcceleratorIdle } from "./backend/comfyui-memory-transition";
+import { prepareComfyUiRunnerMemory, waitForComfyUiAcceleratorIdle, waitForComfyUiRunnerReady } from "./backend/comfyui-memory-transition";
 import { buildBackendRegistry, type BackendRegistry } from "./backend/registry";
 import { withGenerationAcceleratorLease } from "./backend/generation-accelerator-lease";
 import { env } from "./env";
@@ -451,6 +451,7 @@ function buildBackendImageModel(): ImageModel {
     getBackendRegistry(),
     (run, options) => withBackendAcceleratorLease("image", run, options),
     prepareComfyUiRunnerMemory,
+    waitForComfyUiRunnerReady,
   );
 }
 
@@ -481,6 +482,7 @@ function buildVideoModel(): VideoModel {
         getBackendRegistry(),
         (run, options) => withBackendAcceleratorLease("video", run, options),
         prepareComfyUiRunnerMemory,
+        waitForComfyUiRunnerReady,
       );
   }
 }

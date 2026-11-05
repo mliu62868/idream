@@ -400,6 +400,45 @@ describe("Generation TransportExecution authority", () => {
     }
   });
 
+  it("leaves a long render alone while a worker holds its source, until the execution ceiling", async () => {
+    const jobId = `transport-active-source-job-${suffix}`;
+    const attemptId = `transport-active-source-${suffix}`;
+    const dedupeKey = `generation:${jobId}:attempt:1`;
+    const staleScan = (afterMs: number) => reconcileStaleGenerationJobs({ now: new Date(Date.now() + afterMs), timeoutMs: 60_000, generationJobIds: [jobId] });
+    await prisma.generationJob.create({ data: { id: jobId, userId, mode: "image", status: "queued", provider: base.provider, model: base.model, controls: {}, presetIds: [], outputCount: 1 } });
+    await prisma.generationAttempt.create({ data: { id: attemptId, requestId: jobId, attemptNo: 1, provider: base.provider, workflowKey: base.model, workflowVersion: 1, status: "queued" } });
+    await createDispatchAuthority(attemptId, 1, jobId);
+    const worker = new Worker("ai.image.generate", null, { autorun: false, connection: workerConnection(), prefix: env.BULLMQ_PREFIX });
+    worker.on("error", () => undefined);
+    const token = `executing-${randomUUID()}`;
+    let claimed: Awaited<ReturnType<typeof worker.getNextJob>> | undefined;
+    try {
+      await expect(dispatchGenerationAttemptOutbox(prisma, { outboxIds: [`transport-dispatch-${attemptId}`], limit: 1 })).resolves.toMatchObject({ delivered: 1 });
+      claimed = await worker.getNextJob(token, { block: false });
+      await expect(jobQueue.getByDedupeKey("ai.image.generate", dedupeKey)).resolves.toMatchObject({ state: "active" });
+      await recordGenerationTransportExecution({ ...base, generationJobId: jobId, attemptId, attemptNo: 1, idempotencyKey: `generation:${attemptId}:provider`, occurredAt: new Date().toISOString(), error: null, status: "running" });
+
+      // Well past the stale threshold, and the worker still holds its lock.
+      await expect(staleScan(3 * 60_000)).resolves.toMatchObject({ quarantined: 0 });
+      await expect(prisma.generationAttempt.findUniqueOrThrow({ where: { id: attemptId } })).resolves.toMatchObject({ status: "running" });
+
+      // Past Gen's own total budget nothing legitimate can still be running.
+      await expect(staleScan(7 * 60_000)).resolves.toMatchObject({ quarantined: 1 });
+      await expect(prisma.generationAttempt.findUniqueOrThrow({ where: { id: attemptId } })).resolves.toMatchObject({ status: "unknown" });
+    } finally {
+      await claimed?.moveToFailed(new UnrecoverableError("test cleanup"), token, false).catch(() => undefined);
+      await worker.close(true);
+      await jobQueue.removeByDedupeKey("ai.image.generate", dedupeKey);
+      await prisma.aiUsageFact.deleteMany({ where: { attemptId } });
+      await prisma.generationJobEvent.deleteMany({ where: { jobId } });
+      await prisma.generationTransportExecution.deleteMany({ where: { attemptId } });
+      await prisma.generationAttemptEvent.deleteMany({ where: { attemptId } });
+      await prisma.generationAttempt.deleteMany({ where: { id: attemptId } });
+      await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: jobId } });
+      await prisma.generationJob.deleteMany({ where: { id: jobId } });
+    }
+  });
+
   it("replaces a failed source that never reached the provider once, then settles a repeated failure as exhausted", async () => {
     const jobId = `transport-failed-source-job-${suffix}`;
     const sourceAttemptId = `transport-failed-source-${suffix}`;

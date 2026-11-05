@@ -6,8 +6,11 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 import wave
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -145,6 +148,47 @@ class PocketTtsGatewayTests(unittest.TestCase):
                 (system_bundle / "state.safetensors").read_bytes()
             ),
         )
+
+    def test_health_answers_while_a_render_runs(self):
+        rendering, release = threading.Event(), threading.Event()
+        model = self.gateway.runtime_model
+        original_generate = model.generate_audio
+
+        def blocked_generate(*args, **kwargs):
+            rendering.set()
+            release.wait(10)
+            return original_generate(*args, **kwargs)
+
+        model.generate_audio = blocked_generate
+        client = TestClient(self.gateway.app)
+        self.assertEqual(client.get("/health").status_code, 200)
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                speech = pool.submit(client.post, "/v1/audio/speech", headers={"Authorization": "Bearer gateway-test-token"}, json={
+                    "model": "pocket-tts", "input": "Blocking render", "voice": "anna", "response_format": "wav",
+                })
+                self.assertTrue(rendering.wait(5))
+                started = time.monotonic()
+                health = client.get("/health")
+                elapsed = time.monotonic() - started
+                release.set()
+                self.assertEqual(speech.result(10).status_code, 200)
+        finally:
+            release.set()
+        self.assertEqual(health.status_code, 200)
+        self.assertLess(elapsed, 2)
+
+    def test_speech_refuses_work_it_could_not_finish_in_time(self):
+        lane = self.gateway.render_lane
+        lane.pending = lane.max_pending
+        try:
+            response = TestClient(self.gateway.app).post("/v1/audio/speech", headers={"Authorization": "Bearer gateway-test-token"}, json={
+                "model": "pocket-tts", "input": "Over capacity", "voice": "anna", "response_format": "wav",
+            })
+        finally:
+            lane.pending = 0
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.headers["retry-after"], "5")
 
     def test_clone_survives_restart_and_exact_key_speech_replays(self):
         client = TestClient(self.gateway.app)

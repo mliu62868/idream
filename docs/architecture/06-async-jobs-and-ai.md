@@ -1,6 +1,6 @@
 # 06 · 异步任务与 AI 执行
 
-更新日期：2026-10-05
+更新日期：2026-11-05
 
 ## 1. 两种执行模型
 
@@ -74,6 +74,8 @@ Request admitted
 - provider 超时、进程退出和 terminal relay 重试都不能产生第二笔结算。
 - 图片/视频 worker ownership 在启动和恢复时必须精确；mock video 不注册真实 video worker。
 - 写入失败的私有产物不进入 Artifact/Delivery。Gen 对所有已尝试的精确 key 回滚，确认已存在的对象不回滚；未获删除成功确认的 key 进入 failed TerminalRecord 的可选 `cleanupKeys`。Main 验证不可变 dispatch 的 attempt 前缀、文件名与数量预算，在同一接收事务建立清理 outbox，并以 lease/CAS 独立重试；账号擦除也枚举该终态和所有状态的清理 outbox，未删完不能完成。
+- 自托管 runner 的记录优先于超时判断：prompt 从 `/history` 与 `/queue` 连续两次消失、或超出执行预算后经取消确认已停止，都是确定失败；取消期间完成的产物照常交付；只有取消后仍在运行或 runner 持续失联才进入 `unknown`（ADR-13 §2.1.6）。
+- Main 只在 Bull source 行已不被 worker 持有时才隔离 `running` Attempt；持有期间最多宽限到 stale 阈值的 6 倍。
 - 已有待清理 key 时，不自动重用同一 attempt 调用 provider；终态重放只重投原始记录。该协议覆盖已观察到的写入/回滚失败，不宣称覆盖成功 put 后、首次 TerminalRecord 持久化前的所有进程崩溃；open/unknown 生成执行仍须运营收敛后才允许账号硬删。
 
 ## 6. Provider 边界
@@ -82,6 +84,7 @@ Request admitted
 - 图片/视频 provider 只由 `packages/gen` 执行。
 - Main 持有产品策略、moderation、entitlement、ledger、Generation 和交付状态机。
 - Provider adapter 只做协议、超时、错误映射与原始执行证据，不做余额更新。
+- 语音网关在单一专用线程上执行合成（MLX 要求加载与推理同线程），事件循环保持空闲以响应 `/health`；排队超限返回 503 + `Retry-After`。语音不参与 Gen 的设备租约。
 - Main 的同步 VoiceClip 和视频后期合成也拥有持久请求/租约与写入证据。账号擦除不能只等待 Gen 的原生生成终态；还须等待 Main 在途私有写入退出、枚举未交付文件，并取得历史 TTS 缓存/alias 的持久擦除 ACK（ADR-17 §6）。
 
 ## 7. 可靠性与可观测

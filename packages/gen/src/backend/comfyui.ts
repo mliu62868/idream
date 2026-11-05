@@ -11,6 +11,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { LOCAL_IMAGE_EDIT_VERSION } from "@idream/shared/chat/image-action";
 import { assertGeneratedImageSanity } from "@idream/shared/media/generated-image-sanity";
 import { logger } from "../logger";
+import { connectionWasRefused } from "./comfyui-memory-transition";
 import { syncComfyUiWorkflow } from "./comfyui-workflow";
 import { assignWorkflowReferenceSlots, bindComfySlots } from "./workflow";
 import type { WorkflowDescriptor } from "./workflow";
@@ -18,7 +19,7 @@ import {
   probeVideoMedia,
   type VideoMediaProbe,
 } from "./video-media-probe";
-import { normalizeVideoSoundtrack, type VideoSoundtrackNormalizer } from "./video-soundtrack";
+import { finalizeVideoContainer, type VideoContainerFinalizer } from "./video-soundtrack";
 import {
   BackendInvocationError,
   type BackendHandle,
@@ -74,10 +75,29 @@ const HEALTH_TIMEOUT_MS = 5_000;
 //   the total-wait cap below, so a wedged ComfyUI still fails instead of hanging.
 const COMFY_TOTAL_WAIT_BUDGET_MULTIPLIER = 6;
 
+// SPEC: how long a poll rides out a runner that stopped answering. PM2 restarts a
+// crashed runner after 5s and it boots in under a minute; once it answers, the
+// prompt's absence decides the outcome.
+const RUNNER_OUTAGE_GRACE_MS = 180_000;
+// SPEC: how long an expired prompt gets to stop after cancellation. ComfyUI only
+// honours an interrupt between steps, and one H3 step on MPS takes over a minute.
+const PROMPT_CANCEL_GRACE_MS = 180_000;
+// A running prompt is only rechecked for having vanished; /queue returns whole graphs.
+const PROMPT_LIVENESS_CHECK_INTERVAL_MS = 5_000;
+// ComfyUI moves a prompt from running to history atomically, but /history and
+// /queue are two reads. One miss can be that race; two consecutive misses cannot.
+const PROMPT_LOST_OBSERVATIONS = 2;
+
 type ComfyImageOutput = {
   filename: string;
   subfolder: string;
   type: string;
+};
+
+type ComfyOutputEvidence = {
+  output: ComfyImageOutput;
+  providerExecutionMs: number | null;
+  cachedNodeCount: number | null;
 };
 
 // SPEC: pending jobs keyed by prompt_id carry the timeout budget + slot values so
@@ -98,7 +118,9 @@ export class ComfyUIBackend implements GenBackend {
   private readonly pollIntervalMs: number;
   private readonly workflowSync: WorkflowSync;
   private readonly videoMediaProbe: VideoMediaProbe;
-  private readonly videoSoundtrackNormalizer: VideoSoundtrackNormalizer;
+  private readonly videoContainerFinalizer: VideoContainerFinalizer;
+  private readonly runnerOutageGraceMs: number;
+  private readonly promptCancelGraceMs: number;
   private readonly workflowGraphs = new Map<string, Promise<JsonRecord>>();
   private readonly pending = new Map<string, PendingJob>();
 
@@ -107,13 +129,17 @@ export class ComfyUIBackend implements GenBackend {
     pollIntervalMs?: number;
     workflowSync?: WorkflowSync;
     videoMediaProbe?: VideoMediaProbe;
-    videoSoundtrackNormalizer?: VideoSoundtrackNormalizer;
+    videoContainerFinalizer?: VideoContainerFinalizer;
+    runnerOutageGraceMs?: number;
+    promptCancelGraceMs?: number;
   }) {
     this.apiUrl = trimTrailingSlash(opts.apiUrl);
     this.pollIntervalMs = opts.pollIntervalMs ?? 1_000;
     this.workflowSync = opts.workflowSync ?? syncComfyUiWorkflow;
     this.videoMediaProbe = opts.videoMediaProbe ?? probeVideoMedia;
-    this.videoSoundtrackNormalizer = opts.videoSoundtrackNormalizer ?? normalizeVideoSoundtrack;
+    this.videoContainerFinalizer = opts.videoContainerFinalizer ?? finalizeVideoContainer;
+    this.runnerOutageGraceMs = opts.runnerOutageGraceMs ?? RUNNER_OUTAGE_GRACE_MS;
+    this.promptCancelGraceMs = opts.promptCancelGraceMs ?? PROMPT_CANCEL_GRACE_MS;
   }
 
   capabilities(): Capabilities {
@@ -193,6 +219,16 @@ export class ComfyUIBackend implements GenBackend {
           "ambiguous",
         );
       }
+      // A refused connection never reached the runner, so no prompt can exist.
+      // Calling that ambiguous would hold the user's coins for operator review.
+      if (connectionWasRefused(error)) {
+        throw new BackendInvocationError(
+          "backend_error",
+          error instanceof Error ? error.message : String(error),
+          "pre_submit",
+          "definitive",
+        );
+      }
       throw new BackendInvocationError(
         "backend_error",
         error instanceof Error ? error.message : String(error),
@@ -252,7 +288,8 @@ export class ComfyUIBackend implements GenBackend {
       const { output, providerExecutionMs, cachedNodeCount } = await this.waitForOutput(handle.id, timeoutMs, controller.signal);
       const waitMs = performance.now() - waitStartedAt;
       const downloadStartedAt = performance.now();
-      let bytes = await this.fetchComfyOutput(output, controller.signal);
+      // Its own budget: output recovered after an expired prompt has outlived the wait guard.
+      let bytes = await this.fetchComfyOutput(output, AbortSignal.timeout(timeoutMs));
       const downloadMs = performance.now() - downloadStartedAt;
       const validationStartedAt = performance.now();
       const outputKind = pending?.outputKind ?? outputKindFromFilename(output.filename);
@@ -260,18 +297,16 @@ export class ComfyUIBackend implements GenBackend {
       if (outputKind === "video") {
         try {
           verifiedVideo = await this.videoMediaProbe(bytes);
-          if (verifiedVideo.hasAudio) {
-            const normalized = await this.videoSoundtrackNormalizer(bytes);
-            if (normalized !== bytes) {
-              const normalizedMedia = await this.videoMediaProbe(normalized);
-              if (!normalizedMedia.hasAudio || normalizedMedia.width !== verifiedVideo.width || normalizedMedia.height !== verifiedVideo.height ||
-                  normalizedMedia.framesPerSecond !== verifiedVideo.framesPerSecond || normalizedMedia.frameCount !== verifiedVideo.frameCount ||
-                  Math.abs(normalizedMedia.durationSeconds - verifiedVideo.durationSeconds) > 0.05) {
-                throw new Error("Native soundtrack processing changed its video envelope");
-              }
-              bytes = normalized;
-              verifiedVideo = normalizedMedia;
+          const finalized = await this.videoContainerFinalizer(bytes, { hasAudio: verifiedVideo.hasAudio });
+          if (finalized !== bytes) {
+            const finalizedMedia = await this.videoMediaProbe(finalized);
+            if (finalizedMedia.hasAudio !== verifiedVideo.hasAudio || finalizedMedia.width !== verifiedVideo.width || finalizedMedia.height !== verifiedVideo.height ||
+                finalizedMedia.framesPerSecond !== verifiedVideo.framesPerSecond || finalizedMedia.frameCount !== verifiedVideo.frameCount ||
+                Math.abs(finalizedMedia.durationSeconds - verifiedVideo.durationSeconds) > 0.05) {
+              throw new Error("Video container finalization changed its stream envelope");
             }
+            bytes = finalized;
+            verifiedVideo = finalizedMedia;
           }
         } catch (error) {
           throw new BackendInvocationError(
@@ -481,12 +516,15 @@ export class ComfyUIBackend implements GenBackend {
     promptId: string,
     timeoutMs: number,
     signal: AbortSignal,
-  ): Promise<{ output: ComfyImageOutput; providerExecutionMs: number | null; cachedNodeCount: number | null }> {
+  ): Promise<ComfyOutputEvidence> {
     const startedAt = Date.now();
     const totalWaitDeadlineAt =
       startedAt + timeoutMs * COMFY_TOTAL_WAIT_BUDGET_MULTIPLIER;
     let executionDeadlineAt = startedAt + timeoutMs;
     let observedExecuting = false;
+    let lastAnsweredAt = startedAt;
+    let nextLivenessCheckAt = startedAt;
+    let absentObservations = 0;
     // The execution deadline must also interrupt an in-flight fetch/body read.
     // Only fresh pending evidence renews the budget; the outer signal retains
     // the total queue-wait cap, and observing running starts the final budget.
@@ -495,54 +533,49 @@ export class ComfyUIBackend implements GenBackend {
     let executionTimeout = setTimeout(() => executionController.abort(), timeoutMs);
     const deadlineReached = () => deadlineSignal.aborted ||
       Date.now() >= executionDeadlineAt || Date.now() >= totalWaitDeadlineAt;
+    const pause = () => sleep(Math.min(this.pollIntervalMs, Math.max(0, Math.min(executionDeadlineAt, totalWaitDeadlineAt) - Date.now())));
     try {
       while (!deadlineReached()) {
-        const response = await fetch(`${this.apiUrl}/history/${encodeURIComponent(promptId)}`, { signal: deadlineSignal });
-        const history = (await response.json().catch(() => ({}))) as JsonRecord;
+        let evidence: ComfyOutputEvidence | null;
+        try {
+          evidence = await this.readPromptHistory(promptId, deadlineSignal);
+        } catch (error) {
+          if (error instanceof BackendInvocationError || deadlineReached()) throw error;
+          // Connection trouble alone proves nothing about the prompt. Keep polling
+          // through a restart so the runner's own answer decides the outcome.
+          if (Date.now() - lastAnsweredAt >= this.runnerOutageGraceMs) throw error;
+          await pause();
+          continue;
+        }
+        if (evidence) return evidence;
         if (deadlineReached()) break;
-        if (!response.ok) {
-          throw new BackendInvocationError(
-            "backend_error",
-            `ComfyUI /history HTTP ${response.status}`,
-            "post_submit",
-            "ambiguous",
-          );
-        }
-        const item = jsonRecord(history[promptId]);
-        const status = jsonRecord(item.status);
-        if (status.status_str === "error") {
-          throw new BackendInvocationError(
-            "backend_error",
-            `ComfyUI prompt failed: ${JSON.stringify(status.messages ?? status)}`,
-            "post_submit",
-            "definitive",
-          );
-        }
-        if (status.completed === true) {
-          const output = firstImageOutput(item);
-          if (!output) {
-            throw new BackendInvocationError(
-              "backend_error",
-              `ComfyUI prompt ${promptId} completed without media output`,
-              "post_submit",
-              "definitive",
-            );
-          }
-          return { output, ...comfyExecutionEvidence(status.messages) };
-        }
-        if (!observedExecuting) {
+        lastAnsweredAt = Date.now();
+        if (!observedExecuting || Date.now() >= nextLivenessCheckAt) {
           const placement = await this.queuePlacement(promptId, deadlineSignal);
           if (deadlineReached()) break;
-          if (placement === "pending" || placement === "running") {
+          nextLivenessCheckAt = Date.now() + PROMPT_LIVENESS_CHECK_INTERVAL_MS;
+          // An unreadable queue is no evidence either way, so it leaves the count alone.
+          if (placement === "absent") absentObservations += 1;
+          else if (placement !== "unreadable") absentObservations = 0;
+          if (absentObservations >= PROMPT_LOST_OBSERVATIONS) {
+            // Without this the worker holds the device until the budget expires,
+            // then records an unknown outcome for a prompt that can no longer run.
+            throw new BackendInvocationError(
+              "backend_error",
+              `ComfyUI no longer tracks prompt ${promptId}; the runner restarted or its queue was cleared before it finished`,
+              "post_submit",
+              "definitive",
+              true,
+            );
+          }
+          if (!observedExecuting && (placement === "pending" || placement === "running")) {
             observedExecuting = placement === "running";
             executionDeadlineAt = Date.now() + timeoutMs;
             clearTimeout(executionTimeout);
             executionTimeout = setTimeout(() => executionController.abort(), timeoutMs);
           }
-          // "absent" covers both "already finished" and an unreadable queue.
-          // Neither proves queue wait, so it cannot extend the execution budget.
         }
-        await sleep(Math.min(this.pollIntervalMs, Math.max(0, Math.min(executionDeadlineAt, totalWaitDeadlineAt) - Date.now())));
+        await pause();
       }
     } catch (error) {
       if (!deadlineReached()) throw error;
@@ -553,33 +586,113 @@ export class ComfyUIBackend implements GenBackend {
     const waitedMs = Date.now() - startedAt;
     // 两条上限只会跳其中一条：没开始执行过、又把总等待耗光了，才是「一直没排上」。
     const neverLeftQueue = !observedExecuting && Date.now() >= totalWaitDeadlineAt;
-    throw new BackendInvocationError(
-      "timeout",
-      neverLeftQueue
-        ? `ComfyUI prompt never left the queue within ${waitedMs}ms: ${promptId}`
-        : `ComfyUI prompt timed out after ${timeoutMs}ms of execution (waited ${waitedMs}ms): ${promptId}`,
-      "post_submit",
-      "ambiguous",
-    );
+    const message = neverLeftQueue
+      ? `ComfyUI prompt never left the queue within ${waitedMs}ms: ${promptId}`
+      : `ComfyUI prompt timed out after ${timeoutMs}ms of execution (waited ${waitedMs}ms): ${promptId}`;
+    const settled = await this.cancelAndReconcile(promptId);
+    if (settled.kind === "completed") {
+      logger.warn({ promptId, waitedMs }, "ComfyUI prompt finished after its budget; delivering its output");
+      return settled.evidence;
+    }
+    throw settled.kind === "stopped"
+      ? new BackendInvocationError("timeout", `${message}; cancelled on the runner`, "post_submit", "definitive", true)
+      : new BackendInvocationError("timeout", message, "post_submit", "ambiguous");
+  }
+
+  // SPEC: one /history read. Null means ComfyUI has no finished entry yet; a
+  // prompt that failed on the runner throws a definitive error.
+  private async readPromptHistory(promptId: string, signal: AbortSignal): Promise<ComfyOutputEvidence | null> {
+    const response = await fetch(`${this.apiUrl}/history/${encodeURIComponent(promptId)}`, { signal });
+    const history = (await response.json().catch(() => ({}))) as JsonRecord;
+    if (!response.ok) {
+      throw new BackendInvocationError(
+        "backend_error",
+        `ComfyUI /history HTTP ${response.status}`,
+        "post_submit",
+        "ambiguous",
+      );
+    }
+    const item = jsonRecord(history[promptId]);
+    const status = jsonRecord(item.status);
+    if (status.status_str === "error") {
+      throw new BackendInvocationError(
+        "backend_error",
+        `ComfyUI prompt failed: ${JSON.stringify(status.messages ?? status)}`,
+        "post_submit",
+        "definitive",
+      );
+    }
+    if (status.completed !== true) return null;
+    const output = firstImageOutput(item);
+    if (!output) {
+      throw new BackendInvocationError(
+        "backend_error",
+        `ComfyUI prompt ${promptId} completed without media output`,
+        "post_submit",
+        "definitive",
+      );
+    }
+    return { output, ...comfyExecutionEvidence(status.messages) };
+  }
+
+  // SPEC: an expired budget used to end at "unknown", which holds the user's coins
+  // until an operator decides, while the abandoned prompt kept the device busy.
+  // Ask the runner to stop it, then let the runner's own record decide: finished
+  // output is still delivered, a stopped prompt can be refunded, and only a prompt
+  // that keeps running or a runner that stays silent remains ambiguous.
+  // INVARIANT: runs under the accelerator lease, so the next job cannot start
+  // while this prompt unwinds.
+  private async cancelAndReconcile(promptId: string): Promise<
+    | { kind: "completed"; evidence: ComfyOutputEvidence }
+    | { kind: "stopped" }
+    | { kind: "unresolved" }
+  > {
+    if (this.promptCancelGraceMs <= 0) return { kind: "unresolved" };
+    const deadlineAt = Date.now() + this.promptCancelGraceMs;
+    const signal = AbortSignal.timeout(this.promptCancelGraceMs);
+    const post = (route: string, body: JsonRecord) => fetch(`${this.apiUrl}${route}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+    });
+    // /queue removes it while pending; /interrupt ignores any other running prompt.
+    await Promise.allSettled([post("/queue", { delete: [promptId] }), post("/interrupt", { prompt_id: promptId })]);
+    let absentObservations = 0;
+    while (Date.now() < deadlineAt) {
+      try {
+        const evidence = await this.readPromptHistory(promptId, signal);
+        if (evidence) return { kind: "completed", evidence };
+        const placement = await this.queuePlacement(promptId, signal);
+        absentObservations = placement === "absent" ? absentObservations + 1 : 0;
+        if (absentObservations >= PROMPT_LOST_OBSERVATIONS) return { kind: "stopped" };
+      } catch (error) {
+        if (error instanceof BackendInvocationError && error.outcome === "definitive") return { kind: "stopped" };
+        absentObservations = 0;
+      }
+      await sleep(Math.min(this.pollIntervalMs, Math.max(0, deadlineAt - Date.now())));
+    }
+    return { kind: "unresolved" };
   }
 
   // SPEC: where the prompt sits in ComfyUI's own queue — "running" once it is
   // executing, "pending" while it waits behind other prompts, "absent" when
-  // ComfyUI no longer lists it or /queue cannot be read.
+  // ComfyUI answers without listing it, "unreadable" when /queue gave no answer.
   private async queuePlacement(
     promptId: string,
     signal: AbortSignal,
-  ): Promise<"running" | "pending" | "absent"> {
+  ): Promise<"running" | "pending" | "absent" | "unreadable"> {
     try {
       const response = await fetch(`${this.apiUrl}/queue`, { signal });
-      if (!response.ok) return "absent";
+      if (!response.ok) return "unreadable";
       const queue = jsonRecord(await response.json());
+      if (!Array.isArray(queue.queue_running) || !Array.isArray(queue.queue_pending)) return "unreadable";
       if (queueListsPrompt(queue.queue_running, promptId)) return "running";
       if (queueListsPrompt(queue.queue_pending, promptId)) return "pending";
       return "absent";
     } catch {
       signal.throwIfAborted();
-      return "absent";
+      return "unreadable";
     }
   }
 

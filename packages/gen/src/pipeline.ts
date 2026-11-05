@@ -35,6 +35,7 @@ import sharp from "sharp";
 import { characterVideoProductionRecipeForWorkflow } from "@idream/shared";
 import { redgraftVideoEnvelope, REDGRAFT_VIDEO_DEFAULTS } from "@idream/shared/contracts";
 import { probeVideoMedia, type VideoMediaProbe, type VerifiedVideoMedia } from "./backend/video-media-probe";
+import { stripPngMetadata } from "./png-metadata";
 
 type AttemptDeps = {
   attemptsMade?: number;
@@ -160,7 +161,9 @@ export async function processImageGenerate(
                 "single_subject_single_frame",
             },
           );
-          return { asset, body, contentType, index, key, sanityEvidence, dimensions };
+          // A localized edit's proof pins the hash of bytes it composited itself.
+          const delivered = asset.preservation ? body : stripPngMetadata(body);
+          return { asset, body: delivered, contentType, index, key, sanityEvidence, dimensions };
         }));
         const assets = [];
         for (const item of normalized) {

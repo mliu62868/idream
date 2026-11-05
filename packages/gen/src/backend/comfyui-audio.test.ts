@@ -8,6 +8,7 @@ import { ComfyUIBackend } from "./comfyui";
 import { workflowDescriptorSchema } from "./workflow";
 
 const run = promisify(execFile);
+const LEAKED_PROMPT = "user secret prompt with fineview_qw21.safetensors";
 const descriptor = workflowDescriptorSchema.parse({
   workflowKey: "sound-test", modelId: "sound-test", backendKind: "comfyui", version: 1,
   comfyWorkflow: { id: "55555555-5555-4555-8555-555555555555", name: "Sound test" },
@@ -22,6 +23,8 @@ async function fixture(directory: string, volume: string | null, audioSource = "
   if (volume !== null) args.push("-f", "lavfi", "-i", audioSource, "-af", `volume=${volume}`);
   args.push("-t", "3", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p");
   if (volume !== null) args.push("-c:a", "aac", "-ar", "48000", "-ac", "2");
+  // What SaveVideo writes: the graph as container tags, with moov after mdat.
+  args.push("-metadata", `prompt=${LEAKED_PROMPT}`, "-metadata", "workflow={}", "-movflags", "use_metadata_tags");
   await run("ffmpeg", [...args, file]);
   return new Uint8Array(await readFile(file));
 }
@@ -47,6 +50,18 @@ async function levels(path: string) {
   return { mean: Number(stderr.match(/mean_volume: ([-\d.]+)/)?.[1]), loudness: Number(summary.match(/I:\s+([-\d.]+)/)?.[1]), peak: Number(summary.match(/Peak:\s+([-\d.]+)/)?.[1]) };
 }
 
+async function expectCleanContainer(bytes: Uint8Array, path: string) {
+  await writeFile(path, bytes);
+  expect(Buffer.from(bytes).includes(LEAKED_PROMPT)).toBe(false);
+  const { stdout } = await run("ffprobe", ["-v", "error", "-show_entries", "format_tags", "-of", "json", path]);
+  const tags = Object.keys((JSON.parse(stdout) as { format?: { tags?: Record<string, string> } }).format?.tags ?? {});
+  expect(tags).not.toEqual(expect.arrayContaining(["prompt"]));
+  expect(tags).not.toEqual(expect.arrayContaining(["workflow"]));
+  const buffer = Buffer.from(bytes);
+  expect(buffer.indexOf("moov")).toBeGreaterThan(-1);
+  expect(buffer.indexOf("moov")).toBeLessThan(buffer.indexOf("mdat"));
+}
+
 async function videoPackets(path: string) {
   const { stdout } = await run("ffmpeg", ["-nostdin", "-v", "error", "-i", path, "-map", "0:v:0", "-c:v", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "h264", "pipe:1"], { encoding: "buffer" });
   return stdout;
@@ -70,6 +85,7 @@ describe("native video soundtrack delivery", () => {
       expect(measured.loudness).toBeLessThan(-17);
       expect(measured.peak).toBeLessThanOrEqual(-1.5);
       expect(await videoPackets(file)).toEqual(await videoPackets(join(directory, "source.mp4")));
+      await expectCleanContainer(asset.body, file);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
@@ -91,13 +107,18 @@ describe("native video soundtrack delivery", () => {
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
-  it.each([null, "0"])("preserves absent and digitally silent audio (%s)", async volume => {
+  it.each([null, "0"])("preserves absent and digitally silent audio while cleaning the container (%s)", async volume => {
     const directory = await mkdtemp(join(tmpdir(), "idream-video-sound-test-"));
     try {
       const source = await fixture(directory, volume);
+      expect(Buffer.from(source).includes(LEAKED_PROMPT)).toBe(true);
       const asset = await deliver(source);
-      expect(asset.body).toEqual(source);
+      const file = join(directory, "delivered.mp4");
+      await expectCleanContainer(asset.body, file);
       expect(asset.verifiedVideo?.hasAudio).toBe(volume !== null);
+      expect(asset.verifiedVideo).toMatchObject({ width: 64, height: 96, frameCount: 72, framesPerSecond: 24 });
+      expect(await videoPackets(file)).toEqual(await videoPackets(join(directory, "source.mp4")));
+      if (volume !== null) expect((await levels(file)).loudness).toBeLessThan(-60);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 

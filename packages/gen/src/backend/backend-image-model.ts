@@ -44,9 +44,11 @@ type SuccessData = Extract<GenerateResult, { ok: true }>["data"];
 type ImageAsset = SuccessData["assets"][number];
 type RunWithAcceleratorLease = <T>(run: (leaseFd?: number) => Promise<T>, options?: { onWait?: () => Promise<void> }) => Promise<T>;
 type PrepareComfyUiRunner = (runner: ComfyUiRunner) => Promise<void>;
+type WaitForComfyUiRunner = (runner: ComfyUiRunner, options?: { onWait?: () => Promise<void> }) => Promise<void>;
 
 const runWithoutAcceleratorLease: RunWithAcceleratorLease = (run) => run();
 const skipComfyUiMemoryTransition: PrepareComfyUiRunner = async () => {};
+const skipComfyUiRunnerWait: WaitForComfyUiRunner = async () => {};
 
 // SPEC: orientation -> default pixel size, used ONLY when controls carry no
 // explicit width/height. Main always pins both on the paths that go through
@@ -114,6 +116,8 @@ export class BackendImageModel implements ImageModel {
       runWithoutAcceleratorLease,
     private readonly prepareComfyUiRunner: PrepareComfyUiRunner =
       skipComfyUiMemoryTransition,
+    private readonly waitForComfyUiRunner: WaitForComfyUiRunner =
+      skipComfyUiRunnerWait,
   ) {}
 
   async retryCapabilitiesForRequest(input: { provider: string; model?: string; controls?: Record<string, unknown> }): Promise<ProviderRetryCapabilities | undefined> {
@@ -219,6 +223,11 @@ export class BackendImageModel implements ImageModel {
     const assets: ImageAsset[] = [];
     let localInvocation: ProviderInvocationMetadata | undefined;
     try {
+      // Before the lease: a restarting runner must not hold the device away from
+      // the other modality, and nothing here has crossed the invocation boundary.
+      if (descriptor.backendKind === "comfyui") {
+        await this.waitForComfyUiRunner(comfyUiRunnerForDescriptor(descriptor), { onWait: input.executionBoundary?.onResourceWait });
+      }
       const execute = async (leaseFd?: number) => {
         resourceWaitMs = performance.now() - startedAt;
         const preparationStartedAt = performance.now();
@@ -325,9 +334,7 @@ export class BackendImageModel implements ImageModel {
         error: {
           code: failure.code,
           message: failure.message,
-          retryable:
-            failure.outcome === "ambiguous" ||
-            failure.phase === "pre_submit",
+          retryable: failure.retryable,
           outcome: failure.outcome,
         },
         invocation: {

@@ -31,9 +31,11 @@ const PRODUCTION_DURATION_TOLERANCE_SECONDS = 0.25;
 const PRODUCTION_FPS_TOLERANCE = 0.05;
 type RunWithAcceleratorLease = <T>(run: () => Promise<T>, options?: { onWait?: () => Promise<void> }) => Promise<T>;
 type PrepareComfyUiRunner = (runner: ComfyUiRunner) => Promise<void>;
+type WaitForComfyUiRunner = (runner: ComfyUiRunner, options?: { onWait?: () => Promise<void> }) => Promise<void>;
 
 const runWithoutAcceleratorLease: RunWithAcceleratorLease = (run) => run();
 const skipComfyUiMemoryTransition: PrepareComfyUiRunner = async () => {};
+const skipComfyUiRunnerWait: WaitForComfyUiRunner = async () => {};
 
 export class BackendVideoModel implements VideoModel {
   readonly managesInvocationBoundary = true;
@@ -43,6 +45,8 @@ export class BackendVideoModel implements VideoModel {
       runWithoutAcceleratorLease,
     private readonly prepareComfyUiRunner: PrepareComfyUiRunner =
       skipComfyUiMemoryTransition,
+    private readonly waitForComfyUiRunner: WaitForComfyUiRunner =
+      skipComfyUiRunnerWait,
   ) {}
 
   async generate(input: GenerateInput): Promise<GenerateResult> {
@@ -124,6 +128,11 @@ export class BackendVideoModel implements VideoModel {
     let runnerPreparationMs: number | null = null;
     const invocationPerformance = () => ({ resourceWaitMs, runnerPreparationMs, totalMs: performance.now() - startedAt, requests });
     try {
+      // Before the lease: a restarting runner must not hold the device away from
+      // the other modality, and nothing here has crossed the invocation boundary.
+      if (descriptor.backendKind === "comfyui") {
+        await this.waitForComfyUiRunner(comfyUiRunnerForDescriptor(descriptor), { onWait: input.executionBoundary?.onResourceWait });
+      }
       const result = await this.runWithAcceleratorLease(async () => {
         resourceWaitMs = performance.now() - startedAt;
         const preparationStartedAt = performance.now();
@@ -199,8 +208,7 @@ export class BackendVideoModel implements VideoModel {
       return failure(
         classified.code,
         classified.message,
-        classified.outcome === "ambiguous" ||
-          classified.phase === "pre_submit",
+        classified.retryable,
         providerRequestId,
         classified.outcome,
         invocationPerformance(),

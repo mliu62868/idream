@@ -130,6 +130,20 @@ Main 在不可变 dispatch 校验后，验证 `gen/{requestId}/attempts/{attempt
 
 有待清理 key 的同一 attempt 不自动重放 provider；精确终态重放保留原 checksum 与 keys。新 attempt 仍使用独立前缀。本协议不证明成功 put 后、首次 terminal record 持久化前的任意崩溃已自动补偿；queued/running/unknown Attempt 或 running/unknown TransportExecution 阻止账号硬删，未决产物须与运营裁决一起收敛。
 
+#### 2.1.6 自托管 runner 的记录决定结果（2026-11-05）
+
+`unknown` 的前提是「可能已扣费已产出」。这个判断来自外部 provider，对自托管 ComfyUI 大多不成立：没有外部费用，而且 runner 自己的 `/history` 与 `/queue` 能回答 prompt 的去向。开发库全部 11 条 `unknown` 中，7 条是执行超时（`ambiguous_non_replayable`），4 条是 Main 的 `stale_provider_outcome`。其中 8 条最终是 `operator_confirmed_provider_failure`，3 条对应的 Job 已完成；这些在结束前都占用着用户的币。
+
+现在 Gen 先问 runner，再下结论：
+
+- 连接被拒发生在 `/prompt` 时是确定未提交；runner 未就绪时先在设备租约之外、调用边界之前等待（有界）。
+- prompt 连续两次既不在 `/history` 也不在 `/queue`（重启或队列被清）是确定失败。两次是因为这是两个独立读取，一次可能恰好撞上完成瞬间。不可读的 `/queue` 不计入。
+- 超出执行预算时，定向取消（`/queue` delete + `/interrupt` 带 `prompt_id`）并在持有租约时等待：已完成则交付产物，已停止则确定失败，仍在运行或失联才是 `unknown`。
+
+这不放宽「不自动重放 provider」：确定失败只走退款，由用户重新发起新 Request。`retryable` 只表示同样输入值得再试，与 Attempt 重放无关。
+
+Main 一侧的同类误判：Gen 在 `running` 之后到终态之前不发任何事件，长任务与死任务在 Main 看来一样。Bull `active` 能区分二者：worker 死后该行在一个 stall 周期内回到 waiting，所以 `active` 就是原始调用仍在运行，不存在重放风险。隔离因此推迟到 stale 阈值的 6 倍（与 Gen 总等待预算一致），兜底所有 worker 都消失、无人回收该行的情况。
+
 ### 2.2 Dreamcoin Ledger 只有一个类型化写入口
 
 业务调用方不得自由组合 `(delta, reason: string)`，也不得直接写 `DreamcoinLedger`。

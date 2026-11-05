@@ -32,8 +32,10 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 try:
     from scripts.voice_erasure import AccountErasureRequest, VoiceErasureRegistry
+    from scripts.voice_render_lane import RenderLane
 except ModuleNotFoundError:
     from voice_erasure import AccountErasureRequest, VoiceErasureRegistry
+    from voice_render_lane import RenderLane
 
 MODEL_ID = os.getenv("POCKET_TTS_MODEL", "pocket-tts").strip()
 LANGUAGE = os.getenv("POCKET_TTS_LANGUAGE", "english").strip()
@@ -92,6 +94,8 @@ ENGLISH_CATALOG_VOICE_SET = frozenset(ENGLISH_CATALOG_VOICES)
 registry_lock = threading.RLock()
 idempotency_lock = threading.RLock()
 generation_lock = threading.Lock()
+# Pocket's median render is about 1.3s and its slowest about 7s against Main's 120s budget.
+render_lane = RenderLane(max_pending=16)
 runtime_model: Any | None = None
 runtime_export_model_state: Any | None = None
 voice_state_cache: OrderedDict[str, Any] = OrderedDict()
@@ -703,6 +707,16 @@ async def synthesize(
     request_id: str | None = Header(default=None, alias="X-Idream-Request-Id"),
     attempt_no: int | None = Header(default=None, alias="X-Idream-Attempt-No"),
     owner_hash: Annotated[str | None, Header(alias="X-Idream-Owner-Hash")] = None,
+) -> Response:
+    return await render_lane.admit(speech_response, request, idempotency_key, request_id, attempt_no, owner_hash)
+
+
+def speech_response(
+    request: SpeechRequest,
+    idempotency_key: str | None,
+    request_id: str | None,
+    attempt_no: int | None,
+    owner_hash: str | None,
 ) -> Response:
     erasure_registry.check(owner_hash, idempotency_key, request.voice)
     if request.response_format != "wav":

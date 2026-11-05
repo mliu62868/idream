@@ -146,6 +146,27 @@ describe("BackendVideoModel", () => {
     ]);
   });
 
+  it("waits for its runner before taking the device, and fails before the invocation boundary if it stays down", async () => {
+    const events: string[] = [];
+    const stub = backend();
+    const boundary = { onResourceWait: async () => { events.push("wait"); }, beforeProviderInvocation: async () => { events.push("admit"); }, beforeNextProviderInvocation: async () => {} };
+    const lease = async <T>(run: () => Promise<T>) => { events.push("lease"); return run(); };
+    const model = new BackendVideoModel({ resolveForModel: vi.fn(() => ({ backend: stub, descriptor })) }, lease, async () => {}, async (runner, options) => {
+      events.push(`ready:${runner}`);
+      await options?.onWait?.();
+    });
+    expect((await model.generate({ ...validGenerationInput(), executionBoundary: boundary })).ok).toBe(true);
+    expect(events.slice(0, 4)).toEqual(["ready:video", "wait", "lease", "admit"]);
+
+    events.length = 0;
+    const down = new BackendVideoModel({ resolveForModel: vi.fn(() => ({ backend: stub, descriptor })) }, lease, async () => {}, async () => {
+      throw new Error("ComfyUI video runner did not answer within 5ms");
+    });
+    const result = await down.generate({ ...validGenerationInput(), executionBoundary: boundary });
+    expect(result).toMatchObject({ ok: false, error: { code: "backend_error", retryable: true, outcome: "definitive" } });
+    expect(events).toEqual([]);
+  });
+
   it("does not advertise deterministic replay for ComfyUI video submissions", () => {
     const model = new BackendVideoModel({
       resolveForModel: vi.fn(() => ({ backend: backend(), descriptor })),

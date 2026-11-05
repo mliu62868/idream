@@ -32,9 +32,11 @@ const processSpecs = Object.freeze([
     },
     watchPaths: [
       "scripts/start-fish-audio.cjs", "scripts/fish_audio_gateway.py",
-      "scripts/ming_voice_runtime.py", "scripts/ming-tts-requirements.lock",
+      "scripts/ming_voice_runtime.py", "scripts/voice_render_lane.py", "scripts/ming-tts-requirements.lock",
       "scripts/breeze-tts-requirements.lock",
     ],
+    // Main allows a clone render 240s; PM2's 1.6s default would kill it mid-render.
+    killTimeout: 5 * 60 * 1_000,
   },
   {
     name: "pocket-tts",
@@ -49,6 +51,7 @@ const processSpecs = Object.freeze([
     watchPaths: [
       "scripts/start-pocket-tts.cjs",
       "scripts/pocket_tts_gateway.py",
+      "scripts/voice_render_lane.py",
       "scripts/pocket-tts-requirements.in",
       "scripts/pocket-tts-requirements.lock",
     ],

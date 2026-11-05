@@ -221,6 +221,10 @@ export const env = {
     // execution windows ahead of this worker on the shared image/video device.
     return positiveIntegerEnv("GEN_ACCELERATOR_WAIT_TIMEOUT_MS", 2 * this.VIDEO_TIMEOUT_MS);
   },
+  /** Budget for riding out a runner restart before submitting. PM2 restarts it after 5s; boot takes under a minute. */
+  get COMFYUI_READY_TIMEOUT_MS(): number {
+    return positiveIntegerEnv("GEN_COMFYUI_READY_TIMEOUT_MS", 180_000);
+  },
   /** Exact ComfyUI models root whose bytes are attested by video launch probes. */
   get COMFYUI_MODEL_ROOT(): string {
     return process.env.COMFYUI_MODEL_ROOT ?? "/Users/kk/ComfyUI-Shared/models";

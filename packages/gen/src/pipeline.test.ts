@@ -500,6 +500,27 @@ describe("processImageGenerate", () => {
     }));
   });
 
+  it("persists no provider metadata and leaves pixels and evidence intact", async () => {
+    const png = Buffer.from(patternedPng(4, 4));
+    const leaked = Buffer.concat([
+      png.subarray(0, 33),
+      pngChunk("tEXt", Buffer.from("prompt\0user secret prompt fineview.safetensors", "latin1")),
+      pngChunk("tEXt", Buffer.from("workflow\0{\"nodes\":[]}", "latin1")),
+      png.subarray(33),
+    ]);
+    const providers = makeProviders({ blob: makeMemoryBlob() });
+    vi.mocked(providers.image.generate).mockResolvedValue({ ok: true, data: { assets: [{
+      body: new Uint8Array(leaked), width: 4, height: 4, contentType: "image/png",
+    }] } });
+    const deps = makePipelineDeps(providers);
+
+    await processImageGenerate(imagePayload({ count: 1 }), deps);
+
+    const write = vi.mocked(providers.blob.putPrivateIfAbsent).mock.calls.find(([input]) => input.key.endsWith("image-1.png"))?.[0];
+    expect(Buffer.from(write!.body).equals(png)).toBe(true);
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({ terminalRecord: expect.objectContaining({ outcome: "succeeded" }) }));
+  });
+
   it("rejects arbitrary provider bytes before publishing an image", async () => {
     const providers = makeProviders({ blob: makeMemoryBlob() });
     vi.mocked(providers.image.generate).mockResolvedValue({ ok: true, data: { assets: [{

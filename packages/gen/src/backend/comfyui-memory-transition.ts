@@ -62,7 +62,46 @@ export async function waitForComfyUiAcceleratorIdle(options: MemoryTransitionOpt
   }
 }
 
-function connectionWasRefused(error: unknown): boolean {
+// SPEC: a prompt submitted while its runner is down or booting proves nothing
+// except that the runner is unavailable, yet it burns the attempt. Wait out a
+// bounded restart first. A runner that stays down fails here, before the invocation
+// boundary, so the transport retry and the final preparation failure stay safe.
+// INVARIANT: only an unanswered connection counts as "not ready". A runner that
+// answers badly is left to the existing queue and submit error handling.
+export async function waitForComfyUiRunnerReady(target: ComfyUiRunner, options: MemoryTransitionOptions & {
+  readonly onWait?: () => Promise<void>;
+  readonly pollMs?: number;
+  readonly waitTimeoutMs?: number;
+  readonly heartbeatMs?: number;
+} = {}) {
+  const endpoint = normalizeEndpoint((options.endpoints ?? defaultEndpoints())[target]);
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const waitTimeoutMs = options.waitTimeoutMs ?? env.COMFYUI_READY_TIMEOUT_MS;
+  const deadline = Date.now() + waitTimeoutMs;
+  let nextHeartbeatAt = 0;
+  while (true) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    let answered = false;
+    try {
+      await (await fetchImpl(`${endpoint}/queue`, { signal: controller.signal })).arrayBuffer();
+      answered = true;
+    } catch (error) {
+      if (!connectionWasRefused(error) && !controller.signal.aborted) throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (answered) return;
+    if (Date.now() >= deadline) throw new Error(`ComfyUI ${target} runner did not answer within ${waitTimeoutMs}ms`);
+    if (Date.now() >= nextHeartbeatAt) {
+      await options.onWait?.();
+      nextHeartbeatAt = Date.now() + (options.heartbeatMs ?? 30_000);
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(options.pollMs ?? 2_000, Math.max(1, deadline - Date.now()))));
+  }
+}
+
+export function connectionWasRefused(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const candidate = error as { code?: unknown; cause?: unknown };
   // Node and the actual Bun worker use different codes for a refused connection.

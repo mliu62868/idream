@@ -1,5 +1,6 @@
 import asyncio
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import importlib
 import io
@@ -9,6 +10,7 @@ import struct
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 import wave
@@ -166,6 +168,53 @@ class FishAudioGatewayTests(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(payload["status"], "degraded")
         self.assertFalse(payload["system_voice_ready"])
+
+    def test_health_answers_while_a_render_holds_the_registry_lock(self):
+        rendering, release = threading.Event(), threading.Event()
+        original_render_wav = self.gateway.render_wav
+
+        def blocked_render(_request):
+            with self.gateway.registry_lock, self.gateway.generation_lock:
+                rendering.set()
+                release.wait(10)
+            return b"RIFF\x00\x00\x00\x00WAVE"
+
+        self.gateway.render_wav = blocked_render
+        self.gateway.load_runtime_model = lambda: object()
+        self.gateway.runtime_model = object()
+        try:
+            with TestClient(self.gateway.app) as client, ThreadPoolExecutor(max_workers=1) as pool:
+                speech = pool.submit(client.post, "/v1/audio/speech", json={
+                    "model": "breeze-tts-2-mlx-8bit", "input": "Blocking render",
+                    "voice": "fish-female-default", "response_format": "wav",
+                })
+                self.assertTrue(rendering.wait(5))
+                started = time.monotonic()
+                health = client.get("/health")
+                elapsed = time.monotonic() - started
+                release.set()
+                self.assertEqual(speech.result(10).status_code, 200)
+        finally:
+            release.set()
+            self.gateway.render_wav = original_render_wav
+        # The status depends on the fixture's system voice. What matters is that it answered.
+        self.assertIn(health.status_code, (200, 503))
+        self.assertLess(elapsed, 2)
+
+    def test_speech_refuses_work_it_could_not_finish_in_time(self):
+        lane = self.gateway.render_lane
+        self.gateway.load_runtime_model = lambda: object()
+        lane.pending = lane.max_pending
+        try:
+            with TestClient(self.gateway.app) as client:
+                response = client.post("/v1/audio/speech", json={
+                    "model": "breeze-tts-2-mlx-8bit", "input": "Over capacity",
+                    "voice": "fish-female-default", "response_format": "wav",
+                })
+        finally:
+            lane.pending = 0
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.headers["retry-after"], "5")
 
     def test_model_loading_and_synthesis_run_on_the_same_thread(self):
         calls = {}

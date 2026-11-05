@@ -231,9 +231,13 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(.03)
         self.assertTrue(g.slot.locked())
         self.assertFalse(g.healthy)
+        self.assertEqual((await self.client.get("/health", headers={"authorization": "Bearer test-internal-token"})).status_code, 503)
         release.set()
         await asyncio.gather(*g.tasks)
         self.assertIsNone(g.states["clip-1"].text)
+        # One slow clip must not take voice input down until someone restarts the process.
+        self.assertTrue(g.healthy)
+        self.assertEqual((await self.client.get("/health", headers={"authorization": "Bearer test-internal-token"})).status_code, 200)
 
     async def test_rate_and_expiry(self):
         for i in range(10):

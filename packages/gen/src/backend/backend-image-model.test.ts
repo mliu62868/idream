@@ -450,6 +450,20 @@ describe("BackendImageModel", () => {
     const registry = {
       resolveForModel: vi.fn(() => ({ backend: stub, descriptor })),
     };
+    const down = new BackendImageModel(registry, async (run) => { events.push("lease"); return run(); }, async () => {}, async () => {
+      throw new Error("ComfyUI image runner did not answer within 5ms");
+    });
+    const refusal = await down.generate({
+      prompt: "a cat",
+      executionBoundary: { onResourceWait: async () => {}, beforeProviderInvocation: async () => { events.push("admit"); }, beforeNextProviderInvocation: async () => {} },
+      count: 1,
+      model: "m",
+      controls: PIN,
+    });
+    // Nothing crossed the boundary, so the transport may safely retry this attempt.
+    expect(refusal).toMatchObject({ ok: false, error: { code: "backend_error", retryable: true, outcome: "definitive" } });
+    expect(events).toEqual([]);
+
     const model = new BackendImageModel(
       registry,
       async (run, options) => {

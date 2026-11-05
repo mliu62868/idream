@@ -40,7 +40,9 @@ TTL = 120
 MAX_STATES = 512
 UPLOAD_TIMEOUT = 20
 DEADLINE = 30
-QUEUE_TIMEOUT = 2
+# A queued clip needs to outlast the clip ahead of it, or MAX_QUEUE admits work that
+# can only fail. The remainder of DEADLINE stays available for decode and inference.
+QUEUE_TIMEOUT = 15
 MAX_QUEUE = 4
 MAX_TEXT = 32000
 TEMP_DIR = Path(os.getenv("ASR_TEMP_DIR", ".data/asr/audio")).resolve()
@@ -247,10 +249,14 @@ async def execute(op: Operation, directory: str, path: Path):
             result = await asyncio.wait_for(asyncio.shield(native), max(0.001, op.deadline - time.monotonic()))
         except TimeoutError:
             # A timed-out native call may still own RAM and CPU. Fail readiness,
-            # refuse delivery, and hold the slot until it really exits.
+            # refuse delivery, and hold the slot until it really exits. Once it has,
+            # the runtime is free again; nothing else would ever restore readiness.
             healthy = False
             finish(op, "failed", "transcription_timeout")
-            await native
+            try:
+                await native
+            finally:
+                healthy = True
             return
         if op.status == "cancelled":
             return

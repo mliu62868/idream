@@ -64,9 +64,17 @@ export class BackendInvocationError extends Error {
     message: string,
     readonly phase: BackendInvocationPhase,
     readonly outcome: BackendInvocationOutcome,
+    // A runner losing or cancelling a prompt says nothing about its input, so a
+    // new request can succeed. A prompt ComfyUI itself rejected stays not_retryable.
+    private readonly independentOfInput = false,
   ) {
     super(message);
     this.name = "BackendInvocationError";
+  }
+
+  /** May the same input reasonably succeed in a fresh request? */
+  get retryable(): boolean {
+    return this.outcome === "ambiguous" || this.phase === "pre_submit" || this.independentOfInput;
   }
 }
 
