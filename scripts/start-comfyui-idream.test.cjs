@@ -1,10 +1,15 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const path = require("node:path");
+const { mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } = require("node:fs");
+const { tmpdir } = require("node:os");
 
 const {
   childExitCode,
+  productionOutputPrefixes,
   resolveRuntime,
+  sweepTransientFiles,
+  transientRetentionMs,
 } = require("./start-comfyui-idream.cjs");
 
 test("launcher exits cleanly after its child receives the forwarded stop signal", () => {
@@ -176,5 +181,61 @@ test("the video PM2 definition replaces stale runtime and native cache overrides
   for (const app of config.apps.filter((app) => app !== video)) {
     assert.equal(app.env.MPS_SDPA_SKIP_CALIBRATION, undefined);
     assert.equal(app.env.TORCH_EXTENSIONS_DIR, undefined);
+  }
+});
+
+test("working-file retention is on in production and off by default in development", () => {
+  const day = 24 * 60 * 60 * 1_000;
+  assert.equal(transientRetentionMs({}), 0);
+  assert.equal(transientRetentionMs({ APP_ENV: "production" }), day);
+  assert.equal(transientRetentionMs({ IDREAM_PM2_MODE: "production" }), day);
+  assert.equal(transientRetentionMs({ COMFYUI_TRANSIENT_RETENTION_HOURS: "48" }), 2 * day);
+  assert.equal(transientRetentionMs({ APP_ENV: "production", COMFYUI_TRANSIENT_RETENTION_HOURS: "0" }), 0);
+  // Shorter than a prompt can sit in the queue would pull inputs out from under it.
+  assert.throws(() => transientRetentionMs({ COMFYUI_TRANSIENT_RETENTION_HOURS: "1" }), /at least 6/);
+  assert.throws(() => transientRetentionMs({ COMFYUI_TRANSIENT_RETENTION_HOURS: "soon" }), /must be 0/);
+});
+
+test("every production workflow's output prefix is known to the sweep", () => {
+  const prefixes = productionOutputPrefixes();
+  for (const expected of ["idream_redcraft_qw21t", "idream-redgraft-ltx25", "idream-minimax-h3-mystic", "idream-enhance-2x"]) {
+    assert.ok(prefixes.includes(expected), expected);
+  }
+});
+
+test("the sweep removes only expired production working files", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "idream-comfy-retention-"));
+  try {
+    const inputDirectory = path.join(root, "input");
+    const outputDirectory = path.join(root, "output");
+    mkdirSync(inputDirectory);
+    mkdirSync(path.join(outputDirectory, "h3-benchmark-20261024"), { recursive: true });
+    const now = Date.parse("2030-01-02T00:00:00.000Z");
+    const place = (directory, name, ageMs) => {
+      const file = path.join(directory, name);
+      writeFileSync(file, "x");
+      utimesSync(file, new Date(now - ageMs), new Date(now - ageMs));
+    };
+    const hour = 60 * 60 * 1_000;
+    const hash = "a".repeat(64);
+    place(inputDirectory, `idream-reference-${hash}.png`, 25 * hour);
+    place(inputDirectory, `idream-edit-mask-${hash}.png`, 25 * hour);
+    place(inputDirectory, `idream-reference-${"b".repeat(64)}.png`, 2 * hour);
+    place(inputDirectory, "hand-picked-reference.png", 25 * hour);
+    place(outputDirectory, "idream_redcraft_qw21t_00001_.png", 25 * hour);
+    place(outputDirectory, "idream_redcraft_qw21t_00002_.png", 2 * hour);
+    place(outputDirectory, "idream_redcraft_qw21t_ab_compare.png", 25 * hour);
+    place(outputDirectory, "ray_m4_rayresident_00001_.png", 25 * hour);
+    place(outputDirectory, "idream_redcraft_krea2_identity_00001_.png", 25 * hour);
+    place(path.join(outputDirectory, "h3-benchmark-20261024"), "idream_redcraft_qw21t_00001_.png", 25 * hour);
+
+    const removed = sweepTransientFiles({ inputDirectory, outputDirectory, retentionMs: 24 * hour, now, prefixes: ["idream_redcraft_qw21t"] });
+
+    assert.equal(removed.length, 3);
+    assert.deepEqual(readdirSync(inputDirectory).sort(), ["hand-picked-reference.png", `idream-reference-${"b".repeat(64)}.png`]);
+    assert.deepEqual(readdirSync(outputDirectory).sort(), ["h3-benchmark-20261024", "idream_redcraft_krea2_identity_00001_.png", "idream_redcraft_qw21t_00002_.png", "idream_redcraft_qw21t_ab_compare.png", "ray_m4_rayresident_00001_.png"]);
+    assert.deepEqual(readdirSync(path.join(outputDirectory, "h3-benchmark-20261024")), ["idream_redcraft_qw21t_00001_.png"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

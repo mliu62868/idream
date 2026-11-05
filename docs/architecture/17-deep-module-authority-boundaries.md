@@ -573,6 +573,8 @@ receipt 视为可修复证据，只有专属 Main ACK 后才写 `consumed_v2`。
 
 Chat ACK 也不代替媒体擦除完成。Main 保留所有者映射，直到生成执行、Main 语音写入与视频合成均已收敛、私有 Blob 删除回执完成，以及每个历史 pinned TTS provider 的擦除回执完成。租约过期允许受控恢复，不能证明旧调用已经停止 I/O；取消或接班后的产品终态也不能自动抹掉旧写入者的执行证据。新接纳、恢复、写入和交付须在 User 根锁下重新验证账号权威，数据库锁不跨 provider/Blob I/O。
 
+ComfyUI runner 的 input/output 工作副本（用户参考图、编辑遮罩和带 prompt 元数据的输出）无法从账号映射到文件，不进入擦除枚举；生产环境由 runner 启动器按 24 小时保留期清理，所以这一层的承诺是「擦除完成后至多 24 小时内消失」，而不是即时删除。runner 内存中的 `/history` 同样含 prompt，随进程重启清空。
+
 TTS gateway 持久化账号、精确 request key 和 clone alias 的擦除屏障，拒绝迟到写入与重启重放；Main `AccountDeletion.voiceErasure` 按历史 provider 保存独立 ACK，最终只留完成证据。官方声音属于既有平台 owner，运营 `createdById` 是审计来源；私人角色声音属于 creator。未交付或提交结果未知的语音仍可按 canonical request key 枚举全部支持格式，不依赖 MediaAsset 必须存在。未决执行或删除失败保留映射和待处理回执，不得宣称账号擦除完成。
 
 本 ADR 不要求新增数据库表。必要 schema 变更交付 migration/SQL；开发/专用测试库按项目授权核对目标与隔离后执行，生产库由用户或发布系统执行。

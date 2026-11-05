@@ -1,4 +1,4 @@
-const { existsSync, mkdirSync } = require("node:fs");
+const { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } = require("node:fs");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 
@@ -118,8 +118,86 @@ function resolveRuntime(env = process.env) {
   };
 }
 
+const WORKFLOW_DIRECTORY = path.resolve(__dirname, "../packages/gen/workflows");
+const MINIMUM_RETENTION_HOURS = 6;
+const SWEEP_INTERVAL_MS = 60 * 60 * 1_000;
+const TRANSIENT_INPUT = /^idream-(?:reference|edit-mask)-[0-9a-f]{64}\.png$/;
+
+// SPEC: how long a runner keeps its working copies. Zero means no sweep.
+// INTENT: production defaults on because the guarantee has to hold without anyone
+// remembering a variable. Development defaults off: these directories also hold
+// benchmark evidence the research records point at, and deletion cannot be undone.
+function transientRetentionMs(env = process.env) {
+  const explicit = env.COMFYUI_TRANSIENT_RETENTION_HOURS;
+  const production = env.APP_ENV === "production" || env.IDREAM_PM2_MODE === "production";
+  const hours = explicit === undefined ? (production ? 24 : 0) : Number(explicit);
+  // A prompt can queue for hours and still needs its uploaded inputs when it runs.
+  if (!Number.isFinite(hours) || (hours !== 0 && hours < MINIMUM_RETENTION_HOURS)) {
+    throw new Error(
+      `COMFYUI_TRANSIENT_RETENTION_HOURS must be 0 or at least ${MINIMUM_RETENTION_HOURS}; received ${explicit}`,
+    );
+  }
+  return hours * 60 * 60 * 1_000;
+}
+
+// The checked-in descriptors are the authority on what production writes, so a
+// retired workflow's files and hand-run benchmarks never match.
+function productionOutputPrefixes(workflowDirectory = WORKFLOW_DIRECTORY) {
+  const prefixes = new Set();
+  for (const file of readdirSync(workflowDirectory)) {
+    if (!file.endsWith(".json")) continue;
+    const { apiPrompt } = JSON.parse(readFileSync(path.join(workflowDirectory, file), "utf8"));
+    for (const node of Object.values(apiPrompt ?? {})) {
+      if (typeof node.inputs?.filename_prefix === "string") prefixes.add(node.inputs.filename_prefix);
+    }
+  }
+  return [...prefixes];
+}
+
+// SPEC: Gen copies every result into Blob and uploads inputs again for each submit,
+// so what the runner keeps is only a working copy. Left alone those copies hold user
+// reference images and prompts past account erasure, which cannot reach this host's
+// directories. A bounded lifetime is what lets erasure make a promise about them.
+// INVARIANT: top-level files matching production names only, never subdirectories.
+function sweepTransientFiles({ inputDirectory, outputDirectory, retentionMs, now = Date.now(), prefixes = productionOutputPrefixes() }) {
+  const expired = (file) => now - statSync(file).mtimeMs >= retentionMs;
+  const removed = [];
+  const sweep = (directory, matches) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (!entry.isFile() || !matches(entry.name)) continue;
+      const file = path.join(directory, entry.name);
+      if (!expired(file)) continue;
+      unlinkSync(file);
+      removed.push(file);
+    }
+  };
+  sweep(inputDirectory, (name) => TRANSIENT_INPUT.test(name));
+  // ComfyUI's own counter suffix, so a hand-named comparison under the same prefix stays.
+  sweep(outputDirectory, (name) => {
+    const counted = /^(.+)_\d{5,}_\.(?:png|mp4)$/.exec(name);
+    return counted !== null && prefixes.includes(counted[1]);
+  });
+  return removed;
+}
+
+function startTransientFileSweep(runtime, retentionMs) {
+  if (retentionMs === 0) return;
+  const sweep = () => {
+    try {
+      const removed = sweepTransientFiles({ ...runtime, retentionMs });
+      if (removed.length > 0) console.log(`[comfyui-retention] removed ${removed.length} expired working files`);
+    } catch (error) {
+      // Never take a runner down over housekeeping; the next pass tries again.
+      console.error(`[comfyui-retention] sweep failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  sweep();
+  setInterval(sweep, SWEEP_INTERVAL_MS).unref();
+}
+
 function startComfyUi({ env = process.env, spawnProcess = spawn } = {}) {
   const runtime = resolveRuntime(env);
+  const retentionMs = transientRetentionMs(env);
   if (!existsSync(runtime.python)) {
     throw new Error(
       "ComfyUI venv Python is required; set COMFYUI_VENV_PYTHON or COMFYUI_ROOT",
@@ -132,6 +210,8 @@ function startComfyUi({ env = process.env, spawnProcess = spawn } = {}) {
   ]) {
     mkdirSync(directory, { recursive: true });
   }
+
+  startTransientFileSweep(runtime, retentionMs);
 
   const child = spawnProcess(runtime.python, runtime.args, {
     cwd: runtime.root,
@@ -159,4 +239,11 @@ function childExitCode(code, signal) {
 
 if (require.main === module) startComfyUi();
 
-module.exports = { childExitCode, resolveRuntime, startComfyUi };
+module.exports = {
+  childExitCode,
+  productionOutputPrefixes,
+  resolveRuntime,
+  startComfyUi,
+  sweepTransientFiles,
+  transientRetentionMs,
+};

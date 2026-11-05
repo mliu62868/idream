@@ -50,6 +50,24 @@ describe("generation accelerator lease", () => {
     if (dir) await rm(dir, { recursive: true, force: true });
   });
 
+  it.runIf(process.platform === "darwin")("blocks idle sleep for exactly as long as the device is held", async () => {
+    dir = await mkdtemp(path.join(tmpdir(), "idream-accelerator-"));
+    const lockPath = path.join(dir, "device.lock");
+    const holder = launch(`
+      import { spawnSync } from "node:child_process";
+      const assertions = () => spawnSync("pgrep", ["-f", "caffeinate -i -w " + process.pid]).stdout.toString().trim().split("\\n").filter(Boolean).length;
+      console.log("before=" + assertions());
+      await lease("video", async () => { console.log("during=" + assertions()); }, { lockPath: ${JSON.stringify(lockPath)}, pollMs: 2 });
+      await new Promise(resolve => setTimeout(resolve, 100));
+      console.log("after=" + assertions());
+    `);
+    const result = await holder.done;
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("before=0");
+    expect(result.stdout).toContain("during=1");
+    expect(result.stdout).toContain("after=0");
+  });
+
   it("serializes native image/video processes on the same permanent inode", async () => {
     dir = await mkdtemp(path.join(tmpdir(), "idream-accelerator-"));
     const lockPath = path.join(dir, "device.lock");

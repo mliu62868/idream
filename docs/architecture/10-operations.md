@@ -130,7 +130,10 @@ Chat 没有独立 moderation provider。输入/输出产品策略属于 Main。
 - provider/model/workflow exact pins
 - Blob 与 Main terminal ingest credentials
 
+ComfyUI runner 启动器按 `COMFYUI_TRANSIENT_RETENTION_HOURS` 定期清理自己的工作副本（生产默认 24，开发默认关闭，0 为关闭，否则不得小于 6）。范围只有 input/output 顶层、名称匹配 Gen 上传规则或已提交工作流 `filename_prefix` 的文件；子目录、退役工作流文件和手工基准不受影响。启动 runner 时须设置 `APP_ENV=production` 或显式设置该变量，否则擦除承诺的上限不成立。
+
 同一 host 的图片、视频和媒体基准必须使用相同的 `GEN_ACCELERATOR_LOCK_PATH`。
+持有租约期间，macOS 上由 `caffeinate -i` 阻止空闲睡眠；它挡不住合盖，运行机须另行配置。
 Gen 通过 Bun FFI 持有永久 inode 的 OS `flock`，覆盖完整 submit/poll；关闭 FD 或进程崩溃由内核释放。
 文件内 PID/token 仅供诊断，不能据此删除或替换仍有 worker/基准使用的 inode。
 此锁与旧 existence/PID/mtime 协议不能混跑，旧 stale-owner 回收会 unlink 新 worker 正持有的 inode。

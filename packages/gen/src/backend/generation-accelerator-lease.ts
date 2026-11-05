@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, open } from "node:fs/promises";
 import { constants } from "node:os";
@@ -51,6 +52,20 @@ async function loadNativeFlock(): Promise<NativeFlock> {
   };
 }
 
+// SPEC: on a Mac, block idle sleep while the device is in use, and only then.
+// INTENT: budgets run on the wall clock, so a host that sleeps mid-render wakes with
+// its budget gone: one RedGraft attempt reported 1821s waited against 652s of real
+// execution and ended unknown. `-w` lets the assertion die with this process. It does
+// not stop a closed laptop lid, which remains a host configuration matter.
+function holdHostAwake() {
+  if (process.platform !== "darwin") return undefined;
+  const assertion = spawn("/usr/bin/caffeinate", ["-i", "-w", String(process.pid)], { stdio: "ignore" });
+  // Missing the assertion costs a possible wasted render, never a paid attempt.
+  assertion.on("error", () => {});
+  assertion.unref();
+  return assertion;
+}
+
 // SPEC: all host image/video backends hold the same OS advisory lock for their
 // full submit/poll window. The kernel releases it on close or process death.
 // INVARIANT: the lock inode is permanent. Unlinking it allows a late stale-owner
@@ -69,6 +84,7 @@ export async function withGenerationAcceleratorLease<T>(
   let nextHeartbeatAt = 0;
   await mkdir(path.dirname(lockPath), { recursive: true });
   const handle = await open(lockPath, "a+", 0o600);
+  let awake: ReturnType<typeof holdHostAwake>;
   try {
     while (true) {
       if (Date.now() >= deadline) throw new Error("Generation accelerator resource wait timed out before provider invocation");
@@ -83,8 +99,10 @@ export async function withGenerationAcceleratorLease<T>(
     // authority. Updating the held inode does not replace it.
     await handle.truncate(0);
     await handle.writeFile(`${JSON.stringify({ pid: process.pid, token: randomUUID(), kind, acquiredAtMs: Date.now() })}\n`);
+    awake = holdHostAwake();
     return await run(handle.fd);
   } finally {
+    awake?.kill();
     await handle.close();
   }
 }
