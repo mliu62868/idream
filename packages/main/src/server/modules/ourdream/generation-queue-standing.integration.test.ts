@@ -57,7 +57,7 @@ describe("generation queue standing", () => {
 
   it("gives no standing to anything no longer waiting", async () => {
     const started = await request({ mode: "image", attemptStatus: "running", startedAt: new Date(), offsetMs: 6_000 });
-    const finished = await request({ mode: "image", status: "completed", attemptStatus: "succeeded", offsetMs: 7_000 });
+    const finished = await request({ mode: "image", status: "completed", attemptStatus: "succeeded", startedAt: new Date(base), finishedAt: new Date(base + 1_000), offsetMs: 7_000 });
     await expect(readGenerationQueueStandings([started, finished])).resolves.toEqual(new Map());
   });
 

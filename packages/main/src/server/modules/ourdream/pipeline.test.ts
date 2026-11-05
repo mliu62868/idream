@@ -1666,7 +1666,7 @@ describe("local AI service pipeline", () => {
       });
       expect(asset.type).toBe("video");
       expect(asset.url).toMatch(/^\/user-content\/.+\/content\.mp4$/);
-      expect(asset.thumbnailUrl).toBeNull();
+      expect(asset.thumbnailUrl).toMatch(/^\/user-content\/.+\/thumbnail\.webp$/);
       expect(asset.url).not.toContain("promo-card");
       expect(asset.metadata).toMatchObject({
         provider: "comfyui",

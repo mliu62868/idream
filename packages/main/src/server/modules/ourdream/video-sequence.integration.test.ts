@@ -966,6 +966,20 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
     expect(await dreamcoinBalance(userId)).toBe(1000);
   });
 
+  it("delivers a sequence whose unknown scene was later adopted as a success", async () => {
+    const native = await mockedNativeSuccess(), { sequence } = await create(body(1, "silent"));
+    await runQueuedGenerationJobs(10);
+    const jobId = sequence.scenes[0]!.job.id;
+    expect((await prisma.generationJob.findUniqueOrThrow({ where: { id: jobId } })).status).toBe("completed");
+    // The state adoption leaves: a completed Request over an Attempt that stays unknown.
+    const attempt = await prisma.generationAttempt.findFirstOrThrow({ where: { requestId: jobId }, orderBy: { attemptNo: "desc" } });
+    await prisma.generationAttempt.update({ where: { id: attempt.id }, data: { status: "unknown", finishedAt: new Date() } });
+    await prisma.videoSequence.update({ where: { id: sequence.id }, data: { status: "unknown", errorCode: "provider_outcome_unknown" } });
+    await advanceVideoSequences(); await advanceVideoSequences();
+    expect((await read(sequence.id)).status).toBe("completed");
+    expect(native).toHaveBeenCalledTimes(1);
+  });
+
   it("delivers a ready sequence behind ten older unknown sequences without repeating generation or charges", async () => {
     const native = await mockedNativeSuccess(), { sequence } = await create(body(1, "silent"));
     await runQueuedGenerationJobs(10);

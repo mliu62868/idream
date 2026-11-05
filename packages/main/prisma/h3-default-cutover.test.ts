@@ -45,7 +45,7 @@ describe("H3 default selection publication", () => {
     const job = await prisma.generationJob.create({ data: { id: `${prefix}history`, userId: "seed-dev-user",
       mode: "video", status: "completed", profileId: old.id, profileVersion: 5, controls: {}, presetIds: [] } });
     const attempt = await prisma.generationAttempt.create({ data: { id: `${prefix}attempt`, requestId: job.id,
-      attemptNo: 1, status: "succeeded", profileKey: key, profileVersion: 5,
+      attemptNo: 1, status: "succeeded", startedAt: new Date(), finishedAt: new Date(), profileKey: key, profileVersion: 5,
       workflowKey: "minimax-h3-mystic-i2v", workflowVersion: 5 } });
     await publish();
     const [archived, current] = await profiles();
@@ -71,7 +71,8 @@ describe("H3 default selection publication", () => {
     const job = await prisma.generationJob.create({ data: { id: `${prefix}pending`, userId: "seed-dev-user",
       mode: "video", status: "completed", controls: {}, presetIds: [] } });
     await prisma.generationAttempt.create({ data: { id: `${prefix}running`, requestId: job.id,
-      attemptNo: 1, status, profileKey: key, profileVersion: 5,
+      // The database requires a start on running and a finish on terminal Attempts.
+      attemptNo: 1, status, startedAt: new Date(), finishedAt: status === "unknown" ? new Date() : null, profileKey: key, profileVersion: 5,
       workflowKey: "minimax-h3-mystic-i2v", workflowVersion: 5 } });
     await expect(publish()).rejects.toThrow("Pending H3 work must finish");
   });

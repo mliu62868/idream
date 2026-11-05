@@ -430,7 +430,10 @@ export async function advanceVideoSequences(limit = 10, cursor: VideoSequenceAdv
       if (row.status === "composing" && row.compositionLeaseAt && row.compositionLeaseAt.getTime() > Date.now()) continue;
       const statuses = await latestGenerationAttemptStatuses(row.scenes.map(scene => scene.generationJobId));
       const settledFailure = (scene: SequenceRow["scenes"][number]) => ["failed", "blocked", "cancelled", "refunded"].includes(scene.generationJob.status);
-      const failed = row.scenes.find(scene => settledFailure(scene) || statuses.get(scene.generationJobId) === "unknown");
+      // A completed Request settles an unknown Attempt as success (the sweeper or an
+      // operator adopted its recovered output), though the Attempt row stays as evidence.
+      const unresolved = (scene: SequenceRow["scenes"][number]) => scene.generationJob.status !== "completed" && statuses.get(scene.generationJobId) === "unknown";
+      const failed = row.scenes.find(scene => settledFailure(scene) || unresolved(scene));
       if (failed) {
         // The unknown attempt is immutable evidence and outlives settlement. Once
         // the Request itself is settled (the stale-unknown sweeper refunds it),

@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
-import { characterVideoProductionRecipe } from "@idream/shared";
+import { minimaxH3VideoProductionRecipe } from "@idream/shared";
 import sharp from "sharp";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
@@ -71,11 +71,11 @@ describe("video generation (Deluxe)", () => {
     });
     const previousVideoProfile =
       await prisma.generationModelProfile.findUniqueOrThrow({
-        where: { id: "seed-profile-video-redgraft-ltx25-v1" },
+        where: { id: "seed-profile-video-h3-v1" },
         select: { rolloutPercent: true },
       });
     await prisma.generationModelProfile.update({
-      where: { id: "seed-profile-video-redgraft-ltx25-v1" },
+      where: { id: "seed-profile-video-h3-v1" },
       data: { rolloutPercent: 100 },
     });
 
@@ -93,11 +93,11 @@ describe("video generation (Deluxe)", () => {
       );
       expect(queued?.payload).toMatchObject({
         kind: "video",
-        model: "redgraft-ltx25-i2v",
+        model: minimaxH3VideoProductionRecipe.workflowKey,
         controls: {
           sourceImageAssetId: expect.any(String),
-          workflowKey: "redgraft-ltx25-i2v",
-          workflowVersion: characterVideoProductionRecipe.workflowVersion,
+          workflowKey: minimaxH3VideoProductionRecipe.workflowKey,
+          workflowVersion: minimaxH3VideoProductionRecipe.workflowVersion,
         },
         referenceImages: [
           expect.objectContaining({
@@ -136,7 +136,7 @@ describe("video generation (Deluxe)", () => {
         data: previousVideoFlag,
       });
       await prisma.generationModelProfile.update({
-        where: { id: "seed-profile-video-redgraft-ltx25-v1" },
+        where: { id: "seed-profile-video-h3-v1" },
         data: previousVideoProfile,
       });
     }

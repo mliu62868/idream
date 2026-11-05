@@ -357,7 +357,8 @@ describe("ComfyUIBackend prompt lifecycle", () => {
   it("notices a running prompt vanish after a runner restart", async () => {
     let queueReads = 0;
     scriptedRunner("p-restart", { history: () => NOT_FINISHED, queue: () => (queueReads++ === 0 ? queueWith(["p-restart"]) : queueWith()) });
-    const { outcome } = await settle(backendFor(), 11_000, 60_000);
+    // Coarse polling: this has to cross two 5s liveness intervals under fake time.
+    const { outcome } = await settle(new ComfyUIBackend({ apiUrl: "http://x", pollIntervalMs: 500, promptCancelGraceMs: 0, workflowSync: testWorkflowSync }), 11_000, 60_000);
     expect(outcome).toMatchObject({ ok: false, error: { outcome: "definitive", retryable: true } });
     expect(queueReads).toBe(3);
   });

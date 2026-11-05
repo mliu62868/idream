@@ -1586,8 +1586,9 @@ describe("ChatSessionClient streaming composer", () => {
       intent: "play",
       messageId: "assistant-0",
       sessionId: "session-1",
-      text: "Hey there.",
     });
+    // Main reads the reply's own text; a long reply must not have to fit a client field.
+    expect(JSON.parse(String(request?.body))).not.toHaveProperty("text");
   });
 
   it.each(["playing", "render pending", "quote pending"])("stops %s TTS on microphone start and blocks voice requests during capture", async mode => {

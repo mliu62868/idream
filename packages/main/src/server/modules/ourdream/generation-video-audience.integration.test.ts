@@ -7,7 +7,7 @@ import { prisma } from "@/server/lib/db";
 import { jobQueue } from "@/server/jobs/queue";
 import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import { characterReleaseSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
-import { PRODUCTION_REDGRAFT_LTX25_VIDEO_PROFILE } from "@/server/modules/generation/production-video-profile";
+import { PRODUCTION_H3_VIDEO_PROFILE } from "@/server/modules/generation/production-video-profile";
 import { createGenerationJobForUser } from "./generation-job-create";
 import { quoteAuthorityFor, quoteGeneration } from "./generation-quote";
 import { generationJobSchema } from "./generation-request-schema";
@@ -34,7 +34,7 @@ beforeAll(async () => {
   const flag = await prisma.featureFlag.findUnique({ where: { key: "video_gen" } });
   priorFlag = flag ? { enabled: flag.enabled, rolloutPercent: flag.rolloutPercent } : null;
   await prisma.featureFlag.upsert({ where: { key: "video_gen" }, create: { key: "video_gen", label: "Video generation", targetRoles: [], targetPlans: [], enabled: true, rolloutPercent: 100 }, update: { enabled: true, rolloutPercent: 100 } });
-  const authority = PRODUCTION_REDGRAFT_LTX25_VIDEO_PROFILE;
+  const authority = PRODUCTION_H3_VIDEO_PROFILE;
   if (!await prisma.generationModelProfile.findFirst({ where: { profileKey: authority.profileKey, version: authority.version } })) {
     createdConfig.profile = `${prefix}-profile`;
     await prisma.generationModelProfile.create({ data: { id: createdConfig.profile, ...authority, label: "Video audience fixture", mode: "video", costMultiplier: 1, enabled: true, status: "active", publishedAt: new Date() } });
@@ -97,7 +97,7 @@ describe("Character video audience at quote and reservation", () => {
     expect(await createGenerationJobForUser(ownerId, input, options)).toMatchObject({ id: job.id });
     expect(job).toMatchObject({ status: "queued", mode: "video", characterId, costDreamcoins: 100, provider: "comfyui", controls: expect.objectContaining({ sourceImageAssetId: sourceAssetId, seconds: 5 }) });
     const attempt = await prisma.generationAttempt.findFirstOrThrow({ where: { requestId: job.id } });
-    expect(attempt).toMatchObject({ attemptNo: 1, status: "queued", profileKey: PRODUCTION_REDGRAFT_LTX25_VIDEO_PROFILE.profileKey });
+    expect(attempt).toMatchObject({ attemptNo: 1, status: "queued", profileKey: PRODUCTION_H3_VIDEO_PROFILE.profileKey });
     expect(await prisma.generationAttempt.count({ where: { requestId: job.id } })).toBe(1);
     expect(await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: `generation_initial_${job.id}` } })).toMatchObject({ status: "delivered" });
     const queued = await jobQueue.getByDedupeKey("ai.video.generate", idempotencyKeys.generationAttempt(job.id, 1));

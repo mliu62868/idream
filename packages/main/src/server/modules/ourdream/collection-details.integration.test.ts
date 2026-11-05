@@ -65,7 +65,7 @@ describe("collection details and membership", () => {
     const last = await api("GET", `media/collections/${id}`, { ageGate: true, query: { cursor: first.data.nextCursor } });
     expectOk(last);
     expect(last.data.nextCursor).toBeNull();
-    expect(last.data.items).toEqual([{ id: mediaIds[12], type: "video", url: `/user-content/${Buffer.from(mediaIds[12]!).toString("base64url")}/content.mp4` }]);
+    expect(last.data.items).toEqual([{ id: mediaIds[12], type: "video", thumbnailUrl: null, url: `/user-content/${Buffer.from(mediaIds[12]!).toString("base64url")}/content.mp4` }]);
     expect(JSON.stringify(last.data)).not.toMatch(/storageKey|sourceJobId|provider|prompt/);
   });
 
@@ -198,7 +198,7 @@ describe("collection details and membership", () => {
     const second = await api("GET", "community/collections", { ageGate: true, query: { cursor: first.data.nextCursor } });
     expectOk(second);
     expect(second.data.collections[0].id).toBe(ids[0]);
-    expect(first.data.collections[0].previews[0]).toEqual({ id: mediaId, type: "image", url: `/user-content/${Buffer.from(mediaId).toString("base64url")}/content.webp` });
+    expect(first.data.collections[0].previews[0]).toEqual({ id: mediaId, type: "image", thumbnailUrl: null, url: `/user-content/${Buffer.from(mediaId).toString("base64url")}/content.webp` });
     expectError(await api("GET", "community/collections", { ageGate: true, query: { cursor: "broken" } }), 400);
   });
 });
