@@ -113,7 +113,6 @@ describe("content merchandising commands", () => {
         characterIds: [featuredId],
         expectedVersion: currentFeatured.data.settingVersion,
         reason: "verify featured command transaction",
-        confirmation: featuredId,
       },
     });
     expectOk(status);

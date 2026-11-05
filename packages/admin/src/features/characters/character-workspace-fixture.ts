@@ -318,6 +318,7 @@ const base = {
     changedFields: [],
   },
   performance: [],
+  handoff: null,
 } satisfies CharacterWorkspaceDetail;
 
 /**

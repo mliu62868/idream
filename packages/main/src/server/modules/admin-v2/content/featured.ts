@@ -33,6 +33,8 @@ const featuredCharacterSelect = {
   imageAsset: {
     select: {
       id: true,
+      url: true,
+      thumbnailUrl: true,
       type: true,
       visibility: true,
       safetyStatus: true,
@@ -97,6 +99,7 @@ export async function getFeaturedCharacters() {
         name: character?.name ?? null,
         visibility: character?.visibility ?? null,
         status: character?.status ?? null,
+        thumbnailUrl: character?.imageAsset?.thumbnailUrl ?? character?.imageAsset?.url ?? null,
         configuredPosition,
         configured: true as const,
         effective,
@@ -311,10 +314,6 @@ export async function putFeaturedCharacters(input: {
 }) {
   const { tx, request, actor, requestId, body } = input;
   const unique = parseFeaturedSetting({ characterIds: body.characterIds }).characterIds;
-  const expected = unique.length ? unique.join(",") : "CLEAR";
-  if (body.confirmation !== expected) {
-    throw Errors.badRequest("Confirmation did not match featured target");
-  }
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`app-setting:${FEATURED_SETTING_KEY}`}))`;
   const before = await tx.appSetting.findUnique({ where: { key: FEATURED_SETTING_KEY } });
   const beforeSetting = parseFeaturedSetting(before?.value);

@@ -14,6 +14,7 @@ import { clearSoulDraft, readSoulDraft, writeSoulDraft, type SoulDraft, type Sou
 import { characterCreateStepFieldErrors } from "./character-form-validation";
 import { characterHasPublishedRelease } from "./character-workspace-format";
 import type { RunCommittedCharacterMutation } from "./character-workspace-permissions";
+import { CandidateDiscardAction } from "./CandidateDiscardAction";
 import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
 import { RequestErrorDetails } from "@/components/admin/ui/RequestErrorDetails";
 import { operatorErrorCopy, type OperatorErrorCopy } from "@/components/admin/ui/request-error-copy";
@@ -174,6 +175,7 @@ function SoulEditor({
     <div className="space-y-5">
       {candidatePending ? <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-[var(--ad-yellow-bg)] px-4 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">
         <span>{t("A candidate release is waiting. Publish or discard it before editing the character.")}</span>
+        <CandidateDiscardAction data={data} />
         <Link className="min-h-9 content-center font-semibold underline" href={releaseHref}>{t("Go to Release")}</Link>
       </div> : null}
 

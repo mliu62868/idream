@@ -186,6 +186,31 @@ export const ADMIN_GRANT_BUNDLES = {
     ],
     scopes: { "character.performance.read": "assigned_characters" },
   },
+  // SPEC: 创作者可写角色并标记创作交接，但不能发布、回滚或暂停。
+  character_creator: {
+    permissions: [
+      "character.project.read",
+      "character.project.write",
+      "character.release.read",
+      "character.performance.read",
+    ],
+    scopes: { "character.performance.read": "assigned_characters" },
+  },
+  // SPEC: 发布运营管上线与分发。
+  // INTENT: 保留 character.project.write：选产品槽位（draft-image）与读图片库（image-sources）
+  //         现在只认它，拆掉就选不了图。与 character_producer 的差别在于精选 / 展示位。
+  character_publisher: {
+    permissions: [
+      "character.project.read",
+      "character.project.write",
+      "character.release.read",
+      "character.release.publish",
+      "character.performance.read",
+      "content.read",
+      "content.placement.write",
+    ],
+    scopes: { "character.performance.read": "assigned_characters" },
+  },
   creative_operator: {
     permissions: [
       "creative.run.read",
@@ -198,7 +223,8 @@ export const ADMIN_GRANT_BUNDLES = {
     scopes: {},
   },
   growth_operator: {
-    permissions: ["analytics.metric.read", "experiment.manage"],
+    // INTENT: 精选是增长运营的日常动作；只开目录读取与展示位写入，不含下架 / 可见性。
+    permissions: ["analytics.metric.read", "experiment.manage", "content.read", "content.placement.write"],
     scopes: {},
   },
 } as const satisfies Record<
@@ -210,6 +236,15 @@ export const ADMIN_GRANT_BUNDLES = {
 >;
 
 export type AdminGrantBundleKey = keyof typeof ADMIN_GRANT_BUNDLES;
+
+/**
+ * SPEC: 带 assigned_characters 作用域的权限包必须按角色授予。
+ * INVARIANT: Main 的授予校验与有效权限解析、Admin 的授予表单共用这一个判据；
+ *            否则新增的角色级权限包会因为 scope 为 null 被解析成全局授权。
+ */
+export function adminGrantBundleRequiresCharacterScope(bundleKey: AdminGrantBundleKey) {
+  return Object.keys(ADMIN_GRANT_BUNDLES[bundleKey].scopes).length > 0;
+}
 
 export const adminPermissionOverrideSchema = z
   .object({

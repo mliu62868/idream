@@ -22,7 +22,7 @@ Explore 搜索/筛选、详情、Following、公开/链接可见边界与 CMS �
 
 完整创建、可恢复草稿、视觉/声音候选、私有使用、Release/Serving 和编辑管理已有实现。10月2日两标签草稿 CAS、客户 preview → 运营素材 → Hero/Chat 真实生成 → 发布 → 独立发现/聊天 → 暂停/恢复已形成受控链；Follow/Studio、My AI 复制/编辑/私有恢复/删除另有单域记录。
 
-证据：[草稿竞争](../../.scratch/full-product-audit-2026-10-01/browser/draft-two-tabs-cas.txt)、[发布与运营记录](../../.scratch/full-product-audit-2026-10-01/REPORT.md)。五步创建须按完整字段、恢复、预览与发布证明六类任务等价；目录数量不等于语义对标。创作交接与独立发布界面的完整分离仍需实际操作证明。Hero 的 full-body 请求产出腰上构图，保留为质量限制。
+证据：[草稿竞争](../../.scratch/full-product-audit-2026-10-01/browser/draft-two-tabs-cas.txt)、[发布与运营记录](../../.scratch/full-product-audit-2026-10-01/REPORT.md)。五步创建须按完整字段、恢复、预览与发布证明六类任务等价；目录数量不等于语义对标。创作交接已实现为一键、不可变、不阻塞发布的记录（`character_handoffs`），只有自动测试证据；交接与发布界面的实际操作仍需证明。发布面板的暂停/恢复单击、回滚/退役普通确认与精选对象选择器同样只有自动测试证据。不做单角色 A/B，用 Release 前后对比。Hero 的 full-body 请求产出腰上构图，保留为质量限制。
 
 ## Chat 与记忆
 

@@ -378,10 +378,16 @@ describe("Release historical image authority", () => {
     });
     const editedRevision = await prisma.characterRevision.findFirstOrThrow({ where: { projectId: candidate.projectId, revision: edited.revision } });
 
+    // SPEC: 交接只是记录：一条与当前内容已漂移的交接不阻塞、也不改变发布。
+    const staleHandoff = await prisma.characterHandoff.create({ data: {
+      characterId, projectId: candidate.projectId, contentVersionId: livedRevision.characterContentVersionId,
+      selectableImageCount: 0, createdById: actor.id,
+    } });
     const next = await createCharacterRelease({
       request: new Request("http://localhost"), characterId, expectedProjectVersion: await projectVersion(),
       reason: "Publish the author's text edit", actor, requestId: `${characterId}-release`,
     });
+    expect(await prisma.characterHandoff.findUnique({ where: { id: staleHandoff.id } })).toEqual(staleHandoff);
     expect(next).toMatchObject({
       status: "approved", readiness: "ready",
       revisionId: editedRevision.id, characterContentVersionId: editedRevision.characterContentVersionId,

@@ -548,7 +548,7 @@ export function AccessWorkspace({
           </div>
           {/* SPEC: 需要范围的包，范围就是它的必填项 —— 不填不给按。
               INTENT: 没有这个输入框时，character_producer（下拉框的默认值）发出去必定是一条
-              "Character producer grants require at least one assigned Character" 的 400。 */}
+              "Character-scoped grants require at least one assigned Character" 的 400。 */}
           {needsCharacterScope ? (
             <div className="mt-3">
               <Field

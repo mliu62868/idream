@@ -306,6 +306,20 @@ export const adminZhCharacters: Record<string, string> = {
   "Check the selected images and their sources before publishing.": "发布前确认所选图片及其来源。",
   "Open image library": "打开图片库",
   "Discard candidate": "放弃待发布版本",
+  "Discard candidate and keep editing": "放弃候选并继续编辑",
+  "Pending publish": "待发布",
+  "Roll back to Release #{ordinal}?": "回滚到版本 #{ordinal}？",
+  "New conversations use this Release right away. Conversations already in progress stay on their pinned version. Publish again to move forward.": "新会话立即使用这个版本，进行中的会话仍停留在原版本。之后可以重新发布。",
+  "Retire {name}?": "停用 {name}？",
+  "Mark ready to publish": "标记为可发布",
+  "Could not mark ready to publish": "标记可发布失败",
+  "Marked ready to publish {time}": "已于 {time} 标记为可发布",
+  "{name} marked this ready to publish {time}": "{name} {time}标记为可发布",
+  "A creator": "创作者",
+  "No changes since": "之后没有改动",
+  "{count} changes since: {items}": "之后有 {count} 处改动：{items}",
+  "Character content": "角色内容",
+  "Reference set": "参考集",
   "Could not discard candidate": "未能放弃待发布版本",
   "Discard this candidate to edit the draft again. The live Character stays unchanged.": "放弃后可继续编辑草稿，线上角色不受影响。",
   "Character availability and rollback": "角色状态与回滚",
@@ -946,7 +960,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Hero image not selected": "尚未选择主视觉图片",
   "Historical rollback source": "历史回滚来源",
   Hybrid: "混合",
-  "I confirm this release action": "我确认执行该发布操作",
   "Identity anchor": "身份锚点",
   "Identity and quality safeguards are automatic. Add only exclusions specific to this image.":
     "系统会自动应用身份与质量约束；这里只填写这张图片需要额外避免的内容。",
@@ -1551,11 +1564,8 @@ export const adminZhCharacters: Record<string, string> = {
   "Companion product contract": "陪伴产品契约",
   "Historical editorial release with no automatic release check record. Publishing again runs the full checks.":
     "历史编辑发布，无自动发布检查记录；重新发布会走完整检查。",
-  "Reason must be at least 3 characters, or leave it empty to use the default.":
-    "理由至少 3 个字符；留空则使用默认理由。",
   "Retiring is permanent. The Character can never be published or rolled back again. Use Pause serving to take it offline temporarily.":
     "停用不可撤销：停用后不能再发布，也不能回滚。只想暂时下线请用「暂停上线服务」。",
-  "I understand retiring cannot be undone": "我了解停用不可撤销",
   "A candidate release is waiting. Publish or discard it before editing the character.":
     "有待发布的候选版本，先发布或撤回后再改资料。",
   "Publishing stays blocked until every item below is cleared, warnings included.":

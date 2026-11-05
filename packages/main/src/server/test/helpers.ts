@@ -1134,6 +1134,7 @@ export async function purgeTestData(prefix: string) {
     await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: { in: projectIds } } });
     await prisma.adminCollaborationActivity.deleteMany({ where: { targetId: { in: projectIds } } });
     await prisma.characterRevision.deleteMany({ where: { projectId: { in: projectIds } } });
+    await prisma.characterHandoff.deleteMany({ where: { projectId: { in: projectIds } } });
     await prisma.characterProject.deleteMany({ where: { id: { in: projectIds } } });
   }
   if (projectCharacterIds.length > 0) {

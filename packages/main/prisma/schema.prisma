@@ -2187,6 +2187,25 @@ model CharacterRevision {
   @@map("character_revisions")
 }
 
+/// 创作交接：创作者声明「这些事实可供发布运营编排」的不可变记录。
+/// 不创建 Release、不改 Serving，发布也从不读取它。没有状态机，只增不改。
+model CharacterHandoff {
+  id                     String   @id @default(cuid())
+  characterId            String
+  projectId              String
+  contentVersionId       String?
+  visualProfileId        String?
+  visualProfileVersion   Int?
+  referenceSetRevisionId String?
+  selectableImageCount   Int
+  note                   String?
+  createdById            String
+  createdAt              DateTime @default(now())
+
+  @@index([characterId, createdAt, id])
+  @@map("character_handoffs")
+}
+
 model CharacterRelease {
   id                         String                      @id @default(cuid())
   projectId                  String

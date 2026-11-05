@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   characterReleaseCheckLabel,
-  characterReleaseConfirmationVisible,
   characterReleaseDraftBlockers,
   releaseBlockerGuidance,
   releaseBlockersFromError,
@@ -28,27 +27,6 @@ describe("Character release panel", () => {
     );
   });
 
-  it("keeps confirmation only for rollback and live operations", () => {
-    expect(
-      characterReleaseConfirmationVisible({
-        hasRollbackSource: false,
-        servingState: null,
-      }),
-    ).toBe(false);
-    expect(
-      characterReleaseConfirmationVisible({
-        hasRollbackSource: true,
-        servingState: "retired",
-      }),
-    ).toBe(true);
-    expect(
-      characterReleaseConfirmationVisible({
-        hasRollbackSource: false,
-        servingState: null,
-      }),
-    ).toBe(false);
-  });
-
   it("exposes one publish action and no QA, review, validation, or schedule workflow", () => {
     expect(workspaceSource).toContain('t("Publish Character")');
     expect(workspaceSource).toContain("characterReleaseCreateMutation");
@@ -65,7 +43,7 @@ describe("Character release panel", () => {
 
   it("separates the live release, ready candidate, and collapsed history", () => {
     expect(workspaceSource).toContain('t("Current live release")');
-    expect(workspaceSource).toContain('t("Ready to publish")');
+    expect(workspaceSource).toContain('t("Pending publish")');
     expect(workspaceSource).toContain('t("Release history")');
   });
 

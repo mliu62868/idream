@@ -110,6 +110,43 @@ export const characterReleaseSchema = z
     }
   });
 
+// SPEC: 创作交接是一条不可变记录：创作者在此刻声明这些事实可供发布运营编排。
+// INVARIANT: 它不创建 Release、不改 Serving，发布也从不读取它。请求不带任何事实，
+//            服务端按当前状态快照，运营无需填写。
+export const characterHandoffCreateRequestSchema = z
+  .object({ note: z.string().trim().min(1).max(500).optional() })
+  .strict();
+
+export const characterHandoffSchema = z
+  .object({
+    id: adminIdSchema,
+    characterId: adminIdSchema,
+    projectId: adminIdSchema,
+    contentVersionId: adminIdSchema.nullable(),
+    visualProfileId: adminIdSchema.nullable(),
+    visualProfileVersion: z.number().int().positive().nullable(),
+    referenceSetRevisionId: adminIdSchema.nullable(),
+    selectableImageCount: z.number().int().nonnegative(),
+    note: z.string().nullable(),
+    createdById: adminIdSchema,
+    createdAt: adminIsoDateTimeSchema,
+  })
+  .strict();
+
+export const characterHandoffDriftSchema = z.enum([
+  "content",
+  "visual_identity",
+  "reference_set",
+]);
+
+// 工作区看到的最近一次交接，附带它与当前事实的差异。
+export const characterWorkspaceHandoffSchema = characterHandoffSchema
+  .extend({
+    createdByName: z.string().nullable(),
+    drift: z.array(characterHandoffDriftSchema).readonly(),
+  })
+  .strict();
+
 export const characterServingSchema = z
   .object({
     characterId: adminIdSchema,

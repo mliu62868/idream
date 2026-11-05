@@ -12,6 +12,7 @@ import {
 import { generationRouteQualificationResultSchema } from "./characters-qualification";
 import {
   characterServingSchema,
+  characterWorkspaceHandoffSchema,
   characterWorkspaceReleaseSchema,
 } from "./characters-release";
 import {
@@ -836,6 +837,7 @@ export const characterWorkspaceDetailSchema = z
       })
       .strict(),
     performance: z.array(characterPerformanceSummarySchema).readonly(),
+    handoff: characterWorkspaceHandoffSchema.nullable(),
   })
   .strict();
 

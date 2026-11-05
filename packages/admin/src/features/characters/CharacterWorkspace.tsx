@@ -49,6 +49,8 @@ import {
 import { createLatestRequestGate, type LatestRequestToken } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { cn } from "@/lib/utils";
+import { CharacterHandoffAction } from "./CharacterHandoff";
+import { CharacterWorkspaceActionsProvider } from "./character-workspace-actions";
 import { characterWorkspacePermissions } from "./character-workspace-permissions";
 import { permissionDenied } from "./character-permission-denied";
 import { CharacterPortfolio } from "./CharacterPortfolio";
@@ -1148,6 +1150,19 @@ function CharacterDetail({
           </button>
         ))}
       </div>
+      {["project", "soul", "assets"].includes(tab) ? (
+        <CharacterHandoffAction
+          canWrite={guardedPermissions.writeProject}
+          data={data}
+          runCommittedMutation={runCommittedMutation}
+        />
+      ) : null}
+      <CharacterWorkspaceActionsProvider
+        journal={journal}
+        permissions={guardedPermissions}
+        runCommittedMutation={runCommittedMutation}
+        writesLocked={writesLocked}
+      >
       <div
         className="mt-5 scroll-mt-24"
         id={`character-panel-${tab}`}
@@ -1264,6 +1279,7 @@ function CharacterDetail({
           </div>
         )}
       </div>
+      </CharacterWorkspaceActionsProvider>
       <CharacterMediaOperationsCard
         canReclaimVoice={guardedPermissions.writeProject}
         onReclaimVoice={reclaimVoiceRequest}

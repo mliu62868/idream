@@ -21,6 +21,7 @@ export const CHARACTER_WORKSPACE_WRITES = {
   writeTags: "content.tag.write",
   manageChatTools: "content.production.write",
   manageCatalogVisibility: "content.takedown.write",
+  manageFeatured: "content.placement.write",
 } as const satisfies Record<string, AdminPermissionKey>;
 
 type CharacterWorkspaceWrite = keyof typeof CHARACTER_WORKSPACE_WRITES;
@@ -32,6 +33,7 @@ export type CharacterWorkspacePermissions =
     readonly readVideos: boolean;
     readonly readProduction: boolean;
     readonly readContent: boolean;
+    readonly readPlacements: boolean;
     readonly previewVoice: boolean;
   }
   & { readonly [Capability in CharacterWorkspaceWrite]: boolean };
@@ -57,6 +59,10 @@ export function characterWorkspacePermissions(
     readProduction: granted.has("creative.run.read"),
     readContent: adminV2OperationAllowed(
       "GET /api/v2/admin/content/characters/:id",
+      granted,
+    ),
+    readPlacements: adminV2OperationAllowed(
+      "GET /api/v2/admin/content/placements",
       granted,
     ),
     previewVoice: adminV2OperationAllowed(

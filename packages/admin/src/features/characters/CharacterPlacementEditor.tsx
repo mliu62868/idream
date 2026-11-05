@@ -15,6 +15,7 @@ import { operatorErrorCopy, type OperatorErrorCopy } from "@/components/admin/ui
 import { WorkspaceButton } from "@/features/operations/WorkspaceUi";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import type { RunCommittedCharacterMutation } from "./character-workspace-permissions";
+import { CandidateDiscardAction } from "./CandidateDiscardAction";
 
 const placements = [
   { purpose: "character_cover", label: "Cover", description: "Character cards and primary portrait", aspect: "aspect-[4/5]" },
@@ -135,6 +136,7 @@ export function CharacterPlacementEditor({
       {candidatePending ? (
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-md bg-[var(--ad-yellow-bg)] px-4 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">
           <span>{t("A candidate release is waiting. Publish or discard it before changing images.")}</span>
+          <CandidateDiscardAction data={data} />
           <Link className="min-h-9 content-center font-semibold underline" href={`/admin/characters/${encodeURIComponent(data.character.id)}?tab=release`}>{t("Go to Release")}</Link>
         </div>
       ) : null}

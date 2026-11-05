@@ -7,22 +7,19 @@ import Link from "next/link";
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { Rocket, RotateCcw } from "lucide-react";
 import { useMemo, useState } from "react";
+import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { characterReleaseCreateMutation } from "@/features/image-workflow-transport";
 import {
   StatusBadge,
   WorkspaceButton,
   fieldClass,
-  textAreaClass,
 } from "@/features/operations/WorkspaceUi";
 import {
   adminV2Operation,
   adminV2OperationEndpoint,
 } from "@/lib/admin-v2-operation";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
-import type {
-  CharacterCommandJournal,
-  CharacterCommandSubmission,
-} from "./character-command-journal";
+import type { CharacterCommandJournal } from "./character-command-journal";
 import {
   characterHasNoUnpublishedChanges,
   characterMonitorNeedsAttention,
@@ -32,18 +29,8 @@ import type {
   CharacterWorkspacePermissions,
   RunCommittedCharacterMutation,
 } from "./character-workspace-permissions";
-
-function commandSubmissionMessage(
-  outcome: Exclude<CharacterCommandSubmission, { readonly kind: "accepted" }>,
-  action: string,
-) {
-  if (outcome.kind === "attached") {
-    return characterCommandMessage("{action} is already active. This workspace attached to that command instead of accepting another one.", { action: outcome.command.action });
-  }
-  return outcome.cause instanceof Error
-    ? outcome.cause.message
-    : characterCommandMessage("{action} acceptance is unknown. The same command will be replayed safely.", { action: action });
-}
+import { CharacterHandoffNotice } from "./CharacterHandoff";
+import { commandSubmissionMessage, submitCharacterReleaseCommand } from "./release-command";
 
 type CharacterReleaseItem = CharacterWorkspaceDetail["releases"][number];
 
@@ -270,7 +257,8 @@ function ReleaseSummary({
             {release.publishedAt.slice(0, 10)}
           </span>
         ) : null}
-        <StatusBadge value={release.status} />
+        {/* INTENT: 持久化枚举 approved 只表示「已准备好待发布」，从来没有人批准过它。 */}
+        <StatusBadge value={release.status === "approved" ? "Pending publish" : release.status} />
         {!historical ? <StatusBadge value={release.readiness} /> : null}
         {serving ? <StatusBadge tone="good" value="serving now" /> : null}
         {release.legacy ? <StatusBadge tone="neutral" value="Legacy release" /> : null}
@@ -353,19 +341,6 @@ function LegacyUpgradeGuide({
   );
 }
 
-export function characterReleaseConfirmationVisible(input: {
-  readonly hasRollbackSource: boolean;
-  readonly servingState: string | null;
-}) {
-  return (
-    input.hasRollbackSource ||
-    input.servingState === "live" ||
-    input.servingState === "paused" ||
-    input.servingState === "inactive" ||
-    input.servingState === "retired"
-  );
-}
-
 export function ReleasePanel({
   data,
   permissions,
@@ -399,10 +374,8 @@ export function ReleasePanel({
     ({ release }) =>
       release.id !== current?.release.id && release.status === "superseded",
   );
-  const [reason, setReason] = useState("");
   const [selectedRollbackSourceId, setSelectedRollbackSourceId] = useState("");
-  const [releaseConfirmed, setReleaseConfirmed] = useState(false);
-  const [retireAcknowledged, setRetireAcknowledged] = useState(false);
+  const [confirmSpec, setConfirmSpec] = useState<ConfirmSpec | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<CharacterCommandMessage | null>(null);
   // INTENT: server blockers describe the workspace they were returned for. A
@@ -431,25 +404,13 @@ export function ReleasePanel({
       // the workspace locked while the candidate POST is still in flight.
       const prepared = typeof release === "function" ? await release() : release;
       if (!journal.isCurrentGeneration(generation)) return;
-      const releaseId = prepared.id;
-      const body = {
-        entityVersion: prepared.version,
-        reason: { code: `operator_${kind}`, summary: reason.trim() || t(kind === "withdraw" ? "Discard candidate" : kind === "rollback" ? "Roll back" : "Publish current Character") },
-        confirmation: `${data.character.id}:${releaseId}:${kind}`,
-      };
-      const outcome = await journal.submit({
-        action: `Release ${kind}`,
-        signature: `${kind}:${releaseId}:${JSON.stringify(body)}`,
-        endpoint: adminV2OperationEndpoint(
-          `POST /api/v2/admin/characters/:id/releases/:releaseId/commands/${kind}`,
-          { id: data.character.id, releaseId },
-        ),
-        body,
+      const outcome = await submitCharacterReleaseCommand(journal, {
+        characterId: data.character.id,
+        kind,
+        release: prepared,
+        summary: t(kind === "withdraw" ? "Discard candidate" : kind === "rollback" ? "Roll back" : "Publish current Character"),
       });
-      if (outcome.kind === "accepted") {
-        setReleaseConfirmed(false);
-        return;
-      }
+      if (outcome.kind === "accepted") return;
       setError(commandSubmissionMessage(outcome, `Release ${kind}`));
     } catch (cause) {
       journal.abortSubmission();
@@ -465,11 +426,10 @@ export function ReleasePanel({
       const releaseRef = candidate
         ? { id: candidate.release.id, version: candidate.release.version }
         : async () => {
-            const publishReason = reason.trim() || t("Publish current Character");
             const mutation = characterReleaseCreateMutation(
               data.character.id,
               data.project.version,
-              publishReason,
+              t("Publish current Character"),
               `${data.character.id}:publish`,
             );
             const created = await adminV2Operation(
@@ -508,7 +468,7 @@ export function ReleasePanel({
   };
 
   const servingCommand = async (action: "pause" | "resume" | "retire" | "restore") => {
-    if (!data.serving || writesLocked || !releaseConfirmed) return;
+    if (!data.serving || writesLocked) return;
     setBusy(action);
     setError(null);
     if (
@@ -522,7 +482,7 @@ export function ReleasePanel({
     try {
       const body = {
         entityVersion: data.serving.version,
-        reason: { code: `operator_${action}`, summary: reason.trim() || t(action === "restore" ? "Restore draft" : action === "retire" ? (data.serving.state === "inactive" ? "Archive draft" : "Retire Character") : action === "pause" ? "Pause serving" : "Resume serving") },
+        reason: { code: `operator_${action}`, summary: t(action === "restore" ? "Restore draft" : action === "retire" ? (data.serving.state === "inactive" ? "Archive draft" : "Retire Character") : action === "pause" ? "Pause serving" : "Resume serving") },
         confirmation: `${data.character.id}:${action}`,
       };
       const outcome = await journal.submit({
@@ -534,11 +494,7 @@ export function ReleasePanel({
         ),
         body,
       });
-      if (outcome.kind === "accepted") {
-        setReleaseConfirmed(false);
-        setRetireAcknowledged(false);
-        return;
-      }
+      if (outcome.kind === "accepted") return;
       setError(commandSubmissionMessage(outcome, `Serving ${action}`));
     } catch (cause) {
       journal.abortSubmission();
@@ -572,7 +528,7 @@ export function ReleasePanel({
   };
 
   const rollbackCharacter = async () => {
-    if (!rollbackSource || !releaseConfirmed || writesLocked) return;
+    if (!rollbackSource || writesLocked) return;
     setBusy("rollback");
     setError(null);
     try {
@@ -585,6 +541,34 @@ export function ReleasePanel({
     } finally {
       setBusy(null);
     }
+  };
+
+  // SPEC: 回滚和不可逆退役各只有一个普通确认框：说清影响，不键入、不勾选、不要原因。
+  const confirmRollback = () => {
+    if (!rollbackSource) return;
+    setConfirmSpec({
+      title: t("Roll back to Release #{ordinal}?", { ordinal: releaseOrdinals.get(rollbackSource.release.id) ?? "?" }),
+      consequence: {
+        effect: t("New conversations use this Release right away. Conversations already in progress stay on their pinned version. Publish again to move forward."),
+        reversible: true,
+      },
+      requireReason: false,
+      submitLabel: "Roll back",
+      onSubmit: () => rollbackCharacter(),
+    });
+  };
+
+  const confirmRetire = () => {
+    setConfirmSpec({
+      title: t("Retire {name}?", { name: data.character.name }),
+      consequence: {
+        effect: t("Retiring is permanent. The Character can never be published or rolled back again. Use Pause serving to take it offline temporarily."),
+        reversible: false,
+      },
+      requireReason: false,
+      submitLabel: "Retire Character",
+      onSubmit: () => servingCommand("retire"),
+    });
   };
 
   const rollbackSourceId = rollbackSources.some(
@@ -618,18 +602,15 @@ export function ReleasePanel({
   const canPublish =
     data.serving?.state !== "retired" &&
     (Boolean(candidate) || !noUnpublishedChanges || currentReleaseStale || legacyCurrent);
-  // characterReleaseCreateRequestSchema requires 3+ characters; empty uses the default.
-  const reasonTooShort = !candidate && reason.trim().length > 0 && reason.trim().length < 3;
+  // INTENT: 退役已发布角色不可撤销；未发布草稿只是归档，能恢复，所以一键。
   const retireIsPermanent =
     data.serving?.state === "live" || data.serving?.state === "paused";
-  const confirmationVisible = characterReleaseConfirmationVisible({
-    hasRollbackSource: rollbackSources.length > 0,
-    servingState: data.serving?.state ?? null,
-  });
+  const servingActionDisabled = !permissions.publishRelease || Boolean(busy) || writesLocked;
 
   return (
     <div className="grid gap-5 xl:grid-cols-[1fr_340px]">
       <div className="space-y-5">
+        <CharacterHandoffNotice data={data} />
         {data.releases.length === 0 ? (
           <EmptyState
             hint={canPublish && draftBlockers.length === 0
@@ -663,7 +644,7 @@ export function ReleasePanel({
                   className="mb-3 text-sm font-semibold"
                   id="candidate-release-title"
                 >
-                  {t("Ready to publish")}
+                  {t("Pending publish")}
                 </h3>
                 <ReleaseSummary
                   item={candidate}
@@ -747,14 +728,33 @@ export function ReleasePanel({
               !permissions.publishRelease ||
               Boolean(busy) ||
               writesLocked ||
-              draftBlockers.length > 0 ||
-              reasonTooShort
+              draftBlockers.length > 0
             }
             onClick={() => void publishCharacter()}
             tone="primary"
           >
             <Rocket className="h-4 w-4" /> {t("Publish Character")}
           </WorkspaceButton>
+        ) : null}
+
+        {/* SPEC: 暂停、恢复、恢复草稿一键执行，不放进折叠区。 */}
+        {data.serving?.state === "live" ? (
+          <WorkspaceButton className="mt-3 w-full" disabled={servingActionDisabled} onClick={() => void servingCommand("pause")}>
+            {t("Pause serving")}
+          </WorkspaceButton>
+        ) : null}
+        {data.serving?.state === "paused" ? (
+          <WorkspaceButton className="mt-3 w-full" disabled={servingActionDisabled} onClick={() => void servingCommand("resume")}>
+            {t("Resume serving")}
+          </WorkspaceButton>
+        ) : null}
+        {data.serving?.state === "retired" && data.serving.currentReleaseId === null ? (
+          <div className="mt-3 space-y-2">
+            <p className="text-xs text-[var(--ad-text-muted)]">{t("Restore this draft to continue editing. It will remain private.")}</p>
+            <WorkspaceButton className="w-full" disabled={servingActionDisabled} onClick={() => void servingCommand("restore")}>
+              {t("Restore draft")}
+            </WorkspaceButton>
+          </div>
         ) : null}
 
         <details className="mt-5 border-t border-[var(--ad-border)] pt-4" open={characterMonitorNeedsAttention(data)}>
@@ -773,32 +773,6 @@ export function ReleasePanel({
                 {t(data.character.visibility === "unlisted" ? "Show in Explore" : "Hide from Explore")}
               </WorkspaceButton>
             </div>
-          ) : null}
-          {confirmationVisible ? (
-            <>
-              <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
-                {t("Reason")}
-                <textarea
-                  className={`${textAreaClass} mt-1`}
-                  onChange={(event) => setReason(event.target.value)}
-                  value={reason}
-                />
-              </label>
-              {reasonTooShort ? (
-                <p className="mt-1 text-xs text-[var(--ad-red-text)]" role="alert">
-                  {t("Reason must be at least 3 characters, or leave it empty to use the default.")}
-                </p>
-              ) : null}
-              <label className="mt-4 flex items-start gap-2 text-xs font-semibold">
-                <input
-                  checked={releaseConfirmed}
-                  className="mt-0.5 h-4 w-4"
-                  onChange={(event) => setReleaseConfirmed(event.target.checked)}
-                  type="checkbox"
-                />
-                <span>{t("I confirm this release action")}</span>
-              </label>
-            </>
           ) : null}
           {rollbackSources.length > 0 ? <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
             {t("Historical rollback source")}
@@ -820,89 +794,28 @@ export function ReleasePanel({
           <div className="mt-3 grid gap-2">
             {rollbackSources.length > 0 ? <WorkspaceButton
               disabled={
-                !permissions.publishRelease ||
-                !releaseConfirmed ||
                 !rollbackSource ||
                 data.serving?.state === "retired" ||
-                Boolean(busy) ||
-                writesLocked
+                servingActionDisabled
               }
-              onClick={() => void rollbackCharacter()}
+              onClick={confirmRollback}
               tone="danger"
             >
               <RotateCcw className="h-4 w-4" /> {t("Roll back")}
             </WorkspaceButton> : null}
-            {data.serving?.state === "live" ? (
-              <>
-                <WorkspaceButton
-                  disabled={
-                    !permissions.publishRelease ||
-                    !releaseConfirmed ||
-                    Boolean(busy) ||
-                    writesLocked
-                  }
-                  onClick={() => void servingCommand("pause")}
-                >
-                  {t("Pause serving")}
-                </WorkspaceButton>
-
-              </>
-            ) : null}
             {data.serving && ["inactive", "live", "paused"].includes(data.serving.state) ? (
-              <>
-                {/* INTENT: retiring a published Character cannot be undone (no
-                    restore, no rollback, no new release), unlike Pause. An
-                    inactive draft is archived instead and can be restored. */}
-                {retireIsPermanent ? (
-                  <div className="rounded-md bg-[var(--ad-red-bg)] p-3 text-xs text-[var(--ad-red-text)]">
-                    <p>{t("Retiring is permanent. The Character can never be published or rolled back again. Use Pause serving to take it offline temporarily.")}</p>
-                    <label className="mt-2 flex items-start gap-2 font-semibold">
-                      <input
-                        checked={retireAcknowledged}
-                        className="mt-0.5 h-4 w-4"
-                        onChange={(event) => setRetireAcknowledged(event.target.checked)}
-                        type="checkbox"
-                      />
-                      <span>{t("I understand retiring cannot be undone")}</span>
-                    </label>
-                  </div>
-                ) : null}
-                <WorkspaceButton
-                  disabled={!permissions.publishRelease || !releaseConfirmed || (retireIsPermanent && !retireAcknowledged) || Boolean(busy) || writesLocked}
-                  onClick={() => void servingCommand("retire")}
-                  tone="danger"
-                >
-                  {t(data.serving.state === "inactive" ? "Archive draft" : "Retire Character")}
-                </WorkspaceButton>
-              </>
-            ) : null}
-            {data.serving?.state === "retired" && data.serving.currentReleaseId === null ? (
-              <>
-                <p className="text-xs text-[var(--ad-text-muted)]">{t("Restore this draft to continue editing. It will remain private.")}</p>
-                <WorkspaceButton
-                  disabled={!permissions.publishRelease || !releaseConfirmed || Boolean(busy) || writesLocked}
-                  onClick={() => void servingCommand("restore")}
-                >
-                  {t("Restore draft")}
-                </WorkspaceButton>
-              </>
-            ) : null}
-            {data.serving?.state === "paused" ? (
               <WorkspaceButton
-                disabled={
-                  !permissions.publishRelease ||
-                  !releaseConfirmed ||
-                  Boolean(busy) ||
-                  writesLocked
-                }
-                onClick={() => void servingCommand("resume")}
+                disabled={servingActionDisabled}
+                onClick={retireIsPermanent ? confirmRetire : () => void servingCommand("retire")}
+                tone="danger"
               >
-                {t("Resume serving")}
+                {t(data.serving.state === "inactive" ? "Archive draft" : "Retire Character")}
               </WorkspaceButton>
             ) : null}
           </div>
         </details>
       </aside>
+      {confirmSpec ? <ConfirmDialog onClose={() => setConfirmSpec(null)} spec={confirmSpec} /> : null}
     </div>
   );
 }

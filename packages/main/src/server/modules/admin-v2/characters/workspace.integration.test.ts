@@ -323,6 +323,7 @@ describe("Character operator workspace", () => {
     const detail = characterWorkspaceDetailSchema.parse(
       await getCharacterWorkspace(characterId),
     );
+    expect(detail.handoff).toBeNull();
     expect(detail.activeCommand).toBeNull();
     expect(detail.visual.videoGenerationEstimate).toMatchObject({
       profileKey: "profile_video_h3_v1",
