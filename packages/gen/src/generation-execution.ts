@@ -48,7 +48,7 @@ import {
 } from "./terminal-record";
 import { env } from "./env";
 import { logger } from "./logger";
-import { GenerationTransportUnavailableError } from "./transport-execution";
+import { GenerationAuthorityRevokedError, GenerationTransportUnavailableError } from "./transport-execution";
 
 type GenerationPayload = ImageGeneratePayload | VideoGeneratePayload;
 type GenerationModel = ImageModel | VideoModel;
@@ -195,7 +195,9 @@ class GenerationExecution {
   }
 
   async failPreparation(error: unknown): Promise<void> {
-    if (!this.isFinalAttempt()) throw error;
+    // Main already holds the terminal fact; a preparation_failed record would only
+    // contradict it. Rethrown on every attempt, including the last.
+    if (error instanceof GenerationAuthorityRevokedError || !this.isFinalAttempt()) throw error;
     if (await this.reconcilePriorInvocation()) return;
     await this.fail(
       "preparation_failed",
@@ -766,6 +768,7 @@ export async function runGeneration<TPrepared, TProviderOutput>(
               url.searchParams.set("jobId", payload.generationJobId);
               url.searchParams.set("attemptId", payload.attemptId);
               const response = await fetch(url, { headers: { "x-internal-token": env.INTERNAL_TOKEN }, signal: AbortSignal.timeout(60_000) });
+              if (response.status === 410) throw new GenerationAuthorityRevokedError("Generation Attempt was closed before its source snapshot was read");
               if (!response.ok || !response.body) throw new Error("Pinned source snapshot is unavailable");
               const declared = Number(response.headers.get("content-length"));
               if (!Number.isSafeInteger(declared) || declared <= 0 || declared > 64 * 1024 * 1024) throw new Error("Pinned source snapshot has invalid size");

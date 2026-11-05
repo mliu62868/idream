@@ -9,7 +9,7 @@ import { assertProductionProviderReady, providers } from "./providers";
 import { runWorker } from "./queue";
 import { startGenerationSourceRecovery } from "./failed-source-recovery";
 import { enqueueTerminalRecordRelay } from "./terminal-record";
-import { recordTransportExecution } from "./transport-execution";
+import { isGenerationAuthorityRevoked, recordTransportExecution } from "./transport-execution";
 import { env } from "./env";
 import { imageWorkerIdentity } from "./worker-identity";
 
@@ -59,6 +59,11 @@ const imageWorker = runWorker(
 );
 
 imageWorker.on("failed", (job, err) => {
+  // A user cancelling a queued image is ordinary, not a runtime failure to alert on.
+  if (isGenerationAuthorityRevoked(err)) {
+    logger.info({ jobId: job?.id }, "image generate job stopped: Main closed its Attempt");
+    return;
+  }
   captureGenerationRuntimeFailure({
     boundary: "worker",
     error: err,

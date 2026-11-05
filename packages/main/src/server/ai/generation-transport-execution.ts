@@ -1,5 +1,9 @@
 import { Prisma } from "@prisma/client";
-import { generationTransportExecutionEventSchema, type GenerationTransportExecutionEvent } from "@idream/shared/contracts";
+import {
+  GENERATION_TRANSPORT_AUTHORITY_REVOKED_REASON,
+  generationTransportExecutionEventSchema,
+  type GenerationTransportExecutionEvent,
+} from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { recordGenerationAttemptEvent } from "./generation-attempt-events";
@@ -31,9 +35,6 @@ export async function recordGenerationTransportExecution(rawInput: unknown) {
       FOR UPDATE
     `);
     const attempt = await tx.generationAttempt.findUnique({ where: { id: input.attemptId } });
-    if ((input.status === "running" || input.status === "waiting") && await videoSceneDispatchDeferred(tx, input.generationJobId)) {
-      throw Errors.conflict("This video scene must wait for the preceding delivered scene", { reason: "video_sequence_deferred" });
-    }
     if (!attempt || attempt.requestId !== input.generationJobId || attempt.attemptNo !== input.attemptNo) {
       throw Errors.conflict(
         `Generation transport identity does not match its business Attempt (${input.attemptId}/${input.generationJobId}/${input.attemptNo})`,
@@ -59,12 +60,21 @@ export async function recordGenerationTransportExecution(rawInput: unknown) {
       throw Errors.conflict(
         "Generation transport cannot invoke a provider after dispatch authority was revoked",
         {
+          // INVARIANT: this reason is the one signal that makes Gen stop for good.
+          // Both states are terminal, so no later retry of this row can pass here.
+          reason: GENERATION_TRANSPORT_AUTHORITY_REVOKED_REASON,
           requestId: input.generationJobId,
           requestStatus: request?.status ?? null,
           attemptId: attempt.id,
           attemptStatus: attempt.status,
         },
       );
+    }
+    // After the terminal check: a stopped sequence also reads as deferred, and that
+    // rejection stays retryable, so checking this first would keep a cancelled scene
+    // cycling through Bull instead of ending it.
+    if ((input.status === "running" || input.status === "waiting") && await videoSceneDispatchDeferred(tx, input.generationJobId)) {
+      throw Errors.conflict("This video scene must wait for the preceding delivered scene", { reason: "video_sequence_deferred" });
     }
     const dispatch = await resolveExactGenerationDispatchAuthority(tx, {
       generationJobId: input.generationJobId,

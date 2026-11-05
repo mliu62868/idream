@@ -36,11 +36,10 @@ export const GENERATION_ATTEMPT_TERMINAL_STATUSES = [
 
 // SPEC: 谁有资格取消，是一个判别变体；取消本身的五步顺序只写一遍。
 // - operator: 运营在精确版本上取消，允许的来源状态是 CANCELLABLE 集合。
-// - before_dispatch: 用户只能在 dispatch 尚未被触碰时取消，因为 dispatch 超时之后
-//   供应商可能已经收到提交，只有「派发事实未被动过」才证明取消停住了付费执行。
+// - before_provider_entry: 用户只能在任何 provider 执行都不可能已开始时取消。
 export type GenerationCancellationGuard =
   | { readonly kind: "operator"; readonly expectedVersion: number }
-  | { readonly kind: "before_dispatch" };
+  | { readonly kind: "before_provider_entry" };
 
 /**
  * 取消一次 Generation Request 的唯一结算路径：锁 User → Request → 判前置 → 状态迁移 →
@@ -79,13 +78,13 @@ export async function settleGenerationRequestCancellation(
   // Concurrent user cancellations may both pass the caller's fast replay read.
   // Decide replay under the settlement locks before checking dispatch eligibility;
   // operator commands retain their stricter version-based conflict semantics.
-  if (guard.kind === "before_dispatch" && job.status === "cancelled") {
+  if (guard.kind === "before_provider_entry" && job.status === "cancelled") {
     return { job, attempt, cancelled: job, refundAmount: 0 };
   }
   if (guard.kind === "operator" && job.version !== guard.expectedVersion) {
     throw Errors.conflict("Generation Request changed before cancellation");
   }
-  if (guard.kind === "before_dispatch") await assertGenerationDispatchUntouched(tx, job, attempt);
+  if (guard.kind === "before_provider_entry") await assertNoGenerationProviderEntry(tx, job, attempt);
 
   const cancelled = await transitionGenerationRequest(tx, {
     requestId: job.id,
@@ -151,21 +150,25 @@ async function reconcileCancelledChatAttachments(tx: Prisma.TransactionClient, j
   }
 }
 
-// 派发超时之后供应商可能已经接单，所以「未被触碰的 dispatch」是唯一能证明
-// 取消真的停住了付费执行的事实。
-export function canCancelGenerationBeforeDispatch(
+// SPEC: Gen 进入 provider 之前必须先让 Main 在 Request 锁下接受 `running` 传输事件，而
+// 这个事件和 Attempt.startedAt 在同一事务落库。所以 `startedAt IS NULL` 就是「不可能有
+// 任何 provider 执行已开始」的证明，排在 Bull 里或等设备租约都属于这个状态。
+// INTENT: 这里曾要求 dispatch 还是 pending 且 attempts=0，理由是派发超时后供应商可能已接
+// 单。但派发只把任务写进 Bull，从不碰 provider，内联派发在下单请求返回前就把 attempts 加一，
+// 于是视频一被接受就再也无法取消，币可能被占满整段排队时间。
+// INVARIANT: exact dispatch 必须存在。缺失的 Attempt 属于待修复的异常，不靠用户取消掩盖。
+export function canCancelGenerationBeforeProviderEntry(
   job: Pick<GenerationJob, "status">,
   attempt: Pick<GenerationAttempt, "id" | "status" | "startedAt"> | null,
-  dispatches: readonly { status: string; attempts: number; payload: Prisma.JsonValue }[],
+  dispatches: readonly { payload: Prisma.JsonValue }[],
 ) {
-  const exact = dispatches.filter((item) => jsonRecord(item.payload).attemptId === attempt?.id);
-  return !(
-    job.status !== "queued" || !attempt || attempt.status !== "queued" || attempt.startedAt !== null ||
-    exact.length === 0 || exact.some((item) => item.status !== "pending" || item.attempts !== 0)
-  );
+  return job.status === "queued" && attempt?.status === "queued" && attempt.startedAt === null &&
+    dispatches.some((item) => jsonRecord(item.payload).attemptId === attempt.id);
 }
 
-async function assertGenerationDispatchUntouched(
+// INVARIANT: 调用方已持有 Request 锁，Main 接受 `running` 事件时取同一把锁，所以这里的判断
+// 与 worker 进入 provider 的判断不可能同时成立。输掉竞争的一方只会看到确定的拒绝。
+async function assertNoGenerationProviderEntry(
   tx: Prisma.TransactionClient,
   job: GenerationJob,
   attempt: GenerationAttempt | null,
@@ -177,12 +180,15 @@ async function assertGenerationDispatchUntouched(
           aggregateId: job.id,
           eventType: { in: [...MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES] },
         },
-        select: { status: true, attempts: true, payload: true },
+        select: { payload: true },
       })
     : [];
-  if (!canCancelGenerationBeforeDispatch(job, attempt, dispatches)) {
+  const transports = attempt
+    ? await tx.generationTransportExecution.count({ where: { attemptId: attempt.id } })
+    : 0;
+  if (transports > 0 || !canCancelGenerationBeforeProviderEntry(job, attempt, dispatches)) {
     throw Errors.conflict(
-      "This video has already entered processing and can no longer be cancelled. Its result will stay in this chat.",
+      `This ${job.mode} has already started rendering and can no longer be cancelled. Its result will appear here when it's ready.`,
       { reason: "processing_started" },
     );
   }
@@ -317,7 +323,7 @@ export async function retryGenerationRequest(input: {
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }
 
-async function removeLatestGenerationAttemptQueueJob(requestId: string) {
+export async function removeLatestGenerationAttemptQueueJob(requestId: string) {
   try {
     const attempt = await prisma.generationAttempt.findFirst({
       where: { requestId },
@@ -332,5 +338,7 @@ async function removeLatestGenerationAttemptQueueJob(requestId: string) {
   } catch {
     // The durable cancelled authority suppresses any late worker result. Queue
     // removal is an optimization and is retried by idempotent command replay.
+    // A row a worker already holds cannot be removed; Main rejects that worker
+    // at its next waiting or running event instead.
   }
 }

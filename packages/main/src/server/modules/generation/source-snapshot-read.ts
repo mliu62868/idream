@@ -1,6 +1,18 @@
 import { prisma } from "@/server/lib/db";
 import { GENERATION_SOURCE_CHUNK_BYTES, GENERATION_SOURCE_MAX_BYTES } from "@/server/modules/ourdream/generation-source-snapshot";
 
+// True when the reader's own Attempt can never become active again, as opposed to
+// a snapshot that could not be served. Only asked after a read was refused.
+export async function generationSnapshotReaderIsClosed({ jobId, attemptId }: { jobId: string; attemptId: string }) {
+  const [job, attempt] = await Promise.all([
+    prisma.generationJob.findUnique({ where: { id: jobId }, select: { status: true } }),
+    prisma.generationAttempt.findFirst({ where: { id: attemptId, requestId: jobId }, select: { status: true } }),
+  ]);
+  if (!job || !attempt) return false;
+  return !["queued", "running"].includes(attempt.status) ||
+    !["queued", "moderating_input", "running", "moderating_output"].includes(job.status);
+}
+
 // Only the exact active Attempt of a job that pinned this snapshot can read it.
 export async function readGenerationSourceSnapshot({ snapshotId, jobId, attemptId }: { snapshotId: string; jobId: string; attemptId: string }) {
   const [job, attempt, snapshot] = await Promise.all([

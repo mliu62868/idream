@@ -1,6 +1,10 @@
 import { Prisma } from "@prisma/client";
 import { isGenerationRequestCancellableStatus } from "@idream/shared/catalog";
+import { canCancelGenerationBeforeProviderEntry } from "@/server/ai/generation-request-lifecycle";
+import { MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES } from "@/server/events/main-outbox-transport";
 import { prisma } from "@/server/lib/db";
+import { USER_CANCELLABLE_GENERATION_SOURCE_TYPES } from "./generation-job-cancel";
+import { readGenerationQueueStandings, type GenerationQueueStanding } from "./generation-queue-standing";
 
 // SPEC: 用户侧读一条 Generation Job 时的取数形状与投影。
 //
@@ -46,6 +50,7 @@ function generationJobDTO(
   job: GenerationJobWithRelations,
   latestAttemptStatus: string | null,
   settlement: { charged: number; refunded: number },
+  waiting: { canCancel: boolean; standing: GenerationQueueStanding | null },
 ) {
   return {
     id: job.id,
@@ -81,6 +86,9 @@ function generationJobDTO(
     sourceId: job.sourceId,
     sourceMeta: job.sourceMeta,
     errorCode: generationExecutionErrorCode(job.status, latestAttemptStatus, job.errorCode),
+    canCancel: waiting.canCancel,
+    queueAhead: waiting.standing?.queueAhead ?? null,
+    queueEtaSeconds: waiting.standing?.queueEtaSeconds ?? null,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
     completedAt: job.completedAt,
@@ -100,11 +108,39 @@ function generationJobDTO(
 export async function readGenerationJobs(jobs: readonly GenerationJobWithRelations[]) {
   if (jobs.length === 0) return [];
   const requestIds = jobs.map(job => job.id);
-  const [statuses, costs] = await Promise.all([
-    latestGenerationAttemptStatuses(requestIds),
+  const [attempts, costs] = await Promise.all([
+    latestGenerationAttempts(requestIds),
     readGenerationSettlements(requestIds),
   ]);
-  return jobs.map(job => generationJobDTO(job, statuses.get(job.id) ?? null, costs.get(job.id) ?? { charged: 0, refunded: 0 }));
+  // INTENT: these routes are polled while a job waits. Everything that only matters
+  // to a waiting job is read for waiting jobs alone, so a settled list costs nothing.
+  const waiting = jobs.filter(job => job.status === "queued" && attempts.get(job.id)?.status === "queued").map(job => job.id);
+  const [standings, dispatches] = await Promise.all([
+    readGenerationQueueStandings(waiting),
+    waiting.length ? prisma.mainOutboxEvent.findMany({
+      where: { aggregateType: "generation_request", aggregateId: { in: waiting }, eventType: { in: [...MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES] } },
+      select: { aggregateId: true, payload: true },
+    }) : [],
+  ]);
+  return jobs.map(job => {
+    const attempt = attempts.get(job.id) ?? null;
+    return generationJobDTO(job, attempt?.status ?? null, costs.get(job.id) ?? { charged: 0, refunded: 0 }, {
+      canCancel: USER_CANCELLABLE_GENERATION_SOURCE_TYPES.includes(job.sourceType) &&
+        canCancelGenerationBeforeProviderEntry(job, attempt, dispatches.filter(dispatch => dispatch.aggregateId === job.id)),
+      standing: standings.get(job.id) ?? null,
+    });
+  });
+}
+
+async function latestGenerationAttempts(requestIds: string[]) {
+  const rows = await prisma.generationAttempt.findMany({
+    where: { requestId: { in: requestIds } },
+    select: { id: true, requestId: true, status: true, startedAt: true },
+    orderBy: [{ requestId: "asc" }, { attemptNo: "desc" }],
+  });
+  const latest = new Map<string, (typeof rows)[number]>();
+  for (const row of rows) if (!latest.has(row.requestId)) latest.set(row.requestId, row);
+  return latest;
 }
 
 export async function readGenerationSettlements(requestIds: readonly string[]) {

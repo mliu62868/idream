@@ -10,7 +10,7 @@ import { assertProductionProviderReady, providers } from "./providers";
 import { runWorker } from "./queue";
 import { startGenerationSourceRecovery } from "./failed-source-recovery";
 import { enqueueTerminalRecordRelay } from "./terminal-record";
-import { recordTransportExecution } from "./transport-execution";
+import { isGenerationAuthorityRevoked, recordTransportExecution } from "./transport-execution";
 import { videoWorkerIdentity } from "./worker-identity";
 
 // A mock video provider means this host runs no video worker: the topology omits
@@ -66,6 +66,11 @@ const worker = runWorker(
 );
 
 worker.on("failed", (job, err) => {
+  // A user cancelling a queued video is ordinary, not a runtime failure to alert on.
+  if (isGenerationAuthorityRevoked(err)) {
+    logger.info({ jobId: job?.id }, "video generate job stopped: Main closed its Attempt");
+    return;
+  }
   captureGenerationRuntimeFailure({
     boundary: "worker",
     error: err,

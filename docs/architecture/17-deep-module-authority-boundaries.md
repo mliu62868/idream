@@ -166,6 +166,26 @@ Main 一侧的同类误判：Gen 在 `running` 之后到终态之前不发任何
 - **擦除**：`materializeCurrentBlobDeletes` 在枚举结束后对全部 key 再推导一遍，因此 MediaAsset、被抑制的迟到产物、已恢复的 unknown 与 cleanup 意图都覆盖，也覆盖「ACK 丢失后记录为 failed、对象却已写入」。历史资产多一次对不存在对象的删除，是幂等空操作。Blob 删除只有这条路径涉及生成资产：媒体软删除只写 `deletedAt`，字节由账号擦除回收。
 - **读取**：`/user-content/{token}/thumbnail.webp` 与原图走同一组访问分支，只换读取的对象。门控是 `thumbnailUrl` 列等于该路由且行自有 `storageKey`：历史行、经 `shared_immutable` locator 借字节的行都回退原图，不回写。
 
+#### 2.1.8 用户取消以 provider 入口为界（2026-11-05）
+
+用户可以取消的条件从「dispatch 未被触碰」改为「Attempt 尚未 `running`」（`startedAt IS NULL`）。派发只写 Bull，从不碰 provider，而内联派发在下单请求返回前就把 `attempts` 加一，所以旧条件让请求一被接受就无法取消。Gen 进入 provider 前必须让 Main 在 Request 锁下接受 `running`，取消持同一把锁，两者只有一方成立。
+
+- 用户取消开放给 `generator`、`chat_video`、`feed_remix`、`media_variation`、`media_enhance`；序列分镜由停止序列处理，`chat_image` 和 `character_preview` 有下游在等结果，不开放。
+- 提交后尽力移除 Bull 行。worker 已持有的行移除不了，由下一次 `waiting` 或 `running` 事件拒绝。
+- 拒绝带 `reason: generation_dispatch_authority_revoked` 时，Gen 抛 `UnrecoverableError` 立即停止，不写终态记录；其余 4xx 仍可重试（序列分镜的延后是暂时的，401 是部署问题）。留下的 Bull failed 行属于历史，cutover 按已终态 Attempt 忽略。
+
+#### 2.1.9 接纳在事务外冻结来源（2026-11-05）
+
+接纳事务持有的每 Character 咨询锁由使用同一公开 Character 的所有用户共享，所以 Blob 读取、解码和分块写入都移到事务之前（`prefreezeGenerationSources`），事务内只校验行与权威（`assertPrefrozenGenerationSource`）。
+
+- 精确：比对读取字节时资产行的定位符；媒体写入方在事务持有的锁下改这一行。
+- 属主：快照行必须属于当前用户，账号擦除后校验失败。
+- 钉住：仍写入 `controls`，读取时按 pin 校验。
+- 事务内发现的参考集与事务外读到的不一致时返回 409 让用户重试，不在锁内补读 Blob。
+
+准入失败可能留下未被钉住的快照：它是属主自己的字节，没有 pin 就读不到，按内容去重，随账号级联删除。除级联外快照目前没有其他删除路径。
+
+### 2.2 Dreamcoin Ledger 只有一个类型化写入口
 
 业务调用方不得自由组合 `(delta, reason: string)`，也不得直接写 `DreamcoinLedger`。
 

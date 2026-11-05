@@ -7,7 +7,7 @@ import { redgraftLtx25VideoProductionRecipe } from "@idream/shared";
 import { z } from "zod";
 import { fishAudioDeliverySettingsSchema, videoSequenceRequestSchema, REDGRAFT_VIDEO_OPTIONS, REDGRAFT_VIDEO_DEFAULTS, type VideoSequenceRequest } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
-import type { FrozenGenerationSource } from "./generation-source-snapshot";
+import type { PrefrozenGenerationSource } from "./generation-source-snapshot";
 import { Errors } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
 import { resolveMediaAssetBlobLocator } from "@/server/lib/media-asset-authority";
@@ -19,7 +19,8 @@ import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { dreamcoinBalance } from "@/server/modules/billing/ledger";
 import { dispatchGenerationAttemptOutbox } from "@/server/modules/generation/generation-attempt-authority";
 import { hasProductionVideoOptions } from "@/server/modules/generation/production-video-profile";
-import { settleGenerationRequestCancellation } from "@/server/ai/generation-request-lifecycle";
+import { canCancelGenerationBeforeProviderEntry, removeLatestGenerationAttemptQueueJob, settleGenerationRequestCancellation } from "@/server/ai/generation-request-lifecycle";
+import { lockGenerationRequestForSettlement } from "@/server/ai/generation-settlement";
 import { MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES } from "@/server/events/main-outbox-transport";
 import { lockUserLedger } from "./subscription-lifecycle";
 import { entitlementMap } from "./subscription-lifecycle";
@@ -154,7 +155,7 @@ export async function createVideoSequence(userId: string, body: VideoSequenceReq
   if (!body.quoteFingerprint || body.quoteFingerprint !== quoted.fingerprint) throw Errors.conflict("Video sequence quote changed. Review its current price before accepting.", { reason: "video_sequence_quote_stale" });
   const sequenceId = randomUUID();
   const videoSourceChecks = new Set<string>();
-  const videoSourceSnapshots = new Map<string, FrozenGenerationSource>();
+  const videoSourceSnapshots = new Map<string, PrefrozenGenerationSource>();
   const admissions: Array<Awaited<ReturnType<typeof prepareGenerationJobForUser>>> = [];
   for (const [ordinal] of body.scenes.entries()) {
     const native = { ...nativeSceneBody(body, ordinal), quoteAuthority: quoted.scenes[ordinal]!.authority };
@@ -216,27 +217,37 @@ async function projectVideoSequences(rows: readonly SequenceRow[]) {
 }
 
 async function stopUnstartedScenes(tx: Prisma.TransactionClient, row: SequenceRow, reason: string) {
+  const stopped: string[] = [];
   for (const scene of row.scenes) {
-    const attempt = await tx.generationAttempt.findFirst({ where: { requestId: scene.generationJobId }, orderBy: { attemptNo: "desc" } });
-    if (scene.generationJob.status !== "queued" || attempt?.startedAt || attempt?.status !== "queued") continue;
-    const dispatches = await tx.mainOutboxEvent.findMany({ where: { aggregateId: scene.generationJobId, eventType: { in: [...MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES] } }, select: { status: true, attempts: true } });
-    if (!dispatches.length || dispatches.some(dispatch => dispatch.status !== "pending" || dispatch.attempts !== 0)) continue;
-    const { refundAmount } = await settleGenerationRequestCancellation(tx, { requestId: scene.generationJobId, userId: row.userId, expectSourceType: "video_sequence_scene", guard: { kind: "before_dispatch" }, reason, cancelledAt: new Date() });
-    await appendGenerationEvent(tx, scene.generationJobId, "cancelled", reason, { refundAmount, sequenceId: row.id });
-    if (refundAmount > 0) await appendGenerationEvent(tx, scene.generationJobId, "refunded", "Unexecuted scene Dreamcoins returned", { amount: refundAmount });
+    // INVARIANT: decide under the Request lock. A worker that is about to start this
+    // scene needs the same lock for its `running` event, so it either finds the scene
+    // cancelled or leaves it started and this stop passes over it. An unlocked read
+    // here would turn that ordinary race into a 409 that fails the whole stop.
+    const job = await lockGenerationRequestForSettlement(tx, scene.generationJobId);
+    const attempt = await tx.generationAttempt.findFirst({ where: { requestId: job.id }, orderBy: { attemptNo: "desc" } });
+    const dispatches = await tx.mainOutboxEvent.findMany({ where: { aggregateId: job.id, eventType: { in: [...MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES] } }, select: { payload: true } });
+    if (!canCancelGenerationBeforeProviderEntry(job, attempt, dispatches)) continue;
+    const { refundAmount } = await settleGenerationRequestCancellation(tx, { requestId: job.id, userId: row.userId, expectSourceType: "video_sequence_scene", guard: { kind: "before_provider_entry" }, reason, cancelledAt: new Date() });
+    await appendGenerationEvent(tx, job.id, "cancelled", reason, { refundAmount, sequenceId: row.id });
+    if (refundAmount > 0) await appendGenerationEvent(tx, job.id, "refunded", "Unexecuted scene Dreamcoins returned", { amount: refundAmount });
+    stopped.push(job.id);
   }
+  return stopped;
 }
 
 export async function stopVideoSequence(userId: string, id: string) {
-  await prisma.$transaction(async tx => {
+  const stopped = await prisma.$transaction(async tx => {
     await lockUserLedger(tx, userId);
     await tx.$queryRaw`SELECT id FROM video_sequences WHERE id = ${id} AND "userId" = ${userId} FOR UPDATE`;
     const row = await tx.videoSequence.findFirst({ where: { id, userId }, include });
     if (!row) throw Errors.notFound("Video sequence not found");
     if (row.status === "completed") throw Errors.conflict("This sequence has already been delivered");
-    await stopUnstartedScenes(tx, row, "Video sequence stopped by its owner");
+    const scenes = await stopUnstartedScenes(tx, row, "Video sequence stopped by its owner");
     await tx.videoSequence.update({ where: { id }, data: { status: "cancelled", errorCode: null, compositionOwner: null, compositionLeaseAt: null } });
+    return scenes;
   });
+  // A scene already in Bull would otherwise hold the single video slot just to be refused.
+  await Promise.all(stopped.map(requestId => removeLatestGenerationAttemptQueueJob(requestId)));
   return readVideoSequence(userId, id);
 }
 

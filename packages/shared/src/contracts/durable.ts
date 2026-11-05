@@ -195,6 +195,10 @@ export const generationTerminalRecordSchema = z.discriminatedUnion("outcome", [
   }
 });
 
+// SPEC: the `reason` in Main's 4xx transport response meaning the Attempt is terminal
+// and Gen must stop this Bull row for good. Every other rejection stays retryable.
+export const GENERATION_TRANSPORT_AUTHORITY_REVOKED_REASON = "generation_dispatch_authority_revoked";
+
 export const generationTransportExecutionEventSchema = z.object({
   version: z.literal(1),
   attemptId: z.string().min(1),

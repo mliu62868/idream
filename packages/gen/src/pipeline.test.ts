@@ -30,7 +30,8 @@ import { buildBackendRegistry } from "./backend/registry";
 import { CONFIRMED_IMAGE_EDIT_VERSION } from "@idream/shared/chat/image-action";
 import { ComfyUIBackend } from "./backend/comfyui";
 import { workflowDescriptorSchema } from "./backend/workflow";
-import { recordTransportExecution as recordMainTransportExecution } from "./transport-execution";
+import { GenerationAuthorityRevokedError, recordTransportExecution as recordMainTransportExecution } from "./transport-execution";
+import { UnrecoverableError } from "bullmq";
 
 const originalFetch = globalThis.fetch;
 const originalImageProvider = process.env.GEN_IMAGE_PROVIDER;
@@ -2701,6 +2702,48 @@ it.each(["wait", "entry"] as const)("never invokes or writes terminal evidence a
   expect(harness.generate).not.toHaveBeenCalled();
   expect(harness.providers.blob.putPrivateIfAbsent).not.toHaveBeenCalled();
   expect(acknowledgeTerminalRecord).not.toHaveBeenCalled();
+});
+
+// The worker hands whatever is thrown here to BullMQ, so the exact error type is what
+// decides between stopping for good and going back to the device queue. Covers the
+// last Bull attempt too, where a plain failure would write a terminal record instead.
+it.each([
+  ["waiting on the device", "waiting", 0, 3],
+  ["waiting on the device, on the last Bull attempt", "waiting", 2, 3],
+  ["about to enter the provider", "running", 0, 3],
+] as const)("stops for good when Main closed the Attempt while %s", async (_phase, rejectedStatus, attemptsMade, maxAttempts) => {
+  const harness = lifecycleHarness("video", "succeeded");
+  Object.assign(harness.providers.video, { managesInvocationBoundary: true });
+  harness.providers.video.generate = vi.fn(async (input) => {
+    try {
+      await input.executionBoundary!.onResourceWait();
+      await input.executionBoundary!.beforeProviderInvocation();
+      return videoLifecycleResult("succeeded");
+    } catch {
+      return { ok: false as const, error: { code: "backend_error", message: "backend classified authority failure", retryable: true } };
+    }
+  });
+  const revoked = new GenerationAuthorityRevokedError("Main closed this Attempt");
+  const recordTransportExecution = vi.fn(async (input) => { if (input.status === rejectedStatus) throw revoked; });
+  const acknowledgeTerminalRecord = vi.fn(async () => undefined);
+  const run = harness.run(makePipelineDeps(harness.providers, { recordTransportExecution, acknowledgeTerminalRecord, attemptsMade, maxAttempts }));
+  await expect(run).rejects.toBe(revoked);
+  await expect(run).rejects.toBeInstanceOf(UnrecoverableError);
+  expect(harness.generate).not.toHaveBeenCalled();
+  expect(acknowledgeTerminalRecord).not.toHaveBeenCalled();
+  expect(harness.providers.blob.putPrivateIfAbsent).not.toHaveBeenCalled();
+});
+
+it("writes no preparation failure when Main refuses the source snapshot of a closed Attempt on the last attempt", async () => {
+  const harness = lifecycleHarness("video", "succeeded");
+  const revoked = new GenerationAuthorityRevokedError("Generation Attempt was closed before its source snapshot was read");
+  const acknowledgeTerminalRecord = vi.fn(async () => undefined);
+  const referenceImages = [{ assetId: "source", role: "source_image" as const, sourceSnapshotId: "snapshot", contentSha256: "a".repeat(64), contentType: "image/png" }];
+  await expect(processVideoGenerate(videoPayload({ referenceImages }), makePipelineDeps(harness.providers, {
+    readSourceSnapshot: async () => { throw revoked; }, acknowledgeTerminalRecord, attemptsMade: 2, maxAttempts: 3,
+  }))).rejects.toBe(revoked);
+  expect(acknowledgeTerminalRecord).not.toHaveBeenCalled();
+  expect(harness.generate).not.toHaveBeenCalled();
 });
 
 it("settles a resource wait timeout as preparation failure without provider accounting", async () => {

@@ -442,6 +442,7 @@ export function settledGenerationStatusMessage(job: GenerationJobFact) {
     return reason ? `Failed: ${reason}` : "Failed.";
   }
   if (job.status === "refunded") return "Refunded.";
+  if (job.status === "cancelled") return "Cancelled. Any coins held for this request were returned.";
   return "Generation stopped.";
 }
 

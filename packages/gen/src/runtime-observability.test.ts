@@ -43,7 +43,10 @@ vi.mock("./failed-source-recovery", () => ({
   ),
 }));
 vi.mock("./terminal-record", () => ({ enqueueTerminalRecordRelay: vi.fn() }));
-vi.mock("./transport-execution", () => ({ recordTransportExecution: vi.fn() }));
+vi.mock("./transport-execution", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./transport-execution")>(),
+  recordTransportExecution: vi.fn(),
+}));
 vi.mock("./env", () => ({
   env: { APP_ENV: "production", VIDEO_PROVIDER: "comfyui" },
 }));
@@ -88,5 +91,17 @@ describe("generation process observability wiring", () => {
       [{ boundary: "source-recovery", error: videoRecoveryError, mode: "video" }],
       [{ boundary: "worker", error: videoWorkerError, jobId: "video-job", mode: "video" }],
     ]);
+  });
+
+  it("does not alert when a worker stops because Main closed the Attempt", async () => {
+    await import("./image");
+    await import("./video");
+    const { GenerationAuthorityRevokedError } = await import("./transport-execution");
+    runtime.captureFailure.mockClear();
+
+    runtime.workerFailures.get("image")?.({ id: "image-job" }, new GenerationAuthorityRevokedError("closed"));
+    runtime.workerFailures.get("video")?.({ id: "video-job" }, new GenerationAuthorityRevokedError("closed"));
+
+    expect(runtime.captureFailure).not.toHaveBeenCalled();
   });
 });

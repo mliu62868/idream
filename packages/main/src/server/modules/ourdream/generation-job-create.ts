@@ -30,6 +30,7 @@ import {
 } from "./generation-character-authority";
 import {
   assertGenerationProfileCanDispatchReferences,
+  generationReferenceRouteRequirements,
   normalizedGenerationReferenceRole,
   resolveImageRecipeNegative,
 } from "./generation-profile-selection";
@@ -59,8 +60,8 @@ import type {
   GenerationSource,
 } from "./generation-request-schema";
 import { generationContextToken, lockGenerationContext, resolveGenerationContext } from "./generation-context";
-import { freezeGenerationSource, withGenerationSnapshotSlot, type FrozenGenerationSource } from "./generation-source-snapshot";
-import { freezeGenerationReferences } from "./generation-reference-snapshot";
+import type { FrozenGenerationSource, PrefrozenGenerationSource } from "./generation-source-snapshot";
+import { assertPrefrozenGenerationSource, freezeGenerationReferences, prefreezeGenerationSources } from "./generation-reference-snapshot";
 import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency";
 
 // SPEC: 用户侧「发起一次生成」的完整业务动作 —— 定路线、验报价、锁身份与素材权威、
@@ -120,7 +121,7 @@ export type GenerationJobOptions = {
     /** Only shared by child scenes inside the same admission transaction. */
     videoSourceChecks?: Set<string>;
     /** Shared only by scenes in one admission transaction. */
-    videoSourceSnapshots?: Map<string, FrozenGenerationSource>;
+    videoSourceSnapshots?: Map<string, PrefrozenGenerationSource>;
   };
 
 export async function createGenerationJobForUser(userId: string, body: GenerationCreateBody, options: GenerationJobOptions = {}) {
@@ -357,12 +358,33 @@ export async function prepareGenerationJobForUser(userId: string, body: Generati
         )
       : (body.negativePrompt ?? null);
 
+  // INVARIANT: every source is read, verified and frozen here, with no transaction
+  // open, because this admission's lock set includes the per-Character lock that all
+  // users of a public Character share. The closure below only rechecks rows. Its
+  // reference set comes from the locked revision; if that differs from what this
+  // unlocked read found, the closure refuses rather than reading Blob under the lock.
+  const comicSourceMediaId = plan.context?.source.kind === "comic" ? plan.context.sourceMedia?.id : undefined;
+  const pinnedRouteReferences = visualProfile && character
+    ? await generationReferenceRouteRequirements(visualProfile.id, expectedReferenceSetRevisionId)
+    : [];
+  const prefrozenSources = await prefreezeGenerationSources({
+    userId,
+    characterId: character?.id ?? null,
+    known: options.videoSourceSnapshots,
+    assets: [
+      ...(typeof requestedSourceImageAssetId === "string" && !options.frozenImageSource
+        ? [{ assetId: requestedSourceImageAssetId, authorizedComicSourceMediaId: comicSourceMediaId }]
+        : []),
+      ...(requestedLookReferenceAssetId ? [{ assetId: requestedLookReferenceAssetId }] : []),
+      ...pinnedRouteReferences.map(reference => ({ assetId: reference.assetId })),
+    ],
+  });
+
   return (admissionTx?: Prisma.TransactionClient) => acceptGenerationJobForUser({
     userId,
     identity: options,
-    // Video admission reads, decodes, and stores its source under the same
-    // authority locks; the default five-second transaction cannot cover its
-    // bounded ten-second remote read and chunk writes.
+    // Blob I/O happens before this transaction. The allowance is for waiting on the
+    // account and Character locks behind other writers, not for any work done inside.
     transactionTimeoutMs: 30_000,
     chatAttachment: options.chatAttachment,
     sequenceId: options.sequenceId,
@@ -484,17 +506,14 @@ export async function prepareGenerationJobForUser(userId: string, body: Generati
       let outputDimensions = dimensions;
       let frozenSource: FrozenGenerationSource | undefined;
       if (sourceImageAssetId) {
-        frozenSource = options.frozenImageSource ?? options.videoSourceSnapshots?.get(sourceImageAssetId);
-        const verify = async () => assertGenerationSourceImageAuthority(tx, {
+        await assertGenerationSourceImageAuthority(tx, {
           sourceImageAssetId,
           userId,
           characterId: character?.id ?? null,
-          verifyVideoPixels: body.mode === "video" && !frozenSource,
-          verifyImagePixels: preserveSourceGeometry && !options.frozenImageSource,
           authorizedComicSourceMediaId: lockedContext?.source.kind === "comic" ? lockedContext.sourceMedia?.id : undefined,
         });
         if (options.frozenImageSource) {
-          await verify();
+          frozenSource = options.frozenImageSource;
           const frozen = options.frozenImageSource;
           const stored = await tx.generationSourceSnapshot.findFirst({ where: {
             id: frozen.id, userId, sha256: frozen.sha256, sizeBytes: frozen.sizeBytes, contentType: frozen.contentType,
@@ -504,22 +523,20 @@ export async function prepareGenerationJobForUser(userId: string, body: Generati
           }
           assertOriginalImageGeometry(frozen, profile, recolor);
           outputDimensions = { width: frozen.width, height: frozen.height };
-        } else if ((body.mode === "video" && !frozenSource) || preserveSourceGeometry) {
-          frozenSource = await withGenerationSnapshotSlot(async () => {
-            const source = await verify();
-            if (!source) throw new Error("Verified generation source bytes are missing");
-            if (preserveSourceGeometry) {
-              if (source.pages !== 1) throw Errors.conflict("Original dimensions require a single-frame source image.");
-              // Preserve actual pixels without silently stretching or cropping.
-              // Keep the admitted workload within this profile's published size
-              // envelope; an arbitrary imported source must not expand its budget.
-              assertOriginalImageGeometry(source, profile);
-              outputDimensions = { width: source.width, height: source.height };
-            }
-            return freezeGenerationSource(tx, { userId, ...source });
-          });
-          if (body.mode === "video") options.videoSourceSnapshots?.set(sourceImageAssetId, frozenSource);
-        } else await verify();
+        } else if (body.mode === "video" || preserveSourceGeometry) {
+          const source = prefrozenSources.get(sourceImageAssetId);
+          if (!source) throw Errors.conflict("A source image changed while this request was being prepared. Please try again.", { sourceImageAssetId });
+          await assertPrefrozenGenerationSource(tx, { userId, prefrozen: source });
+          if (preserveSourceGeometry) {
+            if (source.pages !== 1) throw Errors.conflict("Original dimensions require a single-frame source image.");
+            // Preserve actual pixels without silently stretching or cropping.
+            // Keep the admitted workload within this profile's published size
+            // envelope; an arbitrary imported source must not expand its budget.
+            assertOriginalImageGeometry(source, profile);
+            outputDimensions = { width: source.width, height: source.height };
+          }
+          frozenSource = source;
+        }
         if (body.mode === "video") options.videoSourceChecks?.add(sourceImageAssetId);
       }
       const referenceAssetIds =
@@ -614,6 +631,7 @@ export async function prepareGenerationJobForUser(userId: string, body: Generati
         referenceManifest: referenceSetRevision ? JSON.parse(JSON.stringify(referenceManifest)) : undefined,
         authorizedSourceImageAssetId: lockedContext?.source.kind === "comic" ? lockedContext.sourceMedia?.id : undefined,
         reuse: sourceImageAssetId && frozenSource ? { assetId: sourceImageAssetId, snapshot: frozenSource } : undefined,
+        prefrozen: prefrozenSources,
       });
       if (referenceSnapshots.length) Object.assign(controls, { referenceSnapshots });
       return {
