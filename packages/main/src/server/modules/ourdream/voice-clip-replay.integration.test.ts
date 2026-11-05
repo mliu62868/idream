@@ -8,6 +8,7 @@ import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { providers } from "@/server/providers";
+import { VOICE_MAX_INPUT_CHARS } from "@/server/providers/voice/speech-text";
 import { voiceMinutesRemainingMs } from "./voice-clip";
 import { archiveChatSession, beginChatTurn, commitChatTerminal, createChatSession, deleteChatMessage, deleteChatSession, editChatTurn, regenerateChatTurn } from "@/server/modules/chat/turn-ledger";
 import { AGE_GATE_COOKIE_HEADER, api, createCharacter, createUser, dreamcoinBalance, expectOk, grantCoins, purgeTestData, voiceReplyBody } from "@/server/test/helpers";
@@ -326,6 +327,117 @@ describe("voice clip replay settlement", () => {
     expect(content.status).toBe(200);
     expect(content.headers.get("content-type")).toMatch(/^audio\//);
     expect((await content.arrayBuffer()).byteLength).toBeGreaterThan(0);
+  });
+
+  it("voices a reply past the old 2000-character limit as one clip at exactly the quoted price", async () => {
+    const userId = `${P}long-reply`, characterId = `${userId}-character`;
+    await createUser({ id: userId });
+    await createCharacter({ id: characterId, creatorId: userId, source: "user", visibility: "private" });
+    await grantVoice(userId, 0);
+    await grantCoins(userId, 10, "seed");
+    const text = "The rain kept falling while we talked about the old house. ".repeat(100).trim();
+    expect(text.length).toBeGreaterThan(5_000);
+    const body = await voiceReplyBody(userId, { characterId, messageId: `${P}long-message`, text });
+    const provider = vi.spyOn(providers.voice.clip, "synthesize");
+    try {
+      const quote = await api("POST", "generation/voice/quote", { userId, ageGate: true, body });
+      expectOk(quote);
+      const short = await voiceReplyBody(userId, { characterId, messageId: `${P}short-message`, text: "Short." });
+      const shortQuote = await api("POST", "generation/voice/quote", { userId, ageGate: true, body: short });
+      expectOk(shortQuote);
+      // The clip price does not depend on length, and the raw text in the body is ignored.
+      expect(quote.data.quote.maxCostDreamcoins).toBe(shortQuote.data.quote.maxCostDreamcoins);
+      const delivered = await api("POST", "generation/voice", { userId, ageGate: true, body: { ...body, quoteToken: quote.data.quote.quoteToken } });
+      expectOk(delivered, 201);
+      expect(provider).toHaveBeenCalledOnce();
+      expect(provider.mock.calls[0][0].text).toBe(text);
+      expect(await dreamcoinBalance(userId)).toBe(10 - quote.data.quote.maxCostDreamcoins);
+      const usage = await prisma.voiceUsageFact.findFirstOrThrow({ where: { userId } });
+      expect(usage).toMatchObject({ durationMs: text.length * 35, costDreamcoins: quote.data.quote.maxCostDreamcoins });
+    } finally { provider.mockRestore(); }
+  });
+
+  it("explains a reply beyond the voice bound at quote and delivery, starting nothing", async () => {
+    const userId = `${P}too-long`, characterId = `${userId}-character`;
+    await createUser({ id: userId });
+    await createCharacter({ id: characterId, creatorId: userId, source: "user", visibility: "private" });
+    await grantVoice(userId, 0);
+    await grantCoins(userId, 4, "seed");
+    const body = await voiceReplyBody(userId, { characterId, messageId: `${P}too-long-message`, text: "x".repeat(VOICE_MAX_INPUT_CHARS + 1) });
+    const provider = vi.spyOn(providers.voice.clip, "synthesize");
+    try {
+      for (const path of ["generation/voice/quote", "generation/voice"]) {
+        const rejected = await api("POST", path, { userId, ageGate: true, autoGenerationQuote: false, body });
+        expect(rejected.status).toBe(400);
+        expect(rejected.json.error.details).toMatchObject({ reason: "voice_text_too_long", limit: VOICE_MAX_INPUT_CHARS });
+      }
+      expect(provider).not.toHaveBeenCalled();
+      expect(await prisma.voiceClipRequest.count({ where: { userId } })).toBe(0);
+    } finally { provider.mockRestore(); }
+  });
+
+  it("speaks a reply without its narration and delivers it, with quote and delivery agreeing", async () => {
+    const userId = `${P}narration`, characterId = `${userId}-character`;
+    await createUser({ id: userId });
+    await createCharacter({ id: characterId, creatorId: userId, source: "user", visibility: "private" });
+    await grantVoice(userId, 0);
+    await grantCoins(userId, 4, "seed");
+    const body = await voiceReplyBody(userId, { characterId, messageId: `${P}narration-message`, text: "*smiles softly* Hello there. *leans in* Come closer." });
+    const provider = vi.spyOn(providers.voice.clip, "synthesize");
+    try {
+      const delivered = await api("POST", "generation/voice", { userId, ageGate: true, body });
+      expectOk(delivered, 201);
+      expect(provider.mock.calls[0][0].text).toBe("Hello there. Come closer.");
+      expect(await prisma.mediaAsset.findUniqueOrThrow({ where: { id: delivered.data.assetId } })).toMatchObject({
+        prompt: "Hello there. Come closer.", metadata: { cacheVersion: 9 },
+      });
+      const replay = await api("POST", "generation/voice", { userId, ageGate: true, body });
+      expectOk(replay);
+      expect(replay.data.assetId).toBe(delivered.data.assetId);
+      expect(provider).toHaveBeenCalledOnce();
+    } finally { provider.mockRestore(); }
+  });
+
+  it("keeps an earlier request's raw words under its provider key and replays its version 8 clip", async () => {
+    const userId = `${P}raw-pinned`, characterId = `${userId}-character`, messageId = `${P}raw-pinned-message`;
+    const raw = "*smiles softly* Hello there.";
+    await createUser({ id: userId });
+    await createCharacter({ id: characterId, creatorId: userId, source: "user", visibility: "private" });
+    await grantVoice(userId, 0);
+    await grantCoins(userId, 4, "seed");
+    const body = await voiceReplyBody(userId, { characterId, messageId, text: raw });
+    const provider = vi.spyOn(providers.voice.clip, "synthesize");
+    try {
+      provider.mockResolvedValueOnce({ ok: false, error: { code: "controlled_failure", message: "Controlled", retryable: true } });
+      expect((await api("POST", "generation/voice", { userId, ageGate: true, body })).status).toBe(500);
+      // Rewrite the row to what the previous code stored for this reply.
+      const row = await prisma.voiceClipRequest.findFirstOrThrow({ where: { userId } });
+      const payload = row.synthesisPayload as Record<string, unknown>;
+      const rawFingerprint = canonicalJsonHash({
+        schemaVersion: "voice-clip-request-v2", userId, characterId, messageId, sessionId: body.sessionId,
+        text: raw, sceneVersion: 0, scene: null, replyAttempt: 1,
+      });
+      // Recreate it rather than weakening the production billing triggers.
+      await prisma.voiceClipRequest.delete({ where: { id: row.id } });
+      await prisma.voiceClipRequest.create({ data: {
+        ...row, requestFingerprint: rawFingerprint, synthesisPayload: toInputJson({ ...payload, text: raw }),
+        billingAuthority: toInputJson({ ...(row.billingAuthority as object), requestFingerprint: rawFingerprint }),
+        providerPayload: toInputJson(row.providerPayload), executionAuthority: toInputJson(row.executionAuthority), error: Prisma.DbNull,
+      } });
+      const retried = await api("POST", "generation/voice", { userId, ageGate: true, body });
+      expectOk(retried, 201);
+      expect(provider.mock.calls.at(-1)![0].text).toBe(raw);
+      expect(await dreamcoinBalance(userId)).toBe(2);
+
+      const calls = provider.mock.calls.length;
+      const asset = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: retried.data.assetId } });
+      await prisma.mediaAsset.update({ where: { id: asset.id }, data: { metadata: { ...(asset.metadata as object), cacheVersion: 8 } } });
+      const replay = await api("POST", "generation/voice", { userId, ageGate: true, body });
+      expectOk(replay);
+      expect(replay.data.assetId).toBe(asset.id);
+      expect(provider.mock.calls.length).toBe(calls);
+      expect(await dreamcoinBalance(userId)).toBe(2);
+    } finally { provider.mockRestore(); }
   });
 
   it("accounts for one provider execution when a wallet race delays the first delivery", async () => {

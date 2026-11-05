@@ -16,6 +16,7 @@ from unittest.mock import patch
 import wave
 from pathlib import Path
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 import numpy as np
 
@@ -215,6 +216,147 @@ class FishAudioGatewayTests(unittest.TestCase):
             lane.pending = 0
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.headers["retry-after"], "5")
+
+    def test_janitor_removes_only_entries_past_their_ttl(self):
+        from scripts.voice_cache_janitor import sweep_speech_cache
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "erased").mkdir()
+            old_entry, fresh_entry, marker, partial = root / "old.cache", root / "fresh.cache", root / "erased" / "owner-x", root / ".old.cache.abc.tmp"
+            for path in (old_entry, fresh_entry, marker, partial):
+                path.write_bytes(b"x")
+            ancient = time.time() - 8 * 86_400
+            for path in (old_entry, marker, partial):
+                os.utime(path, (ancient, ancient))
+            self.assertEqual(sweep_speech_cache(root, 7 * 86_400, threading.RLock()), 2)
+            self.assertFalse(old_entry.exists())
+            self.assertFalse(partial.exists())
+            self.assertTrue(fresh_entry.exists())
+            # Erasure markers must outlive every entry, or an erased key could render again.
+            self.assertTrue(marker.exists())
+
+    def test_janitor_waits_for_a_running_render_and_spares_an_entry_it_refreshed(self):
+        from scripts.voice_cache_janitor import refresh_entry, sweep_speech_cache
+        with tempfile.TemporaryDirectory() as directory:
+            entry = Path(directory) / "key.cache"
+            entry.write_bytes(b"x")
+            ancient = time.time() - 8 * 86_400
+            os.utime(entry, (ancient, ancient))
+            lock = threading.RLock()
+            lock.acquire()
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                sweep = pool.submit(sweep_speech_cache, Path(directory), 7 * 86_400, lock)
+                time.sleep(0.1)
+                self.assertFalse(sweep.done())
+                self.assertTrue(entry.exists())
+                # The replay holding the lock has just used this entry.
+                refresh_entry(entry)
+                lock.release()
+                self.assertEqual(sweep.result(5), 0)
+            self.assertTrue(entry.exists())
+
+    def test_cache_ttl_defaults_to_a_week_and_zero_disables_the_janitor(self):
+        from scripts.voice_cache_janitor import CacheJanitor, cache_ttl_seconds
+        with patch.dict(os.environ):
+            os.environ.pop("VOICE_CACHE_TTL_DAYS", None)
+            self.assertEqual(cache_ttl_seconds(), 7 * 86_400)
+            os.environ["VOICE_CACHE_TTL_DAYS"] = "0.5"
+            self.assertEqual(cache_ttl_seconds(), 43_200)
+            os.environ["VOICE_CACHE_TTL_DAYS"] = "0"
+            self.assertIsNone(cache_ttl_seconds())
+            os.environ["VOICE_CACHE_TTL_DAYS"] = "-1"
+            with self.assertRaises(RuntimeError):
+                cache_ttl_seconds()
+        janitor = CacheJanitor(Path("."), threading.RLock(), None)
+        janitor.start()
+        self.assertIsNone(janitor.thread)
+
+    def test_speech_accepts_the_longest_reply_main_will_send_and_nothing_longer(self):
+        gateway = self.gateway
+        self.assertEqual(len(gateway.SpeechRequest(input="x" * 12_000).input), 12_000)
+        with self.assertRaises(ValueError):
+            gateway.SpeechRequest(input="x" * 12_001)
+
+    def test_breeze_keeps_every_word_when_a_long_reply_is_split_at_sentence_ends(self):
+        text = " ".join(f"Sentence number {index} ends right here." for index in range(400))
+        pieces = self.gateway.split_for_breeze(text)
+        self.assertGreater(len(pieces), 1)
+        self.assertTrue(all(len(piece) <= self.gateway.BREEZE_INPUT_CHARS for piece in pieces))
+        self.assertTrue(all(piece.endswith(".") for piece in pieces))
+        self.assertEqual(" ".join(pieces), text)
+
+    def test_breeze_keeps_measured_input_whole_and_hard_cuts_only_a_run_on_sentence(self):
+        short = "A reply that fits. " * 100
+        self.assertEqual(self.gateway.split_for_breeze(short.strip()), [short.strip()])
+        run_on = "x" * 5_000
+        pieces = self.gateway.split_for_breeze(run_on)
+        self.assertEqual("".join(pieces), run_on)
+        self.assertTrue(all(len(piece) <= self.gateway.BREEZE_INPUT_CHARS for piece in pieces))
+
+    def test_lane_drops_a_queued_render_whose_client_hung_up(self):
+        from scripts.voice_render_lane import RenderLane
+        lane, release, rendered = RenderLane(max_pending=4), threading.Event(), []
+
+        async def scenario():
+            running = asyncio.ensure_future(lane.admit(lambda: release.wait(5)))
+            await asyncio.sleep(0.05)
+            hung_up = asyncio.Event()
+
+            async def cancelled():
+                return hung_up.is_set()
+
+            queued = asyncio.ensure_future(lane.admit(lambda: rendered.append("queued"), cancelled=cancelled))
+            await asyncio.sleep(0.05)
+            hung_up.set()
+            with self.assertRaises(HTTPException) as dropped:
+                await queued
+            self.assertEqual(dropped.exception.status_code, 499)
+            # The slot comes back while the current render is still running.
+            self.assertEqual(lane.pending, 1)
+            release.set()
+            await running
+
+        asyncio.run(scenario())
+        lane.executor.submit(lambda: None).result(5)
+        self.assertEqual(rendered, [])
+
+    def test_lane_refuses_a_caller_that_already_hung_up_without_rendering(self):
+        from scripts.voice_render_lane import RenderLane
+        lane, rendered = RenderLane(max_pending=4), []
+
+        async def cancelled():
+            return True
+
+        async def scenario():
+            with self.assertRaises(HTTPException) as dropped:
+                await lane.admit(lambda: rendered.append("late"), cancelled=cancelled)
+            self.assertEqual(dropped.exception.status_code, 499)
+
+        asyncio.run(scenario())
+        lane.executor.submit(lambda: None).result(5)
+        self.assertEqual(rendered, [])
+
+    def test_lane_lets_a_started_render_finish_after_its_client_hangs_up(self):
+        from scripts.voice_render_lane import RenderLane
+        lane, started, release = RenderLane(max_pending=4), threading.Event(), threading.Event()
+
+        def render():
+            started.set()
+            release.wait(5)
+            return "cached"
+
+        async def cancelled():
+            return started.is_set()
+
+        async def scenario():
+            finishing = asyncio.ensure_future(lane.admit(render, cancelled=cancelled))
+            while not started.is_set():
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.3)
+            release.set()
+            self.assertEqual(await finishing, "cached")
+
+        asyncio.run(scenario())
 
     def test_model_loading_and_synthesis_run_on_the_same_thread(self):
         calls = {}
@@ -564,7 +706,8 @@ class FishAudioGatewayTests(unittest.TestCase):
     def test_pm2_start_removes_the_retired_process_before_fish_cutover(self):
         launcher = Path(__file__).with_name("start-pm2-ecosystem.cjs").read_text()
         self.assertIn('["delete", "pocket-tts"]', launcher)
-        self.assertIn('["start", "ecosystem.config.js"]', launcher)
+        # --update-env: a partial recreation must also refresh the apps it left registered.
+        self.assertIn('["start", "ecosystem.config.js", "--update-env"]', launcher)
 
 
 class MingRuntimeTests(unittest.TestCase):
@@ -628,6 +771,13 @@ class MingRuntimeTests(unittest.TestCase):
         text = ("A complete sentence must survive. " * 70)[:2000]
         fragments = self.runtime.split_for_budget(text, lambda value: list(value), 160)
         self.assertGreater(len(fragments), 1)
+        self.assertEqual(" ".join(fragments), " ".join(text.split()))
+        for fragment in fragments:
+            self.assertLess(len(fragment) + 160 + 96, 513)
+
+    def test_the_longest_voiced_reply_is_split_without_losing_content(self):
+        text = ("A complete sentence must survive. " * 400)[:12_000]
+        fragments = self.runtime.split_for_budget(text, lambda value: list(value), 160)
         self.assertEqual(" ".join(fragments), " ".join(text.split()))
         for fragment in fragments:
             self.assertLess(len(fragment) + 160 + 96, 513)

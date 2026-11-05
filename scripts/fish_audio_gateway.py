@@ -23,14 +23,15 @@ from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Annotated, Any
-from uuid import uuid4
 
 import numpy as np
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 try:
+    from scripts.voice_cache_janitor import CacheJanitor, cache_ttl_seconds
     from scripts.voice_erasure import AccountErasureRequest, VoiceErasureRegistry
+    from scripts.voice_gateway_common import atomic_write, read_idempotent_audio, safe_voice_id, validate_wav
     from scripts.voice_render_lane import RenderLane
     from scripts.ming_voice_runtime import (
         CAMPLUS_SHA256, MLX_AUDIO_VERSION, MODEL_ID as MING_MODEL_ID,
@@ -38,7 +39,9 @@ try:
         control_caption, validate_prompt_metadata,
     )
 except ModuleNotFoundError:
+    from voice_cache_janitor import CacheJanitor, cache_ttl_seconds
     from voice_erasure import AccountErasureRequest, VoiceErasureRegistry
+    from voice_gateway_common import atomic_write, read_idempotent_audio, safe_voice_id, validate_wav
     from voice_render_lane import RenderLane
     from ming_voice_runtime import (
         CAMPLUS_SHA256, MLX_AUDIO_VERSION, MODEL_ID as MING_MODEL_ID,
@@ -87,6 +90,10 @@ IDEMPOTENCY_DIR = Path(
 VOICE_MANIFEST_FORMAT = "idream_fish_audio_voice_reference_v1"
 IDEMPOTENCY_MANIFEST_FORMAT = "idream_fish_audio_idempotency_v1"
 IDEMPOTENCY_CACHE_MAGIC = b"IDREAM-FISH-IDEMPOTENCY-V1\n"
+# Must match Main's VOICE_MAX_INPUT_CHARS: the longest reply one clip can voice.
+MAX_SPEECH_CHARS = 12_000
+# Breeze renders one input with a fixed token budget and has no splitter of its own.
+BREEZE_INPUT_CHARS = 2_000
 MAX_REFERENCE_BYTES = 15 * 1024 * 1024
 MAX_REFERENCE_SECONDS = 30
 MIN_REFERENCE_BYTES = 1_024
@@ -106,6 +113,7 @@ if not LANGUAGE:
 VOICE_DIR.mkdir(parents=True, exist_ok=True)
 IDEMPOTENCY_DIR.mkdir(parents=True, exist_ok=True)
 erasure_registry = VoiceErasureRegistry(IDEMPOTENCY_DIR, IDEMPOTENCY_CACHE_MAGIC)
+cache_janitor = CacheJanitor(IDEMPOTENCY_DIR, idempotency_lock, cache_ttl_seconds())
 
 
 class DeliverySettings(BaseModel):
@@ -123,7 +131,7 @@ class DeliverySettings(BaseModel):
 
 class SpeechRequest(BaseModel):
     model: str = Field(default=MODEL_ID)
-    input: str = Field(min_length=1, max_length=2_000)
+    input: str = Field(min_length=1, max_length=MAX_SPEECH_CHARS)
     voice: str = Field(default=DEFAULT_VOICE, min_length=1, max_length=160)
     response_format: str = Field(default="wav")
     delivery: DeliverySettings = Field(default_factory=DeliverySettings)
@@ -175,7 +183,9 @@ def clear_reference_cache() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await render_lane.run(load_runtime_model)
+    cache_janitor.start()
     yield
+    cache_janitor.stop()
 
 
 app = FastAPI(
@@ -188,13 +198,6 @@ app = FastAPI(
 def authorize(authorization: str | None = Header(default=None)) -> None:
     if API_TOKEN and authorization != f"Bearer {API_TOKEN}":
         raise HTTPException(status_code=401, detail="Invalid Fish Audio API token")
-
-
-def safe_voice_id(value: str) -> str:
-    normalized = value.strip()
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{2,159}", normalized):
-        raise HTTPException(status_code=400, detail="Invalid voice_id")
-    return normalized
 
 
 def voice_audio_path(voice_id: str) -> Path:
@@ -323,20 +326,6 @@ def stored_voice_count() -> int:
     )
 
 
-def validate_wav(reference: bytes) -> float:
-    try:
-        with wave.open(io.BytesIO(reference), "rb") as wav:
-            frame_rate = wav.getframerate()
-            frames = wav.getnframes()
-            channels = wav.getnchannels()
-            sample_width = wav.getsampwidth()
-    except (EOFError, wave.Error) as error:
-        raise ValueError("Reference audio is not a valid WAV file") from error
-    if frame_rate <= 0 or frames <= 0 or channels not in (1, 2) or sample_width <= 0:
-        raise ValueError("Reference WAV has invalid audio metadata")
-    return frames / frame_rate
-
-
 def normalize_reference_audio(reference: bytes, filename: str) -> bytes:
     if reference.startswith(b"RIFF") and reference[8:12] == b"WAVE":
         duration = validate_wav(reference)
@@ -399,16 +388,6 @@ def normalize_reference_audio(reference: bytes, filename: str) -> bytes:
     return normalized
 
 
-def atomic_write(path: Path, content: bytes) -> None:
-    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    try:
-        temporary.write_bytes(content)
-        temporary.chmod(0o600)
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def speech_request_fingerprint(request: SpeechRequest) -> str:
     canonical = json.dumps(
         request.model_dump(mode="json"),
@@ -425,48 +404,6 @@ def idempotency_cache_path(idempotency_key: str) -> Path:
         raise HTTPException(status_code=400, detail="Invalid Idempotency-Key")
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
     return IDEMPOTENCY_DIR / f"{digest}.cache"
-
-
-def load_idempotent_audio(
-    cache_path: Path,
-    request_fingerprint: str,
-) -> bytes | None:
-    if not cache_path.is_file():
-        return None
-    try:
-        content = cache_path.read_bytes()
-        prefix_size = len(IDEMPOTENCY_CACHE_MAGIC) + 4
-        if not content.startswith(IDEMPOTENCY_CACHE_MAGIC) or len(content) <= prefix_size:
-            raise ValueError("invalid cache prefix")
-        manifest_size = struct.unpack(
-            ">I",
-            content[len(IDEMPOTENCY_CACHE_MAGIC) : prefix_size],
-        )[0]
-        manifest_end = prefix_size + manifest_size
-        if manifest_size < 2 or manifest_end >= len(content):
-            raise ValueError("invalid manifest size")
-        manifest = json.loads(content[prefix_size:manifest_end].decode("utf-8"))
-        audio = content[manifest_end:]
-    except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
-        raise HTTPException(
-            status_code=503,
-            detail="Stored speech idempotency result is invalid",
-        ) from error
-    if (
-        not isinstance(manifest, dict)
-        or manifest.get("format") != IDEMPOTENCY_MANIFEST_FORMAT
-        or not isinstance(manifest.get("request_fingerprint"), str)
-    ):
-        raise HTTPException(
-            status_code=503,
-            detail="Stored speech idempotency manifest is incompatible",
-        )
-    if manifest["request_fingerprint"] != request_fingerprint:
-        raise HTTPException(
-            status_code=409,
-            detail="Idempotency-Key was already used for a different request",
-        )
-    return audio
 
 
 def render_idempotent_wav(
@@ -488,10 +425,7 @@ def render_idempotent_wav(
     with idempotency_lock:
         erasure_registry.check(owner_hash, idempotency_key, request.voice)
         erasure_registry.check_cache_owner(cache_path, owner_hash)
-        replay = load_idempotent_audio(
-            cache_path,
-            request_fingerprint,
-        )
+        replay = read_idempotent_audio(cache_path, request_fingerprint, IDEMPOTENCY_CACHE_MAGIC, IDEMPOTENCY_MANIFEST_FORMAT)
         if replay is not None:
             erasure_registry.check(owner_hash, idempotency_key, request.voice)
             return replay, True
@@ -575,6 +509,28 @@ def require_generation_model(requested_model: str) -> None:
         )
 
 
+def split_for_breeze(text: str, limit: int = BREEZE_INPUT_CHARS) -> list[str]:
+    """Keep every word, cutting at sentence ends and only hard-cutting a run-on sentence.
+
+    Input up to the limit stays one piece, so it renders exactly as it was measured.
+    """
+    if len(text) <= limit:
+        return [text]
+    pieces: list[str] = []
+    pending = ""
+    for sentence in re.findall(r".+?(?:[。！？]|[.!?](?=\s|$)|$)\s*", text, flags=re.DOTALL):
+        if pending and len(pending) + len(sentence) > limit:
+            pieces.append(pending)
+            pending = ""
+        pending += sentence
+        while len(pending) > limit:
+            pieces.append(pending[:limit])
+            pending = pending[limit:]
+    if pending:
+        pieces.append(pending)
+    return [piece.strip() for piece in pieces if piece.strip()]
+
+
 def render_wav(request: SpeechRequest) -> bytes:
     require_generation_model(request.model)
     if not request.input.strip():
@@ -602,9 +558,11 @@ def render_wav(request: SpeechRequest) -> bytes:
                 raise HTTPException(status_code=502, detail=str(error)) from error
         else:
             # Preserve Breeze's measured no-CFG conditioning path and sampling.
-            results = list(
-                model.generate(
-                    text=request.input.strip(),
+            results = [
+                result
+                for piece in split_for_breeze(request.input.strip())
+                for result in model.generate(
+                    text=piece,
                     instruct=delivery_instruction(request.delivery),
                     ref_audio=ref_audio,
                     ref_text=manifest["ref_text"],
@@ -615,7 +573,7 @@ def render_wav(request: SpeechRequest) -> bytes:
                     max_tokens=1200,
                     stream=False,
                 )
-            )
+            ]
     if not results:
         raise HTTPException(status_code=502, detail="Voice model returned no audio")
     audio = np.concatenate(
@@ -683,13 +641,17 @@ async def health() -> JSONResponse:
 
 @app.post("/v1/audio/speech", dependencies=[Depends(authorize)])
 async def synthesize(
+    http_request: Request,
     request: SpeechRequest,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     request_id: str | None = Header(default=None, alias="X-Idream-Request-Id"),
     attempt_no: int | None = Header(default=None, alias="X-Idream-Attempt-No"),
     owner_hash: Annotated[str | None, Header(alias="X-Idream-Owner-Hash")] = None,
 ) -> Response:
-    return await render_lane.admit(speech_response, request, idempotency_key, request_id, attempt_no, owner_hash)
+    return await render_lane.admit(
+        speech_response, request, idempotency_key, request_id, attempt_no, owner_hash,
+        cancelled=http_request.is_disconnected,
+    )
 
 
 def speech_response(

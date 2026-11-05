@@ -22,9 +22,12 @@
 4. 接受时固定回复、provider、voice/profile version、delivery和账务条款；重试、租约接管和运营默认变化不得替换它们，费用不超接受上限。
 5. Main持久保存产物、交付与唯一usage/ledger fact后才播放；重复点击和刷新重播复用结果，不再次消费。
 6. provider、编码/存储失败或响应丢失须有明确状态与恢复；仅在provider可安全重放时接管。旧owner、旧reply或跨账号迟到结果不覆盖新事实。
-7. 消息内Play/loading/stop与错误/费用状态可用；余额、能力或权益不足由服务端给出准确恢复入口，已有合法交付仍可重播。
+7. 单条Clip最多朗读12000字符（覆盖最长的Story回复），超长时报价和合成都明确拒绝；价格不随长度变化，计划分钟按实际音频时长计入。`*动作*` 叙述不朗读。
+8. 消息内Play/loading/stop与错误/费用状态可用；余额、能力或权益不足由服务端给出准确恢复入口，已有合法交付仍可重播。
 
 具体输入、single-flight、接受报价与provider恢复协议由 [Voice Clip实现](../../packages/main/src/server/modules/ourdream/voice-clip.ts) 与 [报价实现](../../packages/main/src/server/modules/ourdream/voice-clip-quote.ts) 承载，本文不维护第二套API字段表。
+
+网关的 `.data/*/idempotency` 只是重试缓存：交付的 MP3 由 Main 持久保存，条目在 `VOICE_CACHE_TTL_DAYS`（默认 7 天，0 关闭）内未被使用即由后台清理，之后的同 key 重试重新渲染且不重复计费；擦除标记不受影响。系统声音不做跨用户内容寻址缓存：缓存里是用户的私人回复文本，共享条目无法按账号擦除，且逐字相同的回复几乎不存在。例外：固定在已退役模型上的请求只能从缓存重放，条目过期后这类尚未持久交付的请求会失败。
 
 ## 3. 角色声音身份
 
@@ -50,6 +53,7 @@
 - 同一用户的活跃Call和控制tab有唯一租约；静音、interrupt、断网与resume不能由旧tab抢占或重复提交utterance。
 - 录音转写、Chat回复和TTS分别绑定精确Turn/attempt；只有已发送且未被替换的回复可成为通话声音。
 - 停止、断开、超时、预算或时长到限时终止新接纳，处理中请求收敛；重连不把已经失败/取消的语音轮自动变成新付费请求。
+- interrupt 后下一轮不等待被取消的渲染；排队中的渲染被丢弃且不计费。已在模型上运行的渲染无法中止，只占用网关至其结束。
 - 结束后持久状态、实际连接/音频时长与唯一结算可刷新读取。连接时间不当TTS用量，生成失败不虚增交付；Call复用Clip账务不产生第二次消费。
 
 具体Call状态、lease与恢复由 [Voice Call实现](../../packages/main/src/server/modules/chat/voice-call.ts) 承载。
@@ -58,7 +62,7 @@
 
 | 检查 | 必须得到的证据 |
 |---|---|
-| 配置与运行 | 目标环境provider/语言/模型依赖固定，runtime健康、目录和精确声音可用；相关PM2进程ownership正确 |
+| 配置与运行 | 目标环境显式设置`VOICE_PROVIDER`（未设置按mock处理，不启动语音运行时）；provider/语言/模型依赖固定，runtime健康、目录和精确声音可用；Pocket `/health`不是`degraded`；相关PM2进程ownership正确 |
 | 身份闭环 | 创建候选→试听→明确激活→真实Clip/Call使用；默认切换和候选runtime故障不改旧请求声音 |
 | Clip完整链 | quote→明确Play→真实合成→自然播放结束→刷新重播；分钟内、分钟耗尽和免费按币路径分别唯一计量 |
 | 输入完整链 | 实际麦克风录音→转写→编辑/取消→Send；角色/草稿/账号变化、资源释放与不提前计量均验证 |

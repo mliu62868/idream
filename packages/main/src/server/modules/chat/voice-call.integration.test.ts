@@ -551,6 +551,46 @@ describe("canonical Call recording, recovery and settlement", () => {
       if (action !== "end") await run(f, "POST", `/${call.id}/end`, { token: cleanupToken });
     }
   });
+  it("frees the next spoken turn from an interrupted render and stops that render on the owner's next heartbeat", async () => {
+    const f = await fixture(), call = await start(f), id = await utterance(f, call);
+    let entered!: () => void, providerSignal!: AbortSignal;
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    synthesize.mockImplementationOnce(async input => {
+      providerSignal = input.signal!;
+      entered();
+      await new Promise<void>(resolve => input.signal!.addEventListener("abort", () => resolve(), { once: true }));
+      return { ok: false, error: { code: "voice_cancelled", message: "Closed", retryable: true } };
+    });
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const doomed = run(f, "POST", `/${call.id}/utterances/${id}/voice`, { token: call.leaseToken });
+    try {
+      await Promise.race([ready, doomed.then(() => { throw new Error("The doomed render did not start"); })]);
+      expect((await run(f, "POST", `/${call.id}/interrupt`, { token: call.leaseToken })).response.status).toBe(200);
+      const request = await prisma.voiceClipRequest.findFirstOrThrow({ where: { voiceCallUtteranceId: id } });
+      expect(request).toMatchObject({ status: "running", leaseOwner: expect.any(String) });
+      expect(request.cancelRequestedAt).not.toBeNull();
+      expect(providerSignal.aborted).toBe(false);
+
+      // The doomed render is still in flight, and the next turn does not wait for it.
+      const next = await utterance(f, call);
+      const delivered = await run(f, "POST", `/${call.id}/utterances/${next}/voice`, { token: call.leaseToken });
+      expect(delivered.response.status, JSON.stringify(delivered.value)).toBe(201);
+      expect(providerSignal.aborted).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      const stopped = await doomed;
+      expect(stopped.response.status, JSON.stringify(stopped.value)).toBe(410);
+      expect(providerSignal.aborted).toBe(true);
+      expect(await prisma.voiceClipRequest.findUniqueOrThrow({ where: { id: request.id } })).toMatchObject({
+        status: "failed", errorCode: "voice_call_delivery_revoked", leaseOwner: null, mediaAssetId: null,
+      });
+      expect(await prisma.voiceUsageFact.count({ where: { requestId: request.id } })).toBe(0);
+      expect(await dreamcoinBalance(f.userId)).toBe(18);
+    } finally {
+      await vi.advanceTimersByTimeAsync(10_000); await doomed;
+      await run(f, "POST", `/${call.id}/end`, { token: call.leaseToken });
+    }
+  });
   it("settles a failed ordinary Play retried by Call inside its budget without changing the original request ownership", async () => {
     const f = await fixture(), call = await start(f, 2), id = await utterance(f, call);
     const linked = await prisma.voiceCallUtterance.findUniqueOrThrow({ where: { id } });

@@ -163,9 +163,13 @@ function positiveInstanceCount(value, fallback = 1) {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+// Mirrors DEFAULT_VOICE_PROVIDER in packages/shared/src/contracts/env.ts. An unset
+// provider used to start Pocket here while Main ran on mock and never called it.
+const DEFAULT_VOICE_PROVIDER = "mock";
+
 function configuredVoiceRuntimeTargets(environment) {
   const configured = [
-    environment.VOICE_PROVIDER ?? "pocket-tts",
+    environment.VOICE_PROVIDER ?? DEFAULT_VOICE_PROVIDER,
     environment.VOICE_IDENTITY_PROVIDER,
     // Pocket still serves persisted preset profiles and the creator catalog
     // when Ming/Breeze owns the default speech and cloning route.
@@ -335,6 +339,7 @@ function matchesRuntimeProcessDefinition(process, topology, options = {}) {
 module.exports = {
   RUNTIME_CERTIFICATION,
   assertRuntimeMode,
+  DEFAULT_VOICE_PROVIDER,
   configuredVoiceRuntimeTargets,
   createRuntimeTopology,
   matchesRuntimeProcessDefinition,

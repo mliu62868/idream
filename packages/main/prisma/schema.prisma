@@ -359,7 +359,9 @@ model VoiceClipRequest {
   attemptNo          Int              @default(1)
   leaseOwner         String?
   leaseExpiresAt     DateTime?
+  cancelRequestedAt  DateTime?        // A cancelled Call turn: stops the owner on its next heartbeat and frees the user's budget turn
   activeArtifactOwners String[]       @default([]) // PUT/settlement owners survive lease takeover until their I/O exits
+  artifactWriteDeadlineAt DateTime?   // No registered owner can still be writing after this instant; null with owners proves nothing
   mediaAssetId       String?
   provider           String?
   providerRequestId  String?

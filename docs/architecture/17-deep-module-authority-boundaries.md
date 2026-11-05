@@ -612,7 +612,7 @@ admission/direct producer，后停 Gen worker，finalizer 最后。`pm2 jlist` �
 receipt 使用独立 namespace，不能被旧 generic no-op receipt 阻断；Chat 前滚时把旧 `consumed`
 receipt 视为可修复证据，只有专属 Main ACK 后才写 `consumed_v2`。
 
-Chat ACK 也不代替媒体擦除完成。Main 保留所有者映射，直到生成执行、Main 语音写入与视频合成均已收敛、私有 Blob 删除回执完成，以及每个历史 pinned TTS provider 的擦除回执完成。租约过期允许受控恢复，不能证明旧调用已经停止 I/O；取消或接班后的产品终态也不能自动抹掉旧写入者的执行证据。新接纳、恢复、写入和交付须在 User 根锁下重新验证账号权威，数据库锁不跨 provider/Blob I/O。
+Chat ACK 也不代替媒体擦除完成。Main 保留所有者映射，直到生成执行、Main 语音写入与视频合成均已收敛、私有 Blob 删除回执完成，以及每个历史 pinned TTS provider 的擦除回执完成。租约过期允许受控恢复，不能证明旧调用已经停止 I/O；取消或接班后的产品终态也不能自动抹掉旧写入者的执行证据。新接纳、恢复、写入和交付须在 User 根锁下重新验证账号权威，数据库锁不跨 provider/Blob I/O。语音崩溃后的收敛证据：写入者在 PUT 前持久登记硬截止时间（`artifactWriteDeadlineAt`），到期前自行中止 PUT；账号关闭后，未登记写入的请求在租约过期后即可终止（其写入授权已被 User 根锁拒绝），已登记的写入者须等截止时间过后才视为退出，没有截止时间的登记永远阻塞。残留文件仍由 canonical request key 枚举删除。
 
 ComfyUI runner 的 input/output 工作副本（用户参考图、编辑遮罩和带 prompt 元数据的输出）无法从账号映射到文件，不进入擦除枚举；生产环境由 runner 启动器按 24 小时保留期清理，所以这一层的承诺是「擦除完成后至多 24 小时内消失」，而不是即时删除。runner 内存中的 `/history` 同样含 prompt，随进程重启清空。
 

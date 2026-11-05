@@ -2573,3 +2573,31 @@ test("ASR recreation refreshes inherited environment in retained development app
     "ownership:ready", "generation-cutover:resume",
   ]);
 });
+
+test("an unset VOICE_PROVIDER means the same thing to every process", () => {
+  const { DEFAULT_VOICE_PROVIDER, configuredVoiceRuntimeTargets } = require("./runtime-topology.cjs");
+  const contract = fs.readFileSync(path.join(__dirname, "../packages/shared/src/contracts/env.ts"), "utf8");
+  assert.equal(contract.match(/DEFAULT_VOICE_PROVIDER = "([^"]+)"/)?.[1], DEFAULT_VOICE_PROVIDER);
+  assert.deepEqual(configuredVoiceRuntimeTargets({}), []);
+  // A configured environment keeps exactly the runtimes it had.
+  assert.deepEqual(configuredVoiceRuntimeTargets({ VOICE_PROVIDER: "pocket-tts" }), ["pocket-tts"]);
+  assert.deepEqual([...configuredVoiceRuntimeTargets({ VOICE_PROVIDER: "fish-audio" })].sort(), ["fish-audio", "pocket-tts"]);
+});
+
+test("the ASR gateway listens where Main is told to reach it unless a port is set", () => {
+  const previous = { url: process.env.ASR_API_URL, port: process.env.ASR_PORT, host: process.env.ASR_HOST };
+  const restore = (key, value) => { if (value === undefined) delete process.env[key]; else process.env[key] = value; };
+  try {
+    process.env.ASR_API_URL = "http://127.0.0.2:18064";
+    delete process.env.ASR_HOST;
+    delete process.env.ASR_PORT;
+    let asr = byName(loadConfig("development", { ASR_PROVIDER: "mlx-whisper" }), "asr");
+    assert.equal(asr.env.ASR_PORT, "18064");
+    assert.equal(asr.env.ASR_HOST, "127.0.0.2");
+    process.env.ASR_PORT = "19999";
+    asr = byName(loadConfig("development", { ASR_PROVIDER: "mlx-whisper" }), "asr");
+    assert.equal(asr.env.ASR_PORT, "19999");
+  } finally {
+    restore("ASR_API_URL", previous.url); restore("ASR_PORT", previous.port); restore("ASR_HOST", previous.host);
+  }
+});

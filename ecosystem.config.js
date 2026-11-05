@@ -28,6 +28,7 @@ const { existsSync, readFileSync } = require("node:fs");
 const path = require("path");
 const {
   assertRuntimeMode,
+  DEFAULT_VOICE_PROVIDER,
   createRuntimeTopology,
   runtimeIdentityEnvironment,
 } = require("./scripts/runtime-topology.cjs");
@@ -89,6 +90,7 @@ const sharedInternalEnv = internalToken
 const mainEnvPath = dir("packages/main/.env");
 const mainEnvValue = (key, fallback) =>
   process.env[key] ?? localEnvValue(mainEnvPath, key) ?? fallback;
+const asrApiUrl = new URL(mainEnvValue("ASR_API_URL", "http://127.0.0.1:8064"));
 const fishAudioApiUrl = new URL(
   mainEnvValue("FISH_AUDIO_API_URL", "http://127.0.0.1:8062/v1"),
 );
@@ -100,7 +102,7 @@ const pocketTtsApiUrl = new URL(
 const pocketTtsApiToken = mainEnvValue("POCKET_TTS_API_TOKEN");
 const topologyEnvironment = {
   ...process.env,
-  VOICE_PROVIDER: mainEnvValue("VOICE_PROVIDER", "pocket-tts"),
+  VOICE_PROVIDER: mainEnvValue("VOICE_PROVIDER", DEFAULT_VOICE_PROVIDER),
   VOICE_IDENTITY_PROVIDER: mainEnvValue("VOICE_IDENTITY_PROVIDER"),
   ASR_PROVIDER: mainEnvValue("ASR_PROVIDER", "disabled"),
 };
@@ -149,8 +151,11 @@ module.exports = {
       ...runtimeProcess("asr"),
       env: {
         ...runtimeIdentityEnv,
-        ASR_HOST: mainEnvValue("ASR_HOST", "127.0.0.1"),
-        ASR_PORT: mainEnvValue("ASR_PORT", "8064"),
+        ASR_HOST: mainEnvValue("ASR_HOST", asrApiUrl.hostname),
+        ASR_PORT: mainEnvValue(
+          "ASR_PORT",
+          asrApiUrl.port || (asrApiUrl.protocol === "https:" ? "443" : "80"),
+        ),
         ASR_API_TOKEN: mainEnvValue("ASR_API_TOKEN"),
         ASR_TEMP_DIR: mainEnvValue("ASR_TEMP_DIR", dir(".data/asr/audio")),
         HF_HUB_OFFLINE: "1",
@@ -206,6 +211,7 @@ module.exports = {
           "FISH_AUDIO_IDEMPOTENCY_DIR",
           dir(".data/fish-audio/idempotency"),
         ),
+        VOICE_CACHE_TTL_DAYS: mainEnvValue("VOICE_CACHE_TTL_DAYS", "7"),
         HF_HUB_OFFLINE: "1",
         ...(fishAudioApiToken
           ? { FISH_AUDIO_API_TOKEN: fishAudioApiToken }
@@ -244,6 +250,7 @@ module.exports = {
           "POCKET_TTS_IDEMPOTENCY_DIR",
           dir(".data/pocket-tts/idempotency"),
         ),
+        VOICE_CACHE_TTL_DAYS: mainEnvValue("VOICE_CACHE_TTL_DAYS", "7"),
         ...(pocketTtsApiToken
           ? { POCKET_TTS_API_TOKEN: pocketTtsApiToken }
           : {}),

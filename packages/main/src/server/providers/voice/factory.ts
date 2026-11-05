@@ -39,7 +39,6 @@ export function createVoicePortsForKey(
         model: env.POCKET_TTS_MODEL,
         language: env.POCKET_TTS_LANGUAGE,
         defaultVoiceId: env.POCKET_TTS_DEFAULT_VOICE_ID,
-        maxInputChars: env.PIPELINE_VOICE_MAX_INPUT_CHARS,
         timeoutMs: env.POCKET_TTS_TIMEOUT_MS,
       });
       return { clip: adapter, identity: adapter };
@@ -51,7 +50,6 @@ export function createVoicePortsForKey(
         model: env.FISH_AUDIO_MODEL,
         language: env.FISH_AUDIO_LANGUAGE,
         defaultVoiceId: env.FISH_AUDIO_DEFAULT_VOICE_ID,
-        maxInputChars: env.PIPELINE_VOICE_MAX_INPUT_CHARS,
         timeoutMs: env.FISH_AUDIO_TIMEOUT_MS,
       });
       return { clip: adapter, identity: adapter };

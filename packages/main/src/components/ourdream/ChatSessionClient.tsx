@@ -655,7 +655,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     setVoicePreparingIds((current) => new Set(current).add(messageId));
     const request = (async (): Promise<VoiceClipRequestResult> => {
       try {
-        const body = { characterId: sourceCharacterId, messageId, sessionId: sourceSessionId, text, intent: "play" };
+        const body = { characterId: sourceCharacterId, messageId, sessionId: sourceSessionId, intent: "play" };
         const headers = { "content-type": "application/json", "x-idream-viewer-scope": receiptContext.persistence.ownerScope };
         if (!acceptedQuoteToken) {
           const quoted = await fetchForSession("/api/v1/generation/voice/quote", {

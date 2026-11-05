@@ -23,18 +23,18 @@ import { providers } from "@/server/providers";
 import type { VoiceClipPort } from "@/server/providers/types";
 import { createVoiceClipPortForKey } from "@/server/providers/voice/factory";
 import { audioFileExtension, voiceArtifactKey, voiceProviderIdempotencyKey } from "@/server/providers/voice/idempotency";
+import { VOICE_MAX_INPUT_CHARS, voiceSpeechText, voiceSynthesisTimeoutMs } from "@/server/providers/voice/speech-text";
 import { encodeVoiceClipMp3 } from "@/server/providers/voice/transcode";
 import { acceptVoiceClipQuote, signVoiceClipQuote } from "./voice-clip-quote";
 import { chatVoiceAuthority } from "@/server/modules/chat/turn-ledger";
 
 // INVARIANT: 只朗读 Main 账本里已发送的回复。sessionId 必填、朗读文本只取 Chat 权威
-// 文本；客户端 text 仅作兼容字段，不进入合成——否则这个接口就是任意文本的 TTS，
-// 能用他人角色（含克隆声音）说任何话。
+// 文本；请求体里的 text 不被读取——否则这个接口就是任意文本的 TTS，能用他人角色
+// （含克隆声音）说任何话。
 const voiceClipSchema = z.object({
   characterId: z.string().min(1),
   messageId: z.string().min(1),
   sessionId: z.string().min(1),
-  text: z.string().trim().max(2_000).optional(),
   intent: z.enum(["play", "prewarm"]).default("play"),
   quoteToken: z.string().min(1).max(8192).nullish(),
 });
@@ -50,7 +50,7 @@ export const voiceExecutionAuthoritySchema = z.discriminatedUnion("kind", [
 export const voiceClipSynthesisPayloadSchema = z
   .object({
     version: z.literal(1),
-    text: z.string().trim().min(1).max(2_000),
+    text: z.string().trim().min(1).max(VOICE_MAX_INPUT_CHARS),
     sessionId: z.string().min(1).nullable(),
     intent: z.enum(["play", "prewarm"]),
     sceneVersion: z.number().int().nonnegative().optional(),
@@ -110,10 +110,31 @@ export const pinnedVoiceProviderPayloadSchema = z
     }
   });
 
-const VOICE_CLIP_CACHE_VERSION = 8;
+// SPEC: 9 marks clips whose text went through voiceSpeechText.
+// INVARIANT: 8 stays replayable. Those requests keep their original words (see
+//   resolveVoiceClipInput), so rendering one again could only reproduce the same audio,
+//   at the cost of a render, and changing its words under the same provider key would
+//   make the gateway refuse it as a different request.
+const VOICE_CLIP_CACHE_VERSION = 9;
+const REPLAYABLE_VOICE_CLIP_VERSIONS: ReadonlySet<unknown> = new Set([8, VOICE_CLIP_CACHE_VERSION]);
 // Each poll is a transaction that locks the user, session and turn rows, and renders
 // take seconds. At 25ms one waiter issued about 11k write transactions per render.
 const VOICE_CLIP_POLL_MS = 500;
+// SPEC: the lease proves an owner is alive; it says nothing about how long a render
+//   may take. It used to be the whole provider timeout + 30s, so a dead owner held
+//   the user's budget turn, and their other Plays, for up to 270s.
+// INVARIANT: three missed beats before takeover, so one slow database round trip
+//   cannot duplicate a live owner's render. Same-key replay makes a wrong takeover
+//   wasteful rather than unsafe.
+const VOICE_CLIP_LEASE_MS = 30_000;
+const VOICE_CLIP_HEARTBEAT_MS = 10_000;
+// SPEC: a registered writer has a durable bound, because erasure cannot wait forever on
+//   an owner that crashed mid-upload and a lease timeout does not show its PUT stopped.
+// INVARIANT: the owner refuses to start, and aborts, its PUT at the budget. The settle
+//   margin outlives bytes the object store had already received and clock skew between
+//   hosts. A process frozen mid-PUT cannot resume it: the store drops the idle connection.
+const VOICE_ARTIFACT_PUT_BUDGET_MS = 120_000;
+const VOICE_ARTIFACT_WRITE_SETTLE_MS = 60_000;
 
 type VoiceCharacter = {
   id: string;
@@ -174,11 +195,15 @@ async function resolveVoiceClipInput(auth: AuthCtx, input: unknown) {
   if (messageAuthority.characterId !== body.characterId) {
     throw Errors.conflict("Voice message belongs to another Character");
   }
-  const authoritativeText = messageAuthority.text;
+  const authoritativeText = messageAuthority.text.trim();
   const authoritativeScene = messageAuthority.scene ?? null;
+  const spokenText = voiceSpeechText(authoritativeText);
+  if (spokenText.length > VOICE_MAX_INPUT_CHARS) {
+    throw Errors.badRequest("This reply is too long to play as a voice clip", { reason: "voice_text_too_long", limit: VOICE_MAX_INPUT_CHARS });
+  }
   const synthesisPayload = voiceClipSynthesisPayloadSchema.parse({
     version: 1,
-    text: authoritativeText,
+    text: spokenText,
     sessionId: body.sessionId,
     intent: body.intent,
     sceneVersion: messageAuthority.sceneVersion ?? 0,
@@ -196,9 +221,19 @@ async function resolveVoiceClipInput(auth: AuthCtx, input: unknown) {
   };
   const replyAttempt = z.number().int().positive().parse(messageAuthority.attempt);
   const requestFingerprint = canonicalJsonHash({
+    ...legacyFingerprintInput, text: spokenText, schemaVersion: "voice-clip-request-v2", replyAttempt,
+  });
+  // A request made before narration was left out was fingerprinted over the raw reply.
+  // It keeps those words: the gateway's key is already bound to them.
+  const rawRequestFingerprint = canonicalJsonHash({
     ...legacyFingerprintInput, schemaVersion: "voice-clip-request-v2", replyAttempt,
   });
-  return { user, body, synthesisPayload, replyAttempt, requestFingerprint, legacyRequestFingerprint: canonicalJsonHash(legacyFingerprintInput) };
+  return { user, body, synthesisPayload, replyAttempt, requestFingerprint, rawRequestFingerprint, authoritativeText, legacyRequestFingerprint: canonicalJsonHash(legacyFingerprintInput) };
+}
+
+function pinnedSynthesisPayload(input: Awaited<ReturnType<typeof resolveVoiceClipInput>>, existing: Pick<VoiceClipRequest, "requestFingerprint"> | null) {
+  const keepsRawText = existing !== null && existing.requestFingerprint !== input.requestFingerprint;
+  return keepsRawText ? { ...input.synthesisPayload, text: input.authoritativeText } : input.synthesisPayload;
 }
 
 async function existingVoiceRequest(input: Awaited<ReturnType<typeof resolveVoiceClipInput>>) {
@@ -210,7 +245,8 @@ async function existingVoiceRequest(input: Awaited<ReturnType<typeof resolveVoic
   // and immutable fingerprint. New requests always pin the reply attempt.
   const matchesLegacy = existing?.id === legacyVoiceRequestId(input.user.id, input.body.messageId) &&
     existing.requestFingerprint === input.legacyRequestFingerprint;
-  if (existing && ((!matchesLegacy && existing.requestFingerprint !== input.requestFingerprint) || existing.characterId !== input.body.characterId)) {
+  const matchesCurrent = existing?.requestFingerprint === input.requestFingerprint || existing?.requestFingerprint === input.rawRequestFingerprint;
+  if (existing && ((!matchesLegacy && !matchesCurrent) || existing.characterId !== input.body.characterId)) {
     throw Errors.conflict("Voice message id is bound to a different synthesis request", { requestId: existing.id });
   }
   if (existing?.errorCode === "provider_outcome_unknown") {
@@ -382,15 +418,18 @@ export type VoiceClipResult = ReturnType<typeof voiceClipResponse> | ReturnType<
 // Both playback and Call cross this interface with a resolved actor and input.
 // HTTP decoding/encoding stays at their routes; reply ownership, accepted price,
 // provider identity, leases and atomic delivery/settlement stay here.
-export async function createVoiceClip(auth: AuthCtx, bodyInput: unknown, deps: VoiceClipDependencies, authority?: VoiceClipExecutionAuthority): Promise<VoiceClipResult> {
+// `signal` is the caller's HTTP connection. Nobody is left to hear the clip once it
+// aborts, so work that has not reached the provider stops and is not charged.
+export async function createVoiceClip(auth: AuthCtx, bodyInput: unknown, deps: VoiceClipDependencies, authority?: VoiceClipExecutionAuthority, signal?: AbortSignal): Promise<VoiceClipResult> {
   const input = await resolveVoiceClipInput(auth, bodyInput);
-  const { user, body, synthesisPayload, replyAttempt } = input;
+  const { user, body, replyAttempt } = input;
   // A Call's accepted utterance keeps its original reply version even when a
   // different tab completes a regeneration during the Call's budget lookup.
   if (authority && authority.replyAttempt !== replyAttempt) {
     throw Errors.conflict("This spoken reply changed or is not ready");
   }
   const existing = await existingVoiceRequest(input);
+  const synthesisPayload = pinnedSynthesisPayload(input, existing);
   const requestFingerprint = existing?.requestFingerprint ?? input.requestFingerprint;
   if (authority && existing && canonicalJsonHash(existing.providerPayload) !== canonicalJsonHash(authority.providerPayload)) {
     throw Errors.conflict("This reply already has a different pinned voice identity");
@@ -525,6 +564,7 @@ export async function createVoiceClip(auth: AuthCtx, bodyInput: unknown, deps: V
     billingAuthority,
     providerPayload: proposedProviderPayload,
     callAuthority: authority,
+    signal,
   });
   if (claim.kind === "replay") {
     return replayVoiceClip(claim.request, claim.asset, synthesisPayload, authority);
@@ -541,6 +581,7 @@ export async function createVoiceClip(auth: AuthCtx, bodyInput: unknown, deps: V
     prewarming: claimedSynthesisPayload.intent === "prewarm",
     entitlements,
     overflowCost,
+    signal,
   });
 }
 
@@ -691,10 +732,8 @@ export async function reclaimExpiredVoiceClip(input: {
     data: {
       attemptNo: existing.attemptNo + 1,
       leaseOwner,
-      leaseExpiresAt: new Date(
-        claimedAt.getTime() +
-          voiceClipLeaseMs(providerPayload.data.providerKey),
-      ),
+      leaseExpiresAt: new Date(claimedAt.getTime() + VOICE_CLIP_LEASE_MS),
+      cancelRequestedAt: null,
       mediaAssetId: null,
       errorCode: null,
       error: Prisma.DbNull,
@@ -745,7 +784,7 @@ export async function reclaimExpiredVoiceClip(input: {
   };
 }
 
-async function executeOwnedVoiceClaim(input: {
+type OwnedVoiceClaimInput = {
   readonly claim: Extract<VoiceRequestClaim, { kind: "owner" }>;
   readonly user: { readonly id: string };
   readonly character: VoiceCharacter;
@@ -755,7 +794,59 @@ async function executeOwnedVoiceClaim(input: {
   readonly overflowCost: number;
   readonly onSuccessCommit?: VoiceClipSuccessCommit;
   readonly voiceProvider?: VoiceClipPort;
-}): Promise<VoiceClipResult> {
+  readonly signal?: AbortSignal;
+};
+
+// Marks the stop as ours; any other error raised during an abort keeps its meaning.
+class VoiceExecutionStopped extends Error {}
+
+// SPEC: the heartbeat runs from claim to terminal state and covers the synthesis,
+//   encoding, upload and commit that follow. A beat that matches nothing means this
+//   owner was replaced or its Call turn was cancelled, possibly from another process,
+//   so it aborts the provider request instead of finishing a render nobody wants.
+// INTENT: a failed beat proves nothing about the row. The owner keeps working, and if
+//   the outage outlasts the lease a later owner takes over through the normal CAS.
+function holdVoiceLease(claim: Extract<VoiceRequestClaim, { kind: "owner" }>, connection?: AbortSignal) {
+  const revoked = new AbortController();
+  let renewing: Promise<void> | null = null;
+  const timer = setInterval(() => {
+    if (renewing) return;
+    renewing = prisma.voiceClipRequest.updateMany({
+      where: { id: claim.request.id, status: "running", attemptNo: claim.request.attemptNo, leaseOwner: claim.leaseOwner, cancelRequestedAt: null },
+      data: { leaseExpiresAt: new Date(Date.now() + VOICE_CLIP_LEASE_MS) },
+    }).then(({ count }) => {
+      if (count !== 1) revoked.abort();
+    }).catch(error => {
+      logger.warn({ error, voiceClipRequestId: claim.request.id }, "voice lease heartbeat failed");
+    }).finally(() => { renewing = null; });
+  }, VOICE_CLIP_HEARTBEAT_MS);
+  timer.unref?.();
+  return {
+    signal: connection ? AbortSignal.any([connection, revoked.signal]) : revoked.signal,
+    failureCode: () => revoked.signal.aborted ? "voice_call_delivery_revoked" : "voice_client_disconnected",
+    async release() { clearInterval(timer); await renewing; },
+  };
+}
+
+async function executeOwnedVoiceClaim(input: OwnedVoiceClaimInput): Promise<VoiceClipResult> {
+  const lease = holdVoiceLease(input.claim, input.signal);
+  try {
+    return await renderOwnedVoiceClaim({ ...input, signal: lease.signal });
+  } catch (cause) {
+    if (!(cause instanceof VoiceExecutionStopped)) throw cause;
+    // The CAS leaves a row alone once a later owner has taken it over.
+    const code = lease.failureCode();
+    await failOwnedVoiceRequest(input.claim, code, "Stopped before the provider returned audio").catch(error => logger.error(
+      { error, voiceClipRequestId: input.claim.request.id },
+      "stopped voice clip request could not be persisted",
+    ));
+    throw Errors.gone("Voice playback stopped; no audio was delivered or charged", { reason: code });
+  } finally {
+    await lease.release();
+  }
+}
+
+async function renderOwnedVoiceClaim(input: OwnedVoiceClaimInput): Promise<VoiceClipResult> {
   const {
     claim,
     user,
@@ -763,6 +854,7 @@ async function executeOwnedVoiceClaim(input: {
     body,
     prewarming,
     onSuccessCommit,
+    signal,
   } = input;
   const billing = storedVoiceBilling(claim.request);
   const entitlements = billing
@@ -804,6 +896,7 @@ async function executeOwnedVoiceClaim(input: {
     allowanceWindowStartsAt,
     providerKey: providerPayload.providerKey,
     synthesisPayload: body,
+    signal,
   });
   if (budgetDecision.kind === "prewarm_skipped") {
     return voicePrewarmSkipped(claim.request.messageId, "allowance_exhausted");
@@ -830,10 +923,14 @@ async function executeOwnedVoiceClaim(input: {
     providerIdempotencyKey,
     synthesisPayload: body,
   });
+  if (signal?.aborted) throw new VoiceExecutionStopped();
   // A transport exception propagates as-is: the reservation stays pinned, so
   // re-sending the same provider key returns the original synthesis rather than
   // leaving an outcome nobody can resolve. There used to be a catch here that
   // quarantined the request, because one adapter could not be replayed.
+  // INTENT: an abort reaches the gateway as a closed connection, which drops a render
+  // still queued there. One already on MLX cannot be stopped and lands in the gateway
+  // cache, so a retry of this key replays it instead of rendering again.
   const result = await voiceProvider.synthesize({
     ownerId: user.id,
     requestId: claim.request.id,
@@ -845,8 +942,15 @@ async function executeOwnedVoiceClaim(input: {
     tone: providerPayload.tone,
     delivery: providerPayload.delivery,
     scene: body.scene ?? null,
+    signal,
+  }).catch((cause: unknown) => {
+    if (signal?.aborted) throw new VoiceExecutionStopped();
+    throw cause;
   });
+  // A provider that returned audio is an immutable usage fact even after an abort,
+  // so success always continues to the commit, which decides delivery and charge.
   if (!result.ok) {
+    if (signal?.aborted) throw new VoiceExecutionStopped();
     await failOwnedVoiceRequest(claim, result.error.code, result.error);
     throw Errors.internal("Voice synthesis failed", result.error);
   }
@@ -865,12 +969,20 @@ async function executeOwnedVoiceClaim(input: {
   // Persist this I/O owner's lifetime independently of lease/status takeover.
   // Erasure waits even after another owner delivers. No lock spans the upload;
   // a stale HTTP authentication snapshot is not upload permission.
-  await authorizeVoiceArtifactWrite(claim);
+  const putDeadline = await authorizeVoiceArtifactWrite(claim);
   try {
+    // A process that froze after registering must not begin a PUT once erasure may
+    // already have treated it as gone, so the budget is checked as well as enforced.
+    const putBudgetMs = putDeadline - Date.now();
+    if (putBudgetMs <= 0) {
+      await failOwnedVoiceRequest(claim, "voice_artifact_write_expired", "Registered too long before the upload could start");
+      throw Errors.conflict("Voice artifact write budget expired before upload", { requestId: claim.request.id });
+    }
     const stored = await providers.blob.putPrivate({
       key: storageKey,
       body: artifact.body,
       contentType: artifact.contentType,
+      signal: AbortSignal.timeout(putBudgetMs),
     });
     if (!stored.ok) {
       await failOwnedVoiceRequest(claim, stored.error.code, stored.error);
@@ -1229,9 +1341,11 @@ async function authorizeVoiceSynthesisTurn(input: {
   allowanceWindowStartsAt?: Date;
   providerKey: z.infer<typeof pinnedVoiceProviderPayloadSchema>["providerKey"];
   synthesisPayload: VoiceClipSynthesisPayload;
+  signal?: AbortSignal;
 }): Promise<Exclude<VoiceSynthesisBudgetDecision, { kind: "wait" }>> {
   const deadline = Date.now() + voiceClipWaitMs(input.providerKey);
   while (Date.now() <= deadline) {
+    if (input.signal?.aborted) throw new VoiceExecutionStopped();
     const now = new Date();
     const decision = await prisma.$transaction(async (tx) => {
       const userActive = await lockUser(tx, input.userId);
@@ -1274,6 +1388,8 @@ async function authorizeVoiceSynthesisTurn(input: {
           status: "running",
           leaseOwner: { not: null },
           leaseExpiresAt: { gt: now },
+          // A cancelled Call turn is doomed; its render must not hold the next one back.
+          cancelRequestedAt: null,
           OR: [
             { startedAt: { lt: owned.startedAt } },
             { startedAt: owned.startedAt, id: { lt: owned.id } },
@@ -1282,19 +1398,7 @@ async function authorizeVoiceSynthesisTurn(input: {
         select: { id: true },
         orderBy: [{ startedAt: "asc" }, { id: "asc" }],
       });
-      if (earlier) {
-        // Waiting for another message must not make this owner's lease appear
-        // abandoned and allow a duplicate synthesis takeover.
-        await tx.voiceClipRequest.update({
-          where: { id: owned.id },
-          data: {
-            leaseExpiresAt: new Date(
-              now.getTime() + voiceClipLeaseMs(input.providerKey),
-            ),
-          },
-        });
-        return { kind: "wait" } as const;
-      }
+      if (earlier) return { kind: "wait" } as const;
 
       const hasCachedClip =
         (await tx.mediaAsset.count({
@@ -1382,6 +1486,7 @@ async function claimVoiceRequest(input: {
   billingAuthority: VoiceClipBillingAuthority;
   providerPayload: z.infer<typeof pinnedVoiceProviderPayloadSchema>;
   callAuthority?: VoiceCallExecutionAuthority;
+  signal?: AbortSignal;
 }): Promise<VoiceRequestClaim> {
   const requestId = voiceRequestId(input.userId, input.messageId, input.replyAttempt);
   const leaseOwner = randomUUID();
@@ -1404,9 +1509,7 @@ async function claimVoiceRequest(input: {
         provider: input.providerPayload.providerKey,
         providerPayload: toInputJson(input.providerPayload),
         leaseOwner,
-        leaseExpiresAt: new Date(
-          now.getTime() + voiceClipLeaseMs(input.providerPayload.providerKey),
-        ),
+        leaseExpiresAt: new Date(now.getTime() + VOICE_CLIP_LEASE_MS),
       },
       });
       if (input.callAuthority) await bindVoiceCallExecution(tx, request, input.synthesisPayload, input.callAuthority);
@@ -1419,6 +1522,7 @@ async function claimVoiceRequest(input: {
 
   const deadline = Date.now() + voiceClipWaitMs(input.providerPayload.providerKey);
   while (Date.now() <= deadline) {
+    if (input.signal?.aborted) throw Errors.gone("Voice playback stopped; no audio was delivered or charged");
     const existing = await prisma.voiceClipRequest.findUniqueOrThrow({
       where: {
         userId_messageId_replyAttempt: {
@@ -1468,9 +1572,6 @@ async function claimVoiceRequest(input: {
     }
 
     const nextLeaseOwner = randomUUID();
-    const pinnedProviderKey = pinnedVoiceProviderPayloadSchema.parse(
-      existing.providerPayload,
-    ).providerKey;
     const existingBilling = storedVoiceBilling(existing);
     const keepExistingBilling = existingBilling &&
       (existingBilling.intent === "play" || input.synthesisPayload.intent === "prewarm");
@@ -1500,9 +1601,8 @@ async function claimVoiceRequest(input: {
         ...(keepExistingBilling || (!existingBilling && input.synthesisPayload.intent === "prewarm")
           ? {} : { billingAuthority: toInputJson(input.billingAuthority) }),
         leaseOwner: nextLeaseOwner,
-        leaseExpiresAt: new Date(
-          claimNow.getTime() + voiceClipLeaseMs(pinnedProviderKey),
-        ),
+        leaseExpiresAt: new Date(claimNow.getTime() + VOICE_CLIP_LEASE_MS),
+        cancelRequestedAt: null,
         mediaAssetId: null,
         errorCode: null,
         error: Prisma.DbNull,
@@ -1595,6 +1695,7 @@ async function reserveVoiceProviderInvocation(input: {
 }
 
 async function authorizeVoiceArtifactWrite(claim: Extract<VoiceRequestClaim, { kind: "owner" }>) {
+  let putDeadline = 0;
   const rejection = await prisma.$transaction(async tx => {
     const userActive = await lockUser(tx, claim.request.userId);
     await lockVoiceRequest(tx, claim.request.id);
@@ -1604,8 +1705,12 @@ async function authorizeVoiceArtifactWrite(claim: Extract<VoiceRequestClaim, { k
     }
     const leaseActive = owned.leaseExpiresAt !== null && owned.leaseExpiresAt > new Date();
     if (userActive && leaseActive) {
+      putDeadline = Date.now() + VOICE_ARTIFACT_PUT_BUDGET_MS;
+      const writerGoneAt = putDeadline + VOICE_ARTIFACT_WRITE_SETTLE_MS;
       await tx.voiceClipRequest.update({ where: { id: owned.id }, data: {
         activeArtifactOwners: [...new Set([...owned.activeArtifactOwners, claim.leaseOwner])],
+        // An old owner may still be registered after a takeover; keep the later bound.
+        artifactWriteDeadlineAt: new Date(Math.max(writerGoneAt, owned.artifactWriteDeadlineAt?.getTime() ?? 0)),
       } });
       return null;
     }
@@ -1618,6 +1723,7 @@ async function authorizeVoiceArtifactWrite(claim: Extract<VoiceRequestClaim, { k
   });
   if (rejection === "account_revoked") throw Errors.gone("Account is no longer active; no voice artifact was uploaded or delivered");
   if (rejection) throw Errors.conflict("Voice clip request lease changed before artifact upload", { requestId: claim.request.id, reason: rejection });
+  return putDeadline;
 }
 
 async function releaseVoiceArtifactOwner(claim: Extract<VoiceRequestClaim, { kind: "owner" }>) {
@@ -1628,8 +1734,10 @@ async function releaseVoiceArtifactOwner(claim: Extract<VoiceRequestClaim, { kin
     await lockVoiceRequest(tx, claim.request.id);
     const request = await tx.voiceClipRequest.findUnique({ where: { id: claim.request.id }, select: { activeArtifactOwners: true } });
     if (!request?.activeArtifactOwners.includes(claim.leaseOwner)) return;
+    const remaining = request.activeArtifactOwners.filter(owner => owner !== claim.leaseOwner);
     await tx.voiceClipRequest.update({ where: { id: claim.request.id }, data: {
-      activeArtifactOwners: request.activeArtifactOwners.filter(owner => owner !== claim.leaseOwner),
+      activeArtifactOwners: remaining,
+      ...(remaining.length ? {} : { artifactWriteDeadlineAt: null }),
     } });
   });
 }
@@ -1736,7 +1844,16 @@ function legacyVoiceRequestId(userId: string, messageId: string) {
   return `voice_clip_request_${hash}`;
 }
 
-function voiceClipLeaseMs(
+// SPEC: how long a second caller waits for the current owner before giving up. A live
+//   owner holds its lease through the whole provider call, so the wait follows that
+//   provider's timeout, not the much shorter lease.
+// INTENT: this used to be a flat `VOICE_CLIP_WAIT_MS = 220_000`, which was SHORTER
+//   than what the fish_audio route could legitimately take: a concurrent request on
+//   that route always timed out first. Deriving it removes the pair of literals that
+//   had to agree.
+// INVARIANT: strictly greater than timeout + lease, so the waiter outlives a live
+//   owner and also the lease of one that died at the last moment.
+function voiceClipWaitMs(
   providerKey: z.infer<typeof pinnedVoiceProviderPayloadSchema>["providerKey"],
 ) {
   const providerTimeout =
@@ -1745,21 +1862,8 @@ function voiceClipLeaseMs(
       : providerKey === "pocket_tts"
         ? env.POCKET_TTS_TIMEOUT_MS
         : 30_000;
-  return providerTimeout + 30_000;
-}
-
-// SPEC: how long a second caller waits for the current lease holder before
-//   giving up, derived from that provider's own lease.
-// INTENT: this used to be a flat `VOICE_CLIP_WAIT_MS = 220_000`, which was
-//   SHORTER than the fish_audio lease (FISH_AUDIO_TIMEOUT_MS=240s + 30s = 270s):
-//   a concurrent request on that route always timed out ~50s before the lease it
-//   was waiting on could possibly expire. Deriving it removes the pair of
-//   literals that had to agree.
-// INVARIANT: strictly greater than the lease, so the waiter outlives it.
-function voiceClipWaitMs(
-  providerKey: z.infer<typeof pinnedVoiceProviderPayloadSchema>["providerKey"],
-) {
-  return voiceClipLeaseMs(providerKey) + 10_000;
+  // The clip being waited for may be as long as any clip can be.
+  return voiceSynthesisTimeoutMs(providerTimeout, VOICE_MAX_INPUT_CHARS) + VOICE_CLIP_LEASE_MS + 10_000;
 }
 
 function resolvePinnedVoiceProvider(
@@ -1824,7 +1928,7 @@ function voiceContentType(key: string) {
 }
 
 function isCurrentVoiceClip(asset: { metadata: Prisma.JsonValue }) {
-  return jsonRecord(asset.metadata).cacheVersion === VOICE_CLIP_CACHE_VERSION;
+  return REPLAYABLE_VOICE_CLIP_VERSIONS.has(jsonRecord(asset.metadata).cacheVersion);
 }
 
 function jsonRecord(value: Prisma.JsonValue) {
@@ -1884,13 +1988,19 @@ async function lockVoiceReplyAuthority(
   const { session, group, turn } = scope;
   if (session.sessionId !== payload.sessionId || session.status !== "active" || (group && group.status !== "active")) return false;
   if (opening) {
-    return request.replyAttempt === 1 && session.openingMessage?.trim() === payload.text &&
+    return request.replyAttempt === 1 && payloadSpeaksReply(payload, session.openingMessage ?? "") &&
       (payload.sceneVersion ?? 0) === 0 && (payload.scene ?? null) === null;
   }
   return Boolean(turn && turn.assistantMessageId === request.messageId &&
     turn.assistantStatus === "sent" && turn.attempt === request.replyAttempt &&
-    turn.assistantContent.trim() === payload.text && turn.sceneVersion === (payload.sceneVersion ?? 0) &&
+    payloadSpeaksReply(payload, turn.assistantContent) && turn.sceneVersion === (payload.sceneVersion ?? 0) &&
     canonicalJsonHash(turn.scene ?? null) === canonicalJsonHash(payload.scene ?? null));
+}
+
+// A payload holds either the reply's spoken form or, for an earlier request, its raw form.
+function payloadSpeaksReply(payload: VoiceClipSynthesisPayload, reply: string) {
+  const raw = reply.trim();
+  return payload.text === raw || payload.text === voiceSpeechText(raw);
 }
 
 function isUniqueConstraintError(error: unknown) {

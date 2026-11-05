@@ -701,8 +701,9 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     requireAgeGate(ctx);
     if (!id && method === "GET") return ok(await getCharacterDraftVoiceCatalog());
     if (id === "preview" && !action && method === "POST") {
-      requireUser(ctx);
+      const previewer = requireUser(ctx);
       requireAgeVerified(ctx);
+      await enforceRateLimit(request, "voicePreview", previewer.id);
       const selection = characterDraftVoiceSelectionSchema.parse(await jsonBody(request));
       return ok(await previewCharacterDraftVoice({
         ...selection,
@@ -747,7 +748,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
       const input = await jsonBody(request);
       const deps = { entitlementMap, readableCharacter };
       if (action === "quote") return ok({ quote: await quoteVoiceClip(auth, input, deps) });
-      const result = await createVoiceClip(auth, input, deps);
+      const result = await createVoiceClip(auth, input, deps, undefined, request.signal);
       return ok(result.value, { status: result.kind === "created" ? 201 : 200 });
     }
     if (id === "jobs" && !action && method === "GET") return listGenerationJobs(request);
