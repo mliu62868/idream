@@ -1305,7 +1305,7 @@ export function CharacterWorkspace({
     />
   ) : (
     <CharacterPortfolio
-      canReadUnprepared={permissions.readContent}
+      actorId={actorId} permissions={granted} canReadUnprepared={permissions.readContent}
       canOpenAssets={permissions.readImages}
       canCreate={canCreateCharacters && permissions.writeProject}
       canOpenProjects={permissions.read}
@@ -1338,7 +1338,7 @@ export function CharacterPerformanceWorkspace({
         permissions,
       )}
       canRead={permissions.has("character.performance.read")}
-      mode="performance"
+      mode="performance" permissions={permissions}
     />
   );
 }

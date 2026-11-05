@@ -129,7 +129,11 @@ const base = {
   portfolio: {
     characterId: "character-fixture",
     name: "Mira",
+    source: "official",
+    visibility: "private",
+    updatedAt: "2026-07-30T12:00:00.000Z",
     needsAttention: false,
+    attentionReason: null,
     serving: {
       characterId: "character-fixture",
       state: "inactive",
@@ -138,11 +142,10 @@ const base = {
       updatedAt: "2026-07-30T12:00:00.000Z",
     },
     currentRelease: null,
-    candidateRelease: null,
     readiness: "unknown",
-    priority: "normal",
     performance: [],
     changeMarkers: [],
+    recommendation: null,
     visualProduction: {
       primaryImageUrl: null,
       primaryImageSource: null,

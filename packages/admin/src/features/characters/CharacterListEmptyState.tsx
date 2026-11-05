@@ -22,18 +22,22 @@ export function CharacterListEmptyState({
             ? t("Every live image pack is complete")
             : view === "filtered"
             ? t("No characters match these filters")
-            : t("No characters yet")}
+            : view === "all"
+            ? t("No characters yet")
+            : t("Nothing waiting in this queue")}
       </h3>
       <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-[var(--ad-text-muted)]">
         {view === "attention"
           ? t(
-              "Every eligible live character has exposure or funnel observations.",
+              "Every eligible live character has traffic and no monitor action.",
             )
           : view === "live_asset_pack_incomplete"
             ? t("No live Character is missing a required image placement.")
             : view === "filtered"
             ? t("Clear filters to return to all characters.")
-            : t("No characters are available yet.")}
+            : view === "all"
+            ? t("No characters are available yet.")
+            : t("Characters appear here as soon as they need this step.")}
       </p>
       {filtered ? (
         <div className="mt-5">

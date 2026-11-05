@@ -4,7 +4,7 @@ import type { CharacterPortfolioItem } from "@idream/shared/admin";
 import { translateAdmin } from "@/components/admin/i18n";
 import {
   CharacterPortfolioCard,
-  characterPortfolioPerformanceLabel,
+  characterReleasePackLabel,
   characterPortfolioState,
   resolveCharacterPortfolioPrimaryAction,
 } from "./CharacterPortfolioCard";
@@ -73,9 +73,6 @@ function journey(
   };
 }
 
-const t = (key: string, values?: Record<string, string | number>) =>
-  translateAdmin("en", key, values);
-
 describe("Character Portfolio card", () => {
   const item = {
     characterId: "character-1",
@@ -116,27 +113,13 @@ describe("Character Portfolio card", () => {
         canOpenAssets
         canOpenProject
         item={item}
-        mode="studio"
       />,
     );
-    const performance = renderToStaticMarkup(
-      <CharacterPortfolioCard
-        canOpenAssets
-        canOpenProject
-        item={item}
-        mode="performance"
-      />,
-    );
-
     expect(studio).toContain("Mara");
     expect(studio).not.toContain("28d QCE");
     expect(studio).not.toContain("Latest decision:");
     expect(studio).toContain("Live");
     expect(studio).not.toContain("Complete Character Assets");
-    expect(performance).toContain("28d QCE 75.0%");
-    expect(performance).not.toContain("Latest decision:");
-    expect(performance).not.toContain("Companion");
-    expect(performance).not.toContain("live management");
   });
 
   it("marks an archived draft and directs recovery before image production", () => {
@@ -149,7 +132,7 @@ describe("Character Portfolio card", () => {
     expect(resolveCharacterPortfolioPrimaryAction(archived)).toMatchObject({
       label: "Restore draft", href: "/admin/characters/character-1?tab=release", requiresAssets: false,
     });
-    const html = renderToStaticMarkup(<CharacterPortfolioCard canOpenAssets={false} canOpenProject item={archived} mode="studio" />);
+    const html = renderToStaticMarkup(<CharacterPortfolioCard canOpenAssets={false} canOpenProject item={archived} />);
     expect(html).toContain("Archived");
     expect(html).toContain("Restore draft");
     expect(html).not.toContain("Create first identity portrait");
@@ -173,7 +156,6 @@ describe("Character Portfolio card", () => {
         canOpenAssets
         canOpenProject
         item={{ ...item, name: longName }}
-        mode="studio"
       />,
     );
     expect(html).toContain(`title="${longName}"`);
@@ -183,40 +165,6 @@ describe("Character Portfolio card", () => {
   });
 
   // SPEC: 草稿主图的可见性由「能不能看素材」决定，与看的是哪个视图无关。
-  // INTENT: 「角色表现」曾把 canOpenAssets 硬编码成 false，于是主图来源为 draft 的角色
-  //         在那里只剩灰色占位（同一角色在「角色」里有图），requiresAssets 的下一步动作
-  //         也一并降级成「仅表现数据」。这两个症状同源，一起钉住。
-  it("shows a draft portrait in performance mode to an operator who may open assets", () => {
-    const draftItem = {
-      ...item,
-      visualProduction: {
-        ...item.visualProduction,
-        primaryImageSource: "draft",
-      },
-    } as unknown as CharacterPortfolioItem;
-    const withAssets = renderToStaticMarkup(
-      <CharacterPortfolioCard
-        canOpenAssets
-        canOpenProject
-        item={draftItem}
-        mode="performance"
-      />,
-    );
-    const withoutAssets = renderToStaticMarkup(
-      <CharacterPortfolioCard
-        canOpenAssets={false}
-        canOpenProject
-        item={draftItem}
-        mode="performance"
-      />,
-    );
-
-    expect(withAssets).toContain("/media/mara.webp");
-    expect(withAssets).not.toContain("No primary role portrait");
-    expect(withoutAssets).not.toContain("/media/mara.webp");
-    expect(withoutAssets).toContain("No primary role portrait");
-  });
-
   it("treats an existing live portrait as enablement instead of first-time setup", () => {
     const action = resolveCharacterPortfolioPrimaryAction({
       ...item,
@@ -275,7 +223,7 @@ describe("Character Portfolio card", () => {
     });
   });
 
-  it("uses the same authoritative live action in Studio and Performance", () => {
+  it("uses the same authoritative live action on the card", () => {
     const liveJourney = journey(
       "monitor_live_character",
       "live_operations",
@@ -308,13 +256,13 @@ describe("Character Portfolio card", () => {
 
     expect(resolveCharacterPortfolioPrimaryAction(liveItem)).toMatchObject({
       eyebrow: "Live character",
-      label: "Review live character",
+      label: "No action needed",
       href: "/admin/characters/character-1?tab=monitor",
       requiresAssets: false,
     });
     expect(resolveCharacterPortfolioPrimaryAction(liveItem)).toMatchObject({
       eyebrow: "Live character",
-      label: "Review live character",
+      label: "No action needed",
       href: "/admin/characters/character-1?tab=monitor",
       requiresAssets: false,
     });
@@ -344,16 +292,30 @@ describe("Character Portfolio card", () => {
     expect(translateAdmin("zh", "Inspect performance quality")).not.toBe("Inspect performance quality");
   });
 
+  it("names a monitor action instead of sending the operator to check placements", () => {
+    const action = resolveCharacterPortfolioPrimaryAction({
+      ...item,
+      needsAttention: true,
+      attentionReason: "release_monitor_action",
+    });
+    expect(action).toMatchObject({
+      label: "Review monitor evidence",
+      href: "/admin/characters/character-1?tab=monitor",
+    });
+    expect(action.description).not.toContain("event delivery");
+  });
+
   it("explains the exact telemetry problem inside the needs-attention view", () => {
     const action = resolveCharacterPortfolioPrimaryAction({
       ...item,
       needsAttention: true,
+      attentionReason: "no_traffic_after_window",
     });
 
     expect(action).toEqual({
       description:
-        "This live Character has no exposure or funnel events after the 7-day observation window.",
-      eyebrow: "No telemetry after 7 days",
+        "No exposure, funnel, or chat traffic in 7 days live. Check placement targeting and event delivery.",
+      eyebrow: "No traffic after 7 days",
       href: "/admin/characters/character-1?tab=monitor",
       label: "Inspect live monitoring",
       requiresAssets: false,
@@ -364,6 +326,7 @@ describe("Character Portfolio card", () => {
     const action = resolveCharacterPortfolioPrimaryAction({
       ...item,
       needsAttention: true,
+      attentionReason: "no_traffic_after_window",
       journey: journey(
         "continue_image_run",
         "image_production",
@@ -456,7 +419,6 @@ describe("Character Portfolio card", () => {
         canOpenAssets
         canOpenProject
         item={blocked}
-        mode="studio"
       />,
     );
 
@@ -483,7 +445,6 @@ describe("Character Portfolio card", () => {
         canOpenAssets
         canOpenProject
         item={item}
-        mode="studio"
       />,
     );
 
@@ -497,7 +458,6 @@ describe("Character Portfolio card", () => {
         canOpenAssets={false}
         canOpenProject
         item={item}
-        mode="studio"
       />,
     );
 
@@ -507,36 +467,110 @@ describe("Character Portfolio card", () => {
     );
   });
 
-  it("collapses an immature empty metric into one useful sentence", () => {
-    expect(
-      characterPortfolioPerformanceLabel(t, {
-        maturity: "immature",
-        qceRate: null,
-        sameCharacterD7: null,
-      }),
-    ).toBe("28d performance will appear after sufficient live traffic.");
-  });
+  // SPEC: 下一步提示补洞。stale/legacy 对照 ReleasePanel；健康线上不制造待办；路线是平台问题。
+  describe("next-step gaps", () => {
+    const monitor = journey(
+      "monitor_live_character",
+      "live_operations",
+      "/admin/characters/character-1?tab=monitor",
+    );
+    const completeLive = {
+      ...monitor,
+      assetPack: {
+        ...monitor.assetPack,
+        live: {
+          availablePurposes: ["character_cover", "character_hero", "character_chat"],
+          missingPurposes: [],
+          completed: 3,
+          total: 3,
+        },
+      },
+    } as CharacterPortfolioItem["journey"];
+    const healthy = { ...item, journey: completeLive, currentRelease: { status: "published", legacy: false } } as unknown as CharacterPortfolioItem;
 
-  it("shows only measured portfolio metrics", () => {
-    expect(
-      characterPortfolioPerformanceLabel(t, {
-        maturity: "mature",
-        qceRate: 0.75,
-        sameCharacterD7: null,
-      }),
-    ).toBe("28d QCE 75.0% · mature");
-  });
+    it("sends a stale live Release to publish again instead of calling it healthy", () => {
+      expect(
+        resolveCharacterPortfolioPrimaryAction({ ...healthy, readiness: "stale" }),
+      ).toMatchObject({ label: "Publish again", href: "/admin/characters/character-1?tab=release" });
+    });
 
-  it("translates the performance label instead of emitting raw English", () => {
-    const zh = (key: string, values?: Record<string, string | number>) =>
-      translateAdmin("zh", key, values);
+    it("offers a legacy Release a way off only after every real task", () => {
+      const legacy = { ...healthy, currentRelease: { status: "published", legacy: true } } as unknown as CharacterPortfolioItem;
+      expect(resolveCharacterPortfolioPrimaryAction(legacy)).toMatchObject({
+        eyebrow: "Legacy release",
+        href: "/admin/characters/character-1?tab=release",
+      });
+      expect(
+        resolveCharacterPortfolioPrimaryAction({
+          ...legacy,
+          needsAttention: true,
+          attentionReason: "no_traffic_after_window",
+        }).eyebrow,
+      ).toBe("No traffic after 7 days");
+    });
 
-    expect(
-      characterPortfolioPerformanceLabel(zh, {
-        maturity: "mature",
-        qceRate: 0.75,
-        sameCharacterD7: null,
-      }),
-    ).toBe("28 天 QCE 75.0% · 证据充分");
+    it("says no action is needed for a healthy live Character", () => {
+      expect(resolveCharacterPortfolioPrimaryAction(healthy)).toMatchObject({
+        label: "No action needed",
+      });
+    });
+
+    it("explains a route problem as a platform issue and links to platform operations", () => {
+      const action = resolveCharacterPortfolioPrimaryAction({
+        ...item,
+        journey: {
+          ...journey("platform_route_unavailable", "visual_setup", "/admin/ops/profiles"),
+          status: "blocked",
+        },
+      } as CharacterPortfolioItem);
+      expect(action.href).toBe("/admin/ops/profiles");
+      expect(action.description).toContain("platform configuration issue");
+    });
+
+    it("gives failed and unknown image Runs their own step", () => {
+      expect(
+        resolveCharacterPortfolioPrimaryAction({
+          ...item,
+          serving: { ...item.serving, state: "inactive" },
+          journey: journey("retry_failed_image_run", "image_production", "/admin/characters/character-1?tab=assets"),
+        } as CharacterPortfolioItem).label,
+      ).toBe("Generate again");
+      expect(
+        resolveCharacterPortfolioPrimaryAction({
+          ...item,
+          serving: { ...item.serving, state: "inactive" },
+          journey: {
+            ...journey("resolve_unknown_image_run", "image_production", "/admin/characters/character-1?tab=assets"),
+            status: "blocked",
+          },
+        } as CharacterPortfolioItem).label,
+      ).toBe("Check image Run");
+    });
+
+    // SPEC: 暂停/退役的角色线上没人看得到，卡片不能继续写 Live x/3。
+    it("does not call a paused or retired pack live", () => {
+      expect(characterReleasePackLabel("live")).toBe("Live {completed}/{total}");
+      expect(characterReleasePackLabel("paused")).toBe("Paused {completed}/{total}");
+      expect(characterReleasePackLabel("retired")).toBe("Retired {completed}/{total}");
+      const html = renderToStaticMarkup(
+        <CharacterPortfolioCard
+          canOpenAssets
+          canOpenProject
+          item={{ ...item, serving: { ...item.serving, state: "paused" } } as CharacterPortfolioItem}
+        />,
+      );
+      expect(html).toContain("Paused 2/3");
+      expect(html).not.toContain("Live 2/3");
+    });
+
+    it("renders a selection control only when the list offers bulk actions", () => {
+      const plain = renderToStaticMarkup(<CharacterPortfolioCard canOpenAssets canOpenProject item={item} />);
+      expect(plain).not.toContain('type="checkbox"');
+      const selectable = renderToStaticMarkup(
+        <CharacterPortfolioCard canOpenAssets canOpenProject item={item} onToggleSelected={() => undefined} selected />,
+      );
+      expect(selectable).toContain('type="checkbox"');
+      expect(selectable).toContain("Select Mara");
+    });
   });
 });

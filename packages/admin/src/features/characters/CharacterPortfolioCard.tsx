@@ -4,38 +4,8 @@ import { useAdminI18n } from "@/components/admin/i18n";
 import Link from "next/link";
 import type { CharacterPortfolioItem } from "@idream/shared/admin";
 import { ArrowRight, ImageIcon } from "lucide-react";
-import { StatusBadge } from "@/features/operations/WorkspaceUi";
 import { cn } from "@/lib/utils";
-import { percent } from "./character-workspace-format";
 import { CharacterPortfolioVisual } from "./CharacterPortfolioVisual";
-
-// SPEC: 取 t 作为入参而不是自己调 hook —— 它被 CharacterPortfolioCard.test.ts 当纯函数测。
-// INTENT: 原实现直接返回英文串渲染进 JSX，是这个域里最后一处绕过 i18n 的动态文案。
-export function characterPortfolioPerformanceLabel(
-  t: (key: string, values?: Record<string, string | number>) => string,
-  performance: Pick<
-    CharacterPortfolioItem["performance"][number],
-    "maturity" | "qceRate" | "sameCharacterD7"
-  > | null,
-) {
-  const metrics = !performance
-    ? []
-    : [
-        performance.qceRate === null
-          ? null
-          : t("28d QCE {value}", { value: percent(performance.qceRate) }),
-        performance.sameCharacterD7 === null
-          ? null
-          : t("D7 {value}", { value: percent(performance.sameCharacterD7) }),
-      ].filter((metric): metric is string => metric !== null);
-  if (!performance || metrics.length === 0) {
-    return t("28d performance will appear after sufficient live traffic.");
-  }
-  return t("{metrics} · {maturity}", {
-    maturity: t(performance.maturity.replaceAll("_", " ")),
-    metrics: metrics.join(" · "),
-  });
-}
 
 type CharacterPortfolioPrimaryAction = {
   readonly description: string;
@@ -77,6 +47,27 @@ const characterPortfolioPrimaryActionCopy: Record<
     label: "Complete image route setup",
     requiresAssets: false,
   },
+  platform_route_unavailable: {
+    description:
+      "No qualified image route can serve this Character. This is a platform configuration issue you cannot fix on this page; platform operations manages it under Profiles & Rollout.",
+    eyebrow: "Platform issue",
+    label: "Open Profiles & Rollout",
+    requiresAssets: false,
+  },
+  retry_failed_image_run: {
+    description:
+      "The latest image failed without a result. Open Images and generate it again.",
+    eyebrow: "Image generation failed",
+    label: "Generate again",
+    requiresAssets: true,
+  },
+  resolve_unknown_image_run: {
+    description:
+      "The latest image has an unknown outcome and may already have cost money. Check that Run before generating again.",
+    eyebrow: "Image outcome unknown",
+    label: "Check image Run",
+    requiresAssets: true,
+  },
   continue_image_run: {
     description: "Return to the latest unfinished image without starting over.",
     eyebrow: "Image in progress",
@@ -108,10 +99,11 @@ const characterPortfolioPrimaryActionCopy: Record<
     label: "Publish Character",
     requiresAssets: false,
   },
+  // SPEC: 走到这里说明线上没有任何待办。不要写成一个看起来要做的动作，运营不需要被提醒。
   monitor_live_character: {
-    description: "Open live monitoring and performance evidence.",
+    description: "Nothing needs you right now. Live monitoring is here if you want it.",
     eyebrow: "Live character",
-    label: "Review live character",
+    label: "No action needed",
     requiresAssets: false,
   },
 };
@@ -167,6 +159,17 @@ export function resolveCharacterPortfolioPrimaryAction(
       requiresAssets: false,
     };
   }
+  // SPEC: 对照 ReleasePanel：路线资格失效的线上 Release 要重新发布，内容一致也不能自动恢复。
+  if (item.currentRelease?.status === "published" && item.readiness === "stale") {
+    return {
+      description:
+        "The live Release lost its route qualification. Customers still see it; publish again to bring it back to a checked state.",
+      eyebrow: "Live release stale",
+      href: `/admin/characters/${encodeURIComponent(item.characterId)}?tab=release`,
+      label: "Publish again",
+      requiresAssets: false,
+    };
+  }
   // SPEC: 权威判定"表现数据不可信"要比"没有数据"更早说出来。
   // INTENT: qualityState=invalid 的意思是漏斗事实自相矛盾或曝光链不精确（performance.ts:191-198），
   //         也就是这张卡上的数字不能用来做决定。此前这个状态在前端没有任何出口：
@@ -182,17 +185,30 @@ export function resolveCharacterPortfolioPrimaryAction(
       requiresAssets: false,
     };
   }
-  if (item.needsAttention) {
+  if (item.attentionReason === "release_monitor_action") {
     return {
       description:
-        "This live Character has no exposure or funnel events after the 7-day observation window.",
-      eyebrow: "No telemetry after 7 days",
+        "The published monitor needs a decision. Review its evidence, then keep or roll back this Release.",
+      eyebrow: "Monitor needs action",
+      href: `/admin/characters/${encodeURIComponent(item.characterId)}?tab=monitor`,
+      label: "Review monitor evidence",
+      requiresAssets: false,
+    };
+  }
+  if (item.attentionReason === "no_traffic_after_window") {
+    return {
+      description:
+        "No exposure, funnel, or chat traffic in 7 days live. Check placement targeting and event delivery.",
+      eyebrow: "No traffic after 7 days",
       href: `/admin/characters/${encodeURIComponent(item.characterId)}?tab=monitor`,
       label: "Inspect live monitoring",
       requiresAssets: false,
     };
   }
-  if (item.journey.primaryAction.code === "publish_character") {
+  if (
+    item.journey.primaryAction.code === "publish_character" ||
+    item.journey.primaryAction.code === "retry_failed_image_run"
+  ) {
     return journeyAction;
   }
   // INTENT: 创作者改了已发布角色只会写 Revision、不动 Serving；这里不出声，改动就一直停在未发布。
@@ -219,7 +235,30 @@ export function resolveCharacterPortfolioPrimaryAction(
       requiresAssets: true,
     };
   }
+  // SPEC: 对照 ReleasePanel：legacy Release 在线上照常，靠发布一次经过检查的版本离开。
+  // INTENT: 不算故障，排在所有真实待办之后，只在别无他事时提示。
+  if (
+    item.currentRelease?.legacy === true &&
+    !item.journey.release.candidateReleaseId &&
+    item.journey.primaryAction.code === "monitor_live_character"
+  ) {
+    return {
+      description:
+        "This Release predates current checks. It keeps serving; publish once to move it onto a checked Release.",
+      eyebrow: "Legacy release",
+      href: `/admin/characters/${encodeURIComponent(item.characterId)}?tab=release`,
+      label: "Publish a checked Release",
+      requiresAssets: false,
+    };
+  }
   return journeyAction;
+}
+
+// SPEC: 线上/暂停/退役要分得清。暂停的角色线上没有人看得到，不能继续写 Live。
+export function characterReleasePackLabel(servingState: string) {
+  if (servingState === "paused") return "Paused {completed}/{total}";
+  if (servingState === "retired") return "Retired {completed}/{total}";
+  return "Live {completed}/{total}";
 }
 
 export function characterPortfolioState(item: CharacterPortfolioItem) {
@@ -281,81 +320,20 @@ export function CharacterPortfolioCard({
   canOpenProject,
   eager = false,
   item,
-  mode,
+  onToggleSelected,
+  selected = false,
 }: {
   canOpenAssets: boolean;
   canOpenProject: boolean;
   eager?: boolean;
   item: CharacterPortfolioItem;
-  mode: "studio" | "performance";
+  onToggleSelected?: () => void;
+  selected?: boolean;
 }) {
   const { t } = useAdminI18n();
-  const performanceMode = mode === "performance";
-  const performance =
-    item.performance.find(
-      (metric) => metric.window === "28d" && metric.placementId === null,
-    ) ??
-    item.performance.find((metric) => metric.window === "28d") ??
-    null;
   const primaryAction = resolveCharacterPortfolioPrimaryAction(item);
   const canOpenNextAction =
     canOpenProject && (!primaryAction.requiresAssets || canOpenAssets);
-  if (performanceMode) {
-    return (
-      <article className="grid gap-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 transition-colors md:grid-cols-[96px_minmax(0,1fr)_minmax(220px,280px)]">
-        <CharacterPortfolioVisual
-          canOpenAssets={canOpenProject && canOpenAssets}
-          eager={eager}
-          name={item.name}
-          visualProduction={item.visualProduction}
-        />
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3
-              className="min-w-0 break-words font-semibold text-[var(--ad-ink)]"
-              title={item.name}
-            >
-              {canOpenProject ? (
-                <Link
-                  className="hover:underline"
-                  href={`/admin/characters/${encodeURIComponent(item.characterId)}`}
-                >
-                  {item.name}
-                </Link>
-              ) : (
-                item.name
-              )}
-            </h3>
-            <StatusBadge value={item.serving.state} />
-            <StatusBadge value={item.readiness} />
-          </div>
-          <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
-            {characterPortfolioPerformanceLabel(t, performance)}
-          </p>
-        </div>
-        <div className="self-center rounded-lg border border-[var(--ad-border)] bg-black/[0.02] p-3 text-left text-xs text-[var(--ad-text-muted)]">
-          <p className="font-semibold uppercase tracking-[0.14em]">
-            {t(primaryAction.eyebrow)}
-          </p>
-          {canOpenNextAction ? (
-            <Link
-              className="mt-1 inline-flex min-h-8 items-center gap-1.5 text-sm font-semibold text-[var(--ad-ink)] hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
-              href={primaryAction.href}
-            >
-              {t(primaryAction.label)}
-              <ArrowRight aria-hidden="true" className="h-4 w-4" />
-            </Link>
-          ) : (
-            <span className="mt-1 block font-semibold text-[var(--ad-ink)]">
-              {t("Performance only")}
-            </span>
-          )}
-          <p className="mt-1 leading-5">{t(primaryAction.description)}</p>
-        </div>
-      </article>
-    );
-  }
-
   const state = characterPortfolioState(item);
   const { assetPack } = item.journey;
   const characterHref = `/admin/characters/${encodeURIComponent(item.characterId)}`;
@@ -394,7 +372,7 @@ export function CharacterPortfolioCard({
                 completed: assetPack.draft.completed,
                 total: assetPack.draft.total,
               }),
-              t("Live {completed}/{total}", {
+              t(characterReleasePackLabel(item.serving.state), {
                 completed: assetPack.live.completed,
                 total: assetPack.live.total,
               }),
@@ -410,9 +388,23 @@ export function CharacterPortfolioCard({
   //         的下一步动作放上来，就必须先把外层链接收窄到"这是谁"那一块。
   return (
     <article
-      className="flex min-w-0 flex-col overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] transition-[border-color,transform] hover:-translate-y-0.5 hover:border-black/25"
+      className={cn(
+        "relative flex min-w-0 flex-col overflow-hidden rounded-lg border bg-[var(--ad-surface)] transition-[border-color,transform] hover:-translate-y-0.5 hover:border-black/25",
+        selected ? "border-[var(--ad-ink)]" : "border-[var(--ad-border)]",
+      )}
       data-layout="roster"
     >
+      {onToggleSelected ? (
+        <label className="absolute left-2 top-2 z-10 inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-md bg-[var(--ad-surface)]/90">
+          <input
+            aria-label={t("Select {name}", { name: item.name })}
+            checked={selected}
+            className="h-4 w-4"
+            onChange={onToggleSelected}
+            type="checkbox"
+          />
+        </label>
+      ) : null}
       {canOpenProject ? (
         <Link
           aria-label={t("Open {name}", { name: item.name })}

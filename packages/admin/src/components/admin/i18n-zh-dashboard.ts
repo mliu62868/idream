@@ -112,6 +112,8 @@ export const adminZhDashboard: Record<string, string> = {
   "Follow the incident action plan": "按事故行动计划处理",
   "identity calibration": "视觉身份校准",
   "published monitor requires action": "线上监控需要处理",
+  "no exposure, funnel, or chat traffic after 7 days live": "上线 7 天没有曝光、漏斗或聊天流量",
+  "Check placement targeting and event delivery": "检查铺位定向与事件上报",
   "{count} related Creative Runs": "{count} 个相关创意生产批次",
   "fresh {time}": "数据新鲜于 {time}",
   "generation jobs": "生成任务",

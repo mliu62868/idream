@@ -23,8 +23,53 @@ export function characterVideoSourceBroken(data: CharacterWorkspaceDetail) {
 export type CharacterOperationsFact = {
   readonly label: string;
   readonly value: string;
+  readonly values?: Readonly<Record<string, string | number>>;
   readonly alert: boolean;
 };
+
+// SPEC: 把「改了内容」和「存了新修订」合成运营能懂的一条：有多少东西没上线。
+function unpublishedChangesFact(data: CharacterWorkspaceDetail): CharacterOperationsFact {
+  const fields = data.preview.changedFields.length;
+  const revision = data.journey.release.pendingRevision?.revision;
+  const alert = fields > 0 || revision !== undefined;
+  if (fields > 0 && revision !== undefined) {
+    return { label: "Unpublished changes", value: "{fields} fields changed · revision #{revision}", values: { fields, revision }, alert };
+  }
+  if (fields > 0) return { label: "Unpublished changes", value: "{fields} fields changed", values: { fields }, alert };
+  if (revision !== undefined) return { label: "Unpublished changes", value: "Revision #{revision} not published", values: { revision }, alert };
+  return { label: "Unpublished changes", value: "None", alert };
+}
+
+// SPEC: 「为什么没上线」一屏回答：服务状态、Journey 阻塞和修复入口。已上线且无阻塞时返回空。
+export function characterNotLiveReasons(
+  data: CharacterWorkspaceDetail,
+): readonly { readonly message: string; readonly href: string | null }[] {
+  const state = data.serving?.state ?? "inactive";
+  const releaseTab = `/admin/characters/${encodeURIComponent(data.character.id)}?tab=release`;
+  const serving =
+    state === "paused"
+      ? [{ message: "Paused. Customers cannot open this character until it is resumed.", href: releaseTab }]
+      : state === "retired"
+        ? [{
+            message: data.serving?.currentReleaseId
+              ? "Retired. This character can no longer be published."
+              : "Archived draft. Restore it to continue.",
+            href: releaseTab,
+          }]
+        : state === "live"
+          ? []
+          : [{ message: "Not published yet.", href: null }];
+  const blockers = data.journey.blockers.map((blocker) => ({
+    message: blocker.message,
+    href: blocker.deepLink,
+  }));
+  const releaseBlockers = data.portfolio.operationalState.blockers.flatMap((blocker) =>
+    blocker.code === "release_blocked" || blocker.code === "release_stale"
+      ? [{ message: blocker.code === "release_blocked" ? "The current Release is blocked." : "The current Release is stale. Publish again.", href: releaseTab }]
+      : [],
+  );
+  return [...serving, ...blockers, ...releaseBlockers];
+}
 
 // SPEC: 角色详情只陈述当前事实，不把服务端推导的动作包装成强制流程。
 // INTENT: 版本号、项目 ID 这类排障字段留在「技术状态」里。
@@ -36,11 +81,8 @@ export function characterOperationsFacts(
     data.releases.find(
       ({ release }) => release.id === data.serving?.currentReleaseId,
     )?.release ?? null;
-  const visiblePack =
-    data.journey.release.servingState === "live"
-      ? data.journey.assetPack.live
-      : data.journey.assetPack.draft;
-  const changedCount = data.preview.changedFields.length;
+  const servingState = data.journey.release.servingState;
+  const { live: livePack, draft: draftPack } = data.journey.assetPack;
   const releaseOrdinals = characterReleaseOrdinals(data.releases);
   // SPEC: 身份参考图（anchors ∪ references）按 mediaAssetId 去重后计数；不是角色的全部图片。
   // INTENT: anchors 与 references 会重叠（已发布参考集里的图同时也是锚点），相加会把同一张
@@ -64,22 +106,19 @@ export function characterOperationsFacts(
         : "None published",
       alert: currentRelease === null,
     },
-    {
-      label: "Unpublished changes",
-      value: changedCount === 0 ? "None" : String(changedCount),
-      alert: changedCount > 0,
-    },
-    {
-      label: "Pending revision",
-      value: data.journey.release.pendingRevision
-        ? `#${data.journey.release.pendingRevision.revision} · ${data.journey.release.pendingRevision.createdAt.slice(0, 10)}`
-        : "None",
-      alert: Boolean(data.journey.release.pendingRevision),
-    },
+    unpublishedChangesFact(data),
+    // SPEC: 线上和草稿是两包图。只写一个数，线上 1/3 与素材页「已选 2 张」就对不上。
     {
       label: "Image pack",
-      value: `${visiblePack.completed}/${visiblePack.total}`,
-      alert: visiblePack.completed < visiblePack.total,
+      value: servingState === "paused"
+        ? "Paused {live}/{total} · Draft {draft}/{total}"
+        : servingState === "retired"
+          ? "Retired {live}/{total} · Draft {draft}/{total}"
+          : "Live {live}/{total} · Draft {draft}/{total}",
+      values: { live: livePack.completed, draft: draftPack.completed, total: livePack.total },
+      alert: servingState === "live"
+        ? livePack.completed < livePack.total
+        : draftPack.completed < draftPack.total,
     },
     {
       label: "Identity reference images",
@@ -99,6 +138,17 @@ export function characterOperationsFacts(
     },
   ];
 }
+
+const CHARACTER_JOURNEY_STEP_LABELS: Record<
+  CharacterWorkspaceDetail["journey"]["steps"][number]["code"],
+  string
+> = {
+  visual_identity: "Visual identity",
+  image_assets: "Image assets",
+  preview: "Preview",
+  release: "Release",
+  live_monitor: "Live monitoring",
+};
 
 export function characterRecentAssets(data: CharacterWorkspaceDetail) {
   const seen = new Set<string>();
@@ -140,8 +190,9 @@ export function CharacterOverview({
     { label: "Style", value: visualFormFromWorkspace(data).style },
   ] as const;
   const operationalFacts = characterOperationsFacts(data).filter(
-    (fact) => fact.label !== "Serving" && fact.label !== "Visibility",
+    (fact) => fact.label !== "Visibility",
   );
+  const notLiveReasons = characterNotLiveReasons(data);
   return (
     <div className="flex flex-col gap-5">
       <section className="border-b border-[var(--ad-border)] pb-8">
@@ -180,11 +231,51 @@ export function CharacterOverview({
                       fact.alert && "text-[var(--ad-yellow-text)]",
                     )}
                   >
-                    {t(fact.value)}
+                    {t(fact.value, fact.values)}
                   </dd>
                 </div>
               ))}
             </dl>
+            <ol aria-label={t("Production progress")} className="mt-5 flex flex-wrap gap-1.5 text-xs">
+              {data.journey.steps.map((step) => (
+                <li key={step.code}>
+                  <Link
+                    className={cn(
+                      "inline-flex min-h-7 items-center rounded-sm px-2 hover:underline",
+                      step.state === "blocked"
+                        ? "bg-[var(--ad-red-bg)] text-[var(--ad-red-text)]"
+                        : step.state === "current"
+                          ? "bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]"
+                          : step.state === "complete"
+                            ? "bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]"
+                            : "bg-[var(--ad-surface-subtle)] text-[var(--ad-text-muted)]",
+                    )}
+                    href={step.deepLink}
+                  >
+                    {t(CHARACTER_JOURNEY_STEP_LABELS[step.code])}
+                  </Link>
+                </li>
+              ))}
+            </ol>
+            {notLiveReasons.length > 0 ? (
+              <div className="mt-5" role="status">
+                <h4 className="text-xs font-semibold text-[var(--ad-text-muted)]">
+                  {t(data.serving?.state === "live" ? "What needs attention" : "Why it is not live")}
+                </h4>
+                <ul className="mt-2 grid gap-1.5 text-sm">
+                  {notLiveReasons.map((reason) => (
+                    <li className="flex flex-wrap items-baseline gap-x-2" key={reason.message}>
+                      <span>{t(reason.message)}</span>
+                      {reason.href ? (
+                        <Link className="text-xs font-semibold underline-offset-4 hover:underline" href={reason.href}>
+                          {t("Fix this")}
+                        </Link>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             {characterVideoSourceBroken(data) ? (
               <p className="mt-4 flex items-start gap-2 text-xs leading-5 text-[var(--ad-yellow-text)]">
                 <ShieldAlert

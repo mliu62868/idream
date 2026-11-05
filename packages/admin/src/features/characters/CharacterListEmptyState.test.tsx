@@ -17,7 +17,7 @@ describe("Character Portfolio empty states", () => {
     );
     expect(attentionClear).toContain("No character needs attention right now");
     expect(attentionClear).toContain(
-      "Every eligible live character has exposure or funnel observations.",
+      "Every eligible live character has traffic and no monitor action.",
     );
     expect(attentionClear).not.toContain("image pack");
     expect(attentionClear).not.toContain("No characters match these filters");
@@ -32,6 +32,13 @@ describe("Character Portfolio empty states", () => {
     expect(imagePacksClear).toContain(
       "No live Character is missing a required image placement.",
     );
+
+    // 新清单没有专属文案也不能说成「筛选没命中」。
+    const queueClear = renderToStaticMarkup(
+      <CharacterListEmptyState onClear={() => undefined} view="publish_blocked" />,
+    );
+    expect(queueClear).toContain("Nothing waiting in this queue");
+    expect(queueClear).not.toContain("No characters match these filters");
 
     expect(empty).toContain("No characters yet");
     expect(empty).toContain("No characters are available yet.");

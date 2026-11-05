@@ -4,6 +4,7 @@ import {
   CHARACTER_PORTFOLIO_SORTS,
   characterPortfolioEmptyView,
   characterPortfolioQuery,
+  characterPortfolioRequestParams,
   parseCharacterPortfolioUrl,
 } from "./portfolio-query";
 
@@ -56,6 +57,25 @@ describe("Character Portfolio URL authority", () => {
     expect(
       parseCharacterPortfolioUrl("?workQueue=unknown").workQueue,
     ).toBeUndefined();
+  });
+
+  it("round-trips every work queue and the source filter", () => {
+    for (const workQueue of ["pending_changes", "candidate_unpublished", "publish_blocked", "recent_generation_failed", "ready_to_publish"] as const) {
+      expect(parseCharacterPortfolioUrl(`?workQueue=${workQueue}`).workQueue).toBe(workQueue);
+      expect(characterPortfolioEmptyView({ search: "", workQueue })).toBe(workQueue);
+    }
+    expect(parseCharacterPortfolioUrl("?source=user").source).toBe("user");
+    expect(parseCharacterPortfolioUrl("?source=robot").source).toBeUndefined();
+    expect(characterPortfolioQuery({ search: "", source: "official" })).toBe("source=official");
+  });
+
+  // SPEC: 「全部」不含归档；归档有自己的视图。计数只进请求，不进可分享的地址栏。
+  it("excludes archived Characters from every request except the archived view", () => {
+    const all = characterPortfolioRequestParams({ search: "" });
+    expect(all.get("excludeArchived")).toBe("true");
+    expect(all.get("includeFacets")).toBe("true");
+    expect(characterPortfolioRequestParams({ search: "", servingState: "retired" }).has("excludeArchived")).toBe(false);
+    expect(characterPortfolioQuery({ search: "" })).toBe("");
   });
 
   it("does not claim a work queue is clear when an extra search hides its rows", () => {

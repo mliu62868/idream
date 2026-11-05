@@ -79,7 +79,7 @@ describe("Character and Creative operator workspaces", () => {
     expect(html).not.toContain("Portfolio &amp; Projects");
     expect(html).toContain("Search characters");
     expect(html).not.toContain("Search authority");
-    expect(html).toContain("Search name or character ID");
+    expect(html).toContain("Search name, description, or character ID");
     expect(html).not.toContain("Character stage");
     expect(html).not.toContain("Project phase");
     expect(html).toContain('aria-label="Character operations filters"');

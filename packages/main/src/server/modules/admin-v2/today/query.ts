@@ -38,8 +38,10 @@ import {
   RELEASE_SEVERITY,
   SEVERITY_RANK,
   releaseMonitorActionSql,
+  releaseNoTrafficSql,
   severityRankFilterSql,
 } from "./work-severity";
+import { characterAttentionCopy, characterAttentionReason } from "@/server/modules/admin-v2/characters/character-attention";
 
 const QUEUE_LIMIT = 10;
 const MAX_ALL_WORK_SCAN_LIMIT = 5_000;
@@ -98,6 +100,7 @@ type ProjectableRow =
       row: CharacterRelease;
       project: { characterId: string };
       monitorActionRequired?: boolean;
+    noTraffic?: boolean;
     }
   | { sourceType: "creative_run"; row: ContentProductionBatch };
 
@@ -417,6 +420,7 @@ type RankedReleaseIdRow = {
   id: string | null;
   totalCount: bigint;
   monitorActionRequired: boolean | null;
+  noTraffic: boolean | null;
 };
 
 function releaseReadCharacterScope(actor: { id: string; role: string }) {
@@ -431,7 +435,7 @@ async function findBoundedReleaseRows(input: {
   limit?: number;
 }) {
   if (!input.selection) {
-    return { totalCount: 0, rows: [] as Array<Extract<ProjectableRow, { sourceType: "character_release" }> extends { row: infer Row; project: infer Project } ? { row: Row; project: Project; monitorActionRequired?: boolean } : never> };
+    return { totalCount: 0, rows: [] as Array<Extract<ProjectableRow, { sourceType: "character_release" }> extends { row: infer Row; project: infer Project } ? { row: Row; project: Project; monitorActionRequired?: boolean; noTraffic?: boolean } : never> };
   }
   const snoozedSql = input.selection.scope === "active" && input.selection.snoozedIds.length > 0
     ? Prisma.sql`AND release.id NOT IN (${Prisma.join(input.selection.snoozedIds)})`
@@ -445,7 +449,9 @@ async function findBoundedReleaseRows(input: {
     ? Prisma.sql`CASE WHEN release.id IN (${Prisma.join(input.pinnedIds)}) THEN 1 ELSE 0 END`
     : Prisma.sql`0`;
   const monitorActionSql = releaseMonitorActionSql(Prisma.sql`release`);
-  const severityRankSql = RELEASE_SEVERITY.rankSql(Prisma.sql`release`);
+  const asOf = new Date();
+  const noTrafficSql = releaseNoTrafficSql(Prisma.sql`release`, asOf);
+  const severityRankSql = RELEASE_SEVERITY.rankSql(Prisma.sql`release`, asOf);
   const severityFilterSql = input.selection.scope === "active"
     ? severityRankFilterSql(severityRankSql, input.selection.filters?.severity)
     : Prisma.empty;
@@ -466,6 +472,7 @@ async function findBoundedReleaseRows(input: {
         AND (
           release.status IN (${Prisma.join(ACTIVE_RELEASE_STATUSES)})
           OR ${monitorActionSql}
+          OR ${noTrafficSql}
         )
       `
     : input.selection.scope === "recently_resolved"
@@ -473,6 +480,7 @@ async function findBoundedReleaseRows(input: {
         AND release.status IN (${Prisma.join(RESOLVED_RELEASE_STATUSES)})
         AND release."updatedAt" >= ${input.selection.recentCutoff}
         AND NOT (${monitorActionSql})
+        AND NOT ${noTrafficSql}
       `
       : input.selection.releaseIds.length === 0 && input.selection.projectIds.length === 0
         ? Prisma.sql`AND FALSE`
@@ -505,6 +513,7 @@ async function findBoundedReleaseRows(input: {
       SELECT
         release.id,
         ${monitorActionSql} AS monitor_action_required,
+        ${noTrafficSql} AS no_traffic,
         ${pinnedRankSql} AS pinned_rank,
         ${severityRankSql} AS severity_rank,
         NULL::timestamp AS due_at,
@@ -530,7 +539,8 @@ async function findBoundedReleaseRows(input: {
     SELECT
       ranked.id,
       summary.total_count AS "totalCount",
-      ranked.monitor_action_required AS "monitorActionRequired"
+      ranked.monitor_action_required AS "monitorActionRequired",
+      ranked.no_traffic AS "noTraffic"
     FROM summary
     LEFT JOIN ranked ON TRUE
     ${limitSql}
@@ -553,12 +563,13 @@ async function findBoundedReleaseRows(input: {
   const releasesById = new Map(releaseRows.map((row) => [row.id, row]));
   const projectsById = new Map(projects.map((row) => [row.id, row]));
   const monitorById = new Map(rankedIds.flatMap((row) => row.id ? [[row.id, Boolean(row.monitorActionRequired)] as const] : []));
+  const noTrafficById = new Map(rankedIds.flatMap((row) => row.id ? [[row.id, Boolean(row.noTraffic)] as const] : []));
   return {
     totalCount: Number(rankedIds[0]?.totalCount ?? 0),
     rows: ids.flatMap((id) => {
       const row = releasesById.get(id);
       const project = row ? projectsById.get(row.projectId) : undefined;
-      return row && project ? [{ row, project, monitorActionRequired: monitorById.get(id) ?? false }] : [];
+      return row && project ? [{ row, project, monitorActionRequired: monitorById.get(id) ?? false, noTraffic: noTrafficById.get(id) ?? false }] : [];
     }),
   };
 }
@@ -721,14 +732,20 @@ function projectRow(
     const severity = RELEASE_SEVERITY.of({
       readiness: item.readiness,
       monitorActionRequired: Boolean(row.monitorActionRequired),
+      noTraffic: Boolean(row.noTraffic),
     });
+    // INVARIANT: 与列表 attention 同一份原因函数，文案和目标 tab 都从这里来。
+    const attention = characterAttentionCopy(characterAttentionReason({
+      monitorActionRequired: Boolean(row.monitorActionRequired),
+      noTraffic: Boolean(row.noTraffic),
+    }));
     return {
       sourceType: row.sourceType,
       sourceId: item.id,
       sourceStatus: item.status as TodayWorkItem["sourceStatus"],
       title: `Character release ${item.status.replaceAll("_", " ")}`,
-      summary: row.monitorActionRequired
-        ? `${characterNames.get(row.project.characterId) ?? row.project.characterId} · published monitor requires action`
+      summary: attention
+        ? `${characterNames.get(row.project.characterId) ?? row.project.characterId} · ${attention.summary}`
         : `${characterNames.get(row.project.characterId) ?? row.project.characterId} · readiness ${item.readiness}`,
       severity,
       priority: severity === "high" ? "high" : "normal",
@@ -740,11 +757,11 @@ function projectRow(
       },
       ownerId: null,
       slaDueAt: null,
-      recommendedAction: row.monitorActionRequired ? "Investigate monitor evidence and keep or rollback" : item.readiness === "blocked" ? "Resolve release readiness blockers" : "Advance release checks",
+      recommendedAction: attention ? attention.recommendedAction : item.readiness === "blocked" ? "Resolve release readiness blockers" : "Advance release checks",
       openedAt: item.createdAt.toISOString(),
       // INTENT: 监控告警直接到证据；待发布工作仍到发布检查，不能让同一种来源抹掉任务差异。
-      deepLink: `/admin/characters/${encodeURIComponent(row.project.characterId)}?tab=${row.monitorActionRequired ? "monitor" : "release"}&releaseId=${encodeURIComponent(item.id)}`,
-      verificationState: row.monitorActionRequired || item.readiness === "blocked" ? "failed" : item.readiness === "ready" ? "passed" : "pending",
+      deepLink: `/admin/characters/${encodeURIComponent(row.project.characterId)}?tab=${attention?.tab ?? "release"}&releaseId=${encodeURIComponent(item.id)}`,
+      verificationState: attention || item.readiness === "blocked" ? "failed" : item.readiness === "ready" ? "passed" : "pending",
       lastChangedAt: item.updatedAt.toISOString(),
       environment,
       dataClass: "internal",
@@ -914,6 +931,7 @@ function sourceRows(
     row: CharacterRelease;
     project: { characterId: string };
     monitorActionRequired?: boolean;
+    noTraffic?: boolean;
   }> = [],
   creativeRuns: ContentProductionBatch[] = [],
   mentions: Extract<ProjectableRow, { sourceType: "collaboration_mention" }>[] = [],
@@ -923,7 +941,7 @@ function sourceRows(
     ...cases.map((row) => ({ sourceType: "admin_case" as const, row })),
     ...incidents.map((row) => ({ sourceType: "ops_incident" as const, row })),
     ...commands.map((row) => ({ sourceType: "control_plane_command" as const, row })),
-    ...releases.map(({ row, project, monitorActionRequired }) => ({ sourceType: "character_release" as const, row, project, monitorActionRequired })),
+    ...releases.map(({ row, project, monitorActionRequired, noTraffic }) => ({ sourceType: "character_release" as const, row, project, monitorActionRequired, noTraffic })),
     ...creativeRuns.map((row) => ({ sourceType: "creative_run" as const, row })),
   ];
 }
