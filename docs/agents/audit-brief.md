@@ -64,8 +64,8 @@ bun run source:revision             # 记下来，写进产出文件
 ## 不要做的事
 
 - 不要把 `MODERATION_PROVIDER=mock`、`safety-gateway` 未启用列为缺口——这是既定产品配置。
-- 视频按当前已发布 capability、profile/workflow 与实际 provider 验证。默认 RedGraft 已进入真实产品链，
-  不沿用历史“video 恒 mock / 第一期禁用”结论；H3 新选择仍停用，历史视频保留访问权。
+- 视频按当前已发布 capability、profile/workflow 与实际 provider 验证。默认视频是 H3 Mystic V5（2026-11-05 产品决定），
+  RedGraft 保留为可变选项与多场景的显式路线；不沿用历史“video 恒 mock / 第一期禁用”结论。默认配置不等于质量合格，按 profile 版本独立取证。
 - 不要因为当前实现有缺口就缩减 PRD 需求
 - 不要碰生产库；开发库与专用测试库的 schema 变更已获授权
 - 不要在报告里写没有实际执行过的命令输出

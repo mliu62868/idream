@@ -27,7 +27,7 @@
 - 记忆需要验证真实事实召回、用户纠正、Main 删除/修订后隔离及重建、跨会话/跨日连续性、10k recall 与首字性能。Main 已有来源保护与官方 fresh-ingest 恢复；上游授权/误撤回与全历史扫描问题需要可维护源码或已修复版本，不在 Chat 复制私有恢复协议。
 - 图片/视频技术完成和任务质量分别判断。默认图/视频的原像素失败保持；新 Iris、edit、Animate 与 GN-19 成功样本只证明各自输入与版本，不能覆盖全部人物、构图或 Catalog。
 - 主动消息的事实边界指令已有集成与有限真实复验，长期主动性、回复重复、声音听感、anime/长对话与真实回访仍需独立质量证据。
-- **H3 保持禁用**；稳定视觉资格复验和显式合法版本发布是重新启用的前提，不能直接改历史 pins。
+- **默认视频为 H3 Mystic V5**（2026-11-05 产品决定），新版本发布不改历史 pins；V5 的稳定视觉结果仍需按版本独立取证，历史 REDMix 版本的失败不代表 V5，也不被它关闭。
 
 执行入口：[核心体验验证](CORE_EXPERIENCE_VALIDATION.md)、[Chat PRD](CHAT_SERVICE_PRD.md)、[图片系统](CHARACTER_IMAGE_GENERATION_SYSTEM.md)。原失败与各次候选归属保存在当前覆盖及其所引报告中。
 
@@ -57,7 +57,7 @@ Mic → 可编辑草稿 → 明确 Send 的单聊/群聊实现已经存在；Voi
 
 ## 5. 性能、Catalog 与完整功能等价性
 
-- 默认图片、身份图与 RedGraft 优先。多参考加速已有 [独立样本](CURRENT_FUNCTIONAL_COVERAGE.md#图片)；下一步需要同质量的排队、执行、端到端分布和容量，不把单次样本当作全站 SLA。
+- 默认图片、身份图与默认视频（H3 Mystic V5）优先；RedGraft 为显式路线。多参考加速已有 [独立样本](CURRENT_FUNCTIONAL_COVERAGE.md#图片)；下一步需要同质量的排队、执行、端到端分布和容量，不把单次样本当作全站 SLA。
 - Create 的五步与已扩展目录需按字段语义、恢复、预览与发布证明六步任务等价，不能按选项数量直接认定 matched。运行声音目录与创作者可选目录也须区分。
 - CH-16、Group Chat、Pinned Memories/Instructions、主动消息、Advanced seed/model、精确 Chat context、gated Animate、Coin Store 和 AF-02 均已有实现；只补当前未取得的质量、权限变化/恢复、目录等价性与同版组合资格。
 - 免费 Packs 已有私有副本/immutable Grant/撤下与封禁边界及领取闭环；**免费领取不证明付费 Pack 购买**。Comics、CMS 四族、合集、Support、Follow/Studio 等已有单域证据，剩余为库存/组合及最终版本资格，不重复列成空白功能。

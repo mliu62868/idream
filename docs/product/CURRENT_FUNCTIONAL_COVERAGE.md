@@ -62,7 +62,7 @@ Chat Animate 与 Generate GN-19 是独立能力，均已有实现；自然语言
 | GN-19 两场景旁白 | 真实 Chrome 完成 RedGraft-LTX2.5、Pocket Anna 旁白、合成/播放、逐段及完整下载，精确两次 100 coin | 仅证明所测两场景和参数，不证明三场景或全部 Catalog |
 | 三场景修复 | 10月3日按解码帧数对齐、composition owner、复用已保存声音及缺失提示有定向/真实 ffmpeg 证据 | 数据库集成当时因 connect EPERM 零执行；真实模型/Pocket/Gen 三场景完整链未运行 |
 | 10月5日三场景 / source `6515afad…` | RedGraft v4三次preview＋Pocket Anna旁白；583.281秒后交付11.875秒成片；3个持久化检查通过、恰好3次100币，完整解码/下载hash通过 | 身份/衣着/背景保持；第三段“点头一次”未获清晰动作证据；不能签全部像素或无缝表情连续性资格 |
-| 默认 RedGraft / H3 | 原默认视频请求完成且唯一扣费，但像素任务失败；H3 历史视频出现双脸叠影后已停用新选择 | 默认视频执行跨源码 merge，不能签发统一 source 资格；H3 重新启用须独立稳定视觉复验与显式发布 |
+| 历史默认 RedGraft / 旧 H3 | 原默认视频请求完成且唯一扣费，但像素任务失败；旧 H3 视频出现双脸叠影 | 记录所测版本。2026-11-05 起默认改为 H3 Mystic V5；配置已发布，V5 的真实生成质量未由这条记录证明 |
 
 证据：[视频产品记录](../../.scratch/full-product-audit-2026-10-01/REPORT.md)、[两场景旁白回读](../../.scratch/full-product-audit-2026-10-01/gn19-narration-asr-actual-20261002.md)、[三场景定向修复](../../.scratch/scene-three-narration-20261003/REPORT.md)、[像素失败](../../.scratch/core-quality-remediation-20261001/REPORT.md)、[10月5日三场景与独立像素复核](../../.scratch/media-generation-audit-20261005/REPORT.md)。H3 保持禁用。
 

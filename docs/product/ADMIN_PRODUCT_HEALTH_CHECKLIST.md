@@ -37,7 +37,7 @@ Admin 应让运营把“发现问题或机会”推进到“用户得到正确�
 2. 日常角色图片采用“创建 → 生成或上传 → 选择采用 → 预览 → 发布”，不恢复旧人工打分、逐图审批或虚构五轮 QA。举报后的违规处置是独立流程。
 3. 非角色运营图片从外部制作后上传、进入素材库与草稿投放；不恢复 Admin 通用生图。生成历史需要可查。
 4. Chat 使用自托管开源 OpenAI-compatible 模型；Gen 使用 workflow-native backend。退役 `pipeline/mlx/external` runner 不作为兼容面验收。
-5. 视频按 capability、环境开关、合格 workflow/profile、角色来源、价格与权益共同开放。H3 的既有技术交付不代表质量合格，不为了跑清单强行重新启用。
+5. 视频按 capability、环境开关、合格 workflow/profile、角色来源、价格与权益共同开放。默认视频为 H3 Mystic V5（2026-11-05 产品决定），技术交付不代表质量合格，按版本记录视觉结果。
 6. 计划是一次性预付周期访问，不按自动续订产品验收；到期不锁回既有聊天、媒体或已购作品。图片/视频只有 dreamcoin 消耗，不另造独立配额；语音保留计划分钟及超额报价。
 7. WPCU 保持 official；WSCU/WSCrU/WPSCU/WSR 是诊断。没有成熟样本、合格事实或认证时，显示不可用于决策比显示漂亮数字更正确。
 8. 完整平台目标仍包含 Group Chat、Voice Call、Packs、Comics、Creator Economy 与 Affiliate。当前缺入口须记范围缺口；已关闭且如实说明的能力可通过“曝光边界”检查，但不能因此通过“功能实现”检查。

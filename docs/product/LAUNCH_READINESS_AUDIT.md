@@ -7,7 +7,7 @@
 ## 当前契约
 
 - Main PostgreSQL 是产品 Turn、交付、计费、Character/Release/Serving 的权威。Chat 无数据库，只承载内嵌 Pi/igrep 执行与恢复证据；Main durable ACK 后才可发送 SSE `done`。不再配置 `CHAT_DATABASE_URL` 或部署 Chat projector。
-- 图片与视频使用 Gen workflow-native backend。实际 profile、workflow 版本、模型和输入规格以冻结请求与运行记录为准。默认 RedGraft 视频已纳入产品链路；H3 新选择停用，质量未获稳定复验。不能沿用 2026-06 的“第一期视频禁用”作为当前验收预期，也不能降低生产配方门禁。
+- 图片与视频使用 Gen workflow-native backend。实际 profile、workflow 版本、模型和输入规格以冻结请求与运行记录为准。默认视频为 H3 Mystic V5（2026-11-05 产品决定），RedGraft 为显式路线；默认发布不等于质量合格，V5 的稳定视觉结果按版本独立取证。不能沿用 2026-06 的“第一期视频禁用”作为当前验收预期，也不能降低生产配方门禁。
 - Pocket 官方目录声音与 Fish 身份声音按实际选择分别验证。试听候选和激活版本是不同操作，不能用一份音频证明所有角色声音合格。
 - `MODERATION_PROVIDER=mock` 是既定产品配置，保留基础未成年人拦截和角色 `age ≥ 18`。本页不另设人工日常审核关卡。
 - 本地 development 和受控 audit 数据只证明技术链路。公开发布、真实支付、真实用户成熟窗口与经营指标认证分别需要目标环境证据。

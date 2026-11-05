@@ -179,7 +179,7 @@ shasum -a 256 <bundle-dir>/<bundle-name>.sha256
 
 These must point at fresh reports before public launch:
 
-H3 currently remains disabled. Its two report rows apply only after independent visual qualification and an explicit release decision; do not run them merely to fill this checklist. Other reports follow the approved target release scope and active configuration.
+H3 Mystic V5 is the default video route (product decision, 2026-11-05) and RedGraft is the explicit route for video options and sequences. Run the report rows for each route in the approved release scope; a published default is not visual qualification. Other reports follow the approved target release scope and active configuration.
 
 | Key | Command that refreshes it |
 | --- | --- |
