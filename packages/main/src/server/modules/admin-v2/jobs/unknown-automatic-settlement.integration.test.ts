@@ -15,6 +15,7 @@ import { AUTOMATIC_UNKNOWN_SETTLEMENT_ACTOR_ID } from "@/server/ai/generation-un
 import { loadCharacterMediaOperationsProjection } from "../characters/character-media-operations";
 import { getGenerationJobV2, queryGenerationJobsV2Authority } from "./query";
 import { reconcileUnknownGenerationRequest } from "./unknown-reconciliation";
+import { dispatchStaleUnknownGenerationRequests } from "./stale-unknown-dispatcher";
 
 const suffix = randomUUID();
 const actorId = `automatic-recovery-admin-${suffix}`;
@@ -131,6 +132,28 @@ describe("automatic unknown timeout compensation", () => {
     await expect(f.command("adopt_succeeded")).rejects.toThrow("terminal operator resolution");
     expect(await prisma.mediaAsset.count({ where: { sourceJobId: f.requestId } })).toBe(0);
     expect(await prisma.dreamcoinLedger.findMany({ where: { sourceId: f.requestId } })).toEqual(ledger);
+  });
+
+  // Before this the sweeper could only ask to fail it, which is refused while
+  // recovered success exists, so the Request held its slot and coins indefinitely.
+  it("delivers a late success through the sweep, audited, without refunding, and only once", async () => {
+    const f = await fixture(10);
+    await f.ingest();
+    const ledger = await prisma.dreamcoinLedger.findMany({ where: { sourceId: f.requestId } });
+
+    const swept = await dispatchStaleUnknownGenerationRequests(prisma, { graceMs: 0, limit: 200 });
+    expect(swept.adopted).toBeGreaterThanOrEqual(1);
+
+    expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: f.requestId } })).toMatchObject({ status: "completed", deliveredOutputCount: 1, errorCode: null });
+    expect(await prisma.generationDelivery.count({ where: { requestId: f.requestId, status: "delivered" } })).toBe(1);
+    expect(await prisma.dreamcoinLedger.findMany({ where: { sourceId: f.requestId } })).toEqual(ledger);
+    expect(await prisma.adminAuditLog.findMany({ where: { targetId: f.requestId } })).toEqual([
+      expect.objectContaining({ actorId: AUTOMATIC_UNKNOWN_SETTLEMENT_ACTOR_ID, action: "generation.request.unknown.adopt_succeeded" }),
+    ]);
+
+    await dispatchStaleUnknownGenerationRequests(prisma, { graceMs: 0, limit: 200 });
+    expect(await prisma.mediaAsset.count({ where: { sourceJobId: f.requestId } })).toBe(1);
+    expect(await prisma.controlPlaneCommand.count({ where: { targetId: f.requestId } })).toBe(1);
   });
 
   it("does not auto-settle while the exact original queued execution remains recoverable", async () => {

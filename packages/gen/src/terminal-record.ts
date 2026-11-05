@@ -33,6 +33,9 @@ type GenerationInvocationGuard = {
   readonly provider: string;
   readonly model: string | null;
   readonly reservedAt: string;
+  // Present only when this invocation submits under a deterministic runner prompt
+  // id. It describes what the first transport did, so it is not part of identity.
+  readonly runnerPromptIdScheme?: string;
 };
 
 export class GenerationInvocationGuardConflictError extends Error {
@@ -160,7 +163,8 @@ function parseInvocationGuard(value: unknown): GenerationInvocationGuard {
     typeof guard.provider !== "string" || !guard.provider ||
     !(typeof guard.model === "string" || guard.model === null) ||
     typeof guard.reservedAt !== "string" ||
-      !Number.isFinite(Date.parse(guard.reservedAt))
+      !Number.isFinite(Date.parse(guard.reservedAt)) ||
+    !(guard.runnerPromptIdScheme === undefined || typeof guard.runnerPromptIdScheme === "string")
   ) {
     throw new Error("invalid generation provider invocation guard");
   }

@@ -2224,6 +2224,42 @@ describe("GeneratorWorkspace media journeys", () => {
     expect(card?.querySelector('a[href="/helpdesk"]')).toBeNull();
   });
 
+  it("shows the sweeper's later settlement of an unconfirmed job without a reload, even while another job polls fast", async () => {
+    const originalFetch = globalThis.fetch;
+    const unconfirmed = { id: "unknown-video", mode: "video", status: "queued", errorCode: "provider_outcome_unknown", outputCount: 1, costDreamcoins: 100, createdAt: new Date().toISOString() };
+    const running = { id: "running-image", mode: "image", status: "running", errorCode: null, outputCount: 1, costDreamcoins: 5, createdAt: new Date().toISOString() };
+    let settled = false;
+    const reads: Record<string, number> = {};
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/v1/generation/jobs/")) {
+        const id = url.slice("/api/v1/generation/jobs/".length);
+        reads[id] = (reads[id] ?? 0) + 1;
+        const job = id === unconfirmed.id ? (settled ? { ...unconfirmed, status: "failed", errorCode: "operator_confirmed_provider_failure" } : unconfirmed) : running;
+        return Response.json({ ok: true, data: { job, assets: [] } });
+      }
+      if (url.startsWith("/api/v1/generation/jobs")) return Response.json({ ok: true, data: { items: [unconfirmed, running] } });
+      return originalFetch(input, init);
+    }));
+    vi.useFakeTimers();
+    try {
+      await act(async () => root.render(createElement(GeneratorWorkspace)));
+      // One second per act: effects only run when an act ends, as they would between frames.
+      const advance = async (seconds: number) => {
+        for (let second = 0; second < seconds; second += 1) await act(async () => vi.advanceTimersByTimeAsync(1_000));
+      };
+      await advance(20);
+      expect(reads[running.id]).toBeGreaterThan(3);
+      expect(reads[unconfirmed.id] ?? 0).toBe(0);
+      settled = true;
+      await advance(12);
+      expect(reads[unconfirmed.id]).toBe(1);
+      expect(container.querySelector('[data-generation-job-id="unknown-video"]')?.textContent).not.toContain("Result not confirmed yet");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     { jobStatus: "running", expected: "video", delayedJobs: false, priority: "none" },
     { jobStatus: "completed", expected: "image", delayedJobs: false, priority: "none" },

@@ -18,6 +18,7 @@
 //    non-numeric seed is FNV-hashed via providers.ts's stableNumericSeed rather than
 //    coerced to 0, so concurrent jobs don't collide on the same numeric seed.
 import { env } from "../env";
+import { GENERATION_RUNNER_PROMPT_ID_SCHEME, generationRunnerPromptId } from "@idream/shared/contracts";
 import { dimensionsForImageOrientation } from "@idream/shared/media/image-orientation";
 import { logger } from "../logger";
 import { stableNumericSeed, type ImageModel, type ProviderInvocationMetadata, type ProviderRetryCapabilities } from "../providers";
@@ -35,7 +36,7 @@ import {
   type BackendRegistry,
   type ComfyUiRunner,
 } from "./registry";
-import { BackendInvocationError, type BackendPerformance } from "./types";
+import { BackendInvocationError, type BackendHandle, type BackendPerformance } from "./types";
 import { prepareLocalizedImageEdit, compositeLocalizedImageEdit, LocalizedImageEditError } from "../localized-image-edit";
 
 type GenerateInput = Parameters<ImageModel["generate"]>[0];
@@ -218,7 +219,8 @@ export class BackendImageModel implements ImageModel {
     const startedAt = performance.now();
     let resourceWaitMs: number | null = null;
     let runnerPreparationMs: number | null = null;
-    const invocationPerformance = () => ({ resourceWaitMs, runnerPreparationMs, totalMs: performance.now() - startedAt, requests });
+    let reconciledPriorInvocation = false;
+    const invocationPerformance = () => ({ resourceWaitMs, runnerPreparationMs, totalMs: performance.now() - startedAt, requests, ...(reconciledPriorInvocation ? { reconciledPriorInvocation } : {}) });
     let failurePhase: "pre_submit" | "post_submit" = "pre_submit";
     const assets: ImageAsset[] = [];
     let localInvocation: ProviderInvocationMetadata | undefined;
@@ -245,7 +247,66 @@ export class BackendImageModel implements ImageModel {
         if ((descriptor.backendKind === "local-image") !== (localizedEdit?.operation?.kind === "recolor")) {
           throw new LocalizedImageEditError("The confirmed operation does not match the pinned workflow");
         }
-        await input.executionBoundary?.beforeProviderInvocation();
+        const promptIdFor = (index: number) => input.attemptId && backend.findPriorSubmission
+          ? generationRunnerPromptId(input.attemptId, index)
+          : undefined;
+        const collect = async (handle: BackendHandle) => {
+          if (descriptor.backendKind !== "local-image") providerRequestIds.push(handle.id);
+          failurePhase = "post_submit";
+          const result = await backend.poll(handle);
+          if (descriptor.backendKind === "local-image") localInvocation = result.invocation;
+          if (result.performance) requests.push({ providerRequestId: handle.id, ...result.performance });
+          for (const asset of result.assets) {
+            if (localizedEdit) {
+              const composed = await compositeLocalizedImageEdit(localizedEdit, asset.body);
+              composed.preservation.evidence.sampling = descriptor.backendKind === "local-image"
+                ? IMAGE_RECOLOR_ALGORITHM : "source-latent-noise-mask-v1";
+              assets.push(composed);
+              continue;
+            }
+            assets.push({
+              width: asset.width,
+              height: asset.height,
+              contentType: asset.contentType,
+              body: asset.body,
+            });
+          }
+        };
+        const entry = await input.executionBoundary?.beforeProviderInvocation(
+          promptIdFor(0) ? { runnerPromptIdScheme: GENERATION_RUNNER_PROMPT_ID_SCHEME } : undefined,
+        );
+        if (entry === "reconcile_prior") {
+          reconciledPriorInvocation = true;
+          // SPEC: collect what the interrupted transport left and submit nothing. An
+          // output the runner cannot account for is refunded by the partial-delivery
+          // path below, not rendered again.
+          // INVARIANT: every index is asked, not just the ones before the first gap:
+          // a runner restart can lose an early output while a later one still ran.
+          let unaccounted: BackendInvocationError | undefined;
+          for (let index = 0; index < count; index += 1) {
+            if (index > 0) await input.executionBoundary?.beforeNextProviderInvocation();
+            try {
+              // The boundary only answers this way to a promptId the backend can look up.
+              const prior = await backend.findPriorSubmission!({ promptId: promptIdFor(index)!, timeoutMs: env.IMAGE_TIMEOUT_MS, outputKind: "image" });
+              if (prior.state === "gone") {
+                unaccounted ??= prior.failure;
+                continue;
+              }
+              await collect(prior.handle);
+            } catch (error) {
+              if (error instanceof LocalizedImageEditError) throw error;
+              const failure = backendFailure(error, "post_submit");
+              // Ambiguity outranks a known gap, since nothing proves the rest is over.
+              if (failure.outcome === "ambiguous") {
+                unaccounted = failure;
+                break;
+              }
+              unaccounted ??= failure;
+            }
+          }
+          if (unaccounted) throw unaccounted;
+          return;
+        }
         for (let index = 0; index < count; index += 1) {
           if (index > 0) await input.executionBoundary?.beforeNextProviderInvocation();
           failurePhase = "pre_submit";
@@ -269,27 +330,9 @@ export class BackendImageModel implements ImageModel {
             } } : {}),
             requestId: input.requestId,
             timeoutMs: env.IMAGE_TIMEOUT_MS,
+            ...(promptIdFor(index) ? { promptId: promptIdFor(index) } : {}),
           });
-          if (descriptor.backendKind !== "local-image") providerRequestIds.push(handle.id);
-          failurePhase = "post_submit";
-          const result = await backend.poll(handle);
-          if (descriptor.backendKind === "local-image") localInvocation = result.invocation;
-          if (result.performance) requests.push({ providerRequestId: handle.id, ...result.performance });
-          for (const asset of result.assets) {
-            if (localizedEdit) {
-              const composed = await compositeLocalizedImageEdit(localizedEdit, asset.body);
-              composed.preservation.evidence.sampling = descriptor.backendKind === "local-image"
-                ? IMAGE_RECOLOR_ALGORITHM : "source-latent-noise-mask-v1";
-              assets.push(composed);
-              continue;
-            }
-            assets.push({
-              width: asset.width,
-              height: asset.height,
-              contentType: asset.contentType,
-              body: asset.body,
-            });
-          }
+          await collect(handle);
         }
       };
       if (descriptor.backendKind === "local-image") await execute();

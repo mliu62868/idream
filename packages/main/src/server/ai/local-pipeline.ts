@@ -115,6 +115,9 @@ export async function reconcileStaleGenerationJobs(input: {
   videoTimeoutMs?: number;
   limit?: number;
   generationJobIds?: readonly string[];
+  // INTENT: a queued row or a deferred executing one stays eligible while legitimately
+  // old. Without a cursor a full page of those hides the real stale rows behind them.
+  cursor?: { readonly updatedAt: Date; readonly id: string } | null;
 } = {}) {
   const now = input.now ?? new Date();
   const timeoutMs =
@@ -127,13 +130,16 @@ export async function reconcileStaleGenerationJobs(input: {
   const videoCutoff = new Date(now.getTime() - videoTimeoutMs);
   const limit = Math.max(1, Math.min(input.limit ?? 25, 100));
   if (input.generationJobIds?.length === 0) {
-    return { scanned: 0, enqueued: 0, quarantined: 0, cutoff, videoCutoff };
+    return { scanned: 0, enqueued: 0, quarantined: 0, cutoff, videoCutoff, nextCursor: null };
   }
   const idFilter = input.generationJobIds
     ? Prisma.sql`AND request.id IN (${Prisma.join([...input.generationJobIds])})`
     : Prisma.empty;
-  const candidates = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-    SELECT request.id
+  const afterCursor = input.cursor
+    ? Prisma.sql`AND (request."updatedAt", request.id) > (${input.cursor.updatedAt}, ${input.cursor.id})`
+    : Prisma.empty;
+  const candidates = await prisma.$queryRaw<Array<{ id: string; updatedAt: Date }>>(Prisma.sql`
+    SELECT request.id, request."updatedAt"
     FROM generation_jobs request
     WHERE request.status IN ('queued', 'moderating_input', 'running', 'moderating_output')
       AND (
@@ -141,6 +147,7 @@ export async function reconcileStaleGenerationJobs(input: {
         (request.mode <> 'video' AND request."updatedAt" < ${cutoff})
       )
       ${idFilter}
+      ${afterCursor}
       AND EXISTS (
         SELECT 1
         FROM generation_attempts active_attempt
@@ -193,7 +200,10 @@ export async function reconcileStaleGenerationJobs(input: {
     }
   }
 
-  return { scanned: jobs.length, enqueued, quarantined, cutoff, videoCutoff };
+  const last = candidates.at(-1);
+  // A short page means the scan reached the end; the next one starts over.
+  const nextCursor = last && candidates.length === limit ? { updatedAt: last.updatedAt, id: last.id } : null;
+  return { scanned: jobs.length, enqueued, quarantined, cutoff, videoCutoff, nextCursor };
 }
 
 type GenerationQueueFact = {

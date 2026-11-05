@@ -8,6 +8,7 @@ import { BackendInvocationError, type GenBackend } from "./types";
 import { workflowDescriptorSchema } from "./workflow";
 import { CONFIRMED_IMAGE_EDIT_VERSION, LOCAL_IMAGE_EDIT_VERSION, LOCAL_IMAGE_EDIT_MODEL_SHA256 } from "@idream/shared/chat/image-action";
 import { LocalImageBackend } from "./local-image";
+import { GENERATION_RUNNER_PROMPT_ID_SCHEME, generationRunnerPromptId } from "@idream/shared/contracts";
 
 // 2x2 PNG (checkerboard black/white) — same fixture used by comfyui.test.ts.
 // These tests inject a stub GenBackend directly (no real sanity
@@ -981,5 +982,104 @@ describe("BackendImageModel numericControl", () => {
     });
 
     expect(submittedSlots(backend)).not.toHaveProperty("sample_count");
+  });
+});
+
+describe("BackendImageModel with an interrupted invocation", () => {
+  const ATTEMPT = "attempt-reconcile";
+  const input = { prompt: "a cat", count: 3, model: "m", controls: PIN, attemptId: ATTEMPT };
+  const promptId = (index: number) => generationRunnerPromptId(ATTEMPT, index);
+  const gone = () => ({ state: "gone" as const, failure: new BackendInvocationError("backend_error", "runner has no record", "post_submit", "definitive", true) });
+
+  function boundary(entry: "fresh" | "reconcile_prior") {
+    return {
+      beforeProviderInvocation: vi.fn(async () => entry),
+      beforeNextProviderInvocation: vi.fn(async () => {}),
+      onResourceWait: vi.fn(async () => {}),
+    };
+  }
+
+  // Each output's answer is stated by index, the way the runner would hold them.
+  function reconcilingBackend(answers: Record<number, "present" | "gone" | Error>) {
+    return makeStubBackend({
+      findPriorSubmission: vi.fn(async ({ promptId: id }) => {
+        const index = [0, 1, 2].find((candidate) => promptId(candidate) === id)!;
+        const answer = answers[index];
+        if (answer instanceof Error) throw answer;
+        return answer === "present" ? { state: "present" as const, handle: { id } } : gone();
+      }),
+    });
+  }
+
+  it("submits each output under its own deterministic id and claims the scheme", async () => {
+    const backend = makeStubBackend({ findPriorSubmission: vi.fn() });
+    const execution = boundary("fresh");
+    const result = await modelWith(backend).generate({ ...input, executionBoundary: execution });
+    expect(result.ok).toBe(true);
+    expect(vi.mocked(backend.submit).mock.calls.map(([job]) => job.promptId)).toEqual([promptId(0), promptId(1), promptId(2)]);
+    expect(execution.beforeProviderInvocation).toHaveBeenCalledExactlyOnceWith({ runnerPromptIdScheme: GENERATION_RUNNER_PROMPT_ID_SCHEME });
+    expect(backend.findPriorSubmission).not.toHaveBeenCalled();
+  });
+
+  it("gives a backend without the capability no id and claims nothing", async () => {
+    const backend = makeStubBackend();
+    const execution = boundary("fresh");
+    await modelWith(backend).generate({ ...input, count: 1, executionBoundary: execution });
+    expect(vi.mocked(backend.submit).mock.calls[0]![0]).not.toHaveProperty("promptId");
+    expect(execution.beforeProviderInvocation).toHaveBeenCalledExactlyOnceWith(undefined);
+  });
+
+  it("collects every finished output and renders none", async () => {
+    const backend = reconcilingBackend({ 0: "present", 1: "present", 2: "present" });
+    const result = await modelWith(backend).generate({ ...input, executionBoundary: boundary("reconcile_prior") });
+    expect(result).toMatchObject({ ok: true, invocation: { usage: { providerRequestIds: [promptId(0), promptId(1), promptId(2)] } } });
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.data.assets).toHaveLength(3);
+    expect(result.invocation?.usage).not.toHaveProperty("interruptedBy");
+    expect(backend.submit).not.toHaveBeenCalled();
+    expect(backend.poll).toHaveBeenCalledTimes(3);
+  });
+
+  it("delivers a partial set and leaves the missing output for the partial refund", async () => {
+    const backend = reconcilingBackend({ 0: "present", 1: "present", 2: "gone" });
+    const result = await modelWith(backend).generate({ ...input, executionBoundary: boundary("reconcile_prior") });
+    expect(result).toMatchObject({ ok: true, invocation: { usage: { expectedOutputs: 3, deliveredOutputs: 2, interruptedBy: { outcome: "definitive" } } } });
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.data.assets).toHaveLength(2);
+    expect(backend.submit).not.toHaveBeenCalled();
+    expect(backend.poll).toHaveBeenCalledTimes(2);
+  });
+
+  it("still finds a later output when a runner restart lost an earlier one", async () => {
+    const backend = reconcilingBackend({ 0: "gone", 1: "present", 2: "gone" });
+    const result = await modelWith(backend).generate({ ...input, executionBoundary: boundary("reconcile_prior") });
+    expect(result).toMatchObject({ ok: true, invocation: { usage: { providerRequestIds: [promptId(1)], deliveredOutputs: 1 } } });
+    expect(backend.submit).not.toHaveBeenCalled();
+    expect(backend.findPriorSubmission).toHaveBeenCalledTimes(3);
+  });
+
+  it("fails definitively and retryably when the runner has none of them", async () => {
+    const backend = reconcilingBackend({ 0: "gone", 1: "gone", 2: "gone" });
+    const result = await modelWith(backend).generate({ ...input, executionBoundary: boundary("reconcile_prior") });
+    expect(result).toMatchObject({ ok: false, error: { code: "backend_error", outcome: "definitive", retryable: true } });
+    expect(backend.submit).not.toHaveBeenCalled();
+    expect(backend.poll).not.toHaveBeenCalled();
+  });
+
+  it("stays ambiguous when the runner stops answering, even after a known gap", async () => {
+    const silent = new BackendInvocationError("backend_error", "runner silent", "post_submit", "ambiguous");
+    const backend = reconcilingBackend({ 0: "gone", 1: silent, 2: "present" });
+    const result = await modelWith(backend).generate({ ...input, executionBoundary: boundary("reconcile_prior") });
+    expect(result).toMatchObject({ ok: false, error: { outcome: "ambiguous" } });
+    expect(backend.submit).not.toHaveBeenCalled();
+    expect(backend.findPriorSubmission).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a finished output when the runner stops answering about the next", async () => {
+    const silent = new BackendInvocationError("backend_error", "runner silent", "post_submit", "ambiguous");
+    const backend = reconcilingBackend({ 0: "present", 1: silent, 2: "present" });
+    const result = await modelWith(backend).generate({ ...input, executionBoundary: boundary("reconcile_prior") });
+    expect(result).toMatchObject({ ok: true, invocation: { usage: { deliveredOutputs: 1, interruptedBy: { outcome: "ambiguous" } } } });
+    expect(backend.submit).not.toHaveBeenCalled();
   });
 });

@@ -4,6 +4,7 @@ import type { Prisma } from "@prisma/client";
 import { bullMqJobIdForDedupeKey } from "@idream/shared/contracts";
 import { redisConnectionOptions } from "@idream/shared/env";
 import { env } from "@/server/lib/env";
+import { trackOpenJobQueue, untrackOpenJobQueue } from "./queue-lifecycle";
 
 // INTENT: re-exported so existing importers keep their "@/server/jobs/queue"
 // entry point. Gen enqueues onto these same queues, so the derivation itself
@@ -90,6 +91,11 @@ export interface JobQueue {
   removeByDedupeKey(queue: string, dedupeKey: string): Promise<boolean>;
   removeByDedupePrefix(prefix: string, queues: string[]): Promise<number>;
   obliterate(queue: string): Promise<void>;
+  /**
+   * Waits for in-flight processNext calls, then closes the workers they kept open.
+   * A long-running process calls this on shutdown; a later processNext reopens them.
+   */
+  close(): Promise<void>;
 }
 
 type BullMqJobQueueOptions = {
@@ -102,6 +108,11 @@ type BullJobData = {
   payload: Prisma.JsonValue;
   dedupeKey?: string;
   queue: string;
+};
+
+type ManualQueueWorker = {
+  readonly worker: Worker<BullJobData>;
+  lastError: Error | null;
 };
 
 const defaultBackoffDelayMs = 30_000;
@@ -166,6 +177,11 @@ export class BullMqJobQueue implements JobQueue {
   readonly #workerLockDurationMs: number;
   readonly #workerStalledIntervalMs: number;
   readonly #idlePollIntervalMs: number;
+  // INTENT: one Worker per queue for this adapter's lifetime. processNext runs about
+  // once a second per queue on an idle finalizer, and a Worker per call opened and
+  // tore down two Redis connections each time (measured ~4.5 connections/s).
+  readonly #workers = new Map<string, ManualQueueWorker>();
+  readonly #inFlight = new Set<Promise<unknown>>();
 
   constructor(options: BullMqJobQueueOptions = {}) {
     this.#workerLockDurationMs = positiveDuration(
@@ -200,14 +216,75 @@ export class BullMqJobQueue implements JobQueue {
     }
   }
 
-  async processNext(input: {
+  processNext(input: {
     queue: string;
     workerId: string;
     processor: (job: QueueJob) => Promise<void>;
     idleTimeoutMs?: number;
   }): Promise<ProcessNextJobResult> {
+    const processing = this.#processNext(input).finally(() => {
+      this.#inFlight.delete(processing);
+    });
+    this.#inFlight.add(processing);
+    return processing;
+  }
+
+  async #processNext(input: {
+    queue: string;
+    workerId: string;
+    processor: (job: QueueJob) => Promise<void>;
+    idleTimeoutMs?: number;
+  }): Promise<ProcessNextJobResult> {
+    const manual = await this.#manualWorker(input.queue);
+    const { worker } = manual;
+    // INVARIANT: a fresh token per claim even though the Worker is shared. The token
+    // is what owns the job's lock, so two calls can never renew or finish each other's.
+    const token = `${input.workerId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    manual.lastError = null;
+    const deadline = Date.now() + Math.max(0, input.idleTimeoutMs ?? 0);
+    let bullJob: BullJob<BullJobData> | undefined;
+    do {
+      bullJob = await worker.getNextJob(token, { block: false });
+      if (bullJob || Date.now() >= deadline) break;
+      if (manual.lastError) throw manual.lastError;
+      await delay(
+        Math.min(this.#idlePollIntervalMs, Math.max(1, deadline - Date.now())),
+      );
+    } while (Date.now() < deadline);
+    if (!bullJob) return { job: null, status: "empty" };
+
+    const job = toQueueJob(input.queue, bullJob);
+    const renewal = renewManualJobLock(
+      bullJob,
+      token,
+      this.#workerLockDurationMs,
+    );
+    let processorError: Error | null = null;
+    try {
+      await input.processor(job);
+    } catch (error) {
+      processorError = normalizeError(error);
+    } finally {
+      await renewal.stop();
+    }
+    const failure = processorError ?? renewal.error();
+    if (failure) {
+      await bullJob.moveToFailed(failure, token, false);
+      return { job, status: "failed", error: failure.message };
+    }
+    await bullJob.moveToCompleted(
+      { ok: true, workerId: input.workerId },
+      token,
+      false,
+    );
+    return { job, status: "completed" };
+  }
+
+  async #manualWorker(queueName: string): Promise<ManualQueueWorker> {
+    const existing = this.#workers.get(queueName);
+    if (existing) return existing;
     const worker = new Worker<BullJobData>(
-      input.queue,
+      queueName,
       null,
       {
         autorun: false,
@@ -219,57 +296,29 @@ export class BullMqJobQueue implements JobQueue {
         stalledInterval: this.#workerStalledIntervalMs,
       },
     );
-
-    const token = `${input.workerId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    let workerError: Error | null = null;
+    const manual: ManualQueueWorker = { worker, lastError: null };
     worker.on("error", (error) => {
-      workerError ??= error;
+      manual.lastError ??= error;
     });
-    try {
-      // Manual getNextJob does not start BullMQ's stalled checker or lock
-      // manager. Start stalled recovery explicitly, then renew the exact manual
-      // token while the application processor owns the job.
-      await worker.startStalledCheckTimer();
-      const deadline = Date.now() + Math.max(0, input.idleTimeoutMs ?? 0);
-      let bullJob: BullJob<BullJobData> | undefined;
-      do {
-        bullJob = await worker.getNextJob(token, { block: false });
-        if (bullJob || Date.now() >= deadline) break;
-        if (workerError) throw workerError;
-        await delay(
-          Math.min(this.#idlePollIntervalMs, Math.max(1, deadline - Date.now())),
-        );
-      } while (Date.now() < deadline);
-      if (!bullJob) return { job: null, status: "empty" };
+    // Set before the first await: a concurrent call for this queue must share it.
+    this.#workers.set(queueName, manual);
+    trackOpenJobQueue(this);
+    // Manual getNextJob does not start BullMQ's stalled checker or lock
+    // manager. Start stalled recovery explicitly; processNext renews the exact
+    // manual token while the application processor owns the job.
+    await worker.startStalledCheckTimer();
+    return manual;
+  }
 
-      const job = toQueueJob(input.queue, bullJob);
-      const renewal = renewManualJobLock(
-        bullJob,
-        token,
-        this.#workerLockDurationMs,
-      );
-      let processorError: Error | null = null;
-      try {
-        await input.processor(job);
-      } catch (error) {
-        processorError = normalizeError(error);
-      } finally {
-        await renewal.stop();
-      }
-      const failure = processorError ?? renewal.error();
-      if (failure) {
-        await bullJob.moveToFailed(failure, token, false);
-        return { job, status: "failed", error: failure.message };
-      }
-      await bullJob.moveToCompleted(
-        { ok: true, workerId: input.workerId },
-        token,
-        false,
-      );
-      return { job, status: "completed" };
-    } finally {
-      await worker.close();
+  async close() {
+    // Finishing a claimed job needs its Worker's connection, so those go first.
+    while (this.#inFlight.size > 0) {
+      await Promise.allSettled([...this.#inFlight]);
     }
+    const workers = [...this.#workers.values()];
+    this.#workers.clear();
+    untrackOpenJobQueue(this);
+    await Promise.allSettled(workers.map(({ worker }) => worker.close()));
   }
 
   async inspectInFlight(queueNames: readonly string[]) {

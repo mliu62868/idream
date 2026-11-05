@@ -76,7 +76,10 @@ Request admitted
 - 写入失败的私有产物不进入 Artifact/Delivery。Gen 对所有已尝试的精确 key 回滚，确认已存在的对象不回滚；未获删除成功确认的 key 进入 failed TerminalRecord 的可选 `cleanupKeys`。Main 验证不可变 dispatch 的 attempt 前缀、文件名与数量预算，在同一接收事务建立清理 outbox，并以 lease/CAS 独立重试；账号擦除也枚举该终态和所有状态的清理 outbox，未删完不能完成。
 - Gen 在设备租约之外为每个产物写展示派生文件（图片 640px WebP、视频首帧 WebP），key 由资产 key 推导；失败只记录、不影响交付，网格回退原图。擦除按资产 key 推导枚举（ADR-13 §2.1.7）。终态记录由 finalize 与 unknown 采纳共用的 `createDeliveredGenerationAsset` 写入 MediaAsset。
 - 自托管 runner 的记录优先于超时判断：prompt 从 `/history` 与 `/queue` 连续两次消失、或超出执行预算后经取消确认已停止，都是确定失败；取消期间完成的产物照常交付；只有取消后仍在运行或 runner 持续失联才进入 `unknown`（ADR-13 §2.1.6）。
+- worker 崩溃后的重试不提交新 prompt，凭确定性 prompt id 问 runner：已完成则收取，排队或运行中则等待，runner 应答却查不到是确定失败并退款，连不上才是 `unknown`；多输出已完成的交付、其余部分退款（ADR-13 §2.1.6）。
 - Main 只在 Bull source 行已不被 worker 持有时才隔离 `running` Attempt；持有期间最多宽限到 stale 阈值的 6 倍。
+- 进入 `unknown` 后，sweeper 在宽限期满时收口：有已校验的迟到成功则 adopt 并交付，否则失败并退款；两条扫描（sweeper、finalizer stale）都带游标。打开的页面对 `unknown` 保持 30s 慢轮询，结局无需刷新可见。
+- finalizer 每个队列复用一个长生命周期 manual Worker（每次认领仍用独立 token 并续锁），stale 扫描在独立 lane 运行，不阻塞 terminal ingest；停机时等 lane 结束后再关闭 Worker。
 - 已有待清理 key 时，不自动重用同一 attempt 调用 provider；终态重放只重投原始记录。该协议覆盖已观察到的写入/回滚失败，不宣称覆盖成功 put 后、首次 TerminalRecord 持久化前的所有进程崩溃；open/unknown 生成执行仍须运营收敛后才允许账号硬删。
 
 ## 6. Provider 边界

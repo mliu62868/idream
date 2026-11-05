@@ -58,9 +58,16 @@ export interface ProviderRetryCapabilities {
 
 const retryablePipelineCategories = new Set(["rate_limited", "overloaded", "timeout", "internal"]);
 
+// "reconcile_prior": an earlier transport of this Attempt reserved the invocation
+// and left no terminal record. The adapter must ask the runner about it and must
+// not submit. Anything else means this is the first entry.
+export type GenerationInvocationEntry = "fresh" | "reconcile_prior";
+
 export type GenerationInvocationBoundary = {
   onResourceWait: () => Promise<void>;
-  beforeProviderInvocation: () => Promise<void>;
+  // `runnerPromptIdScheme` is the adapter's claim that it submits under that scheme
+  // and can look a submission up. Omitted, a prior invocation stays unknown.
+  beforeProviderInvocation: (options?: { runnerPromptIdScheme?: string }) => Promise<GenerationInvocationEntry | void>;
   beforeNextProviderInvocation: () => Promise<void>;
 };
 
@@ -72,6 +79,8 @@ export interface ImageModel {
   generate(input: {
     provider?: string;
     executionBoundary?: GenerationInvocationBoundary;
+    /** Immutable Attempt identity; runner prompt ids derive from it. */
+    attemptId?: string;
     prompt: string;
     count: number;
     seed?: string;
@@ -101,6 +110,8 @@ export interface VideoModel {
   readonly managesInvocationBoundary?: true;
   generate(input: {
     executionBoundary?: GenerationInvocationBoundary;
+    /** Immutable Attempt identity; runner prompt ids derive from it. */
+    attemptId?: string;
     prompt: string;
     seconds: number;
     seed?: string;

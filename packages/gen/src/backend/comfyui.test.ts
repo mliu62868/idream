@@ -1064,3 +1064,127 @@ describe("ComfyUIBackend", () => {
     );
   });
 });
+
+describe("ComfyUIBackend reconciles an interrupted submission through the runner", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  const PROMPT_ID = "8cb36a7b-6a8a-5379-beb3-aeb4aab3f063";
+  const FINISHED = { status: { completed: true }, outputs: { "9": { images: [{ filename: "a.png", subfolder: "", type: "output" }] } } };
+  const lookup = { promptId: PROMPT_ID, timeoutMs: 1_000, outputKind: "image" as const };
+
+  function runner(answers: { history?: () => unknown; queue?: () => unknown }) {
+    const submissions: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/prompt")) {
+        submissions.push(JSON.parse(String(init?.body)));
+        return Response.json({ prompt_id: JSON.parse(String(init?.body)).prompt_id ?? "minted" });
+      }
+      if (url.includes("/history/")) {
+        const entry = answers.history?.();
+        if (entry instanceof Error) throw entry;
+        return Response.json(entry === undefined ? {} : { [PROMPT_ID]: entry });
+      }
+      if (url.endsWith("/queue")) {
+        const queue = answers.queue?.() ?? { queue_running: [], queue_pending: [] };
+        if (queue instanceof Error) throw queue;
+        return queue instanceof Response ? queue : Response.json(queue);
+      }
+      return new Response(PNG, { headers: { "content-type": "image/png" } });
+    }));
+    return submissions;
+  }
+
+  function backendFor(runnerOutageGraceMs = 1_000) {
+    return new ComfyUIBackend({ apiUrl: "http://x", pollIntervalMs: 1, promptCancelGraceMs: 0, runnerOutageGraceMs, workflowSync: testWorkflowSync });
+  }
+
+  it("submits under the requested deterministic id", async () => {
+    const submissions = runner({});
+    const handle = await backendFor().submit({ descriptor, slots: { prompt: "cat" }, timeoutMs: 1_000, promptId: PROMPT_ID });
+    expect(handle.id).toBe(PROMPT_ID);
+    expect(submissions).toEqual([expect.objectContaining({ prompt_id: PROMPT_ID })]);
+  });
+
+  it("omits prompt_id when the caller has no Attempt identity", async () => {
+    const submissions = runner({});
+    await backendFor().submit({ descriptor, slots: { prompt: "cat" }, timeoutMs: 1_000 });
+    expect(submissions[0]).not.toHaveProperty("prompt_id");
+  });
+
+  // Otherwise a retry would look up an id the runner never heard of and refund a
+  // prompt that is still rendering.
+  it("treats a runner that ignored the requested id as ambiguous", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ prompt_id: "minted-by-runner" })));
+    await expect(backendFor().submit({ descriptor, slots: { prompt: "cat" }, timeoutMs: 1_000, promptId: PROMPT_ID })).rejects.toMatchObject({
+      phase: "post_submit", outcome: "ambiguous",
+    });
+  });
+
+  it("collects a finished prompt without submitting anything", async () => {
+    const submissions = runner({ history: () => FINISHED });
+    const backend = backendFor();
+    const prior = await backend.findPriorSubmission(lookup);
+    expect(prior).toEqual({ state: "present", handle: { id: PROMPT_ID } });
+    if (prior.state !== "present") throw new Error("unreachable");
+    expect((await backend.poll(prior.handle)).assets).toHaveLength(1);
+    expect(submissions).toEqual([]);
+  });
+
+  it.each([
+    ["running", { queue_running: [[0, PROMPT_ID]], queue_pending: [] }],
+    ["queued", { queue_running: [], queue_pending: [[0, PROMPT_ID]] }],
+  ])("waits for a %s prompt to finish instead of concluding anything", async (_state, queue) => {
+    let reads = 0;
+    const submissions = runner({ history: () => (++reads > 5 ? FINISHED : undefined), queue: () => queue });
+    const backend = backendFor();
+    const prior = await backend.findPriorSubmission(lookup);
+    if (prior.state !== "present") throw new Error("expected the prompt to be present");
+    expect((await backend.poll(prior.handle)).assets).toHaveLength(1);
+    expect(reads).toBeGreaterThan(5);
+    expect(submissions).toEqual([]);
+  });
+
+  it("calls a prompt gone only after an answering runner misses it twice, and refunds rather than re-renders", async () => {
+    const submissions = runner({});
+    await expect(backendFor().findPriorSubmission(lookup)).resolves.toMatchObject({
+      state: "gone",
+      failure: { code: "backend_error", phase: "post_submit", outcome: "definitive", retryable: true },
+    });
+    expect(submissions).toEqual([]);
+  });
+
+  it("does not call a prompt gone on one miss that the next read contradicts", async () => {
+    let queueReads = 0;
+    runner({ queue: () => (++queueReads === 1 ? { queue_running: [], queue_pending: [] } : { queue_running: [[0, PROMPT_ID]], queue_pending: [] }) });
+    await expect(backendFor().findPriorSubmission(lookup)).resolves.toMatchObject({ state: "present" });
+  });
+
+  it.each([
+    ["history connection", { history: () => new TypeError("connection reset") }],
+    ["queue answer", { queue: () => new Response("busy", { status: 503 }) }],
+    ["queue connection", { queue: () => new TypeError("connection reset") }],
+  ])("stays ambiguous while the runner gives no %s", async (_case, answers) => {
+    const submissions = runner(answers);
+    await expect(backendFor(20).findPriorSubmission(lookup)).rejects.toMatchObject({
+      code: "backend_error", phase: "post_submit", outcome: "ambiguous",
+    });
+    expect(submissions).toEqual([]);
+  });
+
+  it("rides out a restart so the runner's own answer decides", async () => {
+    let reads = 0;
+    runner({ history: () => (++reads < 4 ? new TypeError("connection refused") : FINISHED) });
+    await expect(backendFor().findPriorSubmission(lookup)).resolves.toMatchObject({ state: "present" });
+  });
+
+  it("reports a prompt that failed on the runner as that failure, not as gone", async () => {
+    const failed = { status: { status_str: "error", completed: false, messages: [] }, outputs: {} };
+    const submissions = runner({ history: () => failed });
+    const backend = backendFor();
+    const prior = await backend.findPriorSubmission(lookup);
+    if (prior.state !== "present") throw new Error("expected the failed record to be present");
+    await expect(backend.poll(prior.handle)).rejects.toMatchObject({ outcome: "definitive", retryable: false });
+    expect(submissions).toEqual([]);
+  });
+});

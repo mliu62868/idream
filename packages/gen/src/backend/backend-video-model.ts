@@ -4,7 +4,7 @@ import {
   type CharacterVideoProductionRecipe,
 } from "@idream/shared";
 import type { VideoGeneratePayload } from "@idream/shared/contracts";
-import { redgraftVideoEnvelope, REDGRAFT_VIDEO_OPTIONS, REDGRAFT_VIDEO_DEFAULTS } from "@idream/shared/contracts";
+import { GENERATION_RUNNER_PROMPT_ID_SCHEME, generationRunnerPromptId, redgraftVideoEnvelope, REDGRAFT_VIDEO_OPTIONS, REDGRAFT_VIDEO_DEFAULTS } from "@idream/shared/contracts";
 import { env } from "../env";
 import {
   stableNumericSeed,
@@ -21,7 +21,7 @@ import {
   type BackendRegistry,
   type ComfyUiRunner,
 } from "./registry";
-import { BackendInvocationError, type BackendAsset, type BackendPerformance } from "./types";
+import { BackendInvocationError, type BackendAsset, type BackendHandle, type BackendPerformance } from "./types";
 import { assertCharacterVideoProductionDescriptor } from "./production-video-descriptor";
 
 type GenerateInput = Parameters<VideoModel["generate"]>[0];
@@ -126,7 +126,8 @@ export class BackendVideoModel implements VideoModel {
     const startedAt = performance.now();
     let resourceWaitMs: number | null = null;
     let runnerPreparationMs: number | null = null;
-    const invocationPerformance = () => ({ resourceWaitMs, runnerPreparationMs, totalMs: performance.now() - startedAt, requests });
+    let reconciledPriorInvocation = false;
+    const invocationPerformance = () => ({ resourceWaitMs, runnerPreparationMs, totalMs: performance.now() - startedAt, requests, ...(reconciledPriorInvocation ? { reconciledPriorInvocation } : {}) });
     try {
       // Before the lease: a restarting runner must not hold the device away from
       // the other modality, and nothing here has crossed the invocation boundary.
@@ -142,14 +143,29 @@ export class BackendVideoModel implements VideoModel {
           );
         }
         runnerPreparationMs = performance.now() - preparationStartedAt;
-        await input.executionBoundary?.beforeProviderInvocation();
-        const handle = await backend.submit({
-          descriptor,
-          slots,
-          referenceImages: input.referenceImages,
-          requestId: input.requestId,
-          timeoutMs: env.VIDEO_TIMEOUT_MS,
-        });
+        const promptId = input.attemptId && backend.findPriorSubmission
+          ? generationRunnerPromptId(input.attemptId, 0)
+          : undefined;
+        const entry = await input.executionBoundary?.beforeProviderInvocation(
+          promptId ? { runnerPromptIdScheme: GENERATION_RUNNER_PROMPT_ID_SCHEME } : undefined,
+        );
+        let handle: BackendHandle;
+        if (entry === "reconcile_prior") {
+          reconciledPriorInvocation = true;
+          // The boundary only answers this way to a promptId the backend can look up.
+          const prior = await backend.findPriorSubmission!({ promptId: promptId!, timeoutMs: env.VIDEO_TIMEOUT_MS, outputKind: "video" });
+          if (prior.state === "gone") throw prior.failure;
+          handle = prior.handle;
+        } else {
+          handle = await backend.submit({
+            descriptor,
+            slots,
+            referenceImages: input.referenceImages,
+            requestId: input.requestId,
+            timeoutMs: env.VIDEO_TIMEOUT_MS,
+            ...(promptId ? { promptId } : {}),
+          });
+        }
         providerRequestId = handle.id;
         const result = await backend.poll(handle);
         if (result.performance) requests.push({ providerRequestId: handle.id, ...result.performance });

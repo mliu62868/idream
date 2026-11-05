@@ -7,6 +7,7 @@ import {
 } from "./queues";
 import {
   generationDispatchRequestId,
+  generationRunnerPromptId,
   generationProviderIdempotencyKey,
   generationProviderInvocationRef,
   generationTerminalFinalizeDedupeKey,
@@ -42,6 +43,19 @@ describe("cross-service generation identity", () => {
     expect(generationDispatchRequestId("attempt-1")).toBe(
       "generation_dispatch_attempt-1",
     );
+  });
+
+  // The expected values come from Python's uuid.uuid5, the same stack as ComfyUI's
+  // validate_job_id. A retry derives these ids to find a crashed worker's prompt, so
+  // a change here reports every in-flight prompt as gone and refunds it.
+  it("derives the runner prompt id as a canonical RFC 4122 UUIDv5", () => {
+    expect(generationRunnerPromptId("attempt-abc", 0)).toBe("8cb36a7b-6a8a-5379-beb3-aeb4aab3f063");
+    expect(generationRunnerPromptId("attempt-abc", 1)).toBe("37b76a0c-5001-5181-a3b0-77fd28016c73");
+    expect(generationRunnerPromptId("a".repeat(120), 3)).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(generationRunnerPromptId("attempt-abc", 0)).toBe(generationRunnerPromptId("attempt-abc", 0));
+    expect(generationRunnerPromptId("attempt-abd", 0)).not.toBe(generationRunnerPromptId("attempt-abc", 0));
+    expect(() => generationRunnerPromptId("attempt-abc", -1)).toThrow();
+    expect(() => generationRunnerPromptId("", 0)).toThrow();
   });
 
   it("pins the terminal record storage layout Gen writes and Main reads", () => {

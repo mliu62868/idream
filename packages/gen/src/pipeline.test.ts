@@ -6,6 +6,8 @@ import { createHash } from "node:crypto";
 import sharp from "sharp";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  GENERATION_RUNNER_PROMPT_ID_SCHEME,
+  generationRunnerPromptId,
   type GenerationTerminalRecordIngest,
   type ImageGeneratePayload,
   type VideoGeneratePayload,
@@ -18,9 +20,12 @@ import {
 } from "./pipeline";
 import type { GenProviders } from "./providers";
 import { env } from "./env";
-import { persistTerminalRecord, reserveGenerationInvocation } from "./terminal-record";
+import { loadGenerationInvocationGuard, persistTerminalRecord, reserveGenerationInvocation } from "./terminal-record";
 import { createVideoMediaProbe } from "./backend/video-media-probe";
 import { BackendImageModel } from "./backend/backend-image-model";
+import { BackendVideoModel } from "./backend/backend-video-model";
+import { BackendInvocationError } from "./backend/types";
+import productionVideoDescriptor from "../workflows/redgraft-ltx25-i2v.json";
 import { buildBackendRegistry } from "./backend/registry";
 import { CONFIRMED_IMAGE_EDIT_VERSION } from "@idream/shared/chat/image-action";
 import { ComfyUIBackend } from "./backend/comfyui";
@@ -2827,4 +2832,221 @@ it("relays a terminal that became durable during resource waiting without replac
   expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ terminalRecord: terminal }));
   expect(waiting.providers.blob.putPrivateIfAbsent).toHaveBeenCalledTimes(1);
   expect(waiting.generate).not.toHaveBeenCalled();
+});
+
+describe("a retry after a worker crash asks the runner instead of concluding unknown", () => {
+  const descriptor = workflowDescriptorSchema.parse({ workflowKey: "reconcile", modelId: "reconcile", backendKind: "comfyui", comfyWorkflow: { id: "11111111-1111-4111-8111-111111111111", name: "Reconcile" }, version: 1, capabilities: ["textToImage"], apiPrompt: {}, inputs: [] });
+  const payload = imagePayload({ attemptId: "attempt_crash", count: 3, model: descriptor.modelId, controls: { workflowKey: descriptor.workflowKey, workflowVersion: descriptor.version } });
+  const promptId = (index: number) => generationRunnerPromptId(payload.attemptId, index);
+  const stubCapabilities = () => ({ textToImage: true, img2img: false, referenceImages: false, stableSeed: true, edit: false });
+  const silent = () => new BackendInvocationError("backend_error", "runner silent", "post_submit", "ambiguous");
+  const gone = () => ({ state: "gone" as const, failure: new BackendInvocationError("backend_error", "runner has no record", "post_submit", "definitive", true) });
+
+  // What a crashed first transport leaves behind: the guard, and nothing else.
+  async function crashedGuard(blob: GenProviders["blob"], scheme: string | undefined = GENERATION_RUNNER_PROMPT_ID_SCHEME) {
+    await reserveGenerationInvocation(blob, {
+      version: 1, attemptId: payload.attemptId, attemptNo: payload.attemptNo,
+      transportAttemptNo: 1, providerIdempotencyKey: `generation:${payload.attemptId}:provider`,
+      requestId: payload.requestId, generationJobId: payload.generationJobId,
+      mode: "image", provider: payload.provider, model: payload.model ?? null,
+      reservedAt: new Date().toISOString(),
+      ...(scheme ? { runnerPromptIdScheme: scheme } : {}),
+    });
+  }
+
+  function harness(answers: Record<number, "present" | "gone" | Error>, options: { capable?: boolean } = {}) {
+    const submit = vi.fn(async () => ({ id: "native-prompt" }));
+    const poll = vi.fn(async () => ({ assets: [{ body: patternedPng(4, 4), width: 4, height: 4, contentType: "image/png" }] }));
+    const findPriorSubmission = vi.fn(async ({ promptId: id }: { promptId: string }) => {
+      const answer = answers[[0, 1, 2].find((index) => promptId(index) === id)!];
+      if (answer instanceof Error) throw answer;
+      return answer === "present" ? { state: "present" as const, handle: { id } } : gone();
+    });
+    const backend = {
+      id: "stub", kind: "comfyui" as const, submit, poll, health: async () => ({ ok: true }), capabilities: stubCapabilities,
+      ...(options.capable === false ? {} : { findPriorSubmission }),
+    };
+    const providers = makeProviders({ image: new BackendImageModel({ resolveForModel: () => ({ descriptor, backend }) }), blob: makeMemoryBlob() });
+    return { providers, submit, poll, findPriorSubmission };
+  }
+
+  const terminal = (deps: PipelineDeps) => vi.mocked(deps.acknowledgeTerminalRecord).mock.calls.at(-1)![0].terminalRecord;
+
+  it("records the scheme on a fresh invocation, so a later retry may trust the derived ids", async () => {
+    const { providers, submit } = harness({}, { capable: true });
+    await processImageGenerate(payload, makePipelineDeps(providers));
+    expect(submit).toHaveBeenCalledTimes(3);
+    await expect(loadGenerationInvocationGuard(providers.blob, payload.attemptId)).resolves.toMatchObject({ runnerPromptIdScheme: GENERATION_RUNNER_PROMPT_ID_SCHEME });
+  });
+
+  // A read cannot replay, so the guard's transport number does not gate it, whether
+  // this delivery has the same number (0) or a later one (1).
+  it.each([0, 1])("collects finished outputs and submits nothing (attemptsMade %i)", async (attemptsMade) => {
+    const { providers, submit, poll } = harness({ 0: "present", 1: "present", 2: "present" });
+    await crashedGuard(providers.blob);
+    const deps = makePipelineDeps(providers, { attemptsMade, maxAttempts: 3 });
+    await processImageGenerate(payload, deps);
+    expect(terminal(deps)).toMatchObject({ outcome: "succeeded", providerInvoked: true, assets: [{ ordinal: 0 }, { ordinal: 1 }, { ordinal: 2 }] });
+    expect(submit).not.toHaveBeenCalled();
+    expect(poll).toHaveBeenCalledTimes(3);
+  });
+
+  // BullMQ counts failures, not deliveries, so a stalled job returns with the same
+  // transport number. Main rejects that `running` event because the crashed process
+  // took the first timestamp with it; the job fails once and the next one reconciles.
+  it("reconciles on the next transport after Main refuses the redelivered running event", async () => {
+    const { providers, submit, findPriorSubmission } = harness({ 0: "present", 1: "present", 2: "present" });
+    await crashedGuard(providers.blob);
+    const recordTransportExecution = vi.fn(async (event: { transportAttemptNo: number }) => {
+      if (event.transportAttemptNo === 1) throw new Error("Event id was reused with a different fact");
+    });
+    const redelivered = makePipelineDeps(providers, { attemptsMade: 0, maxAttempts: 3, recordTransportExecution });
+    await expect(processImageGenerate(payload, redelivered)).rejects.toThrow("reused with a different fact");
+    expect(redelivered.acknowledgeTerminalRecord).not.toHaveBeenCalled();
+    expect(findPriorSubmission).not.toHaveBeenCalled();
+    const next = makePipelineDeps(providers, { attemptsMade: 1, maxAttempts: 3, recordTransportExecution });
+    await processImageGenerate(payload, next);
+    expect(terminal(next)).toMatchObject({ outcome: "succeeded", transportAttemptNo: 2 });
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("settles a prompt the runner lost as a definite, refundable failure without rendering", async () => {
+    const { providers, submit, poll } = harness({ 0: "gone", 1: "gone", 2: "gone" });
+    await crashedGuard(providers.blob);
+    const deps = makePipelineDeps(providers, { attemptsMade: 1, maxAttempts: 3 });
+    await processImageGenerate(payload, deps);
+    expect(terminal(deps)).toMatchObject({ outcome: "failed", providerInvoked: true, error: { code: "backend_error", retryability: "retryable" } });
+    expect(submit).not.toHaveBeenCalled();
+    expect(poll).not.toHaveBeenCalled();
+  });
+
+  it("stays unknown while the runner cannot be reached, and does not spend a provider replay", async () => {
+    const { providers, submit } = harness({ 0: silent(), 1: silent(), 2: silent() });
+    await crashedGuard(providers.blob);
+    const deps = makePipelineDeps(providers, { attemptsMade: 1, maxAttempts: 3 });
+    await processImageGenerate(payload, deps);
+    expect(terminal(deps)).toMatchObject({ outcome: "unknown", error: { code: "ambiguous_non_replayable", retryability: "not_retryable" } });
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("delivers a partial set once and replays that same record on the next delivery", async () => {
+    const { providers, submit, poll, findPriorSubmission } = harness({ 0: "present", 1: "present", 2: "gone" });
+    await crashedGuard(providers.blob);
+    const deps = makePipelineDeps(providers, { attemptsMade: 0, maxAttempts: 3 });
+    await processImageGenerate(payload, deps);
+    const first = terminal(deps);
+    expect(first).toMatchObject({ outcome: "succeeded", assets: [{ ordinal: 0 }, { ordinal: 1 }], usage: { expectedOutputs: 3, deliveredOutputs: 2 } });
+    expect(submit).not.toHaveBeenCalled();
+    await processImageGenerate(payload, deps);
+    expect(terminal(deps)).toEqual(first);
+    expect(findPriorSubmission).toHaveBeenCalledTimes(3);
+    expect(poll).toHaveBeenCalledTimes(2);
+  });
+
+  // In-flight when this ships: that transport let the runner mint the id, so the
+  // derived id would come back absent and refund a prompt that is still rendering.
+  it("leaves a guard from before the scheme existed unknown without asking the runner", async () => {
+    const { providers, submit, findPriorSubmission } = harness({ 0: "gone", 1: "gone", 2: "gone" });
+    await reserveGenerationInvocation(providers.blob, {
+      version: 1, attemptId: payload.attemptId, attemptNo: payload.attemptNo,
+      transportAttemptNo: 1, providerIdempotencyKey: `generation:${payload.attemptId}:provider`,
+      requestId: payload.requestId, generationJobId: payload.generationJobId,
+      mode: "image", provider: payload.provider, model: payload.model ?? null,
+      reservedAt: new Date().toISOString(),
+    });
+    const deps = makePipelineDeps(providers, { attemptsMade: 1, maxAttempts: 3 });
+    await processImageGenerate(payload, deps);
+    expect(terminal(deps)).toMatchObject({ outcome: "unknown", error: { code: "ambiguous_incomplete_provider_invocation" } });
+    expect(findPriorSubmission).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["ends unknown on a later transport", 1],
+    ["refuses a redelivery of the same transport", 0],
+  ])("a backend without the capability keeps today's behaviour: %s", async (_case, attemptsMade) => {
+    const { providers, submit } = harness({}, { capable: false });
+    await crashedGuard(providers.blob, undefined);
+    const deps = makePipelineDeps(providers, { attemptsMade, maxAttempts: 3 });
+    const run = processImageGenerate(payload, deps);
+    if (attemptsMade === 0) {
+      await expect(run).rejects.toThrow("already reserved");
+      expect(deps.acknowledgeTerminalRecord).not.toHaveBeenCalled();
+    } else {
+      await run;
+      expect(terminal(deps)).toMatchObject({ outcome: "unknown", error: { code: "ambiguous_incomplete_provider_invocation" } });
+    }
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("lets a lock-lost worker's record stand instead of writing unknown over a settled attempt", async () => {
+    const { providers, poll } = harness({ 0: "present", 1: "present", 2: "present" });
+    await crashedGuard(providers.blob);
+    const deps = makePipelineDeps(providers, { attemptsMade: 0, maxAttempts: 3 });
+    const winner = await persistTerminalRecord(providers.blob, {
+      version: 1, outcome: "failed", attemptId: payload.attemptId, attemptNo: payload.attemptNo, transportAttemptNo: 1,
+      providerIdempotencyKey: `generation:${payload.attemptId}:provider`, requestId: payload.requestId, generationJobId: payload.generationJobId,
+      mode: "image", provider: payload.provider, providerInvoked: true, model: payload.model, providerRequestId: null, sourceRevision: null,
+      completedAt: new Date().toISOString(), usage: {}, error: { code: "backend_error", message: "the other worker finished first", retryability: "retryable" },
+    });
+    // The redelivered job started before the first worker wrote its record.
+    vi.mocked(providers.blob.getPrivate!).mockImplementationOnce(async () => ({ ok: false, error: { code: "not_found", message: "absent", retryable: false } }));
+    await processImageGenerate(payload, deps);
+    expect(poll).toHaveBeenCalledTimes(3);
+    expect(terminal(deps)).toEqual(winner.terminalRecord);
+    expect(vi.mocked(deps.recordTransportExecution).mock.calls.map(([event]) => event.status)).not.toContain("unknown");
+  });
+
+  describe("video", () => {
+    const videoDescriptor = workflowDescriptorSchema.parse(productionVideoDescriptor);
+    const videoAttempt = videoPayload({ attemptId: "attempt_video_crash", provider: "backend", seconds: 5, model: videoDescriptor.modelId, controls: { workflowKey: videoDescriptor.workflowKey, workflowVersion: videoDescriptor.version, width: 448, height: 768 }, referenceImages: [{ assetId: "source-1", role: "source_image", b64Json: "aW1hZ2U=", sourceSnapshotId: "snapshot-1", contentSha256: createHash("sha256").update("image").digest("hex") } as never] });
+
+    function videoHarness(answer: "present" | "gone" | Error) {
+      const submit = vi.fn(async () => ({ id: "native-video" }));
+      const poll = vi.fn(async () => ({ assets: [{ body: new Uint8Array(mockVideoMp4Bytes()), width: 448, height: 768, contentType: "video/mp4", verifiedVideo: { width: 448, height: 768, durationSeconds: 121 / 24, framesPerSecond: 24, frameCount: 121, hasAudio: true } }] }));
+      const findPriorSubmission = vi.fn(async ({ promptId: id }: { promptId: string }) => {
+        if (answer instanceof Error) throw answer;
+        return answer === "present" ? { state: "present" as const, handle: { id } } : gone();
+      });
+      const backend = { id: "stub", kind: "comfyui" as const, submit, poll, findPriorSubmission, health: async () => ({ ok: true }), capabilities: () => ({ ...stubCapabilities(), img2img: true }) };
+      const providers = makeProviders({ video: new BackendVideoModel({ resolveForModel: () => ({ descriptor: videoDescriptor, backend }) }), blob: makeMemoryBlob() });
+      return { providers, submit, poll, findPriorSubmission };
+    }
+
+    async function retried(answer: "present" | "gone" | Error) {
+      const harnessed = videoHarness(answer);
+      await reserveGenerationInvocation(harnessed.providers.blob, {
+        version: 1, attemptId: videoAttempt.attemptId, attemptNo: videoAttempt.attemptNo,
+        transportAttemptNo: 1, providerIdempotencyKey: `generation:${videoAttempt.attemptId}:provider`,
+        requestId: videoAttempt.requestId, generationJobId: videoAttempt.generationJobId,
+        mode: "video", provider: videoAttempt.provider, model: videoAttempt.model ?? null,
+        reservedAt: new Date().toISOString(), runnerPromptIdScheme: GENERATION_RUNNER_PROMPT_ID_SCHEME,
+      });
+      vi.stubEnv("GEN_VIDEO_PROVIDER", "backend");
+      const deps = makePipelineDeps(harnessed.providers, {
+        attemptsMade: 1, maxAttempts: 3,
+        readSourceSnapshot: async () => new Uint8Array(Buffer.from("image")),
+        probeVideoMedia: vi.fn(async () => ({ width: 448, height: 768, durationSeconds: 121 / 24, framesPerSecond: 24, frameCount: 121, hasAudio: true })),
+      });
+      return { ...harnessed, deps };
+    }
+
+    it.each([
+      ["present", "succeeded"],
+      ["gone", "failed"],
+    ] as const)("settles a %s render as %s without submitting", async (answer, outcome) => {
+      const { deps, submit, findPriorSubmission } = await retried(answer);
+      await processVideoGenerate(videoAttempt, deps);
+      expect(terminal(deps)).toMatchObject({ outcome, providerInvoked: true });
+      expect(findPriorSubmission).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ promptId: generationRunnerPromptId(videoAttempt.attemptId, 0) }));
+      expect(submit).not.toHaveBeenCalled();
+    });
+
+    it("stays unknown while the runner cannot be reached", async () => {
+      const { deps, submit } = await retried(silent());
+      await processVideoGenerate(videoAttempt, deps);
+      expect(terminal(deps)).toMatchObject({ outcome: "unknown", error: { code: "ambiguous_non_replayable" } });
+      expect(submit).not.toHaveBeenCalled();
+    });
+  });
 });

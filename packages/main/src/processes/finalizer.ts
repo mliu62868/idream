@@ -6,6 +6,7 @@ import {
   drainLocalAiPipeline,
   reconcileStaleGenerationJobs,
 } from "@/server/ai/local-pipeline";
+import { jobQueue } from "@/server/jobs/queue";
 import { logger } from "@/server/lib/logger";
 import { dispatchPendingGenerationTerminalRecords } from "@/server/ai/generation-terminal-record-ingest";
 import { redriveFailedGenerationTerminalRelays } from "@/server/ai/generation-terminal-relay";
@@ -26,8 +27,11 @@ const FINALIZER_QUEUES = [
   MAIN_QUEUES.aiFinalize,
 ] as const;
 
+type StaleGenerationScanCursor = Awaited<ReturnType<typeof reconcileStaleGenerationJobs>>["nextCursor"];
+
 let running = true;
-let reconciling = false;
+let staleReconcile: Promise<void> | null = null;
+let staleReconcileCursor: StaleGenerationScanCursor = null;
 let lastReconcileAt = 0;
 let nextQueueOffset = 0;
 let voiceRecovery: Promise<void> | null = null;
@@ -94,7 +98,7 @@ export async function runFinalizerLoop(): Promise<void> {
     maybeRecoverVoiceClips();
     maybeExpireVoiceCalls();
     maybeAdvanceVideoSequences();
-    await maybeReconcileStaleJobs();
+    maybeReconcileStaleJobs();
     await dispatchPendingGenerationTerminalRecords().catch((err) => logger.error({ err }, "generation terminal record dispatch failed"));
     await sleep(processed > 0 ? BUSY_DELAY_MS : IDLE_DELAY_MS);
   }
@@ -102,6 +106,7 @@ export async function runFinalizerLoop(): Promise<void> {
   await callExpiry;
   await videoSequenceAdvance;
   await videoCompositionLane.drain();
+  await staleReconcile;
 }
 
 function finalizerQueuesForIteration(): string[] {
@@ -115,12 +120,18 @@ function finalizerQueuesForIteration(): string[] {
 
 // SPEC: periodically recover stale dispatches and quarantine expired provider
 // leases. This loop never invents a provider failure from GenerationJob age.
-async function maybeReconcileStaleJobs(now = Date.now()): Promise<void> {
-  if (reconciling || now - lastReconcileAt < RECONCILE_INTERVAL_MS) return;
-  reconciling = true;
+// INTENT: its own lane, as with voice recovery. The scan probes Blob and Bull per
+// row, and terminal ingest in the main loop must not wait for that.
+function maybeReconcileStaleJobs(now = Date.now()) {
+  if (staleReconcile || now - lastReconcileAt < RECONCILE_INTERVAL_MS) return;
   lastReconcileAt = now;
+  staleReconcile = reconcileStaleJobs().finally(() => { staleReconcile = null; });
+}
+
+async function reconcileStaleJobs(): Promise<void> {
   try {
-    const result = await reconcileStaleGenerationJobs();
+    const result = await reconcileStaleGenerationJobs({ cursor: staleReconcileCursor });
+    staleReconcileCursor = result.nextCursor;
     if (result.enqueued > 0 || result.quarantined > 0) {
       logger.info(
         { enqueued: result.enqueued, quarantined: result.quarantined },
@@ -169,8 +180,6 @@ async function maybeReconcileStaleJobs(now = Date.now()): Promise<void> {
     }
   } catch (err) {
     logger.error({ err }, "finalizer unknown review reminder scan failed");
-  } finally {
-    reconciling = false;
   }
 }
 
@@ -187,6 +196,8 @@ export async function awaitFinalizerShutdown(
 ): Promise<void> {
   stopFinalizerLoop();
   await loopPromise;
+  // After the loop and its lanes: the last claimed job still needs its Worker.
+  await jobQueue.close();
 }
 
 if (isProcessEntrypoint(["finalizer.ts", "finalizer.js"])) {

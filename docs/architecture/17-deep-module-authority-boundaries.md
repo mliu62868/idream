@@ -142,6 +142,16 @@ Main 在不可变 dispatch 校验后，验证 `gen/{requestId}/attempts/{attempt
 
 这不放宽「不自动重放 provider」：确定失败只走退款，由用户重新发起新 Request。`retryable` 只表示同样输入值得再试，与 Attempt 重放无关。
 
+worker 崩溃后的重试同样问 runner（后端可选能力 `findPriorSubmission`；Draw Things 与 local-image 没有此能力，行为不变）：
+
+- 每个 Attempt 的每个输出用确定性 prompt id（`generationRunnerPromptId`，UUIDv5），由 guard 上的 `runnerPromptIdScheme` 证明首次调用确实用了它。没有该字段的旧 guard 仍是 `unknown`：派生 id 查不到，不代表 runner 自己生成 id 的那个 prompt 不在。
+- ComfyUI 的 `POST /prompt` 不按 id 去重（0.34.2 与 0.37.0 都是直接入队），重发同一 id 会渲染两次，所以重试只读不提交。
+- 已完成则收取产物，排队或运行中则在预算内等待；runner 应答但连续两次查不到是确定失败（退款，不重渲染）；连不上 runner 仍是 `unknown`。
+- 多输出逐个询问，不在第一个缺口处停止：runner 重启可能丢掉前面的输出而保留后面的。已完成的交付，查不到的走既有部分退款，不补渲染。
+- 不看 `transportAttemptNo`：只读不会重放。BullMQ 只在失败时累加 `attemptsMade`，崩溃后重投的 job 仍是同一 transport 号，Main 因 `running` 事件的 `occurredAt` 不同而拒绝（同一事件不可变），job 失败一次后由下一 transport 对账。最后一次 transport 上崩溃没有下一次，仍由 Main stale 判 `unknown`；BullMQ 默认 `maxStalledCount=1`，第二次 stall 同样如此。
+
+迟到的成功由 sweeper 收口：`confirm_failed` 不能覆盖已校验的成功证据，所以 `stale-unknown-dispatcher` 改走运营同一条 `adopt_succeeded` 路径（幂等键独立，审计 actor 为 sweeper），不退款。sweep 带游标，暂时结算不了的行不会占满每一页。adopt 自身被拒（输出审核未过、投影状态不符）时仍留给运营，并记入 sweep 日志。
+
 Main 一侧的同类误判：Gen 在 `running` 之后到终态之前不发任何事件，长任务与死任务在 Main 看来一样。Bull `active` 能区分二者：worker 死后该行在一个 stall 周期内回到 waiting，所以 `active` 就是原始调用仍在运行，不存在重放风险。隔离因此推迟到 stale 阈值的 6 倍（与 Gen 总等待预算一致），兜底所有 worker 都消失、无人回收该行的情况。
 
 #### 2.1.7 展示派生文件由资产 key 推导（2026-11-05）

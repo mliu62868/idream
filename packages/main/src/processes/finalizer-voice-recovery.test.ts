@@ -4,12 +4,16 @@ const mocks = vi.hoisted(() => ({
   drain: vi.fn(async () => ({ processed: 0 })),
   recover: vi.fn(),
   advanceVideos: vi.fn(),
+  reconcileStale: vi.fn(async (_input?: unknown) => ({ enqueued: 0, quarantined: 0, nextCursor: null as unknown })),
+  dispatchTerminal: vi.fn(async () => 0),
+  closeQueue: vi.fn(async () => undefined),
 }));
 vi.mock("@/server/ai/local-pipeline", () => ({
   drainLocalAiPipeline: mocks.drain,
-  reconcileStaleGenerationJobs: async () => ({ enqueued: 0, quarantined: 0 }),
+  reconcileStaleGenerationJobs: mocks.reconcileStale,
 }));
-vi.mock("@/server/ai/generation-terminal-record-ingest", () => ({ dispatchPendingGenerationTerminalRecords: async () => undefined }));
+vi.mock("@/server/jobs/queue", () => ({ jobQueue: { close: mocks.closeQueue } }));
+vi.mock("@/server/ai/generation-terminal-record-ingest", () => ({ dispatchPendingGenerationTerminalRecords: mocks.dispatchTerminal }));
 vi.mock("@/server/ai/generation-terminal-relay", () => ({ redriveFailedGenerationTerminalRelays: async () => ({ redriven: 0, deferredPaused: 0, invalid: [], retryErrors: [] }) }));
 vi.mock("@/server/modules/admin-v2/jobs/unknown-review-reminder", () => ({ scanDueUnknownGenerationReviews: async () => ({ reminded: 0 }) }));
 vi.mock("@/server/modules/ourdream/voice-clip-recovery", () => ({ recoverExpiredVoiceClips: mocks.recover }));
@@ -37,6 +41,40 @@ it("keeps finalizing images while one voice recovers and drains that recovery on
   finish({ examined: 1, recovered: 1, nextCursorId: "voice-a" });
   await shutdown;
   expect(stopped).toBe(true);
+});
+
+it("keeps ingesting terminal records during a slow stale scan and drains it on shutdown", async () => {
+  mocks.recover.mockResolvedValue({ examined: 0, recovered: 0, nextCursorId: null });
+  let finish!: (result: { enqueued: number; quarantined: number; nextCursor: null }) => void;
+  mocks.reconcileStale.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+  const { runFinalizerLoop, awaitFinalizerShutdown } = await import("./finalizer");
+  const loop = runFinalizerLoop();
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(mocks.reconcileStale).toHaveBeenCalledTimes(1);
+  expect(mocks.drain.mock.calls.length).toBeGreaterThan(5);
+  expect(mocks.dispatchTerminal.mock.calls.length).toBeGreaterThan(5);
+  let stopped = false;
+  const shutdown = awaitFinalizerShutdown(loop).then(() => { stopped = true; });
+  await vi.advanceTimersByTimeAsync(2_000);
+  expect(stopped).toBe(false);
+  expect(mocks.closeQueue).not.toHaveBeenCalled();
+  finish({ enqueued: 0, quarantined: 0, nextCursor: null });
+  await shutdown;
+  expect(mocks.closeQueue).toHaveBeenCalledTimes(1);
+});
+
+it("carries the stale scan cursor into the next scan and wraps after the last page", async () => {
+  mocks.recover.mockResolvedValue({ examined: 0, recovered: 0, nextCursorId: null });
+  const cursor = { updatedAt: new Date("2026-10-01T00:00:00.000Z"), id: "legitimately-old" };
+  mocks.reconcileStale.mockResolvedValueOnce({ enqueued: 0, quarantined: 0, nextCursor: cursor });
+  mocks.reconcileStale.mockResolvedValueOnce({ enqueued: 0, quarantined: 0, nextCursor: null });
+  const { runFinalizerLoop, awaitFinalizerShutdown } = await import("./finalizer");
+  const loop = runFinalizerLoop();
+  await vi.advanceTimersByTimeAsync(121_000);
+  expect(mocks.reconcileStale.mock.calls.map(([input]) => input)).toEqual([{ cursor: null }, { cursor }, { cursor: null }]);
+  const shutdown = awaitFinalizerShutdown(loop);
+  await vi.advanceTimersByTimeAsync(1_000);
+  await shutdown;
 });
 
 it("carries the recovery cursor into the next bounded scan", async () => {

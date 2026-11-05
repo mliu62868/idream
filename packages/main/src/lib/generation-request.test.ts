@@ -9,6 +9,7 @@ import {
   loadGenerationQuote,
   loadGenerationRetryQuotes,
   pendingGenerationJobIds,
+  unconfirmedGenerationJobIds,
   projectGenerationRequest,
   projectServerJobArrival,
   quoteAuthorityMatchesQuote,
@@ -625,9 +626,11 @@ describe("generation job settlement", () => {
     ]) expect(projectServerJobArrival(job, "current").statusMessage).toBeNull();
   });
 
-  it("stops polling an unconfirmed outcome without announcing a refund", () => {
+  it("moves an unconfirmed outcome to the slow poll without announcing a refund", () => {
     const job = { id: "uncertain-job", mode: "video" as const, status: "queued", errorCode: "provider_outcome_unknown" };
     expect(pendingGenerationJobIds([job])).toEqual([]);
+    expect(unconfirmedGenerationJobIds([job])).toEqual(["uncertain-job"]);
+    expect(unconfirmedGenerationJobIds([{ ...job, status: "completed" }, { ...job, status: "refunded" }, { ...job, errorCode: null }])).toEqual([]);
     expect(projectServerJobArrival(job)).toEqual({
       settled: true,
       statusMessage: unknownOutcomeCopy(0),
