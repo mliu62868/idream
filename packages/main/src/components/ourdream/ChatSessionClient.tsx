@@ -76,7 +76,7 @@ import {
   type GenerationQuoteAuthority,
 } from "@/lib/generation-write-client";
 import { GroupSpeakerControls, mentionedGroupCharacter } from "./chat/GroupSpeakerControls";
-import { unknownOutcomeCopy } from "@/lib/generation-failure-copy";
+import { UNCONFIRMED_GENERATION_POLL_MS, unknownOutcomeCopy } from "@/lib/generation-failure-copy";
 import { useViewerGate, type ViewerGate } from "@/hooks/useViewerGate";
 
 type ChatLoadState = "loading" | "ready" | "signed-out" | "error";
@@ -320,6 +320,11 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
       chatAttachmentIsActive(attachment.status, attachment.errorCode),
     ),
   );
+  // The sweeper can settle an unconfirmed result while nobody is sending anything.
+  const hasUnconfirmedAttachment = messages.some((message) =>
+    (message.attachments ?? []).some((attachment) => attachment.errorCode === "provider_outcome_unknown" &&
+      ACTIVE_CHAT_ATTACHMENT_STATUSES.has(attachment.status)),
+  );
   const hasGeneratingReply = chatStreamMessagesNeedReconciliation(messages);
   const canSend = canSubmitChatMessage(
     content,
@@ -534,7 +539,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
       // INTENT: a proactive check-in lands while nobody is sending anything, so
       // without this the open page only saw it after a refocus. A slow read is
       // enough — check-ins are hours apart; the list marker covers other pages.
-      (!reconciling && !proactiveEnabled) ||
+      (!reconciling && !hasUnconfirmedAttachment && !proactiveEnabled) ||
       pending ||
       editingPending ||
       memoryPending
@@ -545,6 +550,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     let timer: number | undefined;
     let controller: AbortController | null = null;
     let failureCount = 0;
+    const settledPollMs = hasUnconfirmedAttachment ? UNCONFIRMED_GENERATION_POLL_MS : PROACTIVE_POLL_MS;
 
     const schedule = (delay: number) => {
       if (cancelled) return;
@@ -574,7 +580,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
       } finally {
         controller = null;
         if (!cancelled) {
-          schedule(reconciling ? Math.min(12_000, 1_500 * 2 ** failureCount) : PROACTIVE_POLL_MS);
+          schedule(reconciling ? Math.min(12_000, 1_500 * 2 ** failureCount) : settledPollMs);
         }
       }
     };
@@ -584,7 +590,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
       schedule(0);
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
-    schedule(reconciling ? 1_500 : PROACTIVE_POLL_MS);
+    schedule(reconciling ? 1_500 : settledPollMs);
     return () => {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
@@ -597,6 +603,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     ageGateAccepted,
     editingPending,
     hasActiveAttachment,
+    hasUnconfirmedAttachment,
     hasGeneratingReply,
     id,
     memoryPending,

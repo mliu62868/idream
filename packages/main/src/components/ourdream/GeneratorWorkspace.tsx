@@ -41,7 +41,7 @@ import {
   isBuiltInMediaPlaceholderUrl,
   isPrivateMediaUrl,
 } from "@/lib/image-delivery";
-import { generationFailureCopy, unknownOutcomeCopy } from "@/lib/generation-failure-copy";
+import { generationFailureCopy, UNCONFIRMED_GENERATION_POLL_MS, unknownOutcomeCopy } from "@/lib/generation-failure-copy";
 import {
   parseCharacterDetailResponse,
   parseCharacterLooksResponse,
@@ -81,6 +81,7 @@ import {
   generatorConfigAuthorityState,
   orientationWithinQuote,
   pendingGenerationJobIds,
+  unconfirmedGenerationJobIds,
   projectServerJobArrival,
   type GenerationQuoteRequest,
   type GenerationRequestEffects,
@@ -1964,6 +1965,45 @@ export function GeneratorWorkspace() {
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [ageGateAccepted, jobs, pollGeneration]);
+
+  // A job the sweeper still has to settle can complete or refund at any moment
+  // without another request from this page, so keep asking, slowly.
+  // INVARIANT: keyed on the ids, not on `jobs`. Every fast poll of another job
+  // rewrites `jobs`; restarting this timer on that would mean it never fires.
+  const unconfirmedJobKey = unconfirmedGenerationJobIds(jobs).join(",");
+  useEffect(() => {
+    if (!ageGateAccepted || !unconfirmedJobKey) return;
+    const unconfirmedJobIds = unconfirmedJobKey.split(",");
+    let cancelled = false;
+    let timer: number | undefined;
+    const schedule = () => {
+      timer = window.setTimeout(() => void pollCycle(), UNCONFIRMED_GENERATION_POLL_MS);
+    };
+    const pollCycle = async () => {
+      if (cancelled) return;
+      if (document.hidden || generationPollInFlightRef.current) {
+        schedule();
+        return;
+      }
+      generationPollInFlightRef.current = true;
+      try {
+        for (const jobId of unconfirmedJobIds) {
+          if (cancelled) break;
+          await pollGeneration(jobId);
+        }
+      } catch {
+        // The next cycle asks again; this loop has no spinner to report through.
+      } finally {
+        generationPollInFlightRef.current = false;
+        if (!cancelled) schedule();
+      }
+    };
+    schedule();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [ageGateAccepted, unconfirmedJobKey, pollGeneration]);
 
   // What a queued generation does to this surface. The lifecycle rules around
   // it live in @/lib/generation-request; none of them are repeated here.

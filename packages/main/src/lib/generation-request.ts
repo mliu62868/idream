@@ -408,15 +408,28 @@ export type GenerationJobFact = {
 };
 
 /**
- * Polling stops at a terminal status or an unknown provider outcome. Unknown
+ * Fast polling stops at a terminal status or an unknown provider outcome. Unknown
  * outcomes retain their reservation until the unknown sweeper settles them;
- * stopping a spinner is not settlement.
+ * stopping a spinner is not settlement, so `unconfirmedGenerationJobIds` keeps a
+ * slow poll on them.
  */
 export function pendingGenerationJobIds(
   jobs: readonly GenerationJobFact[],
 ): string[] {
   return jobs
     .filter((job) => !isTerminalGenerationJobStatus(job.status) && job.errorCode !== "provider_outcome_unknown")
+    .map((job) => job.id);
+}
+
+/**
+ * Jobs waiting on the sweeper. Without a poll its settlement stays invisible until
+ * a reload, which the copy promising an automatic outcome cannot afford.
+ */
+export function unconfirmedGenerationJobIds(
+  jobs: readonly GenerationJobFact[],
+): string[] {
+  return jobs
+    .filter((job) => !isTerminalGenerationJobStatus(job.status) && job.errorCode === "provider_outcome_unknown")
     .map((job) => job.id);
 }
 

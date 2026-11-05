@@ -1444,9 +1444,36 @@ describe("ChatSessionClient streaming composer", () => {
     expect(card?.querySelector(".animate-spin")).toBeNull();
     expect(card?.textContent).toContain("marked failed automatically within about 30 minutes");
     expect(card?.querySelector('a[href="/helpdesk"]')).toBeNull();
-    const before = sessionReads;
-    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
-    expect(sessionReads).toBe(before);
+  });
+
+  it("shows the sweeper's later settlement of an unconfirmed image without a reload", async () => {
+    sessionMessages = [{ ...opening, attachments: [{
+      id: "attachment-unknown", kind: "generated_image", status: "accepted",
+      generationJobId: "unknown-image", errorCode: "provider_outcome_unknown",
+    }] }];
+    await mountSession();
+    vi.useFakeTimers();
+    try {
+      // Returning to the tab reads at once, and the next read is scheduled from there.
+      const beforeWake = sessionReads;
+      await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+      await act(async () => vi.advanceTimersByTimeAsync(0));
+      expect(sessionReads).toBe(beforeWake + 1);
+      const before = sessionReads;
+      // No fast polling: the answer comes on the sweeper's cycle.
+      await act(async () => vi.advanceTimersByTimeAsync(29_000));
+      expect(sessionReads).toBe(before);
+      sessionMessages = [{ ...opening, attachments: [{
+        id: "attachment-unknown", kind: "generated_image", status: "failed",
+        generationJobId: "unknown-image", errorCode: "operator_confirmed_provider_failure",
+      }] }];
+      await act(async () => vi.advanceTimersByTimeAsync(1_500));
+      expect(sessionReads).toBe(before + 1);
+      const card = container.querySelector('[data-testid="chat-image-attachment-card"]');
+      expect(card?.textContent).not.toContain("not confirmed yet");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows cancellation without treating the original price as the refund amount", async () => {

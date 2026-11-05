@@ -8,7 +8,7 @@ import {
   dispatchDueReleaseMonitors,
   dispatchStaleReleaseRoutes,
 } from "@/server/modules/admin-v2/characters/release-monitor";
-import { dispatchStaleUnknownGenerationRequests } from "@/server/modules/admin-v2/jobs/stale-unknown-dispatcher";
+import { dispatchStaleUnknownGenerationRequests, type StaleUnknownSweepCursor } from "@/server/modules/admin-v2/jobs/stale-unknown-dispatcher";
 import { ADMIN_COMMAND_TYPES, executeAcceptedAdminCommand } from "@/server/modules/admin-v2/commands/executor";
 import { reconcileExpiredCommandLeases } from "@/server/modules/admin-v2/shared/control-plane-command";
 import {
@@ -33,6 +33,7 @@ let lastReconcileAt = 0;
 //   那个间隔是 50ms，等于每秒扫二十次 generation_attempts。与同循环里的
 //   lease 回收用同一套节流约定。
 let lastStaleUnknownSweepAt = 0;
+let staleUnknownSweepCursor: StaleUnknownSweepCursor | null = null;
 const STALE_UNKNOWN_SWEEP_INTERVAL_MS = 60_000;
 let routeQualificationCursor: string | null = null;
 
@@ -250,7 +251,9 @@ export async function runAdminCommandWorkerLoop() {
         lastStaleUnknownSweepAt = now;
         const settled = await dispatchStaleUnknownGenerationRequests(prisma, {
           now: new Date(now),
+          cursor: staleUnknownSweepCursor,
         });
+        staleUnknownSweepCursor = settled.nextCursor;
         if (settled.settled > 0 || settled.skipped > 0) {
           logger.info(settled, "stale unknown Generation Requests settled");
         }

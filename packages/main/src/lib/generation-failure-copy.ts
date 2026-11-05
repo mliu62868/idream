@@ -31,7 +31,9 @@ export function generationFailureCopy(errorCode: string | null): string | null {
 }
 
 // SPEC: provider 结果不明（unknown）的生成，宽限期后由 admin-command-worker 的
-//   sweeper（stale-unknown-dispatcher，每 60s 一轮）自动结算为失败并全额退款，无人工介入。
+//   sweeper（stale-unknown-dispatcher，每 60s 一轮）自动结算：迟到的成功经校验后交付，
+//   否则失败并全额退款，无人工介入。页面保持慢速轮询（UNCONFIRMED_GENERATION_POLL_MS），
+//   所以两种结局都不需要刷新就能看到。
 // INTENT: 文案过去说「币冻结，请联系客服 / 等团队处理」，而系统实际上不需要任何人，
 //   用户被导去找一个无事可做的客服。sweeper 与用户文案共用这一个数，改宽限期时文案跟着说真话。
 // INVARIANT: 宽限期从 attempt 记为 unknown 的时刻起算（之前的失联判定另需
@@ -39,9 +41,13 @@ export function generationFailureCopy(errorCode: string | null): string | null {
 export const UNKNOWN_SETTLEMENT_GRACE_MS = 30 * 60_000;
 export const UNKNOWN_SETTLEMENT_GRACE_MINUTES = Math.round(UNKNOWN_SETTLEMENT_GRACE_MS / 60_000);
 
+// How often an open page rechecks a job whose outcome is unconfirmed. The answer
+// arrives on the sweeper's 60s cycle at best, so faster polling buys nothing.
+export const UNCONFIRMED_GENERATION_POLL_MS = 30_000;
+
 export function unknownOutcomeCopy(costDreamcoins: number): string {
   const settlement = costDreamcoins > 0
     ? `marked failed and your ${costDreamcoins} coins are refunded automatically`
     : "marked failed automatically";
-  return `We couldn't confirm the result yet. If it doesn't arrive, this job is ${settlement} within about ${UNKNOWN_SETTLEMENT_GRACE_MINUTES} minutes. You won't be charged twice and there's nothing you need to do — please wait for that before starting the same request again.`;
+  return `We couldn't confirm the result yet. If it arrives, it's delivered to you automatically. If it doesn't, this job is ${settlement} within about ${UNKNOWN_SETTLEMENT_GRACE_MINUTES} minutes. You won't be charged twice and there's nothing you need to do — please wait for that before starting the same request again.`;
 }
