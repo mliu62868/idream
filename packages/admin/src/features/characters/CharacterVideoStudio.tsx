@@ -4,6 +4,7 @@ import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 
 import {
   characterVideoProductionRecipe,
+  characterVideoProductionRecipes,
   creativeRunCreateRequestSchema,
   type CharacterWorkspaceDetail,
   type CreativeRun,
@@ -164,7 +165,9 @@ function savedCreateRequest(
     parsed.data.purpose !== "character_video" ||
     parsed.data.targetType !== "character" ||
     parsed.data.targetId !== characterId ||
-    parsed.data.profileId !== characterVideoProductionRecipe.profileKey
+    // A default change cannot invalidate the exact receipt of an earlier Run.
+    // New admission still uses the current default; recovery preserves its pin.
+    !characterVideoProductionRecipes.some((recipe) => recipe.profileKey === parsed.data.profileId)
   ) {
     return null;
   }

@@ -21,7 +21,8 @@ export interface CompanionCompositionPlan {
 export function companionIgrepConfig(mode: CompanionCompositionMode, command: string, env: Readonly<Record<string, string | undefined>> = {}): Record<string, unknown> {
   return { command, memory: mode === "normal", searchMode: "fast", memorySearchMode: "fast", sessionRecallMode: "ultra",
     sessionRecallLimit: 8, sessionRecallTimeoutMs: 60000, automaticIngest: false, automaticMaintain: false,
-    memoryRecord: false, sharedCaches: false,
+    memoryRecord: false, sharedCaches: false, strictSearch: true,
+    sourceRead: { scope: "attempt-knowledge", maxBytes: 6000, versioned: true },
     web: env.IGREP_WEB_SEARCH_PROVIDER ? { provider:env.IGREP_WEB_SEARCH_PROVIDER, url:env.IGREP_SEARXNG_URL || "", mode:"fast", maxResults:6, timeoutMs:30000, evidence:"unverified-provider-snippet" } : false,
     source: "Main committed Turn projection" };
 }
@@ -30,7 +31,7 @@ export function companionIgrepRoutes(env: Readonly<Record<string, string | undef
   return Object.fromEntries([
     "IGREP_LLM_URL", "IGREP_LLM_MODEL", "IGREP_ASK_LLM_URL", "IGREP_ASK_LLM_MODEL",
     "IGREP_LLM_FINAL_SORT_URL", "IGREP_LLM_FINAL_SORT_MODEL", "IGREP_EMBEDDING_URL", "IGREP_EMBED_MODEL", "IGREP_EMBED_DIM",
-    "IGREP_RERANK_URL", "IGREP_RERANK_MODEL", "IGREP_RERANK_API_FORMAT", "IGREP_NO_CACHE",
+    "IGREP_RERANK_URL", "IGREP_RERANK_MODEL", "IGREP_RERANK_API_FORMAT", "IGREP_NO_CACHE", "IGREP_INDEX_LEVEL",
     "IGREP_WEB_SEARCH_PROVIDER", "IGREP_SEARXNG_URL", "IGREP_WEB_FAST_BUDGET_S", "IGREP_WEB_PROVIDER_TIMEOUT_S", "IGREP_WEB_LLM_TIMEOUT_S",
   ].map(name => [name, env[name] ?? ""]));
 }
@@ -43,7 +44,7 @@ export function companionCompositionManifest(mode: CompanionCompositionMode, igr
     corePackages: COMPANION_CORE_PACKAGES, storage: "memory", builtInTools: [],
     compaction: { backend: "pi-durable", ...COMPANION_COMPACTION_CONFIG },
     reasoning: { generation: true, compaction: false, structured: false, totalLimit: "profile" },
-    execution: { version: 68, maxSteps: authority.maxSteps, toolExecution: "sequential", maxParallelToolCalls: 1,
+    execution: { version: 69, maxSteps: authority.maxSteps, toolExecution: "sequential", maxParallelToolCalls: 1,
       mediaReply: { bufferCapableSteps: true, pureBody: "empty-with-main-attachment", extraction: "ordered-verbatim-native", extractionMaxOutputTokens: 1024, body: "native-loop-without-media-tools", sharedStepBudget: true },
       retry: false, backgroundCompaction: false, deadlineSource: "invocation.deadlineAt", commitBeforeProjection: true,
       recovery: "Main snapshot and immutable local proposal" },

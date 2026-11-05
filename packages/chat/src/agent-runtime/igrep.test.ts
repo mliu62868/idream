@@ -1269,6 +1269,19 @@ describe("igrep readiness isolation evidence", () => {
 
 describe("igrep machine protocol admission", () => {
   it.each([
+    { complete: false }, { failed: "true" }, { degraded: true }, { degraded: "false" },
+    { degrade_reasons: ["rerank_unavailable"] }, { degrade_reasons: "invalid" },
+  ])("rejects partial or degraded local search instead of counting a successful hit (%j)", async flags => {
+    const observations: unknown[] = [];
+    const search = createIgrepTools({ cli: cli(), workspace: "/relationship", knowledgePath: "/authorized/knowledge", mode: "private",
+      recall: async () => { throw new Error("unused"); }, observe: event => observations.push(event),
+      run: async () => ({ results: [{ content: "An unqualified fallback hit" }], ...flags }),
+    }).find(tool => tool.name === "igrep_search")!;
+    await expect(search.execute({ query: "What did we discuss?" }, new AbortController().signal)).rejects.toThrow("unverifiable evidence");
+    expect(observations).toEqual([expect.objectContaining({ operation: "search", outcome: "failure" })]);
+  });
+
+  it.each([
     {schema:undefined}, {schema:"igrep.mem/2"}, {failed:true}, {error:"private-error"},
     {warnings:["private-warning"]}, {workspaceRoot:"/different-workspace"}, {markdownContext:"# Memory Status\n\n- operational status"},
   ])("does not turn an unavailable or operational wake envelope into profile facts (%j)", async overrides => {
@@ -1305,8 +1318,8 @@ describe("explicit read-only public web tool", () => {
 
   it("registers only when explicitly enabled, with the same private scope boundary", () => {
     const base = {workspace:"/relationship",knowledgePath:"/authorized/knowledge",mode:"private" as const,recall:unavailableRecall};
-    expect(createIgrepTools({...base,cli:cli()}).map(tool=>tool.name)).toEqual(["igrep_search","session_recall"]);
-    expect(createIgrepTools({...base,cli:webCli}).map(tool=>tool.name)).toEqual(["igrep_search","session_recall","igrep_web_search"]);
+    expect(createIgrepTools({...base,cli:cli()}).map(tool=>tool.name)).toEqual(["igrep_search","igrep_read_source","session_recall"]);
+    expect(createIgrepTools({...base,cli:webCli}).map(tool=>tool.name)).toEqual(["igrep_search","igrep_read_source","session_recall","igrep_web_search"]);
   });
 
   it("passes only bounded public query options and renders cited provider snippets without diagnostics", async () => {

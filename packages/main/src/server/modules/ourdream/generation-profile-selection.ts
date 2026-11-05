@@ -8,6 +8,7 @@ import { Errors } from "@/server/lib/errors";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import {
   isProductionVideoProfile,
+  isDefaultProductionVideoProfile,
 } from "@/server/modules/generation/production-video-profile";
 import { isExecutableGenerationProfile } from "./generation-profile-catalog";
 import { cleanPromptText, imageNegativePrompt } from "./generation-prompt";
@@ -251,6 +252,7 @@ export async function selectGenerationProfile(
       ? automaticCandidates.filter(
           (candidate) =>
             isProductionVideoProfile(candidate) &&
+            (requested || isDefaultProductionVideoProfile(candidate)) &&
             isExecutableGenerationProfile(candidate),
         )
       : catalogScope === "public_text_to_image"

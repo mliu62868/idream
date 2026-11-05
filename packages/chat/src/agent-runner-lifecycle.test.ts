@@ -57,7 +57,7 @@ vi.mock("./agent-runtime/runtime.js", () => ({
   agentRuntimeProfileDigest: vi.fn(async () => "profile-digest"),
   agentRuntimeVersions: vi.fn(async () => ({
     igrepVersion: "igrep-test",
-    piVersion: "1.3.0",
+    piVersion: "1.4.0",
   })),
   runCompanion: runtime.runCompanion,
 }));

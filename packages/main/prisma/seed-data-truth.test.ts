@@ -525,7 +525,7 @@ describe("seed data provenance", () => {
     });
   }, 15_000);
 
-  it("seeds MiniMax H3 as an explicit-only production video profile", async () => {
+  it("seeds MiniMax H3 as the default-eligible production video profile", async () => {
     await execFileAsync("bun", ["run", "db:seed"], {
       cwd: fileURLToPath(new URL("..", import.meta.url)),
       env: process.env,
@@ -550,19 +550,18 @@ describe("seed data provenance", () => {
     expect(profile).toMatchObject({
       profileKey: "profile_video_h3_v1",
       runner: "comfyui",
-      pipelineModel: "minimax-h3-redcraft-a2a-int8-convrot",
-      workflowKey: "minimax-h3-redcraft-i2v",
+      pipelineModel: "minimax-h3-mystic-v5-int8-convrot",
+      workflowKey: "minimax-h3-mystic-i2v",
       sourceModelPath:
-        "diffusion_models/REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors",
+        "diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
       runnerConfig: {
-        workflowVersion: 4,
+        workflowVersion: 5,
         capabilities: {
           imageToVideo: true,
           audio: true,
           fps: 24,
           maxDurationSeconds: 5,
         },
-        publicSelection: { explicitOnly: true },
       },
       defaultWidth: 512,
       defaultHeight: 512,
@@ -570,6 +569,7 @@ describe("seed data provenance", () => {
       steps: 8,
       rolloutPercent: 100,
     });
+    expect(profile.runnerConfig).not.toHaveProperty("publicSelection");
   }, 15_000);
 
   it("preserves a modern operator release while still seeding MiniMax H3", async () => {

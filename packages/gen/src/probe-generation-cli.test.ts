@@ -34,7 +34,7 @@ describe("generation launch probe CLIs", () => {
 
     expect(videoProbeBackendTarget({
       backendKind: "comfyui",
-      workflowKey: "minimax-h3-redcraft-i2v",
+      workflowKey: "minimax-h3-mystic-i2v",
       capabilities: ["video", "audio"],
     }, targets)).toBe(targets.h3);
     expect(videoProbeBackendTarget({
@@ -81,7 +81,7 @@ describe("generation launch probe CLIs", () => {
 
       expect(result.status).toBe(1);
       expect(result.stdout).toContain("FAIL  (video model bytes)");
-      expect(result.stdout).toContain("9 pinned model bytes checked");
+      expect(result.stdout).toContain("11 pinned model bytes checked");
     } finally {
       const exited = once(server, "exit");
       server.kill();
@@ -173,7 +173,7 @@ describe("generation launch probe CLIs", () => {
       "--reference",
       referencePath,
       "--model",
-      "minimax-h3-redcraft-i2v",
+      "minimax-h3-mystic-i2v",
       "--seed",
       "h3-probe-seed-v1",
       "--report",
@@ -188,7 +188,7 @@ describe("generation launch probe CLIs", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(readFileSync(reportPath, "utf8"))).toMatchObject({
       ok: true,
-      model: "minimax-h3-redcraft-i2v",
+      model: "minimax-h3-mystic-i2v",
       seconds: 5,
       seed: "h3-probe-seed-v1",
       sourceRevision: "idream@h3-probe-test",

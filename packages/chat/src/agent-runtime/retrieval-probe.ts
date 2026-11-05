@@ -63,6 +63,9 @@ export async function probeCompanionRetrieval(
   let purpose: string | undefined;
   let requests = 0;
   let step = 0;
+  let fixtureFailure: Error | undefined;
+  let searchPagePending = false;
+  let sourcePagePending = false;
   const runtime = new CompanionEngine({
     workspaces: new AttemptWorkspaceStore({ canonicalRoot: join(root, "canonical"), privateRoot: join(root, "private") }),
     igrep: { command: config.igrepCommand, env: config.igrepEnvironment },
@@ -72,55 +75,100 @@ export async function probeCompanionRetrieval(
       openRouterProviderOnly: config.openRouterProviderOnly,
       observeRequest: evidence => { purpose = evidence.purpose; return policy.observeRequest?.(evidence); },
       fetch: async (_url, init) => {
-        requests++;
-        const body = JSON.parse(String(init?.body)) as { messages: { role: string; content: string; tool_call_id?: string }[]; tools: { function: { name: string } }[] };
-        let delta: { content?: string; tool_calls?: unknown[] };
-        if (purpose === "compaction") {
-          delta = { content: "We talked about a trail. Recall holds the original wording." };
-        } else {
-          const names = body.tools.map(tool => tool.function.name);
-          const expectedTools = ["session_recall", "igrep_search", ...(config.igrepEnvironment.IGREP_WEB_SEARCH_PROVIDER ? ["igrep_web_search"] : [])];
-          if (names.length !== expectedTools.length || !expectedTools.every(name => names.includes(name))) throw new Error("private retrieval capability isolation failed");
-          const wire = JSON.stringify(body.messages);
-          if (!wire.includes("at the library") || !wire.includes("Quote the trail sign exactly")) throw new Error("compaction lost the immutable Turn context");
-          const tool = (name: string, args: object, id: string) => ({ tool_calls: [{ index: 0, id, function: { name, arguments: JSON.stringify(args) } }] });
-          const result = (id: string) => {
-            const content = body.messages.find(message => message.role === "tool" && message.tool_call_id === id)?.content;
-            if (!content) throw new Error(`retrieval probe is missing ${id}`);
-            const parsed: unknown = JSON.parse(content);
-            if (!Array.isArray(parsed)) throw new Error("retrieval probe returned a non-array result");
-            return parsed as Array<{ id: string; content?: string; preview?: string; speaker?: typeof speaker }>;
-          };
-          if (step === 0) {
-            if (wire.includes(original) || wire.includes(otherOriginal)) throw new Error("omitted originals leaked into initial context");
-            delta = tool("session_recall", {}, "readiness-recall-index");
-          } else if (step === 1) {
-            const index = result("readiness-recall-index");
-            sourceIds = [original, otherOriginal].map(text => {
-              const row = index.find(item => item.preview?.includes(text));
-              if (!row?.id) throw new Error("archive index did not identify the original source");
-              return row.id;
-            });
-            delta = tool("session_recall", { ids: sourceIds }, "readiness-recall");
-          } else if (step === 2) {
-            const recalled = result("readiness-recall");
-            const ownSpeaker = { characterId: invocation.characterId, sessionId: invocation.sessionId, name: invocation.preparedTurn.characterName };
-            for (const [index, identity] of [speaker, ownSpeaker].entries()) {
-              const source = recalled.find(item => item.id === sourceIds[index]);
-              if (!source?.content?.includes([original, otherOriginal][index]!)) throw new Error("archive recall did not recover the exact originals");
-              if (!source.speaker || Object.entries(identity).some(([key, value]) => source.speaker![key as keyof typeof speaker] !== value)) throw new Error("archive recall lost its authoritative group speaker");
-            }
-            delta = tool("session_recall", { query: "What was written on the trail sign?" }, "readiness-recall-query");
-          } else if (step === 3) {
-            if (!result("readiness-recall-query").some(item => item.content?.includes(original))) throw new Error("semantic archive recall did not return the source");
-            delta = tool("igrep_search", { query: "What is Mara's profession?" }, "readiness-search");
+        try {
+          requests++;
+          const body = JSON.parse(String(init?.body)) as { messages: { role: string; content: string; tool_call_id?: string }[]; tools: { function: { name: string } }[] };
+          let delta: { content?: string; tool_calls?: unknown[] };
+          if (purpose === "compaction") {
+            delta = { content: "We talked about a trail. Recall holds the original wording." };
           } else {
-            if (!body.messages.some(message => message.role === "tool" && message.tool_call_id === "readiness-search" && message.content.includes("astronomer"))) throw new Error("authorized local search did not return evidence");
-            delta = { content: "I remember the sign: Cedar Finch. We're at the library tonight." };
+            const names = body.tools.map(tool => tool.function.name);
+            const expectedTools = ["session_recall", "igrep_search", "igrep_read_source", ...(config.igrepEnvironment.IGREP_WEB_SEARCH_PROVIDER ? ["igrep_web_search"] : [])];
+            if (names.length !== expectedTools.length || !expectedTools.every(name => names.includes(name))) throw new Error("private retrieval capability isolation failed");
+            const wire = JSON.stringify(body.messages);
+            if (!wire.includes("at the library") || !wire.includes("Quote the trail sign exactly")) throw new Error("compaction lost the immutable Turn context");
+            const tool = (name: string, args: object, id: string) => ({ tool_calls: [{ index: 0, id, function: { name, arguments: JSON.stringify(args) } }] });
+            const payload = (id: string): unknown => {
+              const content = body.messages.find(message => message.role === "tool" && message.tool_call_id === id)?.content;
+              if (!content) throw new Error(`retrieval probe is missing ${id}`);
+              return JSON.parse(content);
+            };
+            const result = (id: string) => {
+              const parsed = payload(id);
+              const rows = Array.isArray(parsed) ? parsed : (parsed as { results?: unknown })?.results;
+              if (!Array.isArray(rows)) throw new Error(`retrieval probe returned invalid result rows for ${id}`);
+              return rows as Array<{ id: string; content?: string; preview?: string; speaker?: typeof speaker }>;
+            };
+            const sourceRead = (location: { path?: string; start_line?: number } | undefined) => {
+              if (location?.path !== "conversation.jsonl" || !Number.isSafeInteger(location.start_line) || location.start_line! < 1) {
+                throw new Error("local search did not expose its original source location");
+              }
+              return tool("igrep_read_source", { path: location.path, start_line: location.start_line, end_line: location.start_line }, "readiness-source");
+            };
+            if (step === 0) {
+              if (wire.includes(original) || wire.includes(otherOriginal)) throw new Error("omitted originals leaked into initial context");
+              delta = tool("session_recall", {}, "readiness-recall-index");
+            } else if (step === 1) {
+              const index = result("readiness-recall-index");
+              sourceIds = [original, otherOriginal].map(text => {
+                const row = index.find(item => item.preview?.includes(text));
+                if (!row?.id) throw new Error("archive index did not identify the original source");
+                return row.id;
+              });
+              delta = tool("session_recall", { ids: sourceIds }, "readiness-recall");
+            } else if (step === 2) {
+              const recalled = result("readiness-recall");
+              const ownSpeaker = { characterId: invocation.characterId, sessionId: invocation.sessionId, name: invocation.preparedTurn.characterName };
+              for (const [index, identity] of [speaker, ownSpeaker].entries()) {
+                const source = recalled.find(item => item.id === sourceIds[index]);
+                if (!source?.content?.includes([original, otherOriginal][index]!)) throw new Error("archive recall did not recover the exact originals");
+                if (!source.speaker || Object.entries(identity).some(([key, value]) => source.speaker![key as keyof typeof speaker] !== value)) throw new Error("archive recall lost its authoritative group speaker");
+              }
+              delta = tool("session_recall", { query: "What was written on the trail sign?" }, "readiness-recall-query");
+            } else if (step === 3) {
+              if (!result("readiness-recall-query").some(item => item.content?.includes(original))) throw new Error("semantic archive recall did not return the source");
+              delta = tool("igrep_search", { query: "What did we sort in the library?" }, "readiness-search");
+            } else if (step === 4) {
+              const search = payload("readiness-search");
+              if (Array.isArray(search)) {
+                delta = sourceRead(search.find(row => row.content?.includes("sorted books"))?.location);
+              } else {
+                const page = search as { status?: string; next?: { tool?: string; arguments?: object } };
+                if (page.status !== "paged_for_context" || page.next?.tool !== "session_recall" || !page.next.arguments) {
+                  throw new Error("local search did not expose a readable continuation");
+                }
+                searchPagePending = true;
+                delta = tool("session_recall", page.next.arguments, "readiness-search-page");
+              }
+            } else if (step === 5 && searchPagePending) {
+              const text = result("readiness-search-page").map(row => row.content ?? "").join("");
+              // A complete source chunk may end inside the search hit's long
+              // content string. Its flat location object is already readable.
+              const location = /"location":(\{[^{}]+\})/u.exec(text)?.[1];
+              if (!location || !text.includes("sorted books")) throw new Error("search cursor did not recover a cited hit");
+              delta = sourceRead(JSON.parse(location));
+            } else if (sourcePagePending) {
+              if (!result("readiness-source-page").some(item => item.content?.includes("sorted books"))) throw new Error("source cursor did not preserve original text");
+              delta = { content: "I remember the sign: Cedar Finch. We're at the library tonight." };
+            } else {
+              const source = payload("readiness-source") as { status?: string; next?: { tool?: string; arguments?: object } };
+              if (source.status === "paged_for_context" && source.next?.tool === "session_recall" && source.next.arguments) {
+                sourcePagePending = true;
+                delta = tool("session_recall", source.next.arguments, "readiness-source-page");
+              } else {
+                if (!result("readiness-source").some(item => item.content?.includes("sorted books"))) throw new Error("local source read did not preserve original text");
+                delta = { content: "I remember the sign: Cedar Finch. We're at the library tonight." };
+              }
+            }
+            step++;
           }
-          step++;
+          return new Response(`data: ${JSON.stringify({ id: `readiness-controlled-${requests}`, provider: config.openRouterProviderOnly?.[0] ?? "readiness-controlled", choices: [{ delta, finish_reason: delta.tool_calls ? "tool_calls" : "stop" }], usage: { prompt_tokens: 100, completion_tokens: 10 } })}\n\ndata: [DONE]\n\n`);
+        } catch (error) {
+          // These are our controlled assertions, not an upstream response body.
+          // Preserve the failed contract when the adapter classifies it as TRANSPORT.
+          fixtureFailure = error instanceof Error ? error : new Error("controlled retrieval assertion failed");
+          throw error;
         }
-        return new Response(`data: ${JSON.stringify({ id: `readiness-controlled-${requests}`, provider: config.openRouterProviderOnly?.[0] ?? "readiness-controlled", choices: [{ delta, finish_reason: delta.tool_calls ? "tool_calls" : "stop" }], usage: { prompt_tokens: 100, completion_tokens: 10 } })}\n\ndata: [DONE]\n\n`);
       },
     }),
   });
@@ -133,7 +181,7 @@ export async function probeCompanionRetrieval(
         return { attemptId: candidate.attemptId, accepted: true, status: "committed", terminalMessageId: "readiness-retrieval-terminal", committedAt: new Date().toISOString() };
       },
     });
-    if (candidates.length !== 1 || events.some(event => event.type === "failed" || event.type === "cancelled")) throw new Error("companion retrieval probe did not commit");
+    if (candidates.length !== 1 || events.some(event => event.type === "failed" || event.type === "cancelled")) throw fixtureFailure ?? new Error("companion retrieval probe did not commit");
     for (const operation of ["compaction", "session", "search"] as const) {
       if (!events.some(event => event.type === "igrep_observation" && event.operation === operation && event.outcome === "hit")) throw new Error(`companion retrieval probe lacks ${operation} evidence`);
     }

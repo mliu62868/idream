@@ -62,6 +62,10 @@ provider 的工具名分片先累计为完整当前名称，再交给 Pi；参�
 
 2026-10-17 执行内核决策：`@earendil-works/pi-ai`、`pi-durable`、`chord` 固定 `1.3.0`，igrep CLI 固定 `0.1.161`。Pi 只负责单次 Agent 运行的 model/tool loop、公共事件和上下文压缩，igrep 通过 provider-neutral CLI 承接记忆与检索；删除 DSH/Cordis 服务注册、插件 bundle、peer 与 profile bootstrap。setup/check 核验精确包版本、公共 MemoryStorage API 与 CLI surface，不能替代 full readiness 或真实产品旅程资格。
 
+2026-11-01 更新：上述三个 Pi 包精确升级为 `1.4.0`，igrep CLI 固定 `0.1.164`。现行执行内核继续是 Pi；`deepseek-harness` 只保留为既有记忆 intake/session 与备份格式标识。文本快照使用 `IGREP_INDEX_LEVEL=none`，移除新版拒绝的 `IGREP_IMAGE_AUGMENTATION_MODE`，并显式关闭未配置的 image embedding 路由。setup/check 增加无模型的真实 CLI 搜索、JSONL ID、UTF-8 分页及版本变化拒绝核验，full readiness 仍另验真实 provider 和记忆生命周期。
+
+本地与会话内检索使用公开 `search --strict`，不完整或模型阶段降级均按失败记录。新版 `search-api` 的证据包没有等价的机器可读 complete/degraded 状态，超时可能返回 exit 0 与文本 guidance，因此本宿主保留严格 CLI，不解析英文提示判定完整性。normal/private 都增加只读 `igrep_read_source`，仅接受本 attempt 授权 knowledge 目录内的相对路径，拒绝越界与符号链接；每页至多 6000 字节，续页要求原 fingerprint，保留原始 UTF-8 与源范围语义。该工具同样参与 Pi 的大结果来源 cursor 预算，不能读取跨关系记忆或替代 session_recall 的原文身份绑定。媒体正文使用自己的 `media-body.jsonl` 搜索快照，首阶段 `conversation.jsonl` 保持不变，已返回的版本续页在同一 attempt 的两个 loop 间仍可读取；attempt 结束统一清理。readiness 的本地检索用保留对话中的事实核验，不能要求 system-only 事实出现在检索语料中。
+
 每个 attempt 的原生执行阶段使用独立、临时的 Pi `Harness`/`MemoryStorage`；媒体独立正文阶段复用同一执行入口和剩余总步数，额外的请求提取也占用该预算。工具串行，关闭自动模型重试和后台压缩。`MemoryStorage` 不跨进程持久化，不承担产品恢复：Chat 重启读取 Main 固定快照与 AgentRun 输入，已写入的不可变 proposal 只能原样重放 Main ACK，包含旧 `embedded_dsh`/plugin 字段的历史 proposal 也不改写。2026-10-23 的真实 SIGKILL 实验发现，无 proposal 时重跑同一 attempt 会再次调用模型，并丢失第一次请求的用量证据，因此收紧原恢复规则：每次物理请求前先等待无正文请求意图写盘；只有可证明尚未发出请求的运行才能自动继续。已发出请求但没有 proposal 的运行提交 `agent_run_interrupted` 失败，保留 Main 用户消息、释放尚未消费的额度，由用户显式重新生成新 attempt。存活回执保留实测用量，未确认请求保持 null；历史未记录请求意图的 `pi.started` 运行也按未知结果处理。当前模型接口没有原请求结果重取契约，故不承诺恢复尚未持久化的原回复。不新增持久 Pi inbox、session log 或第二个状态机，取消、删除、deadline 与 ToolEffect 幂等边界不变。
 
 Main 投影独占长期记忆 ingest/maintain，普通 attempt 首轮前只执行一次可观测的官方 wake，并按当前消息执行 fast recall。normal 开放只读 `memory_search`，normal/private 都开放本 attempt 授权快照的 `igrep_search` 和 `session_recall`，显式配置 web provider 时保留 `igrep_web_search`；private 不读写跨会话记忆。`igrep_search` 只索引保留的对话，不重复索引 system 契约或已省略原文；已省略原文经 `session_recall` 的来源绑定返回。可用工具提示与真实注册保持一致，显式要求的只读查询不能被自动预召回取代，检索成功也不产生保存或未来记忆承诺。每个 CLI 子进程只接收明确绑定的 LLM/ASK/final-sort、embedding、rerank 路由和必要进程环境，未配置能力显式禁用，`IGREP_NO_CACHE=1` 禁用共享结果缓存，不借用个人默认配置或临时更换 HOME。
@@ -78,7 +82,7 @@ Main 投影独占长期记忆 ingest/maintain，普通 attempt 首轮前只执�
 
 普通投影只合并尚未尝试的 pending 事件，并在同一接纳事务通过 event 行 CAS 与领取互斥。尝试过的事件可能已经发布指针但丢失 ACK，后来的产品事实必须取得新 authority。记忆导出明文 spool 归入 Chat 用户擦除目录；每段短文件写入重查用户 tombstone，网络等待不持用户锁。启动在开放 HTTP 前清理崩溃遗留的新目录和已退役 OS 临时目录，账号擦除清理当前用户 spool，迟到 staging 不得重新创建它。
 
-固定 igrep `0.1.161` 的可检索 dialogue 是 `[时间, 正文]` 元组，角色与来源身份位于独立 `session/1` 文件。发布前同时核验两类文件的目录、逐行顺序、时间及 session 的角色、会话身份和原文与 Main 完整来源一致。Dialogue 的 v3 控制符传输严格解码，仅允许插入形状受限的绝对日期注释，全部原文字符须保持顺序；这不认证相对日期解释的语义正确性。维护前后来源及检索视图字节均不能变化。运行认证执行空来源及带换行、Unicode、控制符图形和相对日期的非空来源重建，空工作区或单行 ASCII 成功不能证明 ingest 格式兼容。
+固定 igrep `0.1.164` 的可检索 dialogue 是 `[时间, 正文]` 元组，角色与来源身份位于独立 `session/1` 文件。发布前同时核验两类文件的目录、逐行顺序、时间及 session 的角色、会话身份和原文与 Main 完整来源一致。Dialogue 的 v3 控制符传输严格解码，仅允许插入形状受限的绝对日期注释，全部原文字符须保持顺序；这不认证相对日期解释的语义正确性。维护前后来源及检索视图字节均不能变化。运行认证执行空来源及带换行、Unicode、控制符图形和相对日期的非空来源重建，空工作区或单行 ASCII 成功不能证明 ingest 格式兼容。
 
 新版 igrep 的检索视图绑定来源文件的物理 witness；复制出的 normal attempt 在 wake / recall 前执行官方零模型 `mem reproject`，仅在自己拥有的副本中恢复绑定，不维护 profile、不写 Main 历史。Private 不执行此步骤。预召回若返回检索不完整警告，必须失败，不能将缺失来源解释为记忆为空。完整运行认证同时验证复制后的自身原文召回及双向跨关系隔离。
 

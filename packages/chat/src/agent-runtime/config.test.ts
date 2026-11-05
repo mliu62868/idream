@@ -138,8 +138,10 @@ describe("explicit igrep child environment", () => {
         chat_template_kwargs: { enable_thinking: false },
       });
     }
-    for (const name of ["IGREP_EMBEDDING_URL","IGREP_EMBED_MODEL","IGREP_RERANK_URL","IGREP_WEB_SEARCH_URL","IGREP_OCR_URL","OPENAI_API_KEY","REDIS_URL","HTTP_PROXY"]) expect(env[name]).toBe("");
+    for (const name of ["IGREP_EMBEDDING_URL","IGREP_EMBED_MODEL","IGREP_IMAGE_EMBEDDING_URL","IGREP_IMAGE_EMBED_MODEL","IGREP_IMAGE_EMBEDDING_API_KEY","IGREP_RERANK_URL","IGREP_WEB_SEARCH_URL","IGREP_OCR_URL","OPENAI_API_KEY","REDIS_URL","HTTP_PROXY"]) expect(env[name]).toBe("");
     expect(env.IGREP_NO_CACHE).toBe("1");
+    expect(env.IGREP_INDEX_LEVEL).toBe("none");
+    expect(env.IGREP_IMAGE_AUGMENTATION_MODE).toBeUndefined();
     expect(env.NO_PROXY).toBe("*");
   });
 

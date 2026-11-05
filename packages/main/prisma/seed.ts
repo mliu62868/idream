@@ -1374,18 +1374,16 @@ async function seedAdminControlPlane() {
         enabled: true,
         status: "active",
         dryRunSummary: {
-          status: "passed",
-          source: "local_mps_exact_model_probe",
-          testedAt: "2026-08-19",
+          status: "not_run",
+          source: "seed_configuration_state",
           resolution: `${recipe.width}x${recipe.height}`,
           frames: recipe.frameCount,
           seconds: recipe.expectedDurationSeconds,
           fps: recipe.fps,
-          wallTimeSeconds: 792.917,
           notes:
-            "Exact RedCraft MiniMax H3 INT8 ConvRot workflow completed I2V with AAC audio on Apple Silicon MPS.",
+            "H3 FL2VA INT8 ConvRot with Mystic V5 and Turbo 8-step adapters. This seed configures the route; it does not qualify the installation or reuse the superseded REDMix probe.",
         },
-        publishedAt: new Date("2026-08-19T00:00:00.000Z"),
+        publishedAt: new Date("2026-11-02T00:00:00.000Z"),
       },
     });
   }

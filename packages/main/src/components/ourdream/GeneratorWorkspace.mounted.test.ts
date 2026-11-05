@@ -627,7 +627,7 @@ describe("GeneratorWorkspace media journeys", () => {
         ...config, entitlements: { premium_controls: true, video_generation: true },
         video: { enabled: true, availability: { state: "available" }, requiredEntitlement: "video_generation",
           recipes: [{ id: "video-recipe", rowId: "video-recipe-v1", label: "Animate character", mode: "video", useCase: "character", version: 1 }],
-          models: [{ id: "video-model", label: "Video", maxCount: 1, costMultiplier: 1, entitlement: null }] },
+          models: [{ id: "profile_video_redgraft_ltx25_v1", label: "RedGraft", maxCount: 1, costMultiplier: 1, entitlement: null }] },
       } });
       if (path.startsWith("/api/v1/characters?")) return Response.json({ ok: true, data: { items: [{
         id: "character", title: "Mira", age: "28", description: "Photographer", likes: "0", chats: "0", creator: "iDream", image: "/user-content/portrait.png",
@@ -660,6 +660,8 @@ describe("GeneratorWorkspace media journeys", () => {
     await click(button("Start a new generation"));
     expect(container.querySelector('[data-testid="generator-context"]')).toBeNull();
     await click(button("Video"));
+    await act(async () => { const model = container.querySelector<HTMLSelectElement>('[aria-label="Video model"]')!; model.value = "profile_video_redgraft_ltx25_v1"; model.dispatchEvent(new Event("change", { bubbles: true })); });
+    await settle();
     await act(async () => nextHistory.commit());
     await settle();
     expect(window.location.pathname + window.location.search).toBe("/generate?characterId=character");
@@ -1918,7 +1920,7 @@ describe("GeneratorWorkspace media journeys", () => {
         ...config, entitlements: { premium_controls: true, video_generation: true },
         video: { enabled: true, availability: { state: "available" }, requiredEntitlement: "video_generation",
           recipes: [{ id: "video-recipe", rowId: "video-recipe-v1", label: "Animate character", mode: "video", useCase: "character", version: 1 }],
-          models: [{ id: "video-model", label: "Video", maxCount: 1, costMultiplier: 1, entitlement: null }] },
+          models: [{ id: "profile_video_redgraft_ltx25_v1", label: "RedGraft", maxCount: 1, costMultiplier: 1, entitlement: null }] },
       } });
       if (path.startsWith("/api/v1/characters?")) return Response.json({ ok: true, data: { items: [
         { id: "default-character", title: "Default character", image: "/user-content/default.png" },
@@ -1969,7 +1971,7 @@ describe("GeneratorWorkspace media journeys", () => {
         video: { enabled: true, availability: { state: "available" },
           recipes: [{ id: "video-recipe", rowId: "video-recipe-v1", label: "Animate character", mode: "video", useCase: "character", version: 1 }],
           requiredEntitlement: "video_generation", models: [
-            { id: "video-model", label: "Video", maxCount: 1, costMultiplier: 1, entitlement: null },
+            { id: "profile_video_redgraft_ltx25_v1", label: "RedGraft", maxCount: 1, costMultiplier: 1, entitlement: null },
           ] },
       } });
       if (url.startsWith("/api/v1/characters?")) return Response.json({ ok: true, data: {
@@ -1987,6 +1989,8 @@ describe("GeneratorWorkspace media journeys", () => {
     }));
     await mount();
     await click(button("Video"));
+    await act(async () => { const model = container.querySelector<HTMLSelectElement>('[aria-label="Video model"]')!; model.value = "profile_video_redgraft_ltx25_v1"; model.dispatchEvent(new Event("change", { bubbles: true })); });
+    await settle();
     const prompt = container.querySelector<HTMLTextAreaElement>('[aria-label="Scene 1 prompt"]')!;
     await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(prompt, "A calm wave"); prompt.dispatchEvent(new Event("input", { bubbles: true })); });
     await act(async () => { const ratio = container.querySelector<HTMLSelectElement>('[aria-label="Video aspect ratio"]')!, resolution = container.querySelector<HTMLSelectElement>('[aria-label="Video resolution"]')!, duration = container.querySelector<HTMLSelectElement>('[aria-label="Scene 1 duration"]')!;
@@ -2001,6 +2005,115 @@ describe("GeneratorWorkspace media journeys", () => {
     expect(submitted[0].orientation).toBe(orientation);
     // An unresolved request checks its original authority, not today's quote.
     expect(button("Check original request").disabled).toBe(false);
+  });
+
+  it("defaults to the exact H3 quote and retains explicit RedGraft sequences", async () => {
+    const originalFetch = globalThis.fetch;
+    const h3ModelId = "profile_video_h3_v1";
+    const h3Quote = {
+      ...quote, mode: "video", profileId: h3ModelId, profileVersion: 6,
+      orientations: ["1:1"], defaultOrientation: "1:1",
+      costs: [{ outputCount: 1, costDreamcoins: 17 }],
+      video: { durationSeconds: 124 / 24, width: 512, height: 512, audio: "generated" },
+    };
+    const singleClipQuotes: Record<string, unknown>[] = [];
+    const sequenceQuotes: Record<string, unknown>[] = [];
+    const generationWrites: Array<{ body: Record<string, unknown>; key: string | null; scope: string | null }> = [];
+    const sequenceWrites: Record<string, unknown>[] = [];
+    const h3Job = { id: "h3-clip", mode: "video", status: "completed", costDreamcoins: 17,
+      outputCount: 1, errorCode: null, createdAt: "2026-11-02T00:00:00.000Z" };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: {
+        ...config, entitlements: { premium_controls: true, video_generation: true },
+        video: { enabled: true, availability: { state: "available" }, requiredEntitlement: "video_generation",
+          recipes: [{ id: "video-recipe", rowId: "video-recipe-v1", label: "Animate character", mode: "video", useCase: "character", version: 1 }],
+          models: [
+            { id: "profile_video_redgraft_ltx25_v1", label: "RedGraft LTX 2.5", maxCount: 1, costMultiplier: 1, entitlement: null },
+            { id: h3ModelId, label: "MiniMax H3 Mystic V5", maxCount: 1, costMultiplier: 1, entitlement: null },
+          ] },
+      } });
+      if (path.startsWith("/api/v1/characters?")) return Response.json({ ok: true, data: {
+        items: [{ id: "character", title: "Mira", age: "28", description: "Photographer",
+          likes: "0", chats: "0", creator: "iDream", image: "/user-content/portrait.png" }], nextCursor: null,
+      } });
+      if (path === "/api/v1/generation/quote") {
+        singleClipQuotes.push(JSON.parse(String(init?.body)));
+        return Response.json({ ok: true, data: { quote: h3Quote } });
+      }
+      if (path === "/api/v1/generation/jobs" && init?.method === "POST") {
+        const headers = new Headers(init.headers);
+        generationWrites.push({ body: JSON.parse(String(init.body)), key: headers.get("idempotency-key"), scope: headers.get("x-idream-viewer-scope") });
+        return Response.json({ ok: true, data: { job: { ...h3Job, status: "queued" }, assets: [] } }, { status: 202 });
+      }
+      if (path === "/api/v1/generation/jobs/h3-clip") return Response.json({ ok: true, data: { job: h3Job, assets: [mediaItem("h3-result", "video")] } });
+      if (path.startsWith("/api/v1/generation/jobs?")) return Response.json({ ok: true, data: { items: generationWrites.length ? [h3Job] : [] } });
+      if (path === "/api/v1/generation/video-sequences/capabilities") return Response.json({ ok: true, data: { capabilities: videoCapabilities } });
+      if (path === "/api/v1/generation/video-sequences/quote") {
+        sequenceQuotes.push(JSON.parse(String(init?.body)));
+        return Response.json({ ok: true, data: { quote: videoQuote } });
+      }
+      if (path === "/api/v1/generation/video-sequences" && init?.method === "POST") {
+        sequenceWrites.push(JSON.parse(String(init.body)));
+        return Response.json({ ok: false, error: { message: "Request captured" } }, { status: 503 });
+      }
+      if (path === "/api/v1/generation/video-sequences") return Response.json({ ok: true, data: { sequences: [] } });
+      return originalFetch(input, init);
+    }));
+    const fillPrompt = async (label: string, value: string) => {
+      const field = container.querySelector<HTMLTextAreaElement>(`[aria-label="${label}"]`)!;
+      expect(field).not.toBeNull();
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, value);
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await settle();
+    };
+    const selectModel = async (value: string) => {
+      const field = container.querySelector<HTMLSelectElement>('[aria-label="Video model"]')!;
+      expect(field).not.toBeNull();
+      await act(async () => { field.value = value; field.dispatchEvent(new Event("change", { bubbles: true })); });
+      await settle();
+    };
+
+    await mount();
+    await click(button("Video"));
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="Video model"]')?.value).toBe("");
+    expect(Array.from(container.querySelector<HTMLSelectElement>('[aria-label="Video model"]')!.options, (option) => option.text)).toEqual(["Default (H3 Mystic V5)", "RedGraft · multi-scene"]);
+    expect(container.querySelector('[aria-label="Video sequence"]')).toBeNull();
+    expect(singleClipQuotes.at(-1)).toMatchObject({ mode: "video", characterId: "character" });
+    expect(singleClipQuotes.at(-1)?.controls).not.toHaveProperty("model");
+    expect(container.textContent).toContain("512×512");
+    await fillPrompt("Prompt", "Mira gently waves with one hand.");
+    expect(button("Generate · 17 coins").disabled).toBe(false);
+    await click(button("Generate · 17 coins"));
+    expect(generationWrites).toHaveLength(1);
+    expect(generationWrites[0]).toMatchObject({ scope: config.viewer.scope, body: {
+      mode: "video", characterId: "character", outputCount: 1, prompt: "Mira gently waves with one hand.",
+      controls: { orientation: "1:1" },
+      quoteAuthority: { profileId: h3ModelId, profileVersion: 6, routeFingerprint: h3Quote.routeFingerprint,
+        pricingFingerprint: h3Quote.pricing.fingerprint, outputCount: 1, costDreamcoins: 17 },
+    } });
+    expect(generationWrites[0].key).toBeTruthy();
+    expect(generationWrites[0].body).not.toHaveProperty("scenes");
+    expect(generationWrites[0].body.controls).not.toHaveProperty("seconds");
+    expect(generationWrites[0].body.controls).not.toHaveProperty("model");
+    expect(sequenceWrites).toHaveLength(0);
+
+    await click(button("Create"));
+    const singleClipQuoteCount = singleClipQuotes.length;
+    await selectModel("profile_video_redgraft_ltx25_v1");
+    expect(container.querySelector('[aria-label="Video sequence"]')).not.toBeNull();
+    expect(container.querySelector('#generator-prompt')).toBeNull();
+    expect(singleClipQuotes).toHaveLength(singleClipQuoteCount);
+    await fillPrompt("Scene 1 prompt", "The explicitly selected RedGraft sequence waves.");
+    await click(button("Review video price"));
+    expect(sequenceQuotes).toHaveLength(1);
+    await click(button("Accept 5 coins & create video"));
+    expect(sequenceWrites).toHaveLength(1);
+    expect(sequenceWrites[0]).toMatchObject({ characterId: "character", scenes: [{ prompt: "The explicitly selected RedGraft sequence waves.", seconds: 5 }], quoteFingerprint: videoQuote.fingerprint });
+    expect(sequenceWrites[0]).not.toHaveProperty("model");
+    expect(generationWrites).toHaveLength(1);
   });
 
   it.each([
@@ -2147,7 +2260,7 @@ describe("GeneratorWorkspace media journeys", () => {
           recipes: ["character", "freeplay"].map(useCase => ({ id: `image-${useCase}`, rowId: `image-${useCase}-v1`, label: "Image", mode: "image", useCase, version: 1 })) },
         video: { enabled: true, availability: { state: "available" }, requiredEntitlement: "video_generation",
           recipes: [{ id: "video-recipe", rowId: "video-recipe-v1", label: "Animate character", mode: "video", useCase: "character", version: 1 }],
-          models: [{ id: "video-model", label: "Video", maxCount: 1, costMultiplier: 1, entitlement: null }] },
+          models: [{ id: "profile_video_redgraft_ltx25_v1", label: "RedGraft", maxCount: 1, costMultiplier: 1, entitlement: null }] },
       } });
       if (path.startsWith("/api/v1/characters?")) return Response.json({ ok: true, data: { items: [{
         id: "character", title: "Mira", age: "28", description: "Photographer", likes: "0", chats: "0", creator: "iDream", image: "/user-content/portrait.png",
@@ -2173,7 +2286,7 @@ describe("GeneratorWorkspace media journeys", () => {
       await settle();
       expect(container.querySelector('[data-generation-job-id="video-job"]')).not.toBeNull();
     }
-    expect(container.querySelector('[aria-label="Video sequence"]') !== null).toBe(expected === "video");
+    expect(container.querySelector('[aria-label="Video model"]') !== null).toBe(expected === "video");
     expect(paidWrites).toEqual([]);
   });
 
@@ -2194,7 +2307,7 @@ describe("GeneratorWorkspace media journeys", () => {
         ...config, viewer: { authenticated: true, scope: viewer }, entitlements: { premium_controls: true, video_generation: true },
         video: { enabled: true, availability: { state: "available" }, requiredEntitlement: "video_generation",
           recipes: [{ id: "video-recipe", rowId: "video-recipe-v1", label: "Animate character", mode: "video", useCase: "character", version: 1 }],
-          models: [{ id: "video-model", label: "Video", maxCount: 1, costMultiplier: 1, entitlement: null }] },
+          models: [{ id: "profile_video_redgraft_ltx25_v1", label: "RedGraft", maxCount: 1, costMultiplier: 1, entitlement: null }] },
       } });
       if (path.startsWith("/api/v1/generation/jobs?")) return Response.json({ ok: true, data: { items: viewer === nextViewer ? [{ id: "next-scene", mode: "video", status: "running", errorCode: null, outputCount: 1, costDreamcoins: 100, createdAt: sequence.createdAt }] : [] } });
       if (path.endsWith("/video-sequences/capabilities")) return Response.json({ ok: true, data: { capabilities: videoCapabilities } });

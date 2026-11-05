@@ -381,15 +381,22 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
   it("keeps MiniMax H3 exact on its dedicated production runner", async () => {
     const descriptors = await loadWorkflowDescriptors(WORKFLOWS_DIR);
     const h3 = descriptors.find(
-      (descriptor) => descriptor.workflowKey === "minimax-h3-redcraft-i2v",
+      (descriptor) => descriptor.workflowKey === "minimax-h3-mystic-i2v",
     );
 
-    expect(h3).toMatchObject({ version: 4 });
+    expect(h3).toMatchObject({ version: 5 });
     if (!h3 || h3.backendKind !== "comfyui") {
       throw new Error("expected MiniMax H3 ComfyUI descriptor");
     }
-    expect(h3.apiPrompt["17"]).toBeUndefined();
-    expect(h3.apiPrompt["2"]?.inputs.model).toEqual(["1", 0]);
+    expect(h3.apiPrompt["17"]).toMatchObject({
+      class_type: "LoraLoaderModelOnly",
+      inputs: { model: ["1", 0], lora_name: "MysticXXX_MMH3-V5.safetensors", strength_model: 1 },
+    });
+    expect(h3.apiPrompt["18"]).toMatchObject({
+      class_type: "LoraLoaderModelOnly",
+      inputs: { model: ["17", 0], lora_name: "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors", strength_model: 1 },
+    });
+    expect(h3.apiPrompt["2"]?.inputs.model).toEqual(["18", 0]);
   });
 
 

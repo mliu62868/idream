@@ -4,8 +4,8 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const PI_VERSION = "1.3.0";
-export const IGREP_VERSION = "0.1.161";
+export const PI_VERSION = "1.4.0";
+export const IGREP_VERSION = "0.1.164";
 export const PI_PACKAGES = Object.freeze([
   "@earendil-works/pi-ai", "@earendil-works/pi-durable", "@earendil-works/chord",
 ]);
@@ -57,6 +57,11 @@ export function runPiCompanionBootstrap(options, injected = {}) {
   if (version !== IGREP_VERSION) throw new Error(`igrep version mismatch; expected ${IGREP_VERSION}`);
   const searchHelp = run(command, ["search", "--help"]);
   if (!searchHelp.includes("--stdin-format") || !searchHelp.includes("jsonl")) throw new Error("igrep public JSONL search is unavailable");
+  if (!searchHelp.includes("--strict")) throw new Error("igrep strict search is unavailable");
+  const sourceHelp = run(command, ["read-source", "--help"]);
+  for (const option of ["--root", "--offset", "--max-bytes", "--expected-fingerprint"]) {
+    if (!sourceHelp.includes(option)) throw new Error(`igrep public read-source ${option} is unavailable`);
+  }
   const memoryHelp = run(command, ["mem", "--help"]);
   for (const operation of ["ingest", "maintain", "recall", "wake", "doctor", "reproject"]) {
     if (!memoryHelp.includes(operation)) throw new Error(`igrep memory ${operation} is unavailable`);
@@ -69,12 +74,17 @@ export function runPiCompanionBootstrap(options, injected = {}) {
     import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context';
     import { createModels } from '@earendil-works/pi-ai';
     import { Harness, MemoryStorage, createRegistry } from '@earendil-works/pi-durable';
+    import { probeIgrepPublicCli } from './src/agent-runtime/igrep-public-probe.ts';
     const harness = await Harness.open(new MemoryStorage(), {models:createModels(),registry:createRegistry()}, context);
     try { const conversation=await harness.root(context); const entries=await conversation.entries({order:'ascending'},100,undefined,context); const view=await conversation.context(context); if(!Array.isArray(entries.items)||view.entries.length!==view.contributions.length)throw new Error('public API mismatch'); process.stdout.write('pi-public-memory-api:ok'); } finally { await harness.close(context); }
+    await probeIgrepPublicCli(${JSON.stringify(command)});
+    process.stdout.write('\\nigrep-public-cli:ok');
   `]);
-  if (api !== "pi-public-memory-api:ok") throw new Error("Pi public MemoryStorage API qualification failed");
+  if (!api.startsWith("pi-public-memory-api:ok")) throw new Error("Pi public MemoryStorage API qualification failed");
+  if (api !== "pi-public-memory-api:ok\nigrep-public-cli:ok") throw new Error("igrep public zero-model CLI qualification failed");
   return { schemaVersion: 3, ok: true, mode: options.check ? "check" : "setup", pins: { pi: PI_VERSION, igrep: version }, packages,
-    igrepCommand: command, kernel: { storage: "memory", publicApi: true }, proof: "installed-public-surface", fullReadinessRequired: true };
+    igrepCommand: command, kernel: { storage: "memory", publicApi: true }, cli: { search: true, jsonlSearch: true, versionedSourceRead: true, modelCalls: 0 },
+    proof: "installed-public-surface", fullReadinessRequired: true };
 }
 
 function main() {

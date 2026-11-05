@@ -707,6 +707,96 @@ describe("Chat embedded companion runtime", () => {
     await runtime.shutdown();
   });
 
+  it("continues an original source cursor across the media body boundary while searching only body context", async () => {
+    const value = imageInvocation();
+    const independent = "Also read the rest of my earlier note and tell me its final words.";
+    value.preparedTurn.messages.at(-1)!.content = `Generate a new photo of yourself. ${independent}`;
+    value.preparedTurn.messages.splice(1, 0,
+      { id: "history-note", sourceKind: "replay", role: "user", content: `Original long note. ${"x".repeat(6_400)} Final words: cedar lantern.` },
+      { id: "history-ack", sourceKind: "replay", role: "assistant", content: "I have heard your note." });
+    const requests: WireRequest[] = [];
+    const readCalls: Array<{ path: string; offset: number; expected?: string; fingerprint: string }> = [];
+    const searched: string[] = [];
+    let originalSource = "";
+    let firstPage: { results: Array<{ content: string; fingerprint: string }>; next: Record<string, unknown> };
+    let resumedContent = "";
+    const call = (name: string, id: string, args: unknown) => response({ tool_calls: [{ index: 0, id, function: { name, arguments: JSON.stringify(args) } }] }, "tool_calls", { inputTokens: 4, outputTokens: 1 });
+    const result = (request: WireRequest, id: string) => JSON.parse(request.messages.find(message => message.role === "tool" && message.tool_call_id === id)!.content);
+    const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: async (_url, init) => {
+      const request: WireRequest = JSON.parse(String(init?.body));
+      requests.push(request);
+      if (requests.length === 1) return call("igrep_read_source", "source-first", { path: "conversation.jsonl" });
+      if (requests.length === 2) {
+        firstPage = result(request, "source-first");
+        expect(firstPage.next).toMatchObject({ path: "conversation.jsonl", offset: 6_000, fingerprint: firstPage.results[0]!.fingerprint });
+        return call("generate_image_async", "single-media", { prompt: "Mira walking outdoors", subject: "companion" });
+      }
+      if (requests.length === 3) return response({ content: "Provisional media reply." }, "stop", { inputTokens: 4, outputTokens: 1 });
+      expect(request.tools!.some(tool => tool.function.name === "generate_image_async")).toBe(false);
+      expect(request.messages).toContainEqual(expect.objectContaining({ role: "user", content: independent }));
+      if (requests.length === 4) {
+        // The independent loop must continue the cursor actually supplied to
+        // the first loop, including that original file's version witness.
+        const transferred = result(request, "source-first");
+        expect(transferred.next).toEqual(firstPage.next);
+        return call("igrep_read_source", "source-rest", transferred.next);
+      }
+      if (requests.length === 5) {
+        const rest = result(request, "source-rest");
+        expect(rest.next).toBeNull();
+        expect(rest.results[0].fingerprint).toBe(firstPage.results[0]!.fingerprint);
+        resumedContent = firstPage.results[0]!.content + rest.results[0].content;
+        expect(resumedContent).toBe(originalSource);
+        expect(rest.results[0].content).toContain("cedar lantern");
+        return call("igrep_search", "body-search", { query: "What are the note's final words?" });
+      }
+      expect(result(request, "body-search")).toEqual([expect.objectContaining({ content: "Final words: cedar lantern." })]);
+      return response({ content: "Your note ended with cedar lantern." }, "stop", { inputTokens: 4, outputTokens: 1 });
+    } }, async () => response({ content: JSON.stringify({ requests: [independent] }) }, "stop", { inputTokens: 4, outputTokens: 1 }));
+    const runtime = await engine(adapter, undefined, { runIgrep: async ({ args }) => {
+      if (args[0] === "search") {
+        const path = args.at(-1)!;
+        searched.push(path);
+        expect(path.endsWith("/media-body.jsonl")).toBe(true);
+        expect(JSON.parse((await readFile(path, "utf8")).trim().split("\n").at(-1)!).content).toBe(independent);
+        return { results: [{ content: "Final words: cedar lantern.", location: { path: "media-body.jsonl" } }] };
+      }
+      expect(args[0]).toBe("read-source");
+      const path = args.at(-1)!;
+      const file = join(args[args.indexOf("--root") + 1]!, path);
+      const bytes = await readFile(file);
+      const source = bytes.toString("utf8");
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      const fingerprint = `sha256:${digest}`;
+      const expected = args.includes("--expected-fingerprint") ? args[args.indexOf("--expected-fingerprint") + 1] : undefined;
+      const offset = Number(args[args.indexOf("--offset") + 1]);
+      readCalls.push({ path, offset, expected, fingerprint });
+      // If the body stage overwrites conversation.jsonl, this source-version
+      // check rejects the cursor just as the installed CLI does.
+      if (expected !== undefined && expected !== fingerprint) throw new Error("source revision changed");
+      if (offset === 0) originalSource = source;
+      const end = Math.min(bytes.length, offset + Number(args[args.indexOf("--max-bytes") + 1]));
+      return { schema_version: 1, path: file, content: bytes.subarray(offset, end).toString("utf8"), fingerprint,
+        source_sha256: digest, content_kind: "text", coverage: "complete", encoding: "utf-8", lossy: false, warnings: [],
+        range: { start_line: 1, end_line: source.trimEnd().split("\n").length, byte_start: offset, byte_end: end },
+        line_space: "original", truncated: end < bytes.length, next_offset: end < bytes.length ? end : null };
+    } });
+    const connection = port();
+    try {
+      await runtime.run(value, connection.runtimePort);
+      expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
+      expect(connection.candidates).toHaveLength(1);
+      expect(connection.candidates[0]).toMatchObject({ content: "Your note ended with cedar lantern.",
+        execution: { steps: 7, toolCalls: 1 }, mediaResponse: { attachmentId: "attachment-1" } });
+      expect(readCalls).toEqual([
+        { path: "conversation.jsonl", offset: 0, expected: undefined, fingerprint: readCalls[0]!.fingerprint },
+        { path: "conversation.jsonl", offset: 6_000, expected: readCalls[0]!.fingerprint, fingerprint: readCalls[0]!.fingerprint },
+      ]);
+      expect(resumedContent).toBe(originalSource);
+      expect(searched).toHaveLength(1);
+    } finally { await runtime.shutdown(); }
+  });
+
   it.each(["empty", "length", "budget"] as const)("does not let the attachment mask %s independent-body failure", async kind => {
     const value = imageInvocation();
     const independent = "Also tell me the sum.";
@@ -1084,8 +1174,7 @@ describe("Chat embedded companion runtime", () => {
       return response({ content: original });
     } }), undefined, {
       runIgrep: async ({ args }) => {
-        const directory = args.at(-1)!;
-        for (const name of await readdir(directory)) knowledge[name] = await readFile(join(directory, name), "utf8");
+        knowledge["conversation.jsonl"] = await readFile(args.at(-1)!, "utf8");
         return { results: [] };
       },
     });
@@ -1128,7 +1217,7 @@ describe("Chat embedded companion runtime", () => {
     const runtime=await engine(adapter,undefined,memoryPorts);const connection=port({executeTool:async call=>{effects.push(call);throw new Error("forbidden tools cannot reach Main");}});
     await runtime.run(mode==="normal"?normalInvocation():invocation(),connection.runtimePort);
     expect(requests).toHaveLength(2);
-    expect(requests[0]!.tools?.map(tool=>tool.function.name).sort()).toEqual((mode==="normal"?["igrep_search","memory_search","session_recall"]:["igrep_search","session_recall"]).sort());
+    expect(requests[0]!.tools?.map(tool=>tool.function.name).sort()).toEqual((mode==="normal"?["igrep_search","igrep_read_source","memory_search","session_recall"]:["igrep_search","igrep_read_source","session_recall"]).sort());
     const guidance = requests[0]!.messages.filter(message => message.role === "system").map(message => message.content).join("\n");
     if (mode === "private") expect(guidance).not.toContain("Use memory_search");
     expect(effects).toEqual([]);

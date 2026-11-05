@@ -1,5 +1,6 @@
 import { generationTerminalRecordChecksum } from "@idream/shared/contracts/durable-server";
 import { deflateSync } from "node:zlib";
+import sharp from "sharp";
 import type { Prisma } from "@prisma/client";
 import {
   minimaxH3VideoProductionRecipe,
@@ -10,6 +11,7 @@ import {
 } from "@idream/shared/contracts";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
+import { providers } from "@/server/providers";
 import { jobQueue } from "@/server/jobs/queue";
 import { retryGenerationRequest } from "@/server/ai/generation-request-lifecycle";
 import {
@@ -72,6 +74,14 @@ beforeAll(async () => {
     characterId: CHAR,
     ownerId: SYS,
   });
+  // Admission hydrates the published source; an editorial locator alone is
+  // insufficient evidence that the pixels still exist and decode.
+  const source = await providers.blob.putPrivate({
+    key: `test-fixtures/${CHAR}-public-avatar.webp`,
+    body: await sharp({ create: { width: 64, height: 64, channels: 3, background: "#7296b0" } }).webp().toBuffer(),
+    contentType: "image/webp",
+  });
+  if (!source.ok) throw new Error("Failed to persist pipeline source fixture");
 });
 
 afterEach(() => {
@@ -79,6 +89,7 @@ afterEach(() => {
 });
 
 afterAll(async () => {
+  await providers.blob.delete({ key: `test-fixtures/${CHAR}-public-avatar.webp` });
   for (const dedupeKey of cleanupJobDedupeKeys) {
     await jobQueue.removeByDedupePrefix(dedupeKey, [
       "ai.image.generate",
@@ -963,11 +974,11 @@ describe("local AI service pipeline", () => {
     });
     const previousVideoProfile =
       await prisma.generationModelProfile.findUniqueOrThrow({
-        where: { id: "seed-profile-video-redgraft-ltx25-v1" },
+        where: { id: "seed-profile-video-h3-v1" },
         select: { rolloutPercent: true },
       });
     await prisma.generationModelProfile.update({
-      where: { id: "seed-profile-video-redgraft-ltx25-v1" },
+      where: { id: "seed-profile-video-h3-v1" },
       data: { rolloutPercent: 100 },
     });
 
@@ -1004,17 +1015,17 @@ describe("local AI service pipeline", () => {
       expect(videoSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           prompt: "Video generation for Test Character",
-          seconds: redgraftLtx25VideoProductionRecipe.durationSeconds,
+          seconds: minimaxH3VideoProductionRecipe.durationSeconds,
           seed: expect.any(String),
           negativePrompt: null,
-          model: redgraftLtx25VideoProductionRecipe.workflowKey,
+          model: minimaxH3VideoProductionRecipe.workflowKey,
           controls: expect.objectContaining({
-            profileId: redgraftLtx25VideoProductionRecipe.profileKey,
-            width: 448,
-            height: 768,
+            profileId: minimaxH3VideoProductionRecipe.profileKey,
+            width: 512,
+            height: 512,
             sourceImageAssetId: expect.any(String),
-            workflowKey: redgraftLtx25VideoProductionRecipe.workflowKey,
-            workflowVersion: redgraftLtx25VideoProductionRecipe.workflowVersion,
+            workflowKey: minimaxH3VideoProductionRecipe.workflowKey,
+            workflowVersion: minimaxH3VideoProductionRecipe.workflowVersion,
           }),
           referenceImages: [
             expect.objectContaining({
@@ -1039,7 +1050,7 @@ describe("local AI service pipeline", () => {
         data: previousVideoFlag,
       });
       await prisma.generationModelProfile.update({
-        where: { id: "seed-profile-video-redgraft-ltx25-v1" },
+        where: { id: "seed-profile-video-h3-v1" },
         data: previousVideoProfile,
       });
     }
@@ -1136,8 +1147,8 @@ describe("local AI service pipeline", () => {
       expect(
         config.data.video.models.map((model: { id: string }) => model.id),
       ).toEqual([
-        redgraftLtx25VideoProductionRecipe.profileKey,
         minimaxH3VideoProductionRecipe.profileKey,
+        redgraftLtx25VideoProductionRecipe.profileKey,
       ]);
       const invalidDurationQuote = await api("POST", "generation/quote", {
         userId,
@@ -1205,7 +1216,7 @@ describe("local AI service pipeline", () => {
     }
   });
 
-  it("queues MiniMax H3 only when its explicit video profile is requested", async () => {
+  it("defaults to H3 even when RedGraft is cheaper, with exact delivery and settlement", async () => {
     const userId = `${P}h3-video-user`;
     await createUser({ id: userId });
     await grantCoins(userId, 300, "seed");
@@ -1240,16 +1251,16 @@ describe("local AI service pipeline", () => {
     await prisma.generationModelProfile.update({
       where: { id: "seed-profile-video-h3-v1" },
       data: {
-        label: "AAA explicit H3 route",
-        costMultiplier: 0.01,
+        label: "ZZZ default H3 route",
+        costMultiplier: 1,
         rolloutPercent: 100,
       },
     });
     await prisma.generationModelProfile.update({
       where: { id: "seed-profile-video-redgraft-ltx25-v1" },
       data: {
-        label: "ZZZ implicit LTX route",
-        costMultiplier: 9,
+        label: "AAA cheaper explicit LTX route",
+        costMultiplier: 0.01,
       },
     });
 
@@ -1266,13 +1277,35 @@ describe("local AI service pipeline", () => {
         minimaxH3VideoProductionRecipe.profileKey,
       ]);
 
+      const defaultQuote = await api("POST", "generation/quote", {
+        userId, ageGate: true, body: { mode: "video", characterId: CHAR, outputCount: 1 },
+      });
+      expectOk(defaultQuote);
+      expect(defaultQuote.data.quote).toMatchObject({ profileId: "profile_video_h3_v1", profileVersion: 6,
+        video: { width: 512, height: 512, durationSeconds: 124 / 24, audio: "generated" } });
+      const explicitLtx = await api("POST", "generation/quote", {
+        userId, ageGate: true, body: { mode: "video", characterId: CHAR, model: redgraftLtx25VideoProductionRecipe.profileKey, outputCount: 1 },
+      });
+      expectOk(explicitLtx);
+      expect(explicitLtx.data.quote.profileId).toBe(redgraftLtx25VideoProductionRecipe.profileKey);
+
+      const priorQuote = explicitLtx.data.quote;
+      const staleDefaultSubmit = await api("POST", "generation/jobs", {
+        userId, ageGate: true, body: { mode: "video", characterId: CHAR, outputCount: 1,
+          quoteAuthority: { profileId: priorQuote.profileId, profileVersion: priorQuote.profileVersion,
+            routeFingerprint: priorQuote.routeFingerprint, pricingFingerprint: priorQuote.pricing.fingerprint,
+            outputCount: 1, costDreamcoins: priorQuote.costs[0].costDreamcoins } },
+      });
+      expectError(staleDefaultSubmit, 409, "conflict");
+      expect(await prisma.generationJob.count({ where: { userId, mode: "video" } })).toBe(0);
+      expect(await dreamcoinBalance(userId)).toBe(300);
+
       const invalidQuote = await api("POST", "generation/quote", {
         userId,
         ageGate: true,
         body: {
           mode: "video",
           characterId: CHAR,
-          model: "profile_video_h3_v1",
           controls: { seconds: 4 },
           outputCount: 1,
         },
@@ -1285,7 +1318,6 @@ describe("local AI service pipeline", () => {
         body: {
           mode: "video",
           characterId: CHAR,
-          model: "profile_video_h3_v1",
           controls: { seconds: 4 },
           outputCount: 1,
         },
@@ -1298,7 +1330,6 @@ describe("local AI service pipeline", () => {
         body: {
           mode: "video",
           characterId: CHAR,
-          model: "profile_video_h3_v1",
           controls: { seconds: 5 },
           outputCount: 1,
         },
@@ -1307,14 +1338,14 @@ describe("local AI service pipeline", () => {
       expect(created.data.job).toMatchObject({
         mode: "video",
         profileId: "profile_video_h3_v1",
-        model: "minimax-h3-redcraft-i2v",
+        model: "minimax-h3-mystic-i2v",
         orientation: "1:1",
         controls: expect.objectContaining({
           seconds: 5,
           width: 512,
           height: 512,
-          workflowKey: "minimax-h3-redcraft-i2v",
-          workflowVersion: 4,
+          workflowKey: "minimax-h3-mystic-i2v",
+          workflowVersion: 5,
         }),
       });
       const jobId = created.data.job.id as string;
@@ -1331,11 +1362,11 @@ describe("local AI service pipeline", () => {
       expect(queued?.payload).toMatchObject({
         kind: "video",
         generationJobId: jobId,
-        model: "minimax-h3-redcraft-i2v",
+        model: "minimax-h3-mystic-i2v",
         controls: expect.objectContaining({
           profileId: "profile_video_h3_v1",
-          workflowKey: "minimax-h3-redcraft-i2v",
-          workflowVersion: 4,
+          workflowKey: "minimax-h3-mystic-i2v",
+          workflowVersion: 5,
         }),
       });
 
@@ -1349,7 +1380,7 @@ describe("local AI service pipeline", () => {
       expect(completed.data.job).toMatchObject({
         status: "completed",
         profileId: "profile_video_h3_v1",
-        model: "minimax-h3-redcraft-i2v",
+        model: "minimax-h3-mystic-i2v",
       });
       expect(completed.data.assets).toHaveLength(1);
 
@@ -1359,9 +1390,9 @@ describe("local AI service pipeline", () => {
       expect(attempt).toMatchObject({
         provider: "comfyui",
         profileKey: "profile_video_h3_v1",
-        profileVersion: 4,
-        workflowKey: "minimax-h3-redcraft-i2v",
-        workflowVersion: 4,
+        profileVersion: 6,
+        workflowKey: "minimax-h3-mystic-i2v",
+        workflowVersion: 5,
         status: "succeeded",
         terminalRecordRef: expect.any(String),
       });
@@ -1419,7 +1450,7 @@ describe("local AI service pipeline", () => {
     {
       label: "RedGraft LTX 2.5",
       profileRowId: "seed-profile-video-redgraft-ltx25-v1",
-      requestedModel: undefined,
+      requestedModel: redgraftLtx25VideoProductionRecipe.profileKey,
       seconds: redgraftLtx25VideoProductionRecipe.durationSeconds,
       profileKey: redgraftLtx25VideoProductionRecipe.profileKey,
       workflowKey: redgraftLtx25VideoProductionRecipe.workflowKey,
@@ -1428,10 +1459,10 @@ describe("local AI service pipeline", () => {
     {
       label: "MiniMax H3",
       profileRowId: "seed-profile-video-h3-v1",
-      requestedModel: "profile_video_h3_v1",
+      requestedModel: undefined,
       seconds: 5,
       profileKey: "profile_video_h3_v1",
-      workflowKey: "minimax-h3-redcraft-i2v",
+      workflowKey: "minimax-h3-mystic-i2v",
       workflowVersion: minimaxH3VideoProductionRecipe.workflowVersion,
     },
   ])("fails closed on stale $label workflow pins and preserves exact retry authority", async ({

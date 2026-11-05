@@ -89,7 +89,7 @@ export type ComfyUiRunner = "image" | "video" | "video-h3";
 export function comfyUiRunnerForDescriptor(
   descriptor: Pick<WorkflowDescriptor, "capabilities" | "workflowKey">,
 ): ComfyUiRunner {
-  if (descriptor.workflowKey === "minimax-h3-redcraft-i2v") {
+  if (descriptor.workflowKey === "minimax-h3-mystic-i2v") {
     return "video-h3";
   }
   return descriptor.capabilities.includes("video") ? "video" : "image";

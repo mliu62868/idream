@@ -8,6 +8,7 @@ import {
   characterVideoProductionRecipe,
   characterVideoProductionRecipes,
   minimaxH3VideoProductionRecipe,
+  redgraftLtx25VideoProductionRecipe,
   type CharacterVideoProductionRecipe,
 } from "@idream/shared";
 import {
@@ -1503,7 +1504,8 @@ function addVideoPipelineChecks(
   productConfigProbe: ProductConfigProbeEvidence | null,
 ) {
   const configured = env.GEN_VIDEO_PROVIDER ?? "mock";
-  const genComfyuiApiUrl = genComfyUiAuthority(env, "video");
+  const genComfyuiApiUrl = genComfyUiAuthority(env,
+    characterVideoProductionRecipe.workflowKey === minimaxH3VideoProductionRecipe.workflowKey ? "h3" : "video");
   if (!configured || configured === "mock") {
     const productConfigOk =
       productConfigProbe?.ok === true && !productConfigProbe.loadError;
@@ -1526,7 +1528,7 @@ function addVideoPipelineChecks(
           : "Video generation worker is not configured for a production provider; video must remain disabled.",
       remediation: videoFeatureDisabled
         ? undefined
-        : "Keep the video_gen feature flag off, or set GEN_VIDEO_PROVIDER=backend with the pinned LTX workflow before enabling video generation.",
+        : "Keep the video_gen feature flag off, or set GEN_VIDEO_PROVIDER=backend with the pinned default video workflow before enabling video generation.",
     });
     return;
   }
@@ -1544,7 +1546,7 @@ function addVideoPipelineChecks(
     remediation:
       isProductionProvider && supported
         ? undefined
-        : "Use GEN_VIDEO_PROVIDER=backend with the pinned LTX workflow, or keep video generation disabled for launch.",
+        : "Use GEN_VIDEO_PROVIDER=backend with the pinned default video workflow, or keep video generation disabled for launch.",
   });
 
   if (configured === "backend") {
@@ -1555,7 +1557,7 @@ function addVideoPipelineChecks(
       value: genComfyuiApiUrl,
       url: true,
       remediation:
-        "Set COMFYUI_VIDEO_API_URL (or legacy COMFYUI_API_URL) in Gen's production environment to the ComfyUI runtime hosting the pinned LTX video workflow.",
+        "Set COMFYUI_H3_API_URL in Gen's production environment to the ComfyUI runtime hosting the default H3 Mystic workflow.",
     });
   }
 }
@@ -2710,8 +2712,10 @@ function requiredRevisionProbeNames(
     !probes.productConfigProbe.loadError &&
     probes.productConfigProbe.videoFeatureEnabled === true
   ) {
-    names.add("videoGenerationProbe");
-    names.add("videoGenerationPersistenceProbe");
+    if (!optionalVideoRecipeIsUnpublished(env, probes.productConfigProbe, now, redgraftLtx25VideoProductionRecipe)) {
+      names.add("videoGenerationProbe");
+      names.add("videoGenerationPersistenceProbe");
+    }
     if (!optionalVideoRecipeIsUnpublished(env, probes.productConfigProbe, now, minimaxH3VideoProductionRecipe)) {
       names.add("videoH3GenerationProbe");
       names.add("videoH3GenerationPersistenceProbe");
@@ -3110,7 +3114,7 @@ function assessReadiness(
       probes.productConfigProbe,
       probes.videoGenerationProbe,
       now,
-      characterVideoProductionRecipe,
+      redgraftLtx25VideoProductionRecipe,
       "videoGenerationProbe",
       "video-generation-live-probe",
     );
@@ -3135,7 +3139,7 @@ function assessReadiness(
       {
         probeName: "videoGenerationPersistenceProbe",
         checkId: "generation-video-main-persistence",
-        recipe: characterVideoProductionRecipe,
+        recipe: redgraftLtx25VideoProductionRecipe,
       },
     );
     addGenerationPersistenceProbeCheck(

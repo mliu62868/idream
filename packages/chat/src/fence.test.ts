@@ -31,7 +31,7 @@ const streaming = vi.hoisted(() => ({ appendStreamEvent: vi.fn(async () => undef
 vi.mock("./agent-runtime/runtime.js", () => ({
   runCompanion: runtime.runCompanion,
   agentRuntimeProfileDigest: async () => "d".repeat(64),
-  agentRuntimeVersions: async () => ({ igrepVersion: "igrep-test", piVersion: "1.3.0" }),
+  agentRuntimeVersions: async () => ({ igrepVersion: "igrep-test", piVersion: "1.4.0" }),
 }));
 vi.mock("./prepared-turn.js", () => ({
   prepareCompanionTurn: async ({ snapshot }: AgentRunInput) => ({

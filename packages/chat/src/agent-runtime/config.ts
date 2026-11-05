@@ -85,6 +85,7 @@ export function createIgrepEnvironment(config: IgrepChildConfig, ambient: Readon
     "EMBED_QUERY_PREFIX", "EMBED_DOC_PREFIX", "SYSTEM_PROMPT_EXTRA", "LLM_GATEWAY_DIALECTS",
     "SPARSE_URL", "SPARSE_MODEL", "SPARSE_API_KEY", "SPARSE_TOKENIZER_PATH",
     "OCR_URL", "OCR_MODEL", "OCR_API_KEY", "DECISION_URL", "DECISION_MODEL", "DECISION_API_KEY",
+    "IMAGE_EMBEDDING_URL", "IMAGE_EMBED_MODEL", "IMAGE_EMBEDDING_API_KEY",
     "VLM_URL", "VLM_MODEL", "VLM_API_KEY", "VLM_EMOJI_MODEL", "ISEARCH_DEFAULT_SOURCE",
     "WEB_SEARCH_PROVIDER", "WEB_SEARCH_URL", "WEB_SEARCH_API_KEY", "SEARXNG_URL", "SEARXNG_API_KEY", "SEARXNG_ENGINES",
     "TAVILY_API_KEY", "SERPER_API_KEY", "EXA_API_KEY", "CACHE_REDIS_DIR", "CACHE_BACKEND_SOURCE",
@@ -95,7 +96,9 @@ export function createIgrepEnvironment(config: IgrepChildConfig, ambient: Readon
   Object.assign(env, {
     IGREP_LLM_API_FORMAT: "chat", IGREP_LLM_CONTEXT_WINDOW_TOKENS: "0", IGREP_ASK_LLM_CONTEXT_WINDOW_TOKENS: "0",
     IGREP_NO_CACHE: "1", IGREP_RERANK_CACHE: "0", IGREP_FAST_SPARSE_EXPANSION: "0",
-    IGREP_MEM_DECISION_JUDGE: "0", IGREP_IMAGE_AUGMENTATION_MODE: "off",
+    // The attempt corpus contains only host-written text. 0.1.164 removed
+    // IMAGE_AUGMENTATION_MODE; no preparation stage may inherit a home default.
+    IGREP_MEM_DECISION_JUDGE: "0", IGREP_INDEX_LEVEL: "none",
   });
   if (config.web) {
     const {provider, url, apiKey} = config.web;

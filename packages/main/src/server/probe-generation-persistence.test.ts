@@ -120,7 +120,7 @@ describe("generation persistence probe", () => {
       generationPersistenceProbeName({
         mode: "video",
         profileKey: "profile_video_h3_v1",
-        workflowKey: "minimax-h3-redcraft-i2v",
+        workflowKey: "minimax-h3-mystic-i2v",
       }),
     ).toBe("videoH3GenerationPersistenceProbe");
 

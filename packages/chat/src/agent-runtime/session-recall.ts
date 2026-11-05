@@ -2,7 +2,7 @@ import type { Context } from '@earendil-works/chord/context';
 import type { Message } from '@earendil-works/pi-ai';
 import { AssistantEntry, ToolResultEntry, type Conversation, type Cursor, type EntryRecord } from '@earendil-works/pi-durable';
 
-import { runJsonCommand, type IgrepCommand, type RunJsonCommand } from "./igrep";
+import { igrepSearchResults, runJsonCommand, type IgrepCommand, type RunJsonCommand } from "./igrep";
 
 export type Speaker = { name: string; characterId: string; sessionId: string };
 export type MainSource = {
@@ -203,13 +203,14 @@ export async function projectRecall(conversation: Conversation, context: Context
       if (cli.env.IGREP_NO_CACHE !== '1') throw new Error('recall requires disabled shared caches');
       signal?.throwIfAborted();
       if (!records.length) return [];
-      const payload = await run({ ...cli, args: ['search', '--stdin-format', 'jsonl', '--mode', 'ultra', '--json', '--no-cache', '-m', '8', '--', query],
+      const payload = await run({ ...cli, args: ['search', '--stdin-format', 'jsonl', '--mode', 'ultra', '--json', '--strict', '--no-cache', '-m', '8', '--', query],
         stdin: records.map(item => JSON.stringify({ id: item.id, ref: item.ref, title: item.title, content: item.content })).join('\n') + '\n',
         acceptedExitCodes: [0, 1], timeoutMs: 60_000, signal }) as Record<string, unknown>;
-      if (!payload || payload.failed || payload.error || payload.complete === false
-        || (payload.warnings !== undefined && (!Array.isArray(payload.warnings) || payload.warnings.length))
-        || !Array.isArray(payload.results)) throw new Error('incomplete or invalid igrep recall');
-      const ids = payload.results.map((hit: { record?: { id?: unknown }; ref?: unknown }) => hit.record?.id ?? hit.ref);
+      const ids = igrepSearchResults(payload).map(hit => {
+        if (!hit || typeof hit !== 'object' || Array.isArray(hit)) throw new Error('invalid igrep reference');
+        const record = hit as { record?: { id?: unknown }; ref?: unknown };
+        return record.record?.id ?? record.ref;
+      });
       if (!ids.length) return [];
       if (!ids.every((id: unknown) => typeof id === 'string')) throw new Error('invalid igrep reference');
       // Resolve every selected ID from immutable originals before restoring

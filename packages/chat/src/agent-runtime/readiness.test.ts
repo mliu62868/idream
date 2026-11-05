@@ -21,7 +21,7 @@ const igrepVerification = {
 };
 const successfulRuntimeEvidence = {
   instance: runtimeInstance,
-  resolveIgrepVersion: async () => "0.1.161",
+  resolveIgrepVersion: async () => "0.1.164",
   providerWarmup: async () => {}, memoryLifecycleProbe: async () => igrepVerification,
   bridgeProbe: async () => {}, retrievalProbe: async () => {}, workspaceRebuildProbe: async () => {},
 };
@@ -34,10 +34,10 @@ describe("fail-closed Pi companion readiness", () => {
     const readiness = await createReadinessProbe({
       config, ...successfulRuntimeEvidence,
       bridgeProbe: async invocation => { bridgeProfileDigest = invocation.expectedProfileDigest; },
-      resolveIgrepVersion: async cli => { observedEnvironment = cli.env; return "0.1.161"; },
+      resolveIgrepVersion: async cli => { observedEnvironment = cli.env; return "0.1.164"; },
     })();
     expect(readiness).toMatchObject({
-      ready: true, productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION, piVersion: "1.3.0", igrepVersion: "0.1.161",
+      ready: true, productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION, piVersion: "1.4.0", igrepVersion: "0.1.164",
       kernel: { storage: "memory", publicApi: true }, instance: runtimeInstance,
       provider: { name: "openai", baseUrl: "https://openrouter.ai/api/v1", model: "deepseek/test", resolved: true },
       bridges: { toolReachable: true, commitReachable: true, workspaceRebuildReachable: true }, verification: igrepVerification,
@@ -57,7 +57,7 @@ describe("fail-closed Pi companion readiness", () => {
     for (const version of ["latest", "0.1.150", "9.8.7"]) {
       await expect(createReadinessProbe({ config, ...successfulRuntimeEvidence, providerWarmup, resolveIgrepVersion: async () => version })()).rejects.toThrow(/igrepVersion/);
     }
-    await expect(createReadinessProbe({ config, ...successfulRuntimeEvidence, providerWarmup, resolvePackageVersion: async name => name.endsWith("pi-ai") ? "1.2.0" : "1.3.0" })()).rejects.toThrow(/Pi core version drift/);
+    await expect(createReadinessProbe({ config, ...successfulRuntimeEvidence, providerWarmup, resolvePackageVersion: async name => name.endsWith("pi-ai") ? "1.2.0" : "1.4.0" })()).rejects.toThrow(/Pi core version drift/);
     expect(providerWarmup).not.toHaveBeenCalled();
   });
 

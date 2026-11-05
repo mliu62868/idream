@@ -280,24 +280,39 @@ COMFYUI_H3_API_URL=http://127.0.0.1:8190
 ```
 
 ```text
-default model: redgraft-ltx25-fast2k-int8-convrot
-default workflow: redgraft-ltx25-i2v
-default output: 448x768 (7:12 portrait, 480p tier), 121 frames / 5.042 seconds, 24 fps, MP4 with audio
-default video options: orientation=7:12, quality=preview
+default model: minimax-h3-mystic-v5-int8-convrot
+default workflow: minimax-h3-mystic-i2v (workflow v5, profile v6)
+default output: 512x512, 124 frames / 5.167 seconds, 24 fps, MP4 with audio
 
-explicit model: minimax-h3-redcraft-a2a-int8-convrot
-explicit workflow: minimax-h3-redcraft-i2v
-explicit output: 512x512, 124 frames / 5.167 seconds, 24 fps, MP4 with audio
+explicit multi-scene model: redgraft-ltx25-fast2k-int8-convrot
+explicit workflow: redgraft-ltx25-i2v
+explicit output: 448x768 (7:12 portrait, 480p tier), 121 frames / 5.042 seconds, 24 fps, MP4 with audio
+video options: orientation=7:12, quality=preview
 input: one published source image
 ```
 
-MiniMax H3 is registered as `profile_video_h3_v1` with
-`publicSelection.explicitOnly=true`; it never replaces the RedGraft default when a
-caller omits the model. Its request contract is the integer value `seconds=5`,
-which the worker binds to H3's native 124-frame grid. Workflow v4 routes H3 to
-8190 but keeps exact SDPA: the matched 512×512/124-frame SolAttn A/B saved only
-about eight seconds of an eleven-minute prompt while changing generated pixels,
-which was not enough evidence to accept approximation.
+Ordinary video requests without a model select `profile_video_h3_v1`, regardless
+of operator labels or price ordering. H3's request contract is the integer value
+`seconds=5`, which the worker binds to its native 124-frame grid. Workflow v5 uses
+H3 FL2VA INT8 ConvRot, Mystic XXX V5 FL2VA (Civitai version 3416478, file
+3309543), and LightX2V Turbo 8-step, both adapter strengths 1. The runner stays
+on 8190 with exact SDPA. The immutable recipe pins all six model assets and
+the executable graph, including adapter order. Ref2VA weights are not used by
+this first-frame I2V contract. Generate exposes RedGraft as an explicit multi-scene
+option; sequence requests pin RedGraft and keep their existing options and receipts.
+
+For an existing v4 installation, quiesce admission and finish outstanding H3
+work before applying `db/sql/2026-11-02-h3-mystic-v5.sql`. After verifying and
+enabling Mystic v5, apply `db/sql/2026-11-02-h3-default-video.sql` to publish v6
+with automatic selection enabled. Historical profiles and attempts retain their
+pins; neither SQL changes pricing. Deploy matching Main/Admin/Gen source through
+the PM2 wrapper. The seed's `not_run` summary is configuration, not live qualification.
+
+Readiness retains separate evidence slots: `VIDEO_GENERATION_PROBE_REPORT` and
+`GENERATION_VIDEO_PERSISTENCE_PROBE_REPORT` describe RedGraft;
+`VIDEO_H3_GENERATION_PROBE_REPORT` and `GENERATION_VIDEO_H3_PERSISTENCE_PROBE_REPORT`
+describe H3. `probe:video` now defaults to H3 and its report slot; use
+`--model redgraft-ltx25-i2v` to probe the explicit sequence route.
 
 RedGraft workflow v5 uses `IDreamMPSGraphAttention` in explicit BF16 mode on
 both sampling stages. It preserves the 8+3 Euler schedule, CFG 1, current

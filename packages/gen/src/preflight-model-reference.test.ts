@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import h3Descriptor from "../workflows/minimax-h3-redcraft-i2v.json";
+import h3Descriptor from "../workflows/minimax-h3-mystic-i2v.json";
 import {
   comboOptions,
   modelLoaderNodeForReference,

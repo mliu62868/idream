@@ -1,12 +1,12 @@
 {
-  "workflowKey": "minimax-h3-redcraft-i2v",
-  "modelId": "minimax-h3-redcraft-a2a-int8-convrot",
+  "workflowKey": "minimax-h3-mystic-i2v",
+  "modelId": "minimax-h3-mystic-v5-int8-convrot",
   "backendKind": "comfyui",
   "comfyWorkflow": {
     "id": "4d20caa6-ecab-4c24-8be0-41ef1da93f34",
-    "name": "iDream MiniMax H3 RedCraft I2V"
+    "name": "iDream MiniMax H3 Mystic V5 I2V"
   },
-  "version": 4,
+  "version": 5,
   "negativePromptMode": "positive_instruction",
   "capabilities": [
     "video",
@@ -36,7 +36,7 @@
     "1": {
       "class_type": "UNETLoader",
       "inputs": {
-        "unet_name": "REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors",
+        "unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
         "weight_dtype": "default"
       }
     },
@@ -44,7 +44,7 @@
       "class_type": "MiniMaxH3SigmaShift",
       "inputs": {
         "model": [
-          "1",
+          "18",
           0
         ],
         "shift_video": 12,
@@ -201,7 +201,7 @@
           "14",
           0
         ],
-        "filename_prefix": "idream-minimax-h3-redcraft",
+        "filename_prefix": "idream-minimax-h3-mystic",
         "format": "mp4",
         "codec": "auto"
       }
@@ -223,6 +223,28 @@
           "6",
           1
         ]
+      }
+    },
+    "17": {
+      "class_type": "LoraLoaderModelOnly",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "lora_name": "MysticXXX_MMH3-V5.safetensors",
+        "strength_model": 1.0
+      }
+    },
+    "18": {
+      "class_type": "LoraLoaderModelOnly",
+      "inputs": {
+        "model": [
+          "17",
+          0
+        ],
+        "lora_name": "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+        "strength_model": 1.0
       }
     }
   },

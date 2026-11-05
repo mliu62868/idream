@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { act } from "react";
-import { adminMutationRecoveryRequestSchema } from "@idream/shared/admin";
+import { adminMutationRecoveryRequestSchema, characterVideoProductionRecipe } from "@idream/shared/admin";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
@@ -33,7 +33,7 @@ import {
   characterVideoSourceOptions,
   videoPlaybackIssueMessage,
 } from "./CharacterVideoStudio";
-import { readActiveDurableMutationIntent, updateDurableMutationIntent } from "@/lib/durable-mutation-intent";
+import { beginDurableMutationIntent, readActiveDurableMutationIntent, updateDurableMutationIntent } from "@/lib/durable-mutation-intent";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 
 async function waitUntil(predicate: () => boolean) {
@@ -85,7 +85,7 @@ const data = characterWorkspaceDetail({
   },
   visual: {
     videoGenerationEstimate: {
-      profileKey: "profile_video_redgraft_ltx25_v1",
+      profileKey: characterVideoProductionRecipe.profileKey,
       estimatedCostDreamcoins: 100,
       averageDurationMs: 893_807,
       completedSampleCount: 1,
@@ -163,11 +163,11 @@ const pendingRun = {
   title: "Mira motion portrait",
   reviewContext: {
     brief: "A subtle smile.",
-    orientation: "7:12",
+    orientation: characterVideoProductionRecipe.orientation,
     profile: {
-      key: "profile_video_redgraft_ltx25_v1",
-      version: 1,
-      label: "RedGraft LTX 2.5 Fast 2K",
+      key: characterVideoProductionRecipe.profileKey,
+      version: characterVideoProductionRecipe.recipeVersion,
+      label: characterVideoProductionRecipe.modelLabel,
     },
     recipe: {
       key: "template_video_character_default",
@@ -190,10 +190,10 @@ const pendingRun = {
       briefId: "video-run-1",
       directionId: null,
       directionHash: null,
-      generationProfileKey: "profile_video_redgraft_ltx25_v1",
-      generationProfileVersion: "1",
-      workflowKey: "redgraft-ltx25-i2v",
-      workflowVersion: "1",
+      generationProfileKey: characterVideoProductionRecipe.profileKey,
+      generationProfileVersion: String(characterVideoProductionRecipe.recipeVersion),
+      workflowKey: characterVideoProductionRecipe.workflowKey,
+      workflowVersion: String(characterVideoProductionRecipe.workflowVersion),
       requestId: "video-job-1",
       attemptId: "video-attempt-1",
       providerRequestId: null,
@@ -236,8 +236,8 @@ const readyRun = {
       id: "video-asset-1",
       url: "/video-1.mp4",
       thumbnailUrl: null,
-      width: 768,
-      height: 1152,
+      width: characterVideoProductionRecipe.width,
+      height: characterVideoProductionRecipe.height,
     },
   }],
 };
@@ -447,7 +447,7 @@ describe("Character Video Studio", () => {
     expect(adminV2Request.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(1);
   });
 
-  it("creates one pinned 4-second Character video Run from the selected image", async () => {
+  it("creates one pinned five-second Character video Run from the selected image", async () => {
     await act(async () => root.render(
       <CharacterVideoStudio
         actorId="actor-1"
@@ -459,7 +459,7 @@ describe("Character Video Studio", () => {
     ));
     await waitUntil(() => container.textContent?.includes("Create video") === true);
 
-    expect(container.textContent).toContain("RedGraft LTX 2.5 Fast 2K");
+    expect(container.textContent).toContain(characterVideoProductionRecipe.modelLabel);
     expect(container.textContent).toContain("5 seconds");
     // 梦币金额走 ui/format 的 formatDreamcoins：千分位 + 统一单位（中文界面显示"梦币"）。
     expect(container.textContent).toContain("Estimated cost: 100 DC");
@@ -516,9 +516,9 @@ describe("Character Video Studio", () => {
         purpose: "character_video",
         targetType: "character",
         targetId: "character-video-1",
-        profileId: "profile_video_redgraft_ltx25_v1",
+        profileId: characterVideoProductionRecipe.profileKey,
         referenceAssetIds: ["source-cover"],
-        orientation: "7:12",
+        orientation: characterVideoProductionRecipe.orientation,
         count: 1,
         negativePrompt: "hand distortion, camera shake, visible text",
       },
@@ -752,6 +752,71 @@ describe("Character Video Studio", () => {
       await act(async () => otherRoot.unmount());
       other.remove();
     }
+  });
+
+  it.each(["outcome_unknown", "committed_projection_pending", "reconciliation_required"] as const)("recovers a historical RedGraft receipt after H3 becomes default (%s)", async (status) => {
+    expect(characterVideoProductionRecipe.profileKey).toBe("profile_video_h3_v1");
+    const scope = "character-video:create:actor-1:character-video-1";
+    const key = "historical-redgraft-request";
+    const request = {
+      title: "Mira historical motion portrait", purpose: "character_video", targetType: "character",
+      targetId: "character-video-1", profileId: "profile_video_redgraft_ltx25_v1",
+      referenceAssetIds: ["source-cover"], presetIds: [], bootstrapIdentity: false,
+      orientation: "7:12", count: 1, brief: "Keep the original RedGraft motion and source.",
+      negativePrompt: "No camera shake", consistencyMode: "balanced", priority: "normal",
+      reason: "Create one Character video for the role library",
+    };
+    const intent = beginDurableMutationIntent({
+      scope, signature: JSON.stringify({ characterId: request.targetId, body: request }),
+      requestSnapshot: request, createIdempotencyKey: () => key,
+    });
+    updateDurableMutationIntent(intent, {
+      status, ...(status === "committed_projection_pending" ? { committedTargetId: pendingRun.id } : {}),
+    });
+    const historicalRun = {
+      ...pendingRun, title: request.title,
+      reviewContext: { ...pendingRun.reviewContext, brief: request.brief, orientation: request.orientation,
+        profile: { key: request.profileId, version: 9, label: "RedGraft LTX 2.5 Fast 2K" } },
+      items: [{ ...pendingRun.items[0], lineage: { ...pendingRun.items[0].lineage,
+        generationProfileKey: request.profileId, generationProfileVersion: "9",
+        workflowKey: "redgraft-ltx25-i2v", workflowVersion: "5" } }],
+    };
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+        expect(options.idempotencyKey).toBe(key);
+        expect(options.body).toEqual(request);
+        return { batch: { id: historicalRun.id }, replayed: true };
+      }
+      if (path.endsWith("/mutation-receipts/reconcile")) {
+        expect(adminMutationRecoveryRequestSchema.parse(options?.body)).toMatchObject({
+          expectedPurpose: "character_video", expectedCharacterId: request.targetId,
+        });
+        return { state: "committed", commandType: "creative.run.create", commandId: "historical-command",
+          status: "succeeded", committedTargetId: historicalRun.id,
+          verification: { kind: "creative_run", runId: historicalRun.id, requestSnapshot: request } };
+      }
+      if (path === `/api/v2/admin/creative/runs/${historicalRun.id}`) return historicalRun;
+      return { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
+    });
+    await act(async () => root.render(
+      <CharacterVideoStudio actorId="actor-1" data={data} onCreateImage={vi.fn()}
+        permissions={{ create: true, read: true }} runCommittedMutation={runCommittedMutation} />,
+    ));
+    const label = status === "outcome_unknown" ? "Resume video creation"
+      : status === "committed_projection_pending" ? "Verify created video" : "Reconcile saved video request";
+    const resume = () => [...container.querySelectorAll("button")].find(button => button.textContent?.trim() === label);
+    await waitUntil(() => resume()?.disabled === false);
+    expect(container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe(request.brief);
+    expect(container.querySelector<HTMLTextAreaElement>("textarea")?.disabled).toBe(true);
+    await act(async () => resume()!.click());
+    await waitUntil(() => readActiveDurableMutationIntent({ scope }) === null);
+    expect(container.textContent).toContain(request.title);
+    expect(container.textContent).toContain("Video request in progress");
+    const creates = adminV2Request.mock.calls.filter(([path, options]) => path === "/api/v2/admin/creative/runs" && options?.method === "POST");
+    expect(creates).toHaveLength(status === "outcome_unknown" ? 1 : 0);
+    const reconciliations = adminV2Request.mock.calls.filter(([path]) => path.endsWith("/mutation-receipts/reconcile"));
+    expect(reconciliations).toHaveLength(status === "reconciliation_required" ? 1 : 0);
+    expect(adminV2Request.mock.calls.filter(([path]) => path === `/api/v2/admin/creative/runs/${historicalRun.id}`)).toHaveLength(1);
   });
 
   it.each([false, true])("recovers a lost create response after remount (server reconciliation: %s)", async (reconcile) => {

@@ -19,21 +19,24 @@ export const creativeRunAttachIncidentRequestSchema = z.object({
 
 export const characterRouteEvaluationMatrixSchemaVersion =
   "character-identity-v1";
-// SPEC: H3 is a second pinned production recipe, not a mutable variant of LTX.
+// SPEC: H3 Mystic is the default pinned video recipe; LTX keeps its own contract.
 // INTENT: H3's trained frame grid starts at 124 frames, so the request remains
 // the integer five-second contract while output verification uses 124 / 24.
 export const minimaxH3VideoProductionRecipe = {
-  recipeVersion: 4,
+  recipeVersion: 6,
   profileKey: "profile_video_h3_v1",
-  modelLabel: "MiniMax H3 RedCraft A2A",
+  modelLabel: "MiniMax H3 Mystic V5",
   runner: "comfyui",
-  pipelineModel: "minimax-h3-redcraft-a2a-int8-convrot",
-  workflowKey: "minimax-h3-redcraft-i2v",
-  workflowVersion: 4,
+  pipelineModel: "minimax-h3-mystic-v5-int8-convrot",
+  workflowKey: "minimax-h3-mystic-i2v",
+  workflowVersion: 5,
   sourceModelPath:
-    "diffusion_models/REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors",
+    "diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
   checkpointFilename:
-    "REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors",
+    "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+  mysticLoraFilename: "MysticXXX_MMH3-V5.safetensors",
+  turboLoraFilename: "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+  loraStrength: 1,
   textEncoderFilename: "qwen3vl-32B-MiniMax-H3-Q4_K_M.gguf",
   videoVaeFilename: "minimax_h3_video_vae_fp16.safetensors",
   audioVaeFilename: "minimax_h3_audio_vae_fp32.safetensors",
@@ -41,8 +44,8 @@ export const minimaxH3VideoProductionRecipe = {
   shiftAudio: 3,
   modelFormat: "safetensors",
   comfyWorkflowId: "4d20caa6-ecab-4c24-8be0-41ef1da93f34",
-  comfyWorkflowName: "iDream MiniMax H3 RedCraft I2V",
-  outputFilenamePrefix: "idream-minimax-h3-redcraft",
+  comfyWorkflowName: "iDream MiniMax H3 Mystic V5 I2V",
+  outputFilenamePrefix: "idream-minimax-h3-mystic",
   durationSeconds: 5,
   expectedDurationSeconds: 124 / 24,
   frameCount: 124,
@@ -57,9 +60,11 @@ export const minimaxH3VideoProductionRecipe = {
   scheduler: "simple",
   cfgScale: 1,
   workflowGraphSha256:
-    "feedaa62bc6c32455aeec64f5bda90d58e51b530c8e33cf8b29703623e005b25",
+    "88ac21c2897072152253764287bef05bfb4fb12bacc87ac5d7af42e6b51932af",
   modelAssets: [
-    { path: "diffusion_models/REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors", sha256: "fc99ff051283ee05f29b1ebcb14e0d7b36c03e93512ac5479411cdfa2e284122" },
+    { path: "loras/MysticXXX_MMH3-V5.safetensors", sha256: "4168917daeb6e570a004bc6994f73d091b9f3e887f7e946bd00c0f2f7573e5f3" },
+    { path: "loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors", sha256: "2339acdf19bfe123f46b971ea35d367a84adb85de43627e1eceafa5a5b2b111e" },
+    { path: "diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors", sha256: "e889202c41dafb67b10d67b97f0d8541508036a6090af23425a5c2615d03c47a" },
     { path: "text_encoders/qwen3vl-32B-MiniMax-H3-Q4_K_M.gguf", sha256: "1bf75e038c5895b97b6ea16cc1e3d32076254b06ec3df10657650d86dc82279e" },
     { path: "vae/minimax_h3_video_vae_fp16.safetensors", sha256: "7c1f131492e7eddacaac9069a61b81bdd39de5cc96561e677c5eab1cdce5e522" },
     { path: "vae/minimax_h3_audio_vae_fp32.safetensors", sha256: "8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48" },
@@ -67,7 +72,7 @@ export const minimaxH3VideoProductionRecipe = {
   requiredEntitlement: "video_generation",
   concurrencyLimit: 1,
   rolloutPercent: 100,
-  explicitSelectionOnly: true,
+  explicitSelectionOnly: false,
   capabilities: [
     "video",
     "img2video",
@@ -78,8 +83,7 @@ export const minimaxH3VideoProductionRecipe = {
   evaluatorDimensions: ["artifact", "identity", "intent"],
 } as const;
 
-// SPEC: RedGraft is the default LTX video route validated on the isolated MPS
-// ComfyUI runtime. H3 remains an explicit alternative.
+// SPEC: RedGraft remains the explicit route for variable video options and sequences.
 export const redgraftLtx25VideoProductionRecipe = {
   recipeVersion: 8,
   optionsProfileVersion: 9,
@@ -149,7 +153,7 @@ export const redgraftLtx25VideoProductionRecipe = {
 } as const;
 
 export const characterVideoProductionRecipe =
-  redgraftLtx25VideoProductionRecipe;
+  minimaxH3VideoProductionRecipe;
 
 export const characterVideoProductionRecipes = [
   redgraftLtx25VideoProductionRecipe,
@@ -302,22 +306,26 @@ function characterVideoRunValidationIssues(input: {
     readonly path: readonly string[];
     readonly message: string;
   }> = [];
-  if (input.profileId !== characterVideoProductionRecipe.profileKey) {
+  // Historical receipts must still parse after a default changes. New runs
+  // independently require the current default at Main admission.
+  const recipe = characterVideoProductionRecipes.find((candidate) => candidate.profileKey === input.profileId);
+  if (!recipe) {
     issues.push({
       path: ["profileId"],
       message: "Character video production must use the pinned production video profile",
     });
+    return issues;
   }
   if (
     input.referenceAssetIds.length !==
-      characterVideoProductionRecipe.sourceImageCount
+      recipe.sourceImageCount
   ) {
     issues.push({
       path: ["referenceAssetIds"],
       message: "Character video production requires exactly one source image",
     });
   }
-  if (input.count !== characterVideoProductionRecipe.outputCount) {
+  if (input.count !== recipe.outputCount) {
     issues.push({
       path: ["count"],
       message: "Character video production creates exactly one clip per Run",
@@ -325,11 +333,11 @@ function characterVideoRunValidationIssues(input: {
   }
   if (
     input.orientation !== undefined &&
-    input.orientation !== characterVideoProductionRecipe.orientation
+    input.orientation !== recipe.orientation
   ) {
     issues.push({
       path: ["orientation"],
-      message: "Character video production requires the 2:3 production envelope",
+      message: `Character video production requires the ${recipe.orientation} production envelope`,
     });
   }
   if (input.directions || input.outputsPerDirection !== undefined) {

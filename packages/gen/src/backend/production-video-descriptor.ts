@@ -237,10 +237,17 @@ function assertH3Graph(
   assertGraphValue(graph, "1", "class_type", "UNETLoader");
   assertGraphInput(graph, "1", "unet_name", recipe.checkpointFilename);
   assertGraphValue(graph, "2", "class_type", "MiniMaxH3SigmaShift");
-  if (graph["17"] !== undefined) {
-    throw new Error("Production H3 graph must keep exact attention at 512x512");
-  }
-  assertGraphInput(graph, "2", "model", ["1", 0]);
+  // Both adapters are part of the immutable recipe; bypassing either changes
+  // the model even when the base checkpoint and sampling envelope still match.
+  assertGraphValue(graph, "17", "class_type", "LoraLoaderModelOnly");
+  assertGraphInput(graph, "17", "model", ["1", 0]);
+  assertGraphInput(graph, "17", "lora_name", recipe.mysticLoraFilename);
+  assertGraphInput(graph, "17", "strength_model", recipe.loraStrength);
+  assertGraphValue(graph, "18", "class_type", "LoraLoaderModelOnly");
+  assertGraphInput(graph, "18", "model", ["17", 0]);
+  assertGraphInput(graph, "18", "lora_name", recipe.turboLoraFilename);
+  assertGraphInput(graph, "18", "strength_model", recipe.loraStrength);
+  assertGraphInput(graph, "2", "model", ["18", 0]);
   assertGraphInput(graph, "2", "shift_video", recipe.shiftVideo);
   assertGraphInput(graph, "2", "shift_audio", recipe.shiftAudio);
   assertGraphValue(graph, "3", "class_type", "CLIPLoaderGGUF");

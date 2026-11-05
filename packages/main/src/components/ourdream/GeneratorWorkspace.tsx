@@ -335,7 +335,7 @@ export function projectGeneratorModelSelection(
       };
 }
 
-// SPEC: the Model picker speaks in what an option does, never the admin profile name.
+// SPEC: image model options describe their editing behavior rather than operator names.
 // INTENT: profile labels are operator names ("Default image · REDQW21 (Qwen-Image 2.1)");
 //   the config carries no customer-facing name, so the picker derives one from the
 //   only user-meaningful fact it has — whether an edit keeps the character's identity.
@@ -898,6 +898,10 @@ export function GeneratorWorkspace() {
       ),
     [availableModels, mode, modelSelection],
   );
+  // Ordinary video uses H3. RedGraft sequences retain their separate options and receipts.
+  const usesVideoSequence = mode === "video" && modelSelection.explicit &&
+    modelSelection.id === "profile_video_redgraft_ltx25_v1";
+  const singleClipVideo = mode === "video" && !usesVideoSequence;
   const modeAvailable =
     generationContext.required
       ? Boolean(generationContext.data)
@@ -906,7 +910,7 @@ export function GeneratorWorkspace() {
       : videoModeEnabled;
   // Null while the form does not describe a route the server can price.
   const generationQuoteRequest: GenerationQuoteRequest | null =
-    mode !== "video" && contextReady && modeAvailable &&
+    !usesVideoSequence && contextReady && modeAvailable &&
     config?.viewer.authenticated === true &&
     (
       imageEditMode
@@ -1037,12 +1041,14 @@ export function GeneratorWorkspace() {
     ? authHrefForTarget("/signup", authReturnTarget)
     : `/coins?returnTo=${encodeURIComponent(authReturnTarget)}`;
   function selectVideoMode() {
-    const firstVideoModel = config?.video.models[0];
+    const recoveringSequence = hasSavedVideoSequenceReceipt(receiptOwnerScope);
+    const firstVideoModel = config?.video.models.find((model) => model.id ===
+      (recoveringSequence ? "profile_video_redgraft_ltx25_v1" : "profile_video_h3_v1"));
     setMode("video");
     setFreeplay(false);
     setModelSelection({
-      id: "",
-      explicit: false,
+      id: recoveringSequence ? "profile_video_redgraft_ltx25_v1" : "",
+      explicit: recoveringSequence,
     });
     setOrientation(firstVideoModel?.orientations?.[0] ?? "");
     setCount(1);
@@ -1434,7 +1440,7 @@ export function GeneratorWorkspace() {
       if (!nextVideoModeEnabled && !unconfirmedFormRef.current) {
         setMode((current) => (current === "video" ? "image" : current));
       }
-      if (!unconfirmedFormRef.current) {
+      if (!unconfirmedFormRef.current && !hasSavedVideoSequenceReceipt(nextScope)) {
         // Gallery variations use the same explicit model control, but are not
         // the form's active request. Retain it so their receipts still match.
         if (!hasUnconfirmedVariations()) setModelSelection((current) =>
@@ -1507,6 +1513,7 @@ export function GeneratorWorkspace() {
   const recoverVideoSequenceContext = useCallback((value: VideoSequenceRecovery | null) => {
     setVideoSequenceRecovery(value);
     if (!value) return;
+    setModelSelection({ id: "profile_video_redgraft_ltx25_v1", explicit: true });
     setCharacterId(value.request.characterId);
     setFreeplay(false);
     setConsistencyMode(value.request.consistencyMode);
@@ -1978,7 +1985,7 @@ export function GeneratorWorkspace() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (mode === "video") return;
+    if (usesVideoSequence) return;
     // The disabled button already names what's missing; implicit submits stop here.
     if (!formCanSubmit) return;
     setStatus("");
@@ -2322,6 +2329,7 @@ export function GeneratorWorkspace() {
       if (!item.characterId || (mode === "video" && characterId !== item.characterId)) { setIntentFeedbackError("Choose this result’s character in a new video draft before applying its correction."); return; }
       if (generationContext.required) leaveGenerationContext();
       if (item.characterId) { invalidateLookScope(); setCharacterId(item.characterId); setFreeplay(false); }
+      setModelSelection({ id: "profile_video_redgraft_ltx25_v1", explicit: true });
       setMode("video"); setView("create"); setVideoDirectionDraft({ id: `${item.id}:${Date.now()}`, prompt: direction });
     }
     setStatus("Correction draft ready. Review a new price before generating; nothing was submitted.");
@@ -3086,6 +3094,49 @@ export function GeneratorWorkspace() {
     }
   }
 
+  const modelSelector = (
+    <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+      {mode === "video" ? "Video model" : "Model"}
+      <select
+        aria-label={mode === "video" ? "Video model" : "Model"}
+        className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
+        disabled={formUnconfirmed || !modeAvailable || pending || Boolean(videoSequenceRecovery)}
+        id="generator-model"
+        name="modelId"
+        onChange={(event) => {
+          const nextId = event.target.value;
+          if (!nextId) {
+            setModelSelection({ id: "", explicit: false });
+            return;
+          }
+          const nextModel = availableModels.find((item) => item.id === nextId);
+          setModelSelection({ id: nextId, explicit: true });
+          if (nextModel?.orientations?.[0]) {
+            setOrientation((current) =>
+              nextModel.orientations?.includes(current)
+                ? current
+                : (nextModel.orientations?.[0] ?? current),
+            );
+          }
+        }}
+        value={(formUnconfirmed || videoSequenceRecovery) && modelSelection.explicit ? modelSelection.id : modelSelectionProjection.selectValue}
+      >
+        <option value="">{mode === "video" ? "Default (H3 Mystic V5)" : "Auto (identity-aware)"}</option>
+        {(formUnconfirmed || videoSequenceRecovery) && modelSelection.explicit && !availableModels.some((item) => item.id === modelSelection.id) && (
+          <option value={modelSelection.id}>Original model selection</option>
+        )}
+        {availableModels.map((item, index) => (
+          // RedGraft is explicitly selected for its multi-scene options.
+          mode !== "video" || item.id === "profile_video_redgraft_ltx25_v1" ? (
+            <option key={item.id} value={item.id}>
+              {mode === "video" ? "RedGraft · multi-scene" : availableModelLabels[index]}
+            </option>
+          ) : null
+        ))}
+      </select>
+    </label>
+  );
+
   return (
     <section className="px-4 py-8 md:px-[60px] md:py-12">
       <div className="mx-auto max-w-6xl scroll-mt-24" ref={workspaceTopRef}>
@@ -3192,7 +3243,7 @@ export function GeneratorWorkspace() {
               <div className="rounded-full bg-[rgb(36,36,36)] px-3 py-2 text-[12px] font-bold text-white">
                 {config && !modeAvailable
                   ? "Unavailable"
-                  : mode === "video"
+                  : usesVideoSequence
                     ? "Review price below"
                   : estimatedCost === null
                     ? "Price unavailable"
@@ -3649,7 +3700,9 @@ export function GeneratorWorkspace() {
               </div>
             ) : null}
 
-            {mode === "video" ? anonymousViewer ? <Link className="mt-4 flex h-12 w-full items-center justify-center rounded-full bg-[rgb(255,48,170)] text-[14px] font-black text-white" href={authHrefForTarget("/signup", authReturnTarget)}>Join free to generate</Link> : <VideoSequenceControls key={receiptOwnerScope ?? "signed-out"} viewerScope={receiptOwnerScope} characterId={generationBody.characterId} characters={characters} generationContextToken={generationBody.generationContextToken} consistencyMode={consistencyMode} seed={generationBody.seed} directionDraft={videoDirectionDraft ?? undefined} disabled={!modeAvailable || !contextReady || formUnconfirmed} unavailableMessage={modeUnavailableMessage ?? undefined} coinsHref={insufficientBalanceHref} onStatusChange={refreshVideoSequenceAuthority} onRecoveryChange={recoverVideoSequenceContext} /> : <>
+            {mode === "video" && !anonymousViewer && modelSelector}
+            {singleClipVideo && <p className="mt-3 text-[12px] text-[rgb(170,170,170)]">One 5-second clip · 512×512 · generated sound</p>}
+            {usesVideoSequence ? anonymousViewer ? <Link className="mt-4 flex h-12 w-full items-center justify-center rounded-full bg-[rgb(255,48,170)] text-[14px] font-black text-white" href={authHrefForTarget("/signup", authReturnTarget)}>Join free to generate</Link> : <VideoSequenceControls key={receiptOwnerScope ?? "signed-out"} viewerScope={receiptOwnerScope} characterId={generationBody.characterId} characters={characters} generationContextToken={generationBody.generationContextToken} consistencyMode={consistencyMode} seed={generationBody.seed} directionDraft={videoDirectionDraft ?? undefined} disabled={!modeAvailable || !contextReady || formUnconfirmed} unavailableMessage={modeUnavailableMessage ?? undefined} coinsHref={insufficientBalanceHref} onStatusChange={refreshVideoSequenceAuthority} onRecoveryChange={recoverVideoSequenceContext} /> : <>
             <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(170,170,170)]">
                 {imageEditMode
                   ? "Edit instructions"
@@ -3762,45 +3815,7 @@ export function GeneratorWorkspace() {
               </label>
             )}
 
-            {(!characterImageMode || (advancedOpen && availableModels.length > 0)) && (
-              <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-                Model
-                <select
-                  aria-label="Model"
-                  className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
-                  disabled={formUnconfirmed || !modeAvailable}
-                  id="generator-model"
-                  name="modelId"
-                  onChange={(event) => {
-                    const nextId = event.target.value;
-                    if (!nextId) {
-                      setModelSelection({ id: "", explicit: false });
-                      return;
-                    }
-                    const nextModel = availableModels.find((item) => item.id === nextId);
-                    setModelSelection({ id: nextId, explicit: true });
-                    if (nextModel?.orientations?.[0]) {
-                      setOrientation((current) =>
-                        nextModel.orientations?.includes(current)
-                          ? current
-                          : (nextModel.orientations?.[0] ?? current),
-                      );
-                    }
-                  }}
-                  value={formUnconfirmed && modelSelection.explicit ? modelSelection.id : modelSelectionProjection.selectValue}
-                >
-                  <option value="">Auto (identity-aware)</option>
-                  {formUnconfirmed && modelSelection.explicit && !availableModels.some((item) => item.id === modelSelection.id) && (
-                    <option value={modelSelection.id}>Original model selection</option>
-                  )}
-                  {availableModels.map((item, index) => (
-                    <option key={item.id} value={item.id}>
-                      {availableModelLabels[index]}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
+            {mode !== "video" && (!characterImageMode || (advancedOpen && availableModels.length > 0)) && modelSelector}
             {characterImageMode && advancedOpen && availableModels.length === 0 && (
               <div className="mt-4 rounded-[10px] bg-[rgb(36,36,36)] px-3 py-3">
                 <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">

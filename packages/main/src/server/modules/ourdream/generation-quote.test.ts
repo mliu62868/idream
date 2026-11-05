@@ -95,7 +95,7 @@ describe("generation quote workflow authority", () => {
 
   it.each([
     { profile: PRODUCTION_REDGRAFT_LTX25_VIDEO_PROFILE, profileVersion: 8, frames: 121, width: 448, height: 768, orientation: "7:12" },
-    { profile: PRODUCTION_H3_VIDEO_PROFILE, profileVersion: 4, frames: 124, width: 512, height: 512, orientation: "1:1" },
+    { profile: PRODUCTION_H3_VIDEO_PROFILE, profileVersion: 6, frames: 124, width: 512, height: 512, orientation: "1:1" },
   ])("quotes the exact result envelope of $profile.profileKey", async ({ profile: selected, profileVersion, frames, width, height, orientation }) => {
     authority.entitlementMap.mockResolvedValue({ premium_controls: true, video_generation: true });
     authority.featureFlagEnabled.mockResolvedValue(true);

@@ -49,12 +49,13 @@ function readOptions(): ProbeOptions {
       "Video launch probe requires --reference <reviewed character image> or VIDEO_GENERATION_PROBE_REFERENCE",
     );
   }
+  const model = readArg("model") ?? (env.VIDEO_PROVIDER === "backend"
+    ? characterVideoProductionRecipe.workflowKey
+    : env.PIPELINE_VIDEO_MODEL_DEFAULT);
+  const reportEnvKey = productionRecipeForModel(model)?.profileKey === "profile_video_h3_v1"
+    ? "VIDEO_H3_GENERATION_PROBE_REPORT" : "VIDEO_GENERATION_PROBE_REPORT";
   return {
-    model:
-      readArg("model") ??
-      (env.VIDEO_PROVIDER === "backend"
-        ? characterVideoProductionRecipe.workflowKey
-        : env.PIPELINE_VIDEO_MODEL_DEFAULT),
+    model,
     prompt:
       readArg("prompt") ??
       "Subtle natural breathing and eye movement, fixed portrait camera",
@@ -66,7 +67,7 @@ function readOptions(): ProbeOptions {
       "probe-video-v1",
     report:
       readArg("report") ??
-      process.env.VIDEO_GENERATION_PROBE_REPORT ??
+      process.env[reportEnvKey] ??
       null,
   };
 }

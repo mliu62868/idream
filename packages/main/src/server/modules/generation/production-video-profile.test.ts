@@ -11,7 +11,7 @@ import {
 
 function exactProfile() {
   return {
-    ...PRODUCTION_REDGRAFT_LTX25_VIDEO_PROFILE,
+    ...PRODUCTION_H3_VIDEO_PROFILE,
     mode: "video",
     convertedModelPath: null,
     enabled: true,
@@ -20,7 +20,7 @@ function exactProfile() {
 }
 
 describe("default production video profile authority", () => {
-  it("accepts the exact RedGraft LTX 2.5 route", () => {
+  it("accepts the exact default H3 Mystic route", () => {
     expect(isDefaultProductionVideoProfile(exactProfile())).toBe(true);
   });
 
@@ -32,9 +32,9 @@ describe("default production video profile authority", () => {
     [
       "runnerConfig",
       {
-        ...PRODUCTION_REDGRAFT_LTX25_VIDEO_PROFILE.runnerConfig,
+        ...PRODUCTION_H3_VIDEO_PROFILE.runnerConfig,
         capabilities: {
-          ...PRODUCTION_REDGRAFT_LTX25_VIDEO_PROFILE.runnerConfig.capabilities,
+          ...PRODUCTION_H3_VIDEO_PROFILE.runnerConfig.capabilities,
           fps: 25,
         },
       },
@@ -70,15 +70,15 @@ describe("production video profile catalog", () => {
     };
   }
 
-  it("accepts the exact explicit MiniMax H3 route without changing the RedGraft default", () => {
+  it("accepts MiniMax H3 as the default video route", () => {
     const profile = exactH3Profile();
     expect(isProductionVideoProfile(profile)).toBe(true);
-    expect(isDefaultProductionVideoProfile(profile)).toBe(false);
+    expect(isDefaultProductionVideoProfile(profile)).toBe(true);
     expect(productionVideoRecipeForProfile(profile)).toMatchObject({
-      workflowKey: "minimax-h3-redcraft-i2v",
+      workflowKey: "minimax-h3-mystic-i2v",
       durationSeconds: 5,
       frameCount: 124,
-      explicitSelectionOnly: true,
+      explicitSelectionOnly: false,
     });
   });
 
@@ -96,10 +96,10 @@ describe("production video profile catalog", () => {
     })).toBe(false);
   });
 
-  it("accepts RedGraft LTX 2.5 as the default route", () => {
+  it("accepts RedGraft LTX 2.5 as an explicit alternative", () => {
     const profile = exactRedGraftProfile();
     expect(isProductionVideoProfile(profile)).toBe(true);
-    expect(isDefaultProductionVideoProfile(profile)).toBe(true);
+    expect(isDefaultProductionVideoProfile(profile)).toBe(false);
     expect(productionVideoRecipeForProfile(profile)).toMatchObject({
       workflowKey: "redgraft-ltx25-i2v",
       durationSeconds: 5,
@@ -112,9 +112,8 @@ describe("production video profile catalog", () => {
     const options = { ...PRODUCTION_REDGRAFT_LTX25_VIDEO_OPTIONS_PROFILE, mode: "video", convertedModelPath: null, enabled: true, status: "active" };
     expect(hasProductionVideoOptions(options)).toBe(true);
     expect(isProductionVideoProfile(options)).toBe(true);
-    // The v9 options publication is the same default Character route: admin
-    // runs, plan feature projection, and Generate must agree on it.
-    expect(isDefaultProductionVideoProfile(options)).toBe(true);
+    // RedGraft options remain executable without becoming the ordinary default.
+    expect(isDefaultProductionVideoProfile(options)).toBe(false);
     expect(productionVideoRecipeForProfile(options)?.workflowVersion).toBe(5);
     expect(hasProductionVideoOptions(exactRedGraftProfile())).toBe(false);
     expect(hasProductionVideoOptions({ ...options, version: 2 })).toBe(false);

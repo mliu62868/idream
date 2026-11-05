@@ -53,9 +53,23 @@ type IgrepEvidenceFailureReason =
 /** A rejected envelope may contain user facts; retain only its fixed reason. */
 export class IgrepEvidenceError extends Error {
   constructor(readonly reason: IgrepEvidenceFailureReason) {
-    super("igrep memory-search returned unverifiable evidence");
+    super("igrep returned unverifiable evidence");
     this.name = "IgrepEvidenceError";
   }
+}
+
+/** `--strict` also protects exit-code consumers; validate flags for injected runners. */
+export function igrepSearchResults(value: unknown): unknown[] {
+  const result = objectRecord(value);
+  if (!result || (result.failed !== undefined && result.failed !== false) || result.error || !Array.isArray(result.results)) {
+    throw new IgrepEvidenceError("invalid_envelope");
+  }
+  if ((result.complete !== undefined && result.complete !== true)
+    || (result.degraded !== undefined && result.degraded !== false)
+    || [result.warnings, result.degrade_reasons].some(flags => flags !== undefined && (!Array.isArray(flags) || flags.length > 0))) {
+    throw new IgrepEvidenceError("partial_evidence");
+  }
+  return result.results;
 }
 
 /** Never return subprocess text, tool failure details, paths, or warnings. */
@@ -1123,6 +1137,8 @@ export function createIgrepTools(options: {
   cli: IgrepCommand;
   workspace: string;
   knowledgePath: string;
+  /** Current stage's file; older immutable source pages remain under knowledgePath. */
+  searchPath?: string;
   mode: "normal" | "private";
   recall(): Promise<import("./session-recall").RecallProjection>;
   run?: RunJsonCommand;
@@ -1161,15 +1177,68 @@ export function createIgrepTools(options: {
   const queryParameters = { type: "object", properties: { query: { type: "string", minLength: 1, maxLength: 2000 } }, required: ["query"], additionalProperties: false };
   const tools: IgrepTool[] = [{
     name: "igrep_search",
-    description: "Search retained conversation and turn context. For omitted original dialogue, use session_recall. Query text only; paths and search policy are fixed by the host.",
+    description: "Search retained conversation and turn context. Read a hit's location.path and line range with igrep_read_source for exact original text or more context. For omitted dialogue, use session_recall. Query text only; paths and search policy are fixed by the host.",
     parameters: queryParameters,
     execute: (args, signal) => observed("search", async () => {
-      const result = objectRecord(await run({ ...options.cli,
-        args: ["search", "--mode", "fast", "--json", "--no-cache", "-m", "8", "--", query(args), options.knowledgePath],
+      return igrepSearchResults(await run({ ...options.cli,
+        args: ["search", "--mode", "fast", "--json", "--strict", "--no-cache", "-m", "8", "--", query(args), options.searchPath ?? options.knowledgePath],
         acceptedExitCodes: [0, 1], timeoutMs: 30_000, signal }));
-      if (!result || result.failed === true || result.error || result.complete === false || !Array.isArray(result.results)
-        || (result.warnings !== undefined && (!Array.isArray(result.warnings) || result.warnings.length))) throw new IgrepEvidenceError("invalid_envelope");
-      return result.results;
+    }),
+  }, {
+    name: "igrep_read_source",
+    description: "Read exact text within this attempt's authorized search corpus, using a hit's relative location.path. Optional start_line/end_line select the source range. Follow next for a version-checked continuation; byte offsets are within that selected range. This cannot read relationship memory or arbitrary files.",
+    parameters: { type: "object", properties: {
+      path: { type: "string", minLength: 1, maxLength: 512 },
+      start_line: { type: "integer", minimum: 1 }, end_line: { type: "integer", minimum: 1 },
+      offset: { type: "integer", minimum: 0 }, fingerprint: { type: "string", pattern: "^sha256:[a-f0-9]{64}$" },
+    }, required: ["path"], additionalProperties: false },
+    execute: (args, signal) => observed("search", async () => {
+      signal.throwIfAborted();
+      const path = args.path;
+      if (typeof path !== "string" || !path || path.length > 512 || isAbsolute(path)
+        || /[\\\x00-\x1f\x7f]/u.test(path) || path.split("/").some(part => !part || part === "." || part === "..")) {
+        throw new Error("invalid source path");
+      }
+      const start = args.start_line ?? 1;
+      const end = args.end_line;
+      const offset = args.offset ?? 0;
+      const fingerprint = args.fingerprint;
+      if (!Number.isSafeInteger(start) || Number(start) < 1
+        || (end !== undefined && (!Number.isSafeInteger(end) || Number(end) < Number(start)))
+        || !Number.isSafeInteger(offset) || Number(offset) < 0
+        || (fingerprint !== undefined && (typeof fingerprint !== "string" || !/^sha256:[a-f0-9]{64}$/u.test(fingerprint)))
+        || (Number(offset) > 0 && fingerprint === undefined)) throw new Error("invalid source page");
+      const root = await realpath(options.knowledgePath);
+      const file = resolve(root, path);
+      // Do not dispatch even a read through a link or outside the host's snapshot.
+      if (await realpath(file) !== file || !(await lstat(file)).isFile()) throw new IgrepEvidenceError("source_unverifiable");
+      const page = objectRecord(await run({ ...options.cli,
+        args: ["read-source", "--root", root, "--start-line", String(start),
+          ...(end === undefined ? [] : ["--end-line", String(end)]), "--offset", String(offset), "--max-bytes", "6000",
+          ...(fingerprint === undefined ? [] : ["--expected-fingerprint", String(fingerprint)]), "--", path],
+        timeoutMs: 10_000, signal,
+      }));
+      const range = objectRecord(page?.range);
+      if (page?.schema_version !== 1 || page.path !== file || page.coverage !== "complete" || page.content_kind !== "text"
+        || page.encoding !== "utf-8" || page.lossy !== false || page.line_space !== "original"
+        || !Array.isArray(page.warnings) || page.warnings.length || page.error || page.failed
+        || typeof page.content !== "string" || !page.content.isWellFormed() || Buffer.byteLength(page.content) > 6000
+        || typeof page.fingerprint !== "string" || !/^sha256:[a-f0-9]{64}$/u.test(page.fingerprint)
+        || (fingerprint !== undefined && page.fingerprint !== fingerprint)
+        || typeof page.source_sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(page.source_sha256)
+        || !range || range.start_line !== start || !Number.isSafeInteger(range.end_line) || Number(range.end_line) < Number(start)
+        || (end !== undefined && Number(range.end_line) > Number(end))
+        || range.byte_start !== offset || range.byte_end !== Number(offset) + Buffer.byteLength(page.content)
+        || typeof page.truncated !== "boolean"
+        || (page.truncated ? !page.content || page.next_offset !== range.byte_end : page.next_offset !== null)) {
+        throw new IgrepEvidenceError("source_unverifiable");
+      }
+      // Return the source range as declared; paging may end in the middle of a
+      // line. The official fingerprint binds the entire selected text version.
+      return { results: [{ path, content: page.content, fingerprint: page.fingerprint, source_sha256: page.source_sha256,
+        range, line_space: page.line_space, truncated: page.truncated }],
+        next: page.truncated ? { path, start_line: start, ...(end === undefined ? {} : { end_line: end }),
+          offset: page.next_offset, fingerprint: page.fingerprint } : null };
     }),
   }, {
     name: "session_recall",

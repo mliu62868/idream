@@ -74,7 +74,7 @@ describe("buildBackendRegistry", () => {
       descriptorJson(
         "h3-model",
         "comfyui",
-        "minimax-h3-redcraft-i2v",
+        "minimax-h3-mystic-i2v",
         ["video"],
       ),
     );

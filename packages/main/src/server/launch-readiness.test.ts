@@ -196,7 +196,7 @@ function passingImageProbe(
 
 function passingVideoProbe(
   override: Partial<VideoGenerationProbeEvidence> = {},
-  recipe: CharacterVideoProductionRecipe = characterVideoProductionRecipe,
+  recipe: CharacterVideoProductionRecipe = redgraftLtx25VideoProductionRecipe,
 ): VideoGenerationProbeEvidence {
   const backendTarget = override.backendTarget ?? (
     recipe.workflowKey === minimaxH3VideoProductionRecipe.workflowKey
@@ -276,11 +276,11 @@ function passingGenerationPersistenceProbe(
     provider: "backend",
     executionSourceRevision: productionEnv.IDREAM_GEN_SOURCE_REVISION,
     profileKey: isVideo
-      ? characterVideoProductionRecipe.profileKey
+      ? redgraftLtx25VideoProductionRecipe.profileKey
       : "image-premium",
     profileVersion: 1,
     workflowKey: isVideo
-      ? characterVideoProductionRecipe.workflowKey
+      ? redgraftLtx25VideoProductionRecipe.workflowKey
       : "redcraft-krea2-redmix3-txt2img",
     workflowVersion: 1,
     terminal: {
@@ -470,8 +470,8 @@ function passingRuntimeEvidence(mode: "normal" | "private"): ChatProbeRuntimeEvi
     model: "companion-model",
     profileDigest: "a".repeat(64),
     runtimeInstanceId: "11111111-1111-4111-8111-111111111111",
-    igrepVersion: "0.1.161",
-    piVersion: "1.3.0",
+    igrepVersion: "0.1.164",
+    piVersion: "1.4.0",
     igrepSearchCalls: 0,
     igrepSearchFailures: 0,
     ...(mode === "normal"
@@ -4383,7 +4383,7 @@ describe("launch readiness", () => {
     ).toContain(".tmp/launch-video-h3-persistence-probe.json");
   });
 
-  it("fails closed when default RedGraft lacks direct and Main persistence evidence", () => {
+  it("fails closed when published RedGraft lacks direct and Main persistence evidence", () => {
     const report = assessLaunchReadiness({
       env: productionEnv,
       imagePipelineProbe: passingImageProbe(),
@@ -4421,7 +4421,7 @@ describe("launch readiness", () => {
         {
           generationJobId: "job_video_h3_wrong_profile",
           attemptId: "attempt_video_h3_wrong_profile",
-          profileKey: characterVideoProductionRecipe.profileKey,
+          profileKey: redgraftLtx25VideoProductionRecipe.profileKey,
           workflowKey: minimaxH3VideoProductionRecipe.workflowKey,
         },
       ),
@@ -4537,21 +4537,22 @@ describe("launch readiness", () => {
     );
   });
 
-  it("qualifies the default RedGraft route when optional H3 is unpublished", () => {
+  it("qualifies the default H3 route when optional RedGraft is unpublished", () => {
     const report = assessLaunchReadiness({
       env: {
         ...productionEnv,
-        VIDEO_H3_GENERATION_PROBE_REPORT: undefined,
-        GENERATION_VIDEO_H3_PERSISTENCE_PROBE_REPORT: undefined,
+        VIDEO_GENERATION_PROBE_REPORT: undefined,
+        GENERATION_VIDEO_PERSISTENCE_PROBE_REPORT: undefined,
       },
       imagePipelineProbe: passingImageProbe(),
-      videoGenerationProbe: passingVideoProbe(),
-      videoGenerationPersistenceProbe: passingGenerationPersistenceProbe("video", {
+      videoH3GenerationProbe: passingH3VideoProbe(),
+      videoH3GenerationPersistenceProbe: passingGenerationPersistenceProbe("video", {
+        profileKey: characterVideoProductionRecipe.profileKey, workflowKey: characterVideoProductionRecipe.workflowKey,
         profileVersion: characterVideoProductionRecipe.recipeVersion,
         workflowVersion: characterVideoProductionRecipe.workflowVersion,
       }),
-      videoH3GenerationProbe: null,
-      videoH3GenerationPersistenceProbe: null,
+      videoGenerationProbe: null,
+      videoGenerationPersistenceProbe: null,
       ageVerificationProbe: passingAgeProbe(),
       blobStorageProbe: passingBlobProbe(),
       chatModelProbe: passingChatProbe(),

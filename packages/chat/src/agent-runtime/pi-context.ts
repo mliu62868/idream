@@ -135,7 +135,7 @@ export function fitCompanionMessages(input: {
   // Pi keeps a parallel tool round intact. Replace bulky read-only results with
   // exact source cursors; the untouched Pi entries are still the recall authority.
   for (const result of projected.filter(message => message.role === "tool"
-    && ["igrep_search", "memory_search", "igrep_web_search"].includes(names.get(message.tool_call_id) ?? ""))) {
+    && ["igrep_search", "igrep_read_source", "memory_search", "igrep_web_search"].includes(names.get(message.tool_call_id) ?? ""))) {
     const chunks = input.toolSources.get(result.id);
     if (!chunks?.length) continue;
     const reference = JSON.stringify({ sourceId: chunks[0]!.sourceId,

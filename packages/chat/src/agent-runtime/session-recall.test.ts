@@ -174,7 +174,7 @@ try {
   });
   await check('incomplete-failed-forged-and-duplicate-query-results-fail-closed', async () => {
     const target = finalProjection!.chunks[0]!;
-    for (const payload of [{ failed: true, results: [] }, { complete: false, results: [] }, { warnings: ['incomplete'], results: [] }, { results: [{ ref: 'foreign-id' }] }, { results: [{ ref: target.id }, { ref: target.id }] }]) {
+    for (const payload of [{ failed: true, results: [] }, { complete: false, results: [] }, { degraded: true, results: [{ref:target.id}] }, { degrade_reasons: ['selector_timeout'], results: [{ref:target.id}] }, { warnings: ['incomplete'], results: [] }, { results: [{ ref: 'foreign-id' }] }, { results: [{ ref: target.id }, { ref: target.id }] }]) {
       await assert.rejects(finalProjection!.query(attemptId, 'synthetic query', cli, async () => payload));
     }
     await assert.rejects(finalProjection!.query(attemptId, 'synthetic query', {...cli,env:{IGREP_NO_CACHE:'0'}}, async () => { throw new Error('must not dispatch'); }), /disabled shared caches/);
@@ -183,7 +183,7 @@ try {
   const observations: Array<{operation:string;evidenceMatches?:number}> = [];
   const tools = createIgrepTools({cli,workspace:'/authorized',knowledgePath:'/authorized/knowledge',mode:'private',
     recall:async()=>finalProjection!,observe:event=>observations.push(event),run:async options=>{calls.push(options);return {results:[]};}});
-  assert.deepEqual(tools.map(tool=>tool.name).sort(), ['igrep_search','session_recall']);
+  assert.deepEqual(tools.map(tool=>tool.name).sort(), ['igrep_read_source','igrep_search','session_recall']);
   const recall = tools.find(tool=>tool.name==='session_recall')!;
   const index = await recall.execute({}, new AbortController().signal) as Array<{id:string}>;
   assert(index.length > 0 && index.length <= 16);

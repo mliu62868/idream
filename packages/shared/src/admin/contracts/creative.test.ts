@@ -35,9 +35,9 @@ describe("Creative Run create contract", () => {
     reason: "Launch the approved operator brief",
   };
 
-  it("uses RedGraft as the default Character video recipe and excludes LTX 2.3", () => {
+  it("uses H3 Mystic as the default Character video recipe and excludes LTX 2.3", () => {
     expect(characterVideoProductionRecipe).toBe(
-      redgraftLtx25VideoProductionRecipe,
+      minimaxH3VideoProductionRecipe,
     );
     expect(characterVideoProductionRecipe.explicitSelectionOnly).toBe(false);
     expect(
@@ -45,18 +45,18 @@ describe("Creative Run create contract", () => {
     ).toBeNull();
   });
 
-  it("keeps MiniMax H3 as a separate explicit five-second video recipe", () => {
-    expect(characterVideoProductionRecipe).not.toBe(
+  it("pins the default H3 profile while retaining the tested five-second workflow", () => {
+    expect(characterVideoProductionRecipe).toBe(
       minimaxH3VideoProductionRecipe,
     );
     expect(minimaxH3VideoProductionRecipe).toMatchObject({
-      recipeVersion: 4,
+      recipeVersion: 6,
       profileKey: "profile_video_h3_v1",
-      pipelineModel: "minimax-h3-redcraft-a2a-int8-convrot",
-      workflowKey: "minimax-h3-redcraft-i2v",
-      workflowVersion: 4,
+      pipelineModel: "minimax-h3-mystic-v5-int8-convrot",
+      workflowKey: "minimax-h3-mystic-i2v",
+      workflowVersion: 5,
       checkpointFilename:
-        "REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors",
+        "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
       width: 512,
       height: 512,
       fps: 24,
@@ -66,14 +66,14 @@ describe("Creative Run create contract", () => {
       steps: 8,
       sampler: "euler",
       scheduler: "simple",
-      explicitSelectionOnly: true,
+      explicitSelectionOnly: false,
     });
     expect(
       characterVideoProductionRecipeForWorkflow(
         minimaxH3VideoProductionRecipe.workflowKey,
       ),
     ).toBe(minimaxH3VideoProductionRecipe);
-    expect(minimaxH3VideoProductionRecipe.modelAssets).toHaveLength(4);
+    expect(minimaxH3VideoProductionRecipe.modelAssets).toHaveLength(6);
     expect(
       minimaxH3VideoProductionRecipe.modelAssets.every((asset) =>
         /^[a-f0-9]{64}$/.test(asset.sha256),
@@ -81,7 +81,7 @@ describe("Creative Run create contract", () => {
     ).toBe(true);
   });
 
-  it("pins RedGraft LTX 2.5 and all validated MPS assets as the default route", () => {
+  it("keeps RedGraft LTX 2.5 and its published MPS assets available", () => {
     expect(redgraftLtx25VideoProductionRecipe).toMatchObject({
       recipeVersion: 8,
       optionsProfileVersion: 9,

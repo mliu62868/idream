@@ -157,15 +157,20 @@ leaves the Generation queues paused for the next controlled start.
 
 ## Chat Runtime
 
-Chat embeds Pi `1.3.0` (`pi-ai`, `pi-durable`, and `chord`) and calls the
-provider-neutral igrep `0.1.161` CLI. Install workspace dependencies, then verify
-the pinned packages, public Pi API, and CLI surface:
+Chat embeds Pi `1.4.0` (`pi-ai`, `pi-durable`, and `chord`) and calls the
+provider-neutral igrep `0.1.164` CLI. Install workspace dependencies, then verify
+the pinned packages, public Pi API, and CLI behavior with no model calls:
 
 ```bash
 bun run pi-companion:setup
 bun run pi-companion:check
 bun run test:pi-gate
 ```
+
+The CLI must be installed at the exact release (`uv tool install --python 3.14
+--upgrade igrep2==0.1.164`). Setup/check also run isolated file and JSONL searches,
+versioned UTF-8 source paging, and empty/stale-source exit checks. They do not
+replace full readiness with the configured providers.
 
 Each attempt owns a fresh Pi `MemoryStorage` conversation. This storage is
 process-local: restart recovery uses Main's immutable snapshot and the existing
@@ -187,6 +192,7 @@ Main's committed Turns own long-term memory. Chat alone invokes official
 `mem ingest`, `maintain`, `wake`, `reproject`, and the neutral memory JSON API.
 Normal execution exposes read-only `memory_search`; normal and private attempts
 can use explicitly configured `igrep_web_search`, search their authorized snapshot,
+read its exact original text with `igrep_read_source`,
 and recall original evicted messages with
 `session_recall`. Pi performs context compaction. The host binds Main seed and
 omitted originals plus public Pi entries/contributions to stable attempt-scoped
@@ -198,6 +204,18 @@ from the immutable Turn at each provider request. When the same recall projectio
 contains omitted originals, a context notice makes that gap explicit without
 exposing their text or forcing a retrieval. This includes Main history that Pi
 never received and therefore could not include in its summary.
+
+Local and session searches use the public CLI's `--strict` contract: incomplete
+or degraded retrieval is a failure, not an empty or qualified hit. The newer
+`search-api` evidence renderer does not expose equivalent machine-readable
+completion flags, so this host retains the strict CLI. Source reads accept only
+relative paths inside the attempt's knowledge directory, return at most 6,000
+bytes, and bind continuation pages to the original fingerprint. Large read
+results also participate in Pi's source-cursor budgeting. The media reply stage
+gets its own immutable search file; earlier source continuations keep their
+original version until the attempt ends. Subprocesses use
+`IGREP_INDEX_LEVEL=none` for this text-only corpus and explicitly disable
+unconfigured image embedding routes.
 
 Every physical model request, including compaction, contributes its raw provider
 usage receipt. Missing receipts keep usage unknown; a missing reasoning subtotal

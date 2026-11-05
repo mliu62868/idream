@@ -7,6 +7,7 @@ import type { CompanionInvocation, PreparedTurnMessage } from "./contracts";
 import { buildReplaySeed } from "./pi-context";
 import { executePiConversation } from "./pi-runtime";
 import { OpenAiCompatibleAdapter, type TokenUsage } from "./openai-adapter";
+import { estimateModelRequestInputTokens } from "./model-request-format";
 import { IMAGE_AGENT_TOOL_DEFINITIONS } from "@idream/shared/chat/image-action";
 import { CHARACTER_MEDIA_TOOL_DEFINITIONS } from "@idream/shared/chat/media-library";
 
@@ -49,7 +50,7 @@ function response(delta: object, finish = "stop", usage = { prompt_tokens: 100, 
   return new Response(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: finish }], usage })}\n\ndata: [DONE]\n\n`);
 }
 
-type WireBody = { messages: Array<{ role: string; content: string; tool_call_id?: string; tool_calls?: Array<{ id: string }> }> };
+type WireBody = { messages: Array<{ role: string; content: string; tool_call_id?: string; tool_calls?: Array<{ id: string }> }>; tools?: unknown[] };
 type SummarySource = { kind: string; source: { id?: string; owner?: string }; messages: Array<{ id: string; sourceKind: string; content: string; speaker?: typeof speaker }> };
 
 describe("Pi execution boundaries", () => {
@@ -164,7 +165,7 @@ describe("Pi execution boundaries", () => {
     }
   });
 
-  it.each([0, 200, 1_600, 4_000, 8_000])("fits all eight recalled originals after a %i-character summary without losing exact source reads", async summaryChars => {
+  it.each([0, 200, 1_600, 4_000, 8_000])("pages all eight recalled originals after a %i-character summary without losing exact source reads", async summaryChars => {
     const value = invocation(6_000, 0, 0);
     value.attemptId = "fbdd0712-d40d-40a9-a691-e138dbc771a4:1";
     const current = "请把刚才蓝色杯子的同一张图片再发一次，不要生成新图片。另外，17 加 25 等于多少？请用一句友好的中文回答。";
@@ -181,6 +182,10 @@ describe("Pi execution boundaries", () => {
     let recalled = false;
     const requests: WireBody[] = [];
     const readRows: Array<{ id: string; sourceId: string; content: string; role: string; speaker?: typeof speaker }>[] = [];
+    const delivered = new Map<string, typeof readRows[number][number]>();
+    const pages: Array<{ results: typeof readRows[number]; remainingIds?: string[]; nextCursor?: string;
+      next?: { tool: string; arguments: Record<string, unknown> } }> = [];
+    let recallCallId = "recall-large";
     const adapter = new OpenAiCompatibleAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", maxInputTokens: 6_000,
       observeRequest: request => { purpose = request.purpose; },
       fetch: async (_url, init) => {
@@ -188,6 +193,22 @@ describe("Pi execution boundaries", () => {
         if (purpose === "compaction") return response({ content: `Earlier original records are available with session_recall. ${"s".repeat(summaryChars)}` });
         requests.push(body);
         if (++generation === 1) return response({ tool_calls: [{ index: 0, id: "recall-large", function: { name: "session_recall", arguments: '{"query":"earlier original words"}' } }] }, "tool_calls", { prompt_tokens: 4_324, completion_tokens: 518 });
+        const raw = JSON.parse(body.messages.find(message => message.role === "tool" && message.tool_call_id === recallCallId)!.content);
+        const page: typeof pages[number] = Array.isArray(raw) ? { results: raw } : raw;
+        expect(page.results.length).toBeGreaterThan(0);
+        pages.push(page);
+        for (const row of page.results) delivered.set(row.id, row);
+        if (page.remainingIds?.length || page.nextCursor) {
+          expect(page.next?.tool).toBe("session_recall");
+          if (page.remainingIds?.length) expect(page.next!.arguments.ids).toEqual(page.remainingIds);
+          recallCallId = `recall-page-${generation}`;
+          return response({ tool_calls: [{ index: 0, id: recallCallId, function: {
+            name: page.next!.tool, arguments: JSON.stringify(page.next!.arguments),
+          } }] }, "tool_calls");
+        }
+        // The model may finish only after it actually received every original,
+        // not merely because the unpaged tool implementation found all eight.
+        expect(delivered.size).toBe(8);
         return response({ content: "17 加 25 等于 42 哦！" });
       },
     });
@@ -217,18 +238,22 @@ describe("Pi execution boundaries", () => {
       },
     });
     expect(output.message.stopReason).toBe("stop");
-    expect(requests).toHaveLength(2);
+    expect(requests.length).toBeGreaterThan(2);
     for (const request of requests) {
       expect(request.messages).toContainEqual({ role: "user", content: current });
       expect(JSON.stringify(request)).toContain("media_blue_cup");
+      expect(estimateModelRequestInputTokens(request)).toBeLessThanOrEqual(6_000);
     }
     expect(readRows[0]).toHaveLength(8);
     expect(readRows[0]!.map(row => row.content)).toEqual(originals.map(row => row.content));
     expect(readRows[0]!.map(row => row.sourceId)).toEqual(originals.map(row => `main:${row.id}`));
     expect(readRows[0]!.map(row => row.role)).toEqual(originals.map(row => row.role));
     expect(readRows[0]!.map(row => row.speaker)).toEqual(originals.map(row => "speaker" in row ? row.speaker : undefined));
-    const delivered = JSON.parse(requests[1]!.messages.find(message => message.role === "tool")!.content);
-    expect(delivered).toEqual(readRows[0]);
+    expect(pages[0]!.results.length).toBeLessThan(8);
+    expect(pages[0]!.remainingIds).toContain(readRows[0]![7]!.id);
+    expect([...delivered.values()]).toEqual(readRows[0]);
+    expect(pages.at(-1)!.remainingIds ?? []).toEqual([]);
+    expect(pages.at(-1)!.nextCursor ?? null).toBeNull();
   });
 });
 

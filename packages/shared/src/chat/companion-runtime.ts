@@ -4,8 +4,8 @@ import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL } from "./media-
 
 // Shared contains only Main ↔ Chat contracts and operator evidence.
 export const COMPANION_RUNTIME_PROTOCOL_VERSION = 2 as const;
-export const COMPANION_PI_VERSION = "1.3.0" as const;
-export const COMPANION_IGREP_VERSION = "0.1.161" as const;
+export const COMPANION_PI_VERSION = "1.4.0" as const;
+export const COMPANION_IGREP_VERSION = "0.1.164" as const;
 
 /**
  * SPEC: an unquoted terminal memory-search command is not a completed answer.

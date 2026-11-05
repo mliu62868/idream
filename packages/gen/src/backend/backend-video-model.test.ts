@@ -4,7 +4,7 @@ import { BackendInvocationError, type GenBackend } from "./types";
 import { workflowDescriptorSchema } from "./workflow";
 import type { VerifiedVideoMedia } from "./video-media-probe";
 import { REDGRAFT_VIDEO_OPTIONS, redgraftVideoEnvelope } from "@idream/shared/contracts";
-import h3ProductionDescriptor from "../../workflows/minimax-h3-redcraft-i2v.json";
+import h3ProductionDescriptor from "../../workflows/minimax-h3-mystic-i2v.json";
 import productionDescriptor from "../../workflows/redgraft-ltx25-i2v.json";
 
 const MP4 = new Uint8Array([
@@ -241,11 +241,11 @@ describe("BackendVideoModel", () => {
       negativePrompt: "visible text, duplicate person",
       seconds: 5,
       seed: "42",
-      model: "minimax-h3-redcraft-i2v",
+      model: "minimax-h3-mystic-i2v",
       requestId: "request-h3-video-1",
       controls: {
-        workflowKey: "minimax-h3-redcraft-i2v",
-        workflowVersion: 4,
+        workflowKey: "minimax-h3-mystic-i2v",
+        workflowVersion: 5,
         width: 512,
         height: 512,
         fps: 24,
@@ -368,10 +368,10 @@ describe("BackendVideoModel", () => {
     const result = await model.generate({
       prompt: "She moves naturally.",
       seconds: 5,
-      model: "minimax-h3-redcraft-i2v",
+      model: "minimax-h3-mystic-i2v",
       controls: {
-        workflowKey: "minimax-h3-redcraft-i2v",
-        workflowVersion: 4,
+        workflowKey: "minimax-h3-mystic-i2v",
+        workflowVersion: 5,
         width: 512,
         height: 512,
       },
@@ -530,6 +530,23 @@ describe("BackendVideoModel", () => {
         retryable: false,
       },
     });
+    expect(stub.submit).not.toHaveBeenCalled();
+  });
+
+  it.each(["bypass", "wrong_adapter", "zero_strength", "old_pin"])("rejects H3 %s before provider execution", async (mutation) => {
+    const stub = backend();
+    const changed = structuredClone(h3Descriptor);
+    if (changed.backendKind !== "comfyui") throw new Error("expected comfyui");
+    if (mutation === "bypass") changed.apiPrompt["2"]!.inputs.model = ["1", 0];
+    if (mutation === "wrong_adapter") changed.apiPrompt["17"]!.inputs.lora_name = "MysticXXX_MMH3-V4.safetensors";
+    if (mutation === "zero_strength") changed.apiPrompt["18"]!.inputs.strength_model = 0;
+    const model = new BackendVideoModel({ resolveForModel: vi.fn(() => ({ backend: stub, descriptor: changed })) });
+    const result = await model.generate({
+      ...validGenerationInput(),
+      model: h3Descriptor.workflowKey,
+      controls: { workflowKey: h3Descriptor.workflowKey, workflowVersion: mutation === "old_pin" ? 4 : 5, width: 512, height: 512 },
+    });
+    expect(result).toMatchObject({ ok: false, error: { code: mutation === "old_pin" ? "workflow_version_mismatch" : "unsupported_video_workflow", retryable: false } });
     expect(stub.submit).not.toHaveBeenCalled();
   });
 

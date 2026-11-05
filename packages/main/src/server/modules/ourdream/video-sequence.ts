@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
+import { redgraftLtx25VideoProductionRecipe } from "@idream/shared";
 import { z } from "zod";
 import { fishAudioDeliverySettingsSchema, videoSequenceRequestSchema, REDGRAFT_VIDEO_OPTIONS, REDGRAFT_VIDEO_DEFAULTS, type VideoSequenceRequest } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
@@ -35,7 +36,7 @@ type SequenceRow = Prisma.VideoSequenceGetPayload<{ include: typeof include }>;
 export async function videoSequenceCapabilities(userId: string) {
   const entitlements = await entitlementMap(userId);
   if (!entitlements.video_generation || !await featureFlagEnabled("video_gen")) throw Errors.paymentRequired("Video generation is unavailable for this account");
-  const profile = await selectGenerationProfile({ mode: "video", accessibleEntitlements: entitlements });
+  const profile = await selectGenerationProfile({ mode: "video", requested: redgraftLtx25VideoProductionRecipe.profileKey, accessibleEntitlements: entitlements });
   const runtime = await providers.voice.identity?.inspectCapabilities();
   const narration = runtime?.ok === true && voiceRuntimeSupportsEnglish(providers.voice.clip.providerKey, runtime.data) && await featureFlagEnabled("voice_gen");
   return { options: hasProductionVideoOptions(profile) ? REDGRAFT_VIDEO_OPTIONS : { seconds: [5], orientations: [REDGRAFT_VIDEO_DEFAULTS.orientation], qualities: [REDGRAFT_VIDEO_DEFAULTS.quality] }, audio: narration ? ["generated", "silent", "narration"] : ["generated", "silent"] };
@@ -46,7 +47,8 @@ function nativeSceneBody(request: VideoSequenceRequest, ordinal: number) {
   return generationJobSchema.parse({ mode: "video", characterId: request.characterId, visualProfileId: request.visualProfileId,
     generationContextToken: request.generationContextToken, consistencyMode: request.consistencyMode, seed: request.seed ? `${request.seed}:${ordinal}` : undefined,
     freeplay: false, prompt: scene.prompt, outputCount: 1, orientation: request.orientation,
-    controls: { seconds: scene.seconds, videoQuality: request.quality } });
+    // Sequences retain their published RedGraft contract when the ordinary video default changes.
+    controls: { model: redgraftLtx25VideoProductionRecipe.profileKey, seconds: scene.seconds, videoQuality: request.quality } });
 }
 
 function requestIdentity(body: VideoSequenceRequest) {
