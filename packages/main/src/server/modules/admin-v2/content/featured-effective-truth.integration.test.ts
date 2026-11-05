@@ -274,8 +274,9 @@ describe("Featured configured and effective runtime truth", () => {
     expectError(response, 409, "conflict");
   });
 
-  // SPEC: 精选写权限是 content.placement.write，不再借用下架权限。
-  it("lets a placement holder save Featured and refuses a takedown-only moderator", async () => {
+  // SPEC: 精选有自己的权限 content.featured.write：moderator 保留原有能力，
+  // 只有展示位权限的 ops 不因此能改精选（反过来，精选权限也不带展示位发布）。
+  it("lets a Featured holder save and refuses a placement-only operator", async () => {
     await createUser({ id: moderatorId, role: "moderator", dataClass: "internal" });
     await createUser({ id: opsId, role: "ops", dataClass: "internal" });
     const before = await featured();
@@ -289,18 +290,19 @@ describe("Featured configured and effective runtime truth", () => {
         reason: "moderator curation",
       },
     });
-    expectError(moderator, 403, "forbidden");
+    expectOk(moderator);
+    const after = await featured();
     const ops = await adminV2Api("PUT", "/api/v2/admin/content/featured", {
       userId: opsId,
       role: "ops",
       headers: { "idempotency-key": `${P}ops` },
       body: {
-        characterIds: before.configuredCharacterIds,
-        expectedVersion: before.settingVersion,
+        characterIds: after.configuredCharacterIds,
+        expectedVersion: after.settingVersion,
         reason: "ops curation",
       },
     });
-    expectOk(ops);
+    expectError(ops, 403, "forbidden");
   });
 
   it("persists a paused Character as configured and makes it effective automatically after resume", async () => {

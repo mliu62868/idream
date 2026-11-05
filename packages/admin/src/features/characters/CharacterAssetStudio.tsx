@@ -657,9 +657,8 @@ export function CharacterAssetStudio({
     Boolean(data.visual.imageReadiness.repair);
   const recurringProductionReady = !bootstrapMode && !productionBlocked;
   const readinessDescriptionId = `character-image-readiness-${data.character.id}`;
-  const missingPurposes = characterAssetPurposes.filter((purpose) =>
-    !data.project.draftAssetPack[purpose] &&
-    !(purpose === "character_cover" && data.project.draftImageAssetId));
+  // INVARIANT: 服务端的 missingPurposes 还过滤了资产可用性（软删 / 归属），前端不另算一份。
+  const missingPurposes = data.journey.assetPack.draft.missingPurposes;
   const canGenerateMissing = recurringProductionReady && permissions.create && Boolean(qualifiedRoute) &&
     !mutationContextLocked && unconfirmedOperations.length === 0 && !refreshWarning;
   const canUseGenerationAction = runCreationIntent
