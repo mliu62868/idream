@@ -437,7 +437,7 @@ function SimilarCharacters({ character, viewer }: Readonly<{ character: Characte
   const [cards, setCards] = useState<CharacterCardData[]>([]);
   useEffect(() => {
     const controller = new AbortController();
-    const params = new URLSearchParams({ sort: "popular", limit: "7" });
+    const params = new URLSearchParams({ sort: "popular", limit: "7", surface: "similar" });
     if (character.style) params.set("style", character.style);
     if (character.gender) params.set("gender", character.gender);
     gatedFetch(`/api/v1/characters?${params.toString()}`, { signal: controller.signal })

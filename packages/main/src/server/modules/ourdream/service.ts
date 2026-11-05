@@ -167,6 +167,8 @@ import {
   normalizeImageOrientation,
 } from "@idream/shared/media/image-orientation";
 import {
+  discoveryExposureIssuer,
+  EXPOSURE_PLACEMENTS,
   metricExposureSubject,
   verifyExposureContext,
 } from "./exposure-context";
@@ -1517,8 +1519,16 @@ async function listCharacters(request: Request) {
   const page = characters
     .slice(0, limit)
     .filter(hasPublicListReleaseManifestAuthority);
+  const placementId = exploreListPlacement(url.searchParams.get("surface"), q, sort);
+  const issueExposure = discoveryExposureIssuer(
+    metricExposureSubject(ctx.userId, ctx.anonymousId),
+    env.BETTER_AUTH_SECRET,
+  );
   return ok({
-    items: page.map((character) => characterDTO(character, ctx.userId)),
+    items: page.map((character) => ({
+      ...characterDTO(character, ctx.userId),
+      exposureContext: issueExposure(character, placementId),
+    })),
     nextCursor: characters.length > limit ? encodeCursor(cursor + limit) : null,
   });
 }
@@ -1567,6 +1577,20 @@ async function orderedPage(where: Prisma.CharacterWhereInput, pageIds: string[],
 }
 
 type ExploreSort = "for-you" | "popular" | "newest" | "following";
+
+// INVARIANT: placementId 进入签名上下文，客户端只能选这张表里的嵌入货架，不能自造。
+const EXPLORE_LIST_SURFACE_PLACEMENTS = new Map<string, string>([
+  ["chat-hub", EXPOSURE_PLACEMENTS.chatHub],
+  ["guide-strip", EXPOSURE_PLACEMENTS.guideStrip],
+  ["similar", EXPOSURE_PLACEMENTS.characterSimilar],
+]);
+
+function exploreListPlacement(surface: string | null, q: string, sort: ExploreSort): string {
+  const embedded = surface ? EXPLORE_LIST_SURFACE_PLACEMENTS.get(surface) : undefined;
+  if (embedded) return embedded;
+  if (q.trim()) return EXPOSURE_PLACEMENTS.exploreSearch;
+  return sort === "following" ? EXPOSURE_PLACEMENTS.exploreFollowing : EXPOSURE_PLACEMENTS.exploreFeed;
+}
 
 function exploreSort(value: string | null): ExploreSort {
   if (value === "popular" || value === "newest" || value === "following") return value;
@@ -1973,8 +1997,15 @@ async function suggest(request: Request) {
     }),
   ]);
 
+  const issueExposure = discoveryExposureIssuer(
+    metricExposureSubject(ctx.userId, ctx.anonymousId),
+    env.BETTER_AUTH_SECRET,
+  );
   return ok({
-    characters: characters.map((character) => characterDTO(character, ctx.userId)),
+    characters: characters.map((character) => ({
+      ...characterDTO(character, ctx.userId),
+      exposureContext: issueExposure(character, EXPOSURE_PLACEMENTS.searchSuggest),
+    })),
     routes: suggestRoutes(normalized, 6),
     tags,
   });
@@ -4752,6 +4783,17 @@ async function track(request: Request) {
     ) {
       throw Errors.badRequest("Character exposure does not match its signed context");
     }
+    // 曝光 id 在 journey + Character + placement 内确定：重放（刷新后重新测得的
+    // 可见比例不同）以首次记录为准，而不是撞上"同 id 不同内容"的冲突。
+    const recorded = await prisma.analyticsEvent.findUnique({
+      where: {
+        sourceService_sourceEventId: {
+          sourceService: "main",
+          sourceEventId: `character_exposure:${exposure.exposureId}`,
+        },
+      },
+    });
+    if (recorded) return ok({ event: recorded });
     const authority = await prisma.character.findFirst({
       where: {
         AND: [

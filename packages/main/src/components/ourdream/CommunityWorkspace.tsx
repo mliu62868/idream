@@ -1,6 +1,7 @@
 "use client";
 
 import { ComicDiscovery } from "./ComicCatalog";
+import { useCharacterExposure } from "@/hooks/useCharacterExposure";
 import { useViewerGate, ViewerGateError, type ViewerGate } from "@/hooks/useViewerGate";
 import { isAbortError, type ResourceFetcher } from "@/lib/viewer-resource-client";
 
@@ -45,7 +46,6 @@ import { useReportDialog } from "./ReportDialog";
 // INTENT: 只覆盖有公开渲染面的 campaign 槽位；feed_card/homepage_strip 等无渲染面槽位不造埋点（诚实数据）。
 export const PLACEMENT_IMPRESSION_EVENT = "placement_impression";
 export const PLACEMENT_CLICK_EVENT = "placement_click";
-export const CHARACTER_EXPOSURE_EVENT = "character.exposure.recorded.v2";
 
 export async function requestCommunityFollow(
   creatorId: string,
@@ -72,31 +72,6 @@ export async function requestCommunityFollow(
 function trackPlacementEvent(name: string, placementId: string, slot: string) {
   if (typeof window === "undefined") return;
   const payload = JSON.stringify({ name, props: { placementId, slot } });
-  if (typeof navigator.sendBeacon === "function") {
-    navigator.sendBeacon("/api/v1/events/track", new Blob([payload], { type: "application/json" }));
-    return;
-  }
-  void fetch("/api/v1/events/track", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: payload,
-    keepalive: true,
-  }).catch(() => {});
-}
-
-function trackCharacterExposure(props: {
-  contextToken: string;
-  characterId: string;
-  eventType: "eligible_impression" | "detail_view";
-  exposureId: string;
-  journeyId: string;
-  parentExposureId: string | null;
-  placementId: string;
-  visibleDurationMs: number;
-  visibleRatio: number;
-}) {
-  if (typeof window === "undefined") return;
-  const payload = JSON.stringify({ name: CHARACTER_EXPOSURE_EVENT, props });
   if (typeof navigator.sendBeacon === "function") {
     navigator.sendBeacon("/api/v1/events/track", new Blob([payload], { type: "application/json" }));
     return;
@@ -992,83 +967,22 @@ export function CommunityCharacterCard({
   onReport: (characterId: string) => void;
   onToggleFollow: (creatorId: string, isFollowing: boolean) => Promise<void>;
 }) {
-  const cardRef = useRef<HTMLElement | null>(null);
-  const impressionRecordedRef = useRef(false);
-  const detailRecordedRef = useRef(false);
-  const exposureContext = character.exposureContext ?? null;
-
-  useEffect(() => {
-    const node = cardRef.current;
-    if (!node || !exposureContext || typeof IntersectionObserver === "undefined") return;
-    let timer: number | null = null;
-    let visibleRatio = 0;
-    const clearEligibilityTimer = () => {
-      if (timer !== null) window.clearTimeout(timer);
-      timer = null;
-    };
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        visibleRatio = entry.intersectionRatio;
-        if (!entry.isIntersecting || entry.intersectionRatio < 0.5) {
-          clearEligibilityTimer();
-          return;
-        }
-        if (impressionRecordedRef.current || timer !== null) return;
-        timer = window.setTimeout(() => {
-          timer = null;
-          if (visibleRatio < 0.5 || impressionRecordedRef.current) return;
-          impressionRecordedRef.current = true;
-          onEligibleImpression();
-          trackCharacterExposure({
-            contextToken: exposureContext.contextToken,
-            characterId: character.id,
-            eventType: "eligible_impression",
-            exposureId: exposureContext.impressionExposureId,
-            journeyId: exposureContext.journeyId,
-            parentExposureId: null,
-            placementId: exposureContext.placementId,
-            visibleDurationMs: 500,
-            visibleRatio,
-          });
-        }, 500);
-      },
-      { threshold: [0, 0.5, 1] },
-    );
-    observer.observe(node);
-    return () => {
-      clearEligibilityTimer();
-      observer.disconnect();
-    };
-  }, [character.id, exposureContext, onEligibleImpression]);
-
-  function recordDetailView() {
-    if (!exposureContext || !impressionRecordedRef.current || detailRecordedRef.current) return;
-    detailRecordedRef.current = true;
-    trackCharacterExposure({
-      contextToken: exposureContext.contextToken,
-      characterId: character.id,
-      eventType: "detail_view",
-      exposureId: exposureContext.detailExposureId,
-      journeyId: exposureContext.journeyId,
-      parentExposureId: exposureContext.impressionExposureId,
-      placementId: exposureContext.placementId,
-      visibleDurationMs: 0,
-      visibleRatio: 1,
-    });
-  }
+  const { attach, entryHref, recordDetailView } = useCharacterExposure<HTMLElement>(
+    character.id,
+    character.exposureContext,
+    onEligibleImpression,
+  );
 
   return (
     <article
       className="overflow-hidden rounded-[14px] bg-[rgb(18,18,18)]"
       data-testid="community-character-card"
-      ref={cardRef}
+      ref={attach}
     >
       <Link
         aria-label={character.title}
         className="relative block aspect-[4/5]"
-        href={exposureContext
-          ? `/characters/${character.id}?entryExposureId=${encodeURIComponent(exposureContext.detailExposureId)}&journeyId=${encodeURIComponent(exposureContext.journeyId)}&placementId=${encodeURIComponent(exposureContext.placementId)}`
-          : `/characters/${character.id}`}
+        href={entryHref}
         onClick={recordDetailView}
       >
         <Image
@@ -1101,7 +1015,8 @@ export function CommunityCharacterCard({
           {character.source === "official" || !character.creatorId || character.canEditIdentity ? (
             <Link
               className="inline-flex h-9 flex-1 items-center justify-center rounded-full bg-white text-[12px] font-black text-[rgb(13,13,13)]"
-              href={`/characters/${encodeURIComponent(character.id)}`}
+              href={entryHref}
+              onClick={recordDetailView}
             >
               View character
             </Link>

@@ -124,6 +124,29 @@ describe("Feed keeps personalized results and actions with their account", () =>
     for (const [, init] of vi.mocked(fetch).mock.calls) expect(new Headers(init?.headers).has("x-idream-viewer-scope")).toBe(false);
   });
 
+  it("carries a card's exposure into the chat it starts from the Feed", async () => {
+    const exposureContext = { contextToken: "token", journeyId: "journey-1", placementId: "feed.recommended", impressionExposureId: "impression-1", detailExposureId: "detail-1" };
+    vi.spyOn(window.location, "assign").mockImplementation(() => {});
+    const started: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/chat/sessions") {
+        started.push(JSON.parse(String(init?.body)));
+        return ok({ session: { id: "session-1" } });
+      }
+      if (String(input).startsWith("/api/v1/feed?")) {
+        const item = character("shared", "Shared character");
+        if (item.type !== "character") throw new Error("Expected a character item");
+        return ok({ items: [{ ...item, character: { ...item.character, exposureContext } }], nextCursor: null, focusedItemId: null });
+      }
+      return read(input);
+    }));
+    await mount();
+    expect(sharedCard()!.querySelector("a")!.getAttribute("href")).toBe("/characters/shared?entryExposureId=detail-1&journeyId=journey-1&placementId=feed.recommended");
+    await act(async () => sharedCard()!.querySelector<HTMLButtonElement>('[aria-label="Chat"]')!.click());
+    await until(() => started.length === 1);
+    expect(started).toEqual([{ characterId: "shared", entryExposureId: "detail-1", journeyId: "journey-1", placementId: "feed.recommended" }]);
+  });
+
   it("keeps a pending optimistic unlike through confirmation refresh and rolls it back on failure", async () => {
     let finish!: (response: Response) => void;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/like")

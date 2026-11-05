@@ -7,6 +7,7 @@ import { shouldBypassNextImageOptimizer } from "@/lib/image-delivery";
 import { parseCharacterListResponse } from "@/lib/public-api-contracts";
 import type { CharacterCardData } from "@/types/ourdream";
 import { useAgeGateAccess } from "./AgeGateBoundary";
+import { useCharacterExposure } from "@/hooks/useCharacterExposure";
 import { useViewerGate, type ViewerGate } from "@/hooks/useViewerGate";
 import { isAbortError } from "@/lib/viewer-resource-client";
 
@@ -30,7 +31,7 @@ function CharacterStripContent({ viewer }: Readonly<{ viewer: ViewerGate }>) {
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       setState("loading");
-      void gatedFetch("/api/v1/characters?sort=for-you&limit=4", { cache: "no-store", signal: controller.signal })
+      void gatedFetch("/api/v1/characters?sort=for-you&limit=4&surface=guide-strip", { cache: "no-store", signal: controller.signal })
         .then(async (response) => {
           if (controller.signal.aborted) return;
           if (!response.ok) throw new Error("characters unavailable");
@@ -131,42 +132,48 @@ function CharacterStripContent({ viewer }: Readonly<{ viewer: ViewerGate }>) {
       ) : null}
       {displayState === "ready" && characters.length > 0 ? (
         <div className="grid gap-3 md:grid-cols-4">
-          {characters.map((card, index) => (
-            <Link
-              className="group overflow-hidden rounded-[14px] border border-white/10 bg-[rgb(18,18,18)]"
-              data-testid="public-character-strip-card"
-              href={`/characters/${card.id}`}
-              key={card.id}
-            >
-              <div className="relative aspect-[240/260] overflow-hidden">
-                <Image
-                  alt={card.title}
-                  className="object-cover object-top transition-transform duration-200 group-hover:scale-[1.03]"
-                  fill
-                  loading={index === 0 ? "eager" : "lazy"}
-                  sizes="(max-width: 767px) 50vw, 220px"
-                  src={card.image}
-                  unoptimized={shouldBypassNextImageOptimizer(card.image)}
-                />
-                <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(0,0,0,.78),rgba(0,0,0,.18)_58%,transparent)]" />
-                <div className="absolute inset-x-0 bottom-0 p-3">
-                  <h3 className="line-clamp-2 text-[17px] font-bold leading-5">
-                    {card.title}
-                    <span className="ml-2 text-[14px]">{card.age}</span>
-                  </h3>
-                  <p className="mt-1 text-[12px] font-medium leading-4 text-[rgb(170,170,170)]">
-                    {typeof card.chatsCount === "number" && card.chatsCount > 0
-                      ? `${card.chats} chats`
-                      : card.source === "official"
-                        ? "Official character"
-                        : "New public character"}
-                  </p>
-                </div>
-              </div>
-            </Link>
-          ))}
+          {characters.map((card, index) => <StripCard card={card} eager={index === 0} key={card.id} />)}
         </div>
       ) : null}
     </section>
+  );
+}
+
+function StripCard({ card, eager }: Readonly<{ card: CharacterCardData; eager: boolean }>) {
+  const { attach, entryHref, recordDetailView } = useCharacterExposure<HTMLAnchorElement>(card.id, card.exposureContext);
+  return (
+    <Link
+      className="group overflow-hidden rounded-[14px] border border-white/10 bg-[rgb(18,18,18)]"
+      data-testid="public-character-strip-card"
+      href={entryHref}
+      onClick={recordDetailView}
+      ref={attach}
+    >
+      <div className="relative aspect-[240/260] overflow-hidden">
+        <Image
+          alt={card.title}
+          className="object-cover object-top transition-transform duration-200 group-hover:scale-[1.03]"
+          fill
+          loading={eager ? "eager" : "lazy"}
+          sizes="(max-width: 767px) 50vw, 220px"
+          src={card.image}
+          unoptimized={shouldBypassNextImageOptimizer(card.image)}
+        />
+        <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(0,0,0,.78),rgba(0,0,0,.18)_58%,transparent)]" />
+        <div className="absolute inset-x-0 bottom-0 p-3">
+          <h3 className="line-clamp-2 text-[17px] font-bold leading-5">
+            {card.title}
+            <span className="ml-2 text-[14px]">{card.age}</span>
+          </h3>
+          <p className="mt-1 text-[12px] font-medium leading-4 text-[rgb(170,170,170)]">
+            {typeof card.chatsCount === "number" && card.chatsCount > 0
+              ? `${card.chats} chats`
+              : card.source === "official"
+                ? "Official character"
+                : "New public character"}
+          </p>
+        </div>
+      </div>
+    </Link>
   );
 }

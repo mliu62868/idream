@@ -19,6 +19,18 @@ const timestamp = z
   .string()
   .refine((value) => Number.isFinite(Date.parse(value)), "Expected a timestamp");
 
+const exposureContextSchema = z
+  .object({
+    contextToken: nonEmptyString,
+    journeyId: nonEmptyString,
+    placementId: nonEmptyString,
+    impressionExposureId: nonEmptyString,
+    detailExposureId: nonEmptyString,
+  })
+  .strict();
+
+export type PublicExposureContext = z.infer<typeof exposureContextSchema>;
+
 export const publicCharacterCardSchema = z
   .object({
     id: nonEmptyString,
@@ -43,6 +55,7 @@ export const publicCharacterCardSchema = z
     currentReleaseId: z.string().nullable().optional(),
     hasImage: z.boolean().optional(),
     vivid: z.boolean().optional(),
+    exposureContext: exposureContextSchema.nullable().optional(),
   })
   .passthrough();
 
@@ -758,22 +771,11 @@ const templatesResponseSchema = successEnvelope(
   z.object({ items: z.array(characterTemplateSchema) }),
 );
 
-const exposureContextSchema = z
-  .object({
-    contextToken: nonEmptyString,
-    journeyId: nonEmptyString,
-    placementId: nonEmptyString,
-    impressionExposureId: nonEmptyString,
-    detailExposureId: nonEmptyString,
-  })
-  .strict();
-
 const communityCharacterSchema = publicCharacterCardSchema
   .extend({
     style: z.string().optional(),
     gender: z.string().optional(),
     isFollowing: z.boolean(),
-    exposureContext: exposureContextSchema.nullable().optional(),
   })
   .passthrough();
 

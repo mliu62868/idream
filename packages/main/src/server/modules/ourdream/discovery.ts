@@ -42,8 +42,10 @@ import {
   resolveCommunityCampaignPlacements,
 } from "./community-campaigns";
 import {
-  issueExposureContext,
+  discoveryExposureIssuer,
+  EXPOSURE_PLACEMENTS,
   metricExposureSubject,
+  type IssuedExposureContext,
 } from "./exposure-context";
 import {
   FEATURED_SETTING_KEY,
@@ -100,6 +102,12 @@ export async function feed(request: Request, segments: string[]) {
     }
     const requestedItemId =
       cursorState?.scopeItemId ?? requestedScopeItemId;
+    const issueExposure = discoveryExposureIssuer(
+      metricExposureSubject(ctx.userId, ctx.anonymousId),
+      env.BETTER_AUTH_SECRET,
+    );
+    const feedCharacterItem = (character: CharacterWithPublicRelations, placementId: string) =>
+      feedCharacterItemDTO(character, issueExposure(character, placementId));
     // 用户静音的标签在 Feed 同样生效 —— 之前只有 explore 施加了这条，
     // 于是静音后首页照旧把该标签的角色推给他。
     const feedMutedExclusion = mutedTagExclusionWhere(
@@ -138,7 +146,7 @@ export async function feed(request: Request, segments: string[]) {
       const page = stablePage.slice(0, limit);
       const lastCharacter = page.at(-1);
       return ok({
-        items: page.map(feedCharacterItemDTO),
+        items: page.map((character) => feedCharacterItem(character, EXPOSURE_PLACEMENTS.feedRecommended)),
         focusedItemId: null,
         nextCursor:
           stablePage.length > limit && lastCharacter
@@ -183,7 +191,7 @@ export async function feed(request: Request, segments: string[]) {
         : null,
     ]);
     const focusedItem = focusedCharacter
-      ? feedCharacterItemDTO(focusedCharacter)
+      ? feedCharacterItem(focusedCharacter, EXPOSURE_PLACEMENTS.feedShared)
       : focusedCollection
         ? feedCollectionItemDTO(focusedCollection)
         : null;
@@ -263,7 +271,10 @@ export async function feed(request: Request, segments: string[]) {
       0,
       Math.max(0, characterBudget - orderedFeatured.length),
     );
-    const characterItems = [...orderedFeatured, ...popularPage].map(feedCharacterItemDTO);
+    const characterItems = [
+      ...orderedFeatured.map((character) => feedCharacterItem(character, EXPOSURE_PLACEMENTS.feedFeatured)),
+      ...popularPage.map((character) => feedCharacterItem(character, EXPOSURE_PLACEMENTS.feedRecommended)),
+    ];
     const collectionItems = recentCollections.map(feedCollectionItemDTO);
     const items = [
       ...(focusedItem ? [focusedItem] : []),
@@ -575,11 +586,14 @@ async function canonicalPublicFeedItemId(itemId: string) {
   return collection ? `collection:${collection.id}` : null;
 }
 
-function feedCharacterItemDTO(character: CharacterWithPublicRelations) {
+function feedCharacterItemDTO(
+  character: CharacterWithPublicRelations,
+  exposureContext: IssuedExposureContext | null,
+) {
   return {
     id: `character:${character.id}`,
     type: "character" as const,
-    character: characterDTO(character),
+    character: { ...characterDTO(character), exposureContext },
   };
 }
 
@@ -737,23 +751,12 @@ export async function community(request: Request, segments: string[]) {
     // INVARIANT: Follow rejects self; the read model must not advertise that impossible command.
     isSelf: dreamer.id === ctx.userId,
   }));
-  const exposureJourneyId = `community-journey-${cryptoRandomId("journey")}`;
+  const issueExposure = discoveryExposureIssuer(exposureSubject, env.BETTER_AUTH_SECRET);
   return ok({
     leaderboards: {
       characters: rankedCharacters.map((character) => ({
         ...characterDTO(character, ctx.userId, followingIds),
-        exposureContext: exposureSubject && character.serving?.state === "live" &&
-          character.serving.currentRelease?.status === "published"
-          ? issueExposureContext({
-              ...exposureSubject,
-              characterId: character.id,
-              characterContentVersionId: character.serving.currentRelease.characterContentVersionId,
-              characterReleaseId: character.serving.currentRelease.id,
-              servingVersion: character.serving.version,
-              placementId: "community.leaderboard",
-              journeyId: exposureJourneyId,
-            }, env.BETTER_AUTH_SECRET)
-          : null,
+        exposureContext: issueExposure(character, EXPOSURE_PLACEMENTS.communityLeaderboard),
       })),
       dreamers,
     },
@@ -1039,6 +1042,10 @@ export async function creatorProfile(request: Request, creatorId: string) {
   const totalChats = characterTotals._sum.chatsCount ?? 0;
   const page = characters.slice(0, limit);
   const last = page.at(-1);
+  const issueExposure = discoveryExposureIssuer(
+    metricExposureSubject(ctx.userId, ctx.anonymousId),
+    env.BETTER_AUTH_SECRET,
+  );
   return ok({
     creator: {
       id: creator.id,
@@ -1056,13 +1063,14 @@ export async function creatorProfile(request: Request, creatorId: string) {
         chatsCount: totalChats,
       },
     },
-    characters: page.map((character) =>
-      characterDTO(
+    characters: page.map((character) => ({
+      ...characterDTO(
         character,
         ctx.userId,
         new Set(following ? [creatorId] : []),
       ),
-    ),
+      exposureContext: issueExposure(character, EXPOSURE_PLACEMENTS.creatorProfile),
+    })),
     nextCursor: characters.length > limit && last
       ? Buffer.from(JSON.stringify({ scope: cursorScope, createdAt: last.createdAt.toISOString(), id: last.id })).toString("base64url")
       : null,

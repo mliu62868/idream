@@ -1,5 +1,8 @@
+"use client";
+
 import Image from "next/image";
 import Link from "next/link";
+import { useCharacterExposure } from "@/hooks/useCharacterExposure";
 import type { CharacterCardData } from "@/types/ourdream";
 import {
   ChatBubbleIcon,
@@ -10,7 +13,7 @@ import { shouldBypassNextImageOptimizer } from "@/lib/image-delivery";
 
 export function CharacterCard({
   card,
-  href = `/characters/${card.id}`,
+  href,
   imageLoading = "lazy",
   imageUnoptimized = false,
 }: Readonly<{
@@ -19,6 +22,7 @@ export function CharacterCard({
   imageLoading?: "eager" | "lazy";
   imageUnoptimized?: boolean;
 }>) {
+  const { attach, entryHref, recordDetailView } = useCharacterExposure<HTMLAnchorElement>(card.id, card.exposureContext);
   const description = card.description.trim().replace(/[.!?]+$/, "");
   const hasLikes = typeof card.likesCount === "number" && card.likesCount > 0;
   const hasChats = typeof card.chatsCount === "number" && card.chatsCount > 0;
@@ -34,7 +38,9 @@ export function CharacterCard({
     <Link
       aria-label={label}
       className="group relative block aspect-[240/400] w-full cursor-pointer overflow-hidden rounded-[12px] bg-[rgb(36,36,36)] transition-transform duration-200 ease-out hover:scale-[1.012]"
-      href={href}
+      href={href ?? entryHref}
+      onClick={recordDetailView}
+      ref={attach}
     >
       {card.vivid && (
         <div className="pointer-events-none absolute right-3 top-2 z-10 -skew-x-6">

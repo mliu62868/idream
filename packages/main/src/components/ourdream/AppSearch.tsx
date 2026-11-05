@@ -15,11 +15,13 @@ import {
 } from "react";
 import {
   parseSearchSuggestResponse,
+  type PublicExposureContext,
   type PublicSearchSuggestions,
 } from "@/lib/public-api-contracts";
 import { cn } from "@/lib/utils";
 import type { CharacterCardData, OurdreamRouteTemplate } from "@/types/ourdream";
 import { useAgeGateAccess } from "./AgeGateBoundary";
+import { characterEntryHref, recordCharacterDetailView, useCharacterExposure } from "@/hooks/useCharacterExposure";
 import { useViewerGate, type ViewerIdentity } from "@/hooks/useViewerGate";
 import { isAbortError } from "@/lib/viewer-resource-client";
 
@@ -32,6 +34,8 @@ type SearchSuggestion =
   | {
       href: string;
       id: string;
+      characterId: string;
+      exposureContext?: PublicExposureContext | null;
       image: string;
       kind: "character";
       label: string;
@@ -82,7 +86,9 @@ export function AppSearch() {
   const suggestions = useMemo<SearchSuggestion[]>(() => {
     if (suggestionOwner !== viewer.identity || suggestionQuery !== trimmedQuery || status !== "ready") return [];
     const characterSuggestions = characters.map((character) => ({
-      href: `/characters/${encodeURIComponent(character.id)}`,
+      characterId: character.id,
+      exposureContext: character.exposureContext,
+      href: characterEntryHref(character.id, character.exposureContext),
       id: `character:${character.id}`,
       image: character.image,
       kind: "character" as const,
@@ -220,6 +226,9 @@ export function AppSearch() {
     if (event.key === "Enter" && activeSuggestion) {
       event.preventDefault();
       setFocused(false);
+      if (activeSuggestion.kind === "character") {
+        recordCharacterDetailView(activeSuggestion.characterId, activeSuggestion.exposureContext);
+      }
       router.push(activeSuggestion.href);
     }
   }
@@ -332,55 +341,85 @@ export function AppSearch() {
 
           {displayStatus === "ready"
             ? suggestions.map((suggestion, index) => (
-                <Link
-                  aria-label={`Open ${suggestion.label}`}
-                  aria-selected={activeIndex === index}
-                  className={cn(
-                    "flex min-h-12 items-center gap-3 rounded-[9px] px-2 py-2 text-left transition-colors hover:bg-[rgb(36,36,36)]",
-                    activeIndex === index && "bg-[rgb(46,46,46)]",
-                  )}
-                  href={suggestion.href}
-                  id={optionId(index)}
+                <SearchSuggestionLink
+                  active={activeIndex === index}
+                  index={index}
                   key={suggestion.id}
-                  onClick={() => setFocused(false)}
-                  onMouseEnter={() => setActiveIndex(index)}
-                  role="option"
-                >
-                  {suggestion.kind === "character" ? (
-                    <Image
-                      alt=""
-                      className="h-10 w-10 shrink-0 rounded-[8px] object-cover object-top"
-                      height={40}
-                      sizes="40px"
-                      src={suggestion.image}
-                      unoptimized={isPrivateMediaUrl(suggestion.image)}
-                      width={40}
-                    />
-                  ) : (
-                    <span className="grid h-10 w-10 shrink-0 place-items-center rounded-[8px] bg-[rgb(36,36,36)] text-[rgb(253,95,194)]">
-                      {suggestion.kind === "tag" ? (
-                        <Hash aria-hidden="true" className="h-4 w-4" />
-                      ) : suggestion.template === "generator" ? (
-                        <Sparkles aria-hidden="true" className="h-4 w-4" />
-                      ) : (
-                        <FileText aria-hidden="true" className="h-4 w-4" />
-                      )}
-                    </span>
-                  )}
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13px] font-black leading-4 text-white">
-                      {suggestion.label}
-                    </span>
-                    <span className="mt-1 block truncate text-[11px] font-bold leading-3 text-[rgb(170,170,170)]">
-                      {suggestion.meta}
-                    </span>
-                  </span>
-                </Link>
+                  onActivate={() => setActiveIndex(index)}
+                  onSelect={() => setFocused(false)}
+                  suggestion={suggestion}
+                />
               ))
             : null}
         </div>
       ) : null}
     </div>
+  );
+}
+
+function SearchSuggestionLink({
+  active,
+  index,
+  onActivate,
+  onSelect,
+  suggestion,
+}: Readonly<{
+  active: boolean;
+  index: number;
+  onActivate: () => void;
+  onSelect: () => void;
+  suggestion: SearchSuggestion;
+}>) {
+  const character = suggestion.kind === "character" ? suggestion : null;
+  const { attach, recordDetailView } = useCharacterExposure<HTMLAnchorElement>(character?.characterId ?? "", character?.exposureContext);
+  return (
+    <Link
+      aria-label={`Open ${suggestion.label}`}
+      aria-selected={active}
+      className={cn(
+        "flex min-h-12 items-center gap-3 rounded-[9px] px-2 py-2 text-left transition-colors hover:bg-[rgb(36,36,36)]",
+        active && "bg-[rgb(46,46,46)]",
+      )}
+      href={suggestion.href}
+      id={optionId(index)}
+      onClick={() => {
+        recordDetailView();
+        onSelect();
+      }}
+      onMouseEnter={onActivate}
+      ref={attach}
+      role="option"
+    >
+      {suggestion.kind === "character" ? (
+        <Image
+          alt=""
+          className="h-10 w-10 shrink-0 rounded-[8px] object-cover object-top"
+          height={40}
+          sizes="40px"
+          src={suggestion.image}
+          unoptimized={isPrivateMediaUrl(suggestion.image)}
+          width={40}
+        />
+      ) : (
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-[8px] bg-[rgb(36,36,36)] text-[rgb(253,95,194)]">
+          {suggestion.kind === "tag" ? (
+            <Hash aria-hidden="true" className="h-4 w-4" />
+          ) : suggestion.template === "generator" ? (
+            <Sparkles aria-hidden="true" className="h-4 w-4" />
+          ) : (
+            <FileText aria-hidden="true" className="h-4 w-4" />
+          )}
+        </span>
+      )}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[13px] font-black leading-4 text-white">
+          {suggestion.label}
+        </span>
+        <span className="mt-1 block truncate text-[11px] font-bold leading-3 text-[rgb(170,170,170)]">
+          {suggestion.meta}
+        </span>
+      </span>
+    </Link>
   );
 }
 

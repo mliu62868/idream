@@ -1,3 +1,5 @@
+import type { PublicExposureContext } from "@/lib/public-api-contracts";
+
 export interface CharacterCardData {
   id: string;
   title: string;
@@ -21,6 +23,7 @@ export interface CharacterCardData {
   currentReleaseId?: string | null;
   hasImage?: boolean;
   vivid?: boolean;
+  exposureContext?: PublicExposureContext | null;
   visualProfile?: {
     id: string;
     version: number;

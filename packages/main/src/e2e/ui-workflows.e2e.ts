@@ -172,7 +172,8 @@ test("creator profile paginates all 25 qualified public characters", async ({ pa
   expect(more.body.data.nextCursor).toBeNull();
   await expect(cards).toHaveCount(25);
   const hrefs = await cards.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("href")));
-  expect(hrefs).toEqual([...ids].reverse().map((id) => `/characters/${id}`));
+  // Discovery links also carry their signed entry attribution as a query.
+  expect(hrefs.map((href) => href?.split("?")[0])).toEqual([...ids].reverse().map((id) => `/characters/${id}`));
   expect(new Set(hrefs).size).toBe(25);
   await page.screenshot({ path: testInfo.outputPath("creator-all-25.png"), fullPage: true });
   await page.reload();
@@ -180,7 +181,7 @@ test("creator profile paginates all 25 qualified public characters", async ({ pa
   await expect(page.locator("[data-age-gate-content]")).not.toHaveAttribute("inert", "");
   await page.getByRole("button", { name: "Load more characters", exact: true }).click();
   await expect(cards).toHaveCount(25);
-  await page.locator(`a[href="/characters/${ids[0]}"]`).click();
+  await page.locator(`a[href^="/characters/${ids[0]}"]`).click();
   await expect(page.getByRole("heading", { level: 1, name: "E2E Paged Companion 00" })).toBeVisible();
   await page.reload();
   await expect(page.getByRole("heading", { level: 1, name: "E2E Paged Companion 00" })).toBeVisible();
@@ -2540,10 +2541,10 @@ test("explore UI syncs filters to URL and paginates results", async ({ page }) =
   expect(follow.ok(), await follow.text()).toBeTruthy();
 
   await page.goto(`/?q=${encodeURIComponent(token)}&limit=2`);
-  const alpha = page.locator(`a[href="/characters/${ids.alpha}"]`);
-  const beta = page.locator(`a[href="/characters/${ids.beta}"]`);
-  const gamma = page.locator(`a[href="/characters/${ids.gamma}"]`);
-  const delta = page.locator(`a[href="/characters/${ids.delta}"]`);
+  const alpha = page.locator(`a[href^="/characters/${ids.alpha}"]`);
+  const beta = page.locator(`a[href^="/characters/${ids.beta}"]`);
+  const gamma = page.locator(`a[href^="/characters/${ids.gamma}"]`);
+  const delta = page.locator(`a[href^="/characters/${ids.delta}"]`);
 
   await expect(alpha).toBeVisible({ timeout: 10_000 });
   await expect(beta).toBeVisible({ timeout: 10_000 });
@@ -2652,7 +2653,7 @@ test("explore character grid exposes retryable load errors and empty results", a
   const staleToken = `E2E Stale ${Date.now()} ${Math.floor(Math.random() * 1e6)}`;
   const seeded = await seedExploreCharacters(staleToken);
   await page.goto(`/?q=${encodeURIComponent(staleToken)}&gender=any&limit=2`);
-  const staleCharacter = page.locator(`a[href="/characters/${seeded.alpha}"]`);
+  const staleCharacter = page.locator(`a[href^="/characters/${seeded.alpha}"]`);
   await expect(staleCharacter).toBeVisible({ timeout: 10_000 });
 
   allowCharacters = false;
@@ -2732,7 +2733,7 @@ test("mobile explore keeps bottom nav fixed and cards unobscured", async ({ page
   await page.setViewportSize({ width: 390, height: 812 });
 
   const cards = [ids.delta, ids.alpha, ids.beta, ids.gamma].map((id) =>
-    page.locator(`a[href="/characters/${id}"]`),
+    page.locator(`a[href^="/characters/${id}"]`),
   );
   for (const card of cards) await expect(card).toBeVisible({ timeout: 10_000 });
 
@@ -2880,10 +2881,10 @@ test("global header search routes app pages into Explore results", async ({ page
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/");
   await expect.poll(() => new URL(page.url()).searchParams.get("q")).toBe(token);
-  await expect(page.locator(`a[href="/characters/${ids.alpha}"]`)).toBeVisible({
+  await expect(page.locator(`a[href^="/characters/${ids.alpha}"]`)).toBeVisible({
     timeout: 10_000,
   });
-  await expect(page.locator(`a[href="/characters/${ids.beta}"]`)).toBeVisible({
+  await expect(page.locator(`a[href^="/characters/${ids.beta}"]`)).toBeVisible({
     timeout: 10_000,
   });
 });
@@ -3578,7 +3579,7 @@ test("character detail like signup redirect returns anonymous intent and persist
   await expect(page.getByRole("heading", { name: "Profile" })).toBeVisible({
     timeout: 10_000,
   });
-  const likedProfileCard = page.locator('a[href="/characters/melissa-burke"]').filter({
+  const likedProfileCard = page.locator('a[href^="/characters/melissa-burke"]').filter({
     hasText: "Melissa Burke",
   });
   await expect(likedProfileCard).toHaveCount(1, { timeout: 10_000 });
@@ -5575,7 +5576,7 @@ test("community UI lists dreamers and reports user profiles", async ({ page }) =
     "aria-current",
     "page",
   );
-  const creatorCharacterCard = page.locator(`a[href="/characters/${dreamer.characterId}"]`);
+  const creatorCharacterCard = page.locator(`a[href^="/characters/${dreamer.characterId}"]`);
   await expect(creatorCharacterCard).toBeVisible({ timeout: 10_000 });
   const creatorCharacterImage = creatorCharacterCard.locator("img").first();
   await expect(creatorCharacterImage).toHaveAttribute("loading", "eager");
@@ -5747,7 +5748,7 @@ test("feed chat signup redirect lands the guest in the chat they asked for", asy
   });
   const melissaFeedCard = page
     .locator('[data-testid="feed-character-card"][data-focused="true"]')
-    .filter({ has: page.locator('a[href="/characters/melissa-burke"]') });
+    .filter({ has: page.locator('a[href^="/characters/melissa-burke"]') });
   await expect(melissaFeedCard).toHaveCount(1, { timeout: 10_000 });
   await expect(page.getByText("Showing shared dream.")).toBeVisible({ timeout: 10_000 });
   await melissaFeedCard.getByRole("button", { name: "Chat" }).click();
@@ -5794,7 +5795,7 @@ test("feed like signup redirect returns anonymous intent to focused feed item", 
   });
   const melissaFeedCard = page
     .locator('[data-testid="feed-character-card"][data-focused="true"]')
-    .filter({ has: page.locator('a[href="/characters/melissa-burke"]') });
+    .filter({ has: page.locator('a[href^="/characters/melissa-burke"]') });
   await expect(melissaFeedCard).toHaveCount(1, { timeout: 10_000 });
   await expect(page.getByText("Showing shared dream.")).toBeVisible({ timeout: 10_000 });
   await melissaFeedCard.getByRole("button", { name: "Like" }).click();
@@ -5815,7 +5816,7 @@ test("feed like signup redirect returns anonymous intent to focused feed item", 
   expect(new URL(page.url()).searchParams.get("item")).toBe("character:melissa-burke");
   const focusedMelissaCard = page
     .locator('[data-testid="feed-character-card"][data-focused="true"]')
-    .filter({ has: page.locator('a[href="/characters/melissa-burke"]') });
+    .filter({ has: page.locator('a[href^="/characters/melissa-burke"]') });
   await expect(focusedMelissaCard).toHaveCount(1, { timeout: 10_000 });
   await expect(page.getByText("Showing shared dream.")).toBeVisible({ timeout: 10_000 });
   await focusedMelissaCard.getByRole("button", { name: "Like" }).click();
@@ -5853,7 +5854,7 @@ test("feed remix signup redirect preserves anonymous generator intent", async ({
   });
   const melissaFeedCard = page
     .locator('[data-testid="feed-character-card"][data-focused="true"]')
-    .filter({ has: page.locator('a[href="/characters/melissa-burke"]') });
+    .filter({ has: page.locator('a[href^="/characters/melissa-burke"]') });
   await expect(melissaFeedCard).toHaveCount(1, { timeout: 10_000 });
   await expect(page.getByText("Showing shared dream.")).toBeVisible({ timeout: 10_000 });
   await melissaFeedCard.getByRole("button", { name: "Remix" }).click();
@@ -6018,7 +6019,7 @@ test("feed UI supports share, report, and remix actions", async ({ page }) => {
   }).toBe("/feed");
   await expect(page.getByText("Showing shared dream.")).toHaveCount(0);
   const feedCard = page.locator("article").filter({
-    has: page.locator(`a[href="/characters/${characterId}"]`),
+    has: page.locator(`a[href^="/characters/${characterId}"]`),
   });
   await expect(feedCard).toHaveCount(1, { timeout: 10_000 });
   await expect(feedCard).toBeVisible();
@@ -6046,7 +6047,7 @@ test("feed UI supports share, report, and remix actions", async ({ page }) => {
 
   await page.reload();
   const reloadedFeedCard = page.locator("article").filter({
-    has: page.locator(`a[href="/characters/${characterId}"]`),
+    has: page.locator(`a[href^="/characters/${characterId}"]`),
   });
   await expect(page.locator("article").first().locator("img").first()).toHaveAttribute("loading", "eager", {
     timeout: 10_000,
@@ -6064,7 +6065,7 @@ test("feed UI supports share, report, and remix actions", async ({ page }) => {
   const sharedFeedCard = page.locator("article").first();
   await expect(sharedFeedCard.locator("img").first()).toHaveAttribute("loading", "eager");
   await expect(sharedFeedCard.getByText("Shared dream")).toBeVisible();
-  await expect(sharedFeedCard.locator(`a[href="/characters/${characterId}"]`)).toBeVisible();
+  await expect(sharedFeedCard.locator(`a[href^="/characters/${characterId}"]`)).toBeVisible();
   const focusedPaginationRequests: string[] = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
@@ -6162,7 +6163,7 @@ test("feed UI supports share, report, and remix actions", async ({ page }) => {
   await provenance.click();
   await expect.poll(() => new URL(page.url()).pathname).toBe("/feed");
   await expect(page.getByText("Showing shared dream.")).toBeVisible({ timeout: 10_000 });
-  await expect(page.locator("article").first().locator(`a[href="/characters/${characterId}"]`)).toBeVisible();
+  await expect(page.locator("article").first().locator(`a[href^="/characters/${characterId}"]`)).toBeVisible();
   expect(optimizedStaticMediaRequests).toEqual([]);
 });
 

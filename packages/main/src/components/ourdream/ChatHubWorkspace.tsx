@@ -12,6 +12,7 @@ import {
 import type { CharacterCardData } from "@/types/ourdream";
 import { useAgeGateAccess } from "./AgeGateBoundary";
 import { authHrefForTarget } from "./authRedirect";
+import { useCharacterExposure } from "@/hooks/useCharacterExposure";
 import { useViewerGate, type ViewerGate } from "@/hooks/useViewerGate";
 import { isAbortError } from "@/lib/viewer-resource-client";
 
@@ -267,6 +268,44 @@ function SessionLink({ row, continueLatest = false }: Readonly<{ row: SessionRow
   );
 }
 
+function ChatHubCharacterCard({ card }: Readonly<{ card: CharacterCardData }>) {
+  const { attach, entryHref, recordDetailView } = useCharacterExposure<HTMLAnchorElement>(card.id, card.exposureContext);
+  return (
+    <Link
+      aria-label={`Chat with ${card.title}`}
+      className="group grid grid-cols-[64px_minmax(0,1fr)_18px] items-center gap-3 rounded-[14px] border border-white/10 bg-[rgb(36,36,36)] p-2 transition-colors hover:bg-[rgb(46,46,46)]"
+      data-testid="chat-hub-character-card"
+      href={entryHref}
+      onClick={recordDetailView}
+      ref={attach}
+    >
+      <span className="relative block aspect-[4/5] overflow-hidden rounded-[10px] bg-black">
+        <Image
+          alt=""
+          className="object-cover object-top transition-transform duration-200 group-hover:scale-[1.03]"
+          fill
+          sizes="64px"
+          src={card.image}
+          unoptimized={isProtectedMediaUrl(card.image)}
+        />
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate text-[14px] font-bold text-white">
+          {card.title}
+        </span>
+        <span className="mt-1 block text-[12px] font-medium text-[rgb(170,170,170)]">
+          {typeof card.chatsCount === "number" && card.chatsCount > 0
+            ? `${card.chats} chats`
+            : card.source === "official"
+              ? "Official character"
+              : "New public character"}
+        </span>
+      </span>
+      <ArrowRight className="h-4 w-4 text-[rgb(114,113,112)] transition-colors group-hover:text-white" />
+    </Link>
+  );
+}
+
 function ChatStartPanel({ viewer }: Readonly<{ viewer: ViewerGate }>) {
   const gatedFetch = viewer.fetch;
   const loadEpoch = useRef(0);
@@ -281,7 +320,7 @@ function ChatStartPanel({ viewer }: Readonly<{ viewer: ViewerGate }>) {
     const epoch = ++loadEpoch.current;
     setFeaturedState("loading");
     try {
-      const response = await gatedFetch("/api/v1/characters?sort=for-you&limit=3");
+      const response = await gatedFetch("/api/v1/characters?sort=for-you&limit=3&surface=chat-hub");
       if (!response.ok) throw new Error("characters unavailable");
       const payload = parseCharacterListResponse(await response.json());
       if (epoch !== loadEpoch.current) return;
@@ -347,39 +386,7 @@ function ChatStartPanel({ viewer }: Readonly<{ viewer: ViewerGate }>) {
           </p>
         ) : null}
         {featuredState === "ready"
-          ? featuredCharacters.map((card) => (
-              <Link
-                aria-label={`Chat with ${card.title}`}
-                className="group grid grid-cols-[64px_minmax(0,1fr)_18px] items-center gap-3 rounded-[14px] border border-white/10 bg-[rgb(36,36,36)] p-2 transition-colors hover:bg-[rgb(46,46,46)]"
-                data-testid="chat-hub-character-card"
-                href={`/characters/${card.id}`}
-                key={card.id}
-              >
-                <span className="relative block aspect-[4/5] overflow-hidden rounded-[10px] bg-black">
-                  <Image
-                    alt=""
-                    className="object-cover object-top transition-transform duration-200 group-hover:scale-[1.03]"
-                    fill
-                    sizes="64px"
-                    src={card.image}
-                    unoptimized={isProtectedMediaUrl(card.image)}
-                  />
-                </span>
-                <span className="min-w-0">
-                  <span className="block truncate text-[14px] font-bold text-white">
-                    {card.title}
-                  </span>
-                  <span className="mt-1 block text-[12px] font-medium text-[rgb(170,170,170)]">
-                    {typeof card.chatsCount === "number" && card.chatsCount > 0
-                      ? `${card.chats} chats`
-                      : card.source === "official"
-                        ? "Official character"
-                        : "New public character"}
-                  </span>
-                </span>
-                <ArrowRight className="h-4 w-4 text-[rgb(114,113,112)] transition-colors group-hover:text-white" />
-              </Link>
-            ))
+          ? featuredCharacters.map((card) => <ChatHubCharacterCard card={card} key={card.id} />)
           : null}
       </div>
 

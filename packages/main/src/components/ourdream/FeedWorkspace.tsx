@@ -11,6 +11,7 @@ import {
 } from "@/lib/public-api-contracts";
 import { shouldBypassNextImageOptimizer } from "@/lib/image-delivery";
 import { shareOrCopy } from "@/lib/utils";
+import { characterEntryAttribution, recordCharacterDetailView, useCharacterExposure } from "@/hooks/useCharacterExposure";
 import { useViewerGate, ViewerGateError, type ViewerGate, type ViewerIdentity } from "@/hooks/useViewerGate";
 import { isAbortError, type ResourceFetcher } from "@/lib/viewer-resource-client";
 import { useAgeGateAccess } from "./AgeGateBoundary";
@@ -202,16 +203,19 @@ function FeedViewerWorkspace({ viewer }: { viewer: ViewerGate }) {
     return response;
   }
 
-  async function startChat(characterId: string) {
+  async function startChat(character: FeedCharacterItem["character"]) {
+    const characterId = character.id;
     if (viewer.identity?.kind === "anonymous") {
       window.location.assign(signupUrlForFeedChat(characterId));
       return;
     }
+    // The Feed's Chat button skips the detail page, so it is this card's entry step.
+    recordCharacterDetailView(characterId, character.exposureContext);
     try {
       const response = await fetchForViewer("/api/v1/chat/sessions", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ characterId }),
+        body: JSON.stringify({ characterId, ...characterEntryAttribution(character.exposureContext) }),
       });
       const payload = (await response.json()) as {
         data?: { session?: { id: string } };
@@ -406,7 +410,7 @@ function FeedViewerWorkspace({ viewer }: { viewer: ViewerGate }) {
                   onRemix={() => void remix(item)}
                   onReport={() => openReport({ kind: "feedItem", id: item.id })}
                   onShare={() => share(item.id)}
-                  onStartChat={() => startChat(item.character.id)}
+                  onStartChat={() => startChat(item.character)}
                 />
               ) : (
                 <CollectionFeedCard
@@ -503,9 +507,15 @@ function CharacterFeedCard({
   onShare: () => void;
   onStartChat: () => void;
 }>) {
+  const { attach, entryHref, recordDetailView } = useCharacterExposure<HTMLAnchorElement>(item.character.id, item.character.exposureContext);
   return (
     <>
-      <Link className="relative block aspect-[16/11]" href={`/characters/${item.character.id}`}>
+      <Link
+        className="relative block aspect-[16/11]"
+        href={entryHref}
+        onClick={recordDetailView}
+        ref={attach}
+      >
         <Image
           alt=""
           className="object-cover object-top"
