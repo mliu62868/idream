@@ -7,7 +7,8 @@ import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import { dispatchGenerationAttemptOutbox, reserveInitialGenerationAttempt } from "@/server/modules/generation/generation-attempt-authority";
 import { readGenerationJobs, generationJobInclude } from "@/server/modules/ourdream/generation-job-read-model";
 import { dispatchPendingGenerationTerminalRecords, ingestGenerationTerminalRecord } from "./generation-terminal-record-ingest";
-import { drainLocalAiPipeline, reconcileStaleGenerationJobs } from "./local-pipeline";
+import { drainGenerationFinalization } from "./generation-finalize-drain";
+import { reconcileStaleGenerationJobs } from "./generation-stale-reconcile";
 
 const requests: string[] = [];
 const attempts: string[] = [];
@@ -55,10 +56,10 @@ describe("generation preparation failure recovery", () => {
     await expect(ingestGenerationTerminalRecord(input)).resolves.toMatchObject({ acknowledged: true, status: "persisted" });
     await expect(ingestGenerationTerminalRecord(input)).resolves.toMatchObject({ acknowledged: true, status: "duplicate" });
     await dispatchPendingGenerationTerminalRecords();
-    await drainLocalAiPipeline();
+    await drainGenerationFinalization();
     await ingestGenerationTerminalRecord(input);
     await dispatchPendingGenerationTerminalRecords();
-    await drainLocalAiPipeline();
+    await drainGenerationFinalization();
     expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ status: "failed", errorCode: "preparation_failed" });
     expect(await prisma.generationAttempt.findUniqueOrThrow({ where: { id: attempt.id } })).toMatchObject({ status: "failed", errorCode: "preparation_failed" });
     expect(await prisma.dreamcoinLedger.findMany({ where: { userId: user.id, sourceId: job.id }, orderBy: { createdAt: "asc" }, select: { reason: true, delta: true } })).toEqual([

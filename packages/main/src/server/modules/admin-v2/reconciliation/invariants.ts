@@ -862,7 +862,7 @@ const sqlChecks: readonly SqlInvariant[] = [
   //
   //         已知至少四类分支会走到这里，而两个 sweeper 拼起来正好漏掉它们：
   //         · terminal record 已接收但 finalize 没跑完 —— stale 隔离器显式要求
-  //           `terminalRecordRef IS NULL`（local-pipeline.ts:174,283）把它排除，
+  //           `terminalRecordRef IS NULL`（generation-stale-reconcile.ts）把它排除，
   //           unknown 清扫器又只认 `status='unknown'`；此时唯一凭据只在 Redis 里
   //         · stale 隔离器自身四条无时限的 `return none`（源队列仍活、探针不可达、
   //           缺 dispatch 事实、重投活锁 —— 重投无次数上限且每次都刷新证据时间）

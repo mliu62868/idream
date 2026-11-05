@@ -8,7 +8,7 @@ import type { Prisma } from "@prisma/client";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { parseGenerationConfigResponse } from "@/lib/public-api-contracts";
 import type { AiFinalizePayload } from "@/server/ai/schemas";
-import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
+import { drainGenerationFinalization } from "@/server/ai/generation-finalize-drain";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
@@ -2666,7 +2666,7 @@ describe("generation config control plane", () => {
       dedupeKey: `generation-finalize:${blockJob.id}:blocked`,
     });
 
-    await drainLocalAiPipeline({
+    await drainGenerationFinalization({
       queues: ["app.ai.finalize"],
       limit: 4,
       workerId: `${P}production-refund-finalizer`,

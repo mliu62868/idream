@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { prisma } from "@/server/lib/db";
 import { providers } from "@/server/providers";
 import { jobQueue } from "@/server/jobs/queue";
-import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
+import { drainGenerationFinalization } from "@/server/ai/generation-finalize-drain";
 import { api, createCharacter, createUser, dreamcoinBalance, expectError, expectOk, generationTestProviders, grantCoins, purgeTestData, runQueuedGenerationJobs } from "@/server/test/helpers";
 import * as generation from "../ourdream/service";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
@@ -256,7 +256,7 @@ describe("Chat image retry delivery authority", () => {
     // ACK must neither replace the attachment nor refund the retry's charge.
     if (oldTerminal.payload === null) throw new Error("Missing durable terminal payload");
     await jobQueue.enqueue({ queue: MAIN_QUEUES.aiFinalize, dedupeKey: `${f.userId}:late-old-terminal`, payload: oldTerminal.payload });
-    try { await drainLocalAiPipeline(); }
+    try { await drainGenerationFinalization(); }
     finally { await jobQueue.removeByDedupeKey(MAIN_QUEUES.aiFinalize, `${f.userId}:late-old-terminal`); }
     expect(await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: f.accepted.attachmentId } })).toMatchObject({ generationJobId: next.data.job.id, status: "completed", mediaAssetId: expect.any(String), errorCode: null });
     expect(await prisma.dreamcoinLedger.count({ where: { sourceId: jobId, reason: "refund" } })).toBe(1);

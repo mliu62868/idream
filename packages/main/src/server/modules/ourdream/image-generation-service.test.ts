@@ -7,7 +7,8 @@ import {
   generationTerminalRecordSchema,
 } from "@idream/shared/contracts";
 import type { AiFinalizePayload } from "@/server/ai/schemas";
-import { drainLocalAiPipeline, reconcileStaleGenerationJobs } from "@/server/ai/local-pipeline";
+import { drainGenerationFinalization } from "@/server/ai/generation-finalize-drain";
+import { reconcileStaleGenerationJobs } from "@/server/ai/generation-stale-reconcile";
 import { recordGenerationTransportExecution } from "@/server/ai/generation-transport-execution";
 import {
   dispatchPendingGenerationTerminalRecords,
@@ -2634,7 +2635,7 @@ describe("image generation service contract", () => {
       dedupeKey: `generation-finalize:${jobId}:failed`,
     });
 
-    await drainLocalAiPipeline({
+    await drainGenerationFinalization({
       queues: ["app.ai.finalize"],
       limit: 2,
       workerId: `${P}failed-cleanup-finalizer`,
@@ -2752,7 +2753,7 @@ describe("image generation service contract", () => {
         intent: { status: "unscored", reason: "evaluator_unavailable" },
       },
     }]);
-    await drainLocalAiPipeline({ queues: ["app.ai.finalize"], limit: 2 });
+    await drainGenerationFinalization({ queues: ["app.ai.finalize"], limit: 2 });
 
     const poll = await api("GET", `generation/jobs/${jobId}`, { userId, ageGate: true });
     expectOk(poll);

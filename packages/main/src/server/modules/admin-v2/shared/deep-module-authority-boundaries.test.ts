@@ -188,7 +188,7 @@ async function pooled(db: PrismaClient) {
   });
 
   it("keeps image and video provider execution out of Main", () => {
-    const pipeline = source("src/server/ai/local-pipeline.ts");
+    const pipeline = ["src/server/ai/generation-finalize-drain.ts", "src/server/ai/generation-finalize.ts", "src/server/ai/generation-terminal-settlement.ts", "src/server/ai/generation-stale-reconcile.ts"].map(source).join("\n");
     const finalizer = source("src/processes/finalizer.ts");
     const providerProduction = productionTypeScriptFiles("src/server/providers")
       .map(source)
@@ -198,7 +198,7 @@ async function pooled(db: PrismaClient) {
     expect(pipeline).not.toContain("providers.video.generate");
     expect(pipeline).not.toContain('job.queue === "ai.image.generate"');
     expect(pipeline).not.toContain('job.queue === "ai.video.generate"');
-    expect(finalizer).not.toContain("localAiQueueNames");
+    expect(finalizer).not.toContain("generationFinalizationQueueNames");
     expect(providerProduction).not.toContain("IMAGE_PROVIDER");
     expect(providerProduction).not.toContain("MockImageModel");
     expect(providerProduction).not.toContain("PipelineImageModel");

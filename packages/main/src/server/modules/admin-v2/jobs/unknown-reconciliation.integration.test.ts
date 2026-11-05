@@ -22,7 +22,7 @@ import {
   dispatchPendingGenerationTerminalRecords,
   ingestGenerationTerminalRecord,
 } from "@/server/ai/generation-terminal-record-ingest";
-import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
+import { drainGenerationFinalization } from "@/server/ai/generation-finalize-drain";
 import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
 import { retryGenerationRequest } from "@/server/ai/generation-request-lifecycle";
 
@@ -952,7 +952,7 @@ describe("unknown Generation Attempt operator reconciliation", () => {
       await dispatchPendingGenerationTerminalRecords({
         outboxIds: [`generation_terminal_record_${explicitAttemptId}`],
       });
-      await expect(drainLocalAiPipeline({
+      await expect(drainGenerationFinalization({
         limit: 1,
         queues: ["app.ai.finalize"],
       })).resolves.toMatchObject({ processed: 1 });

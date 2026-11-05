@@ -12,7 +12,7 @@ import { prisma } from "@/server/lib/db";
 import { OPERATOR_UPLOAD_AUTHORITY_SCHEMA, resolveMediaAssetBlobLocator } from "@/server/lib/media-asset-authority";
 import { providers } from "@/server/providers";
 import { dispatchPendingGenerationTerminalRecords, ingestGenerationTerminalRecord } from "@/server/ai/generation-terminal-record-ingest";
-import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
+import { drainGenerationFinalization } from "@/server/ai/generation-finalize-drain";
 import { api, createCharacter, createUser, dreamcoinBalance, expectOk, purgeTestData } from "@/server/test/helpers";
 import { characterVisualProfileSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
 import { characterContentHash } from "@/server/modules/admin-v2/shared/character-content-identity";
@@ -166,7 +166,7 @@ async function deliveredEdit(confirmed = true) {
   expect(await ingestGenerationTerminalRecord({ version: 1, terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`,
     terminalRecordChecksum: generationTerminalRecordChecksum(terminal), terminalRecord: terminal })).toMatchObject({ status: "persisted" });
   await dispatchPendingGenerationTerminalRecords({ outboxIds: [`generation_terminal_record_${attemptId}`] });
-  await drainLocalAiPipeline({ queues: ["app.ai.finalize"], limit: 1, workerId: `${f.id}-finalizer` });
+  await drainGenerationFinalization({ queues: ["app.ai.finalize"], limit: 1, workerId: `${f.id}-finalizer` });
   const asset = await prisma.mediaAsset.findFirstOrThrow({ where: { sourceJobId: jobId } });
   expect(await prisma.generationAttempt.findUniqueOrThrow({ where: { id: attemptId } })).toMatchObject({ status: "succeeded" });
   const snapshot = await f.begin("Recolor the selected mug area blue.");

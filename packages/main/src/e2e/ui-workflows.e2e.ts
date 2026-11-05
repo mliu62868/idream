@@ -15,7 +15,7 @@ import { videoSequenceDtoSchema, videoSequenceQuoteSchema, voiceClipQuoteSchema 
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { hasPendingCompanionMemoryMutation } from "@/server/modules/chat/companion-memory-authority";
 import { ACCOUNT_DELETION_GRACE_PERIOD_MS } from "@/server/account-deletion-authority";
-import { localAiQueueNames } from "@/server/ai/local-pipeline";
+import { generationFinalizationQueueNames } from "@/server/ai/generation-finalize-drain";
 import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
@@ -1162,8 +1162,8 @@ async function cleanupPublicE2EFixtures() {
 
   await Promise.all(
     generationJobIds.flatMap((jobId) => [
-      jobQueue.removeByDedupePrefix(`generation:${jobId}`, [...localAiQueueNames]),
-      jobQueue.removeByDedupePrefix(`generation-finalize:${jobId}:`, [...localAiQueueNames]),
+      jobQueue.removeByDedupePrefix(`generation:${jobId}`, [...generationFinalizationQueueNames]),
+      jobQueue.removeByDedupePrefix(`generation-finalize:${jobId}:`, [...generationFinalizationQueueNames]),
     ]),
   );
 

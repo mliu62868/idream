@@ -6,7 +6,7 @@ import { UNKNOWN_SETTLEMENT_GRACE_MINUTES } from "@/lib/generation-failure-copy"
 // INVARIANT: every sentence describes current behavior. Check the cited code
 // before changing a claim; when the product changes, change the article.
 //   recovery: AccountRecovery.tsx, AccountEmailVerification.tsx
-//   refunds: ai/local-pipeline.ts refundGeneration, GeneratorWorkspace job cards
+//   refunds: ai/generation-terminal-settlement.ts refundGeneration, GeneratorWorkspace job cards
 //   needs review: admin-v2/jobs/stale-unknown-dispatcher.ts (automatic settlement)
 //   memory: chat/MemoryPanel.tsx, chat/ChatContextSettings.tsx
 //   deletion: ProfileWorkspace.tsx "Delete account" copy

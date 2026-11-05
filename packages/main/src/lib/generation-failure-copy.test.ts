@@ -9,7 +9,7 @@ describe("generationFailureCopy", () => {
   });
 
   it("tells the reader their coins came back on every registered failure", () => {
-    // 退款路径是通用的（local-pipeline 的终态对任何已扣费的 failed/blocked 都全额退），
+    // 退款路径是通用的（generation-terminal-settlement 的终态对任何已扣费的 failed/blocked 都全额退），
     // 所以每一条登记过的失败文案都必须说这句 —— 少说一条就等于让用户以为钱没了。
     for (const code of [
       "provider_timeout",

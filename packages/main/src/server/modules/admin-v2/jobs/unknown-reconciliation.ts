@@ -1,4 +1,4 @@
-import { probeRecoverableTerminalEvidence } from "@/server/ai/local-pipeline";
+import { probeRecoverableTerminalEvidence } from "@/server/ai/generation-stale-reconcile";
 import { AUTOMATIC_UNKNOWN_SETTLEMENT_ACTOR_ID, validatedAutomaticFailureCorrection, RECOVERED_SUCCESS_EVENT_TYPES, recoveredReceiptSource, recoveredReceiptHashMatches, validatedUnknownSuccessResolution } from "@/server/ai/generation-unknown-resolution-evidence";
 import { randomUUID } from "node:crypto";
 import {

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
+import { drainGenerationFinalization } from "@/server/ai/generation-finalize-drain";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { handle } from "@/server/lib/http";
@@ -18,7 +18,7 @@ export const POST = handle(async (request) => {
   }
 
   const workerId = `route-${randomUUID()}`;
-  const drained = await drainLocalAiPipeline({ limit: 10, workerId });
+  const drained = await drainGenerationFinalization({ limit: 10, workerId });
 
   return {
     workerId,

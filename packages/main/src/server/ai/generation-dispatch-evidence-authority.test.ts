@@ -296,7 +296,7 @@ describe("exact generation dispatch authority", () => {
     for (
       const gate of [
         "src/server/ai/generation-dispatch-cutover.ts",
-        "src/server/ai/local-pipeline.ts",
+        "src/server/ai/generation-stale-reconcile.ts",
         "src/server/ai/generation-terminal-record-ingest.ts",
         "src/server/ai/generation-transport-execution.ts",
       ]

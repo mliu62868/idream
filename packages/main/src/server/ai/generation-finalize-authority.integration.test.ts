@@ -4,7 +4,7 @@ import { prisma } from "@/server/lib/db";
 import { jobQueue } from "@/server/jobs/queue";
 import { reserveInitialGenerationAttempt } from "@/server/modules/generation/generation-attempt-authority";
 import { retryGenerationRequest } from "./generation-request-lifecycle";
-import { drainLocalAiPipeline } from "./local-pipeline";
+import { drainGenerationFinalization } from "./generation-finalize-drain";
 import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 
 function jsonRecord(value: unknown): Record<string, unknown> {
@@ -24,7 +24,7 @@ describe("Generation finalize Attempt authority", () => {
     const paused = new Promise<void>(resolve => { resumeOld = resolve; });
     let reachedCleanup = () => {};
     const atCleanup = new Promise<void>(resolve => { reachedCleanup = resolve; });
-    let oldFinalizer: ReturnType<typeof drainLocalAiPipeline> | undefined;
+    let oldFinalizer: ReturnType<typeof drainGenerationFinalization> | undefined;
     let cleanupSpy: { mockRestore(): void } | undefined;
     try {
       await prisma.user.create({ data: { id: userId, email: `${userId}@idream.internal`, status: "active" } });
@@ -70,13 +70,13 @@ describe("Generation finalize Attempt authority", () => {
         return remove(...args);
       });
       await jobQueue.enqueue({ queue: "app.ai.finalize", dedupeKey: finalizeKeys[0], payload });
-      oldFinalizer = drainLocalAiPipeline({ limit: 1, queues: ["app.ai.finalize"], workerId: `${requestId}:old` });
+      oldFinalizer = drainGenerationFinalization({ limit: 1, queues: ["app.ai.finalize"], workerId: `${requestId}:old` });
       await Promise.race([
         atCleanup,
         oldFinalizer.then(() => { throw new Error("Old finalizer did not reach the cleanup barrier"); }),
       ]);
       await jobQueue.enqueue({ queue: "app.ai.finalize", dedupeKey: finalizeKeys[1], payload });
-      await expect(drainLocalAiPipeline({ limit: 1, queues: ["app.ai.finalize"], workerId: `${requestId}:replay` }))
+      await expect(drainGenerationFinalization({ limit: 1, queues: ["app.ai.finalize"], workerId: `${requestId}:replay` }))
         .resolves.toMatchObject({ processed: 1 });
       const failed = await prisma.generationJob.findUniqueOrThrow({ where: { id: requestId } });
       expect(failed.status).toBe("failed");
@@ -279,7 +279,7 @@ describe("Generation finalize Attempt authority", () => {
         payload: terminalPayload,
       });
 
-      await expect(drainLocalAiPipeline({
+      await expect(drainGenerationFinalization({
         limit: 1,
         queues: ["app.ai.finalize"],
       })).resolves.toMatchObject({ processed: 1 });
@@ -413,7 +413,7 @@ describe("Generation finalize Attempt authority", () => {
         payload: legacyPayload as Prisma.InputJsonValue,
       });
 
-      await expect(drainLocalAiPipeline({
+      await expect(drainGenerationFinalization({
         limit: 1,
         queues: ["app.ai.finalize"],
       })).resolves.toMatchObject({ processed: 1 });

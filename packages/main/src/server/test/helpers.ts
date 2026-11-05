@@ -10,7 +10,7 @@ import { AGE_GATE_COOKIE, type ActorRole } from "@/server/lib/auth";
 import { dispatchV1 } from "@/server/modules/ourdream/service";
 import { quoteAuthorityFor } from "@/server/modules/ourdream/generation-quote";
 import { jobQueue } from "@/server/jobs/queue";
-import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
+import { drainGenerationFinalization } from "@/server/ai/generation-finalize-drain";
 import {
   dispatchPendingGenerationTerminalRecords,
   ingestGenerationTerminalRecord,
@@ -651,7 +651,7 @@ export async function runQueuedGenerationJobs(
         queue === MAIN_QUEUES.generationTerminalIngest ||
         queue === MAIN_QUEUES.aiFinalize
       ) {
-        const result = await drainLocalAiPipeline({
+        const result = await drainGenerationFinalization({
           queues: [queue],
           limit: 1,
           workerId: `test-main-finalizer-${index}`,

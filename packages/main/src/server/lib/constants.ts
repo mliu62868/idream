@@ -36,8 +36,6 @@ export const JOB_QUEUES = [
   MAIN_QUEUES.aiFinalize,
 ] as const;
 
-export const PROVIDER_KIND = ["mock", "pipeline", "btcpay", "r2", "vercel_blob"] as const;
-
 export const PLAN_SLUGS = ["premium", "deluxe"] as const;
 export const BILLING_PERIODS = ["monthly", "yearly"] as const;
 

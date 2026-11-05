@@ -6,7 +6,7 @@ import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import { listWorkflowDescriptors } from "@/server/modules/generation/generation-catalog";
 import { adminV2 } from "@/server/test/admin-v2-http";
 import { jobQueue } from "@/server/jobs/queue";
-import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
+import { drainGenerationFinalization } from "@/server/ai/generation-finalize-drain";
 
 // SPEC: 死信队列不能把一条 worker 一定会拒的请求标成「可安全重新排队」。
 // INTENT: worker 的 validateWorkflowPin 是 fail-closed 的 —— 上一轮尝试钉死的
@@ -204,7 +204,7 @@ describe("dead-letter retry eligibility honours the workflow pin", () => {
     const dedupeKey = `${fixture.jobId}:finalize`;
     await jobQueue.enqueue({ queue: "app.ai.finalize", dedupeKey, payload });
     try {
-      const finalized = await drainLocalAiPipeline({ limit: 1, queues: ["app.ai.finalize"] });
+      const finalized = await drainGenerationFinalization({ limit: 1, queues: ["app.ai.finalize"] });
       expect(finalized, JSON.stringify(finalized)).toMatchObject({ processed: 1 });
       expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: fixture.jobId } })).toMatchObject({ status: "completed", deliveredOutputCount: 1 });
       expect(await prisma.generationDelivery.count({ where: { requestId: fixture.jobId, status: "delivered" } })).toBe(1);

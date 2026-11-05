@@ -11,7 +11,8 @@ import {
   MAIN_QUEUES,
 } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
-import { drainLocalAiPipeline, reconcileStaleGenerationJobs } from "./local-pipeline";
+import { drainGenerationFinalization } from "./generation-finalize-drain";
+import { reconcileStaleGenerationJobs } from "./generation-stale-reconcile";
 import {
   dispatchPendingGenerationTerminalRecords,
   ingestGenerationTerminalRecord,
@@ -535,7 +536,7 @@ describe("generation terminal record durable ingest", () => {
       await expect(redriveFailedGenerationTerminalRelays({
         cursor: { offset: 0 },
       })).resolves.toMatchObject({ redriven: 1, invalid: [] });
-      await expect(drainLocalAiPipeline({
+      await expect(drainGenerationFinalization({
         queues: [MAIN_QUEUES.aiFinalize],
         limit: 1,
         workerId: "finalizer-after-restart",
@@ -806,7 +807,7 @@ describe("generation terminal record durable ingest", () => {
         where: { id: attemptId },
       })).resolves.toMatchObject({ status: "running", terminalRecordRef: null });
 
-      await expect(drainLocalAiPipeline({
+      await expect(drainGenerationFinalization({
         queues: [MAIN_QUEUES.generationTerminalIngest],
         limit: 1,
         workerId: "stale-terminal-relay-proof",
@@ -1650,7 +1651,7 @@ describe("generation terminal record durable ingest", () => {
         status: "duplicate",
       });
       await expect(dispatchPendingGenerationTerminalRecords()).resolves.toBe(1);
-      await expect(drainLocalAiPipeline({
+      await expect(drainGenerationFinalization({
         queues: ["app.ai.finalize"],
         limit: 1,
         workerId: "terminal-record-blocked-finalizer",

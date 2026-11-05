@@ -7,7 +7,7 @@ import { MAIN_QUEUES } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { jobQueue } from "@/server/jobs/queue";
-import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
+import { drainGenerationFinalization } from "@/server/ai/generation-finalize-drain";
 import { cancelGenerationRequest } from "@/server/ai/generation-request-lifecycle";
 import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
 import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
@@ -513,7 +513,7 @@ describe("Main image action authorization", () => {
     const dedupeKey = `${prefix}replay-terminal:${attemptId}`;
     await jobQueue.enqueue({ queue: MAIN_QUEUES.aiFinalize, payload, dedupeKey, maxAttempts: 1 });
     try {
-      expect(await drainLocalAiPipeline({ queues: [MAIN_QUEUES.aiFinalize], limit: 1, workerId: `${prefix}replay-terminal` }))
+      expect(await drainGenerationFinalization({ queues: [MAIN_QUEUES.aiFinalize], limit: 1, workerId: `${prefix}replay-terminal` }))
         .toMatchObject({ processed: 1, claimed: [expect.objectContaining({ status: "completed" })] });
       if (outcome === "refunded") {
         // Current finalization keeps the Job failed and records its refund separately.
@@ -724,10 +724,10 @@ describe("Main image action authorization", () => {
     const revision = Promise.allSettled([mutation === "rebind"
       ? applyChatToolEffect({ ...call, attempt, callId: randomUUID() })
       : editChatTurn(userId, snapshot.userMessageId, "Send me a photo on the beach at sunset.")]);
-    let finalized: ReturnType<typeof drainLocalAiPipeline> | undefined;
+    let finalized: ReturnType<typeof drainGenerationFinalization> | undefined;
     try {
       const pid = await barrier.locked;
-      finalized = drainLocalAiPipeline({ queues: [MAIN_QUEUES.aiFinalize], limit: 1, workerId: `${prefix}refund` });
+      finalized = drainGenerationFinalization({ queues: [MAIN_QUEUES.aiFinalize], limit: 1, workerId: `${prefix}refund` });
       await waitForBlockedTransaction(pid);
     } finally {
       barrier.resume();

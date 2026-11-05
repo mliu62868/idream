@@ -5,7 +5,7 @@ import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { dispatchGenerationAttemptOutbox } from "@/server/modules/generation/generation-attempt-authority";
-import { reconcileStaleGenerationJobs } from "./local-pipeline";
+import { reconcileStaleGenerationJobs } from "./generation-stale-reconcile";
 import { recordGenerationTransportExecution } from "./generation-transport-execution";
 
 describe("Generation TransportExecution authority", () => {

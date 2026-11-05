@@ -22,7 +22,7 @@ import { CHAT_TO_MAIN_EVENTS, GENERATION_TRANSPORT_AUTHORITY_REVOKED_REASON, RED
 import { recordGenerationTransportExecution } from "@/server/ai/generation-transport-execution";
 import { jobQueue } from "@/server/jobs/queue";
 import { dispatchPendingGenerationTerminalRecords, ingestGenerationTerminalRecord } from "@/server/ai/generation-terminal-record-ingest";
-import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
+import { drainGenerationFinalization } from "@/server/ai/generation-finalize-drain";
 import { quoteAuthorityFor } from "./generation-quote";
 import { quoteGenerationRetry, resolveGenerationRetryTarget, retryGenerationJobForUser } from "./generation-job-retry";
 import { ACCOUNT_DELETION_GRACE_PERIOD_MS, accountDeletionSubjectHash, dispatchPendingAccountDeletionBlobDeletes, requestAccountDeletion } from "@/server/account-deletion-authority";
@@ -330,7 +330,7 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
       recordTransportExecution: async () => { throw new Error("Unexpected provider entry"); },
     });
     await dispatchPendingGenerationTerminalRecords();
-    await drainLocalAiPipeline(); await advanceVideoSequences();
+    await drainGenerationFinalization(); await advanceVideoSequences();
     expect(native).not.toHaveBeenCalled();
     expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: jobId } })).toMatchObject({ status: "failed", errorCode: "preparation_failed" });
     expect(await dreamcoinBalance(userId)).toBe(1000);
@@ -356,7 +356,7 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
       recordTransportExecution: async () => { throw new Error("Unexpected provider entry"); },
     });
     await dispatchPendingGenerationTerminalRecords();
-    await drainLocalAiPipeline(); await advanceVideoSequences();
+    await drainGenerationFinalization(); await advanceVideoSequences();
     expect(native).not.toHaveBeenCalled();
     expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: jobId } })).toMatchObject({ status: "failed", errorCode: "preparation_failed" });
     expect(await dreamcoinBalance(userId)).toBe(1000);

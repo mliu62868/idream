@@ -8,7 +8,7 @@ import {
   BullMqJobQueue,
   jobQueue,
 } from "@/server/jobs/queue";
-import { drainLocalAiPipeline } from "./local-pipeline";
+import { drainGenerationFinalization } from "./generation-finalize-drain";
 import {
   consumeGenerationTerminalRelay,
   redriveFailedGenerationTerminalRelays,
@@ -86,7 +86,7 @@ describe("generation terminal relay durability", () => {
       maxAttempts: 1,
     });
 
-    await expect(drainLocalAiPipeline({
+    await expect(drainGenerationFinalization({
       queues: [MAIN_QUEUES.generationTerminalIngest],
       limit: 1,
       workerId: "finalizer-before-restart",
@@ -156,7 +156,7 @@ describe("generation terminal relay durability", () => {
       maxAttempts: 1,
     });
 
-    await expect(drainLocalAiPipeline({
+    await expect(drainGenerationFinalization({
       queues: [MAIN_QUEUES.generationTerminalIngest],
       limit: 1,
       workerId: "checksum-mismatch-finalizer",

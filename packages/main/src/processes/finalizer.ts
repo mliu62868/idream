@@ -2,10 +2,8 @@
 // packages/gen is the sole image/video provider executor in every topology.
 import { randomUUID } from "node:crypto";
 import { MAIN_QUEUES } from "@idream/shared/contracts";
-import {
-  drainLocalAiPipeline,
-  reconcileStaleGenerationJobs,
-} from "@/server/ai/local-pipeline";
+import { drainGenerationFinalization } from "@/server/ai/generation-finalize-drain";
+import { reconcileStaleGenerationJobs } from "@/server/ai/generation-stale-reconcile";
 import { jobQueue } from "@/server/jobs/queue";
 import { logger } from "@/server/lib/logger";
 import { dispatchPendingGenerationTerminalRecords } from "@/server/ai/generation-terminal-record-ingest";
@@ -84,7 +82,7 @@ export async function runFinalizerLoop(): Promise<void> {
     const workerId = `finalizer-${randomUUID()}`;
     let processed = 0;
     try {
-      const result = await drainLocalAiPipeline({
+      const result = await drainGenerationFinalization({
         // One claimed row per loop keeps SIGTERM bounded by the current
         // authority transition instead of an arbitrary 25-row batch.
         limit: 1,

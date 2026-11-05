@@ -49,7 +49,7 @@ export function hasChatMediaResponseAttachment(
     && attachmentAttempt(attachment.metadata) === turn.attempt);
 }
 
-// INTENT: `blocked` / `refunded` 不是设想中的扩展——ai/local-pipeline.ts 的终态投影
+// INTENT: `blocked` / `refunded` 不是设想中的扩展——ai/generation-finalize.ts 与 generation-terminal-settlement.ts 的终态投影
 //   直接把 Generation Request 的终态状态名写进附件，实测会写出这两个值。表必须描述
 //   真实系统，否则 fail-closed 会在正常终态上误伤。
 export const TOOL_EFFECT_ATTACHMENT_TRANSITIONS = {

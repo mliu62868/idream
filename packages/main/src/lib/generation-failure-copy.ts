@@ -6,7 +6,7 @@
 // INVARIANT: 查不到的码一律回落成原码，绝不编一个理由 —— 宁可让用户看到一个陌生
 //   的标识符去问客服，也不要给他一句听起来可信但不对的解释。
 // INVARIANT: 「Your coins are back」这句只有在退款确实必然发生时才准写。它成立的
-//   依据是 local-pipeline.ts 的终态处理：任何 failed / blocked 的已扣费任务都会
+//   依据是 generation-terminal-settlement.ts 的终态处理：任何 failed / blocked 的已扣费任务都会
 //   调 refundGenerationRequest 全额退回（未扣费的任务由结算 clamp 退 0）。所以
 //   每一条失败文案都带这句；哪天那条路径变成有条件的，这里必须跟着改。
 const FAILURE_COPY: Readonly<Record<string, string>> = {

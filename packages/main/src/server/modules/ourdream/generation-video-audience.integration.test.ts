@@ -13,7 +13,7 @@ import { quoteAuthorityFor, quoteGeneration } from "./generation-quote";
 import { generationJobSchema } from "./generation-request-schema";
 import { quoteGenerationRetry, resolveGenerationRetryTarget, retryGenerationJobForUser } from "./generation-job-retry";
 import { dispatchPendingGenerationTerminalRecords, ingestGenerationTerminalRecord } from "@/server/ai/generation-terminal-record-ingest";
-import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
+import { drainGenerationFinalization } from "@/server/ai/generation-finalize-drain";
 import { providers } from "@/server/providers";
 
 const prefix = `video-audience-${randomUUID()}`;
@@ -121,7 +121,7 @@ describe("Character video audience at quote and reservation", () => {
     const envelope = { terminalRecord, terminalRecordRef: `gen/terminal-records/${attempt.id}/terminal.json`, terminalRecordChecksum: generationTerminalRecordChecksum(terminalRecord) };
     await expect(ingestGenerationTerminalRecord(envelope)).resolves.toMatchObject({ acknowledged: true, status: "persisted" });
     await dispatchPendingGenerationTerminalRecords();
-    await drainLocalAiPipeline();
+    await drainGenerationFinalization();
     expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ status: "failed", errorCode: "preparation_failed" });
     expect(await prisma.dreamcoinLedger.findMany({ where: { userId: ownerId, reason: "refund" }, select: { sourceId: true, delta: true } })).toEqual([{ sourceId: job.id, delta: 100 }]);
 

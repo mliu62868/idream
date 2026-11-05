@@ -8,10 +8,8 @@ const mocks = vi.hoisted(() => ({
   dispatchTerminal: vi.fn(async () => 0),
   closeQueue: vi.fn(async () => undefined),
 }));
-vi.mock("@/server/ai/local-pipeline", () => ({
-  drainLocalAiPipeline: mocks.drain,
-  reconcileStaleGenerationJobs: mocks.reconcileStale,
-}));
+vi.mock("@/server/ai/generation-finalize-drain", () => ({ drainGenerationFinalization: mocks.drain }));
+vi.mock("@/server/ai/generation-stale-reconcile", () => ({ reconcileStaleGenerationJobs: mocks.reconcileStale }));
 vi.mock("@/server/jobs/queue", () => ({ jobQueue: { close: mocks.closeQueue } }));
 vi.mock("@/server/ai/generation-terminal-record-ingest", () => ({ dispatchPendingGenerationTerminalRecords: mocks.dispatchTerminal }));
 vi.mock("@/server/ai/generation-terminal-relay", () => ({ redriveFailedGenerationTerminalRelays: async () => ({ redriven: 0, deferredPaused: 0, invalid: [], retryErrors: [] }) }));

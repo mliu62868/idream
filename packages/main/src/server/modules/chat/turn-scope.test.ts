@@ -383,7 +383,8 @@ describe("chat lock ladder inventory", () => {
     const root = path.join(process.cwd(), "src/server");
     const declared = [
       "modules/chat/tool-effect-attachment.ts",
-      "ai/local-pipeline.ts",
+      "ai/generation-finalize.ts",
+      "ai/generation-terminal-settlement.ts",
       "modules/admin-v2/jobs/unknown-reconciliation.ts",
     ].sort();
     const walk = async (dir: string): Promise<string[]> => {
