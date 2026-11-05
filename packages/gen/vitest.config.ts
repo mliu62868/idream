@@ -9,6 +9,8 @@ export default defineConfig({
     include: ["src/**/*.test.ts"],
     env: {
       NODE_ENV: "test",
+      // Injected so packages/gen/.env, which real workers read, cannot change what tests run.
+      GEN_IMAGE_PROVIDER: "mock",
       GEN_VIDEO_PROVIDER: "mock",
     },
   },
