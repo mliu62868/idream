@@ -108,6 +108,7 @@ export async function processImageGenerate(
     },
     invoke: ({ prepared, providerIdempotencyKey, executionBoundary }) => imageModel.generate({
       executionBoundary,
+      attemptId: payload.attemptId,
       provider: payload.provider,
       prompt: payload.prompt,
       count: payload.count,
@@ -298,6 +299,7 @@ export async function processVideoGenerate(
     prepare: async ({ referenceImages }) => ({ referenceImages }),
     invoke: ({ prepared, providerIdempotencyKey, executionBoundary }) => videoModel.generate({
       executionBoundary,
+      attemptId: payload.attemptId,
       prompt: payload.prompt,
       seconds: payload.seconds,
       seed: payload.seed,

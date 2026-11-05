@@ -24,6 +24,7 @@ import {
   BackendInvocationError,
   type BackendHandle,
   type BackendHealth,
+  type BackendPriorSubmission,
   type BackendResult,
   type Capabilities,
   type GenBackend,
@@ -87,6 +88,8 @@ const PROMPT_LIVENESS_CHECK_INTERVAL_MS = 5_000;
 // ComfyUI moves a prompt from running to history atomically, but /history and
 // /queue are two reads. One miss can be that race; two consecutive misses cannot.
 const PROMPT_LOST_OBSERVATIONS = 2;
+// One read while looking up an earlier submission; the outage grace bounds the whole.
+const PRIOR_SUBMISSION_READ_TIMEOUT_MS = 10_000;
 
 type ComfyImageOutput = {
   filename: string;
@@ -179,6 +182,7 @@ export class ComfyUIBackend implements GenBackend {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           prompt,
+          ...(job.promptId ? { prompt_id: job.promptId } : {}),
           client_id: `idream-comfyui-backend-${randomUUID()}`,
           extra_data: {
             extra_pnginfo: {
@@ -250,6 +254,16 @@ export class ComfyUIBackend implements GenBackend {
         `ComfyUI did not return prompt_id: ${JSON.stringify(json)}`,
         explicitlyRejected ? "pre_submit" : "post_submit",
         explicitlyRejected ? "definitive" : "ambiguous",
+      );
+    }
+    // A runner that ignores prompt_id queued this under an id no retry can derive,
+    // and a retry would then report the running prompt as gone and refund it.
+    if (job.promptId && promptId !== job.promptId) {
+      throw new BackendInvocationError(
+        "backend_error",
+        `ComfyUI queued prompt ${promptId} instead of the requested ${job.promptId}`,
+        "post_submit",
+        "ambiguous",
       );
     }
     this.pending.set(promptId, {
@@ -358,6 +372,69 @@ export class ComfyUIBackend implements GenBackend {
     } finally {
       clearTimeout(timeout);
       this.pending.delete(handle.id);
+    }
+  }
+
+  // SPEC: ask the runner about a prompt an earlier transport may have submitted.
+  // INTENT: an answering runner that has lost the prompt can never finish it, so
+  // that is a definite outcome worth refunding. The same two-read rule as the poll
+  // applies, because /history and /queue are separate reads of an atomic move.
+  // INVARIANT: read-only. ComfyUI's POST /prompt pushes onto its queue without
+  // checking the id, in 0.34.2 and 0.37.0 alike, so resubmitting renders twice.
+  async findPriorSubmission(input: {
+    promptId: string;
+    timeoutMs: number;
+    outputKind: "image" | "video";
+  }): Promise<BackendPriorSubmission> {
+    const { promptId } = input;
+    let lastAnsweredAt = Date.now();
+    let absentObservations = 0;
+    const present = (): BackendPriorSubmission => {
+      this.pending.set(promptId, {
+        prepareMs: 0,
+        submitMs: 0,
+        timeoutMs: input.timeoutMs,
+        slots: {},
+        outputKind: input.outputKind,
+      });
+      return { state: "present", handle: { id: promptId } };
+    };
+    while (true) {
+      const signal = AbortSignal.timeout(PRIOR_SUBMISSION_READ_TIMEOUT_MS);
+      try {
+        if (await this.readPromptHistory(promptId, signal)) return present();
+        const placement = await this.queuePlacement(promptId, signal);
+        if (placement === "running" || placement === "pending") return present();
+        if (placement === "absent") {
+          lastAnsweredAt = Date.now();
+          absentObservations += 1;
+          if (absentObservations >= PROMPT_LOST_OBSERVATIONS) {
+            return {
+              state: "gone",
+              failure: new BackendInvocationError(
+                "backend_error",
+                `ComfyUI has no record of prompt ${promptId} from an interrupted attempt; it never arrived or the runner restarted`,
+                "post_submit",
+                "definitive",
+                true,
+              ),
+            };
+          }
+        }
+      } catch (error) {
+        // A failed prompt is still a record; poll() reads and reports the same entry.
+        if (error instanceof BackendInvocationError && error.outcome === "definitive") return present();
+        absentObservations = 0;
+      }
+      if (Date.now() - lastAnsweredAt >= this.runnerOutageGraceMs) {
+        throw new BackendInvocationError(
+          "backend_error",
+          `ComfyUI did not answer about prompt ${promptId} within ${this.runnerOutageGraceMs}ms`,
+          "post_submit",
+          "ambiguous",
+        );
+      }
+      await sleep(this.pollIntervalMs);
     }
   }
 

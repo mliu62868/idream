@@ -41,11 +41,13 @@ import { hydratedImageReferenceInputs } from "@idream/shared/media/image-referen
 import { workerAdapterForRecordedProvider } from "./provider-vocabulary";
 import {
   loadPersistedTerminalRecord,
+  GenerationTerminalRecordConflictError,
   loadGenerationInvocationGuard,
   persistTerminalRecord,
   reserveGenerationInvocation,
 } from "./terminal-record";
 import { env } from "./env";
+import { logger } from "./logger";
 import { GenerationTransportUnavailableError } from "./transport-execution";
 
 type GenerationPayload = ImageGeneratePayload | VideoGeneratePayload;
@@ -248,14 +250,28 @@ class GenerationExecution {
     let invocationStartedAt: number | undefined;
     let boundaryError: { cause: unknown; phase: "waiting" | "invocation" } | undefined;
     let terminalSettled = false;
-    const beforeProviderInvocation = async () => {
+    const beforeProviderInvocation: GenerationInvocationBoundary["beforeProviderInvocation"] = async (options) => {
       try {
         if (invocationStartedAt !== undefined) throw new Error("Provider invocation boundary entered twice");
         // INVARIANT: waiting for a device creates neither provider authority nor
         // an invocation guard. Recheck Main after acquiring it, before submission.
         await this.recordTransport("running");
-        const reservation = await reserveGenerationInvocation(this.options.blob, this.invocationGuard());
+        const runnerPromptIdScheme = options?.runnerPromptIdScheme;
+        const reservation = await reserveGenerationInvocation(this.options.blob, this.invocationGuard(runnerPromptIdScheme));
         if (!providerReplayIsSafe && !reservation.created) {
+          // SPEC: the runner's record decides, so an interrupted invocation need not
+          // end unknown. The adapter reads that record and submits nothing, which is
+          // why ADR-13's no-replay rule holds. transportAttemptNo adds nothing here:
+          // however this delivery came about, a read cannot invoke the provider twice.
+          if (runnerPromptIdScheme && reservation.guard.runnerPromptIdScheme === runnerPromptIdScheme) {
+            logger.warn({
+              attemptId: this.#identity.attemptId,
+              guardTransportAttemptNo: reservation.guard.transportAttemptNo,
+              transportAttemptNo: this.#identity.transportAttemptNo,
+            }, "reconciling an interrupted provider invocation through its runner");
+            invocationStartedAt = performance.now();
+            return "reconcile_prior";
+          }
           if (reservation.guard.transportAttemptNo >= this.#identity.transportAttemptNo) {
             throw new Error(`provider invocation is already reserved for ${this.#identity.attemptId}`);
           }
@@ -269,6 +285,7 @@ class GenerationExecution {
           throw new Error("Prior provider invocation requires reconciliation");
         }
         invocationStartedAt = performance.now();
+        return "fresh";
       } catch (error) {
         boundaryError = { cause: error, phase: "invocation" };
         throw error;
@@ -500,7 +517,7 @@ class GenerationExecution {
     };
   }
 
-  private invocationGuard() {
+  private invocationGuard(runnerPromptIdScheme?: string) {
     const payload = this.options.payload;
     return {
       version: 1 as const,
@@ -514,6 +531,7 @@ class GenerationExecution {
       provider: this.options.provider,
       model: payload.model ?? null,
       reservedAt: new Date().toISOString(),
+      ...(runnerPromptIdScheme ? { runnerPromptIdScheme } : {}),
     };
   }
 
@@ -525,6 +543,16 @@ class GenerationExecution {
     try {
       ingest = await persistTerminalRecord(this.options.blob, terminalRecord);
     } catch (error) {
+      // A lock-lost worker can still be alive while its redelivered job reconciles
+      // the same prompt, and both then finish. The first record stands; recording
+      // this one as unknown would hold coins for an attempt that already settled.
+      if (error instanceof GenerationTerminalRecordConflictError) {
+        const winner = await loadPersistedTerminalRecord(this.options.blob, terminalRecord.attemptId);
+        if (winner) {
+          await this.options.acknowledgeTerminalRecord(winner);
+          return;
+        }
+      }
       const canReplayBeforeFinalAttempt =
         terminalRecord.providerInvoked &&
         providerReplayIsSafe &&

@@ -3,7 +3,7 @@ import { BackendVideoModel } from "./backend-video-model";
 import { BackendInvocationError, type GenBackend } from "./types";
 import { workflowDescriptorSchema } from "./workflow";
 import type { VerifiedVideoMedia } from "./video-media-probe";
-import { REDGRAFT_VIDEO_OPTIONS, redgraftVideoEnvelope } from "@idream/shared/contracts";
+import { GENERATION_RUNNER_PROMPT_ID_SCHEME, generationRunnerPromptId, REDGRAFT_VIDEO_OPTIONS, redgraftVideoEnvelope } from "@idream/shared/contracts";
 import h3ProductionDescriptor from "../../workflows/minimax-h3-mystic-i2v.json";
 import productionDescriptor from "../../workflows/redgraft-ltx25-i2v.json";
 
@@ -760,6 +760,59 @@ describe("BackendVideoModel", () => {
       ok: false,
       error: { code: "unsupported_video_workflow", retryable: false },
     });
+    expect(stub.submit).not.toHaveBeenCalled();
+  });
+});
+
+describe("BackendVideoModel with an interrupted invocation", () => {
+  const ATTEMPT = "attempt-video-reconcile";
+  const PROMPT_ID = generationRunnerPromptId(ATTEMPT, 0);
+  const execution = (entry: "fresh" | "reconcile_prior") => ({
+    beforeProviderInvocation: vi.fn(async () => entry),
+    beforeNextProviderInvocation: vi.fn(async () => {}),
+    onResourceWait: vi.fn(async () => {}),
+  });
+  const modelFor = (stub: GenBackend) => new BackendVideoModel({ resolveForModel: vi.fn(() => ({ backend: stub, descriptor })) });
+
+  it("submits under a deterministic id and claims the scheme", async () => {
+    const stub = { ...backend(), findPriorSubmission: vi.fn() };
+    const boundary = execution("fresh");
+    expect(await modelFor(stub).generate({ ...validGenerationInput(), attemptId: ATTEMPT, executionBoundary: boundary })).toMatchObject({ ok: true });
+    expect(stub.submit).toHaveBeenCalledWith(expect.objectContaining({ promptId: PROMPT_ID }));
+    expect(boundary.beforeProviderInvocation).toHaveBeenCalledExactlyOnceWith({ runnerPromptIdScheme: GENERATION_RUNNER_PROMPT_ID_SCHEME });
+  });
+
+  it("gives a backend without the capability no id and claims nothing", async () => {
+    const stub = backend();
+    const boundary = execution("fresh");
+    await modelFor(stub).generate({ ...validGenerationInput(), attemptId: ATTEMPT, executionBoundary: boundary });
+    expect(vi.mocked(stub.submit).mock.calls[0]![0]).not.toHaveProperty("promptId");
+    expect(boundary.beforeProviderInvocation).toHaveBeenCalledExactlyOnceWith(undefined);
+  });
+
+  it("collects the finished render through the runner and does not submit", async () => {
+    const findPriorSubmission = vi.fn(async () => ({ state: "present" as const, handle: { id: PROMPT_ID } }));
+    const stub = { ...backend(), findPriorSubmission };
+    const result = await modelFor(stub).generate({ ...validGenerationInput(), attemptId: ATTEMPT, executionBoundary: execution("reconcile_prior") });
+    expect(result).toMatchObject({ ok: true, invocation: { providerRequestId: PROMPT_ID } });
+    expect(findPriorSubmission).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ promptId: PROMPT_ID, outputKind: "video" }));
+    expect(stub.submit).not.toHaveBeenCalled();
+    expect(stub.poll).toHaveBeenCalledExactlyOnceWith({ id: PROMPT_ID });
+  });
+
+  it("fails definitively and retryably when the runner has no record of it", async () => {
+    const failure = new BackendInvocationError("backend_error", "runner has no record", "post_submit", "definitive", true);
+    const stub = { ...backend(), findPriorSubmission: vi.fn(async () => ({ state: "gone" as const, failure })) };
+    const result = await modelFor(stub).generate({ ...validGenerationInput(), attemptId: ATTEMPT, executionBoundary: execution("reconcile_prior") });
+    expect(result).toMatchObject({ ok: false, error: { code: "backend_error", outcome: "definitive", retryable: true } });
+    expect(stub.submit).not.toHaveBeenCalled();
+    expect(stub.poll).not.toHaveBeenCalled();
+  });
+
+  it("stays ambiguous when the runner does not answer", async () => {
+    const stub = { ...backend(), findPriorSubmission: vi.fn(async () => { throw new BackendInvocationError("backend_error", "runner silent", "post_submit", "ambiguous"); }) };
+    const result = await modelFor(stub).generate({ ...validGenerationInput(), attemptId: ATTEMPT, executionBoundary: execution("reconcile_prior") });
+    expect(result).toMatchObject({ ok: false, error: { outcome: "ambiguous" } });
     expect(stub.submit).not.toHaveBeenCalled();
   });
 });

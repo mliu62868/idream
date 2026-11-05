@@ -24,6 +24,11 @@ export interface ResolvedGenJob {
   localRecolor?: { sourceRgba: Uint8Array; mask: Uint8Array; width: number; height: number; color: string };
   requestId?: string;
   timeoutMs: number;
+  /**
+   * Deterministic runner prompt id. A backend with `findPriorSubmission` must
+   * submit under it, or a later retry cannot find this submission.
+   */
+  promptId?: string;
 }
 
 export interface BackendAsset {
@@ -50,6 +55,12 @@ export interface BackendResult {
   invocation?: ProviderInvocationMetadata;
 }
 export type BackendHandle = { id: string };
+// SPEC: what the runner knows about a submission made by an earlier transport.
+// "present" covers finished, failed, queued and running alike: poll() on the
+// handle collects the output, reports the failure or waits within its budgets.
+export type BackendPriorSubmission =
+  | { readonly state: "present"; readonly handle: BackendHandle }
+  | { readonly state: "gone"; readonly failure: BackendInvocationError };
 export interface BackendHealth { ok: boolean; detail?: string }
 
 export type BackendInvocationPhase = "pre_submit" | "post_submit";
@@ -85,4 +96,16 @@ export interface GenBackend {
   submit(job: ResolvedGenJob): Promise<BackendHandle>;
   poll(handle: BackendHandle): Promise<BackendResult>;
   health(): Promise<BackendHealth>;
+  /**
+   * Optional: only a backend whose runner keeps a queryable record of prompts
+   * submitted under a client-chosen id implements this. Without it an interrupted
+   * invocation stays unknown, because nothing can say what became of it.
+   * INVARIANT: never submits. A runner that cannot be reached rejects with an
+   * ambiguous BackendInvocationError; silence is not evidence the prompt is gone.
+   */
+  findPriorSubmission?(input: {
+    promptId: string;
+    timeoutMs: number;
+    outputKind: "image" | "video";
+  }): Promise<BackendPriorSubmission>;
 }
