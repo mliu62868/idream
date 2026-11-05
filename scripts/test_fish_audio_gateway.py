@@ -706,7 +706,8 @@ class FishAudioGatewayTests(unittest.TestCase):
     def test_pm2_start_removes_the_retired_process_before_fish_cutover(self):
         launcher = Path(__file__).with_name("start-pm2-ecosystem.cjs").read_text()
         self.assertIn('["delete", "pocket-tts"]', launcher)
-        self.assertIn('["start", "ecosystem.config.js"]', launcher)
+        # --update-env: a partial recreation must also refresh the apps it left registered.
+        self.assertIn('["start", "ecosystem.config.js", "--update-env"]', launcher)
 
 
 class MingRuntimeTests(unittest.TestCase):
