@@ -400,6 +400,45 @@ describe("Generation TransportExecution authority", () => {
     }
   });
 
+  it("reaches a real stale row behind rows that stay legitimately old", async () => {
+    const old = new Date("2026-01-01T00:00:00.000Z");
+    const scanAt = new Date("2030-01-01T12:00:00.000Z");
+    const legitJobId = `transport-legit-job-${suffix}`;
+    const staleJobId = `transport-stale-job-${suffix}`;
+    const legitAttemptId = `transport-legit-${suffix}`;
+    const staleAttemptId = `transport-stale-${suffix}`;
+    const ids = [legitJobId, staleJobId];
+    await prisma.generationJob.createMany({ data: ids.map((id) => ({ id, userId, mode: "image", status: "running", provider: base.provider, model: base.model, controls: {}, presetIds: [], outputCount: 1 })) });
+    await prisma.generationAttempt.createMany({ data: [
+      // Its own evidence is fresh, so only the Request row looks old: never quarantined.
+      { id: legitAttemptId, requestId: legitJobId, attemptNo: 1, status: "queued", provider: base.provider, workflowKey: base.model, workflowVersion: 1, createdAt: scanAt },
+      { id: staleAttemptId, requestId: staleJobId, attemptNo: 1, status: "running", provider: base.provider, workflowKey: base.model, workflowVersion: 1, createdAt: old, startedAt: old },
+    ] });
+    await prisma.generationTransportExecution.create({ data: { attemptId: staleAttemptId, transportAttemptNo: 1, status: "running", idempotencyKey: `generation:${staleAttemptId}:provider`, startedAt: old } });
+    await prisma.generationJob.update({ where: { id: legitJobId }, data: { updatedAt: old } });
+    await prisma.generationJob.update({ where: { id: staleJobId }, data: { updatedAt: new Date(old.getTime() + 1_000) } });
+    const scan = (cursor?: { updatedAt: Date; id: string } | null) => reconcileStaleGenerationJobs({ now: scanAt, timeoutMs: 60_000, limit: 1, generationJobIds: ids, cursor });
+    try {
+      const first = await scan();
+      expect(first).toMatchObject({ scanned: 1, quarantined: 0, nextCursor: { updatedAt: old, id: legitJobId } });
+      // Without the cursor this repeats the same row forever.
+      await expect(scan()).resolves.toMatchObject({ scanned: 1, quarantined: 0 });
+      const second = await scan(first.nextCursor);
+      expect(second).toMatchObject({ scanned: 1, quarantined: 1, nextCursor: { id: staleJobId } });
+      await expect(scan(second.nextCursor)).resolves.toMatchObject({ scanned: 0, nextCursor: null });
+      await expect(prisma.generationAttempt.findUniqueOrThrow({ where: { id: legitAttemptId } })).resolves.toMatchObject({ status: "queued" });
+      await expect(prisma.generationAttempt.findUniqueOrThrow({ where: { id: staleAttemptId } })).resolves.toMatchObject({ status: "unknown" });
+    } finally {
+      const attempts = [legitAttemptId, staleAttemptId];
+      await prisma.aiUsageFact.deleteMany({ where: { attemptId: { in: attempts } } });
+      await prisma.generationTransportExecution.deleteMany({ where: { attemptId: { in: attempts } } });
+      await prisma.generationAttemptEvent.deleteMany({ where: { attemptId: { in: attempts } } });
+      await prisma.generationAttempt.deleteMany({ where: { id: { in: attempts } } });
+      await prisma.generationJobEvent.deleteMany({ where: { jobId: { in: ids } } });
+      await prisma.generationJob.deleteMany({ where: { id: { in: ids } } });
+    }
+  });
+
   it("leaves a long render alone while a worker holds its source, until the execution ceiling", async () => {
     const jobId = `transport-active-source-job-${suffix}`;
     const attemptId = `transport-active-source-${suffix}`;

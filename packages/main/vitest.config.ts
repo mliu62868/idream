@@ -25,6 +25,7 @@ export default defineConfig({
     pool: "forks",
     fileParallelism: false,
     globalSetup: ["./src/server/test/global-setup.ts"],
+    setupFiles: ["./src/server/test/close-job-queues.ts"],
     env: {
       DOTENV_CONFIG_PATH: devNull,
       APP_ENV: "test",
