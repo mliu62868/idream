@@ -261,6 +261,7 @@ const contentFeaturedItemSchema = z.object({
   name: z.string().nullable(),
   visibility: z.string().nullable(),
   status: z.string().nullable(),
+  thumbnailUrl: z.string().nullable(),
   configuredPosition: z.number().int().nonnegative(),
   configured: z.literal(true),
   effective: z.boolean(),
@@ -278,9 +279,10 @@ export const contentFeaturedResponseSchema = z.object({
 
 export const contentFeaturedUpdateRequestSchema = z.object({
   characterIds: z.array(adminIdSchema.max(160)).max(24),
+  // INTENT: expectedVersion 才是防盲写的护栏。这里曾要求把全部 ID 拼成确认串，而确认串上限 160，
+  //         配置上限却是 24 个角色：放到第 7 个左右必然被 400。
   expectedVersion: z.number().int().nonnegative(),
   reason: reasonSchema,
-  confirmation: confirmationSchema,
 }).strict();
 
 export const contentFeaturedUpdateResponseSchema = z.object({

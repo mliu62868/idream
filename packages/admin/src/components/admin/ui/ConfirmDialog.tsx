@@ -16,8 +16,8 @@ export type ConfirmSpec = {
   /** SPEC: 这个动作会造成什么、能不能撤回。给了就在标题下方常驻一条红色横幅。
    * INTENT: 退款、封禁、下架、永久删除点下去就没有回头路，而弹窗标题只写得下动词。
    *         运营需要在敲确认串之前就读到后果，而不是事后从审计日志里发现。
-   * 约定: reversible: false 一定同时给 destructive —— 不可撤销的动作必须敲确认串，
-   *       不能只靠点一下。这条靠评审保证，类型系统表达不了跨字段依赖。 */
+   * 约定: reversible: false 默认同时给 destructive。角色退役是产品明确决定的例外：
+   *       后果写清楚、红按钮收尾，只点一下确认。 */
   consequence?: { effect: string; reversible: boolean };
   /** 后端写操作是否收 reason（默认 true）。false 时不显示 reason 输入、不拿它门槛提交，
    * onSubmit 收到 ""——后端契约无 reason 字段的操作不该让运营填一个会被丢弃的原因（T14 评审规则）。 */

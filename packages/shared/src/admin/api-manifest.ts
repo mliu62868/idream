@@ -654,6 +654,15 @@ export const ADMIN_V2_API_OPERATIONS = [
   ),
   operation(
     "POST",
+    "/api/v2/admin/characters/:id/handoffs",
+    allOf("character.project.write"),
+    "characterHandoffCreateRequestSchema+idempotency-key",
+    "characterHandoffSchema",
+    undefined,
+    { commandType: "character.handoff.record" },
+  ),
+  operation(
+    "POST",
     "/api/v2/admin/characters/:id/releases",
     allOf("character.release.publish"),
     "characterReleaseCreateRequestSchema+idempotency-key+if-match",
@@ -2162,7 +2171,9 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation(
     "PUT",
     "/api/v2/admin/content/featured",
-    allOf("content.takedown.write"),
+    // INTENT: 精选是展示位决策。这里曾借用 content.takedown.write（下架 / 可见性），
+    //         于是增长运营要改精选就得同时拿到下架权。
+    allOf("content.placement.write"),
     "contentFeaturedUpdateRequestSchema+idempotency-key",
     "contentFeaturedUpdateResponseSchema",
     undefined,

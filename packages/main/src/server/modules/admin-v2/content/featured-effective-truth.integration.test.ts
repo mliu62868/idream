@@ -15,6 +15,8 @@ import {
 const P = "zt-featured-effective-";
 const adminId = `${P}admin`;
 const secondAdminId = `${P}admin-second`;
+const moderatorId = `${P}moderator`;
+const opsId = `${P}ops`;
 const customerId = `${P}customer`;
 const characterIds = {
   paused: `${P}paused`,
@@ -203,7 +205,6 @@ describe("Featured configured and effective runtime truth", () => {
       body: {
         characterIds: [savedWhilePausedId],
         reason: "reject missing version authority",
-        confirmation: savedWhilePausedId,
       },
     });
     expectError(missingVersion, 400, "bad_request");
@@ -218,7 +219,6 @@ describe("Featured configured and effective runtime truth", () => {
         characterIds: [savedWhilePausedId],
         expectedVersion: 0,
         reason: "create canonical Featured authority",
-        confirmation: savedWhilePausedId,
       },
     });
     expectOk(response);
@@ -227,6 +227,80 @@ describe("Featured configured and effective runtime truth", () => {
       configuredCharacterIds: [savedWhilePausedId],
       settingDiagnostics: [],
     });
+  });
+
+  // SPEC: 配置上限是 24 个角色。保存曾要求把全部 ID 拼成确认串，而确认串上限 160：
+  //       放到第 7 个左右就必然 400，「一键保存」根本走不到 CAS。
+  it("saves a full-length Featured list with a version and an automatic reason only", async () => {
+    const before = await featured();
+    const longIds = Array.from({ length: 24 }, (_, index) => `${P}long-id-that-exceeds-confirmation-${index}`);
+    const response = await adminV2Api("PUT", "/api/v2/admin/content/featured", {
+      userId: adminId,
+      role: "admin",
+      headers: { "idempotency-key": `${P}full-length` },
+      body: {
+        characterIds: longIds,
+        expectedVersion: before.settingVersion,
+        reason: "Update Featured (+24, -0)",
+      },
+    });
+    expectOk(response);
+    // The unknown ids are skipped by authority, so the prior list has to be restored.
+    const restored = await adminV2Api("PUT", "/api/v2/admin/content/featured", {
+      userId: adminId,
+      role: "admin",
+      headers: { "idempotency-key": `${P}full-length-restore` },
+      body: {
+        characterIds: before.configuredCharacterIds,
+        expectedVersion: before.settingVersion + 1,
+        reason: "Restore the Featured list",
+      },
+    });
+    expectOk(restored);
+  });
+
+  it("rejects a stale version instead of overwriting another operator's save", async () => {
+    const before = await featured();
+    const response = await adminV2Api("PUT", "/api/v2/admin/content/featured", {
+      userId: adminId,
+      role: "admin",
+      headers: { "idempotency-key": `${P}stale-version` },
+      body: {
+        characterIds: before.configuredCharacterIds,
+        expectedVersion: before.settingVersion + 7,
+        reason: "stale save",
+      },
+    });
+    expectError(response, 409, "conflict");
+  });
+
+  // SPEC: 精选写权限是 content.placement.write，不再借用下架权限。
+  it("lets a placement holder save Featured and refuses a takedown-only moderator", async () => {
+    await createUser({ id: moderatorId, role: "moderator", dataClass: "internal" });
+    await createUser({ id: opsId, role: "ops", dataClass: "internal" });
+    const before = await featured();
+    const moderator = await adminV2Api("PUT", "/api/v2/admin/content/featured", {
+      userId: moderatorId,
+      role: "moderator",
+      headers: { "idempotency-key": `${P}moderator` },
+      body: {
+        characterIds: before.configuredCharacterIds,
+        expectedVersion: before.settingVersion,
+        reason: "moderator curation",
+      },
+    });
+    expectError(moderator, 403, "forbidden");
+    const ops = await adminV2Api("PUT", "/api/v2/admin/content/featured", {
+      userId: opsId,
+      role: "ops",
+      headers: { "idempotency-key": `${P}ops` },
+      body: {
+        characterIds: before.configuredCharacterIds,
+        expectedVersion: before.settingVersion,
+        reason: "ops curation",
+      },
+    });
+    expectOk(ops);
   });
 
   it("persists a paused Character as configured and makes it effective automatically after resume", async () => {
@@ -247,7 +321,6 @@ describe("Featured configured and effective runtime truth", () => {
         characterIds: submittedIds,
         expectedVersion: beforeSave.settingVersion,
         reason: "preserve merchandising intent while Serving is paused",
-        confirmation: submittedIds.join(","),
       },
     });
     expectOk(response);
@@ -323,7 +396,6 @@ describe("Featured configured and effective runtime truth", () => {
             characterIds: [characterId],
             expectedVersion: baselineVersion,
             reason: `concurrent Featured operator ${index}`,
-            confirmation: characterId,
           },
         }),
       ),

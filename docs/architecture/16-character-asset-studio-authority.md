@@ -126,8 +126,9 @@ sequenceDiagram
 | 创建 Run | `POST /api/v2/admin/creative/runs` | `creative.run.write` | `Idempotency-Key` |
 | 查询 Run lineage | `GET /api/v2/admin/creative/runs/:id` | `creative.run.read` | read |
 | 采用草稿素材 | `PATCH /api/v2/admin/characters/:id/draft-image` | `character.project.write` | `If-Match` + entity version |
-| 创建 Release proposal | `POST /api/v2/admin/characters/:id/releases` | `character.release.propose` | `Idempotency-Key` |
-| 校验 Release | `POST /api/v2/admin/characters/:id/releases/:releaseId/validation` | `character.release.publish` | `Idempotency-Key` |
+| 记录创作交接（不阻塞发布） | `POST /api/v2/admin/characters/:id/handoffs` | `character.project.write` | `Idempotency-Key` |
+| 创建 Release 候选（请求内联校验） | `POST /api/v2/admin/characters/:id/releases` | `character.release.publish` | `Idempotency-Key` + `If-Match` |
+| 放弃候选 | `POST /api/v2/admin/characters/:id/releases/:releaseId/commands/withdraw` | `character.release.publish` | `Idempotency-Key` |
 | 发布 Release | `POST /api/v2/admin/characters/:id/releases/:releaseId/commands/publish` | `character.release.publish` | `Idempotency-Key` |
 
 API manifest 与 Zod 契约的单一事实来源：

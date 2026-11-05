@@ -10,6 +10,7 @@ import { ACTIVE_CONTROL_PLANE_COMMAND_STATUSES } from "../shared/control-plane-c
 import { loadCharacterMediaOperationsProjection } from "./character-media-operations";
 import { characterCommandCoordinationKey } from "./command-coordination";
 import { characterAssetPack } from "./draft-asset-route-authority";
+import { loadCharacterWorkspaceHandoff } from "./handoff";
 import { inspectCharacterImageGenerationSource } from "./image-readiness-authority";
 import { listCharacterPortfolioData } from "./portfolio";
 import { projectDto } from "./project-draft";
@@ -321,6 +322,10 @@ export async function getCharacterWorkspace(characterId: string) {
     throw new Error(`Character production journey missing for ${characterId}`);
   }
   const performance = portfolioItem.performance;
+  const handoff = await loadCharacterWorkspaceHandoff({
+    characterId,
+    projectId: project.id,
+  });
   return {
     character: {
       id: character.id,
@@ -378,5 +383,6 @@ export async function getCharacterWorkspace(characterId: string) {
     }),
     preview: { live, draft, changedFields: previewChangedFields(live, draft) },
     performance,
+    handoff,
   };
 }

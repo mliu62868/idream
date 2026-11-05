@@ -4,13 +4,14 @@ import { AdminV2RequestError } from "@/components/admin/api";
 import {
   ContentMerchandisingWorkspace,
   type FeaturedItem,
+  FeaturedRuntimeStatus,
   FeaturedWriteResultNotice,
   characterTableRow,
   contentCommandLabel,
   featuredDiff,
-  featuredTableRow,
   featuredVersionConflictFromError,
 } from "./ContentMerchandisingWorkspace";
+import { featuredSaveBody, moveFeaturedId } from "./featured-save";
 
 describe("featured curation diff", () => {
   // SPEC: 保存前必须能看出这一次改了什么——输入框是一长串逗号分隔 ID，肉眼比不出来。
@@ -45,6 +46,28 @@ describe("featured curation diff", () => {
       removed: ["a", "b"],
       reordered: false,
     });
+  });
+});
+
+// SPEC: 保存精选不手填 ID、不键入确认词；reason 自动生成，CAS 版本保留。
+describe("featured save request", () => {
+  it("is fully generated from the list and the loaded version", () => {
+    expect(featuredSaveBody(["a", "b"], ["b", "c", "d"], 7)).toEqual({
+      characterIds: ["b", "c", "d"],
+      expectedVersion: 7,
+      reason: "Update Featured (+2, -1)",
+    });
+  });
+
+  it("describes a pure reorder and a full clear with a valid reason", () => {
+    expect(featuredSaveBody(["a", "b"], ["b", "a"], 1).reason).toBe("Update Featured (+0, -0)");
+    expect(featuredSaveBody(["a", "b"], [], 1)).toMatchObject({ characterIds: [], reason: "Update Featured (+0, -2)" });
+  });
+
+  it("moves one id and leaves the rest in order", () => {
+    expect(moveFeaturedId(["a", "b", "c"], 2, 0)).toEqual(["c", "a", "b"]);
+    expect(moveFeaturedId(["a", "b", "c"], 0, 1)).toEqual(["b", "a", "c"]);
+    expect(moveFeaturedId(["a", "b"], 0, 5)).toEqual(["a", "b"]);
   });
 });
 
@@ -219,6 +242,7 @@ describe("Content merchandising permissions", () => {
       name: "Paused Character",
       visibility: "public",
       status: "approved",
+      thumbnailUrl: null,
       configuredPosition: 0,
       configured: true,
       effective: false,
@@ -231,7 +255,6 @@ describe("Content merchandising permissions", () => {
 
     expect(html).toContain("Configured · not live");
     expect(html).not.toContain(">Live featured<");
-    expect(html).toContain("serving not live");
     expect(html).toContain("Character Serving is not live.");
     expect(html).toContain(
       'href="/admin/characters/character-paused?tab=release"',
@@ -245,6 +268,7 @@ describe("Content merchandising permissions", () => {
       name: "Live Character",
       visibility: "public",
       status: "approved",
+      thumbnailUrl: null,
       configuredPosition: 1,
       configured: true,
       effective: true,
@@ -253,7 +277,6 @@ describe("Content merchandising permissions", () => {
 
     expect(html).toContain("Live featured");
     expect(html).not.toContain("Configured · not live");
-    expect(html).toContain(">None<");
   });
 
   it("shows the exact saved, effective, and skipped-invalid write result", () => {
@@ -313,16 +336,5 @@ describe("Content merchandising permissions", () => {
 });
 
 function renderFeaturedRow(item: FeaturedItem) {
-  const row = featuredTableRow(item);
-  return renderToStaticMarkup(
-    <table>
-      <tbody>
-        <tr>
-          {row.cells.map((value, index) => (
-            <td key={index}>{value}</td>
-          ))}
-        </tr>
-      </tbody>
-    </table>,
-  );
+  return renderToStaticMarkup(<FeaturedRuntimeStatus item={item} />);
 }

@@ -4168,7 +4168,6 @@ describe("admin featured curation (F3)", () => {
         characterIds: [cold, priv],
         expectedVersion: beforePut.data.settingVersion,
         reason: "promo push",
-        confirmation: `${cold},${priv}`,
       },
     });
     expectOk(put);
@@ -4178,17 +4177,17 @@ describe("admin featured curation (F3)", () => {
     expect(put.data.skipped).toEqual([]);
     expect(put.data.invalid).toEqual([]);
 
-    const wrongConfirmation = await adminV2Api("PUT", "/api/v2/admin/content/featured", {
+    const retiredConfirmationField = await adminV2Api("PUT", "/api/v2/admin/content/featured", {
       userId: admin,
       role: "admin",
       body: {
         characterIds: [hot],
         expectedVersion: put.data.settingVersion,
-        reason: "wrong confirmation",
+        reason: "retired confirmation field",
         confirmation: "FEATURED",
       },
     });
-    expectError(wrongConfirmation, 400, "bad_request");
+    expectError(retiredConfirmationField, 400, "bad_request");
     const settingAfterWrong = await prisma.appSetting.findUniqueOrThrow({ where: { key: "feed.featured" } });
     expect((settingAfterWrong.value as { characterIds?: string[] }).characterIds).toEqual([cold, priv]);
 

@@ -1880,7 +1880,7 @@ test("admin pricing and promo creation require typed confirmation", async ({ pag
   }
 });
 
-test("admin featured curation requires typed target confirmation", async ({ page }) => {
+test("admin featured curation picks characters by name and saves in one click", async ({ page }) => {
   const consoleFailures = collectConsoleFailures(page);
   const admin = await startAdminSession(page);
   const adminURL = adminBaseURL();
@@ -1932,15 +1932,15 @@ test("admin featured curation requires typed target confirmation", async ({ page
 
     await page.goto(`${adminURL}/admin/content`);
     await expectAdminShellReady(page, "Featured Merchandising");
-    await page.getByPlaceholder("char_a, char_b").fill(`${featuredId}, ${secondId}`);
-    await page.getByPlaceholder("Reason (≥3 chars)").fill("E2E featured curation confirmation");
+    const search = page.getByPlaceholder("Search by character name");
+    const results = page.getByTestId("featured-search-results");
     const saveFeatured = page.getByRole("button", { name: "Save featured" });
     await expect(saveFeatured).toBeDisabled();
-    await page.getByRole("textbox", { name: "Featured confirmation" }).fill("FEATURED");
-    await expect(saveFeatured).toBeDisabled();
+    await search.fill(`Featured Confirm ${suffix}`);
+    await results.getByRole("button", { name: new RegExp(`Featured Confirm ${suffix}`) }).click();
+    await search.fill(`Featured Second ${suffix}`);
+    await results.getByRole("button", { name: new RegExp(`Featured Second ${suffix}`) }).click();
     await expect(prisma.appSetting.findUnique({ where: { key: "feed.featured" } })).resolves.toBeNull();
-
-    await page.getByRole("textbox", { name: "Featured confirmation" }).fill(`${featuredId},${secondId}`);
     await expect(saveFeatured).toBeEnabled();
     await saveFeatured.click();
     await expect.poll(async () => {
@@ -1955,15 +1955,16 @@ test("admin featured curation requires typed target confirmation", async ({ page
       characterIds: [featuredId, secondId],
       version: 1,
     });
-    await expect(page.getByRole("row").filter({ hasText: featuredId }).first()).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByRole("row").filter({ hasText: secondId }).first()).toBeVisible({ timeout: 10_000 });
+    const curation = page.getByRole("list", { name: "Featured configuration and live status" });
+    await expect(curation.getByRole("listitem").filter({ hasText: `Featured Confirm ${suffix}` })).toBeVisible({ timeout: 10_000 });
+    await expect(curation.getByRole("listitem").filter({ hasText: `Featured Second ${suffix}` })).toBeVisible({ timeout: 10_000 });
 
     const audit = await prisma.adminAuditLog.findFirst({
       where: { action: "content.featured.write", targetId: "feed.featured" },
       orderBy: { createdAt: "desc" },
       select: { reason: true, after: true },
     });
-    expect(audit?.reason).toBe("E2E featured curation confirmation");
+    expect(audit?.reason).toBe("Update Featured (+2, -0)");
     expect(
       (audit?.after as {
         configuredCharacterIds?: string[];

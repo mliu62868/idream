@@ -7,6 +7,7 @@ import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { ShieldAlert } from "lucide-react";
 import { useMemo } from "react";
 import { CharacterChatToolsPanel } from "./CharacterChatToolsPanel";
+import { CharacterDistributionCard } from "./CharacterDistributionCard";
 import { CharacterTagsPanel } from "./CharacterTagsPanel";
 import { soulDraftFromWorkspace, visualFormFromWorkspace } from "./CharacterSoulPanel";
 import { cn } from "@/lib/utils";
@@ -246,6 +247,7 @@ export function CharacterOverview({
           </div>
         </div>
       </section>
+      <CharacterDistributionCard data={data} />
     </div>
   );
 }

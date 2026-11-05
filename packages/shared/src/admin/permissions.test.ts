@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ADMIN_GRANT_BUNDLES,
+  adminGrantBundleRequiresCharacterScope,
   ADMIN_PERMISSION_KEYS,
   ADMIN_ROLE_PERMISSION_SCOPES,
   ADMIN_ROLE_PERMISSIONS,
@@ -8,6 +9,7 @@ import {
   expandAdminGrantBundles,
   resolveAdminPermissions,
 } from "./permissions";
+import { ADMIN_V2_API_OPERATIONS } from "./api-manifest";
 
 describe("Admin v2 permission contract", () => {
   it("keeps existing roles and applies the v2 permission matrix", () => {
@@ -42,6 +44,38 @@ describe("Admin v2 permission contract", () => {
     );
     expect(expandAdminGrantBundles(["creative_operator"])).toContain("creative.placement.publish");
     expect(expandAdminGrantBundles(["growth_operator"])).not.toContain("analytics.metric.export");
+  });
+
+  // SPEC: 创作者能写角色、不能发布；发布运营能发布、选槽位（project.write）和改精选。
+  it("separates the optional creator and publisher bundles without changing the producer", () => {
+    const creator = expandAdminGrantBundles(["character_creator"]);
+    expect(creator).toContain("character.project.write");
+    expect(creator).not.toContain("character.release.publish");
+    const publisher = expandAdminGrantBundles(["character_publisher"]);
+    expect(publisher).toContain("character.release.publish");
+    expect(publisher).toContain("character.project.write");
+    expect(publisher).toContain("content.placement.write");
+    expect([...expandAdminGrantBundles(["character_producer"])].sort()).toEqual([
+      "character.performance.read",
+      "character.project.read",
+      "character.project.write",
+      "character.release.publish",
+      "character.release.read",
+    ]);
+    for (const bundle of ["character_producer", "character_creator", "character_publisher"] as const) {
+      expect(adminGrantBundleRequiresCharacterScope(bundle)).toBe(true);
+    }
+    expect(adminGrantBundleRequiresCharacterScope("growth_operator")).toBe(false);
+  });
+
+  // SPEC: 精选写权限是 content.placement.write：增长运营能用，且不因此拿到下架权。
+  it("gives the growth operator Featured curation without takedown rights", () => {
+    const featured = ADMIN_V2_API_OPERATIONS.find(({ id }) => id === "PUT /api/v2/admin/content/featured");
+    expect(featured?.authorization).toEqual({ kind: "all_of", permissions: ["content.placement.write"] });
+    const growth = expandAdminGrantBundles(["growth_operator"]);
+    expect(growth).toContain("content.placement.write");
+    expect(growth).toContain("content.read");
+    expect(growth).not.toContain("content.takedown.write");
   });
 
   it("resolves role plus bundles plus grant/revoke overrides deterministically", () => {

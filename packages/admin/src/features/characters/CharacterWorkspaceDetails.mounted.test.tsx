@@ -196,6 +196,9 @@ describe("Character workspace details", () => {
       if (path.includes("/admin/content/tags")) {
         return { items: [{ id: "tag-friendly", label: "Friendly", category: null, isSensitive: false }] };
       }
+      if (path.includes("/admin/content/featured")) {
+        return { items: [], characterIds: [], configuredCharacterIds: [], effectiveCharacterIds: [], settingVersion: 0, settingDiagnostics: [] };
+      }
       if (/\/admin\/content\/characters\/[^/]+$/.test(path)) {
         return { character: { tags: [] }, chatImageToolEnabled: true };
       }

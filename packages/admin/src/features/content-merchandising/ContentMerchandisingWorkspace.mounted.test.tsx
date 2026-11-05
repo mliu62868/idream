@@ -34,13 +34,7 @@ describe("ContentMerchandisingWorkspace Featured concurrency", () => {
     ) => {
       const path = String(input);
       if (path.includes("/api/v2/admin/content/characters")) {
-        return Response.json({
-          ok: true,
-          data: {
-            items: [],
-            pageInfo: { endCursor: null, hasNextPage: false },
-          },
-        });
+        return charactersFixture(path);
       }
       if (
         path.includes("/api/v2/admin/content/featured") &&
@@ -85,27 +79,16 @@ describe("ContentMerchandisingWorkspace Featured concurrency", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await act(async () => {
-      root.render(<ContentMerchandisingWorkspace canWrite />);
+      root.render(<ContentMerchandisingWorkspace canCurate canWrite />);
     });
     await waitFor(() => featuredReads === 1);
 
-    const ids = requiredInput('input[placeholder="char_a, char_b"]');
-    const reason = requiredInput('input[placeholder="Reason (≥3 chars)"]');
-    const confirmation = requiredInput(
-      'input[aria-label="Featured confirmation"]',
-    );
-    await changeInput(ids, "character-draft");
-    await changeInput(reason, "keep operator intent");
-    await changeInput(confirmation, "character-draft");
-
-    const save = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("Save featured"),
-    );
-    expect(save).toBeDefined();
-    expect(save?.disabled).toBe(false);
-    await act(async () => {
-      save?.click();
-    });
+    // SPEC: 没有 ID 输入框、原因框、确认词框。
+    expect(container.querySelector('input[placeholder="char_a, char_b"]')).toBeNull();
+    expect(container.querySelector('input[aria-label="Featured confirmation"]')).toBeNull();
+    await pickCharacter("character-draft");
+    expect(saveFeaturedButton().disabled).toBe(false);
+    await act(async () => saveFeaturedButton().click());
     await waitFor(() => featuredReads === 2);
     await waitFor(() =>
       container.textContent?.includes(
@@ -116,22 +99,17 @@ describe("ContentMerchandisingWorkspace Featured concurrency", () => {
     const putCall = fetchMock.mock.calls.find(([, options]) =>
       options?.method === "PUT"
     );
-    expect(JSON.parse(String(putCall?.[1]?.body))).toMatchObject({
-      characterIds: ["character-draft"],
+    expect(JSON.parse(String(putCall?.[1]?.body))).toEqual({
+      characterIds: ["character-original", "character-draft"],
       expectedVersion: 3,
-      reason: "keep operator intent",
-      confirmation: "character-draft",
+      reason: "Update Featured (+1, -0)",
     });
-    expect(ids.value).toBe("character-draft");
-    expect(reason.value).toBe("keep operator intent");
-    expect(confirmation.value).toBe("character-draft");
+    expect(draftRows()).toEqual(["character-original", "character-draft"]);
     expect(container.textContent).toContain(
-      "Latest authority was refreshed. Your draft remains in the fields",
+      "Latest authority was refreshed. Your list is kept below",
     );
     expect(container.textContent).toContain("Current version 4");
-    expect(container.textContent).toContain(
-      "Current configured IDs: character-current",
-    );
+    expect(container.textContent).toContain("Currently saved: character-current");
   });
 
   it("surfaces dirty-history diagnostics from the canonical authority DTO", async () => {
@@ -196,9 +174,7 @@ describe("ContentMerchandisingWorkspace Featured concurrency", () => {
         writes.push(JSON.parse(String(init.body)));
         return Response.json({ ok: false, error: { code: "FORBIDDEN", message: "Fixture rejected write" } }, { status: 403 });
       }
-      if (String(input).includes("/api/v2/admin/content/characters")) {
-        return Response.json({ ok: true, data: { items: [], pageInfo: { endCursor: null, hasNextPage: false } } });
-      }
+      if (String(input).includes("/api/v2/admin/content/characters")) return charactersFixture(String(input));
       featuredReads += 1;
       const ids = featuredReads === 1 ? ["character-original"] : ["character-saved-elsewhere"];
       return Response.json({ ok: true, data: {
@@ -206,83 +182,162 @@ describe("ContentMerchandisingWorkspace Featured concurrency", () => {
         settingVersion: featuredReads === 1 ? 3 : 4, settingDiagnostics: [],
       } });
     }));
-    await act(async () => root.render(<ContentMerchandisingWorkspace canWrite />));
+    await act(async () => root.render(<ContentMerchandisingWorkspace canCurate canWrite />));
     await waitFor(() => featuredReads === 1);
-    const ids = requiredInput('input[placeholder="char_a, char_b"]');
-    const reason = requiredInput('input[placeholder="Reason (≥3 chars)"]');
-    const confirmation = requiredInput('input[aria-label="Featured confirmation"]');
-    await changeInput(ids, "character-my-draft");
-    await changeInput(reason, "My curated ordering");
-    await changeInput(confirmation, "character-my-draft");
+    await pickCharacter("character-my-draft");
 
     await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
 
     expect(featuredReads).toBe(2);
-    expect(ids.value).toBe("character-my-draft");
-    expect(reason.value).toBe("My curated ordering");
-    expect(confirmation.value).toBe("character-my-draft");
-    const save = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Save featured")!;
-    await act(async () => save.click());
+    expect(draftRows()).toEqual(["character-original", "character-my-draft"]);
+    await act(async () => saveFeaturedButton().click());
     expect(writes).toEqual([{
-      characterIds: ["character-my-draft"], expectedVersion: 3,
-      reason: "My curated ordering", confirmation: "character-my-draft",
+      characterIds: ["character-original", "character-my-draft"], expectedVersion: 3,
+      reason: "Update Featured (+1, -0)",
     }]);
   });
 
-  it("keeps new featured input entered while an earlier save is pending", async () => {
+  it("keeps new featured picks made while an earlier save is pending", async () => {
     let finishWrite!: (response: Response) => void;
     let saved = false;
     const writes: unknown[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      if (String(input).includes("/api/v2/admin/content/characters")) {
-        return Response.json({ ok: true, data: { items: [], pageInfo: { endCursor: null, hasNextPage: false } } });
-      }
+      if (String(input).includes("/api/v2/admin/content/characters")) return charactersFixture(String(input));
       if (init?.method === "PUT") {
         writes.push(JSON.parse(String(init.body)));
         if (writes.length > 1) return Response.json({ ok: false, error: { code: "FORBIDDEN", message: "Fixture rejected second write" } }, { status: 403 });
         return new Promise<Response>(resolve => { finishWrite = resolve; });
       }
-      const ids = saved ? ["character-submitted"] : ["character-original"];
+      const ids = saved ? ["character-submitted"] : [];
       return Response.json({ ok: true, data: {
         items: [], characterIds: ids, configuredCharacterIds: ids, effectiveCharacterIds: [],
         settingVersion: saved ? 4 : 3, settingDiagnostics: [],
       } });
     }));
-    await act(async () => root.render(<ContentMerchandisingWorkspace canWrite />));
-    await waitFor(() => container.querySelector('input[placeholder="char_a, char_b"]') !== null);
-    const ids = requiredInput('input[placeholder="char_a, char_b"]');
-    const reason = requiredInput('input[placeholder="Reason (≥3 chars)"]');
-    const confirmation = requiredInput('input[aria-label="Featured confirmation"]');
-    await changeInput(ids, "character-submitted");
-    await changeInput(reason, "First curated ordering");
-    await changeInput(confirmation, "character-submitted");
-    const save = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Save featured")!;
-    await act(async () => save.click());
-    expect(save.disabled).toBe(true);
-    await changeInput(ids, "character-next-draft");
-    await changeInput(reason, "New curated ordering");
-    await changeInput(confirmation, "character-next-draft");
+    await act(async () => root.render(<ContentMerchandisingWorkspace canCurate canWrite />));
+    await waitFor(() => container.querySelector('input[type="search"]') !== null && Boolean(saveFeaturedButtonOrNull()));
+    await pickCharacter("character-submitted");
+    await act(async () => saveFeaturedButton().click());
+    expect(saveFeaturedButton().disabled).toBe(true);
+    await pickCharacter("character-next-draft");
     saved = true;
     await act(async () => finishWrite(Response.json({ ok: true, data: {
       characterIds: ["character-submitted"], configuredCharacterIds: ["character-submitted"],
       effectiveCharacterIds: [], settingVersion: 4, settingDiagnostics: [], skipped: [], invalid: [],
     } })));
 
-    expect(ids.value).toBe("character-next-draft");
-    expect(reason.value).toBe("New curated ordering");
-    expect(confirmation.value).toBe("character-next-draft");
-    expect(save.disabled).toBe(false);
-    await act(async () => save.click());
+    expect(draftRows()).toEqual(["character-submitted", "character-next-draft"]);
+    expect(saveFeaturedButton().disabled).toBe(false);
+    await act(async () => saveFeaturedButton().click());
     expect(writes).toEqual([
-      { characterIds: ["character-submitted"], expectedVersion: 3, reason: "First curated ordering", confirmation: "character-submitted" },
-      { characterIds: ["character-next-draft"], expectedVersion: 4, reason: "New curated ordering", confirmation: "character-next-draft" },
+      { characterIds: ["character-submitted"], expectedVersion: 3, reason: "Update Featured (+1, -0)" },
+      { characterIds: ["character-submitted", "character-next-draft"], expectedVersion: 4, reason: "Update Featured (+1, -0)" },
     ]);
   });
 
-  function requiredInput(selector: string) {
-    const input = container.querySelector<HTMLInputElement>(selector);
-    if (!input) throw new Error(`Missing input ${selector}`);
-    return input;
+  // SPEC: 选对象、排序、看差异、一键保存；全程不出现 ID 输入和键入确认。
+  it("reorders with buttons, shows the difference by name, and saves in one click", async () => {
+    const writes: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).includes("/api/v2/admin/content/characters")) return charactersFixture(String(input));
+      if (init?.method === "PUT") {
+        writes.push(JSON.parse(String(init.body)));
+        return Response.json({ ok: true, data: {
+          characterIds: ["two", "one"], configuredCharacterIds: ["two", "one"],
+          effectiveCharacterIds: ["two"], settingVersion: 6, settingDiagnostics: [], skipped: [], invalid: [],
+        } });
+      }
+      return Response.json({ ok: true, data: {
+        items: [
+          { id: "one", name: "Ada", visibility: "public", status: "approved", thumbnailUrl: null, configuredPosition: 0, configured: true, effective: false,
+            blockers: [{ code: "serving_not_live", message: "Character Serving is not live.", repairDeepLink: "/admin/characters/one?tab=release" }] },
+          { id: "two", name: "Bea", visibility: "public", status: "approved", thumbnailUrl: null, configuredPosition: 1, configured: true, effective: true, blockers: [] },
+        ],
+        characterIds: ["one", "two"], configuredCharacterIds: ["one", "two"], effectiveCharacterIds: ["two"],
+        settingVersion: 5, settingDiagnostics: [],
+      } });
+    }));
+    await act(async () => root.render(<ContentMerchandisingWorkspace canCurate canWrite={false} />));
+    await waitFor(() => Boolean(saveFeaturedButtonOrNull()));
+    expect(saveFeaturedButton().disabled).toBe(true);
+    // 未上线的行就地说明原因并给出修复入口。
+    expect(container.textContent).toContain("Character Serving is not live.");
+    expect(container.querySelector('a[href="/admin/characters/one?tab=release"]')).not.toBeNull();
+
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Move Bea up"]')!.click());
+    expect(draftRows()).toEqual(["two", "one"]);
+    expect(container.textContent).toContain("Same characters, new order.");
+    await act(async () => saveFeaturedButton().click());
+    expect(writes).toEqual([{ characterIds: ["two", "one"], expectedVersion: 5, reason: "Update Featured (+0, -0)" }]);
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("offers no curation controls without content.placement.write", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      if (String(input).includes("/api/v2/admin/content/characters")) return charactersFixture(String(input));
+      return Response.json({ ok: true, data: {
+        items: [{ id: "one", name: "Ada", visibility: "public", status: "approved", thumbnailUrl: null, configuredPosition: 0, configured: true, effective: true, blockers: [] }],
+        characterIds: ["one"], configuredCharacterIds: ["one"], effectiveCharacterIds: ["one"], settingVersion: 5, settingDiagnostics: [],
+      } });
+    }));
+    await act(async () => root.render(<ContentMerchandisingWorkspace canWrite />));
+    await waitFor(() => container.textContent?.includes("Ada") ?? false);
+    expect(saveFeaturedButtonOrNull()).toBeUndefined();
+    expect(container.querySelector('button[aria-label="Move Ada up"]')).toBeNull();
+    expect(container.textContent).toContain("Editing placements is unavailable");
+  });
+
+  // SPEC: Unlist / Make private 是可逆动作：普通确认，不键入、不填原因。
+  it("unlists through one plain confirmation with an automatic reason", async () => {
+    const writes: Array<[string, unknown]> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+      if (init?.method === "POST") {
+        writes.push([url.pathname, JSON.parse(String(init.body))]);
+        return Response.json({ ok: true, data: { character: { id: "first", visibility: "unlisted", status: "approved" }, replayed: false } });
+      }
+      if (url.pathname.endsWith("/characters")) {
+        return Response.json({ ok: true, data: { items: [{ id: "first", name: "First character", visibility: "public" }], pageInfo: { hasNextPage: false, endCursor: null } } });
+      }
+      return Response.json({ ok: true, data: { items: [], characterIds: [], configuredCharacterIds: [], effectiveCharacterIds: [], settingVersion: 0, settingDiagnostics: [] } });
+    }));
+    await act(async () => root.render(<ContentMerchandisingWorkspace canWrite />));
+    await waitFor(() => container.textContent?.includes("First character") ?? false);
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent?.trim() === "Unlist")!.click());
+    const dialog = document.body.querySelector('[role="dialog"]')!;
+    expect(dialog.querySelector("input")).toBeNull();
+    const submit = [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Unlist")!;
+    expect(submit.disabled).toBe(false);
+    await act(async () => submit.click());
+    expect(writes).toEqual([["/api/v2/admin/content/characters/first/visibility", {
+      visibility: "unlisted", reason: "Unlist", confirmation: "first:visibility:unlisted",
+    }]]);
+  });
+
+  function saveFeaturedButtonOrNull() {
+    return [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Save featured");
+  }
+
+  function saveFeaturedButton() {
+    const button = saveFeaturedButtonOrNull();
+    if (!button) throw new Error("Missing Save featured");
+    return button;
+  }
+
+  function draftRows() {
+    return [...container.querySelectorAll('ol[aria-label="Featured configuration and live status"] > li')]
+      .map(row => row.querySelector("span[title]")?.getAttribute("title") ?? "");
+  }
+
+  async function pickCharacter(name: string) {
+    const search = container.querySelector<HTMLInputElement>('input[type="search"][placeholder="Search by character name"]');
+    if (!search) throw new Error("Missing Featured search");
+    await changeInput(search, name);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 230)); });
+    const results = container.querySelector('[data-testid="featured-search-results"]');
+    const result = [...(results?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(button => button.textContent?.includes(name));
+    if (!result) throw new Error(`Missing Featured search result ${name}`);
+    await act(async () => result.click());
   }
 
   it("restores the page and visited cursors after refresh, remount, and browser navigation", async () => {
@@ -390,6 +445,15 @@ describe("ContentMerchandisingWorkspace Featured concurrency", () => {
     await act(async () => pageButton(label).click());
   }
 });
+
+// 目录列表 fixture：带 search 时把搜索词当角色名返回，其余情况是空表。
+function charactersFixture(path: string) {
+  const search = new URL(path, "http://localhost").searchParams.get("search");
+  return Response.json({ ok: true, data: {
+    items: search ? [{ id: search, name: search, visibility: "public", status: "approved", servingState: "live", imageAsset: null }] : [],
+    pageInfo: { endCursor: null, hasNextPage: false },
+  } });
+}
 
 async function changeInput(input: HTMLInputElement, value: string) {
   await act(async () => {

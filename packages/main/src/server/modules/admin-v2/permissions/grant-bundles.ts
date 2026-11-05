@@ -1,6 +1,7 @@
 import type { AdminUserGrantBundle, Prisma } from "@prisma/client";
 import {
   ADMIN_GRANT_BUNDLES,
+  adminGrantBundleRequiresCharacterScope,
   adminGrantBundleKeySchema,
   adminGrantBundleListSchema,
   adminGrantBundleMutationSchema,
@@ -15,10 +16,11 @@ import { actorWithPermission, type AdminActor } from "@/server/modules/admin-v2/
 import { toInputJson } from "../shared/prisma-json";
 
 function assertBundleScope(bundleKey: AdminGrantBundleKey, scope: { readonly characterIds: readonly string[] } | undefined) {
-  if (bundleKey === "character_producer" && (!scope || scope.characterIds.length === 0)) {
-    throw Errors.badRequest("Character producer grants require at least one assigned Character");
+  const scoped = adminGrantBundleRequiresCharacterScope(bundleKey);
+  if (scoped && (!scope || scope.characterIds.length === 0)) {
+    throw Errors.badRequest("Character-scoped grants require at least one assigned Character");
   }
-  if (bundleKey !== "character_producer" && scope?.characterIds.length) {
+  if (!scoped && scope?.characterIds.length) {
     throw Errors.badRequest("This grant bundle does not accept Character scope");
   }
 }

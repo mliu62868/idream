@@ -75,7 +75,7 @@
 | Character Option Catalog（P1） | personality/voice/occupation/relationship/hobby/fetish 的选项、定义版本、可见性、排序与公开广度 |
 | Visual Identity / Reference Set | immutable 身份版本/hash、prompt/traits/anchors、来源；参考集有有序 manifest、revision/hash、每个身份唯一 active revision，替换需 CAS |
 | Character Image Library | 同角色图片、上传或生成的真实来源、文件可用性、基础检查、依赖和归档状态；创作用途不锁定产品槽位 |
-| Creation Handoff | 指定内容版本、身份、参考集、可选择图片与仍需修复的项；不产生 Release 或 Serving 变更 |
+| Creation Handoff | 一键记录当前内容版本、身份、参考集与可选择图片数，可附备注；不可变、非阻塞，不产生 Release 或 Serving 变更，也不是发布前置步骤 |
 | Release Candidate / Release | 冻结内容、身份、参考集、三张不同槽位图片及各自精确来源、校验版本/结果；发布快照不可变 |
 | Character Serving | 唯一线上 Release 指针、版本、live/paused/retired；决定新公共读取和执行资格，已有会话保留原 pin |
 | Catalog / Character Stats | 标签、公开资格、可解释的 views/likes/interaction 口径；成功回复数不能冒充会话数 |
@@ -399,7 +399,7 @@ Admin 通过独立 BFF 调 Main `/api/v2/admin/*`。真实 endpoint、Zod、读�
 | 运营任务 | 必须具备的能力与结果 |
 | --- | --- |
 | 今日工作 | Mine/Unassigned/Watching/All、服务端计数/排序/游标、排序原因、影响/owner/SLA、对象深链；验证失败重新入队 |
-| 角色供给 | 角色/起始模板的一句话 AI 辅助预填及可编辑草稿、内容与身份创作、图片库/handoff、三槽位编排、preview、显式发布/暂停/回滚、结果监测及小样本提示；辅助结果不代替成年字段与基础校验 |
+| 角色供给 | 角色/起始模板的一句话 AI 辅助预填及可编辑草稿、内容与身份创作、图片库、非阻塞的一键创作交接记录、三槽位编排、preview、显式发布/暂停/回滚、结果监测及小样本提示；辅助结果不代替成年字段与基础校验。不做单角色 A/B（会破坏 Serving 唯一指针），「新版是否更好」由 Release 前后对比回答 |
 | 内容运营 | 外部制作后上传、图库搜索/tag/归档、展示位草稿/预览/验证/撤下、精选、CMS/SEO、公告、campaign/collection；保留来源与投放历史 |
 | 用户与客服 | Customer 360、typed Case/Evidence、领取/转派、举报/申诉/账单争议、客户回复、解决/重开、账号请求和授权访问 |
 | 生成与事故 | Request/Attempt/Transport/Artifact/Delivery/settlement 下钻、错误分类/建议、Incident occurrence 聚类、恢复/reconcile、合格重试/弃单与补偿 |
@@ -413,7 +413,7 @@ Admin 通过独立 BFF 调 Main `/api/v2/admin/*`。真实 endpoint、Zod、读�
 
 **命令与确认。** effective permission、目标版本、幂等 hash/key、资格与接受的报价统一在服务端校验。原回执先于可变 preflight；成功重放不因后来改价/改身份失效，同 key 不同请求冲突。批量先 preview 固定 eligible/skipped 目标、影响/费用、版本、集合 hash 和有效期，再按该 plan execute；过期或漂移重新 preview。写入事务同步保存领域变化、Audit/Activity 与 Outbox；长任务返回已接纳，完成需验证消费面。running/verifying 的 lease/heartbeat/attempt 有限，worker 崩溃由 reconciler 安全恢复或转需核对，不永久卡住。
 
-非破坏单项使用 confirm；资金、发布/回滚、封号、权限及敏感访问使用理由和键入实体名称确认，并展示效果/可撤销性。具体 UI 由 `ConfirmSpec` 驱动。需要双人审批时 requester 与 approver 不同，审批人持实际操作权限，approval 绑定 commandType/目标/payloadHash/expectedVersion/有效期，双方留审计；这不增加日常角色或图片审核。
+非破坏单项使用 confirm；资金、封号、权限及敏感访问使用理由和键入实体名称确认，并展示效果/可撤销性。角色发布、暂停、恢复单击执行；回滚和不可逆退役只用一个普通确认框（说清影响，不键入、不勾选），原因由客户端自动生成，硬边界仍是不可变 Release、Serving 唯一指针、发布时服务端重新校验、幂等与 CAS。声音激活立即生效，不进入 Release。Featured 保存只需 CAS 版本，选择角色后一键保存。具体 UI 由 `ConfirmSpec` 驱动。需要双人审批时 requester 与 approver 不同，审批人持实际操作权限，approval 绑定 commandType/目标/payloadHash/expectedVersion/有效期，双方留审计；这不增加日常角色或图片审核。
 
 **恢复。** 浏览器发送前保存 actor/environment/resource 绑定的精确 intent/key；刷新、断网、两 tab 不换身份重复写。401/403 不是命令终态。未知接纳不能无限自动重放：超过 24h 或精确请求不能安全重放时保留 receipt/key 并进入显式 reconcile；已提交只读回精确投影，未提交由原授权/同一资源锁产生取消 tombstone，防迟到写。同角色互斥发布/暂停/回滚命令由服务端协调锁限制，浏览器不独占权威。每个 Character 恢复先授权该角色，回执 target/result 必须匹配；bootstrap 核对身份/参考集/anchor/草稿，采用核对实际槽位与 asset 后才解锁。
 

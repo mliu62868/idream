@@ -213,8 +213,6 @@ describe("Character release history empty state", () => {
     const section = [...container.querySelectorAll("details")]
       .find((item) => item.querySelector("summary")?.textContent === "角色状态与回滚");
     expect(section?.open).toBe(isCurrent);
-    const pause = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "暂停上线服务");
-    expect(pause?.disabled).toBe(true);
     expect(request).not.toHaveBeenCalled();
   });
 
@@ -234,36 +232,127 @@ describe("Character release history empty state", () => {
     expect(request).toHaveBeenCalledWith("/api/v2/admin/characters/character-fixture/releases/blocked-candidate/commands/withdraw", expect.objectContaining({ body: expect.objectContaining({ entityVersion: 4, confirmation: "character-fixture:blocked-candidate:withdraw", reason: { code: "operator_withdraw", summary: "放弃待发布版本" } }) }));
   });
 
-  it.each(["inactive", "paused"] as const)("offers direct exit from %s without publishing first", async (state) => {
-    const request = vi.spyOn(transport, "adminV2Request").mockResolvedValue({ commandId: "archive-command" });
-    await render(characterWorkspaceDetail({ serving: { characterId: "character-fixture", state, version: 9, currentReleaseId: state === "paused" ? "published" : null, updatedAt: "2026-09-05T00:00:00.000Z" } }));
-    const label = state === "inactive" ? "归档草稿" : "停用角色";
-    const button = [...container.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent?.trim() === label)!;
-    expect(button).toBeDefined();
-    expect(button.disabled).toBe(true);
-    await act(async () => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
-    if (state === "paused") {
-      // Retiring a published Character is permanent and needs its own acknowledgement.
-      expect(container.textContent).toContain("停用不可撤销");
-      expect(button.disabled).toBe(true);
-      await act(async () => container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')[1]!.click());
-    } else {
-      expect(container.textContent).not.toContain("停用不可撤销");
-    }
-    expect(button.disabled).toBe(false);
-    await act(async () => button.click());
-    expect(request).toHaveBeenCalledWith("/api/v2/admin/characters/character-fixture/commands/retire", expect.objectContaining({ body: expect.objectContaining({ entityVersion: 9, confirmation: "character-fixture:retire" }) }));
+  function button(label: string) {
+    return [...container.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent?.trim() === label);
+  }
+
+  function dialog() {
+    return document.body.querySelector<HTMLElement>('[role="dialog"]');
+  }
+
+  async function confirmInDialog(label: string) {
+    const submit = [...dialog()!.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent?.trim() === label)!;
+    expect(submit.disabled).toBe(false);
+    await act(async () => submit.click());
+  }
+
+  const servingFixture = (state: "live" | "paused" | "inactive" | "retired", currentReleaseId: string | null, version = 9) =>
+    characterWorkspaceDetail({ serving: { characterId: "character-fixture", state, version, currentReleaseId, updatedAt: "2026-09-05T00:00:00.000Z" } });
+
+  // SPEC: 暂停、恢复、恢复草稿一键执行，既不勾选也不进确认框。
+  it.each([
+    ["pause", "live", "published", "暂停上线服务"],
+    ["resume", "paused", "published", "恢复上线服务"],
+    ["restore", "retired", null, "恢复草稿"],
+    ["retire", "inactive", null, "归档草稿"],
+  ] as const)("runs %s with a single click and an automatic reason", async (action, state, currentReleaseId, label) => {
+    const request = vi.spyOn(transport, "adminV2Request").mockResolvedValue({ commandId: `${action}-command` });
+    await render(servingFixture(state, currentReleaseId));
+    expect(container.querySelector('input[type="checkbox"]')).toBeNull();
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).not.toContain("我确认执行该发布操作");
+    await act(async () => button(label)!.click());
+    expect(dialog()).toBeNull();
     expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith(
+      `/api/v2/admin/characters/character-fixture/commands/${action}`,
+      expect.objectContaining({ body: expect.objectContaining({
+        entityVersion: 9,
+        confirmation: `character-fixture:${action}`,
+        reason: { code: `operator_${action}`, summary: label === "归档草稿" ? "归档草稿" : expect.any(String) },
+      }) }),
+    );
+  });
+
+  // SPEC: 暂停 / 恢复是最常用的运营动作，不能藏在折叠区里。
+  it("keeps pause and resume outside the collapsed availability section", async () => {
+    await render(servingFixture("live", "published"));
+    const collapsed = [...container.querySelectorAll("details")].find((item) => item.querySelector("summary")?.textContent === "角色状态与回滚");
+    expect(collapsed?.open).toBe(false);
+    expect(collapsed?.contains(button("暂停上线服务")!)).toBe(false);
+  });
+
+  // SPEC: 不可逆退役只有一个普通确认框：说清影响，不键入、不勾选、不要原因。
+  it.each(["live", "paused"] as const)("retires a %s Character through one plain confirmation", async (state) => {
+    const request = vi.spyOn(transport, "adminV2Request").mockResolvedValue({ commandId: "retire-command" });
+    await render(servingFixture(state, "published"));
+    expect(container.querySelector('input[type="checkbox"]')).toBeNull();
+    await act(async () => button("停用角色")!.click());
+    expect(request).not.toHaveBeenCalled();
+    expect(dialog()?.textContent).toContain("停用不可撤销");
+    expect(dialog()?.querySelector("input")).toBeNull();
+    await confirmInDialog("停用角色");
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith("/api/v2/admin/characters/character-fixture/commands/retire", expect.objectContaining({
+      body: expect.objectContaining({ entityVersion: 9, confirmation: "character-fixture:retire", reason: { code: "operator_retire", summary: "停用角色" } }),
+    }));
+    expect(dialog()).toBeNull();
+  });
+
+  it("cancels a retire without sending anything", async () => {
+    const request = vi.spyOn(transport, "adminV2Request");
+    await render(servingFixture("paused", "published"));
+    await act(async () => button("停用角色")!.click());
+    await act(async () => [...dialog()!.querySelectorAll("button")].find((item) => item.textContent?.trim() === translateAdmin("zh", "Cancel"))!.click());
+    expect(dialog()).toBeNull();
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("rolls back through one plain confirmation with the Serving version", async () => {
+    const stamp = "2026-09-05T00:00:00.000Z";
+    const release: CharacterWorkspaceDetail["releases"][number]["release"] = {
+      id: "older-release", projectId: "project-fixture", revisionId: "revision-fixture", characterContentVersionId: "content-fixture",
+      visualProfileId: null, visualProfileVersion: null, referenceSetRevisionId: null, generationProvenance: {}, releasePlacementManifest: {},
+      snapshotHash: "snapshot", readiness: "ready", status: "superseded", legacy: false, publishedAt: stamp,
+      supersedesId: null, rollbackOfReleaseId: null, version: 2, createdAt: stamp, updatedAt: stamp,
+    };
+    const request = vi.spyOn(transport, "adminV2Request").mockResolvedValue({ commandId: "rollback-command" });
+    await render(characterWorkspaceDetail({
+      serving: { characterId: "character-fixture", state: "live", version: 9, currentReleaseId: "current-release", updatedAt: stamp },
+      releases: [
+        { release, checks: [], monitors: [] },
+        { release: { ...release, id: "current-release", status: "published" }, checks: [], monitors: [] },
+      ],
+    }));
+    await act(async () => button("回滚")!.click());
+    expect(request).not.toHaveBeenCalled();
+    expect(dialog()?.querySelector("input")).toBeNull();
+    await confirmInDialog("回滚");
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith("/api/v2/admin/characters/character-fixture/releases/older-release/commands/rollback", expect.objectContaining({
+      body: expect.objectContaining({ entityVersion: 9, confirmation: "character-fixture:older-release:rollback", reason: { code: "operator_rollback", summary: "回滚" } }),
+    }));
+  });
+
+  // SPEC: 候选状态 approved 没有人批准过，UI 只说「待发布」。
+  it("shows a candidate as pending publish, never as approved", async () => {
+    const stamp = "2026-09-05T00:00:00.000Z";
+    await render(characterWorkspaceDetail({ releases: [{ release: {
+      id: "candidate", projectId: "project-fixture", revisionId: "revision-fixture", characterContentVersionId: "content-fixture",
+      visualProfileId: null, visualProfileVersion: null, referenceSetRevisionId: null, generationProvenance: {}, releasePlacementManifest: {},
+      snapshotHash: "snapshot", readiness: "ready", status: "approved", legacy: false, publishedAt: null, supersedesId: null, rollbackOfReleaseId: null,
+      version: 4, createdAt: stamp, updatedAt: stamp,
+    }, checks: [], monitors: [] }] }));
+    expect(container.textContent).toContain("待发布");
+    expect(container.textContent).not.toContain("已通过");
+    expect(container.textContent).not.toContain("已批准");
   });
 
   it("restores an archived draft to editing without offering publication", async () => {
     const request = vi.spyOn(transport, "adminV2Request").mockResolvedValue({ commandId: "restore-command" });
     await render(characterWorkspaceDetail({ ...readyCharacter(), serving: { characterId: "character-fixture", state: "retired", currentReleaseId: null, version: 10, updatedAt: "2026-09-05T00:00:00.000Z" } }));
     expect(publishButton()).toBeUndefined();
-    const button = [...container.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent?.trim() === "恢复草稿")!;
-    expect(button).toBeDefined();
-    await act(async () => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
-    await act(async () => button.click());
+    await act(async () => button("恢复草稿")!.click());
     expect(request).toHaveBeenCalledWith("/api/v2/admin/characters/character-fixture/commands/restore", expect.objectContaining({ body: expect.objectContaining({ entityVersion: 10, reason: { code: "operator_restore", summary: "恢复草稿" } }) }));
   });
 
@@ -273,7 +362,6 @@ describe("Character release history empty state", () => {
   ])("translates interpolated submission outcomes in the mounted release panel", async (cause, message) => {
     vi.spyOn(transport, "adminV2Request").mockRejectedValue(cause);
     await render(characterWorkspaceDetail({ ...readyCharacter(), serving: { characterId: "character-fixture", state: "retired", currentReleaseId: null, version: 10, updatedAt: "2026-09-05T00:00:00.000Z" } }));
-    await act(async () => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
     const restore = [...container.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent?.trim() === "恢复草稿")!;
     await act(async () => restore.click());
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(message);
@@ -327,21 +415,13 @@ describe("Character release history empty state", () => {
     expect(publishButton()?.disabled).toBe(false);
   });
 
-  it("refuses a 1-2 character reason before the server rejects it", async () => {
+  it("publishes without asking for a reason", async () => {
     const stamp = "2026-09-05T00:00:00.000Z";
     await render(withCharacterWorkspaceDetail(readyCharacter(), {
       serving: { characterId: "character-fixture", state: "live", currentReleaseId: "live-release", version: 5, updatedAt: stamp },
       preview: { changedFields: ["persona"] },
     }));
-    const reason = container.querySelector("textarea")!;
-    const type = async (value: string) => act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(reason, value);
-      reason.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await type("ok");
-    expect(publishButton()?.disabled).toBe(true);
-    expect(container.textContent).toContain("理由至少 3 个字符");
-    await type("");
+    expect(container.querySelector("textarea")).toBeNull();
     expect(publishButton()?.disabled).toBe(false);
   });
 

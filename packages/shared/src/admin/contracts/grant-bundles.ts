@@ -4,6 +4,8 @@ import { adminIdSchema, adminIsoDateTimeSchema } from "./common";
 
 export const adminGrantBundleKeySchema = z.enum([
   "character_producer",
+  "character_creator",
+  "character_publisher",
   "creative_operator",
   "growth_operator",
 ]);
