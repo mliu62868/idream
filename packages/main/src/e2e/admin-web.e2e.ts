@@ -8,6 +8,7 @@ import { compileUserCharacterContent, materializeUserCharacterContentVersion } f
 import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
 import { bindApprovalIntent } from "@/server/modules/admin-v2/approvals/intent";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
+import { dreamcoinBalance, postDreamcoinEntry } from "@/server/modules/billing/ledger";
 
 function uniqueEmail(tag: string) {
   return `e2e-admin-${tag}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@test.local`;
@@ -899,16 +900,25 @@ test("admin dead-letter queue discards failed jobs with refund audit", async ({ 
         errorCode: "provider_timeout",
       },
     });
-    await prisma.dreamcoinLedger.create({
-      data: {
+    await prisma.$transaction(async (tx) => {
+      await postDreamcoinEntry(tx, {
+        kind: "signup_bonus",
         userId: ownerId,
-        delta: -7,
-        balanceAfter: -7,
-        reason: "generation_spend",
+        amount: 7,
+        sourceId: ownerId,
+        idempotencyKey: `${ownerId}:bonus`,
+      });
+      // The billing writer records the settlement link used by the read-only
+      // dead-letter projection to distinguish a charge from an uncharged quote.
+      await postDreamcoinEntry(tx, {
+        kind: "generation_spend",
+        userId: ownerId,
+        amount: 7,
         sourceId: jobId,
         idempotencyKey: `generation:${jobId}:spend`,
-      },
+      });
     });
+    expect(await dreamcoinBalance(ownerId)).toBe(0);
 
     const adminURL = adminBaseURL();
     await page.goto(`${adminURL}/admin/generation/dead-letter`);
@@ -917,7 +927,7 @@ test("admin dead-letter queue discards failed jobs with refund audit", async ({ 
     const rowCheckbox = page.getByRole("checkbox", { name: `Select row ${jobId}` });
     await expect(rowCheckbox).toBeVisible({ timeout: 20_000 });
     const jobRow = rowCheckbox.locator("xpath=ancestor::tr");
-    await expect(jobRow.getByText("reserved", { exact: true })).toBeVisible();
+    await expect(jobRow.getByText("Charged", { exact: true })).toBeVisible();
     await rowCheckbox.check();
     await page.getByRole("button", { name: "Discard selected" }).click();
 
@@ -940,6 +950,11 @@ test("admin dead-letter queue discards failed jobs with refund audit", async ({ 
     const ledger = await prisma.dreamcoinLedger.findMany({ where: { sourceId: jobId } });
     const refund = ledger.find((entry) => entry.reason === "refund");
     expect(refund?.delta, JSON.stringify({ audit: audit?.after, ledger }, null, 2)).toBe(7);
+    expect(ledger.filter((entry) => entry.reason === "refund")).toHaveLength(1);
+    expect(await dreamcoinBalance(ownerId)).toBe(7);
+    expect(await prisma.generationSettlementLink.findMany({
+      where: { requestId: jobId, kind: "refund" },
+    })).toEqual([expect.objectContaining({ ledgerEntryId: refund!.id })]);
     expect(audit?.targetType).toBe("generation_job_batch");
     expect(consoleFailures).toEqual([]);
   } finally {
@@ -950,7 +965,7 @@ test("admin dead-letter queue discards failed jobs with refund audit", async ({ 
     //            漏删就是永久悬空行——实测开发库已经攒了 3 轮 e2e 的 6 条，
     //            并且每条都会被 generation_settlement_link_mismatch 记成一次账目违规。
     await prisma.generationSettlementLink.deleteMany({ where: { requestId: jobId } });
-    await prisma.dreamcoinLedger.deleteMany({ where: { sourceId: jobId } });
+    await prisma.dreamcoinLedger.deleteMany({ where: { userId: ownerId } });
     await prisma.generationJob.deleteMany({ where: { id: jobId } });
     await prisma.user.deleteMany({ where: { id: { in: [admin.id, ownerId] } } });
   }
@@ -1126,8 +1141,10 @@ test("admin Chat Ops isolates authority failures and restores URL filters", asyn
   await page.goto(`${adminURL}/admin/chat`);
   await expectAdminShellReady(page, "Chat Operations");
   await expect(page.getByText("Usage: unavailable", { exact: false })).toBeVisible();
-  const usageFailure = page.getByRole("alert").filter({ hasText: "This action did not complete." });
+  const usageFailure = page.getByRole("alert").filter({ hasText: "The authority hit an internal error." });
   await expect(usageFailure).toBeVisible();
+  await expect(usageFailure).toContainText("Retry to load the latest data. The technical details identify the failed read.");
+  await expect(usageFailure.getByRole("button", { name: "Retry", exact: true })).toBeEnabled();
   await usageFailure.getByLabel("Engineering details", { exact: true }).click();
   await expect(usageFailure.locator("pre")).toContainText("code: upstream_error");
   await expect(usageFailure.locator("pre")).toContainText("status: 500");

@@ -21,7 +21,7 @@ import {
 import type { ExistingGenerationJob } from "@/server/modules/generation/attempt-dispatch";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import { reserveRetryGenerationAttempt } from "@/server/modules/generation/generation-attempt-authority";
-import { readGenerationSettlements } from "@/server/modules/ourdream/generation-job-read-model";
+import { generationJobInclude, readGenerationSettlements } from "@/server/modules/ourdream/generation-job-read-model";
 import {
   actorWithPermission,
   jsonBody,
@@ -78,7 +78,7 @@ export async function listGenerationDeadLetter(request: Request) {
     fetch: (paging: AdminKeysetPaging<Prisma.GenerationJobOrderByWithRelationInput>) =>
       prisma.generationJob.findMany({
         where: { AND: [where, ...paging.cursorWhere] },
-        include: { assets: true, events: { orderBy: { createdAt: "asc" } } },
+        include: generationJobInclude(),
         orderBy: paging.orderBy,
         take: paging.take,
       }),
@@ -136,7 +136,7 @@ export async function requeueGenerationDeadLetterBatch(request: Request) {
     mutate: async (tx) => {
       const jobs = await tx.generationJob.findMany({
         where: operationalGenerationJobWhere({ id: { in: [...body.jobIds] } }),
-        include: { assets: true, events: { orderBy: { createdAt: "asc" } } },
+        include: generationJobInclude(),
       });
       const refundedIds = await refundedJobIds(tx, [...body.jobIds]);
       const retiredPins = await retiredWorkflowPins(jobs.map((job) => job.id));
@@ -237,7 +237,7 @@ export async function requeueGenerationDeadLetterJob(request: Request, jobId: st
     mutate: async (tx) => {
       const job = await tx.generationJob.findFirst({
         where: operationalGenerationJobWhere({ id: jobId }),
-        include: { assets: true, events: { orderBy: { createdAt: "asc" } } },
+        include: generationJobInclude(),
       });
       if (!job) throw Errors.notFound("Generation job not found");
       const refunds = await refundedJobIds(tx, [job.id]);

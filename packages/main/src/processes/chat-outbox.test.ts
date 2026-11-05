@@ -217,33 +217,62 @@ describe("main to chat durable outbox", () => {
   });
 
   it("does not deliver or age a product-scheduled event before deliverAfter", async () => {
-    const deliverAfter = new Date(Date.now() + 60_000);
-    await recordMainToChatEvent({
-      eventId,
-      eventType: MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2,
-      schemaVersion: 2,
-      aggregateType: "user",
-      aggregateId: "user-1",
-      payload: { userId: "user-1" },
-      deliverAfter,
+    const now = Date.now();
+    const oldest = await prisma.mainOutboxEvent.findFirst({
+      orderBy: { createdAt: "asc" }, select: { createdAt: true },
     });
-    const deliver = vi.fn(async () => {});
+    const memoryCreatedAt = new Date(Math.min(now - 60_000, (oldest?.createdAt.getTime() ?? now) - 1));
+    const memoryId = `${eventId}-pending-memory`;
+    // Keep real DB timers while comparing the queue-wide age at one instant.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(now);
+    try {
+      await recordMainToChatEvent({
+        eventId: memoryId,
+        eventType: MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1,
+        aggregateType: "chat_relationship",
+        aggregateId: memoryId,
+        payload: { userId: "user-1", characterId: "character-1" },
+      });
+      await prisma.mainOutboxEvent.update({
+        where: { id: memoryId },
+        data: { createdAt: memoryCreatedAt, nextRunAt: new Date(0) },
+      });
+      // The metric spans both lanes; existing memory work must still age even
+      // when this dispatcher only processes lifecycle events.
+      const pendingAgeMetric = `main_outbox_pending_age_seconds{queue="chat"} ${(now - memoryCreatedAt.getTime()) / 1_000}`;
+      await dispatchPendingChatEvents({ lane: "lifecycle", batch: 0 });
+      expect(renderPrometheusMetrics().split("\n")).toContain(pendingAgeMetric);
 
-    await expect(dispatchPendingChatEvents({ lane: "lifecycle", deliver })).resolves.toEqual({
-      delivered: 0,
-      failed: 0,
-    });
-    expect(deliver).not.toHaveBeenCalled();
-    await expect(prisma.mainOutboxEvent.findUniqueOrThrow({
-      where: { id: eventId },
-    })).resolves.toMatchObject({
-      status: "pending",
-      attempts: 0,
-      nextRunAt: deliverAfter,
-    });
-    expect(renderPrometheusMetrics()).toContain(
-      'main_outbox_pending_age_seconds{queue="chat"} 0',
-    );
+      const deliverAfter = new Date(now + 60_000);
+      await recordMainToChatEvent({
+        eventId,
+        eventType: MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2,
+        schemaVersion: 2,
+        aggregateType: "user",
+        aggregateId: "user-1",
+        payload: { userId: "user-1" },
+        deliverAfter,
+      });
+      // If due-time filtering regresses, this older scheduled event would
+      // increase the measured age and be selected for delivery first.
+      await prisma.mainOutboxEvent.update({
+        where: { id: eventId }, data: { createdAt: new Date(memoryCreatedAt.getTime() - 1_000) },
+      });
+      const deliver = vi.fn(async () => {});
+      await expect(dispatchPendingChatEvents({ lane: "lifecycle", deliver })).resolves.toMatchObject({ failed: 0 });
+      // Other suites may leave due lifecycle events in the shared database.
+      expect(deliver).not.toHaveBeenCalledWith(expect.objectContaining({ sourceEventId: eventId }));
+      await expect(prisma.mainOutboxEvent.findUniqueOrThrow({
+        where: { id: eventId },
+      })).resolves.toMatchObject({ status: "pending", attempts: 0, nextRunAt: deliverAfter });
+      await expect(prisma.mainOutboxEvent.findUniqueOrThrow({
+        where: { id: memoryId },
+      })).resolves.toMatchObject({ status: "pending", attempts: 0 });
+      expect(renderPrometheusMetrics().split("\n")).toContain(pendingAgeMetric);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps account deletion v2 pending across a rolled-back Chat capability window", async () => {

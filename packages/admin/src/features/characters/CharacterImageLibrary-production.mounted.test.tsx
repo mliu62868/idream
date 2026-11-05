@@ -23,6 +23,7 @@ vi.mock("@/components/admin/i18n", () => {
 
 import { CharacterImageLibrary } from "./CharacterImageLibrary";
 import { characterWorkspaceDetail } from "./character-workspace-fixture";
+import { emptyCharacterMediaLibrary } from "./character-media-library-fixture";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -47,6 +48,7 @@ it.each([false, true])("refreshes the library when a generated candidate is deli
     updatedAt: "2026-09-02T12:00:00.000Z",
   };
   adminV2Request.mockImplementation(async (path: string) => {
+    if (new URL(path, "http://admin.test").pathname.endsWith("/media-library")) return emptyCharacterMediaLibrary();
     if (path.includes("/image-sources")) {
       if (!delivered) return { items: [], nextCursor: null };
       const asset: CharacterImageSourceAsset = {

@@ -10,7 +10,8 @@ import { prisma } from "@/server/lib/db";
 export function generationJobInclude() {
   return {
     assets: true,
-    events: { orderBy: { createdAt: "asc" as const } },
+    // Admission events can share a timestamp; their CUIDs preserve writer order.
+    events: { orderBy: [{ createdAt: "asc" as const }, { id: "asc" as const }] },
   } satisfies Prisma.GenerationJobInclude;
 }
 

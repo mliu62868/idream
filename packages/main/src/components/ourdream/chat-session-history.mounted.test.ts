@@ -24,8 +24,8 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
 async function settle() { await act(async () => { await new Promise(resolve => setTimeout(resolve, 15)); }); }
-async function more() {
-  const button = [...container.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent === "Load more chats");
+async function more(label = "Load more chats") {
+  const button = [...container.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent === label);
   expect(button).toBeDefined();
   await act(async () => button!.click());
 }
@@ -39,14 +39,22 @@ function ControlledDrawer() {
 
 describe("Complete chat history navigation", () => {
   it("reveals the 51st archived session from the hub without changing its exact destination", async () => {
+    const archivedRows = rows.map(row => ({ ...row, status: "archived" }));
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((input, init) => String(input) === "/api/v1/chat/sessions"
+      ? Promise.resolve(Response.json([...archivedRows, { ...rows[0], id: "deleted", status: "deleted" }]))
+      : base(input, init));
     await act(async () => root.render(createElement(ChatHubWorkspace))); await settle();
     expect(container.querySelectorAll('[data-testid="chat-hub-session"]')).toHaveLength(50);
     expect(container.querySelector('a[href="/chat/session-51"]')).toBeNull();
-    await more();
+    const archived = container.querySelector("details")!;
+    await act(async () => archived.querySelector("summary")!.click());
+    expect(archived.open).toBe(true);
+    await more("Load more archived chats");
     expect(container.querySelector('a[href="/chat/session-51"]')?.textContent).toContain("Conversation 51");
-    expect(container.querySelector('a[href="/chat/session-51"]')?.textContent).toContain("Archived");
+    expect(container.querySelector('a[href="/chat/session-51"]')?.closest("details")?.textContent).toContain("Archived chats (51)");
     expect(container.querySelector('a[href="/chat/deleted"]')).toBeNull();
-    expect(container.textContent).not.toContain("Load more chats");
+    expect(container.textContent).not.toContain("Load more archived chats");
   });
 
   it("reveals older drawer sessions and resets the window when the drawer reopens", async () => {

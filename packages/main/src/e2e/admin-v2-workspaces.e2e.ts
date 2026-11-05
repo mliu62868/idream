@@ -1124,6 +1124,10 @@ async function completeResponsiveCoreFlows(
 test.describe.serial("Admin v2 operator workspaces", () => {
   test.describe.configure({ retries: 0 });
   test.beforeAll(async () => {
+    const bootstrapWorkflow = await generationWorkflowDescriptor(
+      "redcraft-qw21t",
+    );
+    if (!bootstrapWorkflow) throw new Error("E2E bootstrap workflow is unavailable");
     const identityWorkflow = await generationWorkflowDescriptor(
       "qwen-image-edit-img2img",
     );
@@ -1137,9 +1141,10 @@ test.describe.serial("Admin v2 operator workspaces", () => {
           label: "E2E pipeline identity bootstrap",
           mode: "image",
           runner: "comfyui",
-          pipelineModel: "redqw21",
-          workflowKey: "redqw21",
+          pipelineModel: bootstrapWorkflow.modelId,
+          workflowKey: bootstrapWorkflow.workflowKey,
           runnerConfig: {
+            workflowVersion: bootstrapWorkflow.version,
             capabilities: {
               textToImage: true,
               stableSeed: true,
