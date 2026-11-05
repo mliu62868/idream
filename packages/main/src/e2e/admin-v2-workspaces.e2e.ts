@@ -405,13 +405,13 @@ async function completeCharacterCreateDraft(
   await assertNotCreated();
 
   await page
-    .getByLabel("Identity anchor")
+    .getByLabel("Look in one line")
     .fill("Composed late-night radio host with a recognizable adult face");
   await page
-    .getByLabel("Stable traits (one per line)")
+    .getByLabel("Features that never change (one per line)")
     .fill("Dark wavy hair\nWarm brown eyes");
   await page
-    .getByLabel("Reference direction")
+    .getByLabel("Image mood and framing")
     .fill("Low-key tungsten portraiture with an intimate editorial crop");
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await assertNotCreated();
