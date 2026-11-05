@@ -1,4 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Prisma } from "@prisma/client";
 import { redgraftLtx25VideoProductionRecipe } from "@idream/shared";
 import { z } from "zod";
@@ -28,6 +31,24 @@ import { prepareGenerationJobForUser } from "./generation-job-create";
 import { appendGenerationEvent, generationWriteRequestFingerprint } from "./generation-job-authority";
 import { generationJobInclude, readGenerationJobs, latestGenerationAttemptStatuses } from "./generation-job-read-model";
 import { composeVideoScenes } from "./video-composition";
+import type { VideoCompositionLane } from "./video-composition-lane";
+
+// Far above any accepted scene (a five-second clip is single-digit MB), low enough
+// that a corrupt or replaced object fails its packaging instead of filling the disk.
+const VIDEO_SCENE_MAX_BYTES = 256 * 1024 * 1024;
+const VIDEO_NARRATION_MAX_BYTES = 32 * 1024 * 1024;
+
+// INTENT: scoped to one sequence's Requests. An unfiltered drain would make this
+// caller, a user's web request or the 1 Hz sweep, pay for every other pending dispatch
+// in the system. admin-command-worker and stale reconcile still sweep what is left.
+async function dispatchSceneAttempts(requestIds: readonly string[]) {
+  if (requestIds.length === 0) return;
+  const rows = await prisma.mainOutboxEvent.findMany({
+    where: { aggregateId: { in: [...requestIds] }, eventType: { in: [...MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES] }, status: { in: ["pending", "dispatched"] } },
+    select: { id: true },
+  });
+  await dispatchGenerationAttemptOutbox(prisma, { outboxIds: rows.map(row => row.id), limit: 100 });
+}
 
 const voicePinSchema = z.object({ provider: z.enum(["pocket_tts", "fish_audio"]), voiceId: z.string().min(1), settingVersion: z.number().int().nonnegative(), language: z.literal("en"), model: z.string().min(1), delivery: fishAudioDeliverySettingsSchema.optional() }).strict();
 const include = { mediaAsset: true, scenes: { orderBy: { ordinal: "asc" as const }, include: { generationJob: { include: generationJobInclude() }, narrationMediaAsset: true } } } satisfies Prisma.VideoSequenceInclude;
@@ -164,7 +185,8 @@ export async function createVideoSequence(userId: string, body: VideoSequenceReq
     }
     return sequence;
   }, { timeout: 30_000 });
-  await dispatchGenerationAttemptOutbox(prisma);
+  const scenes = await prisma.videoSequenceScene.findMany({ where: { sequenceId: sequence.id }, select: { generationJobId: true } });
+  await dispatchSceneAttempts(scenes.map(scene => scene.generationJobId));
   return readVideoSequence(userId, sequence.id);
 }
 
@@ -275,16 +297,25 @@ async function removeUnpublishedArtifact(row: { id: string; userId: string }, ke
   });
 }
 
-async function loadAssetBytes(asset: { storageKey: string | null; url: string; metadata: unknown; deletedAt: Date | null }) {
+// INVARIANT: bounded before any byte is trusted. The finalizer process also owns
+// terminal ingest, so a scene goes to disk rather than the heap wherever the store
+// can stream, and even the buffered fallback is refused past the same limit.
+async function loadAssetToFile(asset: { storageKey: string | null; url: string; metadata: unknown; deletedAt: Date | null }, path: string, maxBytes: number) {
   const locator = !asset.deletedAt && resolveMediaAssetBlobLocator(asset);
-  if (!locator || !providers.blob.getPrivate) throw new Error("A delivered scene is no longer available");
-  const result = await providers.blob.getPrivate({ key: locator.key });
-  if (!result.ok) throw new Error("A delivered scene could not be read");
-  return result.data.body;
+  if (!locator) throw new Error("A delivered scene is no longer available");
+  if (providers.blob.getPrivateToFile) {
+    const copied = await providers.blob.getPrivateToFile({ key: locator.key, path, maxBytes });
+    if (!copied.ok) throw new Error(`A delivered scene could not be read: ${copied.error.code}`);
+    return;
+  }
+  if (!providers.blob.getPrivate) throw new Error("A delivered scene is no longer available");
+  const result = await providers.blob.getPrivate({ key: locator.key, maxBytes });
+  if (!result.ok) throw new Error(`A delivered scene could not be read: ${result.error.code}`);
+  await writeFile(path, result.data.body, { flag: "wx" });
 }
 
-async function narrationForScene(row: SequenceRow, scene: SequenceRow["scenes"][number], owner: string) {
-  if (scene.narrationMediaAsset) return loadAssetBytes(scene.narrationMediaAsset);
+async function narrationForScene(row: SequenceRow, scene: SequenceRow["scenes"][number], owner: string, path: string) {
+  if (scene.narrationMediaAsset) return loadAssetToFile(scene.narrationMediaAsset, path, VIDEO_NARRATION_MAX_BYTES);
   const pin = voicePinSchema.parse(row.voicePin);
   const request = videoSequenceRequestSchema.parse(row.request);
   const text = request.scenes[scene.ordinal]!.narration!;
@@ -310,7 +341,7 @@ async function narrationForScene(row: SequenceRow, scene: SequenceRow["scenes"][
         contentType: result.data.contentType, visibility: "private", safetyStatus: "passed", metadata: toInputJson({ source: "video_narration", sequenceId: row.id, ordinal: scene.ordinal, voicePin: pin, durationMs: result.data.durationMs }) } });
       await tx.videoSequenceScene.update({ where: { id: scene.id }, data: { narrationMediaAssetId: asset.id, narrationState: "completed" } });
     });
-    return result.data.body;
+    await writeFile(path, result.data.body, { flag: "wx" });
   } catch (error) {
     if (key) await removeUnpublishedArtifact(row, key).catch(cleanupError => logger.error({ sequenceId: row.id, ordinal: scene.ordinal, error: cleanupError }, "unpublished narration cleanup remains owned"));
     // A failed or stopped composer cannot change its successor's narration.
@@ -322,12 +353,20 @@ async function narrationForScene(row: SequenceRow, scene: SequenceRow["scenes"][
 async function composeSequence(row: SequenceRow, owner: string) {
   const heartbeat = setInterval(() => { void prisma.videoSequence.updateMany({ where: { id: row.id, status: "composing", compositionOwner: owner }, data: { compositionLeaseAt: new Date(Date.now() + 5 * 60_000) } }).catch(error => logger.error({ error, sequenceId: row.id }, "video composition heartbeat failed")); }, 15_000);
   let key: string | null = null;
+  let workspace: string | null = null;
   try {
+    workspace = await mkdtemp(join(tmpdir(), "idream-video-sequence-sources-"));
     const scenes = [];
     for (const scene of row.scenes) {
       const asset = scene.generationJob.assets.find(asset => asset.type === "video" && asset.safetyStatus === "passed" && !asset.deletedAt);
       if (!asset) throw new Error("A scene has no available delivered video");
-      scenes.push({ video: await loadAssetBytes(asset), ...(row.audio === "narration" ? { narration: await narrationForScene(row, scene, owner) } : {}) });
+      const videoPath = join(workspace, `scene-${scene.ordinal}.mp4`);
+      await loadAssetToFile(asset, videoPath, VIDEO_SCENE_MAX_BYTES);
+      if (row.audio === "narration") {
+        const narrationPath = join(workspace, `narration-${scene.ordinal}.audio`);
+        await narrationForScene(row, scene, owner, narrationPath);
+        scenes.push({ videoPath, narrationPath });
+      } else scenes.push({ videoPath });
     }
     const output = await composeVideoScenes({ scenes, audio: z.enum(["generated", "silent", "narration"]).parse(row.audio) });
     // A lost lease can only clean up its own unpublished blob, never its successor's delivery.
@@ -352,6 +391,7 @@ async function composeSequence(row: SequenceRow, owner: string) {
     logger.error({ error, sequenceId: row.id }, "video composition failed; native scenes retained");
   } finally {
     clearInterval(heartbeat);
+    if (workspace) await rm(workspace, { recursive: true, force: true }).catch(error => logger.error({ error, sequenceId: row.id }, "video composition workspace cleanup failed"));
     // Retain every old owner through its final provider/Blob I/O and compensation.
     // Failure/crash before this write stays conservatively non-quiescent.
     await prisma.$transaction(async tx => {
@@ -363,7 +403,7 @@ async function composeSequence(row: SequenceRow, owner: string) {
 
 export type VideoSequenceAdvanceCursor = { readonly createdAt: Date; readonly id: string };
 
-export async function advanceVideoSequences(limit = 10, cursor: VideoSequenceAdvanceCursor | null = null) {
+export async function advanceVideoSequences(limit = 10, cursor: VideoSequenceAdvanceCursor | null = null, options: { readonly compositionLane?: VideoCompositionLane } = {}) {
   // Unknown outcomes and live composition leases can remain at the head of the
   // queue. Scan by immutable values so they cannot hide ready sequences, and
   // deleting or settling the last scanned row does not invalidate progress.
@@ -394,6 +434,9 @@ export async function advanceVideoSequences(limit = 10, cursor: VideoSequenceAdv
         continue;
       }
       if (row.scenes.length !== videoSequenceRequestSchema.parse(row.request).scenes.length || row.scenes.some(scene => scene.generationJob.status !== "completed")) continue;
+      // A full lane leaves the row ready for a later sweep. Nothing is claimed, so its
+      // lease and owner list stay clean while it waits.
+      if (options.compositionLane && !options.compositionLane.hasCapacity()) continue;
       const owner = randomUUID();
       const claimed = await prisma.$transaction(async tx => {
         await lockSequence(tx, row);
@@ -401,14 +444,17 @@ export async function advanceVideoSequences(limit = 10, cursor: VideoSequenceAdv
         if (!user || user.status !== "active" || user.deletedAt) return { count: 0 };
         return tx.videoSequence.updateMany({ where: { id: row.id, OR: [{ status: { in: ["generating", "unknown"] } }, { status: "composing", compositionLeaseAt: { lte: new Date() } }] }, data: { status: "composing", compositionOwner: owner, compositionLeaseAt: new Date(Date.now() + 5 * 60_000), activeCompositionOwners: { push: owner } } });
       });
-      if (claimed.count === 1) await composeSequence(row, owner);
+      if (claimed.count === 1) {
+        if (options.compositionLane) options.compositionLane.run(() => composeSequence(row, owner));
+        else await composeSequence(row, owner);
+      }
     } catch (error) {
       // Keep the failed row recoverable on the next sweep without preventing
       // another owner's completed scenes from reaching delivery.
       logger.error({ error, sequenceId: row.id }, "video sequence recovery deferred");
     }
   }
-  await dispatchGenerationAttemptOutbox(prisma);
+  await dispatchSceneAttempts(rows.flatMap(row => row.scenes.map(scene => scene.generationJobId)));
   const last = rows.at(-1);
   return { nextCursor: rows.length === limit && last ? { createdAt: last.createdAt, id: last.id } : null };
 }

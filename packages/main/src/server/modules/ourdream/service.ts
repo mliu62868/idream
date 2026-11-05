@@ -236,6 +236,8 @@ import {
   isExternalMediaUrl,
   mediaDisplayUrl,
   mediaFileExtension,
+  mediaDerivativeKey,
+  mediaGridUrl,
   mediaViewUrl,
   visualProfileDTO,
   formatCount,
@@ -812,6 +814,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
       return createMediaVariation(request, id);
     }
     if (id && action === "content" && method === "GET") return contentMedia(request, id);
+    if (id && action === "thumbnail" && method === "GET") return contentMedia(request, id, "thumbnail");
     if (id && action === "download" && method === "GET") return downloadMedia(request, id);
     if (id && !action && method === "DELETE") return deleteMedia(request, id);
   }
@@ -3277,7 +3280,7 @@ async function getMediaCollection(request: Request, collectionId: string) {
       },
       orderBy: [{ sortOrder: "asc" }, { mediaAssetId: "asc" }],
       take: limit + 1,
-      include: { mediaAsset: { select: { id: true, type: true, url: true, storageKey: true, contentType: true, deletedAt: true, safetyStatus: true, metadata: true } } },
+      include: { mediaAsset: { select: { id: true, type: true, url: true, thumbnailUrl: true, storageKey: true, contentType: true, deletedAt: true, safetyStatus: true, metadata: true } } },
     });
     const page = items.slice(0, limit);
     const last = page.at(-1);
@@ -3289,6 +3292,8 @@ async function getMediaCollection(request: Request, collectionId: string) {
         type: mediaAsset.type,
         // An unavailable member remains removable by its owner without exposing its bytes.
         url: mediaAsset.deletedAt || mediaAsset.safetyStatus !== "passed" || !isMediaAssetOperationalForAuthority(mediaAsset.metadata) ? null : collectionMediaViewUrl(mediaAsset),
+        // Same availability rule as `url`: an unavailable member exposes no derivative either.
+        thumbnailUrl: mediaAsset.deletedAt || mediaAsset.safetyStatus !== "passed" || !isMediaAssetOperationalForAuthority(mediaAsset.metadata) ? null : mediaGridUrl(mediaAsset, null),
       })),
       nextCursor: items.length > limit && last ? Buffer.from(JSON.stringify({ scope, sortOrder: last.sortOrder, id: last.mediaAssetId })).toString("base64url") : null,
     };
@@ -4146,7 +4151,10 @@ async function downloadMedia(request: Request, id: string) {
   return ok({ url: signed.data.url });
 }
 
-async function contentMedia(request: Request, id: string) {
+// INVARIANT: the thumbnail variant passes through every access branch below and
+// only changes which object contentMediaAsset reads. A derivative shows what its
+// asset shows, so it can't have weaker checks than the original.
+async function contentMedia(request: Request, id: string, variant: MediaContentVariant = "original") {
   const previewToken = new URL(request.url).searchParams.get("characterPreview");
   if (previewToken) {
     const preview = await loadCharacterRendererPreview(previewToken);
@@ -4167,7 +4175,7 @@ async function contentMedia(request: Request, id: string) {
       throw Errors.notFound("Media not found");
     }
     // INVARIANT: 签名预览只能读取 token 精确钉住的三张图；它不授予普通媒体库权限。
-    return contentMediaAsset(request, asset);
+    return contentMediaAsset(request, asset, variant);
   }
   const ctx = await getAuthCtx(request);
   const permissions = ctx.userId ? await effectivePermissions(ctx.userId, ctx.role) : null;
@@ -4178,23 +4186,49 @@ async function contentMedia(request: Request, id: string) {
       where: { id, deletedAt: null },
     });
     if (!asset) throw Errors.notFound("Media not found");
-    return contentMediaAsset(request, asset);
+    return contentMediaAsset(request, asset, variant);
   }
 
   requireAgeGate(ctx);
   const publicAsset = await findPublicReadableMediaAsset(id);
-  if (publicAsset) return contentMediaAsset(request, publicAsset);
+  if (publicAsset) return contentMediaAsset(request, publicAsset, variant);
 
   const user = requireUser(ctx);
   requireAgeVerified(ctx);
-  return contentMediaAsset(request, await assertReadableMediaAsset(id, user.id));
+  return contentMediaAsset(request, await assertReadableMediaAsset(id, user.id), variant);
+}
+
+type MediaContentVariant = "original" | "thumbnail";
+
+// SPEC: an asset with no derivative answers the thumbnail route with its original,
+// so a historical row is never a broken image. Downloads never reach this branch:
+// `?download=1` and downloadMedia always read the original.
+async function derivativeMediaResponse(request: Request, key: string) {
+  if ((process.env.BLOB_PROVIDER ?? "mock") === "mock") {
+    const body = await readFile(localBlobPath(key)).catch(() => null);
+    if (!body) return null;
+    return localMediaResponse(request, { id: "", type: "image", contentType: "image/webp", storageKey: key, url: "" }, body);
+  }
+  const signed = await providers.blob.signGetUrl({ key, expiresInSeconds: signedUrlTtlSeconds() });
+  if (!signed.ok) {
+    throw Errors.unavailable("Media is temporarily unavailable", signed.error);
+  }
+  return Response.redirect(signed.data.url, 302);
 }
 
 async function contentMediaAsset(
   request: Request,
   asset: Awaited<ReturnType<typeof assertReadableMediaAsset>>,
+  variant: MediaContentVariant = "original",
 ) {
   if (isUnfinishedExternalImageImport(asset.metadata)) throw Errors.notFound("Media not found");
+  const derivativeKey = variant === "thumbnail" && new URL(request.url).searchParams.get("download") !== "1"
+    ? mediaDerivativeKey(asset)
+    : null;
+  if (derivativeKey) {
+    const response = await derivativeMediaResponse(request, derivativeKey);
+    if (response) return response;
+  }
   const key = resolveMediaAssetBlobLocator(asset)?.key;
 
   if (key && (process.env.BLOB_PROVIDER ?? "mock") === "mock") {
@@ -5098,7 +5132,7 @@ function mediaDTO(asset: {
       : null,
     type: asset.type,
     url: displayUrl,
-    thumbnailUrl: asset.storageKey || (asset.thumbnailUrl && isExternalMediaUrl(asset.thumbnailUrl)) ? displayUrl : (asset.thumbnailUrl ?? displayUrl),
+    thumbnailUrl: mediaGridUrl(asset, asset.storageKey || (asset.thumbnailUrl && isExternalMediaUrl(asset.thumbnailUrl)) ? displayUrl : (asset.thumbnailUrl ?? displayUrl)),
     prompt: asset.prompt,
     visibility: asset.visibility,
     safetyStatus: asset.safetyStatus,

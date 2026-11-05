@@ -285,8 +285,8 @@ function ChatHubCharacterCard({ card }: Readonly<{ card: CharacterCardData }>) {
           className="object-cover object-top transition-transform duration-200 group-hover:scale-[1.03]"
           fill
           sizes="64px"
-          src={card.image}
-          unoptimized={isProtectedMediaUrl(card.image)}
+          src={card.thumbnailUrl ?? card.image}
+          unoptimized={isProtectedMediaUrl(card.thumbnailUrl ?? card.image)}
         />
       </span>
       <span className="min-w-0">

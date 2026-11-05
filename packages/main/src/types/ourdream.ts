@@ -16,6 +16,7 @@ export interface CharacterCardData {
   creatorName?: string | null;
   canEditIdentity?: boolean;
   image: string;
+  thumbnailUrl?: string;
   imageAssetId?: string | null;
   heroImage?: string;
   heroThumbnailUrl?: string;

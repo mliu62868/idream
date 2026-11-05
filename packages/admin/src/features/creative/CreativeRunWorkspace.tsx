@@ -377,7 +377,7 @@ function AssetViewer({ run, selected, onSelect }: { run: CreativeRunDetail; sele
   };
   if (!item) return <EmptyWorkspace filtered={false} onClear={() => undefined} />;
   return <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]" onKeyDown={move} tabIndex={0} aria-label={t("Creative asset viewer. Use left and right arrow keys to move between items.")}><div className="min-h-80 overflow-hidden rounded-xl border border-[var(--ad-border)] bg-black/[0.04]">{item.asset ? run.purpose === "character_video" ? (
-    <video aria-label={t("Creative item {ordinal}", { ordinal: item.ordinal + 1 })} className="max-h-[70vh] w-full object-contain" controls playsInline preload="metadata" src={item.asset.url} />
+    <video aria-label={t("Creative item {ordinal}", { ordinal: item.ordinal + 1 })} className="max-h-[70vh] w-full object-contain" controls playsInline poster={item.asset.thumbnailUrl && item.asset.thumbnailUrl !== item.asset.url ? item.asset.thumbnailUrl : undefined} preload="metadata" src={item.asset.url} />
   ) : (
     // eslint-disable-next-line @next/next/no-img-element -- operator blob URLs are not compatible with Next image optimization
     <img alt={t("Creative item {ordinal}", { ordinal: item.ordinal + 1 })} className="max-h-[70vh] w-full object-contain" src={item.asset.url} />

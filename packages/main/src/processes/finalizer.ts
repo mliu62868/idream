@@ -15,6 +15,7 @@ import { entitlementMap } from "@/server/modules/ourdream/subscription-lifecycle
 import { readableCharacter } from "@/server/modules/ourdream/generation-character-authority";
 import { expireVoiceCalls } from "@/server/modules/chat/voice-call";
 import { advanceVideoSequences, type VideoSequenceAdvanceCursor } from "@/server/modules/ourdream/video-sequence";
+import { createVideoCompositionLane } from "@/server/modules/ourdream/video-composition-lane";
 import { isProcessEntrypoint } from "./process-entrypoint";
 
 const BUSY_DELAY_MS = 50;
@@ -37,11 +38,14 @@ let lastCallExpiryAt = 0;
 let videoSequenceAdvance: Promise<void> | null = null;
 let videoSequenceCursor: VideoSequenceAdvanceCursor | null = null;
 let lastVideoSequenceAdvanceAt = 0;
+const videoCompositionLane = createVideoCompositionLane({
+  onError: error => logger.error({ error }, "video composition lane job failed"),
+});
 
 function maybeAdvanceVideoSequences(now = Date.now()) {
   if (videoSequenceAdvance || now - lastVideoSequenceAdvanceAt < IDLE_DELAY_MS) return;
   lastVideoSequenceAdvanceAt = now;
-  videoSequenceAdvance = advanceVideoSequences(10, videoSequenceCursor).then(result => {
+  videoSequenceAdvance = advanceVideoSequences(10, videoSequenceCursor, { compositionLane: videoCompositionLane }).then(result => {
     videoSequenceCursor = result.nextCursor;
   }).catch(error => logger.error({ error }, "video sequence recovery failed")).finally(() => { videoSequenceAdvance = null; });
 }
@@ -97,6 +101,7 @@ export async function runFinalizerLoop(): Promise<void> {
   await voiceRecovery;
   await callExpiry;
   await videoSequenceAdvance;
+  await videoCompositionLane.drain();
 }
 
 function finalizerQueuesForIteration(): string[] {

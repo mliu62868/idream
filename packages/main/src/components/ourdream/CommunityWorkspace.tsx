@@ -821,8 +821,8 @@ function CommunityViewerWorkspace({ viewer }: { viewer: ViewerGate }) {
                           className="object-cover object-top"
                           fill
                           sizes="180px"
-                          src={preview.url}
-                          unoptimized={shouldBypassNextImageOptimizer(preview.url)}
+                          src={preview.thumbnailUrl ?? preview.url}
+                          unoptimized={shouldBypassNextImageOptimizer(preview.thumbnailUrl ?? preview.url)}
                         /> : <span className="grid h-full place-items-center text-sm text-white/60">{preview.type === "video" ? "Video" : "Audio"}</span>}
                       </div>
                     ))}
@@ -990,8 +990,8 @@ export function CommunityCharacterCard({
           className="object-cover object-top"
           fill
           sizes="260px"
-          src={character.image}
-          unoptimized={shouldBypassNextImageOptimizer(character.image)}
+          src={character.thumbnailUrl ?? character.image}
+          unoptimized={shouldBypassNextImageOptimizer(character.thumbnailUrl ?? character.image)}
         />
       </Link>
       <div className="p-4">

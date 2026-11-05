@@ -11,9 +11,9 @@ type VideoSource = {
 };
 
 // SPEC: 图库卡片里的视频预览。
-// INTENT: 视频资产没有服务端封面（thumbnailUrl 与 url 相同），过去 preload="none"
+// INTENT: 历史视频资产没有服务端封面（thumbnailUrl 与 url 相同），过去 preload="none"
 //   让卡片只剩黑底加载圈。没有真封面时改为预取元数据并定位到首帧，让浏览器画出首帧当封面；
-//   有真封面时仍不预取，避免一屏视频全部开始下载。
+//   有真封面（Gen 写的首帧 WebP）时不预取，避免一屏视频全部开始下载。
 export function VideoPreview({
   className = "h-full w-full object-contain",
   item,

@@ -90,7 +90,7 @@ export function AppSearch() {
       exposureContext: character.exposureContext,
       href: characterEntryHref(character.id, character.exposureContext),
       id: `character:${character.id}`,
-      image: character.image,
+      image: character.thumbnailUrl ?? character.image,
       kind: "character" as const,
       label: character.title,
       meta: `${character.age} · ${character.creator}`,

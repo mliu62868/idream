@@ -27,8 +27,9 @@ import { quoteGenerationRetry, resolveGenerationRetryTarget, retryGenerationJobF
 import { ACCOUNT_DELETION_GRACE_PERIOD_MS, accountDeletionSubjectHash, dispatchPendingAccountDeletionBlobDeletes, requestAccountDeletion } from "@/server/account-deletion-authority";
 import { ACCOUNT_ERASURE_COMPLETION_V2_SOURCE_SERVICE, applyChatEvent } from "@/processes/event-consumer";
 import { api, createCharacter, createMedia, createUser, dreamcoinBalance, expectError, expectOk, generationTestProviders, grantCoins, purgeTestData, runQueuedGenerationJobs } from "@/server/test/helpers";
-import { videoFixture, narrationFixture } from "@/server/test/video-fixtures";
+import { videoFixture, narrationFixture, sceneFiles } from "@/server/test/video-fixtures";
 import { advanceVideoSequences } from "./video-sequence";
+import { createVideoCompositionLane } from "./video-composition-lane";
 import { reconcileUnknownGenerationRequest } from "@/server/modules/admin-v2/jobs/unknown-reconciliation";
 import { GET as getSourceSnapshot } from "@/app/api/internal/generation/source-snapshot/route";
 
@@ -655,7 +656,7 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
 
   it("account erasure waits for an expired active composer and fences its upload", async () => {
     await mockedNativeSuccess(); const { sequence } = await create(body(1)); await runQueuedGenerationJobs(10);
-    const output = await composition.composeVideoScenes({ scenes: [{ video: nativeBytes }], audio: "generated" });
+    const output = await composition.composeVideoScenes({ scenes: await sceneFiles([{ video: nativeBytes }]), audio: "generated" });
     const started = barrier(), release = barrier(), writes: string[] = [];
     vi.spyOn(composition, "composeVideoScenes").mockImplementation(async () => { started.release(); await release.promise; return output; });
     const store = providers.blob.putPrivate.bind(providers.blob);
@@ -1047,7 +1048,7 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
 
   it("keeps delivered video readable when an expired composer cleans up after the new lease delivers identical bytes", async () => {
     const native = await mockedNativeSuccess(), { sequence } = await create(body(1)); await runQueuedGenerationJobs(10);
-    const output = await composition.composeVideoScenes({ scenes: [{ video: nativeBytes }], audio: "generated" });
+    const output = await composition.composeVideoScenes({ scenes: await sceneFiles([{ video: nativeBytes }]), audio: "generated" });
     const oldStarted = barrier(), newStarted = barrier(), releaseOld = barrier(), releaseNew = barrier(), deleting = barrier(), releaseDelete = barrier();
     vi.spyOn(composition, "composeVideoScenes")
       .mockResolvedValueOnce(output)
@@ -1126,6 +1127,80 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
       expect(await prisma.voiceUsageFact.count({ where: { userId } })).toBe(0); expect(await prisma.chatTurn.count({ where: { session: { userId } } })).toBe(0);
       for (const [input] of tts.mock.calls) expect(input).toMatchObject({ requestId: `video-narration:${sequence.id}:0`, idempotencyKey: `video-narration:${sequence.id}:0`, voiceId: defaults.defaultVoiceId });
     } finally { releaseOld.release(); await oldAdvance; }
+  });
+
+  it("targets its dispatch at its own scenes, in the web request and in the sweep", async () => {
+    await mockedNativeSuccess();
+    const dispatch = vi.spyOn(dispatchAuthority, "dispatchGenerationAttemptOutbox");
+    const { sequence } = await create(body(2));
+    const jobIds = sequence.scenes.map((scene: { job: { id: string } }) => scene.job.id);
+    const requested = dispatch.mock.calls.at(-1)![1]!;
+    expect(requested.outboxIds).toEqual(expect.arrayContaining([`generation_initial_${jobIds[0]}`, `generation_initial_${jobIds[1]}`]));
+    expect(requested.outboxIds).toHaveLength(2);
+    dispatch.mockClear();
+    await advanceVideoSequences();
+    for (const [, options] of dispatch.mock.calls) {
+      expect(options?.outboxIds).toBeDefined();
+      const owners = await prisma.mainOutboxEvent.findMany({ where: { id: { in: [...options!.outboxIds!] } }, select: { aggregateId: true } });
+      for (const owner of owners) {
+        expect(await prisma.videoSequenceScene.count({ where: { generationJobId: owner.aggregateId } })).toBe(1);
+      }
+    }
+  });
+
+  it("returns from the sweep while a composition runs on its lane, under the erasure owner rule", async () => {
+    await mockedNativeSuccess(); const { sequence } = await create(body(1)); await runQueuedGenerationJobs(10);
+    const output = await composition.composeVideoScenes({ scenes: await sceneFiles([{ video: nativeBytes }]), audio: "generated" });
+    const started = barrier(), release = barrier();
+    vi.spyOn(composition, "composeVideoScenes").mockImplementation(async () => { started.release(); await release.promise; return output; });
+    const lane = createVideoCompositionLane({ onError: error => { throw error; } });
+    await advanceVideoSequences(10, null, { compositionLane: lane });
+    await started.promise;
+    // The sweep already returned. The claim, and so erasure's view of the writer, did not wait.
+    const running = await prisma.videoSequence.findUniqueOrThrow({ where: { id: sequence.id } });
+    expect(running.status).toBe("composing");
+    expect(running.activeCompositionOwners).toEqual([running.compositionOwner]);
+    expect(lane.hasCapacity()).toBe(false);
+    const deletion = await requestSequenceAccountDeletion();
+    await prisma.videoSequence.update({ where: { id: sequence.id }, data: { compositionLeaseAt: new Date(Date.now() - 1000) } });
+    await acknowledgeSequenceAccountDeletion();
+    const erased = await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [deletion.id], batch: 100 });
+    expect(erased.completed).toBe(0);
+    expect(await prisma.user.findUnique({ where: { id: userId } })).not.toBeNull();
+    release.release();
+    await lane.drain();
+    expect(lane.hasCapacity()).toBe(true);
+    expect((await prisma.videoSequence.findUnique({ where: { id: sequence.id } }))?.activeCompositionOwners ?? []).toEqual([]);
+  });
+
+  it("leaves a ready sequence unclaimed while the lane is full, and composes it once there is room", async () => {
+    await mockedNativeSuccess(); const { sequence } = await create(body(1)); await runQueuedGenerationJobs(10);
+    const lane = createVideoCompositionLane({ onError: error => { throw error; } });
+    let hold!: () => void;
+    lane.run(() => new Promise<void>(resolve => { hold = resolve; }));
+    await advanceVideoSequences(10, null, { compositionLane: lane });
+    const waiting = await prisma.videoSequence.findUniqueOrThrow({ where: { id: sequence.id } });
+    expect(waiting).toMatchObject({ status: "generating", compositionOwner: null, activeCompositionOwners: [] });
+    hold();
+    await lane.drain();
+    await advanceVideoSequences(10, null, { compositionLane: lane });
+    await lane.drain();
+    expect(await prisma.videoSequence.findUniqueOrThrow({ where: { id: sequence.id } })).toMatchObject({ status: "completed" });
+  });
+
+  it("reads scenes to bounded files, and an oversized scene fails packaging without touching native delivery", async () => {
+    await mockedNativeSuccess(); const { sequence } = await create(body(1)); await runQueuedGenerationJobs(10);
+    const toFile = vi.spyOn(providers.blob, "getPrivateToFile");
+    const buffered = vi.spyOn(providers.blob, "getPrivate");
+    toFile.mockResolvedValueOnce({ ok: false, error: { code: "too_large", message: "too large", retryable: false } });
+    await advanceVideoSequences();
+    expect(toFile).toHaveBeenCalledWith(expect.objectContaining({ maxBytes: 256 * 1024 * 1024, path: expect.stringMatching(/scene-0\.mp4$/) }));
+    expect(buffered.mock.calls.filter(([input]) => input.key.endsWith("video.mp4"))).toEqual([]);
+    expect(await prisma.videoSequence.findUniqueOrThrow({ where: { id: sequence.id } })).toMatchObject({
+      status: "composition_failed", errorCode: "video_composition_failed", activeCompositionOwners: [],
+    });
+    const scene = await prisma.videoSequenceScene.findFirstOrThrow({ where: { sequenceId: sequence.id }, include: { generationJob: true } });
+    expect(scene.generationJob.status).toBe("completed");
   });
 
   it("keeps acceptance and native identity immutable and enforces the same-owner Scene FK", async () => {

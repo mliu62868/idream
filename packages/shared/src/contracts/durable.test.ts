@@ -6,6 +6,7 @@ import {
   generationTerminalRecordSchema,
   generationTransportExecutionEventSchema,
 } from "./durable";
+import { generationAssetDerivativeKey } from "./generation-identity";
 import { aiUsageRecordedV2Schema } from "./metric-events";
 
 describe("durable cross-service contracts", () => {
@@ -23,7 +24,47 @@ describe("durable cross-service contracts", () => {
     const cleanupKeys = ["gen/job/attempts/cleanup-attempt/image-1.png"];
     expect(generationTerminalRecordSchema.parse({ ...old, cleanupKeys })).toMatchObject({ cleanupKeys });
     expect(generationTerminalRecordSchema.safeParse({ ...old, cleanupKeys: [...cleanupKeys, ...cleanupKeys] }).success).toBe(false);
-    expect(generationTerminalRecordSchema.safeParse({ ...old, cleanupKeys: Array.from({ length: 5 }, (_, i) => `key-${i}`) }).success).toBe(false);
+    expect(generationTerminalRecordSchema.safeParse({ ...old, cleanupKeys: Array.from({ length: 9 }, (_, i) => `key-${i}`) }).success).toBe(false);
+    expect(generationTerminalRecordSchema.safeParse({ ...old, cleanupKeys: Array.from({ length: 8 }, (_, i) => `key-${i}`) }).success).toBe(true);
+  });
+
+  describe("asset derivatives", () => {
+    const succeeded = {
+      version: 1, outcome: "succeeded", attemptId: "attempt-1", attemptNo: 1,
+      providerIdempotencyKey: "generation:attempt-1:provider", requestId: "request-1", generationJobId: "job-1",
+      mode: "image", provider: "provider-1", providerInvoked: true, providerRequestId: null,
+      completedAt: "2026-07-11T12:00:00.000Z",
+      assets: [{ ordinal: 0, key: "gen/job-1/attempts/attempt-1/image-1.png", contentType: "image/png", width: 8, height: 8, providerKey: null }],
+      usage: { model: "m" },
+    };
+
+    it("keeps the checksum of a record persisted before derivatives existed", () => {
+      // Golden value computed from the schema as it stood before `derivative` was added.
+      const historical = generationTerminalRecordSchema.parse(succeeded);
+      expect(historical.outcome === "succeeded" && historical.assets[0]).not.toHaveProperty("derivative");
+      expect(generationTerminalRecordChecksum(historical)).toBe("6a7b73a3d724bcc0b909eac975cb0fc8cb3577c6be7b58e031e7d73a50b2b55c");
+    });
+
+    it("survives parsing, because an old-shape parser would strip it and quarantine the record", () => {
+      const derivative = { status: "ready", key: "gen/job-1/attempts/attempt-1/image-1.preview.webp", contentType: "image/webp", width: 8, height: 8, sizeBytes: 44 };
+      const parsed = generationTerminalRecordSchema.parse({ ...succeeded, assets: [{ ...succeeded.assets[0], derivative }] });
+      expect(parsed.outcome === "succeeded" && parsed.assets[0]!.derivative).toEqual(derivative);
+      const failed = { status: "failed", code: "derivative_render_failed", message: "ffmpeg missing" };
+      expect(generationTerminalRecordSchema.safeParse({ ...succeeded, assets: [{ ...succeeded.assets[0], derivative: failed }] }).success).toBe(true);
+      expect(generationTerminalRecordSchema.safeParse({ ...succeeded, assets: [{ ...succeeded.assets[0], derivative: { status: "ready", key: "x", contentType: "image/png", width: 1, height: 1, sizeBytes: 1 } }] }).success).toBe(false);
+    });
+
+    it("derives one key from a canonical asset key and nothing else", () => {
+      const prefix = "gen/job-1/attempts/job-1:2/";
+      expect(generationAssetDerivativeKey(`${prefix}image-4.jpg`)).toBe(`${prefix}image-4.preview.webp`);
+      expect(generationAssetDerivativeKey(`${prefix}image-1.webp`)).toBe(`${prefix}image-1.preview.webp`);
+      expect(generationAssetDerivativeKey(`${prefix}video.mp4`)).toBe(`${prefix}video.preview.webp`);
+      for (const key of [
+        `${prefix}image-1.preview.webp`, `${prefix}video.preview.webp`, `${prefix}image-5.png`, `${prefix}video.png`, `${prefix}image-1.mp4`,
+        "gen/job-1/image-1.png", "gen/job-1/attempts/a/b/image-1.png", "../gen/job-1/attempts/a/image-1.png",
+        "gen/terminal-records/a/terminal.json", "character-images/c/a.png", "imports/a/b", "video-sequences/u/s/o/h.mp4",
+      ]) expect(generationAssetDerivativeKey(key), key).toBeNull();
+    });
   });
   it("uses one canonical envelope hash and makes quarantine impossible to acknowledge", () => {
     const envelope = durableEventEnvelopeSchema.parse({

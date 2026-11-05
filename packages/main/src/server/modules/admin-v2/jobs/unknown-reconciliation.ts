@@ -20,6 +20,7 @@ import { refundGenerationRequest } from "@/server/ai/generation-refund";
 import { removeGenerationAttemptQueueJob } from "@/server/ai/generation-attempt-queue";
 import { transitionGenerationRequest } from "@/server/ai/generation-request-transition";
 import { adoptRecoveredUnknownArtifacts } from "@/server/ai/generation-evidence-transition-authority";
+import { createDeliveredGenerationAsset } from "@/server/ai/generation-asset-delivery";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
@@ -635,56 +636,24 @@ async function adoptRecoveredSuccess(
 
   const persistedAssets = [] as Array<{ id: string }>;
   for (const [ordinal, asset] of payload.assets.entries()) {
-    const providerRef = recoveredProviderRef(asset);
-    const mediaProviderRef = providerRef ?? asset.key;
     const mediaId = `media_unknown_${canonicalSha256({
       attemptId: input.attempt.id,
       ordinal,
     }).slice(0, 32)}`;
-    const displayUrl = `/user-content/${Buffer.from(mediaId, "utf8").toString("base64url")}/content${mediaFileExtension(asset.contentType)}`;
-    const created = await tx.mediaAsset.create({
-      data: {
-        id: mediaId,
-        ownerId: input.request.userId,
-        sourceJobId: input.request.id,
-        characterId: input.request.characterId,
-        type: payload.mode,
-        url: displayUrl,
-        thumbnailUrl: payload.mode === "image" ? displayUrl : null,
-        storageKey: asset.key,
-        contentType: asset.contentType,
-        width: asset.width,
-        height: asset.height,
-        providerAssetId: mediaProviderRef,
-        sourcePromptHash: input.request.prompt
-          ? generationPromptHash(input.request.prompt)
-          : null,
-        prompt: input.request.prompt,
-        visibility: "private",
-        safetyStatus: input.evidence.moderation.status,
-        metadata: toInputJson({
-          index: ordinal,
-          provider: payload.provider,
-          providerKey: mediaProviderRef,
-          recoveredUnknown: true,
-          terminalRecordRef: payload.terminalRecordRef,
-          terminalRecordChecksum: payload.terminalRecordChecksum,
-          contentType: asset.contentType,
-          width: asset.width,
-          height: asset.height,
-          seconds: asset.seconds,
-          usage: payload.usage,
-          storageKey: asset.key,
-          visualProfileId: input.request.visualProfileId,
-          visualProfileVersion: input.request.visualProfileVersion,
-          consistencyMode: input.request.consistencyMode,
-          seed: input.request.seed,
-          referenceAssetIds: input.request.referenceAssetIds,
-        }),
+    persistedAssets.push(await createDeliveredGenerationAsset(tx, {
+      id: mediaId,
+      request: input.request,
+      payload,
+      provider: payload.provider ?? input.request.provider ?? "unknown",
+      asset,
+      ordinal,
+      safetyStatus: input.evidence.moderation.status,
+      evidence: {
+        recoveredUnknown: true,
+        terminalRecordRef: payload.terminalRecordRef,
+        terminalRecordChecksum: payload.terminalRecordChecksum,
       },
-      select: { id: true },
-    });
-    persistedAssets.push(created);
+    }));
   }
   await tx.moderationEvent.create({
     data: {
@@ -813,26 +782,6 @@ function recoveredProviderRef(
   if (providerKey === null) return null;
   if (typeof providerKey === "string") return providerKey;
   throw Errors.conflict("Recovered success asset lacks provider identity");
-}
-
-function mediaFileExtension(contentType: string) {
-  const extensions: Readonly<Record<string, string>> = {
-    "image/gif": ".gif",
-    "image/jpeg": ".jpg",
-    "image/png": ".png",
-    "image/webp": ".webp",
-    "video/mp4": ".mp4",
-    "video/webm": ".webm",
-  };
-  return extensions[contentType] ?? "";
-}
-
-// INVARIANT: MediaAsset.sourcePromptHash keeps the established generation
-// projection format so adopted and normal outputs remain query-compatible.
-function generationPromptHash(value: string) {
-  let hash = 5381;
-  for (const char of value) hash = (hash * 33) ^ char.charCodeAt(0);
-  return `prompt_${Math.abs(hash)}`;
 }
 
 function jsonRecord(value: unknown): Record<string, unknown> {

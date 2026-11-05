@@ -282,6 +282,33 @@ export const generationQualitySchema = z
   })
   .passthrough();
 
+// Four outputs, each with one derivative. Widening is safe: a replayed historical
+// record carries at most four, and its checksum does not depend on this bound.
+export const GENERATION_CLEANUP_KEYS_MAX = 8;
+
+// SPEC: a display-only WebP (image preview or video poster) next to the asset.
+// INTENT: "failed" is recorded rather than omitted: a paid generation is delivered
+// without its derivative, and the record says why the grid falls back to the
+// original. An absent field is an asset that predates derivatives, and absent must
+// stay absent so already-persisted terminal records keep their checksum.
+export const generationAssetDerivativeSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("ready"),
+    key: z.string().min(1),
+    contentType: z.literal("image/webp"),
+    width: z.number().int().positive(),
+    height: z.number().int().positive(),
+    sizeBytes: z.number().int().positive(),
+  }),
+  z.object({
+    status: z.literal("failed"),
+    code: z.string().min(1),
+    message: z.string().min(1).max(500),
+  }),
+]);
+
+export type GenerationAssetDerivative = z.infer<typeof generationAssetDerivativeSchema>;
+
 const generationAssetSchema = z
   .object({
     key: z.string(),
@@ -290,6 +317,7 @@ const generationAssetSchema = z
     seconds: z.number().min(0).optional(),
     contentType: z.string(),
     quality: generationQualitySchema.optional(),
+    derivative: generationAssetDerivativeSchema.optional(),
   })
   .passthrough();
 
@@ -322,7 +350,7 @@ const aiFinalizeVariantsSchema = z.discriminatedUnion("kind", [
       terminalRecordRef: z.string().min(1),
       terminalRecordChecksum: z.string().regex(/^[a-f0-9]{64}$/),
       mode: z.enum(["image", "video"]),
-      cleanupKeys: z.array(z.string().min(1)).min(1).max(4).optional(),
+      cleanupKeys: z.array(z.string().min(1)).min(1).max(GENERATION_CLEANUP_KEYS_MAX).optional(),
       error: z.object({
         code: z.string(),
         message: z.string(),

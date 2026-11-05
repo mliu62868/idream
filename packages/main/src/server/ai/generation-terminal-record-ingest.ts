@@ -6,6 +6,7 @@ import { localizedImageEditSchema } from "@idream/shared/chat/image-action";
 import { Prisma } from "@prisma/client";
 import {
   aiFinalizePayloadSchema,
+  generationAssetDerivativeKey,
   generationTerminalFinalizeDedupeKey,
   generationTerminalRecordIngestSchema,
   imageGeneratePayloadSchema,
@@ -669,6 +670,13 @@ async function resolveTerminalRecordAuthority(
     ) {
       return { ok: false, code: "generation_terminal_asset_storage_authority_mismatch" };
     }
+    // The key is checked by derivation rather than by prefix: serving and erasure
+    // both derive it from the asset key, so any other value would be a thumbnail
+    // nobody can load and an object nobody will delete.
+    if (assets.some((asset) => asset.derivative?.status === "ready" &&
+        asset.derivative.key !== generationAssetDerivativeKey(asset.key))) {
+      return { ok: false, code: "generation_terminal_asset_derivative_authority_mismatch" };
+    }
     if (
       (expectedMode === "image" &&
         (typeof payload.count !== "number" ||
@@ -1094,6 +1102,8 @@ function finalizePayload(input: GenerationTerminalRecordIngest) {
         seconds: asset.seconds,
         providerKey: asset.providerKey,
         quality: asset.quality,
+        // Omitted when absent: Outbox and Bull payloads are compared by wire bytes.
+        ...(asset.derivative ? { derivative: asset.derivative } : {}),
       })),
       usage: record.usage,
     };

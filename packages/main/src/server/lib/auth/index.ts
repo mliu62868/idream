@@ -136,7 +136,7 @@ export async function getAuthCtx(request?: Request): Promise<AuthCtx> {
   // This selects an identity only; the media handler still checks its effective permissions.
   const pathname = request ? new URL(request.url).pathname : "";
   const adminMediaRead = request?.method === "GET" &&
-    (/^\/user-content\/[^/]+\/[^/]+$/.test(pathname) || /^\/api\/v1\/media\/[^/]+\/content$/.test(pathname));
+    (/^\/user-content\/[^/]+\/[^/]+$/.test(pathname) || /^\/api\/v1\/media\/[^/]+\/(?:content|thumbnail)$/.test(pathname));
   const adminRequest = pathname === "/admin" || pathname.startsWith("/admin/") || pathname.startsWith("/api/v2/admin/") ||
     (adminMediaRead && headers?.get("x-idream-admin-read-authority") === "not_applicable");
   const primaryCookie = adminRequest ? ADMIN_SESSION_COOKIE : SESSION_COOKIE;

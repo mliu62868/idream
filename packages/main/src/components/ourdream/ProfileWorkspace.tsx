@@ -2157,7 +2157,8 @@ function LibraryCard({
           ) : item.type === "video" && source ? (
             <VideoPreview
               className="h-full w-full object-cover object-top"
-              item={{ url: source, contentType: item.contentType }}
+              // `source` prefers the thumbnail, which for a video is a poster image, not playable.
+              item={{ url: item.url ?? source, thumbnailUrl: item.thumbnailUrl, contentType: item.contentType }}
               label="Profile video"
               testId="profile-media-video"
             />

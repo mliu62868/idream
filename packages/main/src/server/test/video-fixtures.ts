@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -29,4 +29,18 @@ export async function narrationFixture(seconds: number, frequency = 880) {
     await run("ffmpeg", ["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", `sine=frequency=${frequency}:sample_rate=24000`, "-t", String(seconds), "-c:a", "pcm_s16le", output], { timeout: 30_000 });
     return new Uint8Array(await readFile(output));
   } finally { await rm(directory, { recursive: true, force: true }); }
+}
+
+// composeVideoScenes takes paths. Left for the OS tmp cleaner: each fixture is tiny and
+// a test can hand these to a mocked composer whose lifetime outlives its own scope.
+export async function sceneFiles(scenes: ReadonlyArray<{ video: Uint8Array; narration?: Uint8Array }>) {
+  const directory = await mkdtemp(join(tmpdir(), "idream-video-scene-files-"));
+  return Promise.all(scenes.map(async (scene, index) => {
+    const videoPath = join(directory, `scene-${index}.mp4`);
+    await writeFile(videoPath, scene.video);
+    if (!scene.narration) return { videoPath };
+    const narrationPath = join(directory, `narration-${index}.wav`);
+    await writeFile(narrationPath, scene.narration);
+    return { videoPath, narrationPath };
+  }));
 }

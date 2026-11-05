@@ -48,7 +48,7 @@ export const packDetailSchema = packSummarySchema.extend({
   }).strict().nullable(),
 }).strict();
 export const packListSchema = z.object({ items: z.array(packSummarySchema), nextCursor: z.string().nullable() }).strict();
-export const packSourcesSchema = z.object({ items: z.array(z.object({ id: z.string(), type: z.enum(["image", "video", "voice"]), url: z.string() }).strict()), nextCursor: z.string().nullable() }).strict();
+export const packSourcesSchema = z.object({ items: z.array(z.object({ id: z.string(), type: z.enum(["image", "video", "voice"]), url: z.string(), thumbnailUrl: z.string().nullable().optional() }).strict()), nextCursor: z.string().nullable() }).strict();
 export type PackManifest = z.infer<typeof packManifestSchema>;
 export type PackSummary = z.infer<typeof packSummarySchema>;
 export type PackDetail = z.infer<typeof packDetailSchema>;

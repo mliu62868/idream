@@ -300,6 +300,10 @@ describe("generation terminal record durable ingest", () => {
     [`gen/${terminalRecordJobId()}/attempts/${attemptId}/image-2.webp`],
     [`gen/${terminalRecordJobId()}/attempts/${attemptId}/image-1.webp`, `gen/${terminalRecordJobId()}/attempts/${attemptId}/image-1.png`],
     [`gen/${terminalRecordJobId()}/attempts/${attemptId}/terminal.json`],
+    // One output has one derivative, of its own ordinal, and no second asset to spend it on.
+    [`gen/${terminalRecordJobId()}/attempts/${attemptId}/image-2.preview.webp`],
+    [`gen/other/attempts/other/image-1.preview.webp`],
+    [`gen/${terminalRecordJobId()}/attempts/${attemptId}/image-1.webp`, `gen/${terminalRecordJobId()}/attempts/${attemptId}/image-1.png`, `gen/${terminalRecordJobId()}/attempts/${attemptId}/image-1.preview.webp`],
   ])("quarantines cleanup keys outside exact dispatch ownership or output budget (%j)", async (...cleanupKeys) => {
     await reserveAttempt();
     const record = { ...terminalRecordBase, outcome: "failed" as const, cleanupKeys,
@@ -308,6 +312,58 @@ describe("generation terminal record durable ingest", () => {
       terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`, terminalRecordChecksum: generationTerminalRecordChecksum(record) }))
       .resolves.toMatchObject({ acknowledged: false, status: "quarantined" });
     expect(await prisma.mainOutboxEvent.count({ where: { eventType: GENERATION_BLOB_CLEANUP_EVENT, aggregateId: attemptId } })).toBe(0);
+  });
+
+  it("retains an asset and its derivative as cleanup intent within one output's budget", async () => {
+    await reserveAttempt();
+    const prefix = `gen/${terminalRecordJobId()}/attempts/${attemptId}/`;
+    const cleanupKeys = [`${prefix}image-1.webp`, `${prefix}image-1.preview.webp`];
+    const record = { ...terminalRecordBase, outcome: "failed" as const, cleanupKeys,
+      error: { code: "asset_persist_failed", message: "rollback unavailable", retryability: "retryable" as const } };
+    await expect(ingestGenerationTerminalRecord({ terminalRecord: record,
+      terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`, terminalRecordChecksum: generationTerminalRecordChecksum(record) }))
+      .resolves.toMatchObject({ acknowledged: true, status: "persisted" });
+    const deleted = vi.fn(async (_input: { key: string }) => ({ ok: true as const, data: { deleted: true as const } }));
+    await expect(dispatchPendingGenerationBlobCleanup({ outboxIds: [`generation_blob_cleanup_${attemptId}`], blob: { delete: deleted } }))
+      .resolves.toEqual({ delivered: 1, failed: 0 });
+    expect(deleted.mock.calls.map(([input]) => input.key)).toEqual(cleanupKeys);
+  });
+
+  it("carries a derivative into finalize, and omits the field for an asset without one", async () => {
+    await reserveAttempt();
+    const key = terminalRecord.assets[0]!.key;
+    const derivative = { status: "ready" as const, key: key.replace(/\.webp$/, ".preview.webp"), contentType: "image/webp" as const, width: 512, height: 512, sizeBytes: 100 };
+    const record = { ...terminalRecord, assets: [{ ...terminalRecord.assets[0]!, derivative }] };
+    await expect(ingestGenerationTerminalRecord({ terminalRecord: record,
+      terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`, terminalRecordChecksum: generationTerminalRecordChecksum(record) }))
+      .resolves.toMatchObject({ acknowledged: true, status: "persisted" });
+    expect(await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: outboxId } })).toMatchObject({
+      payload: { assets: [expect.objectContaining({ key, derivative })] },
+    });
+  });
+
+  it("delivers a record whose derivative failed", async () => {
+    await reserveAttempt();
+    const derivative = { status: "failed" as const, code: "derivative_render_failed", message: "ffmpeg missing" };
+    const record = { ...terminalRecord, assets: [{ ...terminalRecord.assets[0]!, derivative }] };
+    await expect(ingestGenerationTerminalRecord({ terminalRecord: record,
+      terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`, terminalRecordChecksum: generationTerminalRecordChecksum(record) }))
+      .resolves.toMatchObject({ acknowledged: true, status: "persisted" });
+  });
+
+  it.each([
+    ["another output", (key: string) => key.replace("image-1.webp", "image-2.preview.webp")],
+    ["outside the attempt", () => "gen/other/attempts/other/image-1.preview.webp"],
+    ["the asset itself", (key: string) => key],
+  ])("quarantines a ready derivative pointing at %s", async (_label, forge) => {
+    await reserveAttempt();
+    const key = terminalRecord.assets[0]!.key;
+    const derivative = { status: "ready" as const, key: forge(key), contentType: "image/webp" as const, width: 512, height: 512, sizeBytes: 100 };
+    const record = { ...terminalRecord, assets: [{ ...terminalRecord.assets[0]!, derivative }] };
+    await expect(ingestGenerationTerminalRecord({ terminalRecord: record,
+      terminalRecordRef: `gen/terminal-records/${attemptId}/terminal.json`, terminalRecordChecksum: generationTerminalRecordChecksum(record) }))
+      .resolves.toMatchObject({ acknowledged: false, status: "quarantined" });
+    expect(await prisma.mainOutboxEvent.findUnique({ where: { id: outboxId } })).toBeNull();
   });
 
   it("retains late cancelled-attempt cleanup and reclaims expired cleanup leases", async () => {

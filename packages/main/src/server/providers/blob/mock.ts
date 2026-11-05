@@ -2,7 +2,7 @@ import type { BlobStore } from "../types";
 import { resolveLocalBlobRoot } from "@idream/shared/storage/local-blob";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, realpathSync, statSync } from "node:fs";
-import { mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export class MockBlobStore implements BlobStore {
@@ -99,6 +99,27 @@ export class MockBlobStore implements BlobStore {
           contentType: null,
         },
       };
+    } catch (error) {
+      return {
+        ok: false as const,
+        error: {
+          code: (error as NodeJS.ErrnoException)?.code === "ENOENT" ? "not_found" : "get_failed",
+          message: error instanceof Error ? error.message : String(error),
+          retryable: error instanceof Error && error.name === "AbortError",
+        },
+      };
+    }
+  }
+
+  async getPrivateToFile(input: { key: string; path: string; maxBytes: number; signal?: AbortSignal }) {
+    try {
+      input.signal?.throwIfAborted();
+      const { size } = await stat(path.join(blobRoot(), input.key));
+      if (size > input.maxBytes) {
+        return { ok: false as const, error: { code: "too_large", message: "Object is larger than this reader accepts", retryable: false } };
+      }
+      await copyFile(path.join(blobRoot(), input.key), input.path);
+      return { ok: true as const, data: { size } };
     } catch (error) {
       return {
         ok: false as const,

@@ -36,6 +36,12 @@ import { characterVideoProductionRecipeForWorkflow } from "@idream/shared";
 import { redgraftVideoEnvelope, REDGRAFT_VIDEO_DEFAULTS } from "@idream/shared/contracts";
 import { probeVideoMedia, type VideoMediaProbe, type VerifiedVideoMedia } from "./backend/video-media-probe";
 import { stripPngMetadata } from "./png-metadata";
+import {
+  persistAssetDerivative,
+  renderImageDerivative,
+  renderVideoPosterDerivative,
+  type VideoPosterExtractor,
+} from "./media-derivatives";
 
 type AttemptDeps = {
   attemptsMade?: number;
@@ -45,6 +51,7 @@ type AttemptDeps = {
 export interface PipelineDeps extends AttemptDeps, GenerationExecutionPorts {
   providers?: GenProviders;
   probeVideoMedia?: VideoMediaProbe;
+  extractVideoPoster?: VideoPosterExtractor;
 }
 
 class GeneratedAssetBodyMissingError extends Error {
@@ -163,7 +170,10 @@ export async function processImageGenerate(
           );
           // A localized edit's proof pins the hash of bytes it composited itself.
           const delivered = asset.preservation ? body : stripPngMetadata(body);
-          return { asset, body: delivered, contentType, index, key, sanityEvidence, dimensions };
+          // Rendered from the delivered bytes before any put. Its outcome never joins
+          // the checks above: the preservation proof pins the original, not this.
+          const derivative = await renderImageDerivative(key, delivered);
+          return { asset, body: delivered, contentType, index, key, sanityEvidence, dimensions, derivative };
         }));
         const assets = [];
         for (const item of normalized) {
@@ -176,6 +186,12 @@ export async function processImageGenerate(
           });
           if (!persisted.ok) throw new Error(persisted.error.message);
           if (!persisted.data.created) attemptedKeys.delete(item.key);
+          const derivative = await persistAssetDerivative({
+            blob: providers.blob,
+            assetKey: item.key,
+            rendering: item.derivative,
+            attemptedKeys,
+          });
           assets.push({
             ordinal: item.index,
             key: item.key,
@@ -192,6 +208,8 @@ export async function processImageGenerate(
                 maskPngBase64: Buffer.from(item.asset.preservation.maskBody).toString("base64"),
               } } : {}),
             },
+            // Omitted, never undefined: the checksum hashes the parsed record.
+            ...(derivative ? { derivative } : {}),
           });
         }
         return {
@@ -338,6 +356,7 @@ export async function processVideoGenerate(
       } catch (error) {
         throw new GenerationArtifactError("invalid_video_output", error instanceof Error ? error.message : "Generated video cannot be decoded", false);
       }
+      const poster = await renderVideoPosterDerivative(assetKey, body, deps.extractVideoPoster);
       try {
         const persisted = await providers.blob.putPrivateIfAbsent({
           key: assetKey,
@@ -356,6 +375,13 @@ export async function processVideoGenerate(
           cleanupKeys.length ? cleanupKeys : undefined,
         );
       }
+      // Nothing is written after the poster, so no later failure can need its rollback.
+      const derivative = await persistAssetDerivative({
+        blob: providers.blob,
+        assetKey,
+        rendering: poster,
+        attemptedKeys: new Set<string>(),
+      });
       return {
         assets: [{
           ordinal: 0,
@@ -365,6 +391,7 @@ export async function processVideoGenerate(
           height: media.height,
           contentType,
           providerKey: output.asset.key ?? null,
+          ...(derivative ? { derivative } : {}),
         }],
         usage: { model: payload.model },
       };

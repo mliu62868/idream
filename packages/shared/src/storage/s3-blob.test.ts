@@ -1,4 +1,7 @@
 import { createHash, createHmac } from "node:crypto";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { S3CompatibleBlobStore } from "./s3-blob";
 
@@ -15,6 +18,40 @@ function createStore(fetchImpl?: typeof fetch) {
 }
 
 describe("S3CompatibleBlobStore", () => {
+  describe("getPrivateToFile", () => {
+    const withDirectory = async (run: (path: string) => Promise<void>) => {
+      const directory = await mkdtemp(join(tmpdir(), "idream-s3-to-file-"));
+      try { await run(join(directory, "object.bin")); } finally { await rm(directory, { recursive: true, force: true }); }
+    };
+    // No Content-Length: only counting the stream can enforce the bound.
+    const chunked = (...chunks: Uint8Array[]) => new Response(new ReadableStream({
+      start(controller) { for (const chunk of chunks) controller.enqueue(chunk); controller.close(); },
+    }));
+
+    it("streams an object to a file and reports its size", async () => withDirectory(async (path) => {
+      const store = createStore(async () => chunked(new Uint8Array([1, 2]), new Uint8Array([3])));
+      await expect(store.getPrivateToFile({ key: "a", path, maxBytes: 3 })).resolves.toEqual({ ok: true, data: { size: 3 } });
+      expect(new Uint8Array(await readFile(path))).toEqual(new Uint8Array([1, 2, 3]));
+    }));
+
+    it("stops at the bound without a Content-Length and leaves no partial file", async () => withDirectory(async (path) => {
+      const store = createStore(async () => chunked(new Uint8Array([1, 2]), new Uint8Array([3, 4])));
+      await expect(store.getPrivateToFile({ key: "a", path, maxBytes: 3 })).resolves.toMatchObject({ ok: false, error: { code: "too_large" } });
+      await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" });
+    }));
+
+    it("refuses on a declared Content-Length before creating a file", async () => withDirectory(async (path) => {
+      const store = createStore(async () => new Response("abcdef", { headers: { "content-length": "6" } }));
+      await expect(store.getPrivateToFile({ key: "a", path, maxBytes: 3 })).resolves.toMatchObject({ ok: false, error: { code: "too_large" } });
+      await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" });
+    }));
+
+    it("reports a missing object as not_found", async () => withDirectory(async (path) => {
+      const store = createStore(async () => new Response(null, { status: 404 }));
+      await expect(store.getPrivateToFile({ key: "a", path, maxBytes: 3 })).resolves.toMatchObject({ ok: false, error: { code: "not_found" } });
+    }));
+  });
+
   it("uses the explicitly attested R2 contract only for the official account endpoint", async () => {
     const objects = new Set<string>();
     const fetchImpl = vi.fn(async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {

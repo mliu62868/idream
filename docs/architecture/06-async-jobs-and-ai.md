@@ -74,6 +74,7 @@ Request admitted
 - provider 超时、进程退出和 terminal relay 重试都不能产生第二笔结算。
 - 图片/视频 worker ownership 在启动和恢复时必须精确；mock video 不注册真实 video worker。
 - 写入失败的私有产物不进入 Artifact/Delivery。Gen 对所有已尝试的精确 key 回滚，确认已存在的对象不回滚；未获删除成功确认的 key 进入 failed TerminalRecord 的可选 `cleanupKeys`。Main 验证不可变 dispatch 的 attempt 前缀、文件名与数量预算，在同一接收事务建立清理 outbox，并以 lease/CAS 独立重试；账号擦除也枚举该终态和所有状态的清理 outbox，未删完不能完成。
+- Gen 在设备租约之外为每个产物写展示派生文件（图片 640px WebP、视频首帧 WebP），key 由资产 key 推导；失败只记录、不影响交付，网格回退原图。擦除按资产 key 推导枚举（ADR-13 §2.1.7）。终态记录由 finalize 与 unknown 采纳共用的 `createDeliveredGenerationAsset` 写入 MediaAsset。
 - 自托管 runner 的记录优先于超时判断：prompt 从 `/history` 与 `/queue` 连续两次消失、或超出执行预算后经取消确认已停止，都是确定失败；取消期间完成的产物照常交付；只有取消后仍在运行或 runner 持续失联才进入 `unknown`（ADR-13 §2.1.6）。
 - Main 只在 Bull source 行已不被 worker 持有时才隔离 `running` Attempt；持有期间最多宽限到 stale 阈值的 6 倍。
 - 已有待清理 key 时，不自动重用同一 attempt 调用 provider；终态重放只重投原始记录。该协议覆盖已观察到的写入/回滚失败，不宣称覆盖成功 put 后、首次 TerminalRecord 持久化前的所有进程崩溃；open/unknown 生成执行仍须运营收敛后才允许账号硬删。
@@ -86,6 +87,7 @@ Request admitted
 - Provider adapter 只做协议、超时、错误映射与原始执行证据，不做余额更新。
 - 语音网关在单一专用线程上执行合成（MLX 要求加载与推理同线程），事件循环保持空闲以响应 `/health`；排队超限返回 503 + `Retry-After`。语音不参与 Gen 的设备租约。
 - Main 的同步 VoiceClip 和视频后期合成也拥有持久请求/租约与写入证据。账号擦除不能只等待 Gen 的原生生成终态；还须等待 Main 在途私有写入退出、枚举未交付文件，并取得历史 TTS 缓存/alias 的持久擦除 ACK（ADR-17 §6）。
+- 视频后期合成在 `gen-finalizer` 内的独立 lane 上运行（并发 1），不进入 1 Hz 序列扫描，因此失败结算与下一场景派发不等待 TTS 或 ffmpeg；只有合成彼此排队。不新增 PM2 进程：ffmpeg 本来就是子进程，场景字节也已落盘。素材按上限写入临时文件（场景 256MiB、旁白 32MiB），一条 ffmpeg 命令只编码一次，解码单线程、编码 2 线程；只有成品在上限内（512MiB）读入内存，因为 PUT 要签 payload hash。网页请求和扫描只派发本序列场景的 Attempt。
 
 ## 7. 可靠性与可观测
 

@@ -20,6 +20,11 @@ export type VideoMediaProbe = (
   bytes: Uint8Array,
 ) => Promise<VerifiedVideoMedia>;
 
+/** Same verification over a file already on disk, with no second copy of its bytes. */
+export type VideoMediaFileProbe = (
+  path: string,
+) => Promise<VerifiedVideoMedia>;
+
 export type VideoMediaCommandRunner = (
   command: string,
   args: readonly string[],
@@ -38,17 +43,70 @@ export class VideoMediaProbeError extends Error {
 // catches truncated/corrupt payloads that still carry a parseable MP4 header.
 // Missing verification tools fail closed because unverified bytes may never
 // reach blob persistence or a terminal success record.
-export function createVideoMediaProbe(input: {
+export function createVideoMediaFileProbe(input: {
   readonly runner?: VideoMediaCommandRunner;
   readonly ffprobePath?: string;
   readonly ffmpegPath?: string;
   readonly timeoutMs?: number;
-} = {}): VideoMediaProbe {
+  /** Caps decoder threads for callers that share their host with GPU work. */
+  readonly threads?: number;
+} = {}): VideoMediaFileProbe {
   const runner = input.runner ?? runMediaCommand;
   const ffprobePath = input.ffprobePath ?? "ffprobe";
   const ffmpegPath = input.ffmpegPath ?? "ffmpeg";
   const timeoutMs = input.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+  const threads = input.threads === undefined ? [] : ["-threads", String(input.threads)];
 
+  return async (path) => {
+    let rawMetadata: string;
+    try {
+      rawMetadata = await runner(ffprobePath, [
+        "-v",
+        "error",
+        ...threads,
+        "-count_frames",
+        "-show_entries",
+        "format=duration:stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,duration,nb_frames,nb_read_frames",
+        "-of",
+        "json",
+        path,
+      ], { timeoutMs });
+    } catch (error) {
+      throw new VideoMediaProbeError(
+        `ffprobe could not verify generated video: ${errorMessage(error)}`,
+        { cause: error },
+      );
+    }
+    const metadata = parseVideoMediaMetadata(rawMetadata);
+    try {
+      await runner(ffmpegPath, [
+        "-nostdin",
+        "-v",
+        "error",
+        "-xerror",
+        ...threads,
+        "-i",
+        path,
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0?",
+        "-f",
+        "null",
+        "-",
+      ], { timeoutMs });
+    } catch (error) {
+      throw new VideoMediaProbeError(
+        `ffmpeg could not fully decode generated video: ${errorMessage(error)}`,
+        { cause: error },
+      );
+    }
+    return metadata;
+  };
+}
+
+export function createVideoMediaProbe(input: Parameters<typeof createVideoMediaFileProbe>[0] = {}): VideoMediaProbe {
+  const probeFile = createVideoMediaFileProbe(input);
   return async (bytes) => {
     if (bytes.byteLength === 0) {
       throw new VideoMediaProbeError("Generated video is empty");
@@ -57,48 +115,7 @@ export function createVideoMediaProbe(input: {
     const path = join(directory, "artifact.mp4");
     try {
       await writeFile(path, bytes);
-      let rawMetadata: string;
-      try {
-        rawMetadata = await runner(ffprobePath, [
-          "-v",
-          "error",
-          "-count_frames",
-          "-show_entries",
-          "format=duration:stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,duration,nb_frames,nb_read_frames",
-          "-of",
-          "json",
-          path,
-        ], { timeoutMs });
-      } catch (error) {
-        throw new VideoMediaProbeError(
-          `ffprobe could not verify generated video: ${errorMessage(error)}`,
-          { cause: error },
-        );
-      }
-      const metadata = parseVideoMediaMetadata(rawMetadata);
-      try {
-        await runner(ffmpegPath, [
-          "-nostdin",
-          "-v",
-          "error",
-          "-xerror",
-          "-i",
-          path,
-          "-map",
-          "0:v:0",
-          "-map",
-          "0:a:0?",
-          "-f",
-          "null",
-          "-",
-        ], { timeoutMs });
-      } catch (error) {
-        throw new VideoMediaProbeError(
-          `ffmpeg could not fully decode generated video: ${errorMessage(error)}`,
-          { cause: error },
-        );
-      }
-      return metadata;
+      return await probeFile(path);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
