@@ -206,6 +206,7 @@ module.exports = {
           "FISH_AUDIO_IDEMPOTENCY_DIR",
           dir(".data/fish-audio/idempotency"),
         ),
+        VOICE_CACHE_TTL_DAYS: mainEnvValue("VOICE_CACHE_TTL_DAYS", "7"),
         HF_HUB_OFFLINE: "1",
         ...(fishAudioApiToken
           ? { FISH_AUDIO_API_TOKEN: fishAudioApiToken }
@@ -244,6 +245,7 @@ module.exports = {
           "POCKET_TTS_IDEMPOTENCY_DIR",
           dir(".data/pocket-tts/idempotency"),
         ),
+        VOICE_CACHE_TTL_DAYS: mainEnvValue("VOICE_CACHE_TTL_DAYS", "7"),
         ...(pocketTtsApiToken
           ? { POCKET_TTS_API_TOKEN: pocketTtsApiToken }
           : {}),

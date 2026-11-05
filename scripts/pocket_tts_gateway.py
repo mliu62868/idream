@@ -31,9 +31,11 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 try:
+    from scripts.voice_cache_janitor import CacheJanitor, cache_ttl_seconds, refresh_entry
     from scripts.voice_erasure import AccountErasureRequest, VoiceErasureRegistry
     from scripts.voice_render_lane import RenderLane
 except ModuleNotFoundError:
+    from voice_cache_janitor import CacheJanitor, cache_ttl_seconds, refresh_entry
     from voice_erasure import AccountErasureRequest, VoiceErasureRegistry
     from voice_render_lane import RenderLane
 
@@ -120,6 +122,7 @@ if DEFAULT_VOICE not in ENGLISH_CATALOG_VOICE_SET:
 VOICE_DIR.mkdir(parents=True, exist_ok=True)
 IDEMPOTENCY_DIR.mkdir(parents=True, exist_ok=True)
 erasure_registry = VoiceErasureRegistry(IDEMPOTENCY_DIR, IDEMPOTENCY_CACHE_MAGIC)
+cache_janitor = CacheJanitor(IDEMPOTENCY_DIR, idempotency_lock, cache_ttl_seconds())
 
 
 class SpeechRequest(BaseModel):
@@ -193,7 +196,9 @@ def require_voice_cloning(model: Any) -> None:
 async def lifespan(_: FastAPI):
     load_runtime_model()
     ensure_system_voice()
+    cache_janitor.start()
     yield
+    cache_janitor.stop()
 
 
 app = FastAPI(
@@ -594,6 +599,7 @@ def load_idempotent_audio(
             status_code=409,
             detail="Idempotency-Key was already used for a different request",
         )
+    refresh_entry(cache_path)
     return audio
 
 

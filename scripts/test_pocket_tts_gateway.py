@@ -178,6 +178,40 @@ class PocketTtsGatewayTests(unittest.TestCase):
         self.assertEqual(health.status_code, 200)
         self.assertLess(elapsed, 2)
 
+    def test_a_retry_after_the_cache_ttl_renders_again_under_the_same_key_and_erasure_still_holds(self):
+        from scripts.voice_cache_janitor import sweep_speech_cache
+        client = TestClient(self.gateway.app)
+        owner = "a" * 64
+        headers = {"Authorization": "Bearer gateway-test-token", "Idempotency-Key": "voice:ttl:provider", "X-Idream-Request-Id": "ttl",
+                   "X-Idream-Attempt-No": "1", "X-Idream-Owner-Hash": owner}
+        body = {"model": "pocket-tts", "input": "A retried reply.", "voice": "anna", "response_format": "wav"}
+        model = self.gateway.load_runtime_model()
+        self.assertEqual(client.post("/v1/audio/speech", headers=headers, json=body).status_code, 200)
+        rendered = model.generation_calls
+        cache = self.gateway.idempotency_cache_path("voice:ttl:provider")
+        ancient = time.time() - 8 * 86_400
+        os.utime(cache, (ancient, ancient))
+        replay = client.post("/v1/audio/speech", headers=headers, json=body)
+        self.assertEqual(replay.headers["x-idream-idempotency-replayed"], "true")
+        self.assertEqual(model.generation_calls, rendered)
+
+        # The TTL runs from the last use, so the replay above kept this old entry.
+        self.assertEqual(sweep_speech_cache(self.gateway.IDEMPOTENCY_DIR, 7 * 86_400, self.gateway.idempotency_lock), 0)
+        os.utime(cache, (ancient, ancient))
+        self.assertEqual(sweep_speech_cache(self.gateway.IDEMPOTENCY_DIR, 7 * 86_400, self.gateway.idempotency_lock), 1)
+
+        retried = client.post("/v1/audio/speech", headers=headers, json=body)
+        self.assertEqual(retried.status_code, 200)
+        self.assertEqual(retried.headers["x-idream-idempotency-replayed"], "false")
+        self.assertEqual(model.generation_calls, rendered + 1)
+
+        self.assertEqual(client.post("/v1/account-erasure", headers={"Authorization": "Bearer gateway-test-token"}, json={
+            "subject_hash": owner, "request_keys": ["voice:ttl:provider"], "voice_ids": [],
+        }).status_code, 200)
+        os.utime(self.gateway.erasure_registry.marker("owner", owner), (ancient, ancient))
+        sweep_speech_cache(self.gateway.IDEMPOTENCY_DIR, 7 * 86_400, self.gateway.idempotency_lock)
+        self.assertEqual(client.post("/v1/audio/speech", headers=headers, json=body).status_code, 410)
+
     def test_speech_refuses_work_it_could_not_finish_in_time(self):
         lane = self.gateway.render_lane
         lane.pending = lane.max_pending

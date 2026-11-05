@@ -217,6 +217,60 @@ class FishAudioGatewayTests(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.headers["retry-after"], "5")
 
+    def test_janitor_removes_only_entries_past_their_ttl(self):
+        from scripts.voice_cache_janitor import sweep_speech_cache
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "erased").mkdir()
+            old_entry, fresh_entry, marker, partial = root / "old.cache", root / "fresh.cache", root / "erased" / "owner-x", root / ".old.cache.abc.tmp"
+            for path in (old_entry, fresh_entry, marker, partial):
+                path.write_bytes(b"x")
+            ancient = time.time() - 8 * 86_400
+            for path in (old_entry, marker, partial):
+                os.utime(path, (ancient, ancient))
+            self.assertEqual(sweep_speech_cache(root, 7 * 86_400, threading.RLock()), 2)
+            self.assertFalse(old_entry.exists())
+            self.assertFalse(partial.exists())
+            self.assertTrue(fresh_entry.exists())
+            # Erasure markers must outlive every entry, or an erased key could render again.
+            self.assertTrue(marker.exists())
+
+    def test_janitor_waits_for_a_running_render_and_spares_an_entry_it_refreshed(self):
+        from scripts.voice_cache_janitor import refresh_entry, sweep_speech_cache
+        with tempfile.TemporaryDirectory() as directory:
+            entry = Path(directory) / "key.cache"
+            entry.write_bytes(b"x")
+            ancient = time.time() - 8 * 86_400
+            os.utime(entry, (ancient, ancient))
+            lock = threading.RLock()
+            lock.acquire()
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                sweep = pool.submit(sweep_speech_cache, Path(directory), 7 * 86_400, lock)
+                time.sleep(0.1)
+                self.assertFalse(sweep.done())
+                self.assertTrue(entry.exists())
+                # The replay holding the lock has just used this entry.
+                refresh_entry(entry)
+                lock.release()
+                self.assertEqual(sweep.result(5), 0)
+            self.assertTrue(entry.exists())
+
+    def test_cache_ttl_defaults_to_a_week_and_zero_disables_the_janitor(self):
+        from scripts.voice_cache_janitor import CacheJanitor, cache_ttl_seconds
+        with patch.dict(os.environ):
+            os.environ.pop("VOICE_CACHE_TTL_DAYS", None)
+            self.assertEqual(cache_ttl_seconds(), 7 * 86_400)
+            os.environ["VOICE_CACHE_TTL_DAYS"] = "0.5"
+            self.assertEqual(cache_ttl_seconds(), 43_200)
+            os.environ["VOICE_CACHE_TTL_DAYS"] = "0"
+            self.assertIsNone(cache_ttl_seconds())
+            os.environ["VOICE_CACHE_TTL_DAYS"] = "-1"
+            with self.assertRaises(RuntimeError):
+                cache_ttl_seconds()
+        janitor = CacheJanitor(Path("."), threading.RLock(), None)
+        janitor.start()
+        self.assertIsNone(janitor.thread)
+
     def test_speech_accepts_the_longest_reply_main_will_send_and_nothing_longer(self):
         gateway = self.gateway
         self.assertEqual(len(gateway.SpeechRequest(input="x" * 12_000).input), 12_000)

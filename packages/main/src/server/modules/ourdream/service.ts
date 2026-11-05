@@ -699,8 +699,9 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     requireAgeGate(ctx);
     if (!id && method === "GET") return ok(await getCharacterDraftVoiceCatalog());
     if (id === "preview" && !action && method === "POST") {
-      requireUser(ctx);
+      const previewer = requireUser(ctx);
       requireAgeVerified(ctx);
+      await enforceRateLimit(request, "voicePreview", previewer.id);
       const selection = characterDraftVoiceSelectionSchema.parse(await jsonBody(request));
       return ok(await previewCharacterDraftVoice({
         ...selection,

@@ -1,3 +1,4 @@
+import { consumeRateLimit, rateLimitIdentity, RATE_LIMITS } from "@/server/lib/rate-limit";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_FISH_AUDIO_DELIVERY } from "@idream/shared/admin";
@@ -402,6 +403,19 @@ describe("Create authoring authority", () => {
     expect(preview).toHaveBeenCalledWith({ provider: "pocket_tts", voiceId: "marius", text: "Hello, it's good to meet you. I'm happy we can spend some time together." });
     const arbitraryText = await api("POST", "character-voices/preview", { userId, ageGate: true, body: { provider: "pocket_tts", voiceId: "marius", text: "Not a catalog sample" } });
     expectError(arbitraryText, 400, "bad_request");
+    expect(preview).toHaveBeenCalledTimes(1);
+
+    // Each preview is a real render with no cache, so it is limited per account.
+    // A fresh id per run, because the limiter's Redis window outlives the test database.
+    const limitedId = `${prefix}preview-limited-${Date.now()}`;
+    await createUser({ id: limitedId });
+    process.env.RATE_LIMIT_FORCE = "1";
+    try {
+      for (let used = 0; used < RATE_LIMITS.voicePreview.limit; used += 1) {
+        await consumeRateLimit("voicePreview", rateLimitIdentity(new Request("http://localhost/"), limitedId));
+      }
+      expectError(await api("POST", "character-voices/preview", { userId: limitedId, ageGate: true, body: { provider: "pocket_tts", voiceId: "marius" } }), 429, "rate_limited");
+    } finally { delete process.env.RATE_LIMIT_FORCE; }
     expect(preview).toHaveBeenCalledTimes(1);
   });
 });

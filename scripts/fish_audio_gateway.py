@@ -30,6 +30,7 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 try:
+    from scripts.voice_cache_janitor import CacheJanitor, cache_ttl_seconds, refresh_entry
     from scripts.voice_erasure import AccountErasureRequest, VoiceErasureRegistry
     from scripts.voice_render_lane import RenderLane
     from scripts.ming_voice_runtime import (
@@ -38,6 +39,7 @@ try:
         control_caption, validate_prompt_metadata,
     )
 except ModuleNotFoundError:
+    from voice_cache_janitor import CacheJanitor, cache_ttl_seconds, refresh_entry
     from voice_erasure import AccountErasureRequest, VoiceErasureRegistry
     from voice_render_lane import RenderLane
     from ming_voice_runtime import (
@@ -110,6 +112,7 @@ if not LANGUAGE:
 VOICE_DIR.mkdir(parents=True, exist_ok=True)
 IDEMPOTENCY_DIR.mkdir(parents=True, exist_ok=True)
 erasure_registry = VoiceErasureRegistry(IDEMPOTENCY_DIR, IDEMPOTENCY_CACHE_MAGIC)
+cache_janitor = CacheJanitor(IDEMPOTENCY_DIR, idempotency_lock, cache_ttl_seconds())
 
 
 class DeliverySettings(BaseModel):
@@ -179,7 +182,9 @@ def clear_reference_cache() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await render_lane.run(load_runtime_model)
+    cache_janitor.start()
     yield
+    cache_janitor.stop()
 
 
 app = FastAPI(
@@ -470,6 +475,7 @@ def load_idempotent_audio(
             status_code=409,
             detail="Idempotency-Key was already used for a different request",
         )
+    refresh_entry(cache_path)
     return audio
 
 

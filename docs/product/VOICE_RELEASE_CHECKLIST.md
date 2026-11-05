@@ -27,6 +27,8 @@
 
 具体输入、single-flight、接受报价与provider恢复协议由 [Voice Clip实现](../../packages/main/src/server/modules/ourdream/voice-clip.ts) 与 [报价实现](../../packages/main/src/server/modules/ourdream/voice-clip-quote.ts) 承载，本文不维护第二套API字段表。
 
+网关的 `.data/*/idempotency` 只是重试缓存：交付的 MP3 由 Main 持久保存，条目在 `VOICE_CACHE_TTL_DAYS`（默认 7 天，0 关闭）内未被使用即由后台清理，之后的同 key 重试重新渲染且不重复计费；擦除标记不受影响。系统声音不做跨用户内容寻址缓存：缓存里是用户的私人回复文本，共享条目无法按账号擦除，且逐字相同的回复几乎不存在。例外：固定在已退役模型上的请求只能从缓存重放，条目过期后这类尚未持久交付的请求会失败。
+
 ## 3. 角色声音身份
 
 - Create与Admin可选择并试听可用catalog声音；有明确需求和provider能力时可用参考音频创建声音候选。语言、声音数和克隆能力来自实际runtime，不复制固定目录数量或模型路径。
