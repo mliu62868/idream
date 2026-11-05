@@ -12,6 +12,7 @@ import {
 } from "../shared/list-cursor";
 import { toInputJson } from "../shared/prisma-json";
 import { writeContentAudit } from "./audit";
+import { escapeLike } from "../shared/escape-like";
 
 // SPEC: 角色创建模板库（Starters）。模板是"创建脚手架"——前台选完即与已建角色脱钩，
 //       不做继承/版本逻辑。
@@ -73,9 +74,9 @@ export async function listTemplates(query: ContentTemplateQuery) {
       scope: query.scope,
       isActive,
       ...(query.search ? { OR: [
-        { id: { contains: query.search, mode: "insensitive" as const } },
-        { name: { contains: query.search, mode: "insensitive" as const } },
-        { summary: { contains: query.search, mode: "insensitive" as const } },
+        { id: { contains: escapeLike(query.search), mode: "insensitive" as const } },
+        { name: { contains: escapeLike(query.search), mode: "insensitive" as const } },
+        { summary: { contains: escapeLike(query.search), mode: "insensitive" as const } },
       ] } : {}),
       ...(cursorName && cursorId ? { AND: [{ OR: [
         { name: { gt: cursorName } },

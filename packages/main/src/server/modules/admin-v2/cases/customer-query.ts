@@ -11,6 +11,7 @@ import {
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { caseDto } from "./query";
 import { effectiveSubscriptionStatus } from "@/server/modules/ourdream/subscription-lifecycle";
+import { escapeLike } from "../shared/escape-like";
 
 const ACTIVE_CASE_STATUSES = ["new", "triaged", "in_progress", "waiting", "reopened"];
 
@@ -24,10 +25,10 @@ export async function listCustomers(request: Request) {
     ...(query.status ? { status: query.status } : {}),
     ...(query.search ? {
       OR: [
-        { id: { contains: query.search, mode: "insensitive" } },
-        { email: { contains: query.search, mode: "insensitive" } },
-        { displayName: { contains: query.search, mode: "insensitive" } },
-        { name: { contains: query.search, mode: "insensitive" } },
+        { id: { contains: escapeLike(query.search), mode: "insensitive" } },
+        { email: { contains: escapeLike(query.search), mode: "insensitive" } },
+        { displayName: { contains: escapeLike(query.search), mode: "insensitive" } },
+        { name: { contains: escapeLike(query.search), mode: "insensitive" } },
       ],
     } : {}),
   };

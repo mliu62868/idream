@@ -24,6 +24,7 @@ import {
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { DUAL_APPROVAL_FLAG } from "./enforcement";
 import { assertBoundApprovalIntent, bindApprovalIntent } from "./intent";
+import { escapeLike } from "../shared/escape-like";
 
 /**
  * SPEC: 双人审批 —— 高风险动作先落一条请求，再由**另一个**同样持有该权限的人批准。
@@ -78,11 +79,11 @@ export async function listApprovals(request: Request): Promise<ApprovalListRespo
     status,
     OR: search
       ? [
-          { id: { contains: search } },
-          { action: { contains: search } },
-          { permissionKey: { contains: search } },
-          { targetId: { contains: search } },
-          { requestedById: { contains: search } },
+          { id: { contains: escapeLike(search) } },
+          { action: { contains: escapeLike(search) } },
+          { permissionKey: { contains: escapeLike(search) } },
+          { targetId: { contains: escapeLike(search) } },
+          { requestedById: { contains: escapeLike(search) } },
         ]
       : undefined,
   };

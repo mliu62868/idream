@@ -13,6 +13,7 @@ import {
   operationalMediaAssetWhere,
 } from "@/server/modules/metric-data-scope";
 import { duplicateLineage } from "./duplicate-lineage";
+import { escapeLike } from "../shared/escape-like";
 
 const DEFAULT_REPORT_STATUSES = ["open", "triaged", "reviewing"];
 
@@ -49,10 +50,10 @@ export async function moderationQueue(request: Request): Promise<ModerationQueue
     status: { in: statuses },
     OR: search
       ? [
-          { id: { contains: search } },
-          { targetId: { contains: search } },
-          { category: { contains: search } },
-          { description: { contains: search } },
+          { id: { contains: escapeLike(search) } },
+          { targetId: { contains: escapeLike(search) } },
+          { category: { contains: escapeLike(search) } },
+          { description: { contains: escapeLike(search) } },
         ]
       : undefined,
     AND: reportCursorKeys ? (() => {
@@ -93,10 +94,10 @@ export async function moderationQueue(request: Request): Promise<ModerationQueue
         ...(search
           ? [{
               OR: [
-                { id: { contains: search } },
-                { ownerId: { contains: search } },
-                { characterId: { contains: search } },
-                { type: { contains: search } },
+                { id: { contains: escapeLike(search) } },
+                { ownerId: { contains: escapeLike(search) } },
+                { characterId: { contains: escapeLike(search) } },
+                { type: { contains: escapeLike(search) } },
               ],
             }]
           : []),
@@ -119,10 +120,10 @@ export async function moderationQueue(request: Request): Promise<ModerationQueue
       status: "open",
       OR: search
         ? [
-            { id: { contains: search } },
-            { userId: { contains: search } },
-            { targetId: { contains: search } },
-            { appealText: { contains: search } },
+            { id: { contains: escapeLike(search) } },
+            { userId: { contains: escapeLike(search) } },
+            { targetId: { contains: escapeLike(search) } },
+            { appealText: { contains: escapeLike(search) } },
           ]
         : undefined,
       AND: appealCursorKeys ? (() => {

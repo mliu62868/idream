@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { ADMIN_IDEMPOTENCY_KEY_MAX_LENGTH } from "@idream/shared/admin/contracts";
 import { Errors } from "@/server/lib/errors";
 
 function canonicalize(input: unknown): unknown {
@@ -24,5 +25,10 @@ export function canonicalJsonEqual(left: unknown, right: unknown) {
 export function requireIdempotencyKey(request: Request) {
   const value = request.headers.get("idempotency-key")?.trim();
   if (!value) throw Errors.badRequest("Idempotency-Key header is required");
+  if (value.length > ADMIN_IDEMPOTENCY_KEY_MAX_LENGTH) {
+    throw Errors.badRequest("Idempotency-Key header is too long", {
+      maxLength: ADMIN_IDEMPOTENCY_KEY_MAX_LENGTH,
+    });
+  }
   return value;
 }

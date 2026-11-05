@@ -6,6 +6,7 @@ import {
   CREATED_AT_DESC_KEYS,
   paginateAdminKeyset,
 } from "@/server/modules/admin-v2/shared/list-cursor";
+import { escapeLike } from "../shared/escape-like";
 
 export async function auditLog(request: Request) {
   await actorWithPermission(request, "audit.read");
@@ -17,7 +18,7 @@ export async function auditLog(request: Request) {
   const command = commandId
     ? await prisma.controlPlaneCommand.findUnique({ where: { id: commandId }, select: { requestId: true } })
     : null;
-  const contains = (value: string) => ({ contains: value, mode: "insensitive" as const });
+  const contains = (value: string) => ({ contains: escapeLike(value), mode: "insensitive" as const });
   const where: Prisma.AdminAuditLogWhereInput = {
     action,
     actorId,

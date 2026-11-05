@@ -1,9 +1,11 @@
+import { Prisma } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { adminGrantBundleKeySchema, globalAdminSearchResponseSchema } from "@idream/shared/admin";
 import { adminV2ContractFixtures } from "@idream/shared/admin/testing/contract-fixtures";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { logger } from "@/server/lib/logger";
+import { IdempotencyConflictError } from "./control-plane-command";
 import { jsonBody, multipartFields, parseRequestInput, queryParams } from "./authority";
 import { adminV2Route } from "./route-handler";
 
@@ -181,5 +183,103 @@ describe("Admin v2 route seam", () => {
     );
 
     expect(response.status).toBe(500);
+  });
+  it("logs an AppError of status 500 or above, whose details the client never sees", async () => {
+    const logged = vi.spyOn(logger, "error").mockImplementation(() => {});
+    const response = await adminV2Route(get(savedViewsUrl), () => ({ items: [{ nope: true }] }));
+
+    expect(response.status).toBe(500);
+    expect(logged).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "internal", method: "GET", path: "/api/v2/admin/saved-views" }),
+      "Admin authority produced a response outside its declared contract",
+    );
+  });
+
+  it("logs a 5xx response that a module built from its own caught AppError", async () => {
+    const logged = vi.spyOn(logger, "error").mockImplementation(() => {});
+    const response = await adminV2Route(get(savedViewsUrl), () => Response.json(
+      { ok: false, error: { code: "internal", message: "Read model failed" } },
+      { status: 500 },
+    ));
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({ error: { message: "Read model failed" } });
+    expect(logged).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 500, body: expect.stringContaining("Read model failed") }),
+      "Admin v2 route answered with a server error",
+    );
+  });
+
+  it("does not log an AppError the client caused", async () => {
+    const logged = vi.spyOn(logger, "error").mockImplementation(() => {});
+    const response = await adminV2Route(get(savedViewsUrl), () => {
+      throw Errors.forbidden("Saved view scope is out of reach");
+    });
+
+    expect(response.status).toBe(403);
+    expect(logged).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["P2025", 404, "not_found"],
+    ["P2034", 409, "conflict"],
+    ["P2028", 503, "unavailable"],
+    ["P2020", 400, "bad_request"],
+  ])("maps Prisma %s to %i without leaking its message", async (code, status, errorCode) => {
+    vi.spyOn(logger, "error").mockImplementation(() => {});
+    const response = await adminV2Route(get(savedViewsUrl), () => {
+      throw new Prisma.PrismaClientKnownRequestError("private query text", { code, clientVersion: "test" });
+    });
+
+    expect(response.status).toBe(status);
+    const body = await response.text();
+    expect(JSON.parse(body)).toMatchObject({ ok: false, error: { code: errorCode } });
+    expect(body).not.toContain("private query text");
+  });
+
+  it("keeps an unmapped Prisma failure a 500, since it is not the caller's", async () => {
+    vi.spyOn(logger, "error").mockImplementation(() => {});
+    const response = await adminV2Route(get(savedViewsUrl), () => {
+      throw new Prisma.PrismaClientKnownRequestError("private query text", { code: "P2003", clientVersion: "test" });
+    });
+
+    expect(response.status).toBe(500);
+    expect(await response.text()).not.toContain("private query text");
+  });
+
+  it("answers an idempotency conflict thrown outside commandResponse with 409", async () => {
+    const response = await adminV2Route(get(savedViewsUrl), () => {
+      throw new IdempotencyConflictError("command-1", "hash-a", "hash-b");
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      error: { code: "idempotency_conflict", commandId: "command-1" },
+    });
+  });
+
+  it.each([
+    ["a search term", "http://localhost/api/v2/admin/saved-views?q=a%00b"],
+    ["a query name", "http://localhost/api/v2/admin/saved-views?a%00b=1"],
+    ["a path id", "http://localhost/api/v2/admin/users/user%00id"],
+  ])("rejects a NUL byte in %s before the handler runs", async (_name, url) => {
+    const execute = vi.fn(() => validSavedViewList());
+    const response = await adminV2Route(get(url), execute);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ ok: false, error: { code: "bad_request" } });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized Idempotency-Key on every route, and admits the longest generated one", async () => {
+    const execute = vi.fn(() => validSavedViewList());
+    const withKey = (key: string) => new Request(savedViewsUrl, { headers: { "idempotency-key": key } });
+
+    expect((await adminV2Route(withKey("k".repeat(201)), execute)).status).toBe(400);
+    expect(execute).not.toHaveBeenCalled();
+    // Release canary: `<prefix up to 120>:<uuid>:<iteration>`.
+    const canary = `${"p".repeat(120)}:${crypto.randomUUID()}:99999`;
+    expect((await adminV2Route(withKey(canary), execute)).status).toBe(200);
   });
 });

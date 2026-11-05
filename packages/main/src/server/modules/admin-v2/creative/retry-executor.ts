@@ -26,6 +26,7 @@ import {
   transitionControlPlaneCommand,
   updateControlPlaneCommandMetadata,
 } from "../shared/control-plane-command-transition";
+import { operatorSafeFailureMessage } from "../shared/operator-safe-failure";
 import { toInputJson } from "../shared/prisma-json";
 import {
   isCreativeRunItemTransitionAllowed,
@@ -348,7 +349,10 @@ async function failCommand(
 ) {
   const error = {
     code: "creative_retry_execution_failed",
-    message: input.error instanceof Error ? input.error.message : "Creative retry execution failed",
+    message: operatorSafeFailureMessage(input.error, "Creative retry execution failed", {
+      commandId: input.commandId,
+      attemptNo: input.attemptNo,
+    }),
   };
   await db.$transaction(async (tx) => {
     await transitionControlPlaneCommand(tx, {

@@ -619,7 +619,9 @@ export async function listCharacterPortfolioData(
   } = {},
 ) {
   const asOf = input.asOf ?? new Date();
-  const includePerformance = query.includePerformance !== false;
+  // INTENT: release attribution costs roughly 20 queries per item and reads exposure facts
+  // unbounded, so only a caller that renders it asks for it. The Admin list always states its mode.
+  const includePerformance = query.includePerformance === true;
   const characterIds = await filteredCharacterIds(
     db,
     query,

@@ -4,6 +4,7 @@ import { nonSyntheticMediaAssetWhere } from "@/server/lib/media-asset-authority"
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { transitionControlPlaneCommandAttempt } from "../shared/control-plane-command-attempt";
 import { transitionControlPlaneCommand } from "../shared/control-plane-command-transition";
+import { operatorSafeFailureMessage } from "../shared/operator-safe-failure";
 import { toInputJson } from "../shared/prisma-json";
 import { releaseMonitorDueAt } from "./release-monitor";
 import {
@@ -1023,9 +1024,9 @@ export async function executeCharacterReleaseCommand(
         ? error
         : new ReleaseCommandError(
             "release_executor_transaction_failed",
-            error instanceof Error
-              ? error.message
-              : "Unknown transaction failure",
+            operatorSafeFailureMessage(error, "Release command transaction failed", {
+              commandId: input.commandId,
+            }),
           );
     await db.$transaction(async (tx) => {
       const command = await tx.controlPlaneCommand.findUnique({

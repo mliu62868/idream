@@ -232,6 +232,8 @@ describe("Generation failure to Incident production seam", () => {
       lastError: {
         outcome: "retry_exhausted",
         code: "incident_correlation_failed",
+        // The injected "temporary database outage" stays in server logs.
+        message: "Incident correlation failed",
       },
     });
     await expect(dispatchGenerationIncidentCorrelation(prisma, {

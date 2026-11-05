@@ -20,6 +20,7 @@ import {
   customerSubscriptionWhere,
 } from "@/server/modules/metric-data-scope";
 import { effectiveSubscriptionStatus, liveSubscriptionWhere } from "@/server/modules/ourdream/subscription-lifecycle";
+import { escapeLike } from "../shared/escape-like";
 
 export async function billingLedger(request: Request) {
   await actorWithPermission(request, "billing.read");
@@ -31,10 +32,10 @@ export async function billingLedger(request: Request) {
     reason,
     OR: search
       ? [
-          { id: { contains: search } },
-          { userId: { contains: search } },
-          { sourceId: { contains: search } },
-          { user: { email: { contains: search } } },
+          { id: { contains: escapeLike(search) } },
+          { userId: { contains: escapeLike(search) } },
+          { sourceId: { contains: escapeLike(search) } },
+          { user: { email: { contains: escapeLike(search) } } },
         ]
       : undefined,
   });
@@ -88,11 +89,11 @@ export async function listSubscriptions(request: Request) {
     AND: statusWhere ? [statusWhere] : undefined,
     OR: search
       ? [
-          { id: { contains: search } },
-          { userId: { contains: search } },
-          { providerSubscriptionId: { contains: search } },
-          { user: { email: { contains: search } } },
-          { plan: { slug: { contains: search } } },
+          { id: { contains: escapeLike(search) } },
+          { userId: { contains: escapeLike(search) } },
+          { providerSubscriptionId: { contains: escapeLike(search) } },
+          { user: { email: { contains: escapeLike(search) } } },
+          { plan: { slug: { contains: escapeLike(search) } } },
         ]
       : undefined,
   });

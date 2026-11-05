@@ -11,6 +11,7 @@ import {
   USER_SUBJECT_CASE_TARGET_TYPES,
   operationalAdminCaseWhere,
 } from "@/server/modules/metric-data-scope";
+import { escapeLike } from "../shared/escape-like";
 
 function record(value: Prisma.JsonValue | null) {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -170,7 +171,7 @@ function scopedCaseWhere(role: string, view: string, actorId: string): Prisma.Ad
 }
 
 function supportSearchSql(search: string) {
-  const pattern = `%${search}%`;
+  const pattern = `%${escapeLike(search)}%`;
   return Prisma.sql`(
     admin_case."targetId" ILIKE ${pattern}
     OR admin_case."caseKey" ILIKE ${pattern}

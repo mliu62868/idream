@@ -23,6 +23,7 @@ import {
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { appendSupportMessage, supportConversation } from "./conversation";
 import { supportSlaDueAt } from "./sla";
+import { escapeLike } from "../shared/escape-like";
 
 type PlaintextFields = Record<string, string | null>;
 
@@ -121,14 +122,14 @@ export async function listSupportRequests(request: Request) {
     ...(search
       ? {
           OR: [
-            { ticketId: { contains: search, mode: "insensitive" } },
-            { userId: { contains: search, mode: "insensitive" } },
-            { subject: { contains: search, mode: "insensitive" } },
-            { description: { contains: search, mode: "insensitive" } },
-            { resolutionNotes: { contains: search, mode: "insensitive" } },
-            { sourcePath: { contains: search, mode: "insensitive" } },
-            { user: { is: { email: { contains: search, mode: "insensitive" } } } },
-            { assignedTo: { is: { email: { contains: search, mode: "insensitive" } } } },
+            { ticketId: { contains: escapeLike(search), mode: "insensitive" } },
+            { userId: { contains: escapeLike(search), mode: "insensitive" } },
+            { subject: { contains: escapeLike(search), mode: "insensitive" } },
+            { description: { contains: escapeLike(search), mode: "insensitive" } },
+            { resolutionNotes: { contains: escapeLike(search), mode: "insensitive" } },
+            { sourcePath: { contains: escapeLike(search), mode: "insensitive" } },
+            { user: { is: { email: { contains: escapeLike(search), mode: "insensitive" } } } },
+            { assignedTo: { is: { email: { contains: escapeLike(search), mode: "insensitive" } } } },
           ],
         }
       : {}),

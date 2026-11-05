@@ -279,22 +279,34 @@ export async function overrideAgeVerification(
   if (body.confirmation !== id) {
     throw Errors.badRequest("Confirmation did not match override target");
   }
-  const before = await prisma.ageVerification.findUnique({ where: { id } });
-  if (!before) throw Errors.notFound("Age verification not found");
-  const after = await prisma.ageVerification.update({
-    where: { id },
-    data: {
-      status: body.status,
-      verifiedAt: body.status === "verified" ? new Date() : null,
-    },
-  });
-  await writeAudit(request, actor, {
-    action: "compliance.age_override",
-    targetType: "age_verification",
-    targetId: id,
-    reason: body.reason,
-    before: { status: before.status },
-    after: { status: after.status },
+  // INVARIANT: the 18+ gate and its audit row commit together, and an override only applies to the
+  // state the operator's decision was made against; a concurrent override is a 409, not a silent
+  // last-writer-wins.
+  const after = await prisma.$transaction(async (tx) => {
+    const before = await tx.ageVerification.findUnique({ where: { id } });
+    if (!before) throw Errors.notFound("Age verification not found");
+    const updated = await tx.ageVerification.updateMany({
+      where: { id, status: before.status },
+      data: {
+        status: body.status,
+        verifiedAt: body.status === "verified" ? new Date() : null,
+      },
+    });
+    if (updated.count !== 1) {
+      throw Errors.conflict("Age verification changed concurrently; reload and retry");
+    }
+    const current = await tx.ageVerification.findUniqueOrThrow({ where: { id } });
+    await tx.adminAuditLog.create({
+      data: adminAuditData(request, actor, {
+        action: "compliance.age_override",
+        targetType: "age_verification",
+        targetId: id,
+        reason: body.reason,
+        before: { status: before.status },
+        after: { status: current.status },
+      }),
+    });
+    return current;
   });
   return {
     ageVerification: {

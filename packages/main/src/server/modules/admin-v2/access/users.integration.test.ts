@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { GET as listUsersRoute } from "@/app/api/v2/admin/users/route";
 import { GET as userDetailRoute } from "@/app/api/v2/admin/users/[id]/route";
 import { POST as userStatusRoute } from "@/app/api/v2/admin/users/[id]/status/route";
@@ -96,6 +96,41 @@ describe("idempotent user authority commands", () => {
     const second = await callList(`q=${P}match&role=support&status=active&limit=1&cursor=${encodeURIComponent(firstBody.data.pageInfo.endCursor)}`);
     expect(second.status).toBe(200);
     expect((await second.json()).data.items).toEqual([expect.objectContaining({ id: olderId })]);
+  });
+
+  it("reads every listed balance from one grouped ledger query", async () => {
+    const funded = `${P}balance-funded`;
+    const empty = `${P}balance-empty`;
+    await createUser({ id: funded, email: `${P}balance-funded@example.test` });
+    await createUser({ id: empty, email: `${P}balance-empty@example.test` });
+    await prisma.dreamcoinLedger.createMany({ data: [
+      { userId: funded, delta: 100, balanceAfter: 100, reason: "admin_adjust" },
+      { userId: funded, delta: -30, balanceAfter: 70, reason: "admin_adjust" },
+    ] });
+    const aggregate = vi.spyOn(prisma.dreamcoinLedger, "aggregate");
+    const groupBy = vi.spyOn(prisma.dreamcoinLedger, "groupBy");
+    try {
+      const response = await callList(`q=${P}balance-&limit=10`);
+      expect(response.status).toBe(200);
+      const items = (await response.json()).data.items as { id: string; dreamcoins: number }[];
+      expect(Object.fromEntries(items.map((item) => [item.id, item.dreamcoins]))).toEqual({ [funded]: 70, [empty]: 0 });
+      expect(aggregate).not.toHaveBeenCalled();
+      expect(groupBy).toHaveBeenCalledTimes(1);
+    } finally {
+      aggregate.mockRestore();
+      groupBy.mockRestore();
+    }
+  });
+
+  it("treats wildcards literally and refuses NUL in a search term", async () => {
+    const id = `${P}literal-search`;
+    await createUser({ id, email: `${P}literal-search@example.test` });
+
+    const wildcard = await callList(`q=${encodeURIComponent(`${P}literal_search`)}`);
+    expect(wildcard.status).toBe(200);
+    expect((await wildcard.json()).data.items).toEqual([]);
+    expect((await callList(`q=${P}literal-search`)).status).toBe(200);
+    expect((await callList("q=a%00b")).status).toBe(400);
   });
 
   it("returns every user data class and applies an explicit dataClass filter", async () => {

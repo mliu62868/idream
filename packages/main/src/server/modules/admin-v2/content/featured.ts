@@ -121,7 +121,7 @@ function featuredRuntimeBlockers(
   character: FeaturedCharacter | undefined,
 ): FeaturedRuntimeBlocker[] {
   const merchandisingRepairDeepLink =
-    `/admin/growth/merchandising?view=featured&search=${encodeURIComponent(characterId)}`;
+    `/admin/growth/merchandising?view=featured&contentSearch=${encodeURIComponent(characterId)}`;
   const assetRepairDeepLink = `/admin/characters/${encodeURIComponent(characterId)}?tab=assets`;
   const releaseRepairDeepLink = `/admin/characters/${encodeURIComponent(characterId)}?tab=release`;
   if (!character) {

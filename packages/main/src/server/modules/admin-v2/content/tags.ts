@@ -10,6 +10,7 @@ import { Errors } from "@/server/lib/errors";
 import type { AdminActor } from "../shared/authority";
 import { tagSlug } from "../characters/creation";
 import { writeContentAudit } from "./audit";
+import { escapeLike } from "../shared/escape-like";
 
 // SPEC: 标签分类法治理 —— admin 侧标签的列表 / 编辑 / 合并。
 // INTENT: 与前台 `ourdream` 的只读 listTags() 物理隔离，命名 listAdminTags 以避混淆。
@@ -23,7 +24,7 @@ export async function listAdminTags(query: ContentTagQuery) {
     where: {
       ...(query.category ? { category: query.category } : {}),
       ...(query.search
-        ? { OR: [{ slug: { contains: query.search } }, { label: { contains: query.search } }] }
+        ? { OR: [{ slug: { contains: escapeLike(query.search) } }, { label: { contains: escapeLike(query.search) } }] }
         : {}),
     },
     include: { _count: { select: { characters: true } } },
@@ -107,26 +108,29 @@ export async function patchTag(input: {
     throw Errors.badRequest("Confirmation did not match tag");
   }
 
-  const tag = await prisma.tag.update({
-    where: { id },
-    data: {
-      label: body.label,
-      category: body.category === undefined ? undefined : body.category,
-      isSensitive: body.isSensitive,
-      isMutedByDefault: body.isMutedByDefault,
-    },
-  });
-
   // 仅记录实际请求修改的字段，before/after 一一对应。
   const changedKeys = (["label", "category", "isSensitive", "isMutedByDefault"] as const)
     .filter((key) => body[key] !== undefined);
-  await writeContentAudit(request, actor, {
-    action: "content.tag.update",
-    targetType: "tag",
-    targetId: id,
-    reason: body.reason,
-    before: Object.fromEntries(changedKeys.map((key) => [key, before[key]])),
-    after: Object.fromEntries(changedKeys.map((key) => [key, tag[key]])),
+  // INVARIANT: 标签与审计同一事务，审计写失败时改动一并回滚。
+  const tag = await prisma.$transaction(async (tx) => {
+    const updated = await tx.tag.update({
+      where: { id },
+      data: {
+        label: body.label,
+        category: body.category === undefined ? undefined : body.category,
+        isSensitive: body.isSensitive,
+        isMutedByDefault: body.isMutedByDefault,
+      },
+    });
+    await writeContentAudit(request, actor, {
+      action: "content.tag.update",
+      targetType: "tag",
+      targetId: id,
+      reason: body.reason,
+      before: Object.fromEntries(changedKeys.map((key) => [key, before[key]])),
+      after: Object.fromEntries(changedKeys.map((key) => [key, updated[key]])),
+    }, tx);
+    return updated;
   });
 
   return {
@@ -181,20 +185,19 @@ export async function mergeTags(input: {
     }
     await tx.characterTag.deleteMany({ where: { tagId: source.id } });
     await tx.tag.delete({ where: { id: source.id } });
-    return toMove.length;
-  });
-
-  await writeContentAudit(request, actor, {
-    action: "content.tag.merge",
-    targetType: "tag",
-    targetId: target.id,
-    reason: body.reason,
-    before: {
-      sourceId: source.id,
-      sourceSlug: source.slug,
+    await writeContentAudit(request, actor, {
+      action: "content.tag.merge",
+      targetType: "tag",
       targetId: target.id,
-      movedCount,
-    },
+      reason: body.reason,
+      before: {
+        sourceId: source.id,
+        sourceSlug: source.slug,
+        targetId: target.id,
+        movedCount: toMove.length,
+      },
+    }, tx);
+    return toMove.length;
   });
 
   return { merged: true as const, movedCount };

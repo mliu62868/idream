@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   adminCommandAcceptedSchema,
   adminCommandHeadersSchema,
+  adminOverviewWindowQuerySchema,
   adminBackfillRequestSchema,
   adminErrorResponseSchema,
   adminListResponseSchema,
@@ -398,6 +399,33 @@ describe("Admin API v2 public contracts", () => {
         qualityEvidence: ["canonical data unavailable"],
       }).success,
     ).toBe(true);
+  });
+
+  it("accepts only bounded ISO instants or calendar dates as an overview window", () => {
+    const parses = (query: Record<string, string>) => adminOverviewWindowQuerySchema.safeParse(query).success;
+
+    for (const invalid of ["foo 1", "2026-02-31T00:00:00.000Z", "2026-02-31", "0000-01-01T00:00:00.000Z"]) {
+      expect(parses({ from: invalid }), invalid).toBe(false);
+    }
+    expect(parses({})).toBe(true);
+    expect(parses({ from: "2026-08-01T00:00:00.000Z", to: "2026-08-02T00:00:00+08:00" })).toBe(true);
+    expect(parses({ from: "2100-10-06T00:00:00.000Z", to: "2100-10-06T01:00:00.000Z" })).toBe(true);
+  });
+
+  it("caps an overview window at 365 days, including an open-ended start", () => {
+    const parses = (query: Record<string, string>) => adminOverviewWindowQuerySchema.safeParse(query).success;
+
+    expect(parses({ from: "2025-01-01T00:00:00.000Z", to: "2026-01-01T00:00:00.000Z" })).toBe(true);
+    expect(parses({ from: "2024-12-31T23:59:59.000Z", to: "2026-01-01T00:00:00.000Z" })).toBe(false);
+    expect(parses({ from: new Date(Date.now() - 366 * 24 * 60 * 60 * 1_000).toISOString() })).toBe(false);
+    expect(parses({ from: new Date(Date.now() - 364 * 24 * 60 * 60 * 1_000).toISOString() })).toBe(true);
+  });
+
+  it("caps the command Idempotency-Key", () => {
+    const headers = (idempotencyKey: string) => adminCommandHeadersSchema.safeParse({ idempotencyKey, requestId: "request_1" }).success;
+
+    expect(headers("k".repeat(200))).toBe(true);
+    expect(headers("k".repeat(201))).toBe(false);
   });
 
   it("uses stable command and error envelopes", () => {

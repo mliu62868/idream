@@ -16,6 +16,7 @@ import {
   deriveCreativeItemExecutionState,
 } from "./run-state";
 import { jsonRecord, nonEmptyStrings } from "./json";
+import { escapeLike } from "../shared/escape-like";
 
 // SPEC: Creative Run 的两个只读投影 —— 运营列表与单轮详情。
 // INTENT: 只读、无事务，能看到写路径看不到的东西（结算事实、Attempt / transport 谱系、
@@ -172,9 +173,9 @@ export async function listCreativeRuns(input: {
         targetId: query.targetId,
         ...(query.search ? {
           OR: [
-            { id: { contains: query.search, mode: "insensitive" } },
-            { title: { contains: query.search, mode: "insensitive" } },
-            { purpose: { contains: query.search, mode: "insensitive" } },
+            { id: { contains: escapeLike(query.search), mode: "insensitive" } },
+            { title: { contains: escapeLike(query.search), mode: "insensitive" } },
+            { purpose: { contains: escapeLike(query.search), mode: "insensitive" } },
           ],
         } : {}),
       }),

@@ -46,6 +46,16 @@ describe.each([
     else expect(result.data.generation.total).toBe(0);
   });
 
+  it.each([
+    { from: "foo 1" },
+    { from: "2026-02-31T00:00:00.000Z" },
+    { from: "2024-01-01T00:00:00.000Z", to: "2026-01-01T00:00:00.000Z" },
+  ])("rejects a malformed or oversized window: %j", async (query) => {
+    const result = await callAdminV2(handler, { url, actor, query });
+    expect(result.status).toBe(400);
+    expect(result.error?.code).toBe("bad_request");
+  });
+
   it("keeps the default thirty-day window valid", async () => {
     const result = expectAdminV2Ok(await callAdminV2(handler, { url, actor }));
     expect(Date.parse(result.data.window.to) - Date.parse(result.data.window.from)).toBe(30 * 24 * 60 * 60 * 1000);

@@ -1,9 +1,10 @@
 import type { PrismaClient } from "@prisma/client";
 import { executeCharacterReleaseCommand } from "../characters/release-executor";
-import { Errors } from "@/server/lib/errors";
+import { AppError, Errors } from "@/server/lib/errors";
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { transitionControlPlaneCommandAttempt } from "../shared/control-plane-command-attempt";
 import { transitionControlPlaneCommand } from "../shared/control-plane-command-transition";
+import { operatorSafeFailureMessage } from "../shared/operator-safe-failure";
 import { toInputJson } from "../shared/prisma-json";
 import { executeCreativeRetryCommand } from "../creative/retry-executor";
 import { executeIncidentActionPlanCommand } from "../incidents/action-executor";
@@ -25,8 +26,8 @@ export interface AdminCommandExecutionContext {
 async function failCommand(commandId: string, attemptNo: number, error: unknown, context: AdminCommandExecutionContext) {
   const { db, workerId } = context;
   const payload = {
-    code: "domain_invariant_failed",
-    message: error instanceof Error ? error.message : "Command execution failed",
+    code: error instanceof AppError ? "domain_invariant_failed" : "command_execution_failed",
+    message: operatorSafeFailureMessage(error, "Command execution failed", { commandId, attemptNo }),
   };
   await db.$transaction(async (tx) => {
     await transitionControlPlaneCommand(tx, {

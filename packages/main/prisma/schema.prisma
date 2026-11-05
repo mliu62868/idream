@@ -1071,6 +1071,8 @@ model GenerationJob {
   @@index([lookId])
   @@index([profileId, profileVersion])
   @@index([recipeId, recipeVersion])
+  @@index([createdAt, id])
+  @@index([updatedAt, id])
   @@map("generation_jobs")
 }
 
@@ -1511,6 +1513,7 @@ model DreamcoinLedger {
 
   @@index([userId, createdAt])
   @@index([sourceId])
+  @@index([createdAt, id])
   @@map("dreamcoin_ledger")
 }
 
@@ -1876,6 +1879,7 @@ model AdminAuditLog {
   @@index([actorId, createdAt])
   @@index([action, createdAt])
   @@index([targetType, targetId])
+  @@index([createdAt, id])
   @@map("admin_audit_logs")
 }
 

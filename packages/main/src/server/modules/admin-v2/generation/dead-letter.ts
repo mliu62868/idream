@@ -37,6 +37,7 @@ import {
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { deriveGenerationJobState } from "./job-state";
 import { adminRequestId } from "./model-profiles";
+import { escapeLike } from "../shared/escape-like";
 
 const DEFAULT_DEAD_LETTER_STATUSES = ["failed", "blocked"];
 
@@ -51,16 +52,16 @@ export async function listGenerationDeadLetter(request: Request) {
   const queryIdentity = { search: query.search, statuses, errorCode: query.errorCode, mode };
   const where: Prisma.GenerationJobWhereInput = operationalGenerationJobWhere({
     status: { in: statuses },
-    errorCode: query.errorCode ? { contains: query.errorCode } : undefined,
+    errorCode: query.errorCode ? { contains: escapeLike(query.errorCode) } : undefined,
     mode,
     events: { none: { type: "discarded" } },
     AND: query.search
       ? [{
           OR: [
-            { id: { contains: query.search } },
-            { userId: { contains: query.search } },
-            { errorCode: { contains: query.search } },
-            { provider: { contains: query.search } },
+            { id: { contains: escapeLike(query.search) } },
+            { userId: { contains: escapeLike(query.search) } },
+            { errorCode: { contains: escapeLike(query.search) } },
+            { provider: { contains: escapeLike(query.search) } },
           ],
         }]
       : [],

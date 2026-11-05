@@ -665,4 +665,46 @@ describe.sequential("Admin v2 completed subscription refund authority", () => {
       { delta: -1_500, balanceAfter: 242, reason: "subscription_refund" },
     ]);
   });
+  it("answers the same key with a different reason as a 409, not a 500", async () => {
+    const conflict = await requestRefund({
+      subscriptionId,
+      userId: actorId,
+      role: "admin",
+      idempotencyKey,
+      body: {
+        reason: "A different reason under the already bound key.",
+        confirmation: `${subscriptionId}:refund`,
+      },
+    });
+
+    expect(conflict.status).toBe(409);
+    expect(conflict.error?.code).toBe("idempotency_conflict");
+  });
+
+  it("persists a generic failure for a provider exception and keeps its text out of the command", async () => {
+    const reconcileKey = `${P}raw-provider-failure`;
+    const findRefund = vi.spyOn(providers.payment, "findRefund")
+      .mockRejectedValueOnce(new Error("RAW_PROVIDER_TEXT with an upstream url"));
+    const failed = await reconcileRefund({
+      subscriptionId,
+      userId: actorId,
+      role: "admin",
+      idempotencyKey: reconcileKey,
+      body: {
+        reason: "Exercise a failed provider lookup.",
+        confirmation: `${subscriptionId}:refund_reconcile`,
+      },
+    });
+    findRefund.mockRestore();
+
+    expect(failed.status).toBe(500);
+    const command = await prisma.controlPlaneCommand.findFirstOrThrow({
+      where: { actorId, idempotencyKey: reconcileKey },
+    });
+    expect(command.error).toMatchObject({
+      code: "subscription_refund_failed",
+      message: "Subscription refund failed",
+    });
+    expect(JSON.stringify(command.error)).not.toContain("RAW_PROVIDER_TEXT");
+  });
 });

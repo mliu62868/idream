@@ -41,9 +41,9 @@ describe("Character video Creative Run authority", () => {
         purpose: "character_video",
         targetType: "character",
         targetId: characterId,
-        profileId: "profile_video_redgraft_ltx25_v1",
+        profileId: characterVideoProductionRecipe.profileKey,
         referenceAssetIds: [sourceAssetId],
-        orientation: "7:12",
+        orientation: characterVideoProductionRecipe.orientation,
         count: 1,
         brief: "A subtle natural smile with direct eye contact and a steady camera.",
         consistencyMode: "balanced",
@@ -61,7 +61,7 @@ describe("Character video Creative Run authority", () => {
     }
     const profile = await prisma.generationModelProfile.findFirst({
       where: {
-        profileKey: "profile_video_redgraft_ltx25_v1",
+        profileKey: characterVideoProductionRecipe.profileKey,
         version: characterVideoProductionRecipe.recipeVersion,
       },
     });
@@ -260,7 +260,7 @@ describe("Character video Creative Run authority", () => {
     );
   });
 
-  it("dispatches an exact RedGraft job from an operational image that is not the published primary", async () => {
+  it("dispatches an exact default-recipe job from an operational image that is not the published primary", async () => {
     const response = await createCreativeRun(request());
     expect(response.status).toBe(202);
     const payload = await response.json();
@@ -277,19 +277,19 @@ describe("Character video Creative Run authority", () => {
     expect(item.job).toMatchObject({
       mode: "video",
       characterId,
-      profileId: "profile_video_redgraft_ltx25_v1",
+      profileId: characterVideoProductionRecipe.profileKey,
       profileVersion: characterVideoProductionRecipe.recipeVersion,
       recipeId: "template_video_character_default",
-      orientation: "7:12",
+      orientation: characterVideoProductionRecipe.orientation,
       outputCount: 1,
-      model: "redgraft-ltx25-i2v",
+      model: characterVideoProductionRecipe.workflowKey,
       provider: "comfyui",
     });
     expect(item.job?.controls).toMatchObject({
       sourceImageAssetId: sourceAssetId,
-      seconds: 5,
-      width: 448,
-      height: 768,
+      seconds: characterVideoProductionRecipe.durationSeconds,
+      width: characterVideoProductionRecipe.width,
+      height: characterVideoProductionRecipe.height,
     });
     expect(item.job?.referenceAssetIds).toEqual([sourceAssetId]);
     expect(item.job?.referenceManifest).toEqual([
@@ -300,9 +300,9 @@ describe("Character video Creative Run authority", () => {
     ]);
     expect(attempts).toHaveLength(1);
     expect(attempts[0]).toMatchObject({
-      profileKey: "profile_video_redgraft_ltx25_v1",
+      profileKey: characterVideoProductionRecipe.profileKey,
       profileVersion: characterVideoProductionRecipe.recipeVersion,
-      workflowKey: "redgraft-ltx25-i2v",
+      workflowKey: characterVideoProductionRecipe.workflowKey,
       workflowVersion: characterVideoProductionRecipe.workflowVersion,
     });
     expect(await prisma.mainOutboxEvent.findUniqueOrThrow({

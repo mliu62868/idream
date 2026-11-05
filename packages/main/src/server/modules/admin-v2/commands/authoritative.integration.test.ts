@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
+import { adminCaseActiveKey } from "@/server/modules/admin-v2/cases/service";
 import { POST as publishRelease } from "@/app/api/v2/admin/characters/[id]/releases/[releaseId]/commands/publish/route";
 import { POST as retryFailed } from "@/app/api/v2/admin/creative/runs/[id]/commands/retry-failed/route";
 import { POST as resolveIncident } from "@/app/api/v2/admin/incidents/[id]/commands/resolve/route";
@@ -494,5 +495,31 @@ describe("Admin API v2 authoritative command routes", () => {
     );
     expect(response.status).toBe(403);
     await prisma.adminCase.update({ where: { id: caseId }, data: { type: "support_request" } });
+  });
+
+  it("repairs a refused close through the Case route Admin actually serves", async () => {
+    const openCaseId = `authoritative-open-case-${suffix}`;
+    await prisma.adminCase.create({
+      data: {
+        id: openCaseId,
+        type: "appeal",
+        targetType: "user",
+        targetId: openCaseId,
+        caseKey: openCaseId,
+        activeKey: adminCaseActiveKey("appeal", "user", openCaseId, openCaseId),
+        status: "new",
+        version: 1,
+      },
+    });
+    try {
+      const response = await closeCase(
+        request("/api/v2/admin/cases/x/commands/close", { entityVersion: 1 }, { confirmation: `${openCaseId}:close` }),
+        { params: Promise.resolve({ id: openCaseId }) },
+      );
+      expect(response.status).toBe(422);
+      expect((await response.json()).error.repairDeepLink).toBe(`/admin/cases/${openCaseId}`);
+    } finally {
+      await prisma.adminCase.deleteMany({ where: { id: openCaseId } });
+    }
   });
 });

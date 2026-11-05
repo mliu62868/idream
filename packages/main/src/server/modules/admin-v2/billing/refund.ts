@@ -3,6 +3,7 @@ import type { AdminSubscriptionRefundRequest } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { AppError, Errors } from "@/server/lib/errors";
+import { operatorSafeFailureMessage } from "../shared/operator-safe-failure";
 import { toInputJson } from "@/server/lib/request-json";
 import {
   acceptControlPlaneCommand,
@@ -661,14 +662,9 @@ async function failAcceptedCommand(
 
 function commandFailure(cause: unknown, retryable: boolean) {
   return {
-    code:
-      typeof cause === "object" &&
-      cause !== null &&
-      "code" in cause &&
-      typeof cause.code === "string"
-        ? cause.code
-        : "subscription_refund_failed",
-    message: cause instanceof Error ? cause.message : "Subscription refund failed",
+    // A Prisma `code` is an implementation detail of the failure, not an operator-facing outcome.
+    code: cause instanceof AppError ? cause.code : "subscription_refund_failed",
+    message: operatorSafeFailureMessage(cause, "Subscription refund failed", { retryable }),
     retryable,
   };
 }

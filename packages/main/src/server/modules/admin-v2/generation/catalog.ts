@@ -31,6 +31,7 @@ import { findActiveRecipe, resolveImageRecipeNegative } from "@/server/modules/o
 import { lockCharacterGenerationAuthority, lockCharacterMediaAssetAuthorities } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { freezeGenerationReferences } from "@/server/modules/ourdream/generation-reference-snapshot";
 import { lockUserLedger } from "@/server/modules/ourdream/subscription-lifecycle";
+import { escapeLike } from "../shared/escape-like";
 
 const DEFAULT_CATALOG_PAGE_SIZE = 25;
 
@@ -80,9 +81,9 @@ export async function listGenerationRecipes(request: Request) {
       ...(query.search
         ? {
             OR: [
-              { id: { contains: query.search, mode: "insensitive" as const } },
-              { label: { contains: query.search, mode: "insensitive" as const } },
-              { recipeKey: { contains: query.search, mode: "insensitive" as const } },
+              { id: { contains: escapeLike(query.search), mode: "insensitive" as const } },
+              { label: { contains: escapeLike(query.search), mode: "insensitive" as const } },
+              { recipeKey: { contains: escapeLike(query.search), mode: "insensitive" as const } },
             ],
           }
         : {}),
@@ -494,9 +495,9 @@ export async function listGenerationPresets(request: Request) {
       ...(query.search
         ? {
             OR: [
-              { id: { contains: query.search, mode: "insensitive" as const } },
-              { label: { contains: query.search, mode: "insensitive" as const } },
-              { category: { contains: query.search, mode: "insensitive" as const } },
+              { id: { contains: escapeLike(query.search), mode: "insensitive" as const } },
+              { label: { contains: escapeLike(query.search), mode: "insensitive" as const } },
+              { category: { contains: escapeLike(query.search), mode: "insensitive" as const } },
             ],
           }
         : {}),

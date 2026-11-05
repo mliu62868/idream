@@ -9,6 +9,7 @@ import { executeAtomicIdempotentMutation } from "../shared/atomic-mutation";
 import { actorWithPermission, jsonBody, queryParams } from "../shared/authority";
 import { requireIdempotencyKey } from "../shared/idempotency";
 import { CREATED_AT_DESC_KEYS, paginateAdminKeyset } from "../shared/list-cursor";
+import { escapeLike } from "../shared/escape-like";
 
 // Customer feedback and authored roadmap items share the same operational list.
 // Visibility is not changed by triage; audit/test actors stay outside the queue.
@@ -31,8 +32,8 @@ export async function listProductFeedback(request: Request) {
     operationalFeedbackWhere,
     query.status === "all" ? {} : { status: query.status },
     query.search ? { OR: [
-      { title: { contains: query.search, mode: "insensitive" } },
-      { description: { contains: query.search, mode: "insensitive" } },
+      { title: { contains: escapeLike(query.search), mode: "insensitive" } },
+      { description: { contains: escapeLike(query.search), mode: "insensitive" } },
     ] } : {},
   ] };
   const result = await paginateAdminKeyset<ProductFeedbackItem, Prisma.ProductFeedbackItemOrderByWithRelationInput>({

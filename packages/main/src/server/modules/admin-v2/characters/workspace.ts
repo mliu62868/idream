@@ -311,6 +311,7 @@ export async function getCharacterWorkspace(characterId: string) {
       limit: 1,
       search: characterId,
       sort: "project_id_asc",
+      includePerformance: true,
     },
     { authorizedDraftAssetCharacterIds: [characterId] },
   );

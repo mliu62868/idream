@@ -19,6 +19,7 @@ import {
 } from "@/server/modules/metric-data-scope";
 import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
+import { escapeLike } from "../shared/escape-like";
 
 const jobCursorSchema = z.object({
   version: z.literal(1),
@@ -84,15 +85,15 @@ function baseWhere(query: GenerationJobQuery): Prisma.GenerationJobWhereInput {
     } : {}),
     ...(query.search ? {
       OR: [
-        { id: { contains: query.search, mode: "insensitive" } },
-        { userId: { contains: query.search, mode: "insensitive" } },
-        { characterId: { contains: query.search, mode: "insensitive" } },
-        { provider: { contains: query.search, mode: "insensitive" } },
-        { model: { contains: query.search, mode: "insensitive" } },
-        { profileId: { contains: query.search, mode: "insensitive" } },
-        { recipeId: { contains: query.search, mode: "insensitive" } },
-        { sourceId: { contains: query.search, mode: "insensitive" } },
-        { errorCode: { contains: query.search, mode: "insensitive" } },
+        { id: { contains: escapeLike(query.search), mode: "insensitive" } },
+        { userId: { contains: escapeLike(query.search), mode: "insensitive" } },
+        { characterId: { contains: escapeLike(query.search), mode: "insensitive" } },
+        { provider: { contains: escapeLike(query.search), mode: "insensitive" } },
+        { model: { contains: escapeLike(query.search), mode: "insensitive" } },
+        { profileId: { contains: escapeLike(query.search), mode: "insensitive" } },
+        { recipeId: { contains: escapeLike(query.search), mode: "insensitive" } },
+        { sourceId: { contains: escapeLike(query.search), mode: "insensitive" } },
+        { errorCode: { contains: escapeLike(query.search), mode: "insensitive" } },
       ],
     } : {}),
   });

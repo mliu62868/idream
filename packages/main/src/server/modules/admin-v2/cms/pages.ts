@@ -33,6 +33,7 @@ import {
 } from "@/server/modules/admin-v2/shared/authority";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { paginateAdminKeyset, type AdminKeysetPaging } from "@/server/modules/admin-v2/shared/list-cursor";
+import { escapeLike } from "../shared/escape-like";
 
 const CMS_WRITE = "content.cms.write" as const;
 const CONTENT_READ = "content.read" as const;
@@ -117,7 +118,7 @@ export async function listCmsPages(request: Request) {
   const query = queryParams(request, "GET /api/v2/admin/cms/pages");
   const where: Prisma.RoutePageWhereInput = {
     contentStatus: query.status,
-    ...(query.q ? { OR: [{ path: { contains: query.q } }, { title: { contains: query.q } }] } : {}),
+    ...(query.q ? { OR: [{ path: { contains: escapeLike(query.q) } }, { title: { contains: escapeLike(query.q) } }] } : {}),
   };
   const result = await paginateAdminKeyset({
     scope: "cms-pages",

@@ -137,7 +137,7 @@ describe("subscription refund ordering", () => {
         code: "P2034", clientVersion: Prisma.prismaVersion.client,
       });
     });
-    expect((await refund(row.subscriptionId, "refund", key)).status).toBe(500);
+    expect((await refund(row.subscriptionId, "refund", key)).status).toBe(409);
     const command = await prisma.controlPlaneCommand.findFirstOrThrow({ where: { actorId, idempotencyKey: key } });
     expect(command).toMatchObject({ status: "running", attemptCount: 1 });
     expect(command.leaseExpiresAt).not.toBeNull();

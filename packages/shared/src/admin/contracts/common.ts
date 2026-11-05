@@ -165,9 +165,13 @@ export const adminCommandRequestSchema = z
   })
   .strict();
 
+// Every Admin client mints a UUID; the longest generated key is the release canary's
+// `<prefix up to 120>:<uuid>:<iteration>`. The bound keeps an unbounded header out of the unique index.
+export const ADMIN_IDEMPOTENCY_KEY_MAX_LENGTH = 200;
+
 export const adminCommandHeadersSchema = z
   .object({
-    idempotencyKey: z.string().trim().min(1),
+    idempotencyKey: z.string().trim().min(1).max(ADMIN_IDEMPOTENCY_KEY_MAX_LENGTH),
     ifMatch: z.string().trim().min(1).optional(),
     requestId: adminIdSchema,
   })

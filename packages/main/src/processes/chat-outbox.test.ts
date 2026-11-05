@@ -172,6 +172,26 @@ describe("main to chat durable outbox", () => {
     expect(delivered).toEqual([...urgentTypes, memoryEventType]);
   });
 
+  it("persists a generic message for an unexpected delivery exception", async () => {
+    await recordMainToChatEvent({
+      eventId,
+      eventType: MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2,
+      schemaVersion: 2,
+      aggregateType: "user",
+      aggregateId: "user-raw-failure",
+      payload: { userId: "user-raw-failure" },
+    });
+    await dispatchPendingChatEvents({
+      lane: "lifecycle",
+      deliver: async (event) => {
+        if (event.sourceEventId === eventId) throw new Error("Invalid `prisma.x.update()` RAW_QUERY_TEXT");
+      },
+    });
+
+    expect((await prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: eventId } })).lastError)
+      .toEqual({ message: "chat delivery failed" });
+  });
+
   it("derives the single durable ingest endpoint from the required Chat service URL", () => {
     expect(() => resolveChatDurableIngestUrl(undefined)).toThrow("CHAT_SERVICE_URL");
     expect(resolveChatDurableIngestUrl("https://chat.internal/")).toBe(

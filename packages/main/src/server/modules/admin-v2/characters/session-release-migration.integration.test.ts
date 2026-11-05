@@ -278,4 +278,70 @@ describe("explicit Chat Session Release migration command", () => {
       status: "succeeded",
     });
   });
+  describe("Character scope", () => {
+    const producerId = `session-migrate-producer-${suffix}`;
+    const otherCharacterId = `session-migrate-other-${suffix}`;
+
+    function migrate(input: { actorId: string; role: string; bodyCharacterId: string }) {
+      return POST(
+        new Request(`http://localhost/api/v2/admin/chat/sessions/${sessionId}/commands/migrate-release`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-idream-user-id": input.actorId,
+            "x-idream-role": input.role,
+            "x-request-id": randomUUID(),
+            "idempotency-key": randomUUID(),
+            "if-match": '"7"',
+          },
+          body: JSON.stringify({
+            entityVersion: 7,
+            characterId: input.bodyCharacterId,
+            fromCharacterContentVersionId: contentId,
+            fromCharacterReleaseId: releaseId,
+            toCharacterContentVersionId: contentId,
+            toCharacterReleaseId: releaseId,
+            reason: { code: "compatibility_repair", summary: "Out of scope attempt" },
+            confirmation: `${sessionId}:${releaseId}:migrate`,
+            compatibilityCheck: { status: "passed", policyVersion: "chat-compat-v1" },
+          }),
+        }),
+        { params: Promise.resolve({ sessionId }) },
+      );
+    }
+
+    beforeAll(async () => {
+      await prisma.user.create({
+        data: { id: producerId, email: `${producerId}@example.test`, role: "user", status: "active" },
+      });
+      await prisma.adminUserGrantBundle.create({
+        data: {
+          userId: producerId,
+          bundleKey: "character_producer",
+          scope: { characterIds: [otherCharacterId] },
+          reason: "Migration scope fixture",
+          createdById: adminId,
+        },
+      });
+    });
+
+    afterAll(async () => {
+      await prisma.adminUserGrantBundle.deleteMany({ where: { userId: producerId } });
+      await prisma.user.deleteMany({ where: { id: producerId } });
+    });
+
+    it("refuses a scoped producer naming a Character outside its scope", async () => {
+      const response = await migrate({ actorId: producerId, role: "user", bodyCharacterId: characterId });
+
+      expect(response.status).toBe(403);
+      expect(await prisma.controlPlaneCommand.count({ where: { actorId: producerId } })).toBe(0);
+    });
+
+    it("refuses an in-scope Character that the session does not belong to", async () => {
+      const response = await migrate({ actorId: producerId, role: "user", bodyCharacterId: otherCharacterId });
+
+      expect(response.status).toBe(404);
+      expect(await prisma.controlPlaneCommand.count({ where: { actorId: producerId } })).toBe(0);
+    });
+  });
 });

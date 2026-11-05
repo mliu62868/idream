@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { adminV2 as adminV2Api } from "@/server/test/admin-v2-http";
 import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
@@ -8,6 +8,22 @@ import { createCharacter, createUser, purgeTestData } from "@/server/test/helper
 // INVARIANTS: dev-auth 头（x-idream-*）仅在 APP_ENV=test 生效；前缀 P 隔离测试数据。
 
 const P = "zt-tags-";
+
+const auditFault = vi.hoisted(() => ({ active: false }));
+vi.mock("./audit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./audit")>();
+  return {
+    ...actual,
+    writeContentAudit: (...args: Parameters<typeof actual.writeContentAudit>) => {
+      if (auditFault.active) throw new Error("injected audit failure");
+      return actual.writeContentAudit(...args);
+    },
+  };
+});
+
+afterEach(() => {
+  auditFault.active = false;
+});
 
 beforeAll(async () => {
   await purgeTestData(P);
@@ -261,5 +277,59 @@ describe("admin tag taxonomy governance", () => {
     expect(merged.data).toMatchObject({ merged: true, movedCount: 1 });
     expect(await prisma.tag.findUnique({ where: { id: last.id } })).toBeNull();
     expect(await prisma.characterTag.findUnique({ where: { characterId_tagId: { characterId: character.id, tagId: rows[0].id } } })).not.toBeNull();
+  });
+  // INVARIANT: 没有审计就没有改动 —— 审计写失败必须把标签改动一并回滚。
+  it("rolls a tag patch back when its audit cannot be written", async () => {
+    const admin = await setupActor("admin", "patch-audit-fault");
+    const tag = await createTag("patch-audit-fault", { isSensitive: false });
+
+    auditFault.active = true;
+    const response = await adminV2Api("PATCH", `/api/v2/admin/content/tags/${tag.id}`, {
+      userId: admin,
+      role: "admin",
+      body: { isSensitive: true, reason: "must not survive", confirmation: tag.slug },
+    });
+
+    expect(response.status).toBe(500);
+    expect((await prisma.tag.findUniqueOrThrow({ where: { id: tag.id } })).isSensitive).toBe(false);
+  });
+
+  it("rolls a tag merge back when its audit cannot be written", async () => {
+    const admin = await setupActor("admin", "merge-audit-fault");
+    const source = await createTag("merge-audit-source");
+    const target = await createTag("merge-audit-target");
+    const character = await createCharacter({ id: `${P}merge-audit-character`, creatorId: admin });
+    await prisma.characterTag.create({ data: { characterId: character.id, tagId: source.id } });
+
+    auditFault.active = true;
+    const response = await adminV2Api("POST", "/api/v2/admin/content/tags/merge", {
+      userId: admin,
+      role: "admin",
+      body: { sourceId: source.id, targetId: target.id, confirmation: `${source.id}:${target.id}`, reason: "must not survive" },
+    });
+
+    expect(response.status).toBe(500);
+    expect(await prisma.tag.findUnique({ where: { id: source.id } })).not.toBeNull();
+    expect(await prisma.characterTag.count({ where: { tagId: source.id } })).toBe(1);
+  });
+
+  // Prisma binds `contains` without escaping, so this is what proves the escaping reaches Postgres.
+  it("treats % and _ in a search as the literal characters", async () => {
+    const admin = await setupActor("admin", "search-wildcards");
+    const plain = await createTag("wild-plain", { label: `${P}wild-plain` });
+    const literal = await createTag("wild-literal", { label: `${P}wild_100%` });
+    const search = async (term: string) => {
+      const response = await adminV2Api("GET", `/api/v2/admin/content/tags?search=${encodeURIComponent(term)}`, {
+        userId: admin,
+        role: "admin",
+      });
+      expect(response.status, JSON.stringify(response.json)).toBe(200);
+      return response.data.items.map((item: { id: string }) => item.id);
+    };
+
+    expect(await search("%")).toEqual([literal.id]);
+    expect(await search(`${P}wild_`)).toEqual([literal.id]);
+    expect(await search(`${P}wild-`)).toEqual([plain.id]);
+    expect(await search("\\")).toEqual([]);
   });
 });

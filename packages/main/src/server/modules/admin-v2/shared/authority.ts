@@ -20,6 +20,7 @@ import {
 import { getAuthCtx, requireUser, type ActorRole } from "@/server/lib/auth";
 import { Errors } from "@/server/lib/errors";
 import { verifyAdminBffRequest } from "./admin-bff";
+import { assertNoNulInRequestBody } from "./request-input-guard";
 
 export type AdminActor = { id: string; role: ActorRole };
 
@@ -209,6 +210,7 @@ export function multipartFields<const Id extends AdminV2DeclaredWriteOperationId
       contract: operation.contract.request,
     });
   }
+  assertNoNulInRequestBody(fields);
   return parseRequestInput(contract.schema, fields) as AdminV2RequestBody<
     AdminV2DeclaredRequestRefFor<Id>
   >;
@@ -284,6 +286,7 @@ async function parseManifestBody(
   } catch {
     throw Errors.badRequest("Request body is not valid JSON");
   }
+  assertNoNulInRequestBody(raw);
   if (!operation) {
     if (pathname.startsWith("/api/v2/admin/")) {
       throw Errors.internal("Admin v2 operation is missing from the authority manifest", {
@@ -325,6 +328,10 @@ function assertMutationTransportHeaders(
   if (transport.includes("if_match")) parseAdminIfMatch(request);
 }
 
+// Postgres `int4`, the column type of every authority version. A larger value cannot name a real
+// version, and passing it on would surface as a driver range error instead of a client error.
+const MAX_AUTHORITY_VERSION = 2_147_483_647;
+
 export function parseAdminIfMatch(request: Request) {
   const value = request.headers
     .get("if-match")
@@ -334,5 +341,9 @@ export function parseAdminIfMatch(request: Request) {
   if (!value || !/^\d+$/.test(value)) {
     throw Errors.badRequest("If-Match must contain an authority version");
   }
-  return Number(value);
+  const version = Number(value);
+  if (version > MAX_AUTHORITY_VERSION) {
+    throw Errors.badRequest("If-Match must contain an authority version");
+  }
+  return version;
 }

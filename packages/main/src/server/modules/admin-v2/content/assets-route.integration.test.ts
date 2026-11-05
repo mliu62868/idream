@@ -70,6 +70,91 @@ describe("Admin v2 Image Library route authority", () => {
     await prisma.$disconnect();
   });
 
+  describe("prompt text on customer-owned media", () => {
+    const customerId = `asset-v2-customer-${suffix}`;
+    const jobId = `asset-v2-customer-job-${suffix}`;
+    const customerAssetId = `asset-v2-customer-asset-${suffix}`;
+    const platformAssetId = `asset-v2-platform-asset-${suffix}`;
+    const privatePrompt = `PRIVATE_CUSTOMER_PROMPT_${suffix}`;
+
+    beforeAll(async () => {
+      await prisma.user.create({
+        data: { id: customerId, email: `${customerId}@example.test`, role: "user", status: "active", dataClass: "customer" },
+      });
+      await prisma.generationJob.create({
+        data: {
+          id: jobId,
+          userId: customerId,
+          mode: "image",
+          prompt: privatePrompt,
+          controls: {},
+          presetIds: [],
+          sourceType: "chat_handoff",
+          sourceMeta: { promptHint: privatePrompt, conversationContext: privatePrompt, sessionId: "session-1" },
+        },
+      });
+      await prisma.mediaAsset.createMany({
+        data: [
+          {
+            id: customerAssetId,
+            ownerId: customerId,
+            sourceJobId: jobId,
+            type: "image",
+            url: `memory://${customerAssetId}`,
+            safetyStatus: "passed",
+            prompt: privatePrompt,
+            metadata: { provider: "mock", prompt: privatePrompt, nested: { promptHint: privatePrompt } },
+          },
+          {
+            id: platformAssetId,
+            ownerId: actorId,
+            type: "image",
+            url: `memory://${platformAssetId}`,
+            safetyStatus: "passed",
+            prompt: "Operator-authored direction",
+            metadata: { platformAsset: { status: "approved", purpose: "feed" } },
+          },
+        ],
+      });
+    });
+
+    afterAll(async () => {
+      await prisma.mediaAsset.deleteMany({ where: { id: { in: [customerAssetId, platformAssetId] } } });
+      await prisma.generationJob.deleteMany({ where: { id: jobId } });
+      await prisma.user.deleteMany({ where: { id: customerId } });
+    });
+
+    it("omits every copy of the prompt for a reader with only creative.asset.read", async () => {
+      const response = await getAsset(
+        request("GET", `/api/v2/admin/assets/${customerAssetId}`),
+        { params: Promise.resolve({ id: customerAssetId }) },
+      );
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(text).not.toContain(privatePrompt);
+      expect(JSON.parse(text)).toMatchObject({
+        data: {
+          asset: {
+            id: customerAssetId,
+            promptSummary: null,
+            metadata: { provider: "mock", nested: {} },
+            sourceJob: { id: jobId, sourceMeta: null },
+          },
+        },
+      });
+    });
+
+    it("keeps the prompt summary on operator-authored platform assets", async () => {
+      const response = await getAsset(
+        request("GET", `/api/v2/admin/assets/${platformAssetId}`),
+        { params: Promise.resolve({ id: platformAssetId }) },
+      );
+      await expect(response.json()).resolves.toMatchObject({
+        data: { asset: { promptSummary: "Operator-authored direction" } },
+      });
+    });
+  });
+
   it("executes list, detail, idempotent patch, preflight, and bulk archive through the manifest seam", async () => {
     const listed = await listAssets(request(
       "GET",

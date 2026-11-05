@@ -8,7 +8,7 @@ import { prisma } from "@/server/lib/db";
 import { AppError, Errors } from "@/server/lib/errors";
 import { fail, ok } from "@/server/lib/http";
 import { env } from "@/server/lib/env";
-import type { AdminActor } from "../shared/authority";
+import { requireActorPermission, type AdminActor } from "../shared/authority";
 import {
   durableAdminCommandReceipt,
   readDurableAdminCommand,
@@ -103,6 +103,9 @@ async function executeCommand<const Id extends AdminCommandOperationId>(
   operationId: Id,
   options: {
     readonly resource?: { readonly characterId?: string };
+    // For a resource named only in the body, which `resource` cannot see before it is parsed.
+    // Runs ahead of replay so a retried key cannot outlive the actor's scope.
+    readonly authorizeBody?: (context: CommandContext<Id>) => Promise<unknown>;
     readonly target: { readonly type: AdminCommandTargetType; readonly id: string };
     readonly confirmation: string | ((context: CommandContext<Id>) => string);
     readonly payload?: (context: CommandContext<Id>) => JsonObject;
@@ -124,6 +127,7 @@ async function executeCommand<const Id extends AdminCommandOperationId>(
       targetType: options.target.type,
     };
     const context = { actor: admitted.actor, parsed, permission: definition.permission };
+    await options.authorizeBody?.(context);
     requireConfirmation(body.confirmation, typeof options.confirmation === "string"
       ? options.confirmation
       : options.confirmation(context));
@@ -512,6 +516,12 @@ const MIGRATABLE_RELEASE_STATUSES = ["published", "superseded"];
 export function migrateChatSessionRelease(request: Request, sessionId: string) {
   return executeCommand(request, "POST /api/v2/admin/chat/sessions/:sessionId/commands/migrate-release", {
     target: { type: "chat_session", id: sessionId },
+    authorizeBody: ({ actor, parsed }) => requireActorPermission(
+      request,
+      actor,
+      "character.release.publish",
+      { characterId: parsed.body.characterId },
+    ),
     confirmation: ({ parsed }) => `${sessionId}:${parsed.body.toCharacterReleaseId}:migrate`,
     payload: ({ actor, parsed }) => ({
       characterId: parsed.body.characterId,
@@ -524,6 +534,15 @@ export function migrateChatSessionRelease(request: Request, sessionId: string) {
     }),
     executeInline: true,
     preflight: async ({ parsed }) => {
+      // INVARIANT: the scope check above only binds the body's characterId; the session must
+      // actually belong to that Character, or the body could name any in-scope one.
+      const session = await prisma.recentChat.findUnique({
+        where: { sessionId },
+        select: { characterId: true },
+      });
+      if (session?.characterId !== parsed.body.characterId) {
+        throw Errors.notFound("Chat session not found for character", { sessionId });
+      }
       const [content, release] = await Promise.all([
         prisma.characterContentVersion.findUnique({
           where: { id: parsed.body.toCharacterContentVersionId },
@@ -717,7 +736,7 @@ export function closeCase(request: Request, caseId: string) {
       ) {
         throw new InvariantFailedError(
           [{ code: "case_resolution_incomplete", message: "Case needs a resolution and verified downstream outcome before close." }],
-          `/admin/customer-ops/cases/${caseId}`,
+          `/admin/cases/${caseId}`,
         );
       }
     },

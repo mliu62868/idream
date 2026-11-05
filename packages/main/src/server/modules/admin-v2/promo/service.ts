@@ -32,6 +32,7 @@ import {
   enforceApproval,
   LEDGER_APPROVAL_THRESHOLD,
 } from "@/server/modules/admin-v2/approvals/enforcement";
+import { escapeLike } from "../shared/escape-like";
 
 // SPEC: 兑换码的最大发放量 = 面额 × 可用次数（不限次 = 无上限）。达到调账门槛时与调账同一道
 //       双人复核闸：一个码就是一笔可被反复领取的调账。
@@ -52,7 +53,7 @@ export async function listRedeemCodes(request: Request) {
   const queryIdentity = { search, status };
   const where: Prisma.RedeemCodeWhereInput = {
     status,
-    id: search ? { contains: search } : undefined,
+    id: search ? { contains: escapeLike(search) } : undefined,
   };
   const { items: page, pageInfo } = await paginateAdminKeyset({
     scope: "redeem_codes",
@@ -227,10 +228,10 @@ export async function listReferrals(request: Request) {
     status,
     OR: search
       ? [
-          { id: { contains: search } },
-          { inviterId: { contains: search } },
-          { inviteeId: { contains: search } },
-          { code: { contains: search } },
+          { id: { contains: escapeLike(search) } },
+          { inviterId: { contains: escapeLike(search) } },
+          { inviteeId: { contains: escapeLike(search) } },
+          { code: { contains: escapeLike(search) } },
         ]
       : undefined,
   };

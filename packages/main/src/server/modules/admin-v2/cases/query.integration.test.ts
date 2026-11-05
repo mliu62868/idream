@@ -169,6 +169,9 @@ describe("Admin Case queue scope", () => {
     // The fixture and resolved rows are newer, so they would lead the page if they leaked in.
     expect((await ids("view=unassigned"))[0]).toBe(openCaseId);
     expect(await ids(`view=unassigned&search=${suffix}`)).toEqual([openCaseId]);
+    // A wildcard in the term is a literal character, not "match anything".
+    expect(await ids(`view=unassigned&search=${encodeURIComponent(`%${suffix}`)}`)).toEqual([]);
+    expect(await ids(`view=unassigned&search=${encodeURIComponent(suffix.replace("-", "_"))}`)).toEqual([]);
   });
 
   it("names the owner for people, falling back to email when there is no display name", async () => {

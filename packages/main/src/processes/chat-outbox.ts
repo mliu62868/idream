@@ -11,6 +11,8 @@ import {
 import { setGauge } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
+import { AppError } from "@/server/lib/errors";
+import { logger } from "@/server/lib/logger";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import {
   purgeCompanionMemoryFromMain,
@@ -70,6 +72,19 @@ export async function recordMainToChatEvent(input: {
     },
     update: {},
   });
+}
+
+/** A delivery outcome worded for the operator who reads it back from the outbox row. */
+class ChatDeliveryError extends Error {}
+
+function chatDeliveryFailureMessage(error: unknown, outboxId: string) {
+  if (error instanceof ChatDeliveryError || error instanceof AppError) return error.message;
+  // `AbortSignal.timeout` rejects with one of these; the receiver hanging is the operator's lead.
+  if (error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name)) {
+    return "chat delivery timeout";
+  }
+  logger.error({ err: error, outboxId }, "Main to Chat delivery failed");
+  return "chat delivery failed";
 }
 
 export async function dispatchPendingChatEvents(input: {
@@ -183,9 +198,7 @@ export async function dispatchPendingChatEvents(input: {
             Date.now() + Math.min(attempts, 120) * 30_000,
           ),
           lastError: toInputJson({
-            message: deliveryError instanceof Error
-              ? deliveryError.message
-              : "chat delivery failed",
+            message: chatDeliveryFailureMessage(deliveryError, row.id),
           }),
           leaseToken: null,
           leaseExpiresAt: null,
@@ -238,9 +251,9 @@ async function deliverToChat(event: DurableEventEnvelope): Promise<void> {
         signal: AbortSignal.timeout(CHAT_LIFECYCLE_DELIVERY_TIMEOUT_MS),
       },
     );
-    if (!response.ok) throw new Error(`Chat AgentRun cancel returned ${response.status}`);
+    if (!response.ok) throw new ChatDeliveryError(`Chat AgentRun cancel returned ${response.status}`);
     const acknowledged = await response.json() as { ok?: unknown };
-    if (acknowledged.ok !== true) throw new Error("Chat did not durably fence the AgentRun");
+    if (acknowledged.ok !== true) throw new ChatDeliveryError("Chat did not durably fence the AgentRun");
     return;
   }
   if (
@@ -263,7 +276,7 @@ async function deliverToChat(event: DurableEventEnvelope): Promise<void> {
     body: JSON.stringify(event),
     signal: AbortSignal.timeout(CHAT_LIFECYCLE_DELIVERY_TIMEOUT_MS),
   });
-  if (!response.ok) throw new Error(`chat durable ingest returned ${response.status}`);
+  if (!response.ok) throw new ChatDeliveryError(`chat durable ingest returned ${response.status}`);
   const ack = durableAckSchema.parse(await response.json());
-  if (!ack.acknowledged) throw new Error(`chat did not durably acknowledge ${event.sourceEventId}`);
+  if (!ack.acknowledged) throw new ChatDeliveryError(`chat did not durably acknowledge ${event.sourceEventId}`);
 }

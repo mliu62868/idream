@@ -6,6 +6,7 @@ import { lockGenerationRequestForSettlement } from "@/server/ai/generation-settl
 import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { transitionControlPlaneCommandAttempt } from "../shared/control-plane-command-attempt";
 import { transitionControlPlaneCommand } from "../shared/control-plane-command-transition";
+import { operatorSafeFailureMessage } from "../shared/operator-safe-failure";
 import { toInputJson } from "../shared/prisma-json";
 
 function record(value: Prisma.JsonValue | null): Record<string, unknown> {
@@ -56,7 +57,10 @@ async function failClaimedCommand(
 ) {
   const result = {
     code: "incident_action_execution_failed",
-    message: input.error instanceof Error ? input.error.message : "Incident action execution failed",
+    message: operatorSafeFailureMessage(input.error, "Incident action execution failed", {
+      commandId: input.commandId,
+      attemptNo: input.attemptNo,
+    }),
   };
   await db.$transaction(async (tx) => {
     await transitionControlPlaneCommand(tx, {

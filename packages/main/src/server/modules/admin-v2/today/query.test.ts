@@ -389,6 +389,51 @@ describe("Today domain roots", () => {
     await prisma.$disconnect();
   });
 
+  it("shows a scoped producer only the Releases of its assigned Characters", async () => {
+    const producerId = `today-scoped-producer-${suffix}`;
+    const hiddenCharacterId = `today-hidden-character-${suffix}`;
+    const hiddenProjectId = `today-hidden-project-${suffix}`;
+    const hiddenReleaseId = `today-hidden-release-${suffix}`;
+    const hiddenName = `Hidden Character ${suffix}`;
+    const permissions = new Set(["character.release.read"] as const);
+    await prisma.user.create({ data: { id: producerId, email: `${producerId}@example.test`, role: "user", status: "active" } });
+    await prisma.adminUserGrantBundle.create({ data: {
+      userId: producerId, bundleKey: "character_producer", scope: { characterIds: [`character-${suffix}`] },
+      reason: "Today scope fixture", createdById: actorId,
+    } });
+    await prisma.character.create({ data: { id: hiddenCharacterId, name: hiddenName, age: 24, description: "fixture", source: "official", appearance: {}, advancedDetails: {} } });
+    await prisma.characterProject.create({ data: { id: hiddenProjectId, characterId: hiddenCharacterId } });
+    await prisma.characterRelease.create({ data: {
+      id: hiddenReleaseId, projectId: hiddenProjectId, revisionId: hiddenReleaseId, characterContentVersionId: hiddenReleaseId,
+      generationProvenance: {}, releasePlacementManifest: {}, snapshotHash: hiddenReleaseId, readiness: "blocked", status: "approved",
+    } });
+    await prisma.operationalWorkPreference.create({ data: { actorId: producerId, sourceType: "character_release", sourceId: hiddenReleaseId, watching: true, pinned: true } });
+    try {
+      const actor = { id: producerId, role: "user" };
+      const allWork = await buildTodayAllWork({ actor, permissions, query: allWorkQuery({ domain: "character_release", limit: 50 }), now: new Date() });
+      const projection = await buildTodayProjection({ actor, permissions, now: new Date() });
+
+      expect(allWork.items.map((item) => item.sourceId)).toContain(releaseId);
+      for (const body of [JSON.stringify(allWork), JSON.stringify(projection)]) {
+        expect(body).not.toContain(hiddenReleaseId);
+        expect(body).not.toContain(hiddenName);
+      }
+      expect(allWork.items.length).toBe(allWork.totalCount);
+
+      // A bundle whose scope names nothing narrows to nothing.
+      await prisma.adminUserGrantBundle.updateMany({ where: { userId: producerId }, data: { scope: { characterIds: [] } } });
+      const none = await buildTodayAllWork({ actor, permissions, query: allWorkQuery({ domain: "character_release", limit: 50 }), now: new Date() });
+      expect(none.items).toEqual([]);
+    } finally {
+      await prisma.operationalWorkPreference.deleteMany({ where: { actorId: producerId } });
+      await prisma.characterRelease.deleteMany({ where: { id: hiddenReleaseId } });
+      await prisma.characterProject.deleteMany({ where: { id: hiddenProjectId } });
+      await prisma.character.deleteMany({ where: { id: hiddenCharacterId } });
+      await prisma.adminUserGrantBundle.deleteMany({ where: { userId: producerId } });
+      await prisma.user.deleteMany({ where: { id: producerId } });
+    }
+  });
+
   it("projects Character Release and Creative Run roots with watch, pin and snooze", async () => {
     const projection = await buildTodayProjection({
       actor: { id: actorId, role: "admin" },

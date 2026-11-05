@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { ZodError } from "zod";
 import {
   findAdminV2ApiOperation,
@@ -11,6 +12,9 @@ import {
 import { AppError, Errors } from "@/server/lib/errors";
 import { fail } from "@/server/lib/http";
 import { logger } from "@/server/lib/logger";
+import { IdempotencyConflictError } from "./control-plane-command";
+import { isSerializableWriteConflict } from "./prisma-transaction-conflict";
+import { assertAdminRequestEnvelopeInput } from "./request-input-guard";
 
 /** Resolve once, then validate the complete decorated receipt inside its transaction. */
 export function adminMutationResultValidator(request: Request) {
@@ -61,6 +65,7 @@ export async function adminV2Route<T>(
         pathname: new URL(request.url).pathname,
       });
     }
+    assertAdminRequestEnvelopeInput(request);
     const result = await execute();
     if (operation.responseBody === "binary") {
       if (!(result instanceof Response)) throw Errors.internal("Binary Admin operation did not return a Response");
@@ -79,7 +84,19 @@ export async function adminV2Route<T>(
       if (!narrowed.ok) throw contractViolation(narrowed.violation);
       return Response.json({ ok: true, data: narrowed.data });
     }
-    if (!result.ok) return result;
+    if (!result.ok) {
+      // A module that caught its own AppError and built the response skipped `failAppError` below.
+      if (result.status >= 500) {
+        logger.error({
+          status: result.status,
+          body: await result.clone().text(),
+          method: request.method,
+          path: new URL(request.url).pathname,
+          requestId: request.headers.get("x-request-id"),
+        }, "Admin v2 route answered with a server error");
+      }
+      return result;
+    }
     const rawBody = await result.text();
     const narrowed = narrowAdminV2ResponseEnvelope(
       request.method,
@@ -95,7 +112,25 @@ export async function adminV2Route<T>(
       headers,
     });
   } catch (error) {
-    if (error instanceof AppError) return fail(error);
+    if (error instanceof AppError) return failAppError(request, error);
+    // INVARIANT: the same key with a different request is the caller's conflict on every path,
+    // including those that accept a command outside `commandResponse`.
+    if (error instanceof IdempotencyConflictError) {
+      return Response.json(
+        {
+          ok: false,
+          error: {
+            code: error.code,
+            message: error.message,
+            requestId: request.headers.get("x-request-id")?.trim() || "unknown",
+            commandId: error.existingCommandId,
+          },
+        },
+        { status: 409 },
+      );
+    }
+    const prismaFailure = appErrorFromPrismaFailure(error);
+    if (prismaFailure) return failAppError(request, prismaFailure);
     // Request input is explicitly parsed as bad_request at its ingress, including
     // path parameters and multipart fields. A remaining ZodError is an authority
     // contract failure regardless of which domain module validated the output.
@@ -118,6 +153,38 @@ export async function adminV2Route<T>(
     }, "Unhandled Admin v2 route error");
     return fail(Errors.internal("Internal error"));
   }
+}
+
+// INTENT: `fail` keeps 5xx details out of the response, so without this line a contract violation
+// reached neither the client nor the logs and could only be seen as an unexplained 500.
+function failAppError(request: Request, error: AppError) {
+  if (error.status >= 500) {
+    logger.error({
+      err: error,
+      code: error.code,
+      details: error.details,
+      method: request.method,
+      path: new URL(request.url).pathname,
+      requestId: request.headers.get("x-request-id"),
+    }, error.message);
+  }
+  return fail(error);
+}
+
+/**
+ * SPEC: The Prisma failures a request can legitimately cause, as the client errors they mean.
+ * INVARIANT: messages are fixed here. Prisma's own text quotes the query and must not reach a client.
+ * Every other Prisma failure stays an unhandled 500, because it is ours rather than the caller's.
+ */
+function appErrorFromPrismaFailure(error: unknown): AppError | null {
+  if (isSerializableWriteConflict(error)) {
+    return Errors.conflict("The record changed concurrently; reload and try again");
+  }
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return null;
+  if (error.code === "P2025") return Errors.notFound("Record not found");
+  if (error.code === "P2028") return Errors.unavailable("The database transaction could not complete; try again");
+  if (error.code === "P2020") return Errors.badRequest("A value is out of range for its field");
+  return null;
 }
 
 function contractViolation(violation: AdminV2ResponseViolation) {

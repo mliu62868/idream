@@ -3,6 +3,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { canonicalSha256 } from "../shared/canonical-json";
+import { operatorSafeFailureMessage } from "../shared/operator-safe-failure";
 import { toInputJson } from "../shared/prisma-json";
 import { isIncidentTransitionAllowed } from "../shared/state-transition-authority";
 import { requireDurableAdminCommandOperation } from "../shared/durable-command-admission";
@@ -402,7 +403,7 @@ export async function dispatchGenerationIncidentCorrelation(
           lastError: toInputJson({
             outcome: exhausted ? "retry_exhausted" : "retryable",
             code: "incident_correlation_failed",
-            message: error instanceof Error ? error.message : "Incident correlation failed",
+            message: operatorSafeFailureMessage(error, "Incident correlation failed", { outboxId: row.id, attemptId }),
             attemptId,
             attempts,
             maxAttempts: INCIDENT_CORRELATION_MAX_ATTEMPTS,

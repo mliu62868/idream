@@ -8,7 +8,7 @@ import {
 } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import { mediaAssetDTO } from "@/server/lib/media-asset-dto";
+import { hasPlatformAssetMetadata, mediaAssetDTO } from "@/server/lib/media-asset-dto";
 import {
   resolveMediaAssetAuthorityMap,
   type ResolvedMediaAssetAuthority,
@@ -509,8 +509,9 @@ function contentAssetDTO(
   const platform = platformAssetMetadata(asset);
   const platformHasTags = Object.hasOwn(platform, "tags");
   const platformStatus = platform.status === "archived" ? "archived" : (item?.status ?? platform.status);
+  const isOperatorAuthored = item !== null || hasPlatformAssetMetadata(asset.metadata);
   return {
-    ...mediaAssetDTO(asset, authority),
+    ...mediaAssetDTO(asset, authority, { hasProductionItem: item !== null }),
     createdAt: asset.createdAt.toISOString(),
     platformStatus: platformStatus ?? "generated",
     purpose: item?.batch.purpose ?? platform.purpose ?? null,
@@ -528,7 +529,8 @@ function contentAssetDTO(
           recipeVersion: asset.sourceJob.recipeVersion,
           sourceType: asset.sourceJob.sourceType,
           sourceId: asset.sourceJob.sourceId,
-          sourceMeta: asset.sourceJob.sourceMeta,
+          // A customer job's sourceMeta holds `promptHint` and `conversationContext`.
+          sourceMeta: isOperatorAuthored ? asset.sourceJob.sourceMeta : null,
         }
       : null,
     sourceBatch: item

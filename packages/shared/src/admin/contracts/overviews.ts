@@ -31,16 +31,34 @@ export const adminOverviewWindowSchema = z
   })
   .strict();
 
-/** Shared by the three window-scoped overviews; the manifest binds it per operation. */
+const ADMIN_OVERVIEW_MAX_WINDOW_MS = 365 * 24 * 60 * 60 * 1_000;
+// INTENT: a valid ISO instant can still be year 0000, which Postgres refuses. No overview has data
+// before the epoch, so it is rejected as input rather than reaching the driver.
+// Date-only is a supported caller form; z.string().date() still refuses a day that doesn't exist.
+const adminOverviewInstantSchema = z.union([adminIsoDateTimeSchema, z.string().date()]).refine(
+  (value) => Date.parse(value) >= 0,
+  "Window date is out of range",
+);
+
+/**
+ * Shared by the three window-scoped overviews; the manifest binds it per operation.
+ * INVARIANT: strict ISO instants or calendar dates only. `Date.parse` accepted `foo 1` as 2001 and rolled
+ * `2026-02-31` over into March, so a typo became a confident answer about the wrong period.
+ */
 export const adminOverviewWindowQuerySchema = z
   .object({
-    from: z.string().trim().min(1).refine((value) => !Number.isNaN(Date.parse(value)), "Invalid window date").optional(),
-    to: z.string().trim().min(1).refine((value) => !Number.isNaN(Date.parse(value)), "Invalid window date").optional(),
+    from: adminOverviewInstantSchema.optional(),
+    to: adminOverviewInstantSchema.optional(),
   })
   .strict()
   // Defaults belong to the authority; explicit endpoints already define an inclusive window.
   .refine(({ from, to }) => !from || !to || Date.parse(from) <= Date.parse(to), {
     message: "The start of the window must not be after the end.",
+    path: ["from"],
+  })
+  // An open-ended `from` runs to now on the authority, so it counts against the same bound.
+  .refine(({ from, to }) => !from || (to ? Date.parse(to) : Date.now()) - Date.parse(from) <= ADMIN_OVERVIEW_MAX_WINDOW_MS, {
+    message: "The window must not be longer than 365 days.",
     path: ["from"],
   });
 

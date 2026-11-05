@@ -13,6 +13,7 @@ import { ok } from "@/server/lib/http";
 import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
 import { adminAuditDto } from "@/server/modules/admin-v2/shared/dto";
 import { assertIncidentReadable, incidentReadScopeWhere } from "./scope";
+import { escapeLike } from "../shared/escape-like";
 
 function record(value: Prisma.JsonValue | null) {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -80,8 +81,8 @@ export async function listIncidents(request: Request) {
       ...(query.search
         ? {
             OR: [
-              { signature: { contains: query.search, mode: "insensitive" } },
-              { suspectedCause: { contains: query.search, mode: "insensitive" } },
+              { signature: { contains: escapeLike(query.search), mode: "insensitive" } },
+              { suspectedCause: { contains: escapeLike(query.search), mode: "insensitive" } },
             ],
           }
         : {}),

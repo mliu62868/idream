@@ -24,6 +24,7 @@ import { lockCharacterGenerationAuthority } from "../characters/generation-autho
 import { transitionCharacterServing } from "../characters/transition";
 import { evaluateEditorialReleaseAuthorityInTransaction } from "../../ourdream/public-release-authority";
 import { CHARACTER_RELEASE_POLICY_VERSION, evaluateCharacterReleaseSnapshot } from "../characters/release-validation";
+import { escapeLike } from "../shared/escape-like";
 
 // SPEC: 目录商品化的读写权威 —— 角色列表 / 详情，以及 visibility / status / tags 三条运营写。
 // INTENT: 从 v1 `admin/content/merchandising.ts` 原样搬来。唯一的实质变化是响应显式投影成
@@ -69,7 +70,7 @@ export async function listContentCharacters(query: ContentCharacterQuery) {
     creatorId,
     deletedAt: null,
     OR: search
-      ? [{ id: { contains: search } }, { name: { contains: search } }]
+      ? [{ id: { contains: escapeLike(search) } }, { name: { contains: escapeLike(search) } }]
       : undefined,
   };
 

@@ -27,6 +27,7 @@ import {
   encodeAdminListCursor,
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { jsonRecord, jsonStrings, toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
+import { escapeLike } from "../shared/escape-like";
 
 /** SPEC: the request id every Admin authority stamps onto its audit rows. */
 export function adminRequestId(request: Request) {
@@ -144,9 +145,9 @@ export async function listGenerationModelProfiles(request: Request) {
       status: query.status,
       OR: query.search
         ? [
-            { id: { contains: query.search } },
-            { profileKey: { contains: query.search } },
-            { label: { contains: query.search } },
+            { id: { contains: escapeLike(query.search) } },
+            { profileKey: { contains: escapeLike(query.search) } },
+            { label: { contains: escapeLike(query.search) } },
           ]
         : undefined,
       AND: cursorWhere,

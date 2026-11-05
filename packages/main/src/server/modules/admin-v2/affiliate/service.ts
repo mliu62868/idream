@@ -9,6 +9,7 @@ import { actorWithPermission, jsonBody, queryParams } from "../shared/authority"
 import { requireIdempotencyKey } from "../shared/idempotency";
 import { CREATED_AT_DESC_KEYS, paginateAdminKeyset } from "../shared/list-cursor";
 import { affiliateAttributionHistory } from "@/server/modules/ourdream/affiliate";
+import { escapeLike } from "../shared/escape-like";
 
 function applicationDTO(item: AffiliateApplication) {
   return affiliateApplicationAdminSchema.parse({
@@ -27,8 +28,8 @@ export async function listAffiliateApplications(request: Request) {
     user: { is: { dataClass: "customer" } },
     ...(query.status === "all" ? {} : { status: query.status }),
     ...(query.search ? { OR: [
-      { id: { contains: query.search, mode: "insensitive" } },
-      { userId: { contains: query.search, mode: "insensitive" } },
+      { id: { contains: escapeLike(query.search), mode: "insensitive" } },
+      { userId: { contains: escapeLike(query.search), mode: "insensitive" } },
     ] } : {}),
   };
   const result = await paginateAdminKeyset<AffiliateApplication, Prisma.AffiliateApplicationOrderByWithRelationInput>({

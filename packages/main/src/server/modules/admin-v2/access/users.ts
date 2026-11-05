@@ -27,6 +27,7 @@ import {
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { effectiveSubscriptionStatus } from "@/server/modules/ourdream/subscription-lifecycle";
+import { escapeLike } from "../shared/escape-like";
 
 /**
  * SPEC: 用户权威 —— 名录、明细、状态 / 角色 / 权限覆盖三条写命令。
@@ -122,9 +123,9 @@ export async function listUsers(request: Request) {
     dataClass: query.dataClass,
     OR: q
       ? [
-          { id: { contains: q } },
-          { email: { contains: q } },
-          { displayName: { contains: q } },
+          { id: { contains: escapeLike(q) } },
+          { email: { contains: escapeLike(q) } },
+          { displayName: { contains: escapeLike(q) } },
         ]
       : undefined,
   };
@@ -150,25 +151,31 @@ export async function listUsers(request: Request) {
       }),
     count: () => prisma.user.count({ where }),
   });
-  const items = await Promise.all(
-    page.map(async (user) => ({
-      id: user.id,
-      email: user.email,
-      displayName: user.displayName ?? user.name,
-      role: user.role,
-      status: user.status,
-      dataClass: user.dataClass,
-      createdAt: user.createdAt.toISOString(),
-      plan: user.subscriptions[0]?.plan
-        ? {
-            slug: user.subscriptions[0].plan.slug,
-            billingPeriod: user.subscriptions[0].plan.billingPeriod,
-            status: effectiveSubscriptionStatus(user.subscriptions[0]),
-          }
-        : null,
-      dreamcoins: await dreamcoinBalance(user.id),
-    })),
-  );
+  const balances = page.length > 0
+    ? await prisma.dreamcoinLedger.groupBy({
+        by: ["userId"],
+        where: { userId: { in: page.map((user) => user.id) } },
+        _sum: { delta: true },
+      })
+    : [];
+  const balanceByUserId = new Map(balances.map((row) => [row.userId, row._sum.delta ?? 0]));
+  const items = page.map((user) => ({
+    id: user.id,
+    email: user.email,
+    displayName: user.displayName ?? user.name,
+    role: user.role,
+    status: user.status,
+    dataClass: user.dataClass,
+    createdAt: user.createdAt.toISOString(),
+    plan: user.subscriptions[0]?.plan
+      ? {
+          slug: user.subscriptions[0].plan.slug,
+          billingPeriod: user.subscriptions[0].plan.billingPeriod,
+          status: effectiveSubscriptionStatus(user.subscriptions[0]),
+        }
+      : null,
+    dreamcoins: balanceByUserId.get(user.id) ?? 0,
+  }));
 
   return { items, pageInfo };
 }

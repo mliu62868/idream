@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { jsonBody, queryParams } from "./authority";
+import { jsonBody, parseAdminIfMatch, queryParams } from "./authority";
+import { requireIdempotencyKey } from "./idempotency";
 
 function writeRequest(pathname: string, body: unknown, headers: HeadersInit = {}) {
   return new Request(`https://admin.test${pathname}`, {
@@ -93,5 +94,35 @@ describe("Admin v2 request query authority", () => {
       readRequest("/api/v2/admin/cases?view=nonsense"),
       "GET /api/v2/admin/cases",
     )).toThrow();
+  });
+  it("bounds If-Match by the int4 authority version column", () => {
+    const ifMatch = (value: string) => new Request("https://admin.test/", { headers: { "if-match": value } });
+
+    expect(parseAdminIfMatch(ifMatch('"2147483647"'))).toBe(2_147_483_647);
+    for (const oversized of ['"2147483648"', '"99999999999999999999999"']) {
+      expect(() => parseAdminIfMatch(ifMatch(oversized))).toThrowError(
+        expect.objectContaining({ code: "bad_request" }),
+      );
+    }
+  });
+
+  it("rejects a NUL byte anywhere in a JSON write body as a client error", async () => {
+    const request = writeRequest(
+      "/api/v2/admin/cases/case-1/decisions",
+      { ...caseDecision, summary: "Refunded\u0000 the charge" },
+      { "idempotency-key": "key-1" },
+    );
+
+    await expect(jsonBody(request, "caseDecisionRequestSchema+idempotency-key"))
+      .rejects.toMatchObject({ code: "bad_request" });
+  });
+
+  it("caps the Idempotency-Key a route reads directly", () => {
+    const withKey = (key: string) => new Request("https://admin.test/", { headers: { "idempotency-key": key } });
+
+    expect(requireIdempotencyKey(withKey("k".repeat(200)))).toHaveLength(200);
+    expect(() => requireIdempotencyKey(withKey("k".repeat(201)))).toThrowError(
+      expect.objectContaining({ code: "bad_request" }),
+    );
   });
 });

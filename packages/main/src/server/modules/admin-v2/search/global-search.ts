@@ -9,6 +9,7 @@ import {
   operationalGenerationJobWhere,
   operationalUserWhere,
 } from "@/server/modules/metric-data-scope";
+import { escapeLike } from "../shared/escape-like";
 
 export async function globalAdminSearch(request: Request) {
   const actor = await actorWithPermission(request, "dashboard.read");
@@ -17,7 +18,7 @@ export async function globalAdminSearch(request: Request) {
   const characterScope = permissions.has("character.project.read")
     ? await effectiveCharacterIdsForPermission(actor.id, actor.role, "character.project.read")
     : new Set<string>();
-  const contains = { contains: query.q, mode: "insensitive" as const };
+  const contains = { contains: escapeLike(query.q), mode: "insensitive" as const };
   const incidentScope = permissions.has("ops.incident.read")
     ? await incidentReadScopeWhere(prisma, actor)
     : null;

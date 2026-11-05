@@ -9,6 +9,7 @@ import { ok } from "@/server/lib/http";
 import { actorWithPermission, jsonBody, queryParams } from "@/server/modules/admin-v2/shared/authority";
 import { canonicalJsonEqual, requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { transitionExperiment } from "./transition";
+import { escapeLike } from "../shared/escape-like";
 
 function definitionDto(row: Awaited<ReturnType<typeof prisma.experimentDefinition.findFirstOrThrow>>) {
   const rawMetrics = row.metrics !== null && typeof row.metrics === "object" && !Array.isArray(row.metrics) ? row.metrics : {};
@@ -70,7 +71,7 @@ export async function listExperimentDefinitions(request: Request) {
   const rows = await prisma.experimentDefinition.findMany({
     where: {
       ...(query.status ? { status: query.status } : {}),
-      ...(query.search ? { OR: [{ key: { contains: query.search, mode: "insensitive" } }, { hypothesis: { contains: query.search, mode: "insensitive" } }] } : {}),
+      ...(query.search ? { OR: [{ key: { contains: escapeLike(query.search), mode: "insensitive" } }, { hypothesis: { contains: escapeLike(query.search), mode: "insensitive" } }] } : {}),
       ...(query.cursor ? { id: { lt: query.cursor } } : {}),
     },
     orderBy: { id: "desc" },

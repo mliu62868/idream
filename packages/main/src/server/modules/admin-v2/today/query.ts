@@ -20,7 +20,8 @@ import type {
   OpsIncident,
   PrismaClient,
 } from "@prisma/client";
-import { effectivePermissions } from "@/server/admin/effective-permissions";
+import { effectiveCharacterIdsForPermission, effectivePermissions } from "@/server/admin/effective-permissions";
+import type { ActorRole } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { AppError } from "@/server/lib/errors";
@@ -105,7 +106,9 @@ type QueueRows = {
   rows: ProjectableRow[];
 };
 
-type ReleaseQueueSelection =
+// INVARIANT: `characterIds` is required on every branch — null is global scope, a set narrows to
+// assigned Characters. `character.release.read` alone says nothing about which Characters.
+type ReleaseQueueSelection = { characterIds: ReadonlySet<string> | null } & (
   | {
       scope: "active";
       owner: "all" | { actorId: string } | "unassigned";
@@ -120,7 +123,8 @@ type ReleaseQueueSelection =
       scope: "watching";
       releaseIds: readonly string[];
       projectIds: readonly string[];
-    };
+    }
+);
 
 type IncidentQueueSelection =
   | {
@@ -415,6 +419,10 @@ type RankedReleaseIdRow = {
   monitorActionRequired: boolean | null;
 };
 
+function releaseReadCharacterScope(actor: { id: string; role: string }) {
+  return effectiveCharacterIdsForPermission(actor.id, actor.role as ActorRole, "character.release.read");
+}
+
 async function findBoundedReleaseRows(input: {
   db: TodayReadDb;
   selection: ReleaseQueueSelection | null;
@@ -428,6 +436,11 @@ async function findBoundedReleaseRows(input: {
   const snoozedSql = input.selection.scope === "active" && input.selection.snoozedIds.length > 0
     ? Prisma.sql`AND release.id NOT IN (${Prisma.join(input.selection.snoozedIds)})`
     : Prisma.empty;
+  const characterScopeSql = input.selection.characterIds === null
+    ? Prisma.empty
+    : input.selection.characterIds.size === 0
+      ? Prisma.sql`AND FALSE`
+      : Prisma.sql`AND project."characterId" IN (${Prisma.join([...input.selection.characterIds])})`;
   const pinnedRankSql = input.pinnedIds.length > 0
     ? Prisma.sql`CASE WHEN release.id IN (${Prisma.join(input.pinnedIds)}) THEN 1 ELSE 0 END`
     : Prisma.sql`0`;
@@ -499,6 +512,7 @@ async function findBoundedReleaseRows(input: {
       FROM "character_releases" release
       JOIN "character_projects" project ON project.id = release."projectId"
       WHERE TRUE
+        ${characterScopeSql}
         ${activeOwnerFilterSql}
         ${snoozedSql}
         ${eligibilitySql}
@@ -1192,6 +1206,7 @@ export async function buildTodayProjection(input: {
   const incidentReadable = input.permissions.has("ops.incident.read");
   const releaseReadable = input.permissions.has("character.release.read");
   const creativeReadable = input.permissions.has("creative.run.read");
+  const releaseCharacterIds = releaseReadable ? await releaseReadCharacterScope(input.actor) : null;
   const preferences = normalizeWorkPreferences(await db.operationalWorkPreference.findMany({
     where: { actorId: input.actor.id },
     select: {
@@ -1236,6 +1251,7 @@ export async function buildTodayProjection(input: {
         scope: "active" as const,
         owner: "all" as const,
         snoozedIds: snoozedReleaseIds,
+        characterIds: releaseCharacterIds,
       }
     : null;
   const activeCreativeWhere = creativeReadable
@@ -1323,7 +1339,7 @@ export async function buildTodayProjection(input: {
       //         这个数字是运营首屏唯一的产出指标，自我膨胀 + 重复计数之后就不能用了。
       //         需要对账的那一类已经改由 myShift / nextBestActions 收，不会因此消失。
       commandWhere: null,
-      releaseSelection: releaseReadable ? { scope: "recently_resolved", recentCutoff } : null,
+      releaseSelection: releaseReadable ? { scope: "recently_resolved", recentCutoff, characterIds: releaseCharacterIds } : null,
       creativeWhere: creativeReadable
         ? { lifecycleState: { in: ["closed", "archived"] }, verificationState: { in: ["passed", "overridden"] }, updatedAt: { gte: recentCutoff } }
         : null,
@@ -1366,6 +1382,7 @@ export async function buildTodayProjection(input: {
           scope: "watching",
           releaseIds: directlyWatchedReleaseIds,
           projectIds: [],
+          characterIds: releaseCharacterIds,
         }
       : null,
     creativeWhere: creativeReadable && watchedCreativeIds.length > 0
@@ -1606,6 +1623,7 @@ export async function buildTodayAllWork(input: {
     releaseSelection: input.permissions.has("character.release.read") && (!query.domain || query.domain === "character_release") ? {
       scope: "active",
       owner: incidentOwner,
+      characterIds: await releaseReadCharacterScope(input.actor),
       snoozedIds: idsFor("character_release", "snoozed"),
       filters: { severity: query.severity, sla: query.sla, status: query.status, now },
     } : null,

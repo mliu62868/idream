@@ -325,7 +325,7 @@ describe("Character operator workspace", () => {
     );
     expect(detail.activeCommand).toBeNull();
     expect(detail.visual.videoGenerationEstimate).toMatchObject({
-      profileKey: "profile_video_redgraft_ltx25_v1",
+      profileKey: "profile_video_h3_v1",
       estimatedCostDreamcoins: 100,
       completedSampleCount: expect.any(Number),
       windowDays: 7,

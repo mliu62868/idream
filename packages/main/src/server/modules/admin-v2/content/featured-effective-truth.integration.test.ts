@@ -166,6 +166,22 @@ describe("Featured configured and effective runtime truth", () => {
     await expectFeedMembership(configuredIds, false);
   });
 
+  it("repairs a missing Character through the filter the merchandising view reads", async () => {
+    const missingId = `${P}missing-character`;
+    await prisma.appSetting.update({
+      where: { key: "feed.featured" },
+      data: { value: { characterIds: [missingId] } },
+    });
+
+    const data = await featured();
+
+    expect(blockerCodes(data, missingId)).toEqual(["character_not_operational"]);
+    const [{ repairDeepLink }] = data.items[0].blockers;
+    expect(repairDeepLink).toBe(
+      `/admin/growth/merchandising?view=featured&contentSearch=${encodeURIComponent(missingId)}`,
+    );
+  });
+
   it("uses version zero for a missing setting and creates version one", async () => {
     await prisma.appSetting.deleteMany({
       where: { key: "feed.featured" },
@@ -437,6 +453,12 @@ function blockerCodes(data: FeaturedData, characterId: string) {
   expect(item.effective).toBe(false);
   expect(item.blockers.every((blocker) => blocker.repairDeepLink.length > 0))
     .toBe(true);
+  // The merchandising view reads `contentSearch`; a bare `search` opens it unfiltered.
+  for (const { repairDeepLink } of item.blockers) {
+    if (repairDeepLink.startsWith("/admin/growth/merchandising")) {
+      expect(new URL(repairDeepLink, "http://admin.test").searchParams.get("contentSearch")).toBe(characterId);
+    }
+  }
   return item.blockers.map((blocker) => blocker.code);
 }
 

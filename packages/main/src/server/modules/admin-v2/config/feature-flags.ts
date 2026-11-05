@@ -12,6 +12,7 @@ import {
   encodeAdminListCursor,
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
+import { escapeLike } from "../shared/escape-like";
 
 function flagDto(flag: {
   key: string;
@@ -56,9 +57,9 @@ export async function listFeatureFlags(request: Request) {
       enabled,
       OR: search
         ? [
-            { key: { contains: search } },
-            { label: { contains: search } },
-            { description: { contains: search } },
+            { key: { contains: escapeLike(search) } },
+            { label: { contains: escapeLike(search) } },
+            { description: { contains: escapeLike(search) } },
           ]
         : undefined,
       AND: cursorKey ? { key: { gt: cursorKey } } : undefined,

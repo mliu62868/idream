@@ -597,6 +597,24 @@ describe("Character Portfolio authority/read model", () => {
     await prisma.$disconnect();
   });
 
+  it("omits release attribution unless a caller asks for it", async () => {
+    const exposureFacts = vi.spyOn(prisma.characterExposureFact, "findMany");
+    try {
+      const data = await listCharacterPortfolioData(
+        prisma,
+        characterPortfolioQuerySchema.parse({ search: "Astra", limit: 20 }),
+        { asOf, authorizedDraftAssetCharacterIds: null },
+      );
+
+      expect(data.items.length).toBeGreaterThan(0);
+      expect(data.items.every((item) => item.performance.length === 0)).toBe(true);
+      // The unbounded read is the per-window funnel scan; a coverage probe selects no event rows.
+      expect(exposureFacts.mock.calls.filter(([args]) => args?.select?.exposureId)).toEqual([]);
+    } finally {
+      exposureFacts.mockRestore();
+    }
+  });
+
   it("serves exact release/content/placement 7d and 28d metrics with fail-closed margin", async () => {
     const data = await listCharacterPortfolioData(
       prisma,
@@ -604,6 +622,7 @@ describe("Character Portfolio authority/read model", () => {
         search: "Astra",
         limit: 20,
         placementId: "feed.hero",
+        includePerformance: true,
       }),
       { asOf, authorizedDraftAssetCharacterIds: null },
     );
@@ -1116,6 +1135,7 @@ describe("Character Portfolio authority/read model", () => {
           search: "Astra",
           limit: 20,
           placementId: "feed.hero",
+          includePerformance: true,
         }),
         { asOf: new Date("2026-07-17T12:30:00.000Z") },
       );

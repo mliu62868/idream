@@ -26,6 +26,7 @@ import {
   encodeAdminListCursor,
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
+import { escapeLike } from "../shared/escape-like";
 
 export async function listPricingRules(request: Request) {
   await actorWithPermission(request, "billing.read");
@@ -51,7 +52,7 @@ export async function listPricingRules(request: Request) {
       mode,
       status,
       OR: search
-        ? [{ id: { contains: search } }, { ruleKey: { contains: search } }, { label: { contains: search } }]
+        ? [{ id: { contains: escapeLike(search) } }, { ruleKey: { contains: escapeLike(search) } }, { label: { contains: escapeLike(search) } }]
         : undefined,
       AND: cursorWhere,
     },

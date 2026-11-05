@@ -31,6 +31,7 @@ import { contentAuditData } from "./audit";
 import { parseCommunityCampaignAuthoredCopy, UPLOADED_CAMPAIGN_AUTHORITY_SCHEMA } from "@/server/modules/ourdream/community-campaigns";
 import { providers } from "@/server/providers";
 import { parseAdminImageUpload } from "../shared/image-upload";
+import { escapeLike } from "../shared/escape-like";
 
 // SPEC: 创建草稿，管理暂停/归档；外部上传的 Campaign 经独立 publish 命令核验真实文件后上线。
 // INVARIANT: 角色图仍归 Character Release；生成素材仍归 Creative Run verification。
@@ -66,11 +67,11 @@ export async function listPlacements(query: ContentPlacementQuery) {
       slot,
       targetId,
       ...(search ? { OR: [
-        { id: { contains: search, mode: "insensitive" as const } },
-        { mediaAssetId: { contains: search, mode: "insensitive" as const } },
-        { targetId: { contains: search, mode: "insensitive" as const } },
-        { targetType: { contains: search, mode: "insensitive" as const } },
-        { slot: { contains: search, mode: "insensitive" as const } },
+        { id: { contains: escapeLike(search), mode: "insensitive" as const } },
+        { mediaAssetId: { contains: escapeLike(search), mode: "insensitive" as const } },
+        { targetId: { contains: escapeLike(search), mode: "insensitive" as const } },
+        { targetType: { contains: escapeLike(search), mode: "insensitive" as const } },
+        { slot: { contains: escapeLike(search), mode: "insensitive" as const } },
       ] } : {}),
       ...(cursorAt && cursorId ? { AND: [{ OR: [
         { createdAt: { lt: cursorAt } },
@@ -478,7 +479,9 @@ function placementDTO(
   authority?: ResolvedMediaAssetAuthority,
 ) {
   const metadata = jsonRecord(placement.metadata);
-  const asset = mediaAssetDTO(placement.mediaAsset, authority);
+  const asset = mediaAssetDTO(placement.mediaAsset, authority, {
+    hasProductionItem: typeof metadata.creativeRunItemId === "string",
+  });
   return {
     id: placement.id,
     mediaAssetId: placement.mediaAssetId,
