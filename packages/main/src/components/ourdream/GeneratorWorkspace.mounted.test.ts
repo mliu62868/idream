@@ -837,6 +837,64 @@ describe("GeneratorWorkspace media journeys", () => {
     expect(container.querySelector('[aria-label="Gallery filters"]')).not.toBeNull();
   });
 
+  it("offers cancel only where Main allows it, then shows the settled result", async () => {
+    const originalFetch = globalThis.fetch;
+    const base = { mode: "video", costDreamcoins: 40, outputCount: 1, errorCode: null, createdAt: new Date().toISOString() };
+    const waiting = { ...base, id: "waiting-video", status: "queued", canCancel: true, queueAhead: 2, queueEtaSeconds: 900 };
+    const started = { ...base, id: "started-video", status: "running", canCancel: false, queueAhead: null, queueEtaSeconds: null };
+    const cancelled = { ...waiting, status: "cancelled", canCancel: false, queueAhead: null, queueEtaSeconds: null,
+      cost: { charged: 40, refunded: 40, finalCharge: 0, assetCount: 0, requestedCount: 1, missingOutputs: 1 } };
+    let current: typeof waiting | typeof cancelled = waiting;
+    const writes: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.startsWith("/api/v1/generation/jobs?")) return Response.json({ ok: true, data: { items: [waiting, started] } });
+      if (path === "/api/v1/generation/jobs/waiting-video/cancel" && init?.method === "POST") {
+        writes.push(path); current = cancelled;
+        return Response.json({ ok: true, data: { requestId: "waiting-video", status: "cancelled", refundAmount: 40 } });
+      }
+      if (path === "/api/v1/generation/jobs/waiting-video") return Response.json({ ok: true, data: { job: current, assets: [] } });
+      if (path === "/api/v1/generation/jobs/started-video") return Response.json({ ok: true, data: { job: started, assets: [] } });
+      return originalFetch(input, init);
+    }));
+    await mount();
+    const card = (id: string) => container.querySelector(`[data-generation-job-id="${id}"]`)!;
+    await vi.waitFor(() => expect(card("waiting-video")).not.toBeNull());
+    expect(card("waiting-video").textContent).toContain("2 requests ahead of yours · ready in about 15 minutes");
+    expect(card("started-video").textContent).not.toContain("Cancel and refund");
+    expect(card("started-video").textContent).not.toContain("ahead of yours");
+
+    await click(button("Cancel and refund"));
+    await vi.waitFor(() => expect(card("waiting-video").textContent).toContain("40 coins returned."));
+    expect(writes).toEqual(["/api/v1/generation/jobs/waiting-video/cancel"]);
+    expect(card("waiting-video").textContent).not.toContain("Cancel and refund");
+    expect(card("waiting-video").textContent).not.toContain("ahead of yours");
+  });
+
+  it("keeps the card honest when a worker won the race to start", async () => {
+    const originalFetch = globalThis.fetch;
+    const base = { id: "raced-video", mode: "video", costDreamcoins: 40, outputCount: 1, errorCode: null, createdAt: new Date().toISOString() };
+    let job: Record<string, unknown> = { ...base, status: "queued", canCancel: true, queueAhead: 0, queueEtaSeconds: null };
+    const message = "This video has already started rendering and can no longer be cancelled. Its result will appear here when it's ready.";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.startsWith("/api/v1/generation/jobs?")) return Response.json({ ok: true, data: { items: [job] } });
+      if (path.endsWith("/raced-video/cancel")) {
+        job = { ...base, status: "running", canCancel: false, queueAhead: null, queueEtaSeconds: null };
+        return Response.json({ ok: false, error: { code: "conflict", message } }, { status: 409 });
+      }
+      if (path === "/api/v1/generation/jobs/raced-video") return Response.json({ ok: true, data: { job, assets: [] } });
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await vi.waitFor(() => expect(container.querySelector('[data-generation-job-id="raced-video"]')).not.toBeNull());
+    await click(button("Cancel and refund"));
+    const card = container.querySelector('[data-generation-job-id="raced-video"]')!;
+    await vi.waitFor(() => expect(card.textContent).toContain("Generating video"));
+    expect(card.querySelector('[role="alert"]')?.textContent).toBe(message);
+    expect(card.textContent).not.toContain("Cancel and refund");
+  });
+
   it("keeps a superseded Chat failure visible without offering a paid retry", async () => {
     const originalFetch = globalThis.fetch;
     const retryWrites: string[] = [];

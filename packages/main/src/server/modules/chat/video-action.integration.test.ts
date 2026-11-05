@@ -157,8 +157,6 @@ describe("explicit Chat video admission and delivery", () => {
     expect(await prisma.chatTurnAttachment.count({ where: { turnId: f.turnId, kind: "generated_video" } })).toBe(1);
     expect(await prisma.dreamcoinLedger.count({ where: { sourceId: jobId, reason: "generation_spend" } })).toBe(1);
     expect(await dreamcoinBalance(f.userId)).toBe(500 - body.quoteAuthority.costDreamcoins);
-    const tooLate = await api("POST", `generation/jobs/${jobId}/cancel`, { userId: f.userId, ageGate: true });
-    expectError(tooLate, 409);
     await runQueuedGenerationJobs(8, videoQueues);
     expect(generated).toHaveBeenCalledOnce();
     expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: jobId } })).toMatchObject({ status: "completed", deliveredOutputCount: 1 });
@@ -242,7 +240,7 @@ describe("explicit Chat video admission and delivery", () => {
     expect(await dreamcoinBalance(f.userId)).toBe(500 - retryBody.quoteAuthority.costDreamcoins);
   }, 20_000);
 
-  it.each(["claimed", "attempted", "running", "queued_started", "missing", "unknown"] as const)("does not offer cancellation for a %s dispatch while preserving the reserved video", async (state) => {
+  it.each(["running", "queued_started", "missing", "unknown"] as const)("does not offer cancellation for a %s dispatch while preserving the reserved video", async (state) => {
     const f = await fixture(); const body = await videoBody(f);
     const dispatch = attempts.dispatchGenerationAttemptOutbox;
     vi.spyOn(attempts, "dispatchGenerationAttemptOutbox").mockImplementation((db) => dispatch(db, { outboxIds: [] }));
@@ -251,8 +249,6 @@ describe("explicit Chat video admission and delivery", () => {
     const jobId = created.data.job.id as string;
     const attempt = await prisma.generationAttempt.findFirstOrThrow({ where: { requestId: jobId }, orderBy: { attemptNo: "desc" } });
     const outboxId = `generation_initial_${jobId}`;
-    if (state === "claimed") await prisma.mainOutboxEvent.update({ where: { id: outboxId }, data: { status: "processing", attempts: 1 } });
-    if (state === "attempted") await prisma.mainOutboxEvent.update({ where: { id: outboxId }, data: { attempts: 1 } });
     if (state === "missing") await prisma.mainOutboxEvent.delete({ where: { id: outboxId } });
     if (["running", "queued_started", "unknown"].includes(state)) await prisma.generationAttempt.update({ where: { id: attempt.id }, data: { status: state === "queued_started" ? "queued" : state, startedAt: new Date() } });
     expect(await videoHistory(f, jobId)).toMatchObject({
@@ -264,6 +260,20 @@ describe("explicit Chat video admission and delivery", () => {
     expect(await prisma.chatTurnAttachment.findFirstOrThrow({ where: { generationJobId: jobId } })).toMatchObject({ status: "accepted" });
     expect(await dreamcoinBalance(f.userId)).toBe(500 - body.quoteAuthority.costDreamcoins);
     expect(await prisma.dreamcoinLedger.count({ where: { sourceId: jobId, reason: "refund" } })).toBe(0);
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it("still offers and honors cancellation after the dispatch was handed to Bull", async () => {
+    const f = await fixture(); const body = await videoBody(f);
+    const created = await submit(f, body); expectOk(created, 202);
+    const jobId = created.data.job.id as string;
+    expect(await prisma.mainOutboxEvent.findFirstOrThrow({ where: { aggregateId: jobId } })).toMatchObject({ status: "delivered", attempts: 1 });
+    expect(await videoHistory(f, jobId)).toMatchObject({ generationJobId: jobId, status: "accepted", canCancel: true, queueAhead: expect.any(Number) });
+    const generate = vi.spyOn((await generationTestProviders()).video, "generate");
+    expectOk(await api("POST", `generation/jobs/${jobId}/cancel`, { userId: f.userId, ageGate: true }));
+    expect(await videoHistory(f, jobId)).toMatchObject({ status: "cancelled", canCancel: false });
+    expect(await dreamcoinBalance(f.userId)).toBe(500);
+    await runQueuedGenerationJobs(4, videoQueues);
     expect(generate).not.toHaveBeenCalled();
   });
 

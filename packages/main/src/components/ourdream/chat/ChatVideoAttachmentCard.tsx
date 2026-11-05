@@ -6,6 +6,7 @@ import { z } from "zod";
 import { parseGenerationRetryQuoteResponse, type RuntimeChatAttachment } from "@/lib/public-api-contracts";
 import { apiPayloadErrorMessage, type GenerationQuoteAuthority } from "@/lib/generation-write-client";
 import { unknownOutcomeCopy } from "@/lib/generation-failure-copy";
+import { generationQueueCopy } from "@/lib/generation-queue-copy";
 import { triggerDownload } from "@/lib/browser-download";
 
 const downloadResponseSchema = z.object({ ok: z.literal(true), data: z.object({ url: z.string().min(1) }) });
@@ -94,6 +95,7 @@ export function ChatVideoAttachmentCard({ attachment, ownerScope, retryPending, 
   const retryable = Boolean(jobId) && attachment.canRetry !== false && ["failed", "refunded"].includes(attachment.status);
   const completed = attachment.status === "completed";
   const cancelled = attachment.status === "cancelled";
+  const queueCopy = active ? generationQueueCopy({ mode: "video", queueAhead: attachment.queueAhead, queueEtaSeconds: attachment.queueEtaSeconds }) : null;
   const classes = "inline-flex min-h-11 items-center justify-center gap-2 rounded-full px-4 py-2 text-xs font-bold disabled:opacity-50";
 
   return <figure className="w-full max-w-[360px] overflow-hidden rounded-xl border border-white/15 bg-black/20" data-testid="chat-video-attachment-card">
@@ -102,6 +104,7 @@ export function ChatVideoAttachmentCard({ attachment, ownerScope, retryPending, 
       <div>
         <p className="text-sm font-bold">{unknown ? "Video result not confirmed yet" : cancelled ? "Video cancelled" : completed ? "Video playback unavailable" : failed ? "Video unavailable" : "Generating video"}</p>
         <p className="mt-1 text-xs leading-5 text-white/70">{unknown ? unknownOutcomeCopy(attachment.costDreamcoins ?? 0) : cancelled ? "The request stopped before processing. Reserved Dreamcoins were returned." : completed ? "The video was delivered. Use the download link to open it." : failed ? retryable ? "The video could not be completed. Check the retry price before starting another attempt." : "The video could not be completed. Change the source image or instructions and send a new request." : "You can keep chatting or return later. This request will keep its place."}</p>
+        {queueCopy ? <p className="mt-1 text-xs font-bold leading-5 text-white/70" data-testid="chat-video-queue">{queueCopy}</p> : null}
       </div>
     </div>}
     <figcaption className="grid gap-2 border-t border-white/10 p-3">
@@ -109,7 +112,7 @@ export function ChatVideoAttachmentCard({ attachment, ownerScope, retryPending, 
       {unknown ? null : retryable ? quote ? <>
         <p className="text-xs text-white/75">Retry this video · {quote.costDreamcoins} Dreamcoins</p>
         <button type="button" className={`${classes} bg-white text-black`} disabled={pending || retryPending || !ownerScope} onClick={() => void confirmRetry()}>{pending || retryPending ? "Confirming retry…" : "Confirm video retry"}</button>
-      </> : <button type="button" className={`${classes} bg-white text-black`} disabled={pending || retryPending || !ownerScope} onClick={() => void checkRetry()}><RefreshCw className="size-4" />{pending ? "Checking price…" : "Check video retry price"}</button> : active && attachment.canCancel === true ? <button type="button" className={`${classes} bg-white/10`} disabled={pending || !ownerScope} onClick={() => void cancel()}>{pending ? "Checking cancellation…" : "Cancel before processing"}</button> : null}
+      </> : <button type="button" className={`${classes} bg-white text-black`} disabled={pending || retryPending || !ownerScope} onClick={() => void checkRetry()}><RefreshCw className="size-4" />{pending ? "Checking price…" : "Check video retry price"}</button> : active && attachment.canCancel === true ? <button type="button" className={`${classes} bg-white/10`} disabled={pending || !ownerScope} onClick={() => void cancel()}>{pending ? "Cancelling…" : "Cancel and refund"}</button> : null}
       {error ? <p role="alert" className="text-xs leading-5 text-rose-200">{error}</p> : null}
     </figcaption>
   </figure>;

@@ -671,7 +671,7 @@ describe("generation job settlement", () => {
       }),
     ).toEqual({
       settled: true,
-      statusMessage: "Generation stopped.",
+      statusMessage: "Cancelled. Any coins held for this request were returned.",
       showResults: false,
       refreshBalanceAndQuote: true,
     });

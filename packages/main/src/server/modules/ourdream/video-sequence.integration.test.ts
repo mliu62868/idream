@@ -18,7 +18,8 @@ import * as remoteImage from "@/server/lib/safe-remote-image";
 import * as jobReads from "./generation-job-read-model";
 import { PRODUCTION_REDGRAFT_LTX25_VIDEO_OPTIONS_PROFILE } from "@/server/modules/generation/production-video-profile";
 import * as dispatchAuthority from "@/server/modules/generation/generation-attempt-authority";
-import { CHAT_TO_MAIN_EVENTS, REDGRAFT_VIDEO_OPTIONS, videoSequenceDtoSchema, idempotencyKeys } from "@idream/shared/contracts";
+import { CHAT_TO_MAIN_EVENTS, GENERATION_TRANSPORT_AUTHORITY_REVOKED_REASON, REDGRAFT_VIDEO_OPTIONS, videoSequenceDtoSchema, idempotencyKeys } from "@idream/shared/contracts";
+import { recordGenerationTransportExecution } from "@/server/ai/generation-transport-execution";
 import { jobQueue } from "@/server/jobs/queue";
 import { dispatchPendingGenerationTerminalRecords, ingestGenerationTerminalRecord } from "@/server/ai/generation-terminal-record-ingest";
 import { drainLocalAiPipeline } from "@/server/ai/local-pipeline";
@@ -29,6 +30,8 @@ import { ACCOUNT_ERASURE_COMPLETION_V2_SOURCE_SERVICE, applyChatEvent } from "@/
 import { api, createCharacter, createMedia, createUser, dreamcoinBalance, expectError, expectOk, generationTestProviders, grantCoins, purgeTestData, runQueuedGenerationJobs } from "@/server/test/helpers";
 import { videoFixture, narrationFixture } from "@/server/test/video-fixtures";
 import { advanceVideoSequences } from "./video-sequence";
+import { assertPrefrozenGenerationSource, freezeGenerationReferences, prefreezeGenerationSources } from "./generation-reference-snapshot";
+import { withGenerationSnapshotSlot } from "./generation-source-snapshot";
 import { reconcileUnknownGenerationRequest } from "@/server/modules/admin-v2/jobs/unknown-reconciliation";
 import { GET as getSourceSnapshot } from "@/app/api/internal/generation/source-snapshot/route";
 
@@ -150,6 +153,112 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
     expectOk(await first); expectOk(await second);
     expectOk(await makeQuote());
   });
+  // The first read of a write is its requote; the second is the admission's own freeze.
+  function holdAdmissionRead() {
+    const entered = barrier(), release = barrier();
+    const get = providers.blob.getPrivate!.bind(providers.blob);
+    let reads = 0;
+    vi.spyOn(providers.blob, "getPrivate").mockImplementation(async input => {
+      reads++;
+      if (reads === 2) { entered.release(); await release.promise; }
+      return get(input);
+    });
+    return { entered, release };
+  }
+  const submit = (request: unknown, fingerprint: string) => api("POST", "generation/video-sequences", { userId, ageGate: true,
+    headers: { "idempotency-key": randomUUID() }, body: { ...(request as object), quoteFingerprint: fingerprint } });
+
+  it("reads the source Blob without holding the lock every user of this Character shares", async () => {
+    const request = body(1), price = await quote(request);
+    const { entered, release } = holdAdmissionRead();
+    const pending = submit(request, price.fingerprint);
+    try {
+      await entered.promise;
+      const free = await prisma.$transaction(tx => tx.$queryRaw<Array<{ free: boolean }>>`
+        SELECT pg_try_advisory_xact_lock(hashtext(${`character-generation-authority:${characterId}`})) AS free`);
+      expect(free[0]!.free).toBe(true);
+    } finally { release.release(); }
+    expectOk(await pending, 202);
+  });
+
+  it("refuses without charging when the source asset is replaced after its bytes were read", async () => {
+    const request = body(1), price = await quote(request), balance = await dreamcoinBalance(userId);
+    const source = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: (await prisma.character.findUniqueOrThrow({ where: { id: characterId } })).imageAssetId! } });
+    const { entered, release } = holdAdmissionRead();
+    const pending = submit(request, price.fingerprint);
+    try {
+      await entered.promise;
+      await prisma.mediaAsset.update({ where: { id: source.id }, data: { storageKey: `${source.storageKey}.replaced` } });
+    } finally { release.release(); }
+    expectError(await pending, 409, "conflict");
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(0);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(0);
+    expect(await dreamcoinBalance(userId)).toBe(balance);
+    await prisma.mediaAsset.update({ where: { id: source.id }, data: { storageKey: source.storageKey } });
+  });
+
+  it("will not pin a prefrozen snapshot for anyone but its owner, or a source it never read", async () => {
+    const character = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
+    const source = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: character.imageAssetId! } });
+    const frozen = await prefreezeGenerationSources({ userId, characterId, assets: [{ assetId: source.id }] });
+    const prefrozen = frozen.get(source.id)!;
+    expect(await prisma.generationSourceSnapshotChunk.count({ where: { snapshotId: prefrozen.id } })).toBeGreaterThan(0);
+    await prisma.$transaction(tx => assertPrefrozenGenerationSource(tx, { userId, prefrozen }));
+    await expect(prisma.$transaction(tx => assertPrefrozenGenerationSource(tx, { userId: `${userId}-other`, prefrozen }))).rejects.toMatchObject({ status: 409 });
+
+    const reads = vi.spyOn(providers.blob, "getPrivate");
+    await expect(prisma.$transaction(tx => freezeGenerationReferences(tx, {
+      userId, characterId, controls: { sourceImageAssetId: source.id }, prefrozen: new Map(),
+    }))).rejects.toMatchObject({ status: 409 });
+    // The refusal is the point: asking Blob here would hold the lock across the read.
+    expect(reads).not.toHaveBeenCalled();
+  });
+
+  it("queues a burst of admissions for a verification slot instead of refusing them", async () => {
+    const release = barrier();
+    const hold = () => withGenerationSnapshotSlot(() => release.promise);
+    const holders = [hold(), hold()];
+    // Whoever may be holding locks still gets the immediate answer.
+    await expect(withGenerationSnapshotSlot(async () => "ran")).rejects.toMatchObject({ status: 503, message: "Image verification is busy. Please try again." });
+    await expect(withGenerationSnapshotSlot(async () => "ran", { waitMs: 5 })).rejects.toMatchObject({ status: 503 });
+    const order: string[] = [];
+    const queued = ["first", "second"].map(name => withGenerationSnapshotSlot(async () => { order.push(name); return name; }, { waitMs: 5_000 }));
+    release.release();
+    await Promise.all(holders);
+    await expect(Promise.all(queued)).resolves.toEqual(["first", "second"]);
+    expect(order).toEqual(["first", "second"]);
+    // The slots came back: nothing leaked through the hand-over.
+    await expect(Promise.all([hold(), hold()])).resolves.toBeDefined();
+  });
+
+  it("stops a scene already dispatched to Bull, removes its row and refunds it", async () => {
+    await mockedNativeSuccess();
+    const { sequence } = await create(body(1));
+    const jobId = sequence.scenes[0]!.job.id;
+    const dedupeKey = idempotencyKeys.generationAttempt(jobId, 1);
+    expect(await prisma.mainOutboxEvent.findFirstOrThrow({ where: { aggregateId: jobId } })).toMatchObject({ status: "delivered", attempts: 1 });
+    expect(await jobQueue.getByDedupeKey("ai.video.generate", dedupeKey)).toMatchObject({ state: "waiting" });
+
+    const stopped = await api("POST", `generation/video-sequences/${sequence.id}/stop`, { userId, ageGate: true });
+    expectOk(stopped);
+
+    const result = videoSequenceDtoSchema.parse(stopped.data.sequence);
+    expect(result.status).toBe("cancelled");
+    expect(result.scenes[0]!.job.status).toBe("cancelled");
+    expect(result.cost.finalCharge).toBe(0);
+    expect(await jobQueue.getByDedupeKey("ai.video.generate", dedupeKey)).toBeNull();
+    expect(await prisma.dreamcoinLedger.count({ where: { sourceId: jobId, reason: "refund" } })).toBe(1);
+
+    // A stopped sequence also reads as deferred, which Gen keeps retrying. A worker
+    // that already held this row must hear the rejection that ends it.
+    const attempt = await prisma.generationAttempt.findFirstOrThrow({ where: { requestId: jobId } });
+    await expect(recordGenerationTransportExecution({
+      version: 1, attemptId: attempt.id, attemptNo: 1, generationJobId: jobId, transportAttemptNo: 1,
+      provider: attempt.provider, model: "unused-after-revocation", providerRequestId: null,
+      idempotencyKey: `generation:${attempt.id}:provider`, status: "running", occurredAt: new Date().toISOString(), error: null,
+    })).rejects.toMatchObject({ details: { reason: GENERATION_TRANSPORT_AUTHORITY_REVOKED_REASON } });
+  });
+
   it("freezes accepted source pixels for every scene even if the original Blob changes", async () => {
     const character = await prisma.character.findUniqueOrThrow({ where: { id: characterId } });
     const source = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: character.imageAssetId! } });
@@ -352,14 +461,14 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
     expectOk(await api("POST", "generation/video-sequences/quote", { userId, ageGate: true, body: body(1) }));
   });
 
-  it("decodes a shared source once per quote and once per locked multi-scene admission", async () => {
+  it("decodes a shared source once per quote and once per multi-scene admission", async () => {
     const reads = vi.spyOn(providers.blob, "getPrivate");
     const request = body(3), price = await quote(request);
     expect(reads).toHaveBeenCalledTimes(1);
     const response = await api("POST", "generation/video-sequences", { userId, ageGate: true,
       headers: { "idempotency-key": randomUUID() }, body: { ...request, quoteFingerprint: price.fingerprint } });
     expectOk(response, 202);
-    // The write requotes once, then verifies once while holding the source authority.
+    // The write requotes once, then verifies once before taking the source authority.
     expect(reads).toHaveBeenCalledTimes(3);
     expect(videoSequenceDtoSchema.parse(response.data.sequence).scenes).toHaveLength(3);
   });
@@ -416,6 +525,9 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
     const entered = barrier(), hold = barrier();
     const get = providers.blob.getPrivate!.bind(providers.blob);
     let reads = 0;
+    // This pause is the admission's Blob read, which now comes before the intent lock:
+    // the receipt check reports "not confirmed" here, not "still being processed". The
+    // intent lock itself is covered by the separate-client-process test below.
     vi.spyOn(providers.blob, "getPrivate").mockImplementation(async input => {
       reads += 1;
       if (reads === 2) { entered.release(); await hold.promise; return get(input); }
@@ -731,9 +843,9 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
     const { sequence: older } = await create();
     const stopped = await api("POST", `generation/video-sequences/${older.id}/stop`, { userId, ageGate: true });
     expectOk(stopped);
-    // The untouched second scene is refunded; the dispatched first scene is
-    // still unresolved. A quote or sequence status cannot supply this balance.
-    expect(stopped.data.sequence.cost).toEqual({ charged: 200, refunded: 100, finalCharge: 100 });
+    // Neither scene reached the provider, including the first one already in Bull.
+    // A quote or sequence status cannot supply this balance.
+    expect(stopped.data.sequence.cost).toEqual({ charged: 200, refunded: 200, finalCharge: 0 });
     const { sequence: newer } = await create(body(1));
     const expected = await Promise.all([read(newer.id), read(older.id)]);
     const stranger = `${P}user-${randomUUID()}-list-reader`;
@@ -925,7 +1037,7 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
     expect(await dreamcoinBalance(recovering.userId)).toBe(900);
     expect(await prisma.generationJob.count({ where: { userId } })).toBe(1);
     expect(native).not.toHaveBeenCalled();
-  });
+  }, 20_000);
 
   it("packaging failure is recoverable without creating another Request, debit or native invocation", async () => {
     const native = await mockedNativeSuccess(), { sequence } = await create(body(1, "silent"));

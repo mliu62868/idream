@@ -17,7 +17,8 @@ import { logger } from "@/server/lib/logger";
 import { isMediaAssetOperationalForAuthority, isSyntheticMediaAsset } from "@/server/lib/media-asset-authority";
 import { moderateText } from "@/server/moderation/text-authority";
 import { updateGenerationRequestSourceMeta } from "@/server/ai/generation-request-transition";
-import { canCancelGenerationBeforeDispatch } from "@/server/ai/generation-request-lifecycle";
+import { canCancelGenerationBeforeProviderEntry } from "@/server/ai/generation-request-lifecycle";
+import { readGenerationQueueStandings } from "@/server/modules/ourdream/generation-queue-standing";
 import { MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES } from "@/server/events/main-outbox-transport";
 import { recordMainToChatEvent } from "@/processes/chat-outbox";
 import { appendCanonicalMetricEvent, appendCanonicalMetricEventsForUser } from "@/server/modules/admin-v2/metrics/event-writer";
@@ -1983,7 +1984,7 @@ async function enrichAttachmentMedia(messages: Array<Record<string, unknown>>, u
   const videoJobs = jobs.filter(job => job.sourceType === "chat_video");
   const dispatches = videoJobs.length ? await prisma.mainOutboxEvent.findMany({
     where: { aggregateType: "generation_request", aggregateId: { in: videoJobs.map(job => job.id) }, eventType: { in: [...MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES] } },
-    select: { aggregateId: true, status: true, attempts: true, payload: true },
+    select: { aggregateId: true, payload: true },
   }) : [];
   const dispatchesByJob = new Map<string, typeof dispatches>();
   for (const dispatch of dispatches) {
@@ -1991,12 +1992,16 @@ async function enrichAttachmentMedia(messages: Array<Record<string, unknown>>, u
     if (rows) rows.push(dispatch);
     else dispatchesByJob.set(dispatch.aggregateId, [dispatch]);
   }
+  const standings = await readGenerationQueueStandings(
+    jobs.filter(job => job.status === "queued" && latestAttempts.get(job.id)?.status === "queued").map(job => job.id),
+  );
   const jobProjections = new Map(jobs.map((job) => [
     job.id, {
+      standing: standings.get(job.id) ?? null,
       status: effectiveGenerationJobStatus(job.status, latestAttempts.get(job.id)?.status ?? null),
       errorCode: generationExecutionErrorCode(job.status, latestAttempts.get(job.id)?.status ?? null, job.errorCode),
       canRetry: job.status === "failed" && !generationPreparationPreventsRetry(latestAttempts.get(job.id)),
-      canCancel: job.sourceType === "chat_video" && canCancelGenerationBeforeDispatch(job, latestAttempts.get(job.id) ?? null, dispatchesByJob.get(job.id) ?? []),
+      canCancel: job.sourceType === "chat_video" && canCancelGenerationBeforeProviderEntry(job, latestAttempts.get(job.id) ?? null, dispatchesByJob.get(job.id) ?? []),
     },
   ]));
 
@@ -2033,6 +2038,7 @@ async function enrichAttachmentMedia(messages: Array<Record<string, unknown>>, u
         const projected: Record<string, unknown> = {
           ...attachment,
           ...(mediaAttachment ? { canRetry: ["failed", "refunded"].includes(String(attachment.status)) && job?.canRetry === true } : {}),
+          ...(mediaAttachment && job?.standing ? { queueAhead: job.standing.queueAhead, queueEtaSeconds: job.standing.queueEtaSeconds } : {}),
           ...(attachment.kind === "generated_video" ? { canCancel: activeVideo && job?.canCancel === true, ...(activeVideo && job?.status === "running" ? { status: "running" } : {}) } : {}),
         };
         if (job?.errorCode === "provider_outcome_unknown") return { ...projected, errorCode: job.errorCode };

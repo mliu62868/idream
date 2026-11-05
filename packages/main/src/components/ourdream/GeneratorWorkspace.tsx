@@ -42,6 +42,7 @@ import {
   isPrivateMediaUrl,
 } from "@/lib/image-delivery";
 import { generationFailureCopy, unknownOutcomeCopy } from "@/lib/generation-failure-copy";
+import { generationQueueCopy } from "@/lib/generation-queue-copy";
 import {
   parseCharacterDetailResponse,
   parseCharacterLooksResponse,
@@ -252,6 +253,9 @@ type GenerationJob = {
   createdAt: string;
   // 服务端每个 job 都带账目；本地类型漏掉它就等于把退款金额和交付张数丢在契约层。
   cost?: RuntimeGenerationJobCost;
+  canCancel?: boolean;
+  queueAhead?: number | null;
+  queueEtaSeconds?: number | null;
 };
 
 type ApiPayload<T> = {
@@ -538,6 +542,8 @@ export function GeneratorWorkspace() {
   const viewerScopeRef = useRef<string | null>(null);
   const viewerEpochRef = useRef(0);
   const privateRequestControllersRef = useRef<Set<AbortController>>(new Set());
+  const [cancellingJobIds, setCancellingJobIds] = useState<ReadonlySet<string>>(new Set());
+  const [cancelFailures, setCancelFailures] = useState<Record<string, string>>({});
 
   // SPEC: a private read is admissible only while the viewer who asked for it is
   // still the signed-in viewer. The ticket carries the identity the request went
@@ -2006,6 +2012,42 @@ export function GeneratorWorkspace() {
       },
       generationRequestEffects,
     );
+  }
+
+  // Only what Main says is cancellable gets a button, and it stays the authority: a
+  // worker can win the race after that was read, which comes back as an ordinary 409.
+  // Either way the job is re-read, so the card shows what actually happened.
+  async function cancelJob(jobId: string) {
+    const viewerRequest = beginPrivateViewerRequest();
+    if (!viewerRequest) return;
+    setCancellingJobIds((current) => new Set(current).add(jobId));
+    setCancelFailures(({ [jobId]: _previous, ...rest }) => rest);
+    try {
+      const response = await fetch(`/api/v1/generation/jobs/${encodeURIComponent(jobId)}/cancel`, {
+        method: "POST",
+        headers: { "x-idream-viewer-scope": viewerRequest.scope },
+        signal: viewerRequest.controller.signal,
+      });
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok && privateViewerRequestIsCurrent(viewerRequest)) {
+        setCancelFailures((current) => ({
+          ...current,
+          [jobId]: apiPayloadErrorMessage(payload) ?? "This request could not be cancelled. Check its current status.",
+        }));
+      }
+    } catch (error) {
+      if (privateViewerRequestIsCurrent(viewerRequest) && !(error instanceof DOMException && error.name === "AbortError")) {
+        setCancelFailures((current) => ({ ...current, [jobId]: "This request could not be cancelled. Check your connection and try again." }));
+      }
+    } finally {
+      finishPrivateViewerRequest(viewerRequest);
+      setCancellingJobIds((current) => {
+        const next = new Set(current);
+        next.delete(jobId);
+        return next;
+      });
+    }
+    await pollGeneration(jobId);
   }
 
   async function retryJob(jobId: string) {
@@ -4487,6 +4529,11 @@ export function GeneratorWorkspace() {
                         <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">
                           {generatorJobStatusLabel(job.mode, job.status, job.errorCode)}
                         </p>
+                        {generationQueueCopy(job) ? (
+                          <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]" data-testid="generator-job-queue">
+                            {generationQueueCopy(job)}
+                          </p>
+                        ) : null}
                       </div>
                       <span className="rounded-full bg-black/30 px-3 py-1 text-[11px] font-bold uppercase text-white">
                         {job.errorCode === "provider_outcome_unknown"
@@ -4499,6 +4546,24 @@ export function GeneratorWorkspace() {
                         {unknownOutcomeCopy(job.costDreamcoins)}
                         <span className="mt-1 block break-all">Request: {job.id}</span>
                       </p>
+                    )}
+                    {job.status === "cancelled" && (job.cost?.refunded ?? 0) > 0 && (
+                      <p className="mt-3 text-[12px] font-medium text-[rgb(170,170,170)]">
+                        {job.cost!.refunded} {job.cost!.refunded === 1 ? "coin" : "coins"} returned.
+                      </p>
+                    )}
+                    {job.canCancel && (
+                      <button
+                        className="mt-3 h-9 w-fit rounded-full bg-white/10 px-4 text-[12px] font-bold text-white disabled:opacity-50"
+                        disabled={cancellingJobIds.has(job.id)}
+                        onClick={() => void cancelJob(job.id)}
+                        type="button"
+                      >
+                        {cancellingJobIds.has(job.id) ? "Cancelling…" : "Cancel and refund"}
+                      </button>
+                    )}
+                    {cancelFailures[job.id] && !isTerminalGenerationJobStatus(job.status) && (
+                      <p className="mt-2 text-[12px] font-medium text-rose-200" role="alert">{cancelFailures[job.id]}</p>
                     )}
                     {job.status === "failed" && (
                       <div className="mt-3 flex flex-col gap-2">

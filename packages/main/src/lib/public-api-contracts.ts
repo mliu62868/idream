@@ -1204,6 +1204,9 @@ const generationJobSchema = z
     errorCode: z.string().nullable(),
     createdAt: timestamp,
     cost: generationJobCostSchema.optional(),
+    canCancel: z.boolean().optional(),
+    queueAhead: nonNegativeInteger.nullable().optional(),
+    queueEtaSeconds: nonNegativeInteger.nullable().optional(),
   })
   .passthrough();
 
@@ -1419,6 +1422,8 @@ const chatAttachmentSchema = z
     generationJobId: z.string().nullable().optional(),
     canCancel: z.boolean().optional(),
     canRetry: z.boolean().optional(),
+    queueAhead: nonNegativeInteger.nullable().optional(),
+    queueEtaSeconds: nonNegativeInteger.nullable().optional(),
     mediaAssetId: z.string().nullable().optional(),
     mediaUrl: renderableMediaSourceSchema.nullable().optional(),
     thumbnailUrl: renderableMediaSourceSchema.nullable().optional(),

@@ -11,7 +11,7 @@ import { findExistingGenerationJob, generationWriteRequestFingerprint, wakeQueue
 import { generationJobInclude, type GenerationJobWithRelations } from "@/server/modules/ourdream/generation-job-read-model";
 import { generationContextSource, resolveGenerationContext } from "@/server/modules/ourdream/generation-context";
 import { assertChatVideoAvailable, chatVideoCapability } from "./video-availability";
-import { cancelChatVideo } from "./video-cancel";
+import { cancelGenerationBeforeProviderEntry } from "@/server/modules/ourdream/generation-job-cancel";
 
 export const chatVideoRequestSchema = z.object({
   generationContextToken: z.string().min(1).max(4096),
@@ -85,7 +85,7 @@ export async function dispatchChatVideo(
     requireAgeVerified(ctx);
     const expected = request.headers.get("x-idream-viewer-scope");
     if (expected !== null && expected !== `user:${user.id}`) throw Errors.conflict("Your account changed. Sign in to the original account before cancelling this request.");
-    return ok(await cancelChatVideo(user.id, action));
+    return ok(await cancelGenerationBeforeProviderEntry(user.id, action));
   }
   if (!(request.method === "GET" && !child) && !(request.method === "POST" && (!child || child === "quote"))) return null;
   const ctx = await getAuthCtx(request);

@@ -50,6 +50,7 @@ import { chatGenerationHref } from "@/lib/chat-generation-link";
 import { chatVideoSources, isExplicitChatVideoRequest } from "@/lib/chat-video";
 import { ChatVideoComposer, type ChatVideoSubmission } from "./chat/ChatVideoComposer";
 import { ChatVideoAttachmentCard } from "./chat/ChatVideoAttachmentCard";
+import { generationQueueCopy } from "@/lib/generation-queue-copy";
 import { ChatImageEditReviewCard } from "./chat/ChatImageEditReviewCard";
 import {
   chatStreamLatestReplyFailed,
@@ -1880,6 +1881,7 @@ function ChatImageAttachmentCard({
   const chargedCost = attachment.generationJobId && typeof attachment.costDreamcoins === "number" && attachment.costDreamcoins > 0
     ? attachment.costDreamcoins : 0;
   const refundableCost = chargedCost ? `${chargedCost} ${chargedCost === 1 ? "coin" : "coins"}` : null;
+  const queueCopy = generationQueueCopy({ mode: "image", queueAhead: attachment.queueAhead, queueEtaSeconds: attachment.queueEtaSeconds });
   return (
     <div
       className="w-full max-w-[260px] rounded-[12px] border border-white/10 bg-black/20 p-3"
@@ -1928,6 +1930,11 @@ function ChatImageAttachmentCard({
                 : "Your image is being prepared. You can keep chatting while it finishes."}
             </p>
           )}
+          {isWaiting && !requiresReview && queueCopy ? (
+            <p className="mt-1 text-[11px] font-bold leading-4 text-white/70" data-testid="chat-image-queue">
+              {queueCopy}
+            </p>
+          ) : null}
           {costLabel ? (
             <p
               className="mt-1 text-[11px] font-bold leading-4 text-white/70"

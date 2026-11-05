@@ -27,6 +27,7 @@ import {
 import { lockChatScope, type LockedChatTurnAttachment } from "@/server/modules/chat/turn-scope";
 import { jsonRecord } from "./json-values";
 import type { GenerationSource } from "./generation-request-schema";
+import { generationSourceLocator } from "./generation-source-snapshot";
 import { lockUserLedger } from "./subscription-lifecycle";
 
 // SPEC: 用户侧付费生成的接纳 authority。入口只准备各自的历史 PIN；幂等重放、
@@ -424,6 +425,8 @@ export async function assertGenerationSourceImageAuthority(
   // still decode. Recheck on admission as sources can change after a quote.
   const locator = resolveMediaAssetBlobLocator(source);
   if (input.verifyVideoPixels || input.verifyImagePixels) {
+    // Read before the bytes: a replacement landing mid-read must fail the later check.
+    const sourceLocator = generationSourceLocator(source);
     const loadAndValidate = async () => {
       let bytes: Uint8Array;
       if (locator) {
@@ -436,7 +439,7 @@ export async function assertGenerationSourceImageAuthority(
         }
         bytes = stored.data.body;
       } else bytes = (await readRemoteImage(source.url!.trim())).bytes;
-      return verifySourceImageBytes(bytes, input.sourceImageAssetId);
+      return { ...await verifySourceImageBytes(bytes, input.sourceImageAssetId), sourceLocator };
     };
     return locator ? loadAndValidate() : withRemoteImageValidationLimit(loadAndValidate);
   }
