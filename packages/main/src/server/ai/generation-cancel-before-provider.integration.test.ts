@@ -67,8 +67,16 @@ async function claimBullRow() {
     db: url.pathname && url.pathname !== "/" ? Number.parseInt(url.pathname.slice(1), 10) : 0, maxRetriesPerRequest: null,
   } });
   worker.on("error", () => undefined);
-  await worker.getNextJob(`held-${randomUUID()}`, { block: false });
-  return worker;
+  const token = `held-${randomUUID()}`;
+  const held = await worker.getNextJob(token, { block: false });
+  return {
+    // Fail the row before letting go. An abandoned active row would stall back to
+    // waiting and be picked up by whichever suite drains this queue next.
+    release: async () => {
+      await held?.moveToFailed(new Error("test released its held row"), token, false);
+      await worker.close(true);
+    },
+  };
 }
 
 function postTransport(body: unknown) {
@@ -113,7 +121,7 @@ describe("cancelling a Generation Request before provider entry", () => {
 
   it("cancels a request waiting on the device lease and refuses its worker for good", async () => {
     const request = await acceptedRequest();
-    const worker = await claimBullRow();
+    const held = await claimBullRow();
     try {
       await expect(jobQueue.getByDedupeKey("ai.image.generate", request.dedupeKey)).resolves.toMatchObject({ state: "active" });
       await expect(recordGenerationTransportExecution(request.event("waiting"))).resolves.toMatchObject({ acknowledged: true });
@@ -132,7 +140,7 @@ describe("cancelling a Generation Request before provider entry", () => {
       }
       await expect(prisma.generationTransportExecution.count({ where: { attemptId: request.attemptId } })).resolves.toBe(0);
     } finally {
-      await worker.close(true);
+      await held.release();
     }
   });
 
