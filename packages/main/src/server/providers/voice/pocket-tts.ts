@@ -4,7 +4,7 @@ import {
   type VoiceIdentityPort,
 } from "../types";
 import { pcmWavDurationMs } from "./wav";
-import { requestVoiceProvider, voiceOwnerHeaders } from "./http";
+import { ownedArrayBuffer, requestVoiceProvider, voiceEndpoint, voiceFailure, voiceOwnerHeaders } from "./http";
 import { VOICE_MAX_INPUT_CHARS, voiceSynthesisTimeoutMs } from "./speech-text";
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -60,10 +60,10 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
   private readonly fetchImpl: FetchLike;
 
   constructor(config: PocketTtsVoiceModelConfig) {
-    this.speechEndpoint = pocketEndpoint(config.baseUrl, "/audio/speech");
-    this.voicesEndpoint = pocketEndpoint(config.baseUrl, "/voices");
-    this.presetVoicesEndpoint = pocketEndpoint(config.baseUrl, "/voices/presets");
-    this.healthEndpoint = pocketEndpoint(config.baseUrl, "/health");
+    this.speechEndpoint = voiceEndpoint(config.baseUrl, "/audio/speech");
+    this.voicesEndpoint = voiceEndpoint(config.baseUrl, "/voices");
+    this.presetVoicesEndpoint = voiceEndpoint(config.baseUrl, "/voices/presets");
+    this.healthEndpoint = voiceEndpoint(config.baseUrl, "/health");
     this.apiKey = config.apiKey;
     this.model = config.model;
     this.language = config.language;
@@ -106,8 +106,8 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     signal?: AbortSignal;
   }) {
     const text = input.text.trim();
-    if (!text) return pocketFailure("voice_input_empty", "Voice input is empty", false);
-    if (text.length > this.maxInputChars) return pocketFailure("voice_input_too_long", `Voice input exceeds ${this.maxInputChars} characters; no text was truncated`, false);
+    if (!text) return voiceFailure("voice_input_empty", "Voice input is empty", false);
+    if (text.length > this.maxInputChars) return voiceFailure("voice_input_too_long", `Voice input exceeds ${this.maxInputChars} characters; no text was truncated`, false);
     const response = await this.request(this.speechEndpoint, {
       method: "POST",
       signal: input.signal,
@@ -134,11 +134,9 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     if (!response.ok) return response;
 
     const model = input.model ?? this.model;
-    const receivedModel = response.data.headers.get("x-idream-voice-model");
-    if (receivedModel && receivedModel !== model) return pocketFailure("voice_model_mismatch", "Voice response does not match the pinned model", false);
     const contentType = response.data.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
     if (contentType !== "audio/wav" && contentType !== "audio/x-wav") {
-      return pocketFailure(
+      return voiceFailure(
         "invalid_voice_response",
         "Pocket TTS returned a non-WAV response",
         true,
@@ -146,7 +144,7 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     }
     const body = new Uint8Array(await response.data.arrayBuffer());
     const durationMs = pcmWavDurationMs(body);
-    if (durationMs === null) return pocketFailure("invalid_voice_response", "Pocket TTS returned invalid PCM WAV audio", true);
+    if (durationMs === null) return voiceFailure("invalid_voice_response", "Pocket TTS returned invalid PCM WAV audio", true);
     return {
       ok: true as const,
       data: {
@@ -165,7 +163,7 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     form.set("ref_text", input.referenceText);
     form.set(
       "audio",
-      new Blob([arrayBuffer(input.audio)], { type: input.contentType }),
+      new Blob([ownedArrayBuffer(input.audio)], { type: input.contentType }),
       input.filename,
     );
     const response = await this.request(this.voicesEndpoint, {
@@ -181,7 +179,7 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
       typeof raw.model !== "string" ||
       typeof raw.language !== "string"
     ) {
-      return pocketFailure(
+      return voiceFailure(
         "invalid_voice_clone_response",
         "Pocket TTS voice clone response is incomplete",
         false,
@@ -221,7 +219,7 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
       typeof raw.model !== "string" ||
       typeof raw.language !== "string"
     ) {
-      return pocketFailure(
+      return voiceFailure(
         "invalid_voice_preset_response",
         "Pocket TTS preset voice response is incomplete",
         false,
@@ -257,7 +255,7 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     });
     if (!response.ok) return response;
     const receipt = await response.data.json().catch(() => null);
-    if (receipt?.erased !== true) return pocketFailure("invalid_voice_erasure_receipt", "Pocket TTS did not confirm account erasure", true);
+    if (receipt?.erased !== true) return voiceFailure("invalid_voice_erasure_receipt", "Pocket TTS did not confirm account erasure", true);
     return { ok: true as const, data: { erased: true as const } };
   }
 
@@ -294,7 +292,7 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
       typeof raw.config_fingerprint !== "string" ||
       raw.config_fingerprint.trim().length === 0
     ) {
-      return pocketFailure(
+      return voiceFailure(
         "invalid_voice_health_response",
         "Pocket TTS gateway is not running the required official CPU runtime",
         true,
@@ -336,24 +334,4 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     return requestVoiceProvider({ endpoint, init, timeoutMs, fetchImpl: this.fetchImpl,
       providerName: "Pocket TTS", failureCode: "pocket_tts_failed" });
   }
-}
-
-function pocketEndpoint(baseUrl: string, suffix: string) {
-  const normalized = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
-  return new URL(suffix.replace(/^\//, ""), normalized);
-}
-
-function pocketFailure(
-  code: string,
-  message: string,
-  retryable: boolean,
-): ProviderResult<never> {
-  return { ok: false, error: { code, message, retryable } };
-}
-
-function arrayBuffer(bytes: Uint8Array) {
-  return bytes.buffer.slice(
-    bytes.byteOffset,
-    bytes.byteOffset + bytes.byteLength,
-  ) as ArrayBuffer;
 }

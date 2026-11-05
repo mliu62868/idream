@@ -23,15 +23,15 @@ from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Annotated, Any
-from uuid import uuid4
 
 import numpy as np
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 try:
-    from scripts.voice_cache_janitor import CacheJanitor, cache_ttl_seconds, refresh_entry
+    from scripts.voice_cache_janitor import CacheJanitor, cache_ttl_seconds
     from scripts.voice_erasure import AccountErasureRequest, VoiceErasureRegistry
+    from scripts.voice_gateway_common import atomic_write, read_idempotent_audio, safe_voice_id, validate_wav
     from scripts.voice_render_lane import RenderLane
     from scripts.ming_voice_runtime import (
         CAMPLUS_SHA256, MLX_AUDIO_VERSION, MODEL_ID as MING_MODEL_ID,
@@ -39,8 +39,9 @@ try:
         control_caption, validate_prompt_metadata,
     )
 except ModuleNotFoundError:
-    from voice_cache_janitor import CacheJanitor, cache_ttl_seconds, refresh_entry
+    from voice_cache_janitor import CacheJanitor, cache_ttl_seconds
     from voice_erasure import AccountErasureRequest, VoiceErasureRegistry
+    from voice_gateway_common import atomic_write, read_idempotent_audio, safe_voice_id, validate_wav
     from voice_render_lane import RenderLane
     from ming_voice_runtime import (
         CAMPLUS_SHA256, MLX_AUDIO_VERSION, MODEL_ID as MING_MODEL_ID,
@@ -199,13 +200,6 @@ def authorize(authorization: str | None = Header(default=None)) -> None:
         raise HTTPException(status_code=401, detail="Invalid Fish Audio API token")
 
 
-def safe_voice_id(value: str) -> str:
-    normalized = value.strip()
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{2,159}", normalized):
-        raise HTTPException(status_code=400, detail="Invalid voice_id")
-    return normalized
-
-
 def voice_audio_path(voice_id: str) -> Path:
     return VOICE_DIR / f"{safe_voice_id(voice_id)}.wav"
 
@@ -332,20 +326,6 @@ def stored_voice_count() -> int:
     )
 
 
-def validate_wav(reference: bytes) -> float:
-    try:
-        with wave.open(io.BytesIO(reference), "rb") as wav:
-            frame_rate = wav.getframerate()
-            frames = wav.getnframes()
-            channels = wav.getnchannels()
-            sample_width = wav.getsampwidth()
-    except (EOFError, wave.Error) as error:
-        raise ValueError("Reference audio is not a valid WAV file") from error
-    if frame_rate <= 0 or frames <= 0 or channels not in (1, 2) or sample_width <= 0:
-        raise ValueError("Reference WAV has invalid audio metadata")
-    return frames / frame_rate
-
-
 def normalize_reference_audio(reference: bytes, filename: str) -> bytes:
     if reference.startswith(b"RIFF") and reference[8:12] == b"WAVE":
         duration = validate_wav(reference)
@@ -408,16 +388,6 @@ def normalize_reference_audio(reference: bytes, filename: str) -> bytes:
     return normalized
 
 
-def atomic_write(path: Path, content: bytes) -> None:
-    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    try:
-        temporary.write_bytes(content)
-        temporary.chmod(0o600)
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def speech_request_fingerprint(request: SpeechRequest) -> str:
     canonical = json.dumps(
         request.model_dump(mode="json"),
@@ -434,49 +404,6 @@ def idempotency_cache_path(idempotency_key: str) -> Path:
         raise HTTPException(status_code=400, detail="Invalid Idempotency-Key")
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
     return IDEMPOTENCY_DIR / f"{digest}.cache"
-
-
-def load_idempotent_audio(
-    cache_path: Path,
-    request_fingerprint: str,
-) -> bytes | None:
-    if not cache_path.is_file():
-        return None
-    try:
-        content = cache_path.read_bytes()
-        prefix_size = len(IDEMPOTENCY_CACHE_MAGIC) + 4
-        if not content.startswith(IDEMPOTENCY_CACHE_MAGIC) or len(content) <= prefix_size:
-            raise ValueError("invalid cache prefix")
-        manifest_size = struct.unpack(
-            ">I",
-            content[len(IDEMPOTENCY_CACHE_MAGIC) : prefix_size],
-        )[0]
-        manifest_end = prefix_size + manifest_size
-        if manifest_size < 2 or manifest_end >= len(content):
-            raise ValueError("invalid manifest size")
-        manifest = json.loads(content[prefix_size:manifest_end].decode("utf-8"))
-        audio = content[manifest_end:]
-    except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
-        raise HTTPException(
-            status_code=503,
-            detail="Stored speech idempotency result is invalid",
-        ) from error
-    if (
-        not isinstance(manifest, dict)
-        or manifest.get("format") != IDEMPOTENCY_MANIFEST_FORMAT
-        or not isinstance(manifest.get("request_fingerprint"), str)
-    ):
-        raise HTTPException(
-            status_code=503,
-            detail="Stored speech idempotency manifest is incompatible",
-        )
-    if manifest["request_fingerprint"] != request_fingerprint:
-        raise HTTPException(
-            status_code=409,
-            detail="Idempotency-Key was already used for a different request",
-        )
-    refresh_entry(cache_path)
-    return audio
 
 
 def render_idempotent_wav(
@@ -498,10 +425,7 @@ def render_idempotent_wav(
     with idempotency_lock:
         erasure_registry.check(owner_hash, idempotency_key, request.voice)
         erasure_registry.check_cache_owner(cache_path, owner_hash)
-        replay = load_idempotent_audio(
-            cache_path,
-            request_fingerprint,
-        )
+        replay = read_idempotent_audio(cache_path, request_fingerprint, IDEMPOTENCY_CACHE_MAGIC, IDEMPOTENCY_MANIFEST_FORMAT)
         if replay is not None:
             erasure_registry.check(owner_hash, idempotency_key, request.voice)
             return replay, True

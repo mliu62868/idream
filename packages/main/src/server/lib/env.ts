@@ -8,6 +8,7 @@ import {
   DEFAULT_GEN_VIDEO_TIMEOUT_MS,
   crossServiceEnvShape,
   launchScopeSchema,
+  DEFAULT_VOICE_PROVIDER,
 } from "@idream/shared/env";
 import { isPublicHttpsUrl } from "../../lib/public-site-origin";
 import { DB_PROVIDER, DEFAULT_POSTGRES_DATABASE_URL } from "./constants";
@@ -46,11 +47,11 @@ const EnvSchema = z.object({
   GENERATION_ROUTE_EVALUATOR_VERSION: z.string().min(1).default("identity-match-v1"),
   LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).default("info"),
   CHAT_PROVIDER: z.enum(["mock", "pipeline"]).default("mock"),
-  // Tests with no environment remain isolated on mock. Versioned local and
-  // production env templates select Ming through the fish-audio provider slot.
+  // Versioned local and production env templates select Ming through the
+  // fish-audio provider slot; the default itself is shared with the PM2 topology.
   VOICE_PROVIDER: z
     .enum(["mock", "pocket-tts", "fish-audio"])
-    .default("mock"),
+    .default(DEFAULT_VOICE_PROVIDER),
   // Character voice cloning can move independently from the system/default
   // speech route. Once activated, the persisted CharacterVoiceProfile provider
   // remains authoritative for that character's future clips.

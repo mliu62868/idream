@@ -178,6 +178,33 @@ class PocketTtsGatewayTests(unittest.TestCase):
         self.assertEqual(health.status_code, 200)
         self.assertLess(elapsed, 2)
 
+    def test_a_changed_config_starts_degraded_and_existing_keys_still_replay(self):
+        client = TestClient(self.gateway.app)
+        headers = {"Authorization": "Bearer gateway-test-token", "Idempotency-Key": "voice:drift:provider", "X-Idream-Request-Id": "drift", "X-Idream-Attempt-No": "1"}
+        body = {"model": "pocket-tts", "input": "Rendered before the change.", "voice": "alba", "response_format": "wav"}
+        first = client.post("/v1/audio/speech", headers=headers, json=body)
+        self.assertEqual(first.status_code, 200)
+        model = self.gateway.load_runtime_model()
+        rendered = model.generation_calls
+
+        self.gateway.config_fingerprint = lambda: "drifted-config"
+        with TestClient(self.gateway.app) as drifted:
+            health = drifted.get("/health")
+            self.assertEqual(health.status_code, 503)
+            self.assertEqual(health.json()["status"], "degraded")
+            self.assertIn("incompatible", health.json()["error"])
+
+            replay = drifted.post("/v1/audio/speech", headers=headers, json=body)
+            self.assertEqual(replay.status_code, 200)
+            self.assertEqual(replay.headers["x-idream-idempotency-replayed"], "true")
+            self.assertEqual(replay.content, first.content)
+
+            different = drifted.post("/v1/audio/speech", headers=headers, json={**body, "input": "Different words."})
+            self.assertEqual(different.status_code, 409)
+            fresh = drifted.post("/v1/audio/speech", headers={**headers, "Idempotency-Key": "voice:new:provider"}, json=body)
+            self.assertEqual(fresh.status_code, 503)
+            self.assertEqual(model.generation_calls, rendered)
+
     def test_a_retry_after_the_cache_ttl_renders_again_under_the_same_key_and_erasure_still_holds(self):
         from scripts.voice_cache_janitor import sweep_speech_cache
         client = TestClient(self.gateway.app)

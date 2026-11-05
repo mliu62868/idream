@@ -37,6 +37,12 @@ export const launchScopeSchema = z.preprocess(
 );
 export type LaunchScope = z.infer<typeof launchScopeSchema>;
 
+// SPEC: what an unset VOICE_PROVIDER means to every process: no voice runtime. Selecting
+// one is explicit, which is what the versioned env templates and production do.
+// INVARIANT: scripts/runtime-topology.cjs cannot import TypeScript, so it repeats this
+// value and scripts/ecosystem-config.test.cjs fails if the two ever differ.
+export const DEFAULT_VOICE_PROVIDER = "mock";
+
 export const MAIN_LAUNCH_PROVIDER_KEYS = [
   "CHAT_PROVIDER",
   "VOICE_PROVIDER",

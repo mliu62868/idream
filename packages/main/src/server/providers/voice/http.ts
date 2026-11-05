@@ -64,6 +64,19 @@ export async function requestVoiceProvider(input: {
     reader?.releaseLock();
   }
 }
+export function voiceEndpoint(baseUrl: string, suffix: string) {
+  const normalized = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+  return new URL(suffix.replace(/^\//, ""), normalized);
+}
+
+export function voiceFailure(code: string, message: string, retryable: boolean): ProviderResult<never> {
+  return { ok: false, error: { code, message, retryable } };
+}
+
+export function ownedArrayBuffer(bytes: Uint8Array) {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
 export function voiceOwnerHeaders(ownerId?: string): Record<string, string> {
   return ownerId ? { "x-idream-owner-hash": createHash("sha256").update(ownerId).digest("hex") } : {};
 }

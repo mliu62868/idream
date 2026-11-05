@@ -16,16 +16,6 @@ export function voiceArtifactKey(
   return `voice/${digest}${extension}`;
 }
 
-export function voiceChunkIdempotencyKey(
-  idempotencyKey: string,
-  chunkIndex: number,
-  chunkCount: number,
-) {
-  return chunkCount === 1
-    ? idempotencyKey
-    : `${idempotencyKey}:chunk:${chunkIndex + 1}`;
-}
-
 // SPEC: file extension for a synthesized voice artifact, derived from the
 //   provider's content type. Lives beside voiceArtifactKey because the two are
 //   always used together to name one stored object.
