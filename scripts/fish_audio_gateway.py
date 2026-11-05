@@ -26,7 +26,7 @@ from typing import Annotated, Any
 from uuid import uuid4
 
 import numpy as np
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 try:
@@ -683,13 +683,17 @@ async def health() -> JSONResponse:
 
 @app.post("/v1/audio/speech", dependencies=[Depends(authorize)])
 async def synthesize(
+    http_request: Request,
     request: SpeechRequest,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     request_id: str | None = Header(default=None, alias="X-Idream-Request-Id"),
     attempt_no: int | None = Header(default=None, alias="X-Idream-Attempt-No"),
     owner_hash: Annotated[str | None, Header(alias="X-Idream-Owner-Hash")] = None,
 ) -> Response:
-    return await render_lane.admit(speech_response, request, idempotency_key, request_id, attempt_no, owner_hash)
+    return await render_lane.admit(
+        speech_response, request, idempotency_key, request_id, attempt_no, owner_hash,
+        cancelled=http_request.is_disconnected,
+    )
 
 
 def speech_response(

@@ -15,14 +15,20 @@ export async function requestVoiceProvider(input: {
   failureCode: string;
 }): Promise<ProviderResult<Response>> {
   const controller = new AbortController();
+  const caller = input.init.signal ?? undefined;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let timer!: ReturnType<typeof setTimeout>;
+  let onCallerAbort!: () => void;
   const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      reject(new DOMException("Voice response timed out", "AbortError"));
+    const stop = (message: string) => {
+      reject(new DOMException(message, "AbortError"));
       controller.abort();
       void reader?.cancel().catch(() => {});
-    }, input.timeoutMs);
+    };
+    timer = setTimeout(() => stop("Voice response timed out"), input.timeoutMs);
+    onCallerAbort = () => stop("Voice request was cancelled");
+    if (caller?.aborted) onCallerAbort();
+    else caller?.addEventListener("abort", onCallerAbort, { once: true });
   });
   try {
     const response = await Promise.race([
@@ -49,11 +55,12 @@ export async function requestVoiceProvider(input: {
     }) };
   } catch (error) {
     return { ok: false, error: {
-      code: error instanceof Error && error.name === "AbortError" ? "voice_timeout" : "voice_request_failed",
+      code: caller?.aborted ? "voice_cancelled" : error instanceof Error && error.name === "AbortError" ? "voice_timeout" : "voice_request_failed",
       message: error instanceof Error ? error.message : `${input.providerName} request failed`, retryable: true,
     } };
   } finally {
     clearTimeout(timer);
+    caller?.removeEventListener("abort", onCallerAbort);
     reader?.releaseLock();
   }
 }

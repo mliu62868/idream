@@ -20,9 +20,21 @@ export async function recoverExpiredVoiceClips(input: {
       ...(input.cursorId ? { id: { gt: input.cursorId } } : {}),
     },
     orderBy: { id: "asc" },
-    select: { id: true, characterId: true },
+    select: { id: true, characterId: true, attemptNo: true, cancelRequestedAt: true },
   });
   if (!candidate) return { examined: 0, recovered: 0, nextCursorId: null };
+  // The owner of a cancelled Call turn died before it could fail its own row. The turn
+  // is never spoken, and without this the row stays `running` with nobody to resolve it.
+  if (candidate.cancelRequestedAt) {
+    await prisma.voiceClipRequest.updateMany({
+      where: { id: candidate.id, status: "running", attemptNo: candidate.attemptNo },
+      data: {
+        status: "failed", errorCode: "voice_call_delivery_revoked", error: { reason: "call_turn_cancelled" },
+        leaseOwner: null, leaseExpiresAt: null, completedAt: new Date(),
+      },
+    });
+    return { examined: 1, recovered: 0, nextCursorId: candidate.id };
+  }
   // An operator command owns its own atomic receipt. Let its existing takeover
   // protocol resolve a crash rather than completing the clip behind its back.
   const command = await prisma.controlPlaneCommand.findFirst({

@@ -136,9 +136,15 @@ async function cancelUtterance(userId: string, utterance: VoiceCallUtterance) {
   if (utterance.assistantMessageId && utterance.replyAttempt) await cancelAdmittedChatTurn(userId, utterance.assistantMessageId, utterance.replyAttempt);
   await requestAsr("DELETE", { userId, conversationId: `call:${utterance.callId}`, requestId: utterance.id }).catch(() => {});
 }
+// SPEC: cancelling a spoken turn also flags its running clip request. The flag releases
+//   the user's budget turn now, and the owner's next heartbeat aborts the provider
+//   request, even when another process handled this control. The row stays `running`
+//   because a render that does return must still leave its usage fact at commit.
 async function markPendingCancelled(tx: Prisma.TransactionClient, callId: string) {
   const pending = await tx.voiceCallUtterance.findMany({ where: { callId, status: { in: ["transcribing", "linked"] } } });
   await tx.voiceCallUtterance.updateMany({ where: { id: { in: pending.map(u => u.id) }, settledAt: null }, data: { status: "cancelled" } });
+  const requests = pending.flatMap(u => u.voiceRequestId ? [u.voiceRequestId] : []);
+  if (requests.length) await tx.voiceClipRequest.updateMany({ where: { id: { in: requests }, status: "running" }, data: { cancelRequestedAt: new Date() } });
   return pending;
 }
 // Missing heartbeat never adds unobserved connected time. The hard deadline
@@ -251,7 +257,7 @@ async function submitUtterance(call: VoiceCall, token: string | null, id: string
   return { utteranceId: id, status: result.status,
     retryAfterMs: result.retryAfterMs };
 }
-async function speakUtterance(auth: AuthCtx, call: VoiceCall, token: string | null, id: string) {
+async function speakUtterance(auth: AuthCtx, call: VoiceCall, token: string | null, id: string, signal: AbortSignal) {
   const utterance = await prisma.voiceCallUtterance.findFirst({ where: { id, callId: call.id } });
   if (!utterance?.assistantMessageId || utterance.status === "cancelled") throw Errors.conflict("This spoken turn is unavailable");
   if (!leaseIsLive(call, token) || call.status !== "active") throw Errors.gone("Call is no longer active");
@@ -269,7 +275,7 @@ async function speakUtterance(auth: AuthCtx, call: VoiceCall, token: string | nu
     leaseToken: token!,
     providerPayload: pinnedVoiceProviderPayloadSchema.parse(call.providerPayload),
     billingAuthority: fingerprint => ({ ...terms, requestFingerprint: fingerprint, intent: onlyMinutes ? "prewarm" : "play", maxCostDreamcoins: onlyMinutes ? 0 : terms.overflowCostDreamcoins }),
-  });
+  }, signal);
 }
 /** Dispatch before Chat's JSON reader: uploads preserve their binary contract. */
 export async function routeVoiceCall(request: Request, path: string[], userId: string): Promise<Response | null> {
@@ -303,7 +309,7 @@ export async function routeVoiceCall(request: Request, path: string[], userId: s
   if (path[4] === "utterances" && path[5]) {
     const id = z.uuid().parse(path[5]);
     if (path.length === 7 && path[6] === "voice" && request.method === "POST") {
-      const result = await speakUtterance(auth, call, token, id);
+      const result = await speakUtterance(auth, call, token, id, request.signal);
       return ok(result.value, { status: result.kind === "created" ? 201 : 200 });
     }
     if (path.length === 6 && ["POST", "GET"].includes(request.method)) return reply(await submitUtterance(call, token, id, request.method === "POST" ? await readVoiceUpload(request) : undefined));

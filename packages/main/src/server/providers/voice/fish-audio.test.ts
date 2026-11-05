@@ -33,6 +33,19 @@ describe("FishAudioVoiceModel", () => {
     } finally { clearTimeout(timer); if (!cancelled.mock.calls.length) streamController.close(); }
   });
 
+  it("closes the gateway connection as soon as its caller aborts, and reports that as a cancellation", async () => {
+    const connection = new AbortController();
+    let closed = false;
+    const voice = new FishAudioVoiceModel({ baseUrl: "http://127.0.0.1:8062/v1", model: "fish-audio", language: "auto",
+      fetchImpl: (_endpoint, init) => new Promise<Response>((_, reject) => {
+        init!.signal!.addEventListener("abort", () => { closed = true; reject(new DOMException("Closed", "AbortError")); });
+      }) });
+    const pending = voice.synthesize({ requestId: "queued", attemptNo: 1, idempotencyKey: "queued", text: "A reply.", signal: connection.signal });
+    connection.abort();
+    expect(await pending).toMatchObject({ ok: false, error: { code: "voice_cancelled", retryable: true } });
+    expect(closed).toBe(true);
+  });
+
   it("reports only the delivery controls applied by the resident gateway", async () => {
     const fetchMock = vi.fn(async () => new Response(wavBytes(1_000), { headers: { "content-type": "audio/wav" } }));
     const voice = new FishAudioVoiceModel({ baseUrl: "http://127.0.0.1:8062/v1", model: "fish-audio", language: "auto", fetchImpl: fetchMock });

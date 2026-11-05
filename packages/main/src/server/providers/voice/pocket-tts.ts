@@ -102,12 +102,14 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     attemptNo?: number;
     idempotencyKey?: string;
     scene?: Parameters<VoiceClipPort["synthesize"]>[0]["scene"];
+    signal?: AbortSignal;
   }) {
     const text = input.text.trim();
     if (!text) return pocketFailure("voice_input_empty", "Voice input is empty", false);
     if (text.length > this.maxInputChars) return pocketFailure("voice_input_too_long", `Voice input exceeds ${this.maxInputChars} characters; no text was truncated`, false);
     const response = await this.request(this.speechEndpoint, {
       method: "POST",
+      signal: input.signal,
       headers: {
         ...this.jsonHeaders(),
         ...voiceOwnerHeaders(input.ownerId),

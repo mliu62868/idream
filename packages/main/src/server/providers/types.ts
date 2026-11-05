@@ -70,6 +70,9 @@ export interface VoiceClipPort {
       emotionalBeat: string | null;
       unresolvedThreads: string[];
     } | null;
+    // Aborting closes the request. A gateway drops a render it has not started; one
+    // already running finishes and lands in its idempotency cache.
+    signal?: AbortSignal;
     // SPEC: synthesized audio, NOT a stored blob key. Naming and persistence are
     //   the caller's; an adapter that also wrote the blob forced all four of them
     //   to re-implement `voiceArtifactKey` + `putPrivate` + duration accounting,

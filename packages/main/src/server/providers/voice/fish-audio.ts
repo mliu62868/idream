@@ -214,12 +214,14 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     requestId?: string;
     attemptNo?: number;
     idempotencyKey?: string;
+    signal?: AbortSignal;
   }) {
     const text = input.text.trim();
     if (!text) return fishFailure("voice_input_empty", "Voice input is empty", false);
     if (text.length > this.maxInputChars) return fishFailure("voice_input_too_long", `Voice input exceeds ${this.maxInputChars} characters; no text was truncated`, false);
     const response = await this.request(this.speechEndpoint, {
       method: "POST",
+      signal: input.signal,
       headers: {
         ...this.jsonHeaders(),
         ...voiceOwnerHeaders(input.ownerId),

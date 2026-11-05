@@ -16,6 +16,7 @@ from unittest.mock import patch
 import wave
 from pathlib import Path
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 import numpy as np
 
@@ -215,6 +216,71 @@ class FishAudioGatewayTests(unittest.TestCase):
             lane.pending = 0
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.headers["retry-after"], "5")
+
+    def test_lane_drops_a_queued_render_whose_client_hung_up(self):
+        from scripts.voice_render_lane import RenderLane
+        lane, release, rendered = RenderLane(max_pending=4), threading.Event(), []
+
+        async def scenario():
+            running = asyncio.ensure_future(lane.admit(lambda: release.wait(5)))
+            await asyncio.sleep(0.05)
+            hung_up = asyncio.Event()
+
+            async def cancelled():
+                return hung_up.is_set()
+
+            queued = asyncio.ensure_future(lane.admit(lambda: rendered.append("queued"), cancelled=cancelled))
+            await asyncio.sleep(0.05)
+            hung_up.set()
+            with self.assertRaises(HTTPException) as dropped:
+                await queued
+            self.assertEqual(dropped.exception.status_code, 499)
+            # The slot comes back while the current render is still running.
+            self.assertEqual(lane.pending, 1)
+            release.set()
+            await running
+
+        asyncio.run(scenario())
+        lane.executor.submit(lambda: None).result(5)
+        self.assertEqual(rendered, [])
+
+    def test_lane_refuses_a_caller_that_already_hung_up_without_rendering(self):
+        from scripts.voice_render_lane import RenderLane
+        lane, rendered = RenderLane(max_pending=4), []
+
+        async def cancelled():
+            return True
+
+        async def scenario():
+            with self.assertRaises(HTTPException) as dropped:
+                await lane.admit(lambda: rendered.append("late"), cancelled=cancelled)
+            self.assertEqual(dropped.exception.status_code, 499)
+
+        asyncio.run(scenario())
+        lane.executor.submit(lambda: None).result(5)
+        self.assertEqual(rendered, [])
+
+    def test_lane_lets_a_started_render_finish_after_its_client_hangs_up(self):
+        from scripts.voice_render_lane import RenderLane
+        lane, started, release = RenderLane(max_pending=4), threading.Event(), threading.Event()
+
+        def render():
+            started.set()
+            release.wait(5)
+            return "cached"
+
+        async def cancelled():
+            return started.is_set()
+
+        async def scenario():
+            finishing = asyncio.ensure_future(lane.admit(render, cancelled=cancelled))
+            while not started.is_set():
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.3)
+            release.set()
+            self.assertEqual(await finishing, "cached")
+
+        asyncio.run(scenario())
 
     def test_model_loading_and_synthesis_run_on_the_same_thread(self):
         calls = {}

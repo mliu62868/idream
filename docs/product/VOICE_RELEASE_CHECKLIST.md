@@ -50,6 +50,7 @@
 - 同一用户的活跃Call和控制tab有唯一租约；静音、interrupt、断网与resume不能由旧tab抢占或重复提交utterance。
 - 录音转写、Chat回复和TTS分别绑定精确Turn/attempt；只有已发送且未被替换的回复可成为通话声音。
 - 停止、断开、超时、预算或时长到限时终止新接纳，处理中请求收敛；重连不把已经失败/取消的语音轮自动变成新付费请求。
+- interrupt 后下一轮不等待被取消的渲染；排队中的渲染被丢弃且不计费。已在模型上运行的渲染无法中止，只占用网关至其结束。
 - 结束后持久状态、实际连接/音频时长与唯一结算可刷新读取。连接时间不当TTS用量，生成失败不虚增交付；Call复用Clip账务不产生第二次消费。
 
 具体Call状态、lease与恢复由 [Voice Call实现](../../packages/main/src/server/modules/chat/voice-call.ts) 承载。

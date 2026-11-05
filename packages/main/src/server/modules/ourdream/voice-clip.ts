@@ -114,6 +114,14 @@ const VOICE_CLIP_CACHE_VERSION = 8;
 // Each poll is a transaction that locks the user, session and turn rows, and renders
 // take seconds. At 25ms one waiter issued about 11k write transactions per render.
 const VOICE_CLIP_POLL_MS = 500;
+// SPEC: the lease proves an owner is alive; it says nothing about how long a render
+//   may take. It used to be the whole provider timeout + 30s, so a dead owner held
+//   the user's budget turn, and their other Plays, for up to 270s.
+// INVARIANT: three missed beats before takeover, so one slow database round trip
+//   cannot duplicate a live owner's render. Same-key replay makes a wrong takeover
+//   wasteful rather than unsafe.
+const VOICE_CLIP_LEASE_MS = 30_000;
+const VOICE_CLIP_HEARTBEAT_MS = 10_000;
 
 type VoiceCharacter = {
   id: string;
@@ -382,7 +390,9 @@ export type VoiceClipResult = ReturnType<typeof voiceClipResponse> | ReturnType<
 // Both playback and Call cross this interface with a resolved actor and input.
 // HTTP decoding/encoding stays at their routes; reply ownership, accepted price,
 // provider identity, leases and atomic delivery/settlement stay here.
-export async function createVoiceClip(auth: AuthCtx, bodyInput: unknown, deps: VoiceClipDependencies, authority?: VoiceClipExecutionAuthority): Promise<VoiceClipResult> {
+// `signal` is the caller's HTTP connection. Nobody is left to hear the clip once it
+// aborts, so work that has not reached the provider stops and is not charged.
+export async function createVoiceClip(auth: AuthCtx, bodyInput: unknown, deps: VoiceClipDependencies, authority?: VoiceClipExecutionAuthority, signal?: AbortSignal): Promise<VoiceClipResult> {
   const input = await resolveVoiceClipInput(auth, bodyInput);
   const { user, body, synthesisPayload, replyAttempt } = input;
   // A Call's accepted utterance keeps its original reply version even when a
@@ -525,6 +535,7 @@ export async function createVoiceClip(auth: AuthCtx, bodyInput: unknown, deps: V
     billingAuthority,
     providerPayload: proposedProviderPayload,
     callAuthority: authority,
+    signal,
   });
   if (claim.kind === "replay") {
     return replayVoiceClip(claim.request, claim.asset, synthesisPayload, authority);
@@ -541,6 +552,7 @@ export async function createVoiceClip(auth: AuthCtx, bodyInput: unknown, deps: V
     prewarming: claimedSynthesisPayload.intent === "prewarm",
     entitlements,
     overflowCost,
+    signal,
   });
 }
 
@@ -691,10 +703,8 @@ export async function reclaimExpiredVoiceClip(input: {
     data: {
       attemptNo: existing.attemptNo + 1,
       leaseOwner,
-      leaseExpiresAt: new Date(
-        claimedAt.getTime() +
-          voiceClipLeaseMs(providerPayload.data.providerKey),
-      ),
+      leaseExpiresAt: new Date(claimedAt.getTime() + VOICE_CLIP_LEASE_MS),
+      cancelRequestedAt: null,
       mediaAssetId: null,
       errorCode: null,
       error: Prisma.DbNull,
@@ -745,7 +755,7 @@ export async function reclaimExpiredVoiceClip(input: {
   };
 }
 
-async function executeOwnedVoiceClaim(input: {
+type OwnedVoiceClaimInput = {
   readonly claim: Extract<VoiceRequestClaim, { kind: "owner" }>;
   readonly user: { readonly id: string };
   readonly character: VoiceCharacter;
@@ -755,7 +765,59 @@ async function executeOwnedVoiceClaim(input: {
   readonly overflowCost: number;
   readonly onSuccessCommit?: VoiceClipSuccessCommit;
   readonly voiceProvider?: VoiceClipPort;
-}): Promise<VoiceClipResult> {
+  readonly signal?: AbortSignal;
+};
+
+// Marks the stop as ours; any other error raised during an abort keeps its meaning.
+class VoiceExecutionStopped extends Error {}
+
+// SPEC: the heartbeat runs from claim to terminal state and covers the synthesis,
+//   encoding, upload and commit that follow. A beat that matches nothing means this
+//   owner was replaced or its Call turn was cancelled, possibly from another process,
+//   so it aborts the provider request instead of finishing a render nobody wants.
+// INTENT: a failed beat proves nothing about the row. The owner keeps working, and if
+//   the outage outlasts the lease a later owner takes over through the normal CAS.
+function holdVoiceLease(claim: Extract<VoiceRequestClaim, { kind: "owner" }>, connection?: AbortSignal) {
+  const revoked = new AbortController();
+  let renewing: Promise<void> | null = null;
+  const timer = setInterval(() => {
+    if (renewing) return;
+    renewing = prisma.voiceClipRequest.updateMany({
+      where: { id: claim.request.id, status: "running", attemptNo: claim.request.attemptNo, leaseOwner: claim.leaseOwner, cancelRequestedAt: null },
+      data: { leaseExpiresAt: new Date(Date.now() + VOICE_CLIP_LEASE_MS) },
+    }).then(({ count }) => {
+      if (count !== 1) revoked.abort();
+    }).catch(error => {
+      logger.warn({ error, voiceClipRequestId: claim.request.id }, "voice lease heartbeat failed");
+    }).finally(() => { renewing = null; });
+  }, VOICE_CLIP_HEARTBEAT_MS);
+  timer.unref?.();
+  return {
+    signal: connection ? AbortSignal.any([connection, revoked.signal]) : revoked.signal,
+    failureCode: () => revoked.signal.aborted ? "voice_call_delivery_revoked" : "voice_client_disconnected",
+    async release() { clearInterval(timer); await renewing; },
+  };
+}
+
+async function executeOwnedVoiceClaim(input: OwnedVoiceClaimInput): Promise<VoiceClipResult> {
+  const lease = holdVoiceLease(input.claim, input.signal);
+  try {
+    return await renderOwnedVoiceClaim({ ...input, signal: lease.signal });
+  } catch (cause) {
+    if (!(cause instanceof VoiceExecutionStopped)) throw cause;
+    // The CAS leaves a row alone once a later owner has taken it over.
+    const code = lease.failureCode();
+    await failOwnedVoiceRequest(input.claim, code, "Stopped before the provider returned audio").catch(error => logger.error(
+      { error, voiceClipRequestId: input.claim.request.id },
+      "stopped voice clip request could not be persisted",
+    ));
+    throw Errors.gone("Voice playback stopped; no audio was delivered or charged", { reason: code });
+  } finally {
+    await lease.release();
+  }
+}
+
+async function renderOwnedVoiceClaim(input: OwnedVoiceClaimInput): Promise<VoiceClipResult> {
   const {
     claim,
     user,
@@ -763,6 +825,7 @@ async function executeOwnedVoiceClaim(input: {
     body,
     prewarming,
     onSuccessCommit,
+    signal,
   } = input;
   const billing = storedVoiceBilling(claim.request);
   const entitlements = billing
@@ -804,6 +867,7 @@ async function executeOwnedVoiceClaim(input: {
     allowanceWindowStartsAt,
     providerKey: providerPayload.providerKey,
     synthesisPayload: body,
+    signal,
   });
   if (budgetDecision.kind === "prewarm_skipped") {
     return voicePrewarmSkipped(claim.request.messageId, "allowance_exhausted");
@@ -830,10 +894,14 @@ async function executeOwnedVoiceClaim(input: {
     providerIdempotencyKey,
     synthesisPayload: body,
   });
+  if (signal?.aborted) throw new VoiceExecutionStopped();
   // A transport exception propagates as-is: the reservation stays pinned, so
   // re-sending the same provider key returns the original synthesis rather than
   // leaving an outcome nobody can resolve. There used to be a catch here that
   // quarantined the request, because one adapter could not be replayed.
+  // INTENT: an abort reaches the gateway as a closed connection, which drops a render
+  // still queued there. One already on MLX cannot be stopped and lands in the gateway
+  // cache, so a retry of this key replays it instead of rendering again.
   const result = await voiceProvider.synthesize({
     ownerId: user.id,
     requestId: claim.request.id,
@@ -845,8 +913,15 @@ async function executeOwnedVoiceClaim(input: {
     tone: providerPayload.tone,
     delivery: providerPayload.delivery,
     scene: body.scene ?? null,
+    signal,
+  }).catch((cause: unknown) => {
+    if (signal?.aborted) throw new VoiceExecutionStopped();
+    throw cause;
   });
+  // A provider that returned audio is an immutable usage fact even after an abort,
+  // so success always continues to the commit, which decides delivery and charge.
   if (!result.ok) {
+    if (signal?.aborted) throw new VoiceExecutionStopped();
     await failOwnedVoiceRequest(claim, result.error.code, result.error);
     throw Errors.internal("Voice synthesis failed", result.error);
   }
@@ -1229,9 +1304,11 @@ async function authorizeVoiceSynthesisTurn(input: {
   allowanceWindowStartsAt?: Date;
   providerKey: z.infer<typeof pinnedVoiceProviderPayloadSchema>["providerKey"];
   synthesisPayload: VoiceClipSynthesisPayload;
+  signal?: AbortSignal;
 }): Promise<Exclude<VoiceSynthesisBudgetDecision, { kind: "wait" }>> {
   const deadline = Date.now() + voiceClipWaitMs(input.providerKey);
   while (Date.now() <= deadline) {
+    if (input.signal?.aborted) throw new VoiceExecutionStopped();
     const now = new Date();
     const decision = await prisma.$transaction(async (tx) => {
       const userActive = await lockUser(tx, input.userId);
@@ -1274,6 +1351,8 @@ async function authorizeVoiceSynthesisTurn(input: {
           status: "running",
           leaseOwner: { not: null },
           leaseExpiresAt: { gt: now },
+          // A cancelled Call turn is doomed; its render must not hold the next one back.
+          cancelRequestedAt: null,
           OR: [
             { startedAt: { lt: owned.startedAt } },
             { startedAt: owned.startedAt, id: { lt: owned.id } },
@@ -1282,19 +1361,7 @@ async function authorizeVoiceSynthesisTurn(input: {
         select: { id: true },
         orderBy: [{ startedAt: "asc" }, { id: "asc" }],
       });
-      if (earlier) {
-        // Waiting for another message must not make this owner's lease appear
-        // abandoned and allow a duplicate synthesis takeover.
-        await tx.voiceClipRequest.update({
-          where: { id: owned.id },
-          data: {
-            leaseExpiresAt: new Date(
-              now.getTime() + voiceClipLeaseMs(input.providerKey),
-            ),
-          },
-        });
-        return { kind: "wait" } as const;
-      }
+      if (earlier) return { kind: "wait" } as const;
 
       const hasCachedClip =
         (await tx.mediaAsset.count({
@@ -1382,6 +1449,7 @@ async function claimVoiceRequest(input: {
   billingAuthority: VoiceClipBillingAuthority;
   providerPayload: z.infer<typeof pinnedVoiceProviderPayloadSchema>;
   callAuthority?: VoiceCallExecutionAuthority;
+  signal?: AbortSignal;
 }): Promise<VoiceRequestClaim> {
   const requestId = voiceRequestId(input.userId, input.messageId, input.replyAttempt);
   const leaseOwner = randomUUID();
@@ -1404,9 +1472,7 @@ async function claimVoiceRequest(input: {
         provider: input.providerPayload.providerKey,
         providerPayload: toInputJson(input.providerPayload),
         leaseOwner,
-        leaseExpiresAt: new Date(
-          now.getTime() + voiceClipLeaseMs(input.providerPayload.providerKey),
-        ),
+        leaseExpiresAt: new Date(now.getTime() + VOICE_CLIP_LEASE_MS),
       },
       });
       if (input.callAuthority) await bindVoiceCallExecution(tx, request, input.synthesisPayload, input.callAuthority);
@@ -1419,6 +1485,7 @@ async function claimVoiceRequest(input: {
 
   const deadline = Date.now() + voiceClipWaitMs(input.providerPayload.providerKey);
   while (Date.now() <= deadline) {
+    if (input.signal?.aborted) throw Errors.gone("Voice playback stopped; no audio was delivered or charged");
     const existing = await prisma.voiceClipRequest.findUniqueOrThrow({
       where: {
         userId_messageId_replyAttempt: {
@@ -1468,9 +1535,6 @@ async function claimVoiceRequest(input: {
     }
 
     const nextLeaseOwner = randomUUID();
-    const pinnedProviderKey = pinnedVoiceProviderPayloadSchema.parse(
-      existing.providerPayload,
-    ).providerKey;
     const existingBilling = storedVoiceBilling(existing);
     const keepExistingBilling = existingBilling &&
       (existingBilling.intent === "play" || input.synthesisPayload.intent === "prewarm");
@@ -1500,9 +1564,8 @@ async function claimVoiceRequest(input: {
         ...(keepExistingBilling || (!existingBilling && input.synthesisPayload.intent === "prewarm")
           ? {} : { billingAuthority: toInputJson(input.billingAuthority) }),
         leaseOwner: nextLeaseOwner,
-        leaseExpiresAt: new Date(
-          claimNow.getTime() + voiceClipLeaseMs(pinnedProviderKey),
-        ),
+        leaseExpiresAt: new Date(claimNow.getTime() + VOICE_CLIP_LEASE_MS),
+        cancelRequestedAt: null,
         mediaAssetId: null,
         errorCode: null,
         error: Prisma.DbNull,
@@ -1736,7 +1799,16 @@ function legacyVoiceRequestId(userId: string, messageId: string) {
   return `voice_clip_request_${hash}`;
 }
 
-function voiceClipLeaseMs(
+// SPEC: how long a second caller waits for the current owner before giving up. A live
+//   owner holds its lease through the whole provider call, so the wait follows that
+//   provider's timeout, not the much shorter lease.
+// INTENT: this used to be a flat `VOICE_CLIP_WAIT_MS = 220_000`, which was SHORTER
+//   than what the fish_audio route could legitimately take: a concurrent request on
+//   that route always timed out first. Deriving it removes the pair of literals that
+//   had to agree.
+// INVARIANT: strictly greater than timeout + lease, so the waiter outlives a live
+//   owner and also the lease of one that died at the last moment.
+function voiceClipWaitMs(
   providerKey: z.infer<typeof pinnedVoiceProviderPayloadSchema>["providerKey"],
 ) {
   const providerTimeout =
@@ -1745,21 +1817,7 @@ function voiceClipLeaseMs(
       : providerKey === "pocket_tts"
         ? env.POCKET_TTS_TIMEOUT_MS
         : 30_000;
-  return providerTimeout + 30_000;
-}
-
-// SPEC: how long a second caller waits for the current lease holder before
-//   giving up, derived from that provider's own lease.
-// INTENT: this used to be a flat `VOICE_CLIP_WAIT_MS = 220_000`, which was
-//   SHORTER than the fish_audio lease (FISH_AUDIO_TIMEOUT_MS=240s + 30s = 270s):
-//   a concurrent request on that route always timed out ~50s before the lease it
-//   was waiting on could possibly expire. Deriving it removes the pair of
-//   literals that had to agree.
-// INVARIANT: strictly greater than the lease, so the waiter outlives it.
-function voiceClipWaitMs(
-  providerKey: z.infer<typeof pinnedVoiceProviderPayloadSchema>["providerKey"],
-) {
-  return voiceClipLeaseMs(providerKey) + 10_000;
+  return providerTimeout + VOICE_CLIP_LEASE_MS + 10_000;
 }
 
 function resolvePinnedVoiceProvider(
