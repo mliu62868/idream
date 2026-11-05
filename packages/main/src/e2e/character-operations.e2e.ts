@@ -96,6 +96,21 @@ test.describe.serial("Character operations stay one click", () => {
     await drainTargetAdminCommand(prisma, { commandId: command.id, workerId: `playwright-bulk-${suffix}`, leaseMs: 30_000 });
     await expect.poll(() => prisma.characterServing.count({ where: { state: "live" } }), { timeout: 60_000 }).toBe(live - 1);
     await shot(page, "bulk-result");
+
+    // Resume the same way. This also hands the seeded Character back to later specs.
+    await page.goto(`${adminBaseURL()}/admin/characters?servingState=paused`);
+    await page.getByRole("checkbox", { name: /^Select (?!this page)/ }).first().check();
+    const resumesBefore = await prisma.controlPlaneCommand.count({ where: { commandType: "character.serving.resume" } });
+    const resumeBulk = page.getByRole("region", { name: "Bulk actions" });
+    await resumeBulk.getByRole("button", { name: "Resume", exact: true }).click();
+    await page.getByRole("dialog").getByRole("button").last().click();
+    await expect.poll(() => prisma.controlPlaneCommand.count({ where: { commandType: "character.serving.resume" } })).toBe(resumesBefore + 1);
+    const resume = await prisma.controlPlaneCommand.findFirstOrThrow({
+      where: { commandType: "character.serving.resume" },
+      orderBy: { createdAt: "desc" },
+    });
+    await drainTargetAdminCommand(prisma, { commandId: resume.id, workerId: `playwright-bulk-resume-${suffix}`, leaseMs: 30_000 });
+    await expect.poll(() => prisma.characterServing.count({ where: { state: "live" } }), { timeout: 60_000 }).toBe(live);
   });
 
   test("compares live Characters on the board and adds one to Featured", async ({ page }) => {
