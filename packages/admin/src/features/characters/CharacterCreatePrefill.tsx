@@ -131,7 +131,7 @@ export function CharacterCreatePrefill({
           placeholder={t("A 30-year-old night-shift nurse who is dry, tired and secretly romantic")}
           value={seed}
         />
-        <WorkspaceButton disabled={pending || seed.trim().length < 3} onClick={() => void generate()} tone="primary">
+        <WorkspaceButton className="shrink-0 whitespace-nowrap" disabled={pending || seed.trim().length < 3} onClick={() => void generate()} tone="primary">
           {pending ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" /> : <Sparkles aria-hidden="true" className="h-4 w-4" />}
           {t(pending ? "Drafting…" : "Fill with AI")}
         </WorkspaceButton>

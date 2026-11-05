@@ -180,7 +180,7 @@ export function DataTable({
       <div
         aria-busy={loading || undefined}
         aria-label={t("{caption} scrollable table", { caption: translatedCaption })}
-        className={`overflow-x-auto rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] ${stickyHeader ? "max-h-[70vh] overflow-y-auto" : ""}`}
+        className={`relative overflow-x-auto rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] ${stickyHeader ? "max-h-[70vh] overflow-y-auto" : ""}`}
         role="region"
         tabIndex={0}
       >

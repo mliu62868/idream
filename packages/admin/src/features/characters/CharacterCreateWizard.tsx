@@ -56,6 +56,15 @@ import {
   type CharacterDraftSuggestion,
 } from "./character-create-prefill";
 
+// INVARIANT: 目录增删一个值，这两张表就编译不过；选项文案不能退回裸枚举值。
+const GENDER_LABELS: Record<(typeof GENDERS)[number], string> = { female: "Female", male: "Male", trans: "Trans" };
+const STYLE_LABELS: Record<(typeof CHARACTER_STYLES)[number], string> = {
+  realistic: "Realistic",
+  anime: "Anime",
+  hybrid: "Hybrid",
+  other: "Other",
+};
+
 type Draft = CharacterProjectDraft;
 type SaveState =
   | "Not saved"
@@ -1267,7 +1276,7 @@ type StepProps = {
 
 // SPEC: 基本信息与开场白必填；其余角色细节只是一段可选 Markdown。
 function PersonaStep({ draft, errors, update }: StepProps) {
-  const { t, value: enumLabel } = useAdminI18n();
+  const { t } = useAdminI18n();
   const set = <K extends keyof Draft["persona"]>(
     field: K,
     value: Draft["persona"][K],
@@ -1300,7 +1309,7 @@ function PersonaStep({ draft, errors, update }: StepProps) {
             }
             value={draft.persona.gender}
           >
-            {GENDERS.map((gender) => <option key={gender} value={gender}>{enumLabel(gender)}</option>)}
+            {GENDERS.map((gender) => <option key={gender} value={gender}>{t(GENDER_LABELS[gender])}</option>)}
           </select>
         </label>
       </Grid>
@@ -1343,7 +1352,7 @@ function PersonaStep({ draft, errors, update }: StepProps) {
 }
 
 function VisualStep({ draft, errors, update }: StepProps) {
-  const { t, value: enumLabel } = useAdminI18n();
+  const { t } = useAdminI18n();
   // Editing must retain the trailing space/newline needed to type the next word/trait.
   const [stableTraitsText, setStableTraitsText] = useState(() => draft.visualDirection.stableTraits.join("\n"));
   const set = <K extends keyof Draft["visualDirection"]>(
@@ -1385,7 +1394,7 @@ function VisualStep({ draft, errors, update }: StepProps) {
           }
           value={draft.visualDirection.style}
         >
-          {CHARACTER_STYLES.map((style) => <option key={style} value={style}>{enumLabel(style)}</option>)}
+          {CHARACTER_STYLES.map((style) => <option key={style} value={style}>{t(STYLE_LABELS[style])}</option>)}
         </select>
       </label>
       <Area

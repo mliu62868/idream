@@ -2388,7 +2388,17 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       where: { characterId: wizardCharacterId },
     });
 
+    // The handoff is one click, records facts only, and never creates a Release.
+    const releasesBeforeHandoff = await prisma.characterRelease.count({ where: { projectId: releaseProject.id } });
+    await openCharacterTab(page, "assets");
+    await page.getByRole("button", { name: "Mark ready to publish", exact: true }).click();
+    await expect
+      .poll(() => prisma.characterHandoff.count({ where: { characterId: releaseProject.characterId } }))
+      .toBe(1);
+    expect(await prisma.characterRelease.count({ where: { projectId: releaseProject.id } })).toBe(releasesBeforeHandoff);
+
     await openCharacterTab(page, "release");
+    await expect(page.getByText(/marked this ready to publish/)).toBeVisible();
     await page.getByRole("button", { name: "Publish Character" }).click();
     const proposedRelease = await expect
       .poll(async () =>
@@ -3020,7 +3030,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         name: "Open image route",
       })
       .click();
-    await page.getByText("Official identity and production settings", { exact: true }).click();
+    await page.getByText("Diagnostics and advanced settings", { exact: true }).click();
     await expect(
       page.getByRole("heading", {
         level: 3,
@@ -3035,8 +3045,9 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     if (await availabilitySummary.locator("..").getAttribute("open") === null) {
       await availabilitySummary.click();
     }
-    await page.getByLabel("I confirm this release action").check();
+    // Rollback takes one plain confirmation: no checkbox and nothing to type.
     await page.getByRole("button", { name: "Roll back" }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Roll back" }).click();
     await expect
       .poll(async () =>
         prisma.controlPlaneCommand.findFirst({

@@ -756,7 +756,7 @@ function Field({
 }) {
   const { t } = useAdminI18n();
   return (
-    <label className="grid gap-1 text-xs font-medium text-[var(--ad-text-muted)]">
+    <label className="grid min-w-0 gap-1 text-xs font-medium text-[var(--ad-text-muted)]">
       {t(label)}
       <input
         className="h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)]"
@@ -786,7 +786,7 @@ function Select({
     <label className="grid gap-1 text-xs font-medium text-[var(--ad-text-muted)]">
       {t(label)}
       <select
-        className="h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)]"
+        className="h-11 w-full min-w-0 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)]"
         onChange={(event) => onChange(event.target.value)}
         value={value}
       >
