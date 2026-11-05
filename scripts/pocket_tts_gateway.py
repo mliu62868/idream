@@ -66,6 +66,8 @@ MAX_REFERENCE_BYTES = 15 * 1024 * 1024
 MAX_REFERENCE_SECONDS = 30
 MIN_REFERENCE_BYTES = 1_024
 MAX_INPUT_CHARS = 2_000
+# Must match Main's VOICE_MAX_INPUT_CHARS. Pocket splits long text into sentences itself.
+MAX_SPEECH_CHARS = 12_000
 ENGLISH_CATALOG_VOICES = (
     "cosette",
     "marius",
@@ -122,7 +124,7 @@ erasure_registry = VoiceErasureRegistry(IDEMPOTENCY_DIR, IDEMPOTENCY_CACHE_MAGIC
 
 class SpeechRequest(BaseModel):
     model: str = Field(default=MODEL_ID)
-    input: str = Field(min_length=1, max_length=MAX_INPUT_CHARS)
+    input: str = Field(min_length=1, max_length=MAX_SPEECH_CHARS)
     voice: str = Field(default=DEFAULT_VOICE, min_length=1, max_length=160)
     response_format: str = Field(default="wav")
 

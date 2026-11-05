@@ -23,18 +23,18 @@ import { providers } from "@/server/providers";
 import type { VoiceClipPort } from "@/server/providers/types";
 import { createVoiceClipPortForKey } from "@/server/providers/voice/factory";
 import { audioFileExtension, voiceArtifactKey, voiceProviderIdempotencyKey } from "@/server/providers/voice/idempotency";
+import { VOICE_MAX_INPUT_CHARS, voiceSpeechText, voiceSynthesisTimeoutMs } from "@/server/providers/voice/speech-text";
 import { encodeVoiceClipMp3 } from "@/server/providers/voice/transcode";
 import { acceptVoiceClipQuote, signVoiceClipQuote } from "./voice-clip-quote";
 import { chatVoiceAuthority } from "@/server/modules/chat/turn-ledger";
 
 // INVARIANT: 只朗读 Main 账本里已发送的回复。sessionId 必填、朗读文本只取 Chat 权威
-// 文本；客户端 text 仅作兼容字段，不进入合成——否则这个接口就是任意文本的 TTS，
-// 能用他人角色（含克隆声音）说任何话。
+// 文本；请求体里的 text 不被读取——否则这个接口就是任意文本的 TTS，能用他人角色
+// （含克隆声音）说任何话。
 const voiceClipSchema = z.object({
   characterId: z.string().min(1),
   messageId: z.string().min(1),
   sessionId: z.string().min(1),
-  text: z.string().trim().max(2_000).optional(),
   intent: z.enum(["play", "prewarm"]).default("play"),
   quoteToken: z.string().min(1).max(8192).nullish(),
 });
@@ -50,7 +50,7 @@ export const voiceExecutionAuthoritySchema = z.discriminatedUnion("kind", [
 export const voiceClipSynthesisPayloadSchema = z
   .object({
     version: z.literal(1),
-    text: z.string().trim().min(1).max(2_000),
+    text: z.string().trim().min(1).max(VOICE_MAX_INPUT_CHARS),
     sessionId: z.string().min(1).nullable(),
     intent: z.enum(["play", "prewarm"]),
     sceneVersion: z.number().int().nonnegative().optional(),
@@ -110,7 +110,13 @@ export const pinnedVoiceProviderPayloadSchema = z
     }
   });
 
-const VOICE_CLIP_CACHE_VERSION = 8;
+// SPEC: 9 marks clips whose text went through voiceSpeechText.
+// INVARIANT: 8 stays replayable. Those requests keep their original words (see
+//   resolveVoiceClipInput), so rendering one again could only reproduce the same audio,
+//   at the cost of a render, and changing its words under the same provider key would
+//   make the gateway refuse it as a different request.
+const VOICE_CLIP_CACHE_VERSION = 9;
+const REPLAYABLE_VOICE_CLIP_VERSIONS: ReadonlySet<unknown> = new Set([8, VOICE_CLIP_CACHE_VERSION]);
 // Each poll is a transaction that locks the user, session and turn rows, and renders
 // take seconds. At 25ms one waiter issued about 11k write transactions per render.
 const VOICE_CLIP_POLL_MS = 500;
@@ -189,11 +195,15 @@ async function resolveVoiceClipInput(auth: AuthCtx, input: unknown) {
   if (messageAuthority.characterId !== body.characterId) {
     throw Errors.conflict("Voice message belongs to another Character");
   }
-  const authoritativeText = messageAuthority.text;
+  const authoritativeText = messageAuthority.text.trim();
   const authoritativeScene = messageAuthority.scene ?? null;
+  const spokenText = voiceSpeechText(authoritativeText);
+  if (spokenText.length > VOICE_MAX_INPUT_CHARS) {
+    throw Errors.badRequest("This reply is too long to play as a voice clip", { reason: "voice_text_too_long", limit: VOICE_MAX_INPUT_CHARS });
+  }
   const synthesisPayload = voiceClipSynthesisPayloadSchema.parse({
     version: 1,
-    text: authoritativeText,
+    text: spokenText,
     sessionId: body.sessionId,
     intent: body.intent,
     sceneVersion: messageAuthority.sceneVersion ?? 0,
@@ -211,9 +221,19 @@ async function resolveVoiceClipInput(auth: AuthCtx, input: unknown) {
   };
   const replyAttempt = z.number().int().positive().parse(messageAuthority.attempt);
   const requestFingerprint = canonicalJsonHash({
+    ...legacyFingerprintInput, text: spokenText, schemaVersion: "voice-clip-request-v2", replyAttempt,
+  });
+  // A request made before narration was left out was fingerprinted over the raw reply.
+  // It keeps those words: the gateway's key is already bound to them.
+  const rawRequestFingerprint = canonicalJsonHash({
     ...legacyFingerprintInput, schemaVersion: "voice-clip-request-v2", replyAttempt,
   });
-  return { user, body, synthesisPayload, replyAttempt, requestFingerprint, legacyRequestFingerprint: canonicalJsonHash(legacyFingerprintInput) };
+  return { user, body, synthesisPayload, replyAttempt, requestFingerprint, rawRequestFingerprint, authoritativeText, legacyRequestFingerprint: canonicalJsonHash(legacyFingerprintInput) };
+}
+
+function pinnedSynthesisPayload(input: Awaited<ReturnType<typeof resolveVoiceClipInput>>, existing: Pick<VoiceClipRequest, "requestFingerprint"> | null) {
+  const keepsRawText = existing !== null && existing.requestFingerprint !== input.requestFingerprint;
+  return keepsRawText ? { ...input.synthesisPayload, text: input.authoritativeText } : input.synthesisPayload;
 }
 
 async function existingVoiceRequest(input: Awaited<ReturnType<typeof resolveVoiceClipInput>>) {
@@ -225,7 +245,8 @@ async function existingVoiceRequest(input: Awaited<ReturnType<typeof resolveVoic
   // and immutable fingerprint. New requests always pin the reply attempt.
   const matchesLegacy = existing?.id === legacyVoiceRequestId(input.user.id, input.body.messageId) &&
     existing.requestFingerprint === input.legacyRequestFingerprint;
-  if (existing && ((!matchesLegacy && existing.requestFingerprint !== input.requestFingerprint) || existing.characterId !== input.body.characterId)) {
+  const matchesCurrent = existing?.requestFingerprint === input.requestFingerprint || existing?.requestFingerprint === input.rawRequestFingerprint;
+  if (existing && ((!matchesLegacy && !matchesCurrent) || existing.characterId !== input.body.characterId)) {
     throw Errors.conflict("Voice message id is bound to a different synthesis request", { requestId: existing.id });
   }
   if (existing?.errorCode === "provider_outcome_unknown") {
@@ -401,13 +422,14 @@ export type VoiceClipResult = ReturnType<typeof voiceClipResponse> | ReturnType<
 // aborts, so work that has not reached the provider stops and is not charged.
 export async function createVoiceClip(auth: AuthCtx, bodyInput: unknown, deps: VoiceClipDependencies, authority?: VoiceClipExecutionAuthority, signal?: AbortSignal): Promise<VoiceClipResult> {
   const input = await resolveVoiceClipInput(auth, bodyInput);
-  const { user, body, synthesisPayload, replyAttempt } = input;
+  const { user, body, replyAttempt } = input;
   // A Call's accepted utterance keeps its original reply version even when a
   // different tab completes a regeneration during the Call's budget lookup.
   if (authority && authority.replyAttempt !== replyAttempt) {
     throw Errors.conflict("This spoken reply changed or is not ready");
   }
   const existing = await existingVoiceRequest(input);
+  const synthesisPayload = pinnedSynthesisPayload(input, existing);
   const requestFingerprint = existing?.requestFingerprint ?? input.requestFingerprint;
   if (authority && existing && canonicalJsonHash(existing.providerPayload) !== canonicalJsonHash(authority.providerPayload)) {
     throw Errors.conflict("This reply already has a different pinned voice identity");
@@ -1840,7 +1862,8 @@ function voiceClipWaitMs(
       : providerKey === "pocket_tts"
         ? env.POCKET_TTS_TIMEOUT_MS
         : 30_000;
-  return providerTimeout + VOICE_CLIP_LEASE_MS + 10_000;
+  // The clip being waited for may be as long as any clip can be.
+  return voiceSynthesisTimeoutMs(providerTimeout, VOICE_MAX_INPUT_CHARS) + VOICE_CLIP_LEASE_MS + 10_000;
 }
 
 function resolvePinnedVoiceProvider(
@@ -1905,7 +1928,7 @@ function voiceContentType(key: string) {
 }
 
 function isCurrentVoiceClip(asset: { metadata: Prisma.JsonValue }) {
-  return jsonRecord(asset.metadata).cacheVersion === VOICE_CLIP_CACHE_VERSION;
+  return REPLAYABLE_VOICE_CLIP_VERSIONS.has(jsonRecord(asset.metadata).cacheVersion);
 }
 
 function jsonRecord(value: Prisma.JsonValue) {
@@ -1965,13 +1988,19 @@ async function lockVoiceReplyAuthority(
   const { session, group, turn } = scope;
   if (session.sessionId !== payload.sessionId || session.status !== "active" || (group && group.status !== "active")) return false;
   if (opening) {
-    return request.replyAttempt === 1 && session.openingMessage?.trim() === payload.text &&
+    return request.replyAttempt === 1 && payloadSpeaksReply(payload, session.openingMessage ?? "") &&
       (payload.sceneVersion ?? 0) === 0 && (payload.scene ?? null) === null;
   }
   return Boolean(turn && turn.assistantMessageId === request.messageId &&
     turn.assistantStatus === "sent" && turn.attempt === request.replyAttempt &&
-    turn.assistantContent.trim() === payload.text && turn.sceneVersion === (payload.sceneVersion ?? 0) &&
+    payloadSpeaksReply(payload, turn.assistantContent) && turn.sceneVersion === (payload.sceneVersion ?? 0) &&
     canonicalJsonHash(turn.scene ?? null) === canonicalJsonHash(payload.scene ?? null));
+}
+
+// A payload holds either the reply's spoken form or, for an earlier request, its raw form.
+function payloadSpeaksReply(payload: VoiceClipSynthesisPayload, reply: string) {
+  const raw = reply.trim();
+  return payload.text === raw || payload.text === voiceSpeechText(raw);
 }
 
 function isUniqueConstraintError(error: unknown) {

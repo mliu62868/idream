@@ -22,7 +22,8 @@
 4. 接受时固定回复、provider、voice/profile version、delivery和账务条款；重试、租约接管和运营默认变化不得替换它们，费用不超接受上限。
 5. Main持久保存产物、交付与唯一usage/ledger fact后才播放；重复点击和刷新重播复用结果，不再次消费。
 6. provider、编码/存储失败或响应丢失须有明确状态与恢复；仅在provider可安全重放时接管。旧owner、旧reply或跨账号迟到结果不覆盖新事实。
-7. 消息内Play/loading/stop与错误/费用状态可用；余额、能力或权益不足由服务端给出准确恢复入口，已有合法交付仍可重播。
+7. 单条Clip最多朗读12000字符（覆盖最长的Story回复），超长时报价和合成都明确拒绝；价格不随长度变化，计划分钟按实际音频时长计入。`*动作*` 叙述不朗读。
+8. 消息内Play/loading/stop与错误/费用状态可用；余额、能力或权益不足由服务端给出准确恢复入口，已有合法交付仍可重播。
 
 具体输入、single-flight、接受报价与provider恢复协议由 [Voice Clip实现](../../packages/main/src/server/modules/ourdream/voice-clip.ts) 与 [报价实现](../../packages/main/src/server/modules/ourdream/voice-clip-quote.ts) 承载，本文不维护第二套API字段表。
 

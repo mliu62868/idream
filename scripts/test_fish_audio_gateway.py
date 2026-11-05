@@ -217,6 +217,28 @@ class FishAudioGatewayTests(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.headers["retry-after"], "5")
 
+    def test_speech_accepts_the_longest_reply_main_will_send_and_nothing_longer(self):
+        gateway = self.gateway
+        self.assertEqual(len(gateway.SpeechRequest(input="x" * 12_000).input), 12_000)
+        with self.assertRaises(ValueError):
+            gateway.SpeechRequest(input="x" * 12_001)
+
+    def test_breeze_keeps_every_word_when_a_long_reply_is_split_at_sentence_ends(self):
+        text = " ".join(f"Sentence number {index} ends right here." for index in range(400))
+        pieces = self.gateway.split_for_breeze(text)
+        self.assertGreater(len(pieces), 1)
+        self.assertTrue(all(len(piece) <= self.gateway.BREEZE_INPUT_CHARS for piece in pieces))
+        self.assertTrue(all(piece.endswith(".") for piece in pieces))
+        self.assertEqual(" ".join(pieces), text)
+
+    def test_breeze_keeps_measured_input_whole_and_hard_cuts_only_a_run_on_sentence(self):
+        short = "A reply that fits. " * 100
+        self.assertEqual(self.gateway.split_for_breeze(short.strip()), [short.strip()])
+        run_on = "x" * 5_000
+        pieces = self.gateway.split_for_breeze(run_on)
+        self.assertEqual("".join(pieces), run_on)
+        self.assertTrue(all(len(piece) <= self.gateway.BREEZE_INPUT_CHARS for piece in pieces))
+
     def test_lane_drops_a_queued_render_whose_client_hung_up(self):
         from scripts.voice_render_lane import RenderLane
         lane, release, rendered = RenderLane(max_pending=4), threading.Event(), []
@@ -694,6 +716,13 @@ class MingRuntimeTests(unittest.TestCase):
         text = ("A complete sentence must survive. " * 70)[:2000]
         fragments = self.runtime.split_for_budget(text, lambda value: list(value), 160)
         self.assertGreater(len(fragments), 1)
+        self.assertEqual(" ".join(fragments), " ".join(text.split()))
+        for fragment in fragments:
+            self.assertLess(len(fragment) + 160 + 96, 513)
+
+    def test_the_longest_voiced_reply_is_split_without_losing_content(self):
+        text = ("A complete sentence must survive. " * 400)[:12_000]
+        fragments = self.runtime.split_for_budget(text, lambda value: list(value), 160)
         self.assertEqual(" ".join(fragments), " ".join(text.split()))
         for fragment in fragments:
             self.assertLess(len(fragment) + 160 + 96, 513)

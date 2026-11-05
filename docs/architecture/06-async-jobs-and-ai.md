@@ -85,6 +85,7 @@ Request admitted
 - Main 持有产品策略、moderation、entitlement、ledger、Generation 和交付状态机。
 - Provider adapter 只做协议、超时、错误映射与原始执行证据，不做余额更新。
 - 语音网关在单一专用线程上执行合成（MLX 要求加载与推理同线程），事件循环保持空闲以响应 `/health`；排队超限返回 503 + `Retry-After`。语音不参与 Gen 的设备租约。
+- VoiceClip 单条文本上限 12000 字符，Main 与网关一致；Ming、Pocket 内部切句，Breeze 由网关按句切分后拼接。provider 超时按每 2000 字符一份配置时长线性放大，因此 Fish 上限 24 分钟、Pocket 12 分钟。朗读文本在指纹之前由 `voiceSpeechText` 统一去掉 `*动作*` 叙述；此前的请求保持原文和原 provider key。
 - VoiceClip 租约为 30s，owner 每 10s 心跳，覆盖合成、编码、上传和提交；进程死亡后最多 30s 就不再占用该用户的预算回合。调用方断开、Call 轮次被取消或 owner 被接管时，Main 中止 provider 请求，网关丢弃尚未开始的渲染；已在 MLX 上运行的渲染无法停止，结果进入幂等缓存供同 key 重试。
 - Main 的同步 VoiceClip 和视频后期合成也拥有持久请求/租约与写入证据。账号擦除不能只等待 Gen 的原生生成终态；还须等待 Main 在途私有写入退出、枚举未交付文件，并取得历史 TTS 缓存/alias 的持久擦除 ACK（ADR-17 §6）。语音写入者崩溃不会让擦除永远等待：未登记写入的请求在租约过期后关闭，已登记的写入者等到其持久记录的写入截止时间（约 3 分钟）之后关闭。
 

@@ -85,7 +85,6 @@ const EnvSchema = z.object({
     .min(1)
     .default("Ornith-1.5-35B-A3B-Abliterated-MLX-8bit"),
   PIPELINE_IMAGE_MODEL_DEFAULT: z.string().min(1).default("image-default"),
-  PIPELINE_VOICE_MAX_INPUT_CHARS: z.coerce.number().int().min(1).max(2_000).default(2_000),
   PIPELINE_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
   // Voice clips arrive as WAV from both gateways; Main re-encodes to MP3 before
   // storage. Set to an absolute path when ffmpeg is not on PATH.

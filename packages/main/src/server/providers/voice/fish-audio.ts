@@ -5,6 +5,7 @@ import {
 } from "../types";
 import { pcmWavDurationMs } from "./wav";
 import { requestVoiceProvider, voiceOwnerHeaders } from "./http";
+import { VOICE_MAX_INPUT_CHARS, voiceSynthesisTimeoutMs } from "./speech-text";
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -61,7 +62,7 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     this.language = config.language;
     this.defaultVoiceId =
       config.defaultVoiceId?.trim() || "fish-female-default";
-    this.maxInputChars = Math.min(2_000, Math.max(1, config.maxInputChars ?? 2_000));
+    this.maxInputChars = Math.min(VOICE_MAX_INPUT_CHARS, Math.max(1, config.maxInputChars ?? VOICE_MAX_INPUT_CHARS));
     this.timeoutMs = Math.max(250, config.timeoutMs ?? 180_000);
     this.fetchImpl = config.fetchImpl ?? fetch;
   }
@@ -242,7 +243,7 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
         response_format: "wav",
         ...(input.delivery ? { delivery: input.delivery } : {}),
       }),
-    });
+    }, voiceSynthesisTimeoutMs(this.timeoutMs, text.length));
     if (!response.ok) return response;
 
     const model = input.model ?? this.model;

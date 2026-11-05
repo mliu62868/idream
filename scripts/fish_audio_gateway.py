@@ -87,6 +87,10 @@ IDEMPOTENCY_DIR = Path(
 VOICE_MANIFEST_FORMAT = "idream_fish_audio_voice_reference_v1"
 IDEMPOTENCY_MANIFEST_FORMAT = "idream_fish_audio_idempotency_v1"
 IDEMPOTENCY_CACHE_MAGIC = b"IDREAM-FISH-IDEMPOTENCY-V1\n"
+# Must match Main's VOICE_MAX_INPUT_CHARS: the longest reply one clip can voice.
+MAX_SPEECH_CHARS = 12_000
+# Breeze renders one input with a fixed token budget and has no splitter of its own.
+BREEZE_INPUT_CHARS = 2_000
 MAX_REFERENCE_BYTES = 15 * 1024 * 1024
 MAX_REFERENCE_SECONDS = 30
 MIN_REFERENCE_BYTES = 1_024
@@ -123,7 +127,7 @@ class DeliverySettings(BaseModel):
 
 class SpeechRequest(BaseModel):
     model: str = Field(default=MODEL_ID)
-    input: str = Field(min_length=1, max_length=2_000)
+    input: str = Field(min_length=1, max_length=MAX_SPEECH_CHARS)
     voice: str = Field(default=DEFAULT_VOICE, min_length=1, max_length=160)
     response_format: str = Field(default="wav")
     delivery: DeliverySettings = Field(default_factory=DeliverySettings)
@@ -575,6 +579,28 @@ def require_generation_model(requested_model: str) -> None:
         )
 
 
+def split_for_breeze(text: str, limit: int = BREEZE_INPUT_CHARS) -> list[str]:
+    """Keep every word, cutting at sentence ends and only hard-cutting a run-on sentence.
+
+    Input up to the limit stays one piece, so it renders exactly as it was measured.
+    """
+    if len(text) <= limit:
+        return [text]
+    pieces: list[str] = []
+    pending = ""
+    for sentence in re.findall(r".+?(?:[。！？]|[.!?](?=\s|$)|$)\s*", text, flags=re.DOTALL):
+        if pending and len(pending) + len(sentence) > limit:
+            pieces.append(pending)
+            pending = ""
+        pending += sentence
+        while len(pending) > limit:
+            pieces.append(pending[:limit])
+            pending = pending[limit:]
+    if pending:
+        pieces.append(pending)
+    return [piece.strip() for piece in pieces if piece.strip()]
+
+
 def render_wav(request: SpeechRequest) -> bytes:
     require_generation_model(request.model)
     if not request.input.strip():
@@ -602,9 +628,11 @@ def render_wav(request: SpeechRequest) -> bytes:
                 raise HTTPException(status_code=502, detail=str(error)) from error
         else:
             # Preserve Breeze's measured no-CFG conditioning path and sampling.
-            results = list(
-                model.generate(
-                    text=request.input.strip(),
+            results = [
+                result
+                for piece in split_for_breeze(request.input.strip())
+                for result in model.generate(
+                    text=piece,
                     instruct=delivery_instruction(request.delivery),
                     ref_audio=ref_audio,
                     ref_text=manifest["ref_text"],
@@ -615,7 +643,7 @@ def render_wav(request: SpeechRequest) -> bytes:
                     max_tokens=1200,
                     stream=False,
                 )
-            )
+            ]
     if not results:
         raise HTTPException(status_code=502, detail="Voice model returned no audio")
     audio = np.concatenate(
