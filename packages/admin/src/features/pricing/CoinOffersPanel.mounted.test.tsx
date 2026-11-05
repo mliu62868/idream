@@ -72,6 +72,32 @@ async function confirm(action: string, reason = "Controlled publication review")
 }
 
 describe("coin offer operator actions", () => {
+  it("does not claim an empty catalog when the catalog read failed, and folds the raw error away", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: false, error: { code: "unavailable", message: "Internal coin catalog address" } }, { status: 503 })));
+    await mount(true);
+    const alert = container.querySelector('[role="alert"]')!;
+    expect(alert.textContent).toContain("Retry to load the latest data.");
+    expect(alert.querySelector("details")?.open).toBe(false);
+    expect(alert.querySelector("details")?.textContent).toContain("Internal coin catalog address");
+    expect(container.textContent).not.toContain("No coin offers have been configured.");
+  });
+
+  it("reports a saved draft and a published offer", async () => {
+    writeResponse = async () => Response.json({ ok: true, data: { offer } });
+    await mount(true);
+    const form = container.querySelector("form")!;
+    for (const [label, value] of [
+      ["Offer key", "fixture-coins"], ["Offer name", "Fixture coins"], ["Dreamcoin amount", "125"],
+      ["Price in cents", "99"], ["Reason (≥3)", "Controlled draft test"], ["Customer purchase and refund terms", offer.terms],
+    ]) await fill(label, value, form);
+    await act(async () => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(document.body.textContent).toContain("Coin offer draft saved: Fixture coins");
+    writeResponse = async (write) => savedOffer(String(write.body.action));
+    const dialog = await confirm("Publish coin offer");
+    await act(async () => button("Publish coin offer", dialog).click());
+    expect(document.body.textContent).toContain("Coin offer published: Fixture coins");
+  });
+
   it("provides a read-only catalog without mutation controls for readers", async () => {
     await mount(false);
     expect(container.textContent).toContain("Fixture coins");

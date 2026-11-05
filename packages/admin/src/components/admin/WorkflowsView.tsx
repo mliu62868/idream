@@ -34,7 +34,8 @@ type WorkflowSlotTarget = { nodeId: string; field: string } | { argFlag: string 
 type WorkflowSlot = {
   key: string;
   type: "text" | "int" | "float" | "image";
-  target: WorkflowSlotTarget;
+  // 只有 ComfyUI 后端才把槽位绑到节点或命令行参数上；local-recolor 这类本地后端的槽位没有 target。
+  target?: WorkflowSlotTarget;
   default?: string | number;
 };
 
@@ -181,7 +182,7 @@ function SlotList({ slots }: { slots: WorkflowSlot[] }) {
       <ul className="space-y-1">
         {slots.map((slot) => (
           <li key={slot.key}>
-            {slot.key} · {slot.type} → {formatSlotTarget(slot.target)}
+            {slot.key} · {slot.type}{slot.target ? ` → ${formatSlotTarget(slot.target)}` : null}
             {slot.default === undefined ? null : ` (${t("Default")}: ${slot.default})`}
           </li>
         ))}

@@ -196,7 +196,16 @@ export function CharacterAssetStudio({
         scope: `character-asset:selection:${actorId}:${data.character.id}`,
       }),
     );
+  // SPEC: 三种列表读取各有一道闸门，只有「整表重读」能作废另外两种。
+  // INTENT: 它们曾共用一道闸门：Load more 取消轮询（轮询就此永久停摆），轮询又丢弃在途的
+  //         下一页。轮询只写 active，翻页只写 history，两者本来就互不覆盖。
   const runListRequestGate = useRef(createLatestRequestGate());
+  const activeRunsRequestGate = useRef(createLatestRequestGate());
+  const historyPageRequestGate = useRef(createLatestRequestGate());
+  // SPEC: Refresh 自己的列表读取被「项目重载触发的 effect 重读」取代时，由那次重读替它收尾。
+  const refreshAttempt = useRef<{ replaced: boolean; awaitingReplacement: boolean } | null>(null);
+  const [pendingRegeneratePurpose, setPendingRegeneratePurpose] =
+    useState<CharacterAssetPurpose | null>(null);
   const selectRunId = useCallback(
     (runId: string | null) => {
       selectedRunIdRef.current = runId;
@@ -317,7 +326,19 @@ export function CharacterAssetStudio({
         readonly activeOnly?: boolean;
       } = {},
     ) => {
-      const request = runListRequestGate.current.begin();
+      const { activeOnly = false, cursor } = options;
+      const fullRead = !activeOnly && !cursor;
+      const request = cursor
+        ? historyPageRequestGate.current.begin()
+        : activeOnly
+          ? activeRunsRequestGate.current.begin()
+          : runListRequestGate.current.begin();
+      const activeRequest = activeOnly
+        ? request
+        : fullRead
+          ? activeRunsRequestGate.current.begin()
+          : null;
+      if (fullRead) historyPageRequestGate.current.invalidate();
       const baseQuery = {
         limit: "20",
         targetType: "character",
@@ -334,25 +355,32 @@ export function CharacterAssetStudio({
       // the two execution states independently discoverable even behind pages
       // of completed work; the server owns both purpose and outcome filtering.
       const [history, pending, running] = await Promise.all([
-        options.activeOnly ? Promise.resolve(null) : readPage(options.cursor ? { cursor: options.cursor } : {}),
-        readPage({ executionOutcome: "pending" }),
-        readPage({ executionOutcome: "running" }),
+        activeOnly ? Promise.resolve(null) : readPage(cursor ? { cursor } : {}),
+        cursor ? Promise.resolve(null) : readPage({ executionOutcome: "pending" }),
+        cursor ? Promise.resolve(null) : readPage({ executionOutcome: "running" }),
       ]);
       if (!request.isCurrent()) throw new SupersededProjectionError();
-      const active = [...pending.items, ...running.items].filter((run) => run.purpose === activePurpose);
+      const active = pending && running
+        ? [...pending.items, ...running.items].filter((run) => run.purpose === activePurpose)
+        : [];
       const historyItems = history?.items.filter((run) => run.purpose === activePurpose) ?? [];
       const scoped = [...new Map([...historyItems, ...active].map((run) => [run.id, run])).values()];
+      // A page requested during this full read continues the listing it just replaced.
+      if (fullRead) historyPageRequestGate.current.invalidate();
+      // A poll tick that began after this full read holds the newer active list.
+      const activeIsNewest = activeRequest?.isCurrent() === true;
       setRunPages((current) => {
         const samePurpose = current.purpose === activePurpose;
         const previousHistory = samePurpose ? current.history : [];
+        const nextActive = activeIsNewest ? active : samePurpose ? current.active : [];
         if (!history) return {
-          purpose: activePurpose, active, history: previousHistory,
+          purpose: activePurpose, active: nextActive, history: previousHistory,
           cursor: samePurpose ? current.cursor : null,
         };
         return {
           purpose: activePurpose,
-          active,
-          history: options.cursor
+          active: nextActive,
+          history: cursor
             ? [...new Map([...previousHistory, ...historyItems].map((run) => [run.id, run])).values()]
             : historyItems,
           cursor: history.pageInfo.hasNextPage ? history.pageInfo.endCursor : null,
@@ -458,14 +486,27 @@ export function CharacterAssetStudio({
     if (!permissions.read) return;
     let cancelled = false;
     const controller = new AbortController();
-    const gate = runListRequestGate.current;
+    const gates = [
+      runListRequestGate.current,
+      activeRunsRequestGate.current,
+      historyPageRequestGate.current,
+    ];
     const timer = window.setTimeout(async () => {
       setLoading(true);
       setError(null);
       try {
         await loadRuns({ signal: controller.signal });
+        const attempt = refreshAttempt.current;
+        if (attempt) attempt.replaced = true;
+        if (attempt?.awaitingReplacement) {
+          refreshAttempt.current = null;
+          setRefreshWarning(null);
+        }
       } catch (cause) {
         if (!cancelled && !isProjectionRequestCancellation(cause)) {
+          refreshAttempt.current = null;
+          // The click asked to generate from this list; it must not fire on some later read.
+          setPendingRegeneratePurpose(null);
           setError(
             cause instanceof Error
               ? cause.message
@@ -478,7 +519,7 @@ export function CharacterAssetStudio({
     }, 0);
     return () => {
       cancelled = true;
-      gate.invalidate();
+      for (const gate of gates) gate.invalidate();
       controller.abort();
       window.clearTimeout(timer);
     };
@@ -529,8 +570,9 @@ export function CharacterAssetStudio({
         if (!context.cancelled) setRefreshWarning(null);
         return 4_000;
       } catch (cause) {
-        // INTENT: 请求被新一轮取代不是故障，静默停手等新一轮接管即可。
-        if (isProjectionRequestCancellation(cause)) return null;
+        // INTENT: 这一轮被取代不是故障，但取代它的未必是另一轮轮询（可能是一次手动读取），
+        //         没人接管循环。只有循环本身被取消才停，否则按正常节奏继续。
+        if (isProjectionRequestCancellation(cause)) return context.cancelled ? null : 4_000;
         if (!context.cancelled) {
           setRefreshWarning(
             cause instanceof Error
@@ -754,6 +796,7 @@ export function CharacterAssetStudio({
     setError(null);
     setMessage(null);
     setRefreshWarning(null);
+    refreshAttempt.current = null;
     try {
       const result = await createOrRecoverCharacterRun({
         scope: `character-asset:create:${actorId}:${data.character.id}`,
@@ -847,6 +890,8 @@ export function CharacterAssetStudio({
         }
       } else if (runCreationIntentRef.current?.status === "outcome_unknown") {
         setError("Generation outcome is unknown. Choose Resume generation to replay the same intent without creating a duplicate Run.");
+      } else if (runCreationIntentRef.current?.status === "reconciliation_required" && cause instanceof AdminV2RequestError) {
+        setError(t("Generation outcome still needs server confirmation: {detail}. Choose Reconcile saved request; it cannot create a duplicate Run.", { detail: t(cause.message) }));
       } else {
         setError(cause instanceof AdminV2RequestError && cause.status === 503 &&
           cause.code === "unavailable" && cause.message.includes("No Run was created")
@@ -873,17 +918,52 @@ export function CharacterAssetStudio({
   const regenerateUnderCurrentRoute = () => {
     const purpose = data.project.draftAssetRouteAuthority?.recoveryPurpose;
     if (!purpose) return;
+    const listLoaded = purpose === activePurpose && runPages.purpose === purpose;
     choosePurpose(purpose);
-    void createRun(purpose);
+    if (listLoaded) void createRun(purpose);
+    else setPendingRegeneratePurpose(purpose);
   };
+
+  // SPEC: 一次点击只生成一次，且必须等目标用途的列表读回来——「这个用途有没有在跑的请求」
+  //       只能由它的列表回答。
+  // INTENT: 点击的闭包还停在旧用途上，createRun 的守卫因此直接返回，运营要点第二次。
+  //         不写依赖：每次渲染都拿最新闭包重新武装，定时器在命中前总被上一次 cleanup 清掉。
+  useEffect(() => {
+    if (!pendingRegeneratePurpose) return;
+    const timer = window.setTimeout(() => {
+      if (activePurpose !== pendingRegeneratePurpose) {
+        setPendingRegeneratePurpose(null);
+      } else if (runPages.purpose === pendingRegeneratePurpose) {
+        setPendingRegeneratePurpose(null);
+        if (canGenerate && busy === null) void createRun(pendingRegeneratePurpose);
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  });
 
   const refreshWorkspace = async () => {
     setError(null);
+    const attempt = { replaced: false, awaitingReplacement: false };
+    refreshAttempt.current = attempt;
+    const finishAttempt = () => {
+      if (refreshAttempt.current === attempt) refreshAttempt.current = null;
+    };
     try {
-      await Promise.all([onProjectReload(), loadRuns()]);
+      const [project, list] = await Promise.allSettled([onProjectReload(), loadRuns()]);
+      if (project.status === "rejected") throw project.reason;
+      // INTENT: 项目重载一提交就会换掉 loadRuns、触发 effect 重读并作废这里的读取。
+      //         这不算失败，但警告要等那次重读真的成功才能清。
+      const superseded = list.status === "rejected" && isProjectionRequestCancellation(list.reason);
+      if (list.status === "rejected" && !superseded) throw list.reason;
       if (selectedRunIdRef.current) await loadRun(selectedRunIdRef.current);
+      if (superseded && !attempt.replaced) {
+        attempt.awaitingReplacement = true;
+        return;
+      }
+      finishAttempt();
       setRefreshWarning(null);
     } catch (cause) {
+      finishAttempt();
       if (isProjectionRequestCancellation(cause)) return;
       setError(
         cause instanceof Error
@@ -1022,8 +1102,11 @@ export function CharacterAssetStudio({
         cause.outcome === "answered" &&
         [400, 401, 403, 404, 409, 422].includes(cause.status)
       ) {
-        clearDurableMutationIntent(currentIntent);
-        setReviewMutationIntent(null);
+        // A refused replay proves nothing about the earlier attempt: the saved key is
+        // the only recovery receipt, and only the server can recover or seal it.
+        setReviewMutationIntent(updateDurableMutationIntent(currentIntent, {
+          status: "reconciliation_required",
+        }));
         setError(cause.message);
       } else {
         const unknown = updateDurableMutationIntent(currentIntent, {
@@ -1302,8 +1385,12 @@ export function CharacterAssetStudio({
         cause.outcome === "answered" &&
         [400, 401, 403, 404, 409, 422].includes(cause.status)
       ) {
-        clearDurableMutationIntent(currentIntent);
-        setSelectionMutationIntent(null);
+        // A refused replay proves nothing about the earlier attempt: the saved key is
+        // the only recovery receipt, and only the server can recover or seal it.
+        currentIntent = updateDurableMutationIntent(currentIntent, {
+          status: "reconciliation_required",
+        });
+        setSelectionMutationIntent(currentIntent);
         setError(cause.message);
       } else {
         currentIntent = updateDurableMutationIntent(currentIntent, {
@@ -1474,8 +1561,16 @@ export function CharacterAssetStudio({
         cause.outcome === "answered" &&
         [400, 401, 403, 404, 409, 422].includes(cause.status)
       ) {
-        clearDurableMutationIntent(intent);
-        setSelectionMutationIntent(null);
+        // INVARIANT: only a newly claimed intent can be released by a rejection. An
+        // existing claim means another attempt already used this key.
+        if (claim.created) {
+          clearDurableMutationIntent(intent);
+          setSelectionMutationIntent(null);
+        } else {
+          setSelectionMutationIntent(updateDurableMutationIntent(intent, {
+            status: "reconciliation_required",
+          }));
+        }
         setError(cause.message);
       } else if (intent) {
         const unknown = updateDurableMutationIntent(intent, {

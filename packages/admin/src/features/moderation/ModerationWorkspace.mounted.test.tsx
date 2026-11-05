@@ -63,6 +63,25 @@ describe("ModerationWorkspace media-review interaction", () => {
     vi.restoreAllMocks();
   });
 
+  it("does not invent a page number for a shared cursor and offers a way back to the first page", async () => {
+    window.history.replaceState(null, "", "/admin/moderation?mediaCursor=shared-cursor");
+    apiGet.mockImplementation(async (path) => {
+      if (path.includes("scope=media")) return { mediaReview: [mediaRow], pageInfo: { mediaReview: pageInfo } };
+      if (path.includes("scope=reports")) return { reports: [], pageInfo: { reports: pageInfo } };
+      return { appeals: [], pageInfo: { appeals: pageInfo } };
+    });
+    await act(async () => {
+      root.render(<AdminI18nProvider locale="en"><ToastProvider><ModerationWorkspace canDecide /></ToastProvider></AdminI18nProvider>);
+    });
+    const deadline = Date.now() + 2_000;
+    while (!container.querySelector('[data-testid="admin-pagination"]') && Date.now() < deadline) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+    }
+    const pagination = container.querySelector('[data-testid="admin-pagination"]')!;
+    expect(pagination.textContent).toContain("Page position unknown");
+    expect([...pagination.querySelectorAll("button")].find((button) => button.textContent === "Back to first page")?.disabled).toBe(false);
+  });
+
   it.each([
     {
       actionLabel: "Approve image",

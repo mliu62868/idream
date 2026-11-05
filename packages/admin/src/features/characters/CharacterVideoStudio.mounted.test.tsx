@@ -917,15 +917,20 @@ describe("Character Video Studio", () => {
     expect(runCommittedMutationSpy).toHaveBeenCalledTimes(reconcile ? 1 : 2);
   });
 
-  it("keeps an unknown video intent after an unauthorized replay and recovers the original request", async () => {
+  it("keeps an unknown video intent after an unauthorized replay and recovers it through its server receipt", async () => {
     const scope = "character-video:create:actor-1:character-video-1";
     const creates: Array<{ key: string; body: Record<string, unknown> }> = [];
+    const reconciles: string[] = [];
     adminV2Request.mockImplementation(async (path, options) => {
       if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
         creates.push({ key: options.idempotencyKey, body: options.body });
         if (creates.length === 1) throw new TypeError("Response ended after server commit");
-        if (creates.length === 2) throw new AdminV2RequestError("Session expired before replay", 401, "unauthorized");
-        return { batch: { id: pendingRun.id }, replayed: true };
+        throw new AdminV2RequestError("Session expired before replay", 401, "unauthorized");
+      }
+      if (path.endsWith("/mutation-receipts/reconcile")) {
+        reconciles.push(options.idempotencyKey);
+        return { state: "committed", commandType: "creative.run.create", commandId: "recovered-command", status: "succeeded", committedTargetId: pendingRun.id,
+          verification: { kind: "creative_run", runId: pendingRun.id, requestSnapshot: creates[0].body } };
       }
       if (path === `/api/v2/admin/creative/runs/${pendingRun.id}`) {
         const request = creates[0].body;
@@ -956,13 +961,13 @@ describe("Character Video Studio", () => {
     expect(creates).toHaveLength(2);
     expect(creates[1]).toEqual(creates[0]);
     expect(readActiveDurableMutationIntent({ scope })?.idempotencyKey).toBe(creates[0].key);
-    expect(button("Resume video creation")).toBeDefined();
+    expect(button("Reconcile saved video request")).toBeDefined();
     expect(container.querySelector<HTMLTextAreaElement>("textarea")?.disabled).toBe(true);
 
-    await act(async () => button("Resume video creation")!.click());
+    await act(async () => button("Reconcile saved video request")!.click());
     await waitUntil(() => readActiveDurableMutationIntent({ scope }) === null);
-    expect(creates).toHaveLength(3);
-    expect(creates[2]).toEqual(creates[0]);
+    expect(creates).toHaveLength(2);
+    expect(reconciles).toEqual([creates[0].key]);
     expect(container.textContent).toContain("Video request in progress");
   });
 
@@ -1081,5 +1086,91 @@ describe("Character Video Studio", () => {
     await waitUntil(() => container.querySelector("video") !== null);
     await waitUntil(() => onProjectReload.mock.calls.length === 1);
     expect(onProjectReload).toHaveBeenCalledOnce();
+  });
+
+  describe("Refresh failures", () => {
+    const LIBRARY_ERROR = "Video is ready, but the Character library could not refresh";
+    const readyRun = {
+      ...pendingRun, executionOutcome: "succeeded",
+      items: [{ ...pendingRun.items[0], executionState: "ready", asset: { id: "video-asset", url: "/video.mp4", thumbnailUrl: null } }],
+    };
+    const mount = async (input: {
+      readonly run: typeof pendingRun | typeof readyRun | null;
+      readonly list: () => Promise<unknown>;
+      readonly onProjectReload: () => Promise<void>;
+    }) => {
+      adminV2Request.mockImplementation(async (path) => {
+        if (input.run && path.endsWith(`/${input.run.id}`)) return input.run;
+        return input.list();
+      });
+      await act(async () => root.render(<CharacterVideoStudio actorId="actor-1" data={data} onCreateImage={vi.fn()}
+        onProjectReload={input.onProjectReload} permissions={{ create: true, read: true }} runCommittedMutation={runCommittedMutation} />));
+      await waitUntil(() => [...container.querySelectorAll("button")].some((item) => item.textContent?.trim() === "Refresh" && !item.disabled));
+      await waitUntil(() => container.querySelector(".animate-spin") === null || input.run !== null);
+    };
+    const clickRefresh = async () => {
+      const refresh = [...container.querySelectorAll("button")].find((item) => item.textContent?.trim() === "Refresh");
+      await act(async () => refresh?.click());
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    };
+    const page = (items: readonly unknown[] = []) => ({ items, pageInfo: { endCursor: null, hasNextPage: false } });
+    const alert = () => container.querySelector('[role="alert"]')?.textContent ?? "";
+
+    it("reports a failed Run read as a read failure and leaves the Character reload alone", async () => {
+      let fail = false;
+      const onProjectReload = vi.fn(async () => undefined);
+      await mount({
+        run: null, onProjectReload,
+        list: async () => {
+          if (fail) throw new AdminV2RequestError("pg: connection refused", 503, "unavailable");
+          return page();
+        },
+      });
+      fail = true;
+      await clickRefresh();
+      expect(alert()).toContain("Character video runs could not be refreshed");
+      expect(alert()).not.toContain(LIBRARY_ERROR);
+      expect(onProjectReload).not.toHaveBeenCalled();
+    });
+
+    it("ignores a Run read a newer poll superseded and still reloads the Character", async () => {
+      let abort = false;
+      const onProjectReload = vi.fn(async () => undefined);
+      await mount({
+        run: null, onProjectReload,
+        list: async () => {
+          if (abort) throw new DOMException("A newer authority request replaced this read.", "AbortError");
+          return page();
+        },
+      });
+      abort = true;
+      await clickRefresh();
+      expect(alert()).toBe("");
+      expect(onProjectReload).toHaveBeenCalledOnce();
+    });
+
+    it("keeps the library copy for a failed Character reload after a ready video", async () => {
+      let fail = false;
+      await mount({
+        run: readyRun, list: async () => page([readyRun]),
+        onProjectReload: async () => {
+          if (fail) throw new Error("project unavailable");
+        },
+      });
+      await waitUntil(() => container.querySelector("video") !== null);
+      fail = true;
+      await clickRefresh();
+      expect(alert()).toContain(LIBRARY_ERROR);
+    });
+
+    it("does not claim a video is ready when the Character reload fails without one", async () => {
+      await mount({
+        run: null, list: async () => page(),
+        onProjectReload: async () => { throw new Error("project unavailable"); },
+      });
+      await clickRefresh();
+      expect(alert()).toContain("The Character library could not refresh");
+      expect(alert()).not.toContain(LIBRARY_ERROR);
+    });
   });
 });

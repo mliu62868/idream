@@ -35,6 +35,7 @@ import {
   type DurableMutationIntent,
 } from "@/lib/durable-mutation-intent";
 import { useAuthorityResource } from "@/lib/authority-resource";
+import { isProjectionRequestCancellation } from "@/lib/committed-projection";
 import { createOrRecoverCharacterRun } from "./creative-run-creation";
 import { cn } from "@/lib/utils";
 
@@ -200,6 +201,10 @@ const VIDEO_STALL_TIMEOUT_MS = 15_000;
 const EMPTY_VIDEO_RUNS: readonly CreativeRun[] = [];
 const VIDEO_LIBRARY_REFRESH_ERROR =
   "Video is ready, but the Character library could not refresh. Use Refresh to try again.";
+const CHARACTER_LIBRARY_REFRESH_ERROR =
+  "The Character library could not refresh. Use Refresh to try again.";
+const VIDEO_RUNS_REFRESH_ERROR =
+  "Character video runs could not be refreshed. Use Refresh to try again.";
 
 const videoErrorReasons: Record<number, string> = {
   1: "Playback was aborted before the video loaded.",
@@ -572,13 +577,24 @@ export function CharacterVideoStudio({
     setBusy("refresh");
     setError(null);
     try {
-      // The list also owns whether another video is still active, even while
-      // the operator is viewing a historical result.
-      if (needsRunRefresh) await refreshCurrentRun();
-      else await Promise.all([runList.readback(), ...(activeRunId ? [runDetail.readback()] : [])]);
+      try {
+        // The list also owns whether another video is still active, even while
+        // the operator is viewing a historical result.
+        if (needsRunRefresh) await refreshCurrentRun();
+        else await Promise.all([runList.readback(), ...(activeRunId ? [runDetail.readback()] : [])]);
+      } catch (cause) {
+        // A poll that supersedes this read already delivers the newer projection.
+        if (!isProjectionRequestCancellation(cause)) {
+          setError(VIDEO_RUNS_REFRESH_ERROR);
+          return;
+        }
+      }
       await onProjectReload?.();
-    } catch {
-      setError(VIDEO_LIBRARY_REFRESH_ERROR);
+    } catch (cause) {
+      if (isProjectionRequestCancellation(cause)) return;
+      setError(selectedRun?.items.some((item) => item.asset)
+        ? VIDEO_LIBRARY_REFRESH_ERROR
+        : CHARACTER_LIBRARY_REFRESH_ERROR);
     } finally {
       setBusy(null);
     }

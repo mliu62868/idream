@@ -29,6 +29,17 @@ describe("admin source boundary", () => {
     expect(notFoundView).toContain('href="/admin/today"');
   });
 
+  // 服务端一旦（传递地）import 工作台，RSC 图就把它们全部登记成客户端入口，首屏回到整包 4.6MB。
+  it("keeps every workspace out of the navigation data that the server imports", async () => {
+    const navConfig = await readFile(path.join(packageRoot, "src/components/admin/nav-config.tsx"), "utf8");
+    const routeRenderer = await readFile(path.join(packageRoot, "src/app/admin/_server/render-admin-route.tsx"), "utf8");
+    const localImports = [...navConfig.matchAll(/from "([^"]+)"/g)].map((match) => match[1])
+      .filter((source) => source.startsWith(".") || source.startsWith("@/"));
+
+    expect(localImports.sort()).toEqual(["./nav-routes", "./shell-preferences", "./workspace-access"]);
+    expect(routeRenderer).not.toContain("nav-sections");
+  });
+
   it("resolves application source from the admin package only", async () => {
     const tsconfig = await readFile(path.join(packageRoot, "tsconfig.json"), "utf8");
     const globals = await readFile(path.join(packageRoot, "src/app/globals.css"), "utf8");

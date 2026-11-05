@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AdminNavigation } from "./AdminNavigation";
+import { renderAdminSection } from "./nav-sections";
 import { focusAdminMainContent } from "./admin-skip-link";
 import {
   AdminI18nProvider,
@@ -185,7 +186,17 @@ function AdminConsoleContent({
     // Broadcast only after the fresh permission props have committed to the workspace.
     if (authority.dataRefreshVersion > 0) window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT));
   }, [authority.dataRefreshVersion]);
-  const canAccessActiveSection = canReadWorkspace(activeItem, permissions);
+  // SPEC: 权威暂时读不到：工作台冻结但不卸载，运营写到一半的内容还在，恢复后接着用。
+  // INVARIANT: 冻结期间只下发读权限——「权威读不到就不能留着写能力」这条不因此放松；inert 再挡一层。
+  const frozenPermissions = useMemo(
+    () => (authority.retainedPermissions ? new Set(authority.retainedPermissions) : null),
+    [authority.retainedPermissions],
+  );
+  const sectionPermissions = frozenPermissions ?? permissions;
+  const sectionGrants = useMemo(
+    () => (frozenPermissions ? new Set([...frozenPermissions].filter((key) => key.endsWith(".read"))) : permissions),
+    [frozenPermissions, permissions],
+  );
   // 只有 admin 能改工作模式，所以也只有 admin 的 cookie 值算数——被降权的账号不该继续按
   // 上一次的模式排列导航。
   const canChooseWorkMode = actor?.role === "admin";
@@ -427,20 +438,23 @@ function AdminConsoleContent({
             {authority.error ? (
               <AuthorityRequestError cause={authority.error} message="Admin permissions could not be refreshed"
                 onRetry={() => void authority.refresh()} requestKind="read" />
-            ) : !canAccessActiveSection ? (
+            ) : null}
+            {authority.error && !frozenPermissions ? null : !canReadWorkspace(activeItem, sectionPermissions) ? (
               <PermissionDenied
-                canReachTeamAccess={permissions.has("user.read")}
-                missing={missingWorkspacePermissions(activeItem, permissions)}
+                canReachTeamAccess={sectionPermissions.has("user.read")}
+                missing={missingWorkspacePermissions(activeItem, sectionPermissions)}
               />
             ) : (
-              activeItem.render({
-                actorId: actor.id,
-                canCreateCharacters,
-                canRead: canAccessActiveSection,
-                permissions,
-                view: path.view,
-                workMode,
-              })
+              <div inert={Boolean(frozenPermissions)}>
+                {renderAdminSection(activeItem.id, {
+                  actorId: actor.id,
+                  canCreateCharacters,
+                  canRead: canReadWorkspace(activeItem, sectionPermissions),
+                  permissions: sectionGrants,
+                  view: path.view,
+                  workMode,
+                })}
+              </div>
             )}
           </div>
         </section>

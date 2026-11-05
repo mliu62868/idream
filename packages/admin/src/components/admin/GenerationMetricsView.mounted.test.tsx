@@ -44,6 +44,17 @@ describe("generation health failure drilldown through the real transport", () =>
     vi.unstubAllGlobals();
   });
 
+  it("exposes the selected window to assistive technology", async () => {
+    await act(async () => root.render(<GenerationMetricsView />));
+    await waitUntil(() => reads.some(url => url.searchParams.get("days") === "14"));
+    const windowButton = (label: string) => [...container.querySelectorAll("button")].find(button => button.textContent?.trim() === label)!;
+    expect(windowButton("7 days").getAttribute("aria-pressed")).toBe("true");
+    expect(windowButton("30 days").getAttribute("aria-pressed")).toBe("false");
+    await act(async () => windowButton("30 days").click());
+    expect(windowButton("7 days").getAttribute("aria-pressed")).toBe("false");
+    expect(windowButton("30 days").getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("reloads the selected metrics window once through shell refresh", async () => {
     await act(async () => root.render(<GenerationMetricsView />));
     await waitUntil(() => reads.some(url => url.searchParams.get("days") === "14"));

@@ -169,6 +169,42 @@ describe("committed projection protocol", () => {
     ]);
   });
 
+  it("starts a fresh request when the same target is loaded again after invalidate", async () => {
+    const harness = createHarness();
+    const stale = harness.loader.load("run-1");
+    harness.loader.invalidate();
+    const fresh = harness.loader.load("run-1");
+    expect(harness.pending).toHaveLength(2);
+
+    // 旧请求先回来也不能把新请求的登记摘掉：第三个调用方仍要并进新请求。
+    harness.pending[0].deferred.resolve({ id: "run-1", stamp: "stale" });
+    await expect(stale).rejects.toBeInstanceOf(SupersededProjectionError);
+    const joined = harness.loader.load("run-1");
+    expect(harness.pending).toHaveLength(2);
+
+    harness.pending[1].deferred.resolve({ id: "run-1", stamp: "fresh" });
+    await expect(fresh).resolves.toEqual({ id: "run-1", stamp: "fresh" });
+    await expect(joined).resolves.toEqual({ id: "run-1", stamp: "fresh" });
+    expect(harness.commits.map((entry) => entry.projection.stamp)).toEqual(["fresh"]);
+  });
+
+  it("does not join a request that a newer target already superseded", async () => {
+    const harness = createHarness();
+    const first = harness.loader.load("run-1");
+    harness.state.target = "run-2";
+    const second = harness.loader.load("run-2");
+    harness.state.target = "run-1";
+    const again = harness.loader.load("run-1");
+    expect(harness.pending).toHaveLength(3);
+
+    harness.pending[0].deferred.resolve({ id: "run-1", stamp: "stale" });
+    harness.pending[1].deferred.resolve({ id: "run-2", stamp: "stale" });
+    harness.pending[2].deferred.resolve({ id: "run-1", stamp: "fresh" });
+    await expect(first).rejects.toBeInstanceOf(SupersededProjectionError);
+    await expect(second).rejects.toBeInstanceOf(SupersededProjectionError);
+    await expect(again).resolves.toEqual({ id: "run-1", stamp: "fresh" });
+  });
+
   // INVARIANT 3: 提交目标与非提交目标的失败走不同出口。
   it("routes a failed committed target to the recoverable exit", () => {
     const harness = createHarness();

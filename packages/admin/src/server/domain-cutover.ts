@@ -138,7 +138,9 @@ export function resolveAdminDomainReadRoute(input: {
   const compatibilityBaseUrl = normalizeHttpBaseUrl(
     input.environment[entry.compatibilityBaseUrlEnv],
   );
-  if (!compatibilityBaseUrl) {
+  // 这条路径会带上运营 cookie 和 HMAC 头。生产上走明文等于把会话交给链路上的任何人；
+  // 这里按未配置处理，和其它配置错误一样 fail closed。
+  if (!compatibilityBaseUrl || (input.environment.APP_ENV === "production" && !isTransportSecure(compatibilityBaseUrl))) {
     return {
       kind: "unavailable",
       domain,
@@ -159,6 +161,11 @@ export function canonicalMainBaseUrl(environment: Environment) {
   const configured = environment.MAIN_WEB_URL?.trim();
   if (!configured) return "http://127.0.0.1:3000";
   return normalizeHttpBaseUrl(configured);
+}
+
+function isTransportSecure(origin: string) {
+  const url = new URL(origin);
+  return url.protocol === "https:" || ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
 }
 
 function normalizeHttpBaseUrl(value: string | undefined) {

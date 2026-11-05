@@ -14,6 +14,7 @@ import { ArrowLeft, Check, ImageIcon, RefreshCcw, RotateCcw, Send, ShieldAlert, 
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { AdminSubview } from "@/components/admin/nav-config";
 import { AdminText, useAdminI18n } from "@/components/admin/i18n";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { formatDateTime } from "@/components/admin/ui/format";
 import { Pagination } from "@/components/admin/ui/Pagination";
 import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
@@ -339,11 +340,11 @@ function RunList({ permissions }: { permissions: Permissions }) {
         <div><h2 className="sr-only" id="creative-runs-title">{t("Creative Runs")}</h2><p className="max-w-2xl text-sm text-[var(--ad-text-muted)]">{t("Generate assets, choose where to use them, and verify delivery.")}</p></div>
         <form className="grid gap-2 sm:grid-cols-[minmax(220px,1fr)_180px_auto]" onSubmit={(event) => { event.preventDefault(); apply(); }}>
           <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Search")}<input className={`${fieldClass} mt-1`} onChange={(event) => setSearch(event.target.value)} placeholder={t("Run, title or purpose")} value={search} /></label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Outcome")}<select className={`${fieldClass} mt-1`} onChange={(event) => setOutcome(event.target.value)} value={outcome}>{["all", "pending", "running", "succeeded", "partially_succeeded", "failed", "cancelled"].map((value) => <option key={value}>{t(value.replaceAll("_", " "))}</option>)}</select></label>
+          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Outcome")}<select className={`${fieldClass} mt-1`} onChange={(event) => setOutcome(event.target.value)} value={outcome}>{["all", "pending", "running", "succeeded", "partially_succeeded", "failed", "cancelled"].map((value) => <option key={value} value={value}>{t(value.replaceAll("_", " "))}</option>)}</select></label>
           <WorkspaceButton tone="primary" type="submit">{t("Apply")}</WorkspaceButton>
         </form>
       </div>
-      {error ? <div className="mt-5 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{error} <button className="ml-2 underline" onClick={() => void runs.refresh()} type="button">{t("Retry")}</button></div> : null}
+      {error !== null ? <div className="mt-5"><AuthorityRequestError cause={runs.cause} message={error} onRetry={() => void runs.refresh()} requestKind="read" /></div> : null}
       <div className="mt-6">{loading && items.length === 0 ? <LoadingWorkspace label="Loading Creative Run facts" /> : items.length === 0 ? error ? null : <EmptyWorkspace filtered={filtered} onClear={() => applyQuery({ search: "", outcome: "all" }, "push")} /> : <div className="grid gap-3">{items.map((run) => <Link className="grid gap-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 transition-colors hover:border-[var(--ad-ink)] focus-visible:outline focus-visible:outline-2 sm:grid-cols-[1fr_auto]" href={`/admin/creative/runs/${run.id}`} key={run.id}><div><div className="flex flex-wrap items-center gap-2"><strong>{t(run.purpose)}</strong><StatusBadge value={run.executionOutcome} />{run.purpose === "model_eval" ? <StatusBadge value={run.reviewState} /> : null}<StatusBadge value={run.deploymentState} /><StatusBadge value={run.verificationState} /></div><p className="mt-2 text-xs text-[var(--ad-text-muted)]">{run.target.type === "none" ? t("Choose an asset destination") : `${run.target.type}:${run.target.id}`} · {t(run.workflowStage)}  {t("· owner")} {run.ownerId ?? t("unassigned")}</p><div className="mt-3 flex flex-wrap gap-3 text-xs tabular-nums"><span>{run.counts.generated}/{run.counts.total}  {t("generated")}</span><span>{run.counts.failed}  {t("failed")}</span><span>{run.counts.placed}  {t("placed")}</span></div></div><span className="self-center text-xs text-[var(--ad-text-muted)]">{t("Open operator flow →")}</span></Link>)}</div>}</div>
       <div className="mt-4">
         <Pagination
@@ -730,7 +731,7 @@ function IncidentAttachment({ run, permissions, reload }: { run: CreativeRunDeta
   const { t } = useAdminI18n();
   const [incidentId, setIncidentId] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
   const [warning, setWarning] = useState<CommittedProjectionWarning | null>(null);
   const attach = async () => {
     setBusy(true); setError(null); setWarning(null);
@@ -744,7 +745,7 @@ function IncidentAttachment({ run, permissions, reload }: { run: CreativeRunDeta
         },
       });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Incident attachment failed");
+      setError(cause);
       setBusy(false);
       return;
     }
@@ -757,7 +758,7 @@ function IncidentAttachment({ run, permissions, reload }: { run: CreativeRunDeta
       setBusy(false);
     }
   };
-  return <section className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"><h3 className="font-semibold">{t("Related Incidents")}</h3><div className="mt-2 flex flex-wrap gap-2">{run.relatedIncidentIds?.length ? run.relatedIncidentIds.map((id) => <Link className="text-sm underline" href={`/admin/ops/incidents/${id}`} key={id}>{id}</Link>) : <span className="text-xs text-[var(--ad-text-muted)]">{t("No correlated Incident")}</span>}</div>{permissions.manageIncident ? <div className="mt-3 flex flex-col gap-2 sm:flex-row"><label className="flex-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Active Incident ID")}<input className={`${fieldClass} mt-1`} onChange={(event) => setIncidentId(event.target.value)} value={incidentId} /></label><WorkspaceButton disabled={busy || !incidentId.trim()} onClick={() => void attach()}>{t("Attach failed Attempts")}</WorkspaceButton></div> : null}{error ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}{warning ? <p className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{t(warning.key, warning.values)}</p> : null}</section>;
+  return <section className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"><h3 className="font-semibold">{t("Related Incidents")}</h3><div className="mt-2 flex flex-wrap gap-2">{run.relatedIncidentIds?.length ? run.relatedIncidentIds.map((id) => <Link className="text-sm underline" href={`/admin/ops/incidents/${id}`} key={id}>{id}</Link>) : <span className="text-xs text-[var(--ad-text-muted)]">{t("No correlated Incident")}</span>}</div>{permissions.manageIncident ? <div className="mt-3 flex flex-col gap-2 sm:flex-row"><label className="flex-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Active Incident ID")}<input className={`${fieldClass} mt-1`} onChange={(event) => setIncidentId(event.target.value)} value={incidentId} /></label><WorkspaceButton disabled={busy || !incidentId.trim()} onClick={() => void attach()}>{t("Attach failed Attempts")}</WorkspaceButton></div> : null}{error !== null ? <div className="mt-3"><AuthorityRequestError cause={error} message={t("This action did not complete.")} onRetry={() => void attach()} /></div> : null}{warning ? <p className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{t(warning.key, warning.values)}</p> : null}</section>;
 }
 
 function RunDetail({

@@ -3,7 +3,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
-import { requestErrorMessage } from "@/components/admin/section-kit";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { useFailureToast } from "@/components/admin/ui/Toast";
 import { FormPage, FormSection, Field, FormFooter, INPUT_CLASS } from "@/components/admin/ui/FormPage";
 import { PrimaryButton } from "@/components/admin/ui/buttons";
 import { Pagination } from "@/components/admin/ui/Pagination";
@@ -33,7 +34,9 @@ export function PlacementsNewPage() {
   const [selectedAsset, setSelectedAsset] = useState<ApprovedAsset | null>(null);
   const [loadingAssets, setLoadingAssets] = useState(true);
   const [creating, setCreating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // 只装素材列表的读取失败；创建失败走 failure toast。
+  const [error, setError] = useState<unknown>(null);
+  const failureToast = useFailureToast();
   const [assetSearch, setAssetSearch] = useState("");
   const [assetCursors, setAssetCursors] = useState<Array<string | undefined>>([undefined]);
   const [pageInfo, setPageInfo] = useState<AdminPageInfo>({ hasNextPage: false, endCursor: null });
@@ -60,11 +63,11 @@ export function PlacementsNewPage() {
         : null);
     } catch (loadError) {
       if (!request.isCurrent()) return;
-      setError(requestErrorMessage(loadError, t));
+      setError(loadError);
     } finally {
       if (request.isCurrent()) setLoadingAssets(false);
     }
-  }, [assetSearch, assetCursor, t]);
+  }, [assetSearch, assetCursor]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -113,7 +116,7 @@ export function PlacementsNewPage() {
       const newId = created.placement?.id;
       window.location.href = newId ? `/admin/creative/placements/${newId}` : "/admin/creative/placements";
     } catch (createError) {
-      setError(requestErrorMessage(createError, t));
+      failureToast(createError);
       setCreating(false);
     }
   }
@@ -218,7 +221,8 @@ export function PlacementsNewPage() {
         <Field label={t("Campaign CTA href")}><input aria-label={t("Campaign CTA href")} className={INPUT_CLASS} maxLength={512} value={draft.href} onChange={event => patch({ href: event.target.value })} /></Field>
         <p className="text-sm text-[var(--ad-text-muted)]">{t("Add both a CTA label and destination, or leave both blank.")}</p>
       </FormSection> : <p className="text-sm text-[var(--ad-yellow-text)]">{t("This slot has no customer-facing renderer. It can be saved as a draft only.")}</p>}
-      <FormFooter error={error}>
+      {error ? <AuthorityRequestError cause={error} message={t("The latest data could not be loaded.")} onRetry={() => void loadAssets()} requestKind="read" /> : null}
+      <FormFooter>
         <input
           aria-label={t("Reason (≥3)")}
           className={`${INPUT_CLASS} max-w-xs`}

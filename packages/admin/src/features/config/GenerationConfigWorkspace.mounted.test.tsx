@@ -52,6 +52,31 @@ describe("disabled model profile visibility", () => {
     vi.restoreAllMocks();
   });
 
+  it("hides the count on a tab whose list has not been read instead of showing a false zero", async () => {
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<GenerationConfigWorkspace permissions={{ manageFlags: true, manageProfiles: true }} />);
+    });
+    await waitUntil(() => [...container.querySelectorAll("h2")].some(heading => heading.textContent === "H3"));
+    const tab = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.startsWith(label) && button.textContent.includes(label === "Profiles" ? "Test and publish" : "Feature flags"))!;
+    expect(tab("Profiles").querySelector("span")?.textContent).toBe("Profiles2");
+    expect(tab("Settings").querySelector("span")?.textContent).toBe("Settings");
+    await act(async () => tab("Settings").click());
+    await waitUntil(() => tab("Settings").querySelector("span")?.textContent === "Settings0");
+  });
+
+  it("does not invent a page number for a shared cursor and offers a way back to the first page", async () => {
+    window.history.replaceState(null, "", "/admin/ops/profiles?profileCursor=shared-cursor");
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<GenerationConfigWorkspace permissions={{ manageFlags: true, manageProfiles: true }} />);
+    });
+    await waitUntil(() => container.querySelector('[data-testid="admin-pagination"]') !== null);
+    const pagination = container.querySelector('[data-testid="admin-pagination"]')!;
+    expect(pagination.textContent).toContain("Page position unknown");
+    expect([...pagination.querySelectorAll("button")].find((button) => button.textContent === "Back to first page")?.disabled).toBe(false);
+  });
+
   it.each([
     // INVARIANT: 停用是单向的 —— 权威在这条 PATCH 上只接受 enabled:false，
     //            被停用的版本再也回不来（model-profiles.ts:305-314）。确认框必须这么说。

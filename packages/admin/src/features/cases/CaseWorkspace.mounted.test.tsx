@@ -1009,6 +1009,49 @@ describe("CaseWorkspace decision loop", () => {
     expect(container.querySelector('[data-case-mobile-actions]')?.textContent).toContain("Record action");
   });
 
+  it("keeps the close confirmation open with its reason when the detail is still loading", async () => {
+    await mount({ canAssign: false, canDecide: true });
+    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent === "Close case")!.click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    const reason = dialog.querySelector<HTMLInputElement>('input[aria-label="Reason (≥3)"]')!;
+    await act(async () => {
+      setReactValue(reason, "Outcome verified with the customer");
+      setReactValue(dialog.querySelector<HTMLInputElement>('input[aria-label="Type confirmation"]')!, "case-1:close");
+    });
+    const reads = adminV2Request.getMockImplementation()!;
+    adminV2Request.mockImplementation(async (path, options) =>
+      path === "/api/v2/admin/cases/case-1" ? new Promise(() => undefined) : reads(path, options));
+    await act(async () => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)));
+    const writesBefore = adminV2Request.mock.calls.filter(([, options]) => options?.method === "POST").length;
+    await act(async () => [...dialog.querySelectorAll("button")].find((button) => button.textContent === "Close case")!.click());
+    expect(document.querySelector('[role="dialog"]')).toBe(dialog);
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toContain("This record's latest details are not ready.");
+    expect(reason.value).toBe("Outcome verified with the customer");
+    expect(adminV2Request.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(writesBefore);
+  });
+
+  it("says the audit trail is a truncated view when the authority sent more than it shows", async () => {
+    const reads = adminV2Request.getMockImplementation()!;
+    const activity = (count: number) => Array.from({ length: count }, (_, index) => ({ ...resolvedDetail.activity[0], id: `audit-${index}` }));
+    let trail = activity(25);
+    adminV2Request.mockImplementation(async (path, options) =>
+      path === "/api/v2/admin/cases/case-1" ? { ...resolvedDetail, activity: trail } : reads(path, options));
+    await mount({ canAssign: true, canDecide: true });
+    const audit = () => container.querySelector('[aria-labelledby="case-audit-title"]')!;
+    expect(audit().querySelectorAll("ol > li")).toHaveLength(20);
+    expect(audit().textContent).toContain("Showing the 20 most recent of 25 recorded actions.");
+    trail = activity(100);
+    await act(async () => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)));
+    await waitUntil(() => audit().textContent?.includes("of 100+ recorded actions") === true);
+  });
+
+  it("keeps each queue row's contents valid inside its button", async () => {
+    await mount({ canAssign: true, canDecide: true });
+    const row = container.querySelector<HTMLButtonElement>('button[aria-current="true"]')!;
+    expect(row.textContent).toContain("Last touch");
+    expect(row.querySelector("dl, dt, dd, div, p")).toBeNull();
+  });
+
   // 回归：reason 输入框此前只在 canAssign 的「分配」表单里，而关闭按钮要求 reason≥3——
   // 只有 case.decide 的运营永远关不掉工单，界面上也没有任何解释。
   it("lets a decide-only operator reach the close confirmation without the assignment form", async () => {

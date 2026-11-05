@@ -8,6 +8,13 @@
 // "Check backend health — needs engineering"、"Unknown error"、
 // "Share the error code with engineering"。改 failureReasons.ts 的 title/hint 时同步改这里。
 export const adminZhPlatformOps: Record<string, string> = {
+  "Merge reference": "合并引用",
+  "Enter at least one source. Open the other Incident and copy its merge reference.": "至少填写一个来源：打开另一个事故，复制它的合并引用。",
+  "Not usable as a source: {entries}. Each entry must be another Incident's merge reference, written as incidentId@version.": "不能作为来源：{entries}。每一项都必须是另一个事故的合并引用，格式为 incidentId@version。",
+  "You requested this; another approver must decide": "这是你发起的申请，需由另一位审批人决定",
+  "Retry attempt created for {id}": "已为 {id} 创建重试尝试",
+  "{delivered} delivered · {refund} Dreamcoins refund": "已交付 {delivered} 个 · 退还 {refund} 梦币",
+  "{refund} Dreamcoins refund": "退还 {refund} 梦币",
   "Search model profiles": "搜索模型档案",
   "Mitigation command": "处置命令",
   "Mitigation plan accepted": "处置方案已受理",

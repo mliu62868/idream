@@ -327,8 +327,8 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
       </div>
 
       <div className="grid gap-px overflow-hidden rounded-lg border border-[var(--ad-border)] bg-black/5 md:grid-cols-2">
-        <Tab active={query.tab === "profiles"} count={profileRows.length} label="Profiles" meta="Test and publish" onClick={() => navigate({ ...query, tab: "profiles" })} />
-        <Tab active={query.tab === "settings"} count={flagRows.length} label="Settings" meta="Feature flags" onClick={() => navigate({ ...query, tab: "settings" })} />
+        <Tab active={query.tab === "profiles"} count={profiles.data ? profileRows.length : null} label="Profiles" meta="Test and publish" onClick={() => navigate({ ...query, tab: "profiles" })} />
+        <Tab active={query.tab === "settings"} count={flags.data ? flagRows.length : null} label="Settings" meta="Feature flags" onClick={() => navigate({ ...query, tab: "settings" })} />
       </div>
 
       <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:grid-cols-2 xl:grid-cols-4" onSubmit={apply}>
@@ -475,7 +475,8 @@ function AuthorityError<T>({ onRetry, state }: { onRetry: () => void; state: Aut
   return state.error ? <AuthorityRequestError requestKind="read" cause={state.cause} message={state.error} onRetry={onRetry} snapshotAt={state.data ? state.refreshedAt : null} /> : null; }
 function Loading() {
   const { t } = useAdminI18n(); return <div aria-label={t("Loading profiles…")} className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" role="status"><span className="inline-flex items-center gap-2 text-sm text-[var(--ad-text-muted)]"><Loader2 className="h-4 w-4 animate-spin" />{t("Loading profiles…")}</span></div>; }
-function Tab({ active, count, label, meta, onClick }: { active: boolean; count: number; label: string; meta: string; onClick: () => void }) { const { t } = useAdminI18n(); return <button aria-current={active ? "page" : undefined} className={`px-4 py-3 text-left ${active ? "bg-[var(--ad-ink)] text-white" : "bg-[var(--ad-surface)]"}`} onClick={onClick} type="button"><span className="flex justify-between font-semibold"><span>{t(label)}</span><span>{count}</span></span><span className="mt-1 block text-xs opacity-70">{t(meta)}</span></button>; }
+// INVARIANT: 只有懒加载的那份读回来才有计数；还没读的标签页不显示数字，免得把「没读」说成 0。
+function Tab({ active, count, label, meta, onClick }: { active: boolean; count: number | null; label: string; meta: string; onClick: () => void }) { const { t } = useAdminI18n(); const format = useAdminFormat(); return <button aria-current={active ? "page" : undefined} className={`px-4 py-3 text-left ${active ? "bg-[var(--ad-ink)] text-white" : "bg-[var(--ad-surface)]"}`} onClick={onClick} type="button"><span className="flex justify-between font-semibold"><span>{t(label)}</span>{count === null ? null : <span>{format.count(count)}</span>}</span><span className="mt-1 block text-xs opacity-70">{t(meta)}</span></button>; }
 function Field({ label, onChange, search = false, value }: { label: string; onChange: (value: string) => void; search?: boolean; value: string }) { const { t } = useAdminI18n(); return <label className="grid min-w-0 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t(label)}<input className="min-h-11 min-w-0 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm" onChange={(event) => onChange(event.target.value)} role={search ? "searchbox" : undefined} value={value} /></label>; }
 // SPEC: 选项文案走 enumLabel —— 枚举值与 StatusBadge 共用同一份译文（zhValues）。
 // INTENT: booleanOptions 是给"开关状态"这类布尔筛选留的口子。它的取值是查询串里的 "true"/"false"，
@@ -491,17 +492,20 @@ function ListPagination({ cursor, loading, onNavigate, pageInfo, rowCount, trail
   rowCount: number;
   trail: string[];
 }) {
+  const { t } = useAdminI18n();
   return (
     <Pagination
       hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
-      hasPrevious={trail.length > 0}
+      hasPrevious={Boolean(cursor)}
       loading={loading}
       onNext={() => {
         if (!pageInfo.endCursor) return;
         onNavigate(pageInfo.endCursor, [...trail, cursor]);
       }}
       onPrevious={() => onNavigate(trail.at(-1) ?? "", trail.slice(0, -1))}
-      page={trail.length + 1}
+      previousLabel={cursor && trail.length === 0 ? t("Back to first page") : undefined}
+      // INVARIANT: 后退 / 刷新后轨迹为空而游标还在——位置未知就说未知，不编页码。
+      page={!cursor ? 1 : trail[0] === "" ? trail.length + 1 : null}
       pageSize={GENERATION_CONFIG_PAGE_SIZE}
       rowCount={rowCount}
     />

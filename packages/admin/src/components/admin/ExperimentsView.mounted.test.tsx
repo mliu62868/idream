@@ -146,6 +146,16 @@ describe("ExperimentsView lifecycle commands", () => {
     expect(container.querySelector('[data-testid="admin-pagination"]')?.textContent).toContain("Page 1");
   });
 
+  it("does not call flag monitoring without analytics.export and says which capability is missing", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ ok: true, data: { items: [], pageInfo: { hasNextPage: false, endCursor: null } } }));
+    vi.stubGlobal("fetch", fetchMock);
+    await act(async () => root.render(<ExperimentsView canReadFlagMonitoring={false} />));
+    await waitFor(() => fetchMock.mock.calls.length > 0);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    expect(fetchMock.mock.calls.map(([input]: unknown[]) => String(input)).filter((url) => url.includes("flag-monitoring"))).toEqual([]);
+    expect(container.querySelector('[title="analytics.export"]')).not.toBeNull();
+  });
+
   it("explains engineering integration before starting a custom definition instead of promising product traffic", async () => {
     const custom = { ...runningExperiment, key: "custom.retention.v1", status: "draft" };
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => Response.json({ ok: true, data:

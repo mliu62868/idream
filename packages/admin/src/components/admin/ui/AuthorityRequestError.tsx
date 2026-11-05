@@ -16,6 +16,8 @@ export function AuthorityRequestError({
   onRetry,
   snapshotAt,
   requestKind = "write",
+  retryLabel,
+  onDismiss,
 }: {
   /** 原始异常。给了就按错误码映射文案；只有 message 时按「读不到最新数据」兜底。 */
   cause?: unknown;
@@ -24,6 +26,10 @@ export function AuthorityRequestError({
   snapshotAt?: string | null;
   /** 历史调用方也用它呈现保存失败；显式标注读取，才能省去写入结果核对。 */
   requestKind?: "read" | "write";
+  /** 按钮并不重放这次写入、只是重新读取时，必须改名——否则运营以为点过 Retry 就重试过了。 */
+  retryLabel?: string;
+  /** 写失败不随重读消失；给运营一个自己确认「知道了」的出口。 */
+  onDismiss?: () => void;
 }) {
   const { locale, t } = useAdminI18n();
   const copy = cause === undefined ? null : operatorErrorCopy(cause);
@@ -54,15 +60,22 @@ export function AuthorityRequestError({
             </span>
           ) : null}
         </span>
-        <button
-          className="inline-flex min-h-9 shrink-0 items-center gap-2 rounded border border-current px-3 font-semibold"
-          onClick={onRetry}
-          type="button"
-        >
-          <RefreshCcw className="h-4 w-4" />
+        <span className="flex shrink-0 flex-wrap justify-end gap-2">
+          <button
+            className="inline-flex min-h-9 shrink-0 items-center gap-2 rounded border border-current px-3 font-semibold"
+            onClick={onRetry}
+            type="button"
+          >
+            <RefreshCcw className="h-4 w-4" />
 
-          {t("Retry")}
-        </button>
+            {retryLabel ?? t("Retry")}
+          </button>
+          {onDismiss ? (
+            <button className="inline-flex min-h-9 shrink-0 items-center rounded px-3 underline underline-offset-2" onClick={onDismiss} type="button">
+              {t("Dismiss")}
+            </button>
+          ) : null}
+        </span>
       </div>
       <RequestErrorDetails technical={copy?.technical ?? fallbackTechnical(message)} />
     </div>

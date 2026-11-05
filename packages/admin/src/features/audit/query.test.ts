@@ -40,7 +40,8 @@ describe("Audit workspace query contract", () => {
   });
 
   it("distinguishes filtered empty results from a true empty authority", () => {
-    expect(isAuditQueryFiltered(auditQueryFromSearch("?auditCursor=page-2&commandId=command-9"))).toBe(false);
+    expect(isAuditQueryFiltered(auditQueryFromSearch("?auditCursor=page-2"))).toBe(false);
+    expect(isAuditQueryFiltered(auditQueryFromSearch("?auditCursor=page-2&commandId=command-9"))).toBe(true);
     expect(isAuditQueryFiltered(auditQueryFromSearch("?auditActor=operator-1"))).toBe(true);
   });
 
@@ -51,6 +52,11 @@ describe("Audit workspace query contract", () => {
       .toBe("/api/v2/admin/audit-log?limit=50");
   });
 
+  it("names the deep-linked command as a chip that can be cleared", () => {
+    const [command] = changedAuditFilters(auditQueryFromSearch("?commandId=command-9"));
+    expect(command).toEqual({ key: "commandId", value: "command-9", reset: { commandId: "" } });
+  });
+
   it("names every active filter as a chip and hands back the patch that clears it", () => {
     const query = auditQueryFromSearch("?auditActor=operator-1&auditTargetType=character_release&auditCursor=page-2");
 
@@ -58,7 +64,7 @@ describe("Audit workspace query contract", () => {
       ["actorId", "operator-1"],
       ["targetType", "character_release"],
     ]);
-    // 清一枚芯片只还原那一个字段，游标和 commandId 由调用方决定，不在补丁里。
+    // 清一枚芯片只还原那一个字段，游标由调用方决定，不在补丁里。
     expect(changedAuditFilters(query)[0].reset).toEqual({ actorId: defaultAuditQuery.actorId });
   });
 });

@@ -1,9 +1,9 @@
 "use client";
 
-import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
+import { useAdminI18n } from "@/components/admin/i18n";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, ArrowRight, CheckCircle2, RefreshCcw, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, CheckCircle2, X } from "lucide-react";
 import {
   type AdminListResponse,
   type IncidentActionPlan,
@@ -12,7 +12,11 @@ import {
 } from "@idream/shared/admin";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
+import { CopyableId } from "@/components/admin/ui/CopyableId";
+import { OperatorInputError } from "@/components/admin/ui/request-error-copy";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
+import { useAdminFormat, type AdminFormat } from "@/components/admin/ui/format";
+import { Pagination } from "@/components/admin/ui/Pagination";
 import { useUnsavedChanges } from "@/components/admin/ui/useUnsavedChanges";
 import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 import { setWorkspaceUrl } from "@/lib/admin-v2-api";
@@ -68,12 +72,15 @@ export function IncidentWorkspace({
   canReplayCorrelationOutbox?: boolean;
   initialIncidentId?: string | null;
 }) {
-  const { locale, t } = useAdminI18n();
+  const { t } = useAdminI18n();
+  const format = useAdminFormat();
   const { toast } = useToast();
   const failureToast = useFailureToast();
   const [initialUrlState] = useState(() => initialIncidentWorkspaceState(initialIncidentId));
   const [query, setQuery] = useState<IncidentQueryDraft>(initialUrlState.query);
   const [list, setList] = useState<IncidentList | null>(null);
+  // SPEC: 列表当前停在哪个游标、怎么走到的。query 同时是筛选草稿（打字会清它的 cursor），不能拿来算页码。
+  const [listPosition, setListPosition] = useState<{ cursor: string; trail: string[] }>({ cursor: "", trail: [] });
   const [selectedId, setSelectedId] = useState(initialUrlState.selectedId);
   const [selectedSavedViewId, setSelectedSavedViewId] = useState(initialUrlState.savedViewId);
   const [detail, setDetail] = useState<IncidentDetail | null>(null);
@@ -90,6 +97,11 @@ export function IncidentWorkspace({
   const detailRequestId = useRef(0);
   const mounted = useRef(false);
   const activeOperations = useRef(new Set<symbol>());
+  // INTENT: 确认框的 onSubmit 是打开那一刻捕获的闭包，读 state 只能读到旧值；门禁要看现在的读取状态。
+  const detailReadState = useRef({ loading: false, failed: false });
+  useEffect(() => {
+    detailReadState.current = { loading: detailLoading, failed: detailError !== null };
+  }, [detailError, detailLoading]);
 
   useEffect(() => {
     const operations = activeOperations.current;
@@ -108,6 +120,9 @@ export function IncidentWorkspace({
 
   const loadList = useCallback(async (next: IncidentQueryDraft) => {
     const requestId = ++listRequestId.current;
+    setListPosition((position) => next.cursor === position.cursor || (!next.cursor && !position.cursor)
+      ? position
+      : { cursor: next.cursor ?? "", trail: next.cursor ? position.trail : [] });
     setLoading(true);
     setError(null);
     try {
@@ -198,6 +213,14 @@ export function IncidentWorkspace({
     void loadList(defaultIncidentQuery);
   }
 
+  function goToListPage(cursor: string, trail: string[]) {
+    const next = { ...history.current.current().query, cursor: cursor || undefined };
+    setQuery(next);
+    setListPosition({ cursor, trail });
+    history.current.navigate({ query: next, selectedId, savedViewId: selectedSavedViewId }, writeIncidentUrl);
+    void loadList(next);
+  }
+
   function selectIncident(id: string | null) {
     if (id === selectedId) return;
     confirmDiscard(() => {
@@ -226,7 +249,12 @@ export function IncidentWorkspace({
   // SPEC: command 让失败抛出去——ConfirmDialog 要靠它就地显示错误并保持模态不关。
   // mutate 是给页面内联按钮用的包装：同样的刷新，但把错误交给失败 toast。
   async function command(label: string, execute: () => Promise<unknown>) {
-    if (!mounted.current || history.current.current().selectedId !== selectedId || activeOperations.current.size > 0 || detailLoading || detailError !== null) return;
+    if (!mounted.current || history.current.current().selectedId !== selectedId) return;
+    // INVARIANT: ConfirmDialog 把「正常返回」当成写入成功。这里不能静默 return，否则它带着运营敲好的
+    //            理由关掉，而什么都没写；抛出去才能留在框里显示原因。
+    if (activeOperations.current.size > 0 || detailReadState.current.loading || detailReadState.current.failed) {
+      throw new OperatorInputError(t("This record's latest details are not ready."), "Wait for them to load, or retry the read, then submit again — nothing was written.");
+    }
     const operation = Symbol("incident-command");
     activeOperations.current.add(operation);
     const pathname = window.location.pathname;
@@ -292,7 +320,7 @@ export function IncidentWorkspace({
         </div>
         {list ? (
           <p className="text-xs text-[var(--ad-text-muted)]" role="status">
-            {t(list.freshness)}  {t("· data as of")} <time dateTime={list.asOf}>{new Date(list.asOf).toLocaleTimeString(locale === "zh" ? "zh-CN" : "en-US")}</time>
+            {t(list.freshness)}  {t("· data as of")} <time dateTime={list.asOf}>{format.time(list.asOf)}</time>
           </p>
         ) : null}
       </header>
@@ -343,23 +371,34 @@ export function IncidentWorkspace({
             {list?.items.map((incident) => (
               <button
                 aria-current={selectedId === incident.id ? "true" : undefined}
-                className="group w-full rounded-lg bg-[var(--ad-surface)] p-4 text-left transition hover:-translate-y-0.5 hover:shadow-[var(--ad-shadow-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
+                className={`group w-full rounded-lg bg-[var(--ad-surface)] p-4 text-left transition hover:-translate-y-0.5 hover:shadow-[var(--ad-shadow-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)] ${selectedId === incident.id ? "ring-1 ring-[var(--ad-ink)]" : ""}`}
                 key={incident.id}
                 onClick={() => selectIncident(incident.id)}
                 type="button"
               >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0"><p className="truncate font-mono text-xs text-[var(--ad-text-muted)]">{incident.signature.slice(0, 18)}</p><p className="mt-1 line-clamp-2 text-sm font-semibold">{incident.suspectedCause ?? t("Cause not yet established")}</p></div>
+                {/* INVARIANT: <button> 里只能放短语内容——这一行全部用 span，不用 div / p / dl。 */}
+                <span className="flex items-start justify-between gap-3">
+                  <span className="min-w-0"><span className="block truncate font-mono text-xs text-[var(--ad-text-muted)]">{incident.signature.slice(0, 18)}</span><span className="mt-1 line-clamp-2 text-sm font-semibold">{incident.suspectedCause ?? t("Cause not yet established")}</span></span>
                   <ArrowRight className="mt-1 h-4 w-4 shrink-0 text-[var(--ad-text-muted)] transition group-hover:translate-x-0.5" />
-                </div>
-                <div className="mt-3 flex flex-wrap gap-2"><StatusBadge value={incident.severity} /><StatusBadge value={incident.status} /><StatusBadge value={incident.recoveryVerification.state} /></div>
+                </span>
+                <span className="mt-3 flex flex-wrap gap-2"><StatusBadge value={incident.severity} /><StatusBadge value={incident.status} /><StatusBadge value={incident.recoveryVerification.state} /></span>
                 {/* INTENT: 半夜被叫醒的人在列表这一屏就要看齐"多少请求 / 多少人 / 烧了多少钱 / 从什么时候起"。
                     影响面里的钱和 firstSeenAt 一直在响应里，之前只是没渲染。 */}
-                <dl className="mt-4 grid grid-cols-2 gap-3 text-xs sm:grid-cols-4"><Stat label="Requests" value={incident.impact.affectedRequests} /><Stat label="Users" value={incident.impact.affectedUsers} /><Stat label="Provider spend" value={micros(locale, incident.impact.failedCostMicros)} /><Stat label="Started" value={<RelativeTime referenceTime={list.asOf} value={incident.firstSeenAt} />} /></dl>
+                <span className="mt-4 grid grid-cols-2 gap-3 text-xs sm:grid-cols-4"><RowStat label="Requests" value={format.count(incident.impact.affectedRequests)} /><RowStat label="Users" value={format.count(incident.impact.affectedUsers)} /><RowStat label="Provider spend" value={micros(format, incident.impact.failedCostMicros)} /><RowStat label="Started" value={<RelativeTime referenceTime={list.asOf} value={incident.firstSeenAt} />} /></span>
               </button>
             ))}
-            {list?.pageInfo.hasNextPage && list.pageInfo.endCursor ? (
-              <WorkspaceButton disabled={loading} onClick={() => { const next = { ...history.current.current().query, cursor: list.pageInfo.endCursor ?? undefined }; setQuery(next); history.current.navigate({ query: next, selectedId, savedViewId: selectedSavedViewId }, writeIncidentUrl); void loadList(next); }}><RefreshCcw className="h-4 w-4" />{t("Next page")}</WorkspaceButton>
+            {list ? (
+              <Pagination
+                hasNext={Boolean(list.pageInfo.hasNextPage && list.pageInfo.endCursor)}
+                hasPrevious={Boolean(listPosition.cursor)}
+                loading={loading}
+                onNext={() => { if (list.pageInfo.endCursor) goToListPage(list.pageInfo.endCursor, [...listPosition.trail, listPosition.cursor]); }}
+                onPrevious={() => goToListPage(listPosition.trail.at(-1) ?? "", listPosition.trail.slice(0, -1))}
+                previousLabel={listPosition.cursor && listPosition.trail.length === 0 ? t("Back to first page") : undefined}
+                page={!listPosition.cursor ? 1 : listPosition.trail[0] === "" ? listPosition.trail.length + 1 : null}
+                pageSize={query.limit}
+                rowCount={list.items.length}
+              />
             ) : null}
           </div>
 
@@ -390,7 +429,8 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
   onAuthorityChange: () => Promise<void>;
   onDirtyChange: (dirty: boolean) => void;
 }) {
-  const { locale, t, value } = useAdminI18n();
+  const { t, value } = useAdminI18n();
+  const format = useAdminFormat();
   const [trackedCommandId, setTrackedCommandId] = useState<string | null>(null);
   useEffect(() => {
     const restore = () => setTrackedCommandId(new URLSearchParams(window.location.search).get("commandId"));
@@ -437,12 +477,22 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
   const canVerify = ["mitigating", "monitoring"].includes(incident.status);
   const canResolve = incident.status === "monitoring" && ["passed", "overridden"].includes(incident.recoveryVerification.state);
   const splitIds = [...selectedOccurrenceIds].sort();
-  const mergeSourceRecords = mergeSources.split(",").map((item) => item.trim()).filter(Boolean).flatMap((item) => {
-    const [incidentId, version] = item.split("@");
-    const parsedVersion = Number(version);
-    return incidentId && Number.isInteger(parsedVersion) && parsedVersion > 0 ? [{ incidentId, version: parsedVersion }] : [];
+  const mergeEntries = mergeSources.split(",").map((item) => item.trim()).filter(Boolean);
+  const mergeSourceRecords = mergeEntries.flatMap((item) => {
+    const source = parseMergeSource(item);
+    return source && source.incidentId !== incident.id ? [source] : [];
   });
-  const mergeSourceIds = [...new Set(mergeSourceRecords.map((source) => source.incidentId).filter((id) => id !== incident.id))].sort();
+  const mergeSourceIds = [...new Set(mergeSourceRecords.map((source) => source.incidentId))].sort();
+  // INTENT: 只要有一条写错就不放行，并逐条点名——静默丢掉写错的那条等于少合并一个事故。
+  const invalidMergeEntries = mergeEntries.filter((item) => {
+    const source = parseMergeSource(item);
+    return !source || source.incidentId === incident.id;
+  });
+  const mergeBlockedReason = mergeEntries.length === 0
+    ? t("Enter at least one source. Open the other Incident and copy its merge reference.")
+    : invalidMergeEntries.length > 0
+      ? t("Not usable as a source: {entries}. Each entry must be another Incident's merge reference, written as incidentId@version.", { entries: invalidMergeEntries.join(", ") })
+      : null;
   const serverNow = new Date(asOf).getTime();
   const livePlans = detail.actionPlans.filter((plan) => new Date(plan.expiresAt).getTime() > serverNow);
   const closeBlockers = [
@@ -550,7 +600,7 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
   return (
     <aside aria-labelledby="incident-detail-title" className="min-w-0 rounded-xl bg-[var(--ad-surface)] shadow-[0_18px_50px_rgb(45_42_34/0.08)] lg:sticky lg:top-40">
       <header className="flex items-start justify-between gap-4 border-b border-[var(--ad-border)] p-5">
-        <div className="min-w-0"><p className="break-all font-mono text-xs text-[var(--ad-text-muted)]">{incident.id}</p><h3 className="mt-1 break-words text-lg font-semibold" id="incident-detail-title">{incident.suspectedCause ?? t("Incident under investigation")}</h3><div className="mt-3 flex flex-wrap gap-2"><StatusBadge value={incident.severity} /><StatusBadge value={incident.status} /></div></div>
+        <div className="min-w-0"><p className="break-all font-mono text-xs text-[var(--ad-text-muted)]">{incident.id}</p><p className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-[var(--ad-text-muted)]"><span>{t("Merge reference")}</span><CopyableId full value={`${incident.id}@${incident.version}`} /></p><h3 className="mt-1 break-words text-lg font-semibold" id="incident-detail-title">{incident.suspectedCause ?? t("Incident under investigation")}</h3><div className="mt-3 flex flex-wrap gap-2"><StatusBadge value={incident.severity} /><StatusBadge value={incident.status} /></div></div>
         <button aria-label={t("Close incident detail")} className="grid min-h-11 min-w-11 shrink-0 place-items-center rounded-md hover:bg-black/[0.04]" onClick={onClose} type="button"><X className="h-4 w-4" /></button>
       </header>
 
@@ -561,13 +611,13 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
         <section aria-labelledby="incident-impact-title">
           <h4 className="text-sm font-semibold" id="incident-impact-title">{t("Impact and recovery")}</h4>
           <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <Stat label="Requests" value={incident.impact.affectedRequests} />
-            <Stat label="Users" value={incident.impact.affectedUsers} />
-            <Stat label="Provider spend" value={micros(locale, incident.impact.failedCostMicros)} />
-            <Stat label="Refunded" value={t("{count} DC", { count: incident.impact.refundDreamcoins ?? 0 })} />
+            <Stat label="Requests" value={format.count(incident.impact.affectedRequests)} />
+            <Stat label="Users" value={format.count(incident.impact.affectedUsers)} />
+            <Stat label="Provider spend" value={micros(format, incident.impact.failedCostMicros)} />
+            <Stat label="Refunded" value={t("{count} DC", { count: format.count(incident.impact.refundDreamcoins ?? 0) })} />
             <Stat label="Started" value={<RelativeTime referenceTime={asOf} value={incident.firstSeenAt} />} />
             <Stat label="Last seen" value={<RelativeTime referenceTime={asOf} value={incident.lastSeenAt} />} />
-            <Stat label="Occurrences" value={detail.occurrences.length} />
+            <Stat label="Occurrences" value={format.count(detail.occurrences.length)} />
             <Stat label="Verification" value={<StatusBadge value={incident.recoveryVerification.state} />} />
           </dl>
           {incident.slaDueAt ? (
@@ -713,8 +763,9 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
               <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Merge sources")}<input className={fieldClass} onChange={(event) => setMergeSources(event.target.value)} value={mergeSources} /></label>
               <div className="flex flex-wrap gap-2">
                 <WorkspaceButton disabled={busy || splitIds.length === 0 || splitIds.length >= detail.occurrences.length} onClick={splitOccurrences}>{t("Split selected")}</WorkspaceButton>
-                <WorkspaceButton disabled={busy || mergeSourceIds.length === 0} onClick={mergeIncidents}>{t("Merge sources")}</WorkspaceButton>
+                <WorkspaceButton disabled={busy || mergeBlockedReason !== null} onClick={mergeIncidents}>{t("Merge sources")}</WorkspaceButton>
               </div>
+              {mergeBlockedReason ? <p className="text-xs text-[var(--ad-text-muted)]" role="status">{mergeBlockedReason}</p> : null}
             </section>
 
             <section
@@ -870,7 +921,8 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
 }
 
 function PlanFacts({ asOf, plan }: { asOf: string; plan: IncidentActionPlan }) {
-  const { locale, t } = useAdminI18n();
+  const { t } = useAdminI18n();
+  const format = useAdminFormat();
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
@@ -878,13 +930,13 @@ function PlanFacts({ asOf, plan }: { asOf: string; plan: IncidentActionPlan }) {
         <span className="text-xs text-[var(--ad-text-muted)]">{t("expires")} <RelativeTime referenceTime={asOf} value={plan.expiresAt} /></span>
       </div>
       <p className="mt-2">
-        <strong>{plan.eligibleOccurrenceIds.length}</strong> {t("eligible ·")} <strong>{plan.skippedOccurrenceIds.length}</strong> {t("skipped")}
+        <strong>{format.count(plan.eligibleOccurrenceIds.length)}</strong> {t("eligible ·")} <strong>{format.count(plan.skippedOccurrenceIds.length)}</strong> {t("skipped")}
       </p>
       <dl className="mt-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-        <Stat label="Requests" value={plan.impact.affectedRequests} />
-        <Stat label="Users" value={plan.impact.affectedUsers} />
-        <Stat label="Provider spend" value={micros(locale, plan.impact.failedCostMicros)} />
-        <Stat label="Refunded" value={t("{count} DC", { count: plan.impact.refundDreamcoins ?? 0 })} />
+        <Stat label="Requests" value={format.count(plan.impact.affectedRequests)} />
+        <Stat label="Users" value={format.count(plan.impact.affectedUsers)} />
+        <Stat label="Provider spend" value={micros(format, plan.impact.failedCostMicros)} />
+        <Stat label="Refunded" value={t("{count} DC", { count: format.count(plan.impact.refundDreamcoins ?? 0) })} />
       </dl>
       {plan.targetVersion ? <p className="mt-2 text-xs">{t("Rollback target")}: <code className="font-mono">{plan.targetVersion}</code></p> : null}
       <code className="mt-2 block break-all text-xs">{plan.incidentId}:{plan.id}:{plan.action}</code>
@@ -940,9 +992,23 @@ function Select({ label, onChange, options, value }: { label: string; onChange: 
   return <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t(label)}<select className={fieldClass} onChange={(event) => onChange(event.target.value)} value={value}>{options.map((option) => <option key={option || "all"} value={option}>{option ? t(option.replaceAll("_", " ")) : t("All")}</option>)}</select></label>;
 }
 
+function parseMergeSource(entry: string) {
+  const [incidentId, version, ...rest] = entry.split("@");
+  const parsedVersion = Number(version);
+  return incidentId && rest.length === 0 && Number.isInteger(parsedVersion) && parsedVersion > 0
+    ? { incidentId, version: parsedVersion }
+    : null;
+}
+
 function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   const { t } = useAdminI18n();
   return <div><dt className="text-[10px] font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">{t(label)}</dt><dd className="mt-1 font-mono text-sm text-[var(--ad-ink)]">{value}</dd></div>;
+}
+
+// 列表行是 <button>，里面不能放 <dl>；视觉上与 Stat 一致，语义上是按钮名称的一部分。
+function RowStat({ label, value }: { label: string; value: React.ReactNode }) {
+  const { t } = useAdminI18n();
+  return <span className="block"><span className="block text-[10px] font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">{t(label)}</span><span className="mt-1 block font-mono text-sm text-[var(--ad-ink)]">{value}</span></span>;
 }
 
 // INVARIANT: server and first browser render must agree; the address bar is restored after hydration.
@@ -958,8 +1024,8 @@ function writeIncidentUrl(state: IncidentWorkspaceUrlState, mode: "push" | "repl
 }
 
 // 跟随 JobsView 的既有写法：micros 不换算成任何货币，带 μ 后缀原样呈现。
-function micros(locale: "en" | "zh", value: number) {
-  return `${value.toLocaleString(adminDateLocale(locale))} μ`;
+function micros(format: Pick<AdminFormat, "count">, value: number) {
+  return `${format.count(value)} μ`;
 }
 
 function message(error: unknown) {

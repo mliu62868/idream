@@ -331,6 +331,49 @@ describe("IncidentWorkspace affected users", () => {
     expect(cause().value).toBe("Later local evidence");
   });
 
+  it("shows the copyable merge reference and says why Merge sources is unavailable", async () => {
+    await mountInspector();
+    const inspector = container.querySelector('[aria-labelledby="incident-detail-title"]')!;
+    expect(inspector.querySelector('code[title="incident-1@7"]')?.textContent).toBe("incident-1@7");
+    expect(inspector.querySelector('button[aria-label="Copy incident-1@7"]')).not.toBeNull();
+    const correlation = container.querySelector('[aria-labelledby="incident-correlation-title"]')!;
+    const merge = () => [...correlation.querySelectorAll("button")].find((node) => node.textContent === "Merge sources")!;
+    const field = correlation.querySelector<HTMLInputElement>("input")!;
+    expect(merge().disabled).toBe(true);
+    expect(correlation.textContent).toContain("copy its merge reference");
+    await enter(field, "incident-2");
+    expect(merge().disabled).toBe(true);
+    expect(correlation.textContent).toContain("Not usable as a source: incident-2.");
+    await enter(field, "incident-2@3, incident-1@7");
+    expect(merge().disabled).toBe(true);
+    expect(correlation.textContent).toContain("Not usable as a source: incident-1@7.");
+    await enter(field, "incident-2@3");
+    expect(merge().disabled).toBe(false);
+    expect(correlation.textContent).not.toContain("Not usable as a source");
+  });
+
+  it("marks the selected row visibly and keeps its contents valid inside a button", async () => {
+    await mountInspector();
+    const row = container.querySelector<HTMLButtonElement>('[aria-label="Incident results"] button[aria-current="true"]')!;
+    expect(row.className).toContain("ring-1");
+    expect(row.querySelector("dl, dt, dd, div, p")).toBeNull();
+  });
+
+  it("keeps the confirmation open with its reason when the detail is still loading", async () => {
+    await mountInspector();
+    await click(findButton("Execute frozen plan", container));
+    const dialog = await waitForDialog();
+    await enter(dialog.querySelector<HTMLInputElement>('input[aria-label="Execution confirmation"]'), "incident-1:plan-1:refund");
+    const reads = adminV2Request.getMockImplementation()!;
+    adminV2Request.mockImplementation(async (path: string, options?: { method?: string }) =>
+      path === `/api/v2/admin/incidents/${incident.id}` ? new Promise(() => undefined) : reads(path, options));
+    await act(async () => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)));
+    await click(findButton("Execute frozen plan", dialog));
+    expect(document.querySelector('[role="dialog"]')).toBe(dialog);
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toContain("This record's latest details are not ready.");
+    expect(adminV2Request.mock.calls.some(([, options]) => (options as { method?: string } | undefined)?.method === "POST")).toBe(false);
+  });
+
   it("lists each affected user and says how many occurrences could not be traced", async () => {
     await mountInspector();
     expect(adminV2Request).toHaveBeenCalledWith(

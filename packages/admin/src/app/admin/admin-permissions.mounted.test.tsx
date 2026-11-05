@@ -190,6 +190,31 @@ describe("shell permission authority through actual workspace HTTP requests", ()
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
   });
 
+  // SPEC: 外壳刷新碰上一次 5xx，不能把运营写到一半的内容一起卸载掉；但写能力依然要立刻收回。
+  it("keeps the workspace and its unsaved input mounted but frozen through a transient refresh failure", async () => {
+    bootstrapRead = async () => bootstrap(review);
+    await mount();
+    const content = document.querySelector<HTMLElement>("#admin-main-content .p-4 > div")!;
+    const marker = document.createElement("input");
+    content.append(marker);
+
+    bootstrapRead = async () => Response.json({ ok: false, error: { code: "admin_upstream_unavailable", message: "down" } }, { status: 503 });
+    await click(button("Refresh"));
+    await settle();
+    expect(document.querySelector('[role="alert"]')).not.toBeNull();
+    expect(document.contains(marker)).toBe(true);
+    expect(marker.parentElement?.hasAttribute("inert")).toBe(true);
+    expect([...document.querySelectorAll("button")].some(node => node.textContent === "Approve")).toBe(false);
+
+    bootstrapRead = async () => bootstrap(review);
+    await click(button("Refresh"));
+    await settle();
+    expect(document.querySelector('[role="alert"]')).toBeNull();
+    expect(document.contains(marker)).toBe(true);
+    expect(marker.parentElement?.hasAttribute("inert")).toBe(false);
+    expect(button("Approve")).toBeDefined();
+  });
+
   it("retains a business-policy rejection when fresh permissions are unchanged", async () => {
     bootstrapRead = async () => bootstrap(review);
     write = async () => Response.json({ ok: false, error: {

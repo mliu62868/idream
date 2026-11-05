@@ -76,7 +76,7 @@ export function JobsView({ permissions }: { readonly permissions: JobsViewPermis
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [detail, setDetail] = useState<GenerationJobDetailResponse | null>(null);
   const [detailBusy, setDetailBusy] = useState(false);
-  const [detailError, setDetailError] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<unknown>(null);
   const { toast } = useToast();
   const [retrySpec, setRetrySpec] = useState<ConfirmSpec | null>(null);
   const [selectedRows, setSelectedRows] = useState<string[]>([]);
@@ -107,6 +107,7 @@ export function JobsView({ permissions }: { readonly permissions: JobsViewPermis
         current,
         encoded,
         cause instanceof Error ? cause.message : "Generation Jobs could not be loaded",
+        cause,
       ));
     }
   }, []);
@@ -124,11 +125,11 @@ export function JobsView({ permissions }: { readonly permissions: JobsViewPermis
       );
       if (request.isCurrent()) setDetail(response);
     } catch (cause) {
-      if (request.isCurrent()) setDetailError(cause instanceof Error ? cause.message : t("Job detail load failed"));
+      if (request.isCurrent()) setDetailError(cause);
     } finally {
       if (request.isCurrent()) setDetailBusy(false);
     }
-  }, [t]);
+  }, []);
 
   const filters = useUrlFilters<GenerationJobQueryDraft>({
     initial: defaultGenerationJobQuery,
@@ -267,6 +268,7 @@ export function JobsView({ permissions }: { readonly permissions: JobsViewPermis
                     },
                   });
                   if (confirmationIntent.current !== spec) return;
+                  toast({ tone: "success", title: t("Retry attempt created for {id}", { id: shortId(item.id) }) });
                   await loadJobs(query);
                 },
               };
@@ -375,7 +377,7 @@ export function JobsView({ permissions }: { readonly permissions: JobsViewPermis
         <datalist id="job-source-facets">{jobs.data?.facets.sourceTypes.map((facet) => <option key={facet.value} value={facet.value}>{facet.count}</option>)}</datalist>
       </FilterBar>
 
-      {jobs.error && jobs.data ? <AuthorityRequestError requestKind="read" message={jobs.error} onRetry={reload} snapshotAt={jobs.refreshedAt} /> : null}
+      {jobs.error && jobs.data ? <AuthorityRequestError requestKind="read" cause={jobs.cause} message={jobs.error} onRetry={reload} snapshotAt={jobs.refreshedAt} /> : null}
       {jobs.data ? (
         <section aria-label={t("Generation Job totals")} className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
           {[
@@ -383,7 +385,7 @@ export function JobsView({ permissions }: { readonly permissions: JobsViewPermis
             ["Dreamcoins cost", jobs.data.summary.totalCostDreamcoins],
             ["Requested outputs", jobs.data.summary.totalOutputCount],
             ["Delivered outputs", jobs.data.summary.totalDeliveredOutputCount],
-          ].map(([label, amount]) => <div className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3" key={label}><p className="text-xs text-[var(--ad-text-muted)]">{t(String(label))}</p><p className="mt-1 text-lg font-semibold tabular-nums">{amount}</p></div>)}
+          ].map(([label, amount]) => <div className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3" key={label}><p className="text-xs text-[var(--ad-text-muted)]">{t(String(label))}</p><p className="mt-1 text-lg font-semibold tabular-nums">{format.count(Number(amount))}</p></div>)}
         </section>
       ) : null}
 
@@ -401,6 +403,7 @@ export function JobsView({ permissions }: { readonly permissions: JobsViewPermis
           />
         }
         error={jobs.data ? null : jobs.error}
+        errorCause={jobs.cause}
         headers={headers}
         loading={jobs.loading}
         minimumWidthClassName="min-w-[1080px]"
@@ -459,6 +462,7 @@ export function JobsView({ permissions }: { readonly permissions: JobsViewPermis
           jobId={selectedJobId}
           loading={detailBusy}
           onClose={closeJobDetail}
+          onRetry={() => void showJobDetail(selectedJobId)}
           onReconciled={async () => {
             await Promise.all([
               showJobDetail(selectedJobId),
@@ -487,13 +491,14 @@ function UnknownReviewCell({ item }: { item: GenerationJobListItem }) {
   );
 }
 
-function GenerationJobInspector({ canReconcile, detail, error, jobId, loading, onClose, onReconciled }: {
+function GenerationJobInspector({ canReconcile, detail, error, jobId, loading, onClose, onReconciled, onRetry }: {
   canReconcile: boolean;
   detail: GenerationJobDetailResponse | null;
-  error: string | null;
+  error: unknown;
   jobId: string;
   loading: boolean;
   onClose: () => void;
+  onRetry: () => void;
   onReconciled: () => Promise<void>;
 }) {
   const { t, value } = useAdminI18n();
@@ -521,7 +526,7 @@ function GenerationJobInspector({ canReconcile, detail, error, jobId, loading, o
         </div>
       </div>
       {loading ? <div className="flex h-28 items-center justify-center text-sm text-[var(--ad-text-muted)]" role="status"><Loader2 className="mr-2 h-4 w-4 animate-spin" />{t("Loading Request, Attempt, Delivery, and Settlement facts")}</div> : null}
-      {error ? <div className="m-4 rounded-lg border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] px-3 py-2 text-sm text-[var(--ad-red-text)]" role="alert">{error}</div> : null}
+      {error !== null ? <div className="m-4"><AuthorityRequestError cause={error} message={t("Job detail load failed")} onRetry={onRetry} requestKind="read" /></div> : null}
       {request && detail ? (
         <div className="space-y-5 p-4">
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -553,7 +558,7 @@ function GenerationJobInspector({ canReconcile, detail, error, jobId, loading, o
               <span className="inline-flex items-center gap-1" key="transport">{`#${execution.transportAttemptNo} ·`} <CopyableId value={execution.id} /></span>,
               <span className="inline-flex items-center gap-1" key="attempt-provider"><CopyableId value={execution.attemptId} />{" · "}{execution.provider ?? "—"}</span>,
               value(execution.status),
-              execution.costMicros === null ? "Unavailable" : `${format.count(execution.costMicros)} μ`,
+              execution.costMicros === null ? t("Unavailable") : `${format.count(execution.costMicros)} μ`,
               execution.terminalRecordRef ?? "—",
               execution.finishedAt ? format.dateTime(execution.finishedAt) : "—",
             ])}
@@ -600,7 +605,7 @@ function GenerationJobInspector({ canReconcile, detail, error, jobId, loading, o
           <AuthorityTable
             caption="Append-only Settlement entries"
             headers={["Ledger entry", "Kind", "Reason", "Dreamcoins", "Occurred"]}
-            rows={detail.settlementEntries.map((entry) => [<CopyableId key="ledger" value={entry.ledgerEntryId} />, entry.kind, entry.reason, String(entry.deltaDreamcoins), format.dateTime(entry.createdAt)])}
+            rows={detail.settlementEntries.map((entry) => [<CopyableId key="ledger" value={entry.ledgerEntryId} />, entry.kind, entry.reason, format.dreamcoins(entry.deltaDreamcoins, { signed: true, unit: false }), format.dateTime(entry.createdAt)])}
           />
           <AuthorityTable
             caption="Unknown outcome reconciliation decisions"
@@ -613,8 +618,8 @@ function GenerationJobInspector({ canReconcile, detail, error, jobId, loading, o
               decision.nextReviewAt
                 ? `${value(decision.reviewStatus)} · ${format.dateTime(decision.nextReviewAt)}`
                 : decision.deliveredCount > 0
-                  ? `${decision.deliveredCount} delivered · ${decision.refundAmount} Dreamcoins refund`
-                  : `${decision.refundAmount} Dreamcoins refund`,
+                  ? t("{delivered} delivered · {refund} Dreamcoins refund", { delivered: format.count(decision.deliveredCount), refund: format.count(decision.refundAmount) })
+                  : t("{refund} Dreamcoins refund", { refund: format.count(decision.refundAmount) }),
               format.dateTime(decision.occurredAt),
             ])}
           />

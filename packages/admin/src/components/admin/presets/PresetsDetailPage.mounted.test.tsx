@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { act } from "react";
+import { ToastProvider } from "@/components/admin/ui/Toast";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PresetsDetailPage } from "./PresetsDetailPage";
@@ -32,7 +33,7 @@ describe("preset edits under pending and failed writes", () => {
   const writes = () => fetchMock.mock.calls.filter(([, init]) => init?.method === "PATCH");
 
   async function edit() {
-    await act(async () => root.render(<PresetsDetailPage canWrite id={preset.id} />));
+    await act(async () => root.render(<ToastProvider><PresetsDetailPage canWrite id={preset.id} /></ToastProvider>));
     await waitFor(() => button("Edit preset") !== undefined);
     await act(async () => button("Edit preset")!.click());
   }
@@ -54,7 +55,7 @@ describe("preset edits under pending and failed writes", () => {
 
   it.each([true, false])("recovers an initial network failure with only a read (canWrite=%s)", async (canWrite) => {
     fetchMock.mockRejectedValueOnce(new TypeError("Preset network unavailable"));
-    await act(async () => root.render(<PresetsDetailPage canWrite={canWrite} id={preset.id} />));
+    await act(async () => root.render(<ToastProvider><PresetsDetailPage canWrite={canWrite} id={preset.id} /></ToastProvider>));
     await waitFor(() => container.textContent?.includes("Preset network unavailable") === true);
     expect(container.textContent).not.toContain("Preset not found.");
     expect(container.textContent).toContain("Could not load preset.");
@@ -71,7 +72,7 @@ describe("preset edits under pending and failed writes", () => {
 
   it("keeps a real 404 distinct from a failed preset read", async () => {
     fetchMock.mockResolvedValueOnce(Response.json({ ok: false, error: { code: "not_found", message: "Preset missing" } }, { status: 404 }));
-    await act(async () => root.render(<PresetsDetailPage canWrite id={preset.id} />));
+    await act(async () => root.render(<ToastProvider><PresetsDetailPage canWrite id={preset.id} /></ToastProvider>));
     await waitFor(() => container.textContent?.includes("Preset missing") === true);
     expect(container.textContent).toContain("Preset not found.");
     expect(container.textContent).not.toContain("Could not load preset.");
@@ -109,13 +110,13 @@ describe("preset edits under pending and failed writes", () => {
   it("keeps the same preset input through rerenders and starts another preset with its own controls", async () => {
     const other = { ...preset, id: "preset-other", label: "Another preset", controls: { prompt: "Another setting" } };
     fetchMock.mockImplementation(async input => Response.json({ ok: true, data: { preset: String(input).includes(other.id) ? other : preset } }));
-    await act(async () => root.render(<PresetsSection canWrite view={{ kind: "detail", id: preset.id }} />));
+    await act(async () => root.render(<ToastProvider><PresetsSection canWrite view={{ kind: "detail", id: preset.id }} /></ToastProvider>));
     await waitFor(() => button("Edit preset") !== undefined);
     await act(async () => button("Edit preset")!.click());
     await changeInput(field("Controls (JSON)"), '{"prompt":"My unsaved first preset controls"}');
-    await act(async () => root.render(<PresetsSection canWrite view={{ kind: "detail", id: preset.id }} />));
+    await act(async () => root.render(<ToastProvider><PresetsSection canWrite view={{ kind: "detail", id: preset.id }} /></ToastProvider>));
     expect(field("Controls (JSON)").value).toBe('{"prompt":"My unsaved first preset controls"}');
-    await act(async () => root.render(<PresetsSection canWrite view={{ kind: "detail", id: other.id }} />));
+    await act(async () => root.render(<ToastProvider><PresetsSection canWrite view={{ kind: "detail", id: other.id }} /></ToastProvider>));
     await waitFor(() => container.textContent?.includes(other.label) === true);
     expect(button("Save changes")).toBeUndefined();
     expect(container.querySelector("textarea")).toBeNull();
@@ -145,13 +146,24 @@ describe("preset edits under pending and failed writes", () => {
     expect(container.textContent).toContain("A calm setting");
   });
 
+  it("names invalid controls JSON instead of blaming an unidentified cause", async () => {
+    await edit();
+    await changeInput(field("Controls (JSON)"), "{ not json");
+    await act(async () => button("Save changes")!.click());
+    expect(document.body.textContent).toContain("controls must be a JSON object");
+    expect(document.body.textContent).not.toContain("send them to engineering");
+    expect(writes()).toHaveLength(0);
+    expect(field("Controls (JSON)").value).toBe("{ not json");
+  });
+
   it("retains a failed preset input and saves the deliberate correction on retry", async () => {
     await edit();
     await changeInput(field("Label"), "My failed preset");
     await changeInput(field("Controls (JSON)"), JSON.stringify({ prompt: "A pending setting" }));
     fetchMock.mockResolvedValueOnce(Response.json({ ok: false, error: { code: "unavailable", message: "Preset write unavailable" } }, { status: 503 }));
     await act(async () => button("Save changes")!.click());
-    await waitFor(() => container.textContent?.includes("Preset write unavailable") === true);
+    await waitFor(() => document.body.textContent?.includes("whether the write landed is unknown") === true);
+    expect(document.body.textContent).not.toContain("Preset write unavailable");
     expect(field("Label").value).toBe("My failed preset");
     expect(JSON.parse(field("Controls (JSON)").value)).toEqual({ prompt: "A pending setting" });
     expect(Boolean(field("Label").closest("fieldset")?.disabled)).toBe(false);
@@ -190,7 +202,7 @@ describe("preset edits under pending and failed writes", () => {
     expect(container.textContent).toContain("Changes were saved, but the latest details could not be loaded.");
     await act(async () => button("Save changes")!.click());
     expect(writes()).toHaveLength(1);
-    await act(async () => root.render(<PresetsDetailPage canWrite={false} id={preset.id} />));
+    await act(async () => root.render(<ToastProvider><PresetsDetailPage canWrite={false} id={preset.id} /></ToastProvider>));
     for (const label of ["Save changes", "Edit preset", "Archive preset", "Restore"]) expect(button(label)).toBeUndefined();
     preset.label = "Latest authority preset"; preset.controls = { prompt: "Latest authority setting" }; failRead = false;
     await act(async () => button("Retry")!.click());
@@ -198,7 +210,7 @@ describe("preset edits under pending and failed writes", () => {
     expect(container.textContent).toContain(preset.label);
     expect(container.querySelector("textarea")).toBeNull();
     expect(writes()).toHaveLength(1);
-    await act(async () => root.render(<PresetsDetailPage canWrite id={preset.id} />));
+    await act(async () => root.render(<ToastProvider><PresetsDetailPage canWrite id={preset.id} /></ToastProvider>));
     await act(async () => button("Edit preset")!.click());
     expect(JSON.parse(field("Controls (JSON)").value)).toEqual(preset.controls);
   });
@@ -215,7 +227,7 @@ describe("preset edits under pending and failed writes", () => {
       if (committed && failRead) return Response.json({ ok: false, error: { code: "unavailable", message: "Archived preset read unavailable" } }, { status: 503 });
       return Response.json({ ok: true, data: { preset } });
     });
-    await act(async () => root.render(<PresetsDetailPage canWrite id={preset.id} />));
+    await act(async () => root.render(<ToastProvider><PresetsDetailPage canWrite id={preset.id} /></ToastProvider>));
     await waitFor(() => button("Archive preset") !== undefined);
     await act(async () => button("Archive preset")!.click());
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
@@ -241,11 +253,11 @@ describe("preset edits under pending and failed writes", () => {
     let finishWrite!: (response: Response) => void;
     fetchMock.mockImplementationOnce(() => new Promise(resolve => { finishWrite = resolve; }));
     await act(async () => button("Save changes")!.click());
-    await act(async () => root.render(<PresetsDetailPage canWrite={false} id={preset.id} />));
+    await act(async () => root.render(<ToastProvider><PresetsDetailPage canWrite={false} id={preset.id} /></ToastProvider>));
     await act(async () => finishWrite(Response.json({ ok: false, error: { code: "forbidden", message: "Missing admin permission" } }, { status: 403 })));
     for (const label of ["Edit preset", "Save changes", "Archive preset", "Restore"]) expect(button(label)).toBeUndefined();
     expect(writes()).toHaveLength(1);
-    await act(async () => root.render(<PresetsDetailPage canWrite id={preset.id} />));
+    await act(async () => root.render(<ToastProvider><PresetsDetailPage canWrite id={preset.id} /></ToastProvider>));
     expect(field("Label").value).toBe("My permission-sensitive preset");
     expect(button("Save changes")!.disabled).toBe(false);
   });

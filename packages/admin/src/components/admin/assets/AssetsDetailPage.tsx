@@ -12,7 +12,8 @@ import { AssetImage } from "@/components/admin/ui/AssetImage";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
 import { useWorkspaceRefresh } from "@/features/workspace-refresh";
-import { InfoGrid, WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { InfoGrid, WriteFeedbackBanner, useWriteFeedback } from "@/components/admin/section-kit";
 import {
   ASSETS_LIST,
   assetAuthorityDependencyView,
@@ -32,7 +33,7 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
   const { t, value } = useAdminI18n();
   const [rows, setRows] = useState<ContentAsset[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingAction | null>(null);
   const [previousAuthority, setPreviousAuthority] = useState({ canReview, id });
@@ -72,12 +73,12 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
       setRows([data.asset]);
       setRefreshWarning(null);
     } catch (loadError) {
-      setError(requestErrorMessage(loadError, t));
+      setError(loadError);
       if (propagateError) throw loadError;
     } finally {
       setLoading(false);
     }
-  }, [id, t]);
+  }, [id]);
 
   useWorkspaceRefresh(reload);
 
@@ -134,6 +135,10 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
       title: t("Archive"),
       summary: shortIdSummary,
       destructive: { expectedName: shortId },
+      consequence: {
+        effect: t("This image leaves the library and can no longer be placed. This console has no command to bring it back."),
+        reversible: false,
+      },
       submitLabel: t("Archive"),
       onSubmit: async (reason) => {
         if (!pending || !isCurrentWrite(pending)) return;
@@ -166,12 +171,7 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
   if (!row) {
     if (error) {
       return (
-        <div className="rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">
-          {error}{" "}
-          <button className="font-semibold underline" onClick={() => void reload()} type="button">
-            {t("Retry")}
-          </button>
-        </div>
+        <AuthorityRequestError cause={error} message={t("The latest data could not be loaded.")} onRetry={() => void reload()} requestKind="read" />
       );
     }
     return (
@@ -181,7 +181,6 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
             <PrimaryButton>{t("Back to image library")}</PrimaryButton>
           </Link>
         }
-        hint={error ?? undefined}
         title={t("Asset not found.")}
       />
     );
@@ -206,7 +205,7 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
       title={shortId}
     >
       <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
-      {error ? <p role="alert" className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
+      {error ? <AuthorityRequestError cause={error} message={t("The latest data could not be loaded.")} onRetry={() => void reload()} requestKind="read" /> : null}
       {refreshWarning ? <p role="status" className="rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]">{refreshWarning}</p> : null}
 
       <MediaAssetAuthorityNotice asset={row} />

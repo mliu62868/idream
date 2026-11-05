@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { act } from "react";
+import { ToastProvider } from "@/components/admin/ui/Toast";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { RecipesDetailPage } from "./RecipesDetailPage";
@@ -29,7 +30,7 @@ it("reloads recipe details through shell refresh without remounting an unfinishe
   const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async input =>
     Response.json({ ok: true, data: String(input).includes("/model-profiles") ? { items: [] } : { recipe } }));
   vi.stubGlobal("fetch", fetchMock);
-  await act(async () => root.render(<RecipesDetailPage canWrite id={recipe.id} />));
+  await act(async () => root.render(<ToastProvider><RecipesDetailPage canWrite id={recipe.id} /></ToastProvider>));
   await waitFor(() => button("Edit recipe") !== undefined);
   await act(async () => button("Edit recipe")!.click());
   await changeInput(field("Body"), "Unfinished recipe prompt");
@@ -55,7 +56,7 @@ it.each([true, false])("recovers an initial recipe 503 with only reads (canWrite
     Response.json({ ok: true, data: String(input).includes("/model-profiles") ? { items: [] } : { recipe } }));
   fetchMock.mockResolvedValueOnce(Response.json({ ok: false, error: { code: "unavailable", message: "Recipe read unavailable" } }, { status: 503 }));
   vi.stubGlobal("fetch", fetchMock);
-  await act(async () => root.render(<RecipesDetailPage canWrite={canWrite} id={recipe.id} />));
+  await act(async () => root.render(<ToastProvider><RecipesDetailPage canWrite={canWrite} id={recipe.id} /></ToastProvider>));
   await waitFor(() => container.textContent?.includes("Recipe read unavailable") === true);
   expect(container.textContent).not.toContain("Recipe not found.");
   expect(container.textContent).toContain("Could not load recipe.");
@@ -72,7 +73,7 @@ it.each([true, false])("recovers an initial recipe 503 with only reads (canWrite
 it("keeps a real recipe 404 distinct from a failed read", async () => {
   const fetchMock = vi.fn(async () => Response.json({ ok: false, error: { code: "not_found", message: "Recipe missing" } }, { status: 404 }));
   vi.stubGlobal("fetch", fetchMock);
-  await act(async () => root.render(<RecipesDetailPage canWrite id="missing-recipe" />));
+  await act(async () => root.render(<ToastProvider><RecipesDetailPage canWrite id="missing-recipe" /></ToastProvider>));
   await waitFor(() => container.textContent?.includes("Recipe missing") === true);
   expect(container.textContent).toContain("Recipe not found.");
   expect(container.textContent).not.toContain("Could not load recipe.");
@@ -88,7 +89,7 @@ it("guards Back and reload only for changed recipe input and keeps that input wh
     createdAt: "2026-09-01T00:00:00.000Z", updatedAt: "2026-09-01T00:00:00.000Z",
   };
   vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => Response.json({ ok: true, data: String(input).includes("/model-profiles") ? { items: [] } : { recipe } })));
-  await act(async () => root.render(<RecipesDetailPage canWrite id={recipe.id} />));
+  await act(async () => root.render(<ToastProvider><RecipesDetailPage canWrite id={recipe.id} /></ToastProvider>));
   await waitFor(() => button("Edit recipe") !== undefined);
   await act(async () => button("Edit recipe")!.click());
   const back = container.querySelector<HTMLAnchorElement>('a[href="/admin/generation/recipes"]')!;
@@ -123,13 +124,13 @@ it("keeps the same recipe draft through rerenders and never offers it as another
   const other = { ...recipe, id: "recipe-other", recipeKey: "landscape", label: "Other recipe", body: "Other recipe body" };
   const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async input => Response.json({ ok: true, data: String(input).includes("/model-profiles") ? { items: [] } : { recipe: String(input).includes(other.id) ? other : recipe } }));
   vi.stubGlobal("fetch", fetchMock);
-  await act(async () => root.render(<RecipesSection canWrite view={{ kind: "detail", id: recipe.id }} />));
+  await act(async () => root.render(<ToastProvider><RecipesSection canWrite view={{ kind: "detail", id: recipe.id }} /></ToastProvider>));
   await waitFor(() => button("Edit recipe") !== undefined);
   await act(async () => button("Edit recipe")!.click());
   await changeInput(field("Body"), "My unsaved first recipe body");
-  await act(async () => root.render(<RecipesSection canWrite view={{ kind: "detail", id: recipe.id }} />));
+  await act(async () => root.render(<ToastProvider><RecipesSection canWrite view={{ kind: "detail", id: recipe.id }} /></ToastProvider>));
   expect(field("Body").value).toBe("My unsaved first recipe body");
-  await act(async () => root.render(<RecipesSection canWrite view={{ kind: "detail", id: other.id }} />));
+  await act(async () => root.render(<ToastProvider><RecipesSection canWrite view={{ kind: "detail", id: other.id }} /></ToastProvider>));
   await waitFor(() => container.textContent?.includes(other.label) === true);
   expect(button("Save changes")).toBeUndefined();
   expect(container.querySelector("textarea")).toBeNull();
@@ -158,7 +159,7 @@ it("renames a draft without replacing configuration and verification fields abse
     return Response.json({ ok: true, data: { recipe } });
   });
   vi.stubGlobal("fetch", fetchMock);
-  await act(async () => root.render(<RecipesDetailPage canWrite id={recipe.id} />));
+  await act(async () => root.render(<ToastProvider><RecipesDetailPage canWrite id={recipe.id} /></ToastProvider>));
   await waitFor(() => button("Edit recipe") !== undefined);
   await act(async () => button("Edit recipe")?.click());
   const label = [...container.querySelectorAll("label")].find(field => field.querySelector("span")?.textContent === "Label")?.querySelector("input");
@@ -189,7 +190,7 @@ it("freezes draft inputs until a pending recipe save settles", async () => {
     return Response.json({ ok: true, data: String(input).includes("/model-profiles") ? { items: [] } : { recipe } });
   });
   vi.stubGlobal("fetch", fetchMock);
-  await act(async () => root.render(<RecipesDetailPage canWrite id={recipe.id} />));
+  await act(async () => root.render(<ToastProvider><RecipesDetailPage canWrite id={recipe.id} /></ToastProvider>));
   await waitFor(() => button("Edit recipe") !== undefined);
   await act(async () => button("Edit recipe")!.click());
   await changeInput(field("Label"), "Saved pending label");
@@ -228,13 +229,14 @@ it("keeps a failed recipe edit available for correction and retry", async () => 
     return Response.json({ ok: true, data: String(input).includes("/model-profiles") ? { items: [] } : { recipe } });
   });
   vi.stubGlobal("fetch", fetchMock);
-  await act(async () => root.render(<RecipesDetailPage canWrite id={recipe.id} />));
+  await act(async () => root.render(<ToastProvider><RecipesDetailPage canWrite id={recipe.id} /></ToastProvider>));
   await waitFor(() => button("Edit recipe") !== undefined);
   await act(async () => button("Edit recipe")!.click());
   await changeInput(field("Label"), "My failed label");
   await changeInput(field("Body"), "My pending body");
   await act(async () => button("Save changes")!.click());
-  await waitFor(() => container.textContent?.includes("Recipe write unavailable") === true);
+  await waitFor(() => document.body.textContent?.includes("whether the write landed is unknown") === true);
+  expect(document.body.textContent).not.toContain("Recipe write unavailable");
   expect(field("Label").value).toBe("My failed label");
   expect(field("Body").value).toBe("My pending body");
   expect(Boolean(field("Label").closest("fieldset")?.disabled)).toBe(false);
@@ -267,7 +269,7 @@ it("keeps a confirmed recipe write until a failed readback is retried, without o
     return Response.json({ ok: true, data: { recipe } });
   });
   vi.stubGlobal("fetch", fetchMock);
-  await act(async () => root.render(<RecipesDetailPage canWrite id={recipe.id} />));
+  await act(async () => root.render(<ToastProvider><RecipesDetailPage canWrite id={recipe.id} /></ToastProvider>));
   await waitFor(() => button("Edit recipe") !== undefined);
   await act(async () => button("Edit recipe")!.click());
   await changeInput(field("Label"), "My confirmed recipe");
@@ -285,7 +287,7 @@ it("keeps a confirmed recipe write until a failed readback is retried, without o
   expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(1);
   const reload = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(reload);
   expect(reload.defaultPrevented).toBe(false);
-  await act(async () => root.render(<RecipesDetailPage canWrite={false} id={recipe.id} />));
+  await act(async () => root.render(<ToastProvider><RecipesDetailPage canWrite={false} id={recipe.id} /></ToastProvider>));
   expect(button("Save changes")).toBeUndefined();
   expect(button("Publish")).toBeUndefined();
   recipe.label = "Latest authority recipe"; recipe.body = "Latest authority prompt"; recipe.version = 3;
@@ -296,7 +298,7 @@ it("keeps a confirmed recipe write until a failed readback is retried, without o
   expect(container.querySelector("textarea")).toBeNull();
   expect(container.textContent).not.toContain("Latest recipe read unavailable");
   expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(1);
-  await act(async () => root.render(<RecipesDetailPage canWrite id={recipe.id} />));
+  await act(async () => root.render(<ToastProvider><RecipesDetailPage canWrite id={recipe.id} /></ToastProvider>));
   await act(async () => button("Edit recipe")!.click());
   expect(field("Body").value).toBe(recipe.body);
 });
@@ -327,7 +329,7 @@ it.each([true, false])("keeps the operator's test profile across matrix save, wi
     return Response.json({ ok: true, data: { recipe } });
   });
   vi.stubGlobal("fetch", fetchMock);
-  await act(async () => root.render(<RecipesDetailPage canWrite id={recipe.id} />));
+  await act(async () => root.render(<ToastProvider><RecipesDetailPage canWrite id={recipe.id} /></ToastProvider>));
   const profileSelect = () => [...container.querySelectorAll("label")]
     .find(label => label.querySelector("span")?.textContent === "Test profile")?.querySelector("select");
   await waitFor(() => profileSelect()?.value === "audit-batch-four");
@@ -375,7 +377,7 @@ it("offers preview, real matrix jobs and result verification before publishing w
     return Response.json({ ok: true, data: { recipe } });
   });
   vi.stubGlobal("fetch", fetchMock);
-  await act(async () => root.render(<RecipesDetailPage canWrite id={recipe.id} />));
+  await act(async () => root.render(<ToastProvider><RecipesDetailPage canWrite id={recipe.id} /></ToastProvider>));
   await waitFor(() => button("Publish") !== undefined);
   expect(button("Publish")?.disabled).toBe(true);
   await waitFor(() => container.textContent?.includes("Compiled sunlit portrait") ?? false);

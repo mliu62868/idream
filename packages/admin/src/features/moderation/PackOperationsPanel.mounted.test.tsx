@@ -2,9 +2,11 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const { apiGet, apiWrite } = vi.hoisted(() => ({ apiGet: vi.fn(), apiWrite: vi.fn() }));
+const { apiGet, apiWrite, toast } = vi.hoisted(() => ({ apiGet: vi.fn(), apiWrite: vi.fn(), toast: vi.fn() }));
 vi.mock("@/components/admin/api", () => ({ apiGet, apiWrite }));
-vi.mock("@/components/admin/i18n", () => ({ useAdminI18n: () => ({ t: (text: string) => text, value: (text: string) => text }) }));
+vi.mock("@/components/admin/i18n", () => ({ adminDateLocale: () => undefined, translateAdmin: (_locale: string, text: string) => text, useAdminI18n: () => ({ locale: "en", t: (text: string) => text, value: (text: string) => text }) }));
+vi.mock("@/components/admin/ui/Toast", () => ({ useToast: () => ({ toast }), useFailureToast: () => vi.fn() }));
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { PackOperationsPanel } from "./PackOperationsPanel";
 
@@ -16,14 +18,42 @@ const detail = { ...summary, manifest: null, grant: null, grants: [], blockedRea
   priceCents: 0, rights: summary.rights, claimUntil: null, publishedAt: summary.publishedAt, canAccess: false,
   items: [{ id: "asset-fixture", caption: "Selected image", type: "image", contentType: "image/png", sizeBytes: 4096, url: null, downloadUrl: null }] } };
 let root: Root, container: HTMLDivElement;
-beforeEach(() => { vi.useFakeTimers(); apiGet.mockReset(); apiWrite.mockReset(); apiGet.mockImplementation(async (path: string) => path.includes("?") ? { items: [summary], nextCursor: null } : detail); container = document.createElement("div"); document.body.append(container); root = createRoot(container); });
+beforeEach(() => { vi.useFakeTimers(); apiGet.mockReset(); apiWrite.mockReset(); toast.mockReset(); apiGet.mockImplementation(async (path: string) => path.includes("?") ? { items: [summary], nextCursor: null } : detail); container = document.createElement("div"); document.body.append(container); root = createRoot(container); });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.useRealTimers(); });
 async function mount(canBlock = true) { await act(async () => root.render(<PackOperationsPanel canBlock={canBlock} />)); await act(async () => vi.advanceTimersByTimeAsync(1)); }
-function button(text: string) { const element = [...container.querySelectorAll("button")].find(item => item.textContent === text); if (!element) throw new Error(`Missing ${text}`); return element; }
+function button(text: string, scope: ParentNode = container) { const element = [...scope.querySelectorAll("button")].find(item => item.textContent === text); if (!element) throw new Error(`Missing ${text}`); return element; }
+const dialog = () => document.querySelector('[role="dialog"]')!;
+const dialogField = (label: string) => dialog().querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
+async function fillBlock(reason = "Emergency access withdrawal", id = "pack-fixture") {
+  await act(async () => button("Block all access").click());
+  await change(dialogField("Block reason"), reason);
+  await change(dialogField("Type this Pack ID to confirm"), id);
+}
 async function change(field: HTMLTextAreaElement | HTMLInputElement, text: string) {
   await act(async () => { Object.getOwnPropertyDescriptor(field instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, "value")!.set!.call(field, text); field.dispatchEvent(new Event("input", { bubbles: true })); });
 }
 describe("Pack operator authority", () => {
+  it("answers the shell refresh with a reread of the list and the inspected Pack", async () => {
+    await mount(); await act(async () => button("Inspect Pack").click());
+    const readsBefore = apiGet.mock.calls.length;
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    expect(apiGet.mock.calls.slice(readsBefore).map(([path]) => path)).toEqual([
+      "/api/v2/admin/packs?limit=12&status=published", "/api/v2/admin/packs/pack-fixture",
+    ]);
+  });
+
+  it("pages forward and back through the list instead of an append-only load-more", async () => {
+    apiGet.mockImplementation(async (path: string) => path.includes("cursor=page-2")
+      ? { items: [{ ...summary, id: "pack-two", title: "Second page Pack" }], nextCursor: null }
+      : { items: [summary], nextCursor: "page-2" });
+    await mount();
+    await act(async () => button("Next page").click());
+    expect(container.textContent).toContain("Second page Pack");
+    expect(container.textContent).not.toContain("Controlled Pack");
+    await act(async () => button("Previous page").click());
+    expect(container.textContent).toContain("Controlled Pack");
+  });
+
   it("retries the exact deep-linked pack after its initial detail read fails outside the visible queue", async () => {
     let detailReads = 0;
     apiGet.mockImplementation(async (path: string) => {
@@ -52,11 +82,10 @@ describe("Pack operator authority", () => {
     expect(alert.querySelector("details")?.textContent).toContain("Internal Pack read address");
     await act(async () => alert.querySelector<HTMLButtonElement>("button")!.click());
     await act(async () => button("Inspect Pack").click());
-    await change(container.querySelector("textarea")!, "Emergency access withdrawal");
-    await change(container.querySelector("input")!, "pack-fixture");
+    await fillBlock();
     apiWrite.mockRejectedValueOnce(new AdminV2RequestError("Internal Pack block address", 503, "unavailable"));
-    await act(async () => button("Block all access").click());
-    alert = container.querySelector('[role="alert"]')!;
+    await act(async () => button("Block all access", dialog()).click());
+    alert = dialog().querySelector('[role="alert"]')!;
     expect(alert.textContent).toContain("whether the write landed is unknown");
     expect(alert.querySelector("details")?.open).toBe(false);
     expect(alert.querySelector("details")?.textContent).toContain("Internal Pack block address");
@@ -64,16 +93,20 @@ describe("Pack operator authority", () => {
 
   it("requires the exact inspected version, a reason and target confirmation, and can recover a lost response", async () => {
     apiWrite.mockRejectedValueOnce(new Error("Controlled lost response")).mockResolvedValueOnce({ ...detail, status: "blocked", version: 4, canClaim: false, blockedReason: "Emergency access withdrawal" });
-    await mount(); expect(container.querySelector("textarea")).toBeNull(); await act(async () => button("Inspect Pack").click());
-    expect(container.textContent).toContain("Selected image"); expect(button("Block all access").disabled).toBe(true);
-    await change(container.querySelector("textarea")!, "Emergency access withdrawal"); await change(container.querySelector("input")!, "different-pack"); expect(button("Block all access").disabled).toBe(true);
-    await change(container.querySelector("input")!, "pack-fixture"); await act(async () => button("Block all access").click()); expect(container.textContent).toContain("Controlled lost response");
-    await act(async () => button("Block all access").click()); expect(apiWrite.mock.calls[1]).toEqual(apiWrite.mock.calls[0]);
+    await mount(); await act(async () => button("Inspect Pack").click());
+    expect(container.textContent).toContain("Selected image");
+    await fillBlock("Emergency access withdrawal", "different-pack"); expect(button("Block all access", dialog()).disabled).toBe(true);
+    expect(dialog().textContent).toContain("This cannot be undone.");
+    expect(dialog().textContent).toContain("Claim receipts are retained.");
+    await change(dialogField("Type this Pack ID to confirm"), "pack-fixture"); await act(async () => button("Block all access", dialog()).click()); expect(dialog().textContent).toContain("Controlled lost response");
+    await act(async () => button("Block all access", dialog()).click()); expect(apiWrite.mock.calls[1]).toEqual(apiWrite.mock.calls[0]);
     expect(apiWrite.mock.calls[0]).toEqual(["/api/v2/admin/packs/pack-fixture/block", "POST", { version: 3, confirmation: "pack-fixture", reason: "Emergency access withdrawal" }]);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(toast).toHaveBeenCalledWith({ tone: "success", title: "Blocked; existing receipts retained." });
     expect(container.textContent).toContain("Blocked; existing receipts retained.");
   });
   it("permits inspection without exposing a block command to read-only operators", async () => {
-    await mount(false); await act(async () => button("Inspect Pack").click()); expect(container.textContent).toContain("Selected image"); expect(container.querySelector("textarea")).toBeNull(); expect(apiWrite).not.toHaveBeenCalled();
+    await mount(false); await act(async () => button("Inspect Pack").click()); expect(container.textContent).toContain("Selected image"); expect(() => button("Block all access")).toThrow(); expect(apiWrite).not.toHaveBeenCalled();
   });
   it("opens the exact Pack from an operational deep link", async () => {
     const previous = window.location.href; window.history.replaceState(null, "", "/admin/moderation?pack=pack-fixture");
@@ -90,17 +123,19 @@ describe("Pack operator authority", () => {
     apiWrite.mockRejectedValueOnce(new Error("Pack changed. Reload before continuing.")).mockResolvedValueOnce({ ...detail, status: "blocked", version: 4, canClaim: false, blockedReason: "Emergency access withdrawal" });
     const previous = window.location.href; window.history.replaceState(null, "", "/admin/moderation?pack=pack-fixture");
     try {
-      await mount(); await change(container.querySelector("textarea")!, "Emergency access withdrawal"); await change(container.querySelector("input")!, "pack-fixture");
-      await act(async () => button("Block all access").click());
-      expect(container.textContent).toContain("Pack changed. Reload before continuing.");
-      await act(async () => button("Retry").click());
+      await mount(); await fillBlock();
+      await act(async () => button("Block all access", dialog()).click());
+      expect(dialog().textContent).toContain("Pack changed. Reload before continuing.");
+      // 放弃这次写入时重读——结果可能已落地，手上的版本号也可能过期。
+      await act(async () => button("Cancel", dialog()).click());
       expect(detailReads).toBe(2);
       expect(container.textContent).toContain("Controlled Pack · Version 2");
       expect(button("Block all access").disabled).toBe(true);
       await act(async () => completeRefresh({ ...detail, status: "withdrawn", canClaim: false }));
       expect(container.textContent).toContain("Controlled Pack · Version 3");
       expect(button("Block all access").disabled).toBe(false);
-      await act(async () => button("Block all access").click());
+      await fillBlock();
+      await act(async () => button("Block all access", dialog()).click());
       expect(apiWrite.mock.calls.map(call => call[2].version)).toEqual([2, 3]);
       expect(container.textContent).toContain("Blocked; existing receipts retained.");
     } finally { window.history.replaceState(null, "", previous); }
@@ -108,14 +143,13 @@ describe("Pack operator authority", () => {
   it("retains the inspected context and a visible error when its current authority cannot reload", async () => {
     const previous = window.location.href; window.history.replaceState(null, "", "/admin/moderation?pack=pack-fixture");
     try {
-      await mount(); await change(container.querySelector("textarea")!, "Emergency access withdrawal"); await change(container.querySelector("input")!, "pack-fixture");
+      await mount(); await fillBlock();
       apiWrite.mockRejectedValueOnce(new Error("Pack changed. Reload before continuing."));
-      await act(async () => button("Block all access").click());
+      await act(async () => button("Block all access", dialog()).click());
       apiGet.mockImplementation(async (path: string) => { if (path.includes("?")) return { items: [], nextCursor: null }; throw new Error("Current Pack authority could not load."); });
-      await act(async () => button("Retry").click());
+      await act(async () => button("Cancel", dialog()).click());
       expect(container.textContent).toContain("Current Pack authority could not load.");
       expect(container.textContent).toContain("Controlled Pack · Version 3");
-      expect(container.querySelector("textarea")!.value).toBe("Emergency access withdrawal");
       expect(button("Block all access").disabled).toBe(true);
       await act(async () => button("Block all access").click());
       expect(apiWrite).toHaveBeenCalledTimes(1);

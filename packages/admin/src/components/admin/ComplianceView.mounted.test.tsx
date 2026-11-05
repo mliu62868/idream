@@ -3,7 +3,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminPermissionKey } from "@idream/shared/admin/permissions";
-import { navItems, type SectionContext } from "./nav-config";
+import type { SectionContext } from "./nav-config";
+import { renderAdminSection } from "./nav-sections";
 import { AdminI18nProvider, type AdminLocale } from "./i18n";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
@@ -44,18 +45,21 @@ describe("Compliance operator target and permission boundaries", () => {
   async function render(canWrite = true, locale: AdminLocale = "en") {
     const permissions = new Set<AdminPermissionKey>(["compliance.read", ...(canWrite ? ["compliance.write" as const] : [])]);
     const context: SectionContext = { permissions, canCreateCharacters: false, actorId: "operator", canRead: true, view: { kind: "list" }, workMode: "support" };
-    await act(async () => root.render(<AdminI18nProvider locale={locale}>{navItems.find(item => item.id === "compliance")!.render(context)}</AdminI18nProvider>));
+    await act(async () => root.render(<AdminI18nProvider locale={locale}>{renderAdminSection("compliance", context)}</AdminI18nProvider>));
     await waitFor(() => container.textContent?.includes(ageRow.userId) === true);
   }
   const button = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent?.trim() === label);
-  const input = (label: string) => container.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
+  const input = (label: string) => document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
+  const dialog = () => document.querySelector('[role="dialog"]');
+  const dialogButton = (label: string) => [...(dialog()?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(node => node.textContent?.trim() === label);
+  const clickDialog = async (label: string) => { await act(async () => dialogButton(label)!.click()); };
   const click = async (label: string) => { await act(async () => button(label)!.click()); };
   const requests = (suffix: string) => fetchMock.mock.calls.filter(([url]) => String(url).includes(suffix));
   async function prepareErase() {
     await changeInput(input("User ID"), "account-A");
     await click("Erase");
     await changeInput(input("Erase reason"), "Controlled erasure request");
-    await changeInput(input("Erase confirmation"), "account-A");
+    await changeInput(input("Type user ID"), "account-A");
   }
 
   it("reloads the compliance read sections once through shell refresh without discarding an erase draft", async () => {
@@ -72,7 +76,7 @@ describe("Compliance operator target and permission boundaries", () => {
     expect(refreshed).toHaveLength(2);
     expect(input("User ID").value).toBe("account-A");
     expect(input("Erase reason").value).toBe("Controlled erasure request");
-    expect(input("Erase confirmation").value).toBe("account-A");
+    expect(input("Type user ID").value).toBe("account-A");
     expect(window.location.href).toBe(href);
   });
 
@@ -143,7 +147,7 @@ describe("Compliance operator target and permission boundaries", () => {
     await render();
     await prepareErase();
     await changeInput(input("User ID"), "account-B");
-    expect(button("Confirm erase")).toBeUndefined();
+    expect(dialog()).toBeNull();
     expect(input("Erase reason")).toBeNull();
     expect(requests("/erase")).toHaveLength(0);
   });
@@ -153,22 +157,56 @@ describe("Compliance operator target and permission boundaries", () => {
     await prepareErase();
     let finishErase!: (response: Response) => void;
     fetchMock.mockImplementationOnce(() => new Promise(resolve => { finishErase = resolve; }));
-    await click("Confirm erase");
+    await clickDialog("Confirm erase");
     expect(input("User ID").disabled).toBe(true);
-    expect(input("Erase reason").disabled).toBe(true);
-    expect(input("Erase confirmation").disabled).toBe(true);
-    expect(button("Cancel")!.disabled).toBe(true);
-    await click("Cancel");
+    expect(dialogButton("Cancel")!.disabled).toBe(true);
+    await clickDialog("Cancel");
     expect(input("Erase reason").value).toBe("Controlled erasure request");
     await act(async () => finishErase(unavailable()));
     expect(input("User ID").disabled).toBe(false);
     expect(input("Erase reason").value).toBe("Controlled erasure request");
+    expect(dialog()?.querySelector('[role="alert"]')?.textContent).toContain("whether the write landed is unknown");
     fetchMock.mockImplementationOnce(async () => Response.json({ ok: true, data: { erased: false, idempotent: true, deletion: { graceEndsAt: "2026-10-10T00:00:00.000Z" } } }));
-    await click("Retry");
+    await clickDialog("Confirm erase");
     const writes = requests("/account-A/erase");
     expect(writes).toHaveLength(2);
     expect(writes[1][1]?.body).toBe(writes[0][1]?.body);
     expect(new Headers(writes[1][1]?.headers).get("idempotency-key")).toBe(new Headers(writes[0][1]?.headers).get("idempotency-key"));
+  });
+
+  it("confirms erasure in a dialog that states it cannot be undone, then shows the new request in the queue", async () => {
+    await render();
+    const queueReads = () => requests("/account-deletions").length;
+    const before = queueReads();
+    await prepareErase();
+    expect(dialog()?.textContent).toContain("This cannot be undone.");
+    expect(dialog()?.textContent).toContain("This console has no command to stop it.");
+    expect(dialogButton("Confirm erase")!.disabled).toBe(false);
+    fetchMock.mockImplementation(async input => {
+      const url = new URL(String(input), window.location.origin);
+      if (url.pathname.endsWith("/erase")) return Response.json({ ok: true, data: { erased: false, deletion: { graceEndsAt: "2026-10-10T00:00:00.000Z" } } });
+      if (url.pathname.endsWith("/account-deletions")) return Response.json({ ok: true, data: { items: [{ id: "deletion-1", userId: "account-A", waitingOn: "grace_period", pastDue: false, graceEndsAt: "2026-10-10T00:00:00.000Z", blobExpectedCount: 0, blobDeletedCount: 0, blockedReason: null, chatRequestDelivery: null }], pastDueCount: 0 } });
+      return Response.json({ ok: true, data: { items: [ageRow] } });
+    });
+    await clickDialog("Confirm erase");
+    expect(JSON.parse(String(requests("/account-A/erase")[0][1]?.body))).toEqual({ reason: "Controlled erasure request", confirmation: "account-A" });
+    expect(dialog()).toBeNull();
+    expect(queueReads()).toBe(before + 1);
+    await waitFor(() => container.textContent?.includes("Inside the grace period") === true);
+    expect(container.textContent).toContain("track it in the queue below");
+  });
+
+  it("says the queues are only the first 100 rows when the authority returns its full default page", async () => {
+    await render();
+    expect(container.textContent).not.toContain("Showing the first 100 rows");
+    const rows = Array.from({ length: 100 }, (_, index) => ({ ...ageRow, id: `verification-${index}`, userId: `account-${index}` }));
+    const deletions = rows.map((row) => ({ id: row.id, userId: row.userId, waitingOn: "grace_period", pastDue: false, graceEndsAt: "2026-10-10T00:00:00.000Z", blobExpectedCount: 0, blobDeletedCount: 0, blockedReason: null, chatRequestDelivery: null }));
+    fetchMock.mockImplementation(async input => new URL(String(input), window.location.origin).pathname.endsWith("/account-deletions")
+      ? Response.json({ ok: true, data: { items: deletions, pastDueCount: 0 } })
+      : Response.json({ ok: true, data: { items: rows } }));
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    await waitFor(() => container.querySelectorAll('[role="status"]').length >= 2);
+    expect(container.textContent?.match(/Showing the first 100 rows/g)).toHaveLength(2);
   });
 
   it("keeps reads available without exposing erasure or verification writes to a compliance reader", async () => {
@@ -184,13 +222,16 @@ describe("Compliance operator target and permission boundaries", () => {
   it("removes open write confirmations when compliance.write is revoked", async () => {
     await render();
     await prepareErase();
+    expect(dialogButton("Confirm erase")).toBeDefined();
+    await render(false);
+    expect(dialog()).toBeNull();
+    await render(true);
+    expect(dialog()).toBeNull();
     await click("Verify");
     expect(button("Confirm override")).toBeDefined();
     await render(false);
-    expect(button("Confirm erase")).toBeUndefined();
     expect(button("Confirm override")).toBeUndefined();
     await render(true);
-    expect(button("Confirm erase")).toBeUndefined();
     expect(button("Confirm override")).toBeUndefined();
     expect(fetchMock.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
   });
@@ -199,12 +240,10 @@ describe("Compliance operator target and permission boundaries", () => {
     await render();
     await prepareErase();
     fetchMock.mockImplementationOnce(async () => unavailable());
-    await click("Confirm erase");
-    expect(button("Retry")).toBeDefined();
+    await clickDialog("Confirm erase");
     await changeInput(input("Erase reason"), "Corrected erasure request");
-    expect(button("Retry")).toBeUndefined();
     fetchMock.mockImplementationOnce(async () => Response.json({ ok: true, data: { idempotent: true, deletion: { graceEndsAt: "2026-10-10T00:00:00.000Z" } } }));
-    await click("Confirm erase");
+    await clickDialog("Confirm erase");
     expect(JSON.parse(String(requests("/account-A/erase").at(-1)![1]?.body)).reason).toBe("Corrected erasure request");
   });
 
@@ -213,11 +252,11 @@ describe("Compliance operator target and permission boundaries", () => {
     await prepareErase();
     let finishErase!: (response: Response) => void;
     fetchMock.mockImplementationOnce(() => new Promise(resolve => { finishErase = resolve; }));
-    await click("Confirm erase");
+    await clickDialog("Confirm erase");
     await render(false);
     await act(async () => finishErase(unavailable()));
     await render(true);
-    expect(button("Confirm erase")).toBeUndefined();
+    expect(dialog()).toBeNull();
     expect(button("Retry")).toBeUndefined();
     expect(requests("/erase")).toHaveLength(1);
   });

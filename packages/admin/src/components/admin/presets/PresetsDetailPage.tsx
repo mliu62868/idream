@@ -14,7 +14,11 @@ import { useUnsavedChanges } from "@/components/admin/ui/useUnsavedChanges";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
 import { useWorkspaceRefresh } from "@/features/workspace-refresh";
-import { InfoGrid, WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { RequestErrorDetails } from "@/components/admin/ui/RequestErrorDetails";
+import { operatorErrorCopy } from "@/components/admin/ui/request-error-copy";
+import { useFailureToast } from "@/components/admin/ui/Toast";
+import { InfoGrid, WriteFeedbackBanner, useWriteFeedback } from "@/components/admin/section-kit";
 import {
   PRESET_TYPES,
   PRESET_VISIBILITY,
@@ -50,7 +54,9 @@ export function PresetsDetailPage({ canWrite, id }: { canWrite: boolean; id: str
   const { t, value } = useAdminI18n();
   const [rows, setRows] = useState<PresetRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // 只装读取失败；保存 / 恢复失败走 failure toast，编辑态不丢。
+  const [error, setError] = useState<unknown>(null);
+  const failureToast = useFailureToast();
   const [notFound, setNotFound] = useState(false);
   const [mode, setMode] = useState<Mode>("view");
   const [draft, setDraft] = useState<PresetDraft | null>(null);
@@ -72,12 +78,12 @@ export function PresetsDetailPage({ canWrite, id }: { canWrite: boolean; id: str
       return data.preset;
     } catch (loadError) {
       setNotFound(loadError instanceof AdminV2RequestError && loadError.status === 404);
-      setError(requestErrorMessage(loadError, t));
+      setError(loadError);
       return null;
     } finally {
       setLoading(false);
     }
-  }, [id, t]);
+  }, [id]);
 
   useWorkspaceRefresh(reload);
 
@@ -127,7 +133,7 @@ export function PresetsDetailPage({ canWrite, id }: { canWrite: boolean; id: str
       setDraft(null);
       reportSuccess(t("Saved. {label} now shows the edited values.", { label: saved.label }));
     } catch (saveError) {
-      setError(requestErrorMessage(saveError, t));
+      failureToast(saveError);
     } finally {
       setSaving(false);
     }
@@ -153,7 +159,7 @@ export function PresetsDetailPage({ canWrite, id }: { canWrite: boolean; id: str
       setAwaitingReadback(false);
       reportSuccess(t("Restored. This preset is selectable again."));
     } catch (restoreError) {
-      setError(requestErrorMessage(restoreError, t));
+      failureToast(restoreError);
     } finally {
       setRestoring(false);
     }
@@ -164,6 +170,7 @@ export function PresetsDetailPage({ canWrite, id }: { canWrite: boolean; id: str
     return {
       title: t("Archive preset"),
       destructive: { expectedName: row.label },
+      consequence: { effect: t("This preset is no longer offered to users. Restore brings it back."), reversible: true },
       requireReason: false,
       submitLabel: t("Archive preset"),
       onSubmit: async () => {
@@ -191,9 +198,9 @@ export function PresetsDetailPage({ canWrite, id }: { canWrite: boolean; id: str
             </Link>
           </div>
         }
-        hint={error ?? undefined}
+        hint={error ? t(operatorErrorCopy(error).nextStep, operatorErrorCopy(error).nextStepValues) : undefined}
         title={t(notFound ? "Preset not found." : "Could not load preset.")}
-      /></>
+      />{error ? <RequestErrorDetails technical={operatorErrorCopy(error).technical} /> : null}</>
     );
   }
 
@@ -231,8 +238,8 @@ export function PresetsDetailPage({ canWrite, id }: { canWrite: boolean; id: str
     >
       <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
       {awaitingReadback ? <p role="status" className="text-sm text-[var(--ad-yellow-text)]">{t("Changes were saved, but the latest details could not be loaded. Retry before making another change.")}</p> : null}
-      {error ? <p role="alert" className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
-      {awaitingReadback ? <GhostButton onClick={() => void retryReadback()}>{t("Retry")}</GhostButton> : null}
+      {error ? <AuthorityRequestError cause={error} message={t("The latest data could not be loaded.")} onRetry={() => void (awaitingReadback ? retryReadback() : reload())} requestKind="read" /> : null}
+      {awaitingReadback && !error ? <GhostButton onClick={() => void retryReadback()}>{t("Retry")}</GhostButton> : null}
 
       {editing && draft ? (
         <fieldset disabled={saving || awaitingReadback}>

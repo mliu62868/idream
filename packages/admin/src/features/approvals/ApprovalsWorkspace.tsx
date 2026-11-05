@@ -89,7 +89,12 @@ function payloadEntries(value: unknown): Array<[string, string]> {
 
 const DUAL_APPROVAL_FLAG = "dual_approval_enforced";
 
-export function ApprovalsWorkspace({ canReview, canToggleEnforcement = false }: { canReview: boolean; canToggleEnforcement?: boolean }) {
+export function ApprovalsWorkspace({ actorId, canReview, canToggleEnforcement = false }: {
+  /** 当前登录者。缺席时退回「服务端兜底拒绝」——不敢凭空判断谁是申请人。 */
+  actorId?: string | null;
+  canReview: boolean;
+  canToggleEnforcement?: boolean;
+}) {
   const { t } = useAdminI18n();
   const format = useAdminFormat();
   const { toast } = useToast();
@@ -356,14 +361,14 @@ export function ApprovalsWorkspace({ canReview, canToggleEnforcement = false }: 
           caption="Approval requests"
           headers={["Request", "Target", "Requested by", "Reason", "Actions"]}
           minimumWidthClassName="min-w-[880px]"
-          rows={approvalRows(rows, canReview, confirmDecision, format)}
+          rows={approvalRows(rows, canReview, confirmDecision, format, actorId ?? null)}
           stickyLastColumn
         />
       ) : null}
       {data && rows.length > 0 ? (
         <Pagination
           hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
-          hasPrevious={cursorTrail.length > 0}
+          hasPrevious={Boolean(query.cursor)}
           loading={loading}
           onNext={() => {
             if (!pageInfo.endCursor) return;
@@ -372,7 +377,8 @@ export function ApprovalsWorkspace({ canReview, canToggleEnforcement = false }: 
           onPrevious={() =>
             navigate({ ...query, cursor: cursorTrail.at(-1) ?? "" }, "push", cursorTrail.slice(0, -1))
           }
-          page={cursorTrail.length + 1}
+          previousLabel={query.cursor && cursorTrail.length === 0 ? t("Back to first page") : undefined}
+          page={!query.cursor ? 1 : cursorTrail[0] === "" ? cursorTrail.length + 1 : null}
           pageSize={APPROVAL_PAGE_SIZE}
           rowCount={rows.length}
         />
@@ -392,6 +398,7 @@ function approvalRows(
   canReview: boolean,
   decide: (entry: ApprovalCase, decision: "approve" | "reject") => void,
   format: AdminFormat,
+  actorId: string | null,
 ): DataTableRow[] {
   return rows.map((row, index) => {
     const entry = toApprovalCase(row, index);
@@ -403,7 +410,11 @@ function approvalRows(
         <div key="requester" className="space-y-1"><span className="block break-all">{format.display(row.requestedById)}</span><span className="block text-xs text-[var(--ad-text-muted)]">{format.dateTime(row.createdAt)}</span></div>,
         <div key="reason" className="max-w-xs space-y-2 whitespace-normal"><p>{format.display(row.reason)}</p><PayloadCell entries={entry.payload} /></div>,
         <div key="decision" className="space-y-2"><DecidedCell at={entry.decidedAt} by={entry.approvedById} status={entry.status} />{
-        canReview && row.status === "pending" ? (
+        // INTENT: 服务端一定会拒绝申请人自批（approvals/service.ts），而且只给一句通用的输入错误。
+        //         按钮摆出来就是让人白填一遍理由和确认串再撞墙。
+        canReview && row.status === "pending" && actorId !== null && entry.requestedById === actorId ? (
+          <AdminText key="own-request" text="You requested this; another approver must decide" />
+        ) : canReview && row.status === "pending" ? (
           <div className="flex gap-1">
             <Action
               icon={<Check className="h-4 w-4" />}

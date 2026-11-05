@@ -276,6 +276,158 @@ describe("Admin main HTTP proxy", () => {
     );
   });
 
+  it("rejects a same-site page posting into Admin before reading the body or contacting main", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const browserWrites: Record<string, string>[] = [
+      { "sec-fetch-site": "same-site", cookie: "idream_admin_session=token" },
+      { "sec-fetch-site": "cross-site", cookie: "idream_admin_session=token" },
+      { origin: "http://evil.local", host: "admin.local", cookie: "idream_admin_session=token" },
+    ];
+    for (const headers of browserWrites) {
+      const response = await proxyToMain(
+        new Request("http://admin.local/api/v2/admin/compliance/users/u1/erase", {
+          method: "POST",
+          headers: { ...headers, "content-type": "text/plain" },
+          body: '{"reason":"x","confirmation":"u1"}',
+        }),
+        "/api/v2/admin/compliance/users/u1/erase",
+      );
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({ error: { code: "admin_cross_site_write_rejected" } });
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("lets Admin's own pages and non-browser clients write, and never blocks reads on fetch metadata", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ ok: false, error: { code: "forbidden", message: "no" } }, { status: 403 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const post = (headers: Record<string, string>) => proxyToMain(
+      new Request("http://admin.local/api/admin-auth/logout", { method: "POST", headers, body: "{}" }),
+      "/api/admin-auth/logout",
+    );
+    await post({ "sec-fetch-site": "same-origin", origin: "http://admin.local" });
+    await post({ origin: "https://admin.example", "x-forwarded-host": "admin.example", host: "internal:3001" });
+    await post({});
+    await proxyToMain(
+      new Request("http://admin.local/api/v2/admin/today", { headers: { "sec-fetch-site": "cross-site" } }),
+      "/api/v2/admin/today",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("refuses an oversized body before signing it, with or without a Content-Length", async () => {
+    vi.stubEnv("ADMIN_BFF_SIGNING_SECRET", SIGNING_SECRET);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const pathname = "/api/v2/admin/customers/commands/x";
+    const declared = await proxyToMain(
+      new Request(`http://admin.local${pathname}`, {
+        method: "POST",
+        headers: { "content-length": String(9 * 1024 * 1024), "content-type": "application/json" },
+        body: "{}",
+      }),
+      pathname,
+    );
+    expect(declared.status).toBe(413);
+    const chunked = await proxyToMain(
+      new Request(`http://admin.local${pathname}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: new Blob([new Uint8Array(9 * 1024 * 1024)]).stream(),
+        duplex: "half",
+      } as RequestInit),
+      pathname,
+    );
+    expect(chunked.status).toBe(413);
+    await expect(chunked.json()).resolves.toMatchObject({ error: { code: "admin_request_body_too_large" } });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps multipart uploads up to the largest Main limit", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ ok: false, error: { code: "forbidden", message: "no" } }, { status: 403 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const pathname = "/api/v2/admin/assets";
+    const response = await proxyToMain(
+      new Request(`http://admin.local${pathname}`, {
+        method: "POST",
+        headers: { "content-type": "multipart/form-data; boundary=x" },
+        body: new Uint8Array(9 * 1024 * 1024),
+      }),
+      pathname,
+    );
+    expect(response.status).toBe(403);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers 503 when main never responds, and stops the upstream read when the client leaves", async () => {
+    vi.useFakeTimers();
+    try {
+      const signals: AbortSignal[] = [];
+      vi.stubGlobal("fetch", vi.fn((_target: URL, init: RequestInit) => new Promise((_resolve, reject) => {
+        signals.push(init.signal!);
+        init.signal!.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      })));
+      const hung = proxyToMain(new Request("http://admin.local/api/v2/admin/today"), "/api/v2/admin/today");
+      await vi.advanceTimersByTimeAsync(120_001);
+      expect((await hung).status).toBe(503);
+
+      const client = new AbortController();
+      const left = proxyToMain(new Request("http://admin.local/api/v2/admin/today", { signal: client.signal }), "/api/v2/admin/today");
+      await vi.advanceTimersByTimeAsync(1);
+      client.abort();
+      expect((await left).status).toBe(503);
+      expect(signals).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let a client choose its audit identity through forwarded headers", async () => {
+    const fetchMock = vi.fn(async (_target: URL, init: RequestInit) => {
+      const headers = new Headers(init.headers);
+      expect(headers.get("x-forwarded-for")).toBe("203.0.113.9");
+      expect(headers.get("x-request-id")).toMatch(/^[0-9a-f-]{36}$/);
+      expect(headers.get("x-request-id")).not.toBe("another-commands-request");
+      return Response.json({ ok: false, error: { code: "forbidden", message: "no" } }, { status: 403 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await proxyToMain(
+      new Request("http://admin.local/api/v2/admin/today", {
+        headers: { "x-forwarded-for": "198.51.100.7, 203.0.113.9", "x-request-id": "another-commands-request" },
+      }),
+      "/api/v2/admin/today",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks authenticated Admin JSON as uncacheable", async () => {
+    const pathname = "/api/v2/admin/bootstrap";
+    vi.stubGlobal("fetch", vi.fn(async () => validV2Response("GET", pathname)));
+    const response = await proxyToMain(new Request(`http://admin.local${pathname}`), pathname);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("engages the kill switches on any value an operator would write in an incident, and covers media reads", async () => {
+    const fetchMock = vi.fn(async () => new Response("bytes", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    for (const value of ["1", "TRUE", "yes", " true "]) {
+      vi.stubEnv("ADMIN_V2_WRITE_KILL_SWITCH", value);
+      const blocked = await proxyToMain(
+        new Request("http://admin.local/api/v2/admin/cases/x", { method: "POST", body: "{}" }),
+        "/api/v2/admin/cases/x",
+      );
+      expect(blocked.status).toBe(503);
+    }
+    vi.stubEnv("ADMIN_V2_WRITE_KILL_SWITCH", "false");
+    vi.stubEnv("ADMIN_V2_READ_KILL_SWITCH", "true");
+    const media = await proxyToMain(new Request("http://admin.local/user-content/a/b.png"), "/user-content/a/b.png");
+    expect(media.status).toBe(503);
+    expect(fetchMock).not.toHaveBeenCalled();
+    vi.stubEnv("ADMIN_V2_READ_KILL_SWITCH", "false");
+    expect((await proxyToMain(new Request("http://admin.local/user-content/a/b.png"), "/user-content/a/b.png")).status).toBe(200);
+  });
+
   it("provides independent fail-closed read and write kill switches for v2 cutover", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

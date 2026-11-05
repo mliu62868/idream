@@ -427,17 +427,25 @@ describe("Visual Identity experiment activation", () => {
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Generate 1 candidate image"]')).not.toBeNull();
   });
 
-  it("keeps an unknown experiment intent after a conflicting replay and recovers the original request", async () => {
+  it("keeps an unknown experiment intent after a conflicting replay and recovers it through its server receipt", async () => {
     const scope = "identity-experiment:create:operator-replay:character-1";
     const creates: Array<{ key: string; body: unknown }> = [];
+    const reconciles: string[] = [];
     adminV2Request.mockImplementation(async (path, options) => {
       if (path.endsWith("/image-sources")) return { items: [] };
       if (path.includes("/creative/runs?")) return { items: [], pageInfo: { hasNextPage: false, endCursor: null } };
       if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
         creates.push({ key: options.idempotencyKey, body: options.body });
         if (creates.length === 1) throw new TypeError("Response ended after server commit");
-        if (creates.length === 2) throw new AdminV2RequestError("Current policy rejects this replay", 409, "conflict");
-        return { batch: { id: "identity-run-2" }, replayed: true };
+        throw new AdminV2RequestError("Current policy rejects this replay", 409, "conflict");
+      }
+      if (path === "/api/v2/admin/mutation-receipts/reconcile") {
+        reconciles.push(options.idempotencyKey);
+        return {
+          state: "committed", commandType: "creative.run.create", commandId: "identity-command",
+          status: "succeeded", committedTargetId: "identity-run-2",
+          verification: { kind: "creative_run", runId: "identity-run-2", requestSnapshot: creates[0].body },
+        };
       }
       if (path.endsWith("/identity-run-2")) return createdDetail(creates[0].body);
       throw new Error(`Unexpected request: ${path}`);
@@ -472,8 +480,8 @@ describe("Visual Identity experiment activation", () => {
     ));
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Resume saved experiment"]')!.click());
     await waitUntil(() => readActiveDurableMutationIntent({ scope }) === null);
-    expect(creates).toHaveLength(3);
-    expect(creates[2]).toEqual(creates[0]);
+    expect(creates).toHaveLength(2);
+    expect(reconciles).toEqual([creates[0].key]);
     expect(container.querySelector('button[aria-label="Generate 1 candidate image"]')).not.toBeNull();
   });
 
@@ -1454,5 +1462,42 @@ describe("Visual Identity experiment activation", () => {
     expect(
       container.querySelector('button[aria-label="生成 1 张候选图"]'),
     ).not.toBeNull();
+  });
+
+  it("clears a poll failure banner on the next successful poll", async () => {
+    vi.useFakeTimers();
+    try {
+      const runningRun = { ...run, executionOutcome: "running" };
+      const runningDetail = {
+        ...runDetail, ...runningRun,
+        items: [{ ...runDetail.items[0], executionState: "generating", asset: null, review: null }],
+      };
+      let failNext = false;
+      adminV2Request.mockImplementation(async (path: string) => {
+        if (new URL(path, "http://admin.test").pathname.endsWith("/image-sources")) return { items: [] };
+        if (path.includes("/api/v2/admin/creative/runs?")) return { items: [runningRun], pageInfo: { endCursor: null, hasNextPage: false } };
+        if (path === `/api/v2/admin/creative/runs/${run.id}`) {
+          if (failNext) {
+            failNext = false;
+            throw new Error("Temporary poll failure");
+          }
+          return runningDetail;
+        }
+        throw new Error(`Unexpected request: ${path}`);
+      });
+      await act(async () => {
+        root.render(<VisualIdentityExperimentWorkbench canActivate canCreate canReview canUploadSource
+          data={data} onActivateCandidate={vi.fn(async () => undefined)} />);
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      failNext = true;
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+      expect(container.textContent).toContain("Temporary poll failure");
+      await act(async () => { await vi.advanceTimersByTimeAsync(6_000); });
+      expect(container.textContent).not.toContain("Temporary poll failure");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

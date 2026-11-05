@@ -32,6 +32,7 @@ import { useAdminFormat } from "@/components/admin/ui/format";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { emptyPageInfo, Pagination, type PageInfo } from "@/components/admin/ui/Pagination";
 import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
+import { OperatorInputError } from "@/components/admin/ui/request-error-copy";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { createLatestRequestGate } from "@/lib/latest-request";
@@ -253,7 +254,7 @@ export function SupportWorkspace({
       submitLabel: "Confirm",
       onSubmit: async (reason) => {
         if (!writeAuthority.current.canWrite || writeAuthority.current !== authority) return;
-        if (needsMessage && !publicMessage.value.trim()) throw new Error(t("Write a message to the customer before continuing."));
+        if (needsMessage && !publicMessage.value.trim()) throw new OperatorInputError(t("Write a message to the customer before continuing."));
         const body = {
           confirmation: input.id, reason,
           expectedUpdatedAt: input.expectedUpdatedAt,
@@ -533,6 +534,7 @@ export function SupportConversationPanel({ ticketId, canWrite, canViewPlaintext,
 
 function PlaintextAccessPanel({ initialTicketId = "" }: { initialTicketId?: string }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   const { toast } = useToast();
   const failureToast = useFailureToast();
   const [targetType, setTargetType] =
@@ -596,7 +598,7 @@ function PlaintextAccessPanel({ initialTicketId = "" }: { initialTicketId?: stri
         tone: "success",
         title: t("Consent granted for {fields} until {expires}.", {
           fields: response.grant.fields.join(", "),
-          expires: new Date(response.grant.expiresAt).toLocaleString(),
+          expires: format.dateTime(response.grant.expiresAt),
         }),
       });
     } catch (cause) {

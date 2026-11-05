@@ -243,22 +243,50 @@ describe("AnnouncementsView edit", () => {
     await waitFor(() => container.querySelector('[aria-label="Edit announcement"]') !== null);
     const button = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent?.trim() === label)!;
     await act(async () => button("Deactivate").click());
-    await changeInput(container.querySelector<HTMLInputElement>('[aria-label="Announcement action reason"]')!, "Pause this announcement");
-    await changeInput(container.querySelector<HTMLInputElement>('[aria-label="Announcement action confirmation"]')!, announcement.id);
+    await changeInput(document.querySelector<HTMLInputElement>('[role="dialog"] input[aria-label="Announcement action reason"]')!, "Pause this announcement");
+    await changeInput(document.querySelector<HTMLInputElement>('[role="dialog"] input[aria-label="Announcement action confirmation"]')!, announcement.id);
     let finishWrite!: (response: Response) => void;
     fetchMock.mockImplementationOnce(() => new Promise(resolve => { finishWrite = resolve; }));
-    await act(async () => button("Confirm update").click());
-    expect(container.querySelector<HTMLInputElement>('[aria-label="Announcement action reason"]')!.closest("fieldset")?.disabled).toBe(true);
-    expect(button("Cancel").disabled).toBe(true);
-    await act(async () => button("Cancel").click());
-    expect(container.querySelector<HTMLInputElement>('[aria-label="Announcement action reason"]')!.value).toBe("Pause this announcement");
+    const dialog = document.querySelector('[role="dialog"]')!;
+    const inDialog = (label: string) => [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent?.trim() === label)!;
+    await act(async () => inDialog("Confirm update").click());
+    expect(inDialog("Cancel").disabled).toBe(true);
+    await act(async () => inDialog("Cancel").click());
+    expect(document.querySelector<HTMLInputElement>('[role="dialog"] input[aria-label="Announcement action reason"]')!.value).toBe("Pause this announcement");
     await act(async () => finishWrite(Response.json({ ok: false, error: { code: "unavailable", message: "Announcement action unavailable" } }, { status: 503 })));
-    expect(container.querySelector<HTMLInputElement>('[aria-label="Announcement action reason"]')!.value).toBe("Pause this announcement");
-    expect(container.querySelector<HTMLInputElement>('[aria-label="Announcement action reason"]')!.closest("fieldset")?.disabled).toBe(false);
-    expect(button("Confirm update").disabled).toBe(false);
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Announcement action unavailable");
+    expect(document.querySelector<HTMLInputElement>('[role="dialog"] input[aria-label="Announcement action reason"]')!.value).toBe("Pause this announcement");
+    expect(inDialog("Confirm update").disabled).toBe(false);
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toContain("Announcement action unavailable");
     expect(container.textContent).not.toContain("Deactivated “Launch sale”");
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(1);
+  });
+
+  it("keeps a failed action's failure in its dialog, where the real retry is, instead of a list-only Retry", async () => {
+    await act(async () => root.render(<AnnouncementsView canWrite />));
+    await waitFor(() => container.querySelector('[aria-label="Edit announcement"]') !== null);
+    const button = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent?.trim() === label);
+    await act(async () => button("Deactivate")!.click());
+    await changeInput(document.querySelector<HTMLInputElement>('[role="dialog"] input[aria-label="Announcement action reason"]')!, "Pause this announcement");
+    await changeInput(document.querySelector<HTMLInputElement>('[role="dialog"] input[aria-label="Announcement action confirmation"]')!, announcement.id);
+    fetchMock.mockImplementationOnce(async () => Response.json({ ok: false, error: { code: "unavailable", message: "Announcement action unavailable" } }, { status: 503 }));
+    const dialog = document.querySelector('[role="dialog"]')!;
+    const inDialog = (label: string) => [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent?.trim() === label)!;
+    expect(dialog.textContent).toContain("This can be undone later.");
+    await act(async () => inDialog("Confirm update").click());
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toContain("whether the write landed is unknown");
+    expect(button("Retry")).toBeUndefined();
+    const patch = () => fetchMock.mock.calls.filter(([, init]) => init?.method === "PATCH");
+    await act(async () => inDialog("Confirm update").click());
+    expect(patch()).toHaveLength(2);
+    expect(patch()[1][1]?.body).toBe(patch()[0][1]?.body);
+  });
+
+  it("warns that deleting an announcement cannot be undone", async () => {
+    await act(async () => root.render(<AnnouncementsView canWrite />));
+    await waitFor(() => container.querySelector('[aria-label="Delete announcement"]') !== null);
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Delete announcement"]')!.click());
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("This cannot be undone.");
+    expect(fetchMock.mock.calls.every(([, init]) => (init?.method ?? "GET") === "GET")).toBe(true);
   });
 
   it("prefills the form and patches the edited copy with the id as confirmation", async () => {
@@ -423,9 +451,9 @@ describe("AnnouncementsView edit", () => {
     const action = kind === "delete" ? container.querySelector<HTMLButtonElement>('[aria-label="Delete announcement"]')! :
       [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Deactivate")!;
     await act(async () => action.click());
-    await changeInput(container.querySelector<HTMLInputElement>('[aria-label="Announcement action reason"]')!, "Retire the displayed announcement");
-    await changeInput(container.querySelector<HTMLInputElement>('[aria-label="Announcement action confirmation"]')!, announcement.id);
-    const confirm = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === (kind === "delete" ? "Confirm delete" : "Confirm update"))!;
+    await changeInput(document.querySelector<HTMLInputElement>('[role="dialog"] input[aria-label="Announcement action reason"]')!, "Retire the displayed announcement");
+    await changeInput(document.querySelector<HTMLInputElement>('[role="dialog"] input[aria-label="Announcement action confirmation"]')!, announcement.id);
+    const confirm = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(button => button.textContent?.trim() === (kind === "delete" ? "Confirm delete" : "Confirm update"))!;
     await act(async () => confirm.click());
     const method = kind === "delete" ? "DELETE" : "PATCH";
     const [, init] = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === method)!;

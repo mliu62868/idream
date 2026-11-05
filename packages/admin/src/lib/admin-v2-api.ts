@@ -136,10 +136,17 @@ export async function adminV2Request<T>(
   const payload = decoded as ApiEnvelope<T>;
   if (!payload.ok) {
     const details = payload.error.details;
-    reportAuthorityRejection(path, {
-      status: response.status,
-      permission: details && typeof details === "object" && "permission" in details ? details.permission : undefined,
-    });
+    // SPEC: 按资源拒绝不是权限被收回。
+    // INTENT: 只能管角色 A 的运营打开角色 B 时，403 带着 permission + characterId。bootstrap 里这个
+    //         权限键还在（授权是全局的，只是范围不含 B）；当成收回就会 卸载 → bootstrap 还回来 →
+    //         重新挂载 → 再 403，实测 1 秒 10597 轮。这一页自己显示拒绝就够了。
+    const resourceScoped = Boolean(details && typeof details === "object" && "characterId" in details);
+    if (!resourceScoped) {
+      reportAuthorityRejection(path, {
+        status: response.status,
+        permission: details && typeof details === "object" && "permission" in details ? details.permission : undefined,
+      });
+    }
     throw new AdminV2RequestError(
       formatApiError(payload.error, "Admin request failed"),
       response.status,

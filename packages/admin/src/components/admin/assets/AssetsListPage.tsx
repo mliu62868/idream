@@ -11,6 +11,7 @@ import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
+import { useFailureToast } from "@/components/admin/ui/Toast";
 import { Pagination } from "@/components/admin/ui/Pagination";
 import { DangerButton, GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
 import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
@@ -75,6 +76,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
   const [uploadPurpose, setUploadPurpose] = useState<(typeof ASSET_UPLOAD_PURPOSES)[number]>("campaign");
   const [uploadBusy, setUploadBusy] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const failureToast = useFailureToast();
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [uploadRevision, setUploadRevision] = useState(0);
   const requestGate = useRef(createLatestRequestGate());
@@ -253,17 +255,12 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
         count: uploadedCount,
       }));
     } catch (uploadFailure) {
+      // INTENT: 页内那句只说「传到哪了」；为什么失败、下一步做什么走 failure toast，原始报错留给工程。
+      failureToast(uploadFailure);
       setUploadError(
         uploadedCount > 0
-          ? t("{count} images uploaded; the next upload failed: {message}", {
-              count: uploadedCount,
-              message: uploadFailure instanceof Error
-                ? uploadFailure.message
-                : t("Image upload failed"),
-            })
-          : uploadFailure instanceof Error
-            ? uploadFailure.message
-            : t("Image upload failed"),
+          ? t("{count} images uploaded; the next upload failed.", { count: uploadedCount })
+          : t("Image upload failed"),
       );
     } finally {
       setUploadBusy(false);
@@ -638,6 +635,10 @@ function BulkArchiveConfirmDialog({
     destructive: {
       expectedName: confirmation,
       inputLabel: t("Paste exact asset IDs to confirm"),
+    },
+    consequence: {
+      effect: t("These images leave the library and can no longer be placed. This console has no command to bring them back."),
+      reversible: false,
     },
     submitLabel: t("Archive selected"),
     onSubmit,

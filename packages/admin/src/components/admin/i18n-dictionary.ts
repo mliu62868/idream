@@ -40,6 +40,10 @@ const zh: Record<string, string> = {
 };
 
 const zhValues: Record<string, string> = {
+  // creativeRunItemExecutionStateSchema 里还没有译文的三个阶段（StatusBadge 把 _ 换成空格再查表）。
+  dispatching: "派发中",
+  provider_queued: "供应商排队中",
+  finalizing: "收尾中",
   legacy: "旧版结构",
   unpinned: "未锚定版本",
   // SPEC: 线上表现的枚举值走 zhValues 通道——StatusBadge 直接接收服务端枚举。

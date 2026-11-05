@@ -51,7 +51,11 @@ bun run dev:admin     # http://localhost:3001/admin
 
 **外壳偏好走 cookie，不走 localStorage。** 语言、工作模式、侧栏展开态在 `shell-preferences.ts`，服务端在 `render-admin-route.tsx` 首帧就读得到。往 localStorage 里塞任何影响首帧渲染的东西，都会把「英文 + 全折叠」的闪帧带回来；`admin-route-shell.test.tsx` 有源码断言拦着。
 
-**加导航目的地要两边一起改。** `nav-routes.ts` 的 `ADMIN_SECTION_IDS`（纯解析层，`proxy.ts` 靠它在响应体流式输出前判定 404，不能 import 组件）和 `nav-config.tsx` 的 `navItems` 必须对称：proxy 说「存在」而页面解析不出来，就又回到 200/404 不一致。`nav-config.test.ts`、`nav-route-coverage.test.ts`（防止目的地被同级动态段吃掉）和 `proxy.test.ts` 分别守这三面。
+**加导航目的地要三处一起改。** `nav-routes.ts` 的 `ADMIN_SECTION_IDS`（纯解析层，`proxy.ts` 靠它在响应体流式输出前判定 404，不能 import 组件）、`nav-config.tsx` 的 `navItems`（纯数据，服务端也读）、`nav-sections.tsx` 的渲染注册表（`Record<AdminSectionId, …>`，漏配是编译错误）。`nav-config.test.ts`、`nav-route-coverage.test.ts`（防止目的地被同级动态段吃掉）和 `proxy.test.ts` 分别守路由这三面。
+
+**服务端不许碰工作台。** 工作台只能由 `"use client"` 的 `nav-sections.tsx` 经 `next/dynamic` 引入。`nav-config` 被服务端引用，它一旦 import 工作台，RSC 图就把它们全部登记成客户端入口：每页（连 404）首屏回到 4.6MB。`source-boundary.test.ts` 守这条。`dynamic()` 的 `import()` 必须内联写，封 helper 后 Next 认不出来，SSR 预加载会失效。
+
+**BFF 是写入的第一道门。** `server/main-proxy.ts` 拒绝跨站写（`Sec-Fetch-Site` / `Origin`）、限制请求体（JSON 8MB、multipart 128MB，模型导入除外）、给上游加超时。新增页面向 Admin 写入不需要额外处理；从别的源往 Admin 发写请求是不允许的，别为此放宽。
 
 ## 验证
 

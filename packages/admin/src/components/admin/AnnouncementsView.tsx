@@ -10,6 +10,7 @@ import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { Field } from "@/components/admin/ui/FormPage";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { useAdminFormat } from "@/components/admin/ui/format";
@@ -56,8 +57,6 @@ type Announcement = {
 type AnnouncementActionDraft = {
   kind: "toggle" | "delete";
   item: Announcement;
-  reason: string;
-  confirmation: string;
 };
 
 const inputClass =
@@ -67,7 +66,6 @@ export function AnnouncementsView({ canWrite }: { canWrite: boolean }) {
   const { t, value: valueLabel } = useAdminI18n();
   const format = useAdminFormat();
   const [list, setList] = useState(() => createAuthorityState<{ items: Announcement[]; pageInfo: AdminPageInfo }>());
-  const [error, setError] = useState<{ message: string; cause: unknown } | null>(null);
   const [actionDraft, setActionDraft] = useState<AnnouncementActionDraft | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [formBusy, setFormBusy] = useState(false);
@@ -79,7 +77,7 @@ export function AnnouncementsView({ canWrite }: { canWrite: boolean }) {
   const [hasPageHistory, setHasPageHistory] = useState(false);
   const requestGate = useRef(createLatestRequestGate());
   const { confirmDiscard, guard } = useUnsavedChanges(Boolean(
-    formDirty || (actionDraft && (actionDraft.reason || actionDraft.confirmation)),
+    formDirty,
   ));
 
   const load = useCallback(async (params = new URLSearchParams(window.location.search)) => {
@@ -87,7 +85,6 @@ export function AnnouncementsView({ canWrite }: { canWrite: boolean }) {
     const restored = announcementQueryFromSearch(params.toString());
     const queryKey = announcementListPath(restored);
     setList((current) => authorityRequestStarted(current, queryKey));
-    setError(null);
     try {
       setQuery(restored);
       setPage(syncListUrl(params, listPageFromParams(params), listKeys));
@@ -134,29 +131,30 @@ export function AnnouncementsView({ canWrite }: { canWrite: boolean }) {
 
   function startAction(kind: AnnouncementActionDraft["kind"], item: Announcement) {
     if (!canWrite || formBusy || actionBusy) return;
-    setError(null);
     clearFeedback();
-    setActionDraft({ kind, item, reason: "", confirmation: "" });
+    setActionDraft({ kind, item });
   }
 
-  async function submitAction() {
-    if (!canWrite || actionBusy || !actionDraft || !canConfirmAnnouncementAction(actionDraft)) return;
+  // INVARIANT: 失败抛给 ConfirmDialog——就地显示、不关框，理由和确认串都留着，重试复用同一把幂等键。
+  async function submitAction(reason: string) {
+    if (!canWrite || !actionDraft) return;
+    const confirmation = actionDraft.item.id;
     setActionBusy(true);
     try {
       if (actionDraft.kind === "toggle") {
         await apiWrite(`/api/v2/admin/announcements/${actionDraft.item.id}`, "PATCH", {
           entityVersion: actionDraft.item.version,
           active: !actionDraft.item.active,
-          reason: actionDraft.reason.trim(),
-          confirmation: actionDraft.confirmation.trim(),
+          reason,
+          confirmation,
         });
       } else {
         await adminV2Operation("DELETE /api/v2/admin/announcements/:id", {
           path: { id: actionDraft.item.id },
           body: {
             entityVersion: actionDraft.item.version,
-            reason: actionDraft.reason.trim(),
-            confirmation: actionDraft.confirmation.trim(),
+            reason,
+            confirmation,
           },
         });
       }
@@ -173,8 +171,6 @@ export function AnnouncementsView({ canWrite }: { canWrite: boolean }) {
               ? t("Activated “{title}”. It shows only inside its scheduled window.", { title: item.title })
               : t("Activated “{title}”. It is visible site-wide now.", { title: item.title }),
       );
-    } catch (err) {
-      setError({ message: requestErrorMessage(err, t), cause: err });
     } finally {
       setActionBusy(false);
     }
@@ -273,7 +269,6 @@ export function AnnouncementsView({ canWrite }: { canWrite: boolean }) {
       </div>
       <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
       {list.error ? <AuthorityRequestError cause={list.cause} message={list.error} requestKind="read" snapshotAt={list.refreshedAt} onRetry={() => void load()} /> : null}
-      {error ? <AuthorityRequestError cause={error.cause} message={error.message} onRetry={() => void load()} /> : null}
 
       <AnnouncementForm
         busy={formBusy}
@@ -291,55 +286,29 @@ export function AnnouncementsView({ canWrite }: { canWrite: boolean }) {
       />
 
       {canWrite && actionDraft ? (
-        <section className="rounded-lg border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] p-3">
-          <p className="text-xs font-semibold text-[var(--ad-yellow-text)]">
-            {actionDraft.kind === "delete"
+        <ConfirmDialog
+          onClose={() => setActionDraft(null)}
+          spec={{
+            title: actionDraft.kind === "delete"
               ? t("Confirm announcement delete")
               : actionDraft.item.active
                 ? t("Confirm announcement deactivation")
-                : t("Confirm announcement activation")}{" "}
-            <span className="font-mono">{actionDraft.item.id}</span>
-          </p>
-          <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{actionDraft.item.title}</p>
-          <fieldset className="mt-3 grid gap-3 md:grid-cols-[1fr_260px_auto_auto]" disabled={actionBusy}>
-            <Field label={t("Reason (≥3)")}>
-              <input
-                aria-label={t("Announcement action reason")}
-                className={inputClass}
-                onChange={(event) => setActionDraft({ ...actionDraft, reason: event.target.value })}
-                placeholder={t("Reason (≥3)")}
-                value={actionDraft.reason}
-              />
-            </Field>
-            <input
-              aria-label={t("Announcement action confirmation")}
-              className={`${inputClass} font-mono`}
-              onChange={(event) => setActionDraft({ ...actionDraft, confirmation: event.target.value })}
-              placeholder={actionDraft.item.id}
-              value={actionDraft.confirmation}
-            />
-            <button
-              className="rounded-md inline-flex h-10 items-center justify-center border border-[var(--ad-border)] px-3 text-sm"
-              disabled={actionBusy}
-              onClick={() => setActionDraft(null)}
-              type="button"
-            >
-              {t("Cancel")}
-            </button>
-            <button
-              className="inline-flex h-10 items-center justify-center bg-[var(--ad-yellow-bg)] px-3 text-sm font-semibold text-[var(--ad-yellow-text)] disabled:opacity-50"
-              disabled={actionBusy || !canConfirmAnnouncementAction(actionDraft)}
-              onClick={() => void submitAction()}
-              type="button"
-            >
-              {actionBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              {actionDraft.kind === "delete" ? t("Confirm delete") : t("Confirm update")}
-            </button>
-          </fieldset>
-        </section>
+                : t("Confirm announcement activation"),
+            summary: `${actionDraft.item.title} · ${actionDraft.item.id}`,
+            consequence: actionDraft.kind === "delete"
+              ? { effect: t("It disappears from the site at once, and this console cannot bring it back."), reversible: false }
+              : actionDraft.item.active
+                ? { effect: t("It is hidden from the site now. Activating it brings it back."), reversible: true }
+                : { effect: t("It can show on the site as soon as its schedule allows. Deactivating hides it again."), reversible: true },
+            destructive: { expectedName: actionDraft.item.id, inputLabel: t("Announcement action confirmation") },
+            reasonLabel: t("Announcement action reason"),
+            submitLabel: actionDraft.kind === "delete" ? t("Confirm delete") : t("Confirm update"),
+            onSubmit: submitAction,
+          }}
+        />
       ) : null}
 
-      {(error || list.error) && items.length === 0 ? null : (
+      {list.error && items.length === 0 ? null : (
         <DataTable
           caption="Announcements"
           empty={
@@ -377,10 +346,6 @@ export function AnnouncementsView({ canWrite }: { canWrite: boolean }) {
   );
 }
 
-function canConfirmAnnouncementAction(draft: AnnouncementActionDraft) {
-  const confirmation = draft.confirmation.trim();
-  return draft.reason.trim().length >= 3 && confirmation === draft.item.id;
-}
 
 // SPEC: 只说窗口本身，不重复「在不在展示」——那一列已经回答过了。
 // INTENT: 两端都为空是最常见的情况（恒显），此时写「始终展示」比留一个破折号有用：
@@ -440,7 +405,7 @@ function AnnouncementForm({
     ? editing.endsAt : localInputToIso(endsAt);
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
-  const [err, setErr] = useState<string | null>(null);
+  const [err, setErr] = useState<{ message: string; cause: unknown } | null>(null);
   const trimmedTitle = title.trim();
   const expectedConfirmation = editing ? editing.id : trimmedTitle;
   const dirty = title !== (editing?.title ?? "") || body !== (editing?.body ?? "") ||
@@ -501,7 +466,7 @@ function AnnouncementForm({
             : t("Created “{title}”. It is live site-wide now.", { title: trimmedTitle }),
       );
     } catch (error) {
-      setErr(requestErrorMessage(error, t));
+      setErr({ message: requestErrorMessage(error, t), cause: error });
     } finally {
       onBusyChange(false);
     }
@@ -618,7 +583,7 @@ function AnnouncementForm({
           </ul>
         </div>
       ) : null}
-      {err ? <p role="alert" className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
+      {err !== null ? <div className="mt-2"><AuthorityRequestError cause={err.cause} message={err.message} onRetry={() => void submit()} /></div> : null}
     </details>
   );
 }

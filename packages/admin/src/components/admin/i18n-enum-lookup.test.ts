@@ -17,6 +17,10 @@ describe("多词枚举的中英查表", () => {
     ["recently_resolved", "最近已解决"],
     ["billing_dispute", "账务争议"],
     ["no_violation", "未违规"],
+    // creativeRunItemExecutionStateSchema：Creative Run 明细的执行阶段徽章。
+    ["dispatching", "派发中"],
+    ["provider_queued", "供应商排队中"],
+    ["finalizing", "收尾中"],
   ] as const;
 
   it("下划线形态查得到", () => {

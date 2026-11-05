@@ -16,7 +16,9 @@ import Link from "next/link";
 import { Loader2, RefreshCcw } from "lucide-react";
 import { apiGet } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
-import { requestErrorMessage } from "@/components/admin/section-kit";
+import { formatCount } from "@/components/admin/ui/format";
+import { RequestErrorDetails } from "@/components/admin/ui/RequestErrorDetails";
+import { operatorErrorCopy } from "@/components/admin/ui/request-error-copy";
 import { ReadonlyOpsView, type OpsColumn } from "@/components/admin/generation/ReadonlyOpsView";
 import { cn } from "@/lib/utils";
 import { useWorkspaceRefresh } from "@/features/workspace-refresh";
@@ -189,7 +191,7 @@ export function GenerationMetricsView() {
     MetricsWindowState<boolean>
   >({});
   const [errorsByWindow, setErrorsByWindow] = useState<
-    MetricsWindowState<string | null>
+    MetricsWindowState<{ cause: unknown } | null>
   >({});
   const [lastGoodWindowDays, setLastGoodWindowDays] =
     useState<MetricsWindowDays | null>(null);
@@ -200,7 +202,8 @@ export function GenerationMetricsView() {
     (metrics === null && errorsByWindow[windowDays] === undefined);
   const errorMessage = error
     ? metricsWindowErrorMessage({
-        error,
+        // 拼进句子的是人话；authority 原文折进下面的技术详情。
+        error: t(operatorErrorCopy(error.cause).headline),
         requestedWindowDays: windowDays,
         hasRequestedSnapshot: metrics !== null,
         lastGoodWindowDays,
@@ -239,7 +242,7 @@ export function GenerationMetricsView() {
     } catch (err) {
       setErrorsByWindow((current) => ({
         ...current,
-        [days]: requestErrorMessage(err, t),
+        [days]: { cause: err },
       }));
     } finally {
       setLoadingByWindow((current) => ({ ...current, [days]: false }));
@@ -263,6 +266,7 @@ export function GenerationMetricsView() {
           <div className="rounded-lg flex border border-[var(--ad-border)]">
             {WINDOW_OPTIONS.map((days) => (
               <button
+                aria-pressed={windowDays === days}
                 className={cn(
                   "h-9 px-3 text-sm",
                   windowDays === days ? "bg-black/[0.05]" : "opacity-70 hover:opacity-100",
@@ -286,10 +290,11 @@ export function GenerationMetricsView() {
           </button>
         </div>
       </div>
-      {errorMessage ? (
-        <p role="alert" className="text-xs text-[var(--ad-red-text)]">
-          {t(errorMessage.key, errorMessage.values)}
-        </p>
+      {error && errorMessage ? (
+        <div role="alert" className="text-xs text-[var(--ad-red-text)]">
+          <p>{t(errorMessage.key, errorMessage.values)}</p>
+          <RequestErrorDetails technical={operatorErrorCopy(error.cause).technical} />
+        </div>
       ) : null}
 
       {metrics ? (
@@ -352,7 +357,7 @@ function HeadlineBand({
   current: WindowTotals;
   windowDays: MetricsWindowDays;
 }) {
-  const { t } = useAdminI18n();
+  const { locale, t } = useAdminI18n();
   const currentFailureRate = ratio(current.failed, current.total);
   const currentCtr = ratio(current.clicks, current.impressions);
   return (
@@ -369,7 +374,7 @@ function HeadlineBand({
         <HeadlineTile
           delta={baseline ? countDelta(current.total, baseline.total) : null}
           label={t("Generations")}
-          value={String(current.total)}
+          value={formatCount(current.total, locale)}
         />
         <HeadlineTile
           delta={baseline ? pointDelta(currentFailureRate, ratio(baseline.failed, baseline.total)) : null}
@@ -382,7 +387,7 @@ function HeadlineBand({
           delta={baseline ? countDelta(current.cost, baseline.cost) : null}
           higherIsWorse
           label={t("Total cost")}
-          value={t("{cost} DC", { cost: current.cost })}
+          value={t("{cost} DC", { cost: formatCount(current.cost, locale) })}
         />
         <HeadlineTile
           delta={baseline ? pointDelta(currentCtr, ratio(baseline.clicks, baseline.impressions)) : null}

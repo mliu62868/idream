@@ -52,6 +52,16 @@ describe("starter detail version protection", () => {
     await act(async () => button(label, dialog()).click());
   }
 
+  it("does not call a starter missing when its read failed", async () => {
+    apiGet.mockRejectedValueOnce(new AdminV2RequestError("Starter read unavailable", 503, "unavailable"));
+    await render();
+    expect(container.textContent).not.toContain("Character not found.");
+    const alert = container.querySelector('[role="alert"]')!;
+    expect(alert.textContent).toContain("Retry to load the latest data.");
+    expect(alert.querySelector("details")?.open).toBe(false);
+    expect(alert.querySelector("details")?.textContent).toContain("Starter read unavailable");
+  });
+
   it("reloads starter details through shell refresh while retaining its draft and confirmation", async () => {
     await render();
     await act(async () => button("Edit profile").click());

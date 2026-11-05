@@ -47,6 +47,24 @@ describe("WorkflowsView diagnostics", () => {
     container.remove();
   });
 
+  // 实测：local-recolor 的槽位没有 target，曾经让整页落到错误边界。
+  it("renders a local-backend slot that has no node or argument target", async () => {
+    apiGet.mockResolvedValue({
+      items: [{
+        workflowKey: "local-recolor",
+        modelId: "local-recolor",
+        backendKind: "local-image",
+        version: 1,
+        capabilities: ["recolor"],
+        inputs: [{ key: "source_image", type: "image", required: true }],
+      }],
+    });
+    await act(async () => root.render(<WorkflowsView />));
+    await waitUntil(() => (container.textContent ?? "").includes("source_image · image"));
+    expect(container.textContent).toContain("local-recolor");
+    expect(container.textContent).not.toContain("→");
+  });
+
   it("reloads the workflow catalog once per shell refresh", async () => {
     await act(async () => root.render(<WorkflowsView />));
     await waitUntil(() => (container.textContent ?? "").includes("workflow-1"));

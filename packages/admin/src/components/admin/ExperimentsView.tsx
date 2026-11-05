@@ -13,6 +13,7 @@ import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
+import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { StatusPill } from "@/components/admin/ui/StatusPill";
 import { WriteFeedbackBanner, listPageFromParams, previousListPage, requestErrorMessage, syncListUrl, useWriteFeedback } from "@/components/admin/section-kit";
 import { FilterBar } from "@/components/admin/ui/FilterBar";
@@ -64,7 +65,9 @@ function randomToken() {
   return typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
 }
 
-export function ExperimentsView() {
+// INTENT: 监控面板调 analytics/flag-monitoring，要 analytics.export；growth_operator 没有它。
+//         不判就是一个永远 403、重试也没用的错误框，所以没权限时不发请求，直接说缺什么。
+export function ExperimentsView({ canReadFlagMonitoring = true }: { canReadFlagMonitoring?: boolean }) {
   const { t, value } = useAdminI18n();
   const [experiments, setExperiments] = useState<ManagedExperiment[]>([]);
   const [flags, setFlags] = useState<FlagRow[]>([]);
@@ -135,8 +138,8 @@ export function ExperimentsView() {
   });
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void loadMonitoring(), 0);
-    const refresh = () => { reload(); void loadMonitoring(); };
+    const timer = window.setTimeout(() => { if (canReadFlagMonitoring) void loadMonitoring(); }, 0);
+    const refresh = () => { reload(); if (canReadFlagMonitoring) void loadMonitoring(); };
     window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
     return () => {
       window.clearTimeout(timer);
@@ -144,7 +147,7 @@ export function ExperimentsView() {
       requestGate.invalidate();
       window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
     };
-  }, [loadMonitoring, monitoringGate, reload, requestGate]);
+  }, [canReadFlagMonitoring, loadMonitoring, monitoringGate, reload, requestGate]);
 
   function applyQuery(next: ExperimentQuery, nextPage = 1) {
     const params = new URLSearchParams(urlFor(next).split("?")[1] ?? "");
@@ -305,7 +308,8 @@ export function ExperimentsView() {
       </section>
 
       <section aria-labelledby="flag-monitoring-heading" className="rounded-lg border border-[var(--ad-yellow-text)]/25 bg-[var(--ad-yellow-bg)] p-4">
-        <h3 className="text-sm font-semibold" id="flag-monitoring-heading">{t("Flag Monitoring")} ({flags.length})</h3><p className="mt-1 text-xs">{t("Directional only · no assignment or exposure records")}</p><p className="mt-2 text-xs">{t("Feature flags remain rollout monitoring and never inherit managed experiment lift.")}</p>
+        <h3 className="text-sm font-semibold" id="flag-monitoring-heading">{t("Flag Monitoring")}{canReadFlagMonitoring ? ` (${flags.length})` : ""}</h3><p className="mt-1 text-xs">{t("Directional only · no assignment or exposure records")}</p><p className="mt-2 text-xs">{t("Feature flags remain rollout monitoring and never inherit managed experiment lift.")}</p>
+        {canReadFlagMonitoring ? null : <p className="mt-3 text-xs"><PermissionNotice permission="analytics.export" /></p>}
         {monitoringLoading ? <p role="status">{t("Loading")}</p> : null}
         {monitoringError ? <div className="mt-3"><AuthorityRequestError cause={monitoringError} message={requestErrorMessage(monitoringError, t)} requestKind="read" onRetry={() => void loadMonitoring()} /></div> : null}
         <ul className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{flags.map((flag) => <li className="rounded-md border border-current/20 p-3 text-xs" key={flag.key}><span className="font-mono">{flag.key}</span><br />{flag.enabled ? t("enabled") : t("disabled")} · {flag.rolloutPercent}%</li>)}</ul>

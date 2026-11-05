@@ -58,6 +58,22 @@ const nextConfig: NextConfig = {
     ? { typescript: { tsconfigPath: isolatedTsconfigPath } }
     : {}),
   allowedDevOrigins: ["127.0.0.1"],
+  poweredByHeader: false,
+  // INVARIANT: 控制台不允许被任何页面嵌入——确认框可以被同站页面点击劫持。Admin 自己嵌 Main 的
+  //   /internal-preview，那条由 Main 的 frame-ancestors 放行，不受这里影响。
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+        ],
+      },
+    ];
+  },
   experimental: {
     // Runtime releases are immutable. Keep ISR/fetch entries in memory instead
     // of allowing Next to rewrite .next/server after publication.

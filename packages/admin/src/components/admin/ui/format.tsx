@@ -104,6 +104,8 @@ export function formatDreamcoins(
   return options?.unit === false ? cost : translateAdmin(locale, "{cost} DC", { cost });
 }
 
+export type AdminFormat = ReturnType<typeof useAdminFormat>;
+
 /** 组件里用这个：locale 已绑好，调用点不必再记得传。 */
 export function useAdminFormat() {
   const { locale, t } = useAdminI18n();

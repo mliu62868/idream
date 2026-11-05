@@ -3,6 +3,9 @@
 // INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhCommon: Record<string, string> = {
+  "This record's latest details are not ready.": "这条记录的最新详情还没有就绪。",
+  "Wait for them to load, or retry the read, then submit again — nothing was written.": "请等待加载完成或重试读取，然后再次提交——本次没有写入任何内容。",
+  "Showing the first {count} rows. The authority returns at most {count} here and has no next page, so more may exist.": "这里只显示前 {count} 行。权威接口此处最多返回 {count} 行且没有下一页，实际可能更多。",
   "Load more": "加载更多",
   "Discard unsaved changes?": "放弃未保存的修改？",
   "Changes were saved, but the latest details could not be loaded. Retry before making another change.": "修改已保存，但最新详情读取失败。重试读取后才能继续修改。",

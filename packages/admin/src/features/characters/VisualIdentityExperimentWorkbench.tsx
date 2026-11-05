@@ -504,18 +504,25 @@ export function VisualIdentityExperimentWorkbench({
   const pollingRunId = selectedRun && !runSettled(selectedRun)
     ? selectedRun.id
     : null;
+  const pollFailure = useRef<string | null>(null);
   const pollExperimentRun = useCallback<PollingTask>(async (context) => {
     if (!pollingRunId) return null;
     try {
       await loadRun(pollingRunId);
+      const failure = pollFailure.current;
+      if (failure !== null && !context.cancelled) {
+        pollFailure.current = null;
+        // Only this poll's own banner: a write failure shown meanwhile must stay visible.
+        setError((current) => (current === failure ? null : current));
+      }
       return 3_000;
     } catch (cause) {
       if (context.cancelled) return null;
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : translateAdmin(locale, "Generation results could not be refreshed"),
-      );
+      const failure = cause instanceof Error
+        ? cause.message
+        : translateAdmin(locale, "Generation results could not be refreshed");
+      pollFailure.current = failure;
+      setError(failure);
       return 6_000;
     }
   }, [loadRun, locale, pollingRunId]);

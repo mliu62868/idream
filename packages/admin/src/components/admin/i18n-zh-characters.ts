@@ -6,6 +6,14 @@
 // packages/main/src/server/modules/admin-v2/characters/{production-journey,readiness,renderer-preview}.ts。
 // 它们在 admin 源码里没有字面量，静态扫描判不出「在用」。删之前先查后端。
 export const adminZhCharacters: Record<string, string> = {
+  "From a previous identity": "属于之前的身份",
+  "This media was produced under a different visual identity.": "这份素材由其他视觉身份产出。",
+  "Generate it again under the current identity, then add the new media to chat.": "请用当前身份重新生成，再把新素材加入聊天。",
+  "Describe for the current identity": "为当前身份填写描述",
+  "This media was described for a previous visual identity, which chat no longer uses. Save a description to add it for the current identity; generated media must come from that identity.": "这份素材的描述属于之前的视觉身份，聊天已不再使用。保存描述即可将其加入当前身份；生成类素材必须由当前身份产出。",
+  "The Character library could not refresh. Use Refresh to try again.": "无法刷新角色素材库。请点击“刷新”重试。",
+  "Character video runs could not be refreshed. Use Refresh to try again.": "无法刷新角色视频任务。请点击“刷新”重试。",
+  "Generation outcome still needs server confirmation: {detail}. Choose Reconcile saved request; it cannot create a duplicate Run.": "生成结果仍需服务端确认：{detail}。请选择“核对已保存请求”，这不会创建重复任务。",
   "Discard edits and reload": "放弃修改并重新载入",
   "Published for this Character identity": "已为当前角色身份启用",
   "Explicit fact filters satisfied": "符合明确的内容筛选条件",

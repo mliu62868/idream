@@ -7,7 +7,7 @@ import {
   type MainToChatOutboxEvent,
   type MainToChatOutboxEventListResponse,
 } from "@idream/shared/admin";
-import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
+import { useAdminI18n } from "@/components/admin/i18n";
 import { Loader2, RefreshCcw, RotateCcw, Search } from "lucide-react";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -23,6 +23,7 @@ import { DataTable, type DataTableHeader, type DataTableRow } from "@/components
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { useAdminFormat } from "@/components/admin/ui/format";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { Pagination } from "@/components/admin/ui/Pagination";
 import { useToast } from "@/components/admin/ui/Toast";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { createLatestRequestGate } from "@/lib/latest-request";
@@ -181,6 +182,9 @@ const authorities: ChatOpsAuthority[] = [
   "events",
 ];
 const emptyPageInfo: PageInfo = { endCursor: null, hasNextPage: false };
+const FAILED_DELIVERY_PAGE_SIZE = 50;
+type PagedAuthority = "sessions" | "usage" | "events";
+const emptyPageTrails = (): Record<PagedAuthority, string[]> => ({ sessions: [], usage: [], events: [] });
 
 function initialStates(): Record<ChatOpsAuthority, AuthorityState> {
   return Object.fromEntries(
@@ -213,6 +217,8 @@ export function ChatOpsWorkspace({
   const { t } = useAdminI18n();
   const [query, setQuery] = useState<ChatOpsQuery>(defaultChatOpsQuery);
   const [draft, setDraft] = useState<ChatOpsQuery>(defaultChatOpsQuery);
+  // SPEC: 三块列表各有自己的游标轨迹 —— 共用一个 URL，但各自独立翻页。
+  const [trails, setTrails] = useState<Record<PagedAuthority, string[]>>(emptyPageTrails);
   const [loadedStates, setStates] =
     useState<Record<ChatOpsAuthority, AuthorityState>>(initialStates);
   // Keep same-query last-good snapshots, but never give a new scope old action targets.
@@ -281,12 +287,14 @@ export function ChatOpsWorkspace({
       setDraft(next);
       load(next);
     };
+    // 后退 / 前进到的那一页走过什么路，历史条目里没记——清空轨迹，页码如实说未知。
+    const restoreFromHistory = () => { setTrails(emptyPageTrails); restore(); };
     restore();
-    window.addEventListener("popstate", restore);
+    window.addEventListener("popstate", restoreFromHistory);
     window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, restore);
     return () => {
       for (const authority of authorities) requestGates[authority].invalidate();
-      window.removeEventListener("popstate", restore);
+      window.removeEventListener("popstate", restoreFromHistory);
       window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, restore);
     };
   }, [load]);
@@ -309,6 +317,7 @@ export function ChatOpsWorkspace({
 
   function apply(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setTrails(emptyPageTrails());
     navigate({ ...draft, sessionCursor: "", usageCursor: "", eventCursor: "" });
   }
 
@@ -507,10 +516,12 @@ export function ChatOpsWorkspace({
           />
           <Pager
             authority="usage"
-            label="Next usage page"
-            navigate={navigate}
+            loading={states.usage.loading}
+            navigate={(next, trail) => { navigate(next); setTrails((current) => ({ ...current, usage: trail })); }}
             pageInfo={states.usage.data?.pageInfo ?? emptyPageInfo}
             query={query}
+            rowCount={states.usage.data?.items?.length ?? 0}
+            trail={trails.usage}
           />
 
           <AuthorityError
@@ -537,10 +548,12 @@ export function ChatOpsWorkspace({
           />
           <Pager
             authority="sessions"
-            label="Next session page"
-            navigate={navigate}
+            loading={states.sessions.loading}
+            navigate={(next, trail) => { navigate(next); setTrails((current) => ({ ...current, sessions: trail })); }}
             pageInfo={states.sessions.data?.pageInfo ?? emptyPageInfo}
             query={query}
+            rowCount={states.sessions.data?.items?.length ?? 0}
+            trail={trails.sessions}
           />
 
           <ChatEngagementPanel key={`${query.userId}:${query.characterId}`} userId={query.userId} characterId={query.characterId} />
@@ -564,10 +577,12 @@ export function ChatOpsWorkspace({
           />
           <Pager
             authority="events"
-            label="Next event page"
-            navigate={navigate}
+            loading={states.events.loading}
+            navigate={(next, trail) => { navigate(next); setTrails((current) => ({ ...current, events: trail })); }}
             pageInfo={states.events.data?.pageInfo ?? emptyPageInfo}
             query={query}
+            rowCount={states.events.data?.items?.length ?? 0}
+            trail={trails.events}
           />
         </>
       ) : null}
@@ -594,6 +609,9 @@ function MainToChatFailedOutboxPanel({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const gate = useRef(createLatestRequestGate());
+  // SPEC: 「上一页」走自己走过的游标回头；回到第一页的读取（含刷新）同时清空轨迹。
+  const [cursor, setCursor] = useState("");
+  const [cursorTrail, setCursorTrail] = useState<string[]>([]);
 
   const load = useCallback(
     async (cursor = "") => {
@@ -601,7 +619,9 @@ function MainToChatFailedOutboxPanel({
       const request = gate.current.begin();
       setLoading(true);
       setError(null);
-      const params = new URLSearchParams({ status: "failed", limit: "50" });
+      setCursor(cursor);
+      if (!cursor) setCursorTrail([]);
+      const params = new URLSearchParams({ status: "failed", limit: String(FAILED_DELIVERY_PAGE_SIZE) });
       if (cursor) params.set("cursor", cursor);
       try {
         const response = await adminV2Operation(
@@ -915,6 +935,7 @@ function MainToChatFailedOutboxPanel({
               />
             }
             error={data ? null : error === null || error === undefined ? null : authorityMessage(error, "Main → Chat failed delivery")}
+            errorCause={error}
             headers={headers}
             loading={loading}
             minimumWidthClassName="min-w-[1080px]"
@@ -922,16 +943,17 @@ function MainToChatFailedOutboxPanel({
             rows={tableRows}
             skeletonRows={5}
           />
-          {data?.pageInfo.hasNextPage && data.pageInfo.endCursor ? (
-            <button
-              className="inline-flex min-h-11 items-center gap-2 rounded border border-[var(--ad-border)] px-4 text-sm font-semibold"
-              disabled={loading}
-              onClick={() => void load(data.pageInfo.endCursor ?? "")}
-              type="button"
-            >
-              <RefreshCcw className="h-4 w-4" />
-              {t("Next failed delivery page")}
-            </button>
+          {data ? (
+            <Pagination
+              hasNext={Boolean(data.pageInfo.hasNextPage && data.pageInfo.endCursor)}
+              hasPrevious={Boolean(cursor)}
+              loading={loading}
+              onNext={() => { if (data.pageInfo.endCursor) { setCursorTrail([...cursorTrail, cursor]); void load(data.pageInfo.endCursor); } }}
+              onPrevious={() => { setCursorTrail(cursorTrail.slice(0, -1)); void load(cursorTrail.at(-1) ?? ""); }}
+              page={cursorTrail.length + 1}
+              pageSize={FAILED_DELIVERY_PAGE_SIZE}
+              rowCount={rows.length}
+            />
           ) : null}
         </>
       )}
@@ -952,6 +974,7 @@ function MainToChatFailedOutboxPanel({
 //   全后台此前只有 JobsView 渲染过 dataScope。
 export function ChatOpsOverviewCards({ overview }: { overview: Row | null }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   const excluded = (overview?.dataScope as { excluded?: Record<string, unknown> } | undefined)
     ?.excluded;
   const excludedCount = (key: string) => {
@@ -976,11 +999,11 @@ export function ChatOpsOverviewCards({ overview }: { overview: Row | null }) {
           <div className="bg-[var(--ad-surface)] p-4" key={label}>
             <p className="text-xs text-[var(--ad-text-muted)]">{t(label)}</p>
             <p className="mt-2 text-2xl font-semibold">
-              {typeof value === "number" ? value : "—"}
+              {typeof value === "number" ? format.count(value) : "—"}
             </p>
             {hidden === null ? null : (
               <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-                {t("{count} excluded by data class", { count: hidden })}
+                {t("{count} excluded by data class", { count: format.count(hidden) })}
               </p>
             )}
           </div>
@@ -1221,6 +1244,7 @@ function AuthorityTable({
   state: AuthorityState;
 }) {
   const { t, value: enumLabel } = useAdminI18n();
+  const format = useAdminFormat();
   if (!state.data && state.loading)
     return <Loading authority={AUTHORITY_LABELS[authority]} state={state} />;
   if (!state.data) return null;
@@ -1246,7 +1270,7 @@ function AuthorityTable({
               : "Chat moderation events"
       }
       headers={columns.map(([, header]) => header)}
-      rows={tableRows(rows, columns, authority, enumLabel)}
+      rows={tableRows(rows, columns, authority, enumLabel, format)}
     />
   );
 }
@@ -1263,54 +1287,67 @@ function releasePinCell(raw: unknown, enumLabel: (key: string) => string) {
   return `${enumLabel(state)}${version}`;
 }
 
+// 这些列装的是 ISO 时间戳，运营要读的是本地化时间，不是机器串。
+const DATE_COLUMNS: ReadonlySet<string> = new Set(["periodStart", "lastMessageAt", "createdAt"]);
+
 function tableRows(
   rows: Row[],
   columns: ColumnSpec,
   prefix: string,
   enumLabel: (key: string) => string,
+  format: ReturnType<typeof useAdminFormat>,
 ): DataTableRow[] {
   return rows.map((row, index) => ({
     id: text(row.id) || `${prefix}-${index}`,
     cells: columns.map(([field]) => {
       const raw = row[field];
       if (field === "releasePin") return releasePinCell(raw, enumLabel);
+      if (DATE_COLUMNS.has(field) && typeof raw === "string" && raw) return format.dateTime(raw);
       return ENUM_COLUMNS.has(field) && typeof raw === "string" && raw
         ? enumLabel(raw)
-        : display(raw);
+        : format.display(raw);
     }),
   }));
 }
 
 function Pager({
   authority,
-  label,
+  loading,
   navigate,
   pageInfo,
   query,
+  rowCount,
+  trail,
 }: {
-  authority: "sessions" | "usage" | "events";
-  label: string;
-  navigate: (query: ChatOpsQuery) => void;
+  authority: PagedAuthority;
+  loading: boolean;
+  navigate: (query: ChatOpsQuery, trail: string[]) => void;
   pageInfo: PageInfo;
   query: ChatOpsQuery;
+  rowCount: number;
+  trail: string[];
 }) {
   const { t } = useAdminI18n();
-  if (!pageInfo.hasNextPage || !pageInfo.endCursor) return null;
-  const cursor =
+  const cursorKey =
     authority === "sessions"
       ? "sessionCursor"
       : authority === "usage"
         ? "usageCursor"
         : "eventCursor";
+  const cursor = query[cursorKey];
+  if (rowCount === 0 && !cursor) return null;
   return (
-    <button
-      className="inline-flex min-h-11 items-center gap-2 rounded border px-4 text-sm font-semibold"
-      onClick={() => navigate({ ...query, [cursor]: pageInfo.endCursor ?? "" })}
-      type="button"
-    >
-      <RefreshCcw className="h-4 w-4" />
-      {t(label)}
-    </button>
+    <Pagination
+      hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
+      hasPrevious={Boolean(cursor)}
+      loading={loading}
+      onNext={() => { if (pageInfo.endCursor) navigate({ ...query, [cursorKey]: pageInfo.endCursor }, [...trail, cursor]); }}
+      onPrevious={() => navigate({ ...query, [cursorKey]: trail.at(-1) ?? "" }, trail.slice(0, -1))}
+      previousLabel={cursor && trail.length === 0 ? t("Back to first page") : undefined}
+      page={!cursor ? 1 : trail[0] === "" ? trail.length + 1 : null}
+      pageSize={Number(query.limit)}
+      rowCount={rowCount}
+    />
   );
 }
 
@@ -1385,11 +1422,10 @@ function Freshness({
   authority: string;
   state: AuthorityState;
 }) {
-  const { locale, t } = useAdminI18n();
+  const { t } = useAdminI18n();
+  const format = useAdminFormat();
   const label = t(authority);
-  const time = state.refreshedAt
-    ? new Date(state.refreshedAt).toLocaleTimeString(adminDateLocale(locale))
-    : t("unknown");
+  const time = state.refreshedAt ? format.time(state.refreshedAt) : t("unknown");
   if (state.loading && state.data)
     return (
       <span>

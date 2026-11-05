@@ -8,6 +8,7 @@ import { Download, FileDown, Loader2, RefreshCcw, ShieldAlert, Trash2 } from "lu
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { formatDateTime } from "@/components/admin/ui/format";
@@ -62,17 +63,20 @@ type AgeOverrideDraft = ConfirmDraft & {
   next: "verified" | "failed";
 };
 
-type EraseDraft = ConfirmDraft & { userId: string };
-type DsarError = { message: string; cause: unknown } & (
-  | { kind: "export"; userId: string }
-  | { kind: "erase"; draft: EraseDraft }
-);
+// 只有导出是读取；擦除的失败留在 ConfirmDialog 里就地显示。
+type DsarError = { message: string; cause: unknown; userId: string };
+
+// SPEC: 契约 compliance.ts 的两条队列 limit 默认 100，且没有游标。
+// INVARIANT: 行数顶到这个数就不能假装看全了——说清楚「只有前 100 行」。
+const COMPLIANCE_LIST_CAP = 100;
 
 export function ComplianceView({ canWrite = false }: { canWrite?: boolean }) {
+  // INTENT: 擦除成功的文案叫运营去下方队列跟踪；队列得真的重读，刚提交的那条才在里面。
+  const [erasureSignal, setErasureSignal] = useState(0);
   return (
     <div className="space-y-6">
-      <DsarSection canWrite={canWrite} />
-      <ErasureQueueSection />
+      <DsarSection canWrite={canWrite} onErasureRequested={() => setErasureSignal((signal) => signal + 1)} />
+      <ErasureQueueSection refreshSignal={erasureSignal} />
       <AgeVerificationSection canWrite={canWrite} />
     </div>
   );
@@ -97,7 +101,17 @@ export const BLOCKER_COPY: Record<string, string> = {
     "A generation request of this account has not reached a terminal state — settle it in Jobs",
 };
 
-function DsarSection({ canWrite }: { canWrite: boolean }) {
+function RowCapNotice({ count }: { count: number }) {
+  const { t } = useAdminI18n();
+  if (count < COMPLIANCE_LIST_CAP) return null;
+  return (
+    <p className="text-xs text-[var(--ad-yellow-text)]" role="status">
+      {t("Showing the first {count} rows. The authority returns at most {count} here and has no next page, so more may exist.", { count: COMPLIANCE_LIST_CAP })}
+    </p>
+  );
+}
+
+function DsarSection({ canWrite, onErasureRequested }: { canWrite: boolean; onErasureRequested: () => void }) {
   const { t, locale } = useAdminI18n();
   const [userId, setUserId] = useState("");
   const [exported, setExported] = useState<{ userId: string; data: unknown } | null>(null);
@@ -105,7 +119,7 @@ function DsarSection({ canWrite }: { canWrite: boolean }) {
   // INVARIANT: 存异常对象而不只是它的 message —— AuthorityRequestError 要靠 cause 才能按错误码
   // 出人话（只有 message 时它退回「读不到最新数据」的通用兜底，运营读到的仍是 authority 英文原文）。
   const [err, setErr] = useState<DsarError | null>(null);
-  const [eraseDraft, setEraseDraft] = useState<EraseDraft | null>(null);
+  const [eraseTarget, setEraseTarget] = useState<string | null>(null);
   const [writePermission, setWritePermission] = useState(canWrite);
   const requestGate = useRef(createLatestRequestGate());
   const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
@@ -113,10 +127,7 @@ function DsarSection({ canWrite }: { canWrite: boolean }) {
   // INVARIANT: 被撤销授权的确认必须重新填写；重新授权不能复活旧的危险操作。
   if (writePermission !== canWrite) {
     setWritePermission(canWrite);
-    if (!canWrite) {
-      setEraseDraft(null);
-      setErr(current => current?.kind === "erase" ? null : current);
-    }
+    if (!canWrite) setEraseTarget(null);
   }
 
   useEffect(() => {
@@ -131,7 +142,7 @@ function DsarSection({ canWrite }: { canWrite: boolean }) {
     // INVARIANT: 预览、错误和确认都属于读取时的账号，切换账号同时作废迟到响应。
     requestGate.current.invalidate();
     setExported(null);
-    setEraseDraft(null);
+    setEraseTarget(null);
     setErr(null);
     setBusy(null);
     clearFeedback();
@@ -152,7 +163,7 @@ function DsarSection({ canWrite }: { canWrite: boolean }) {
       setExported({ userId: targetId, data: data.export });
     } catch (error) {
       if (!request.isCurrent()) return;
-      setErr({ kind: "export", userId: targetId, message: requestErrorMessage(error, t), cause: error });
+      setErr({ userId: targetId, message: requestErrorMessage(error, t), cause: error });
     } finally {
       if (request.isCurrent()) setBusy(null);
     }
@@ -171,8 +182,9 @@ function DsarSection({ canWrite }: { canWrite: boolean }) {
     URL.revokeObjectURL(url);
   }
 
-  async function erase(draft: EraseDraft | null = eraseDraft) {
-    if (!canWrite || busy !== null || !draft || draft.userId !== userId.trim() || !canConfirm(draft, draft.userId)) return;
+  // INVARIANT: 失败抛给 ConfirmDialog——就地显示、不关框，理由和确认串都留着，重试复用同一把幂等键。
+  async function erase(targetId: string, reason: string) {
+    if (!canWrite) return;
     const request = requestGate.current.begin();
     setBusy("erase");
     setErr(null);
@@ -183,15 +195,14 @@ function DsarSection({ canWrite }: { canWrite: boolean }) {
         idempotent?: boolean;
         deletion: { graceEndsAt: string };
       }>(
-        `/api/v2/admin/compliance/users/${encodeURIComponent(draft.userId)}/erase`,
+        `/api/v2/admin/compliance/users/${encodeURIComponent(targetId)}/erase`,
         "POST",
         {
-          reason: draft.reason.trim(),
-          confirmation: draft.confirmation.trim(),
+          reason,
+          confirmation: targetId,
         },
       );
       if (!request.isCurrent()) return;
-      setEraseDraft(null);
       setExported(null);
       // SPEC: 成功文案必须说出「什么时候真的会被删」。
       // INTENT: 旧文案说完成会出现在审计日志里——那是假的：完成路径一行审计都不写，
@@ -199,15 +210,13 @@ function DsarSection({ canWrite }: { canWrite: boolean }) {
       //         按用户 ID 也再查不到。权威在响应里给了准确的到期时间，照它说。
       reportSuccess(
         data.idempotent
-          ? t("{id} already has an erasure request — nothing changed.", { id: draft.userId })
+          ? t("{id} already has an erasure request — nothing changed.", { id: targetId })
           : t("Access for {id} is revoked now. Erasure itself starts after {due}; track it in the queue below.", {
-            id: draft.userId,
+            id: targetId,
             due: formatDateTime(data.deletion.graceEndsAt, locale),
           }),
       );
-    } catch (error) {
-      if (!request.isCurrent()) return;
-      setErr({ kind: "erase", draft, message: requestErrorMessage(error, t), cause: error });
+      onErasureRequested();
     } finally {
       if (request.isCurrent()) setBusy(null);
     }
@@ -244,7 +253,7 @@ function DsarSection({ canWrite }: { canWrite: boolean }) {
           onClick={() => {
             setErr(null);
             clearFeedback();
-            setEraseDraft({ userId: userId.trim(), reason: "", confirmation: "" });
+            setEraseTarget(userId.trim());
           }}
           type="button"
         >
@@ -252,54 +261,29 @@ function DsarSection({ canWrite }: { canWrite: boolean }) {
           {t("Erase")}
         </button> : null}
       </div>
-      {canWrite && eraseDraft ? (
-        <section className="rounded-lg mt-3 border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] p-3">
-          <p className="text-xs font-semibold text-[var(--ad-red-text)]">
-            {t("Confirm erasure for")} <span className="font-mono">{eraseDraft.userId}</span>
-          </p>
-          <div className="mt-3 grid gap-3 md:grid-cols-[1fr_220px_auto_auto]">
-            <input
-              aria-label={t("Erase reason")}
-              className={inputClass}
-              disabled={busy !== null}
-              onChange={(e) => { setErr(null); setEraseDraft({ ...eraseDraft, reason: e.target.value }); }}
-              placeholder={t("Reason (≥3 chars)")}
-              value={eraseDraft.reason}
-            />
-            <input
-              aria-label={t("Erase confirmation")}
-              className={inputClass}
-              disabled={busy !== null}
-              onChange={(e) => { setErr(null); setEraseDraft({ ...eraseDraft, confirmation: e.target.value }); }}
-              placeholder={t("Type user ID")}
-              value={eraseDraft.confirmation}
-            />
-            <button
-              className="rounded-md inline-flex h-10 items-center justify-center border border-[var(--ad-border)] px-3 text-sm"
-              disabled={busy !== null}
-              onClick={() => { setEraseDraft(null); setErr(null); }}
-              type="button"
-            >
-              {t("Cancel")}
-            </button>
-            <button
-              className="inline-flex h-10 items-center justify-center bg-[var(--ad-red-bg)] px-3 text-sm font-semibold text-[var(--ad-red-text)] disabled:opacity-50"
-              disabled={busy !== null || !canConfirm(eraseDraft, eraseDraft.userId)}
-              onClick={() => void erase()}
-              type="button"
-            >
-              {t("Confirm erase")}
-            </button>
-          </div>
-        </section>
+      {canWrite && eraseTarget ? (
+        <ConfirmDialog
+          onClose={() => setEraseTarget(null)}
+          spec={{
+            title: `${t("Confirm erasure for")} ${eraseTarget}`,
+            consequence: {
+              effect: t("Access is revoked immediately. After the grace period the account's data is erased across Chat and storage. This console has no command to stop it."),
+              reversible: false,
+            },
+            destructive: { expectedName: eraseTarget, inputLabel: t("Type user ID") },
+            reasonLabel: t("Erase reason"),
+            submitLabel: t("Confirm erase"),
+            onSubmit: (reason) => erase(eraseTarget, reason),
+          }}
+        />
       ) : null}
-      {err && (err.kind === "export" || (canWrite && eraseDraft)) ? (
+      {err ? (
         <div className="mt-2">
           <AuthorityRequestError
             cause={err.cause}
             message={err.message}
-            requestKind={err.kind === "export" ? "read" : "write"}
-            onRetry={() => err.kind === "export" ? void exportData(err.userId) : void erase(err.draft)}
+            requestKind="read"
+            onRetry={() => void exportData(err.userId)}
           />
         </div>
       ) : null}
@@ -328,7 +312,7 @@ function DsarSection({ canWrite }: { canWrite: boolean }) {
   );
 }
 
-function ErasureQueueSection() {
+function ErasureQueueSection({ refreshSignal }: { refreshSignal: number }) {
   const { t, locale } = useAdminI18n();
   const [scope, setScope] = useState<"open" | "all">("open");
   const [authority, setAuthority] = useState(() => createAuthorityState<DeletionPayload>());
@@ -354,6 +338,12 @@ function ErasureQueueSection() {
   }, []);
 
   useWorkspaceRefresh(() => load(scope));
+
+  const latestScope = useRef(scope);
+  useEffect(() => { latestScope.current = scope; }, [scope]);
+  useEffect(() => {
+    if (refreshSignal > 0) void load(latestScope.current);
+  }, [load, refreshSignal]);
 
   useEffect(() => {
     const gate = requestGate.current;
@@ -434,7 +424,8 @@ function ErasureQueueSection() {
         </div>
       ) : null}
       {authority.error && authority.data === null ? null : (
-        <div className="p-3">
+        <div className="space-y-2 p-3">
+          <RowCapNotice count={payload?.items.length ?? 0} />
           <DataTable
             caption="Account erasure requests"
             empty={<EmptyState title={t("No erasure requests in flight.")} />}
@@ -695,7 +686,8 @@ function AgeVerificationSection({ canWrite }: { canWrite: boolean }) {
       {/* INVARIANT: userId 是 UUID，窄屏必须在表内横滚——DataTable 的 minimumWidthClassName
           管这件事，否则整页被撑出横向滚动条。 */}
       {authority.error && authority.data === null ? null : (
-        <div className="p-3">
+        <div className="space-y-2 p-3">
+          <RowCapNotice count={rows.length} />
           <DataTable
             caption="Compliance records"
             empty={

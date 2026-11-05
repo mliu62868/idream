@@ -4,6 +4,9 @@ import { renderToString } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { AdminPermissionKey } from "@idream/shared/admin/permissions";
 import { AdminConsoleClient } from "@/components/admin/AdminConsoleClient";
+import { AdminI18nProvider } from "@/components/admin/i18n";
+import { ToastProvider } from "@/components/admin/ui/Toast";
+import { CharacterWorkspace } from "@/features/characters/CharacterWorkspace";
 import {
   DEFAULT_ADMIN_SHELL_PREFERENCES,
   type AdminShellPreferences,
@@ -239,26 +242,21 @@ describe("canonical Admin route shell", () => {
   });
 
   it("only shows Character creation when bootstrap allows creating a new object", () => {
-    const initialPermissions: AdminPermissionKey[] = [
+    const permissions = new Set<AdminPermissionKey>([
       "character.project.read",
       "character.project.write",
       "character.release.read",
       "character.performance.read",
-    ];
-    const scopedMarkup = renderToString(
-      <AdminConsoleClient {...shellProps({
-        initialSection: "characters",
-        initialPermissions,
-        canCreateCharacters: false,
-      })} />,
+    ]);
+    const render = (canCreateCharacters: boolean) => renderToString(
+      <AdminI18nProvider locale="en">
+        <ToastProvider>
+          <CharacterWorkspace actorId="operator-1" canCreateCharacters={canCreateCharacters} permissions={permissions} view={{ kind: "list" }} />
+        </ToastProvider>
+      </AdminI18nProvider>,
     );
-    const createMarkup = renderToString(
-      <AdminConsoleClient {...shellProps({
-        initialSection: "characters",
-        initialPermissions,
-        canCreateCharacters: true,
-      })} />,
-    );
+    const scopedMarkup = render(false);
+    const createMarkup = render(true);
 
     expect(scopedMarkup).toContain("Search characters");
     expect(scopedMarkup).not.toContain('href="/admin/characters/new"');

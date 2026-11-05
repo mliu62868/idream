@@ -209,6 +209,28 @@ describe("SupportWorkspace customer replies", () => {
     expect(apiWrite).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the confirmation open and names the missing customer message instead of blaming an unknown cause", async () => {
+    await mount();
+    const waiting = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Wait on user")
+      ?? [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => /wait/i.test(button.textContent ?? ""));
+    await act(async () => waiting()!.click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    const fill = async (label: string, value: string) => act(async () => {
+      const field = dialog.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, value);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await fill("Reason", "Need the receipt");
+    await fill("Confirmation", dialog.querySelector("span.select-all")!.textContent!);
+    await act(async () => [...dialog.querySelectorAll("button")].find((button) => button.textContent === "Confirm")!.click());
+    expect(document.querySelector('[role="dialog"]')).toBe(dialog);
+    const alert = dialog.querySelector('[role="alert"]')!;
+    expect(alert.textContent).toContain("Write a message to the customer before continuing.");
+    expect(alert.textContent).toContain("nothing was written");
+    expect(alert.textContent).not.toContain("send them to engineering");
+    expect(apiWrite).not.toHaveBeenCalled();
+  });
+
   it("asks for a customer-facing question separately from the internal reason", async () => {
     await mount();
     expect([...container.querySelectorAll("button")].some((node) => node.textContent?.trim() === "Close")).toBe(false);

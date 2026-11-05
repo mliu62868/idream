@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CharacterMediaLibraryEntry, CharacterMediaLibraryListResponse } from "@idream/shared/admin";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { CharacterChatLibrary } from "./CharacterChatLibrary";
 
 const { operation } = vi.hoisted(() => ({ operation: vi.fn() }));
@@ -105,11 +106,11 @@ describe("Character chat library", () => {
     current = entry(); await render();
     operation.mockImplementation(async (id) => {
       if (id.startsWith("GET ")) return library([entry()]);
-      throw new Error("Entry changed. Reload the current revision.");
+      throw new AdminV2RequestError("This chat library item has changed; reload it before saving", 409, "conflict");
     });
     await edit(textarea("Visible content description"), "My reviewed description remains here");
     await click("Save description");
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Entry changed");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Chat description could not be saved");
     expect(textarea("Visible content description").value).toBe("My reviewed description remains here");
     expect(button("Save description").disabled).toBe(false);
     current = { ...entry(), revision: 3, description: "Current server description" };
@@ -147,5 +148,125 @@ describe("Character chat library", () => {
     expect(button("Save draft").disabled).toBe(true);
     expect(button("Use in chat").disabled).toBe(true);
     expect(container.textContent).toContain("Set the Character visual identity");
+  });
+
+  describe("after another visual identity is activated", () => {
+    const currentIdentity = { visualProfileId: "visual-2", visualProfileVersion: 4 };
+    const v1 = (status: CharacterMediaLibraryEntry["status"] = "published") => ({ ...entry(status), id: "entry-v1" });
+    const v2 = () => ({ ...entry("published"), id: "entry-v2", ...currentIdentity, description: "Described for the current identity" });
+    const posted = () => operation.mock.calls.filter(([id]) => id === "POST /api/v2/admin/characters/:id/media-library");
+    const patched = () => operation.mock.calls.filter(([id]) => String(id).startsWith("PATCH "));
+    const grid = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent?.includes("Wearing a blue jacket"))!;
+    const mockList = (items: CharacterMediaLibraryEntry[], visualIdentity = currentIdentity) => {
+      operation.mockImplementation(async (id, options) => {
+        if (id.startsWith("GET ")) return { ...library(items), visualIdentity };
+        if (id.endsWith("/search-preview")) return { matches: [], elapsedMs: 1 };
+        return { entry: { ...v2(), ...options.body, revision: 1 }, replayed: false };
+      });
+    };
+
+    it("creates an entry for the current identity instead of patching the previous identity's entry", async () => {
+      mockList([v1()]);
+      await render();
+      expect(container.textContent).toContain("described for a previous visual identity");
+      expect(button("Save draft")).toBeDefined();
+      expect(textarea("Visible content description").value).toBe("");
+      await edit(textarea("Visible content description"), "A blue jacket beside a closed window");
+      await click("Use in chat");
+      expect(patched()).toHaveLength(0);
+      expect(posted()).toHaveLength(1);
+      expect(posted()[0][1].body).toMatchObject({ sourceAssetId: source.id, expectedVisualProfileId: "visual-2", expectedVisualProfileVersion: 4, status: "published" });
+    });
+
+    it("opens the current identity's entry even when a previous identity's entry is newer", async () => {
+      mockList([{ ...v1(), revision: 9 }, v2()]);
+      await render();
+      expect(textarea("Visible content description").value).toBe("Described for the current identity");
+      await click("Save description");
+      expect(posted()).toHaveLength(0);
+      expect(patched()[0][1].path.entryId).toBe("entry-v2");
+    });
+
+    it("labels a previous identity's published entry as unavailable to chat and opens it for the current identity", async () => {
+      mockList([v1()]);
+      await act(async () => root.render(<CharacterChatLibrary characterId="character-1" mediaType="image" canWrite canPublish source={null} onCloseSource={() => undefined} />));
+      await waitUntil(() => container.textContent?.includes("Wearing a blue jacket") === true);
+      expect(grid().textContent).toContain("From a previous identity");
+      expect(grid().textContent).not.toContain("Available in chat");
+      await act(async () => grid().click());
+      expect(button("Save draft")).toBeDefined();
+      expect(textarea("Visible content description").value).toBe("");
+    });
+
+    it("still labels the current identity's published entry as available in chat", async () => {
+      mockList([{ ...v2(), description: "Wearing a blue jacket" }]);
+      await act(async () => root.render(<CharacterChatLibrary characterId="character-1" mediaType="image" canWrite canPublish source={null} onCloseSource={() => undefined} />));
+      await waitUntil(() => container.textContent?.includes("Wearing a blue jacket") === true);
+      expect(grid().textContent).toContain("Available in chat");
+    });
+  });
+
+  describe("write failures", () => {
+    const failWrites = (cause: unknown) => operation.mockImplementation(async (id) => {
+      if (id.startsWith("GET ")) return library([entry()]);
+      throw cause;
+    });
+    const alert = () => container.querySelector('[aria-label="Chat description editor"] [role="alert"]');
+
+    it("does not offer discard-and-reload or claim nothing was written after a 5xx", async () => {
+      current = entry(); await render();
+      failWrites(new AdminV2RequestError("pg: deadlock detected in media_library", 500, "internal"));
+      await click("Save description");
+      expect(alert()?.textContent).toContain("Check this record's current state before retrying");
+      expect(alert()?.textContent).not.toContain("nothing was written");
+      expect(button("Discard edits and reload")).toBeUndefined();
+      // The raw authority text stays inside the collapsed technical details.
+      expect(alert()?.querySelector("details")?.textContent).toContain("pg: deadlock detected");
+      expect(alert()?.querySelector("p")?.textContent).not.toContain("pg: deadlock detected");
+    });
+
+    it("does not offer discard-and-reload for a conflict a reload cannot resolve", async () => {
+      current = entry(); await render();
+      failWrites(new AdminV2RequestError("This source file was replaced; add the replacement as a new library item", 409, "conflict"));
+      await click("Use in chat");
+      expect(alert()?.textContent).toContain("a precondition was not met");
+      expect(button("Discard edits and reload")).toBeUndefined();
+    });
+
+    it.each<[string, string, unknown]>([
+      ["a stale revision", "This chat library item has changed; reload it before saving", undefined],
+      ["a changed visual identity", "The Character visual identity changed; reload before preparing chat media", undefined],
+      ["a structured version mismatch", "Revision moved", { blocker: "version_mismatch" }],
+    ])("offers discard-and-reload for %s", async (_name, conflict, details) => {
+      current = entry(); await render();
+      failWrites(new AdminV2RequestError(conflict, 409, "conflict", details));
+      await click("Use in chat");
+      expect(button("Discard edits and reload")).toBeDefined();
+    });
+
+    it("explains a source from another identity instead of asking for a permission", async () => {
+      current = entry(); await render();
+      failWrites(new AdminV2RequestError("Only platform Character production with this visual identity may enter the shared chat library", 403, "forbidden"));
+      await click("Use in chat");
+      expect(alert()?.textContent).toContain("produced under a different visual identity");
+      expect(alert()?.textContent).not.toContain("does not hold the permission");
+      expect(button("Discard edits and reload")).toBeUndefined();
+    });
+
+    it("does not treat a conflict with an unverified body as a version conflict", async () => {
+      current = entry(); await render();
+      failWrites(new AdminV2RequestError("This chat library item has changed; reload it before saving", 409, "conflict", undefined, "request-1", "unknown"));
+      await click("Save description");
+      expect(button("Discard edits and reload")).toBeUndefined();
+    });
+  });
+
+  it("shows a failed library read through the operator copy", async () => {
+    operation.mockImplementation(async () => { throw new AdminV2RequestError("pg: connection refused", 503, "unavailable"); });
+    await act(async () => root.render(<CharacterChatLibrary characterId="character-1" mediaType="image" canWrite canPublish source={null} onCloseSource={() => undefined} />));
+    await waitUntil(() => container.querySelector('[role="alert"]') !== null);
+    const alert = container.querySelector('[role="alert"]')!;
+    expect(alert.textContent).toContain("The authority did not answer.");
+    expect(alert.querySelector("span")?.textContent).not.toContain("pg: connection refused");
   });
 });

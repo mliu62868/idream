@@ -5,6 +5,7 @@ import { Download, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AdminCommandStatus } from "@idream/shared/admin";
 import { apiGet } from "@/components/admin/api";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { CopyableId } from "@/components/admin/ui/CopyableId";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
 import { csvFilename, downloadCsv, toCsv, type CsvColumn } from "@/components/admin/ui/csv";
@@ -14,6 +15,7 @@ import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { FilterBar, type FilterChip } from "@/components/admin/ui/FilterBar";
 import { useAdminFormat, text } from "@/components/admin/ui/format";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { useFailureToast } from "@/components/admin/ui/Toast";
 import { emptyPageInfo, Pagination, type PageInfo } from "@/components/admin/ui/Pagination";
 import { useUrlFilters } from "@/components/admin/ui/useUrlFilters";
 import { useWorkspaceRefresh } from "@/features/workspace-refresh";
@@ -38,7 +40,12 @@ type AuditListResponse = {
   items: AuditRecord[];
   pageInfo?: PageInfo;
 };
-type AuditSnapshot = { audit: AuditListResponse; command: AdminCommandStatus | null };
+// INTENT: 命令上下文是列表的旁注，不是前提——命令查不到（404 / 403）时审计行照样要给运营看。
+type AuditSnapshot = {
+  audit: AuditListResponse;
+  command: AdminCommandStatus | null;
+  commandFailure: { cause: unknown; message: string } | null;
+};
 
 // SPEC: 导出走服务端的完整筛选结果，不是屏幕上这 25 行 —— 法务要的是整段证据。
 // INVARIANT: 上限 20 页 × 100 行。够不够都要说清楚导出了多少行，不能悄悄截断。
@@ -61,18 +68,21 @@ const FILTER_LABELS: Record<AuditFilterKey, string> = {
   action: "Action",
   actorId: "Actor ID",
   targetType: "Target type",
+  commandId: "Command ID",
 };
 
 export function AuditWorkspace() {
   const { t, value } = useAdminI18n();
   const format = useAdminFormat();
+  const failureToast = useFailureToast();
   const [authority, setAuthority] = useState(() => createAuthorityState<AuditSnapshot>());
   // SPEC: 默认折叠 —— 首屏被一次批量操作吃掉是常态，不是例外。
   const [collapseRepeats, setCollapseRepeats] = useState(true);
   const records = authority.data?.audit.items ?? null;
   const pageInfo = authority.data?.audit.pageInfo ?? emptyPageInfo;
   const command = authority.data?.command ?? null;
-  const { loading, error, refreshedAt } = authority;
+  const commandFailure = authority.data?.commandFailure ?? null;
+  const { loading, error, cause: errorCause, refreshedAt } = authority;
   const [selectedRows, setSelectedRows] = useState<string[]>([]);
   // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
   const [cursorTrail, setCursorTrail] = useState<string[]>([]);
@@ -92,10 +102,15 @@ export function AuditWorkspace() {
         apiGet<AuditListResponse>(queryKey),
         next.commandId
           ? apiGet<AdminCommandStatus>(auditCommandPath(next.commandId))
-          : Promise.resolve(null),
+            .then((command) => ({ command, commandFailure: null }))
+            .catch((cause: unknown) => ({
+              command: null,
+              commandFailure: { cause, message: cause instanceof Error ? cause.message : "Command context could not be loaded" },
+            }))
+          : Promise.resolve({ command: null, commandFailure: null }),
       ]);
       if (!request.isCurrent()) return;
-      setAuthority(authorityRequestSucceeded(queryKey, { audit, command: commandContext }));
+      setAuthority(authorityRequestSucceeded(queryKey, { audit, ...commandContext }));
     } catch (loadError) {
       if (request.isCurrent()) {
         setAuthority((current) => authorityRequestFailed(current, queryKey,
@@ -113,6 +128,7 @@ export function AuditWorkspace() {
       auditActor: next.actorId || null,
       auditTargetType: next.targetType || null,
       auditCursor: next.cursor || null,
+      commandId: next.commandId || null,
       auditLimit: next.limit === defaultAuditQuery.limit ? null : String(next.limit),
     }),
     load: (next) => {
@@ -166,7 +182,8 @@ export function AuditWorkspace() {
         ? t("Exported the first {count} rows", { count: collected.length })
         : t("Exported {count} rows", { count: collected.length }));
     } catch (cause) {
-      setExportNote(cause instanceof Error ? cause.message : t("Export failed"));
+      setExportNote(t("Export failed"));
+      failureToast(cause);
     } finally {
       setExporting(false);
     }
@@ -266,13 +283,14 @@ export function AuditWorkspace() {
           { name: t("Target type"), value: draft.targetType, onChange: (targetType) => setDraft({ targetType }), placeholder: t("character_release") },
         ]}
         onApply={() => applyQuery({ ...draft, cursor: "" })}
-        onReset={() => applyQuery({ ...defaultAuditQuery, commandId: query.commandId })}
+        onReset={() => applyQuery(defaultAuditQuery)}
         onSearch={(search) => setDraft({ search })}
         search={draft.search}
         searchPlaceholder={t("action, target, reason, or request")}
       />
 
       {command ? <CommandContext command={command} /> : null}
+      {commandFailure ? <AuthorityRequestError requestKind="read" cause={commandFailure.cause} message={commandFailure.message} onRetry={reload} /> : null}
 
       <DataTable
         caption="Audit authority events"
@@ -283,11 +301,12 @@ export function AuditWorkspace() {
               ? "The complete server-side query returned no records. Clear filters to inspect the authority."
               : "Auditable operator actions will appear after the first consequential command is recorded."}
             kind={filtered ? "filtered" : "empty"}
-            onClearFilters={filtered ? () => applyQuery({ ...defaultAuditQuery, commandId: query.commandId }) : undefined}
+            onClearFilters={filtered ? () => applyQuery(defaultAuditQuery) : undefined}
             title={canonicalListEmptyTitle("audit", filtered)}
           />
         }
         error={error}
+        errorCause={errorCause}
         headers={AUDIT_HEADERS}
         loading={loading}
         minimumWidthClassName="min-w-[1200px]"
@@ -358,8 +377,8 @@ const AUDIT_HEADERS: DataTableHeader[] = [
 
 function CommandContext({ command }: { command: AdminCommandStatus }) {
   const format = useAdminFormat();
-  const { t } = useAdminI18n();
-  return <DataTable caption="Command context" headers={["Command", "Type", "Target", "Execution", "Verification", "Reconciliation", "Updated", "Error"]} rows={[{ id: command.commandId, cells: [<CopyableId key="id" value={command.commandId} />, command.commandType, `${command.target.type}:${command.target.id}`, command.status, command.verificationState ?? "pending", command.needsReconciliation ? "required" : "not required", <time dateTime={command.updatedAt} key="updated">{format.dateTime(command.updatedAt)}</time>,
+  const { t, value } = useAdminI18n();
+  return <DataTable caption="Command context" headers={["Command", "Type", "Target", "Execution", "Verification", "Reconciliation", "Updated", "Error"]} rows={[{ id: command.commandId, cells: [<CopyableId key="id" value={command.commandId} />, command.commandType, `${command.target.type}:${command.target.id}`, value(command.status), value(command.verificationState ?? "pending"), value(command.needsReconciliation ? "required" : "not required"), <time dateTime={command.updatedAt} key="updated">{format.dateTime(command.updatedAt)}</time>,
     command.error == null ? "—" : <EngineeringDetails key="error" summary={t("Command evidence")}>
       <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(command.error, null, 2)}</pre>
     </EngineeringDetails>,

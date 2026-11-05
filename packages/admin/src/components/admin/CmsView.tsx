@@ -18,10 +18,12 @@ import { Field } from "@/components/admin/ui/FormPage";
 import { useAdminI18n, type AdminLocale } from "@/components/admin/i18n";
 import { formatDateTime } from "@/components/admin/ui/format";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { FilterBar } from "@/components/admin/ui/FilterBar";
 import { Pagination } from "@/components/admin/ui/Pagination";
+import { OperatorInputError } from "@/components/admin/ui/request-error-copy";
 import { useUrlFilters } from "@/components/admin/ui/useUrlFilters";
 import { useUnsavedChanges } from "@/components/admin/ui/useUnsavedChanges";
 import { buildCompatibilityListUrl } from "@/features/compatibility-lists/query";
@@ -63,8 +65,6 @@ type PublishDraft = {
   path: string;
   nextStatus: "draft" | "published";
   expectedUpdatedAt: string;
-  reason: string;
-  confirmation: string;
 };
 
 type EditDraft = {
@@ -113,7 +113,8 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
   const [list, setList] = useState(() => createAuthorityState<CmsPageListResponse>());
   // INVARIANT: 存异常对象而不只是它的 message —— AuthorityRequestError 要靠 cause 才能按错误码
   // 出人话；只有 message 时运营读到的仍是 authority 的英文原文。
-  const [error, setError] = useState<{ message: string; cause: unknown; viewTarget?: PageRow } | null>(null);
+  // INVARIANT: 写失败（无 viewTarget / editTarget）不随列表重读消失——重读不等于这次写入已经处理。
+  const [error, setError] = useState<{ message: string; cause: unknown; viewTarget?: PageRow; editTarget?: PageRow } | null>(null);
   const [publishDraft, setPublishDraft] = useState<PublishDraft | null>(null);
   const [publishBusy, setPublishBusy] = useState(false);
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
@@ -125,15 +126,14 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
   // INTENT: 阅读目标与列表刷新独立；新选择、关闭和卸载都使旧阅读回执失效。
   const viewRequestGate = useRef(createLatestRequestGate());
   const { confirmDiscard, guard } = useUnsavedChanges(Boolean(
-    (editDraft && JSON.stringify(editDraft) !== JSON.stringify(editBaseline)) ||
-    (publishDraft && (publishDraft.reason || publishDraft.confirmation)),
+    editDraft && JSON.stringify(editDraft) !== JSON.stringify(editBaseline),
   ));
 
   const load = useCallback(async (query = cmsQueryFromParams(new URLSearchParams(window.location.search))) => {
     const request = requestGate.current.begin();
     const queryKey = cmsListPath(query);
     setList((current) => authorityRequestStarted(current, queryKey));
-    setError(null);
+    setError((current) => current?.viewTarget || current?.editTarget ? null : current);
     try {
       const data = await apiGet<unknown>(queryKey);
       if (!request.isCurrent()) return;
@@ -195,14 +195,12 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
         path: page.path,
         nextStatus,
         expectedUpdatedAt: page.updatedAt,
-        reason: "",
-        confirmation: "",
       });
     });
   }
 
-  async function publish() {
-    if (!canWrite || publishBusy || !publishDraft || !canConfirmPublish(publishDraft)) return;
+  async function publish(reason: string) {
+    if (!canWrite || !publishDraft) return;
     setPublishBusy(true);
     setError(null);
     try {
@@ -220,8 +218,8 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
           path: publishDraft.path,
           contentStatus: publishDraft.nextStatus,
           expectedUpdatedAt: publishDraft.expectedUpdatedAt,
-          reason: publishDraft.reason.trim(),
-          confirmation: publishDraft.confirmation.trim(),
+          reason,
+          confirmation: publishDraft.path,
         },
       );
       const { path, nextStatus, action } = publishDraft;
@@ -302,7 +300,7 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
         setEditDraft(nextDraft);
         setEditBaseline(nextDraft);
       } catch (err) {
-        setError({ message: requestErrorMessage(err, t), cause: err });
+        setError({ message: requestErrorMessage(err, t), cause: err, editTarget: page });
       } finally {
         setEditLoadingPath(null);
       }
@@ -446,7 +444,10 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
       <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
       {list.error ? <AuthorityRequestError cause={list.cause} message={list.error} requestKind="read" snapshotAt={list.refreshedAt} onRetry={() => void load()} /> : null}
       {error ? (
-        <AuthorityRequestError cause={error.cause} message={error.message} requestKind={error.viewTarget ? "read" : "write"} onRetry={() => error.viewTarget ? void view(error.viewTarget) : void load()} />
+        error.viewTarget || error.editTarget
+          ? <AuthorityRequestError cause={error.cause} message={error.message} requestKind="read" onRetry={() => error.viewTarget ? void view(error.viewTarget) : startEdit(error.editTarget!)} />
+          // 这个按钮只重读列表，不重放写入，所以不能叫 Retry。
+          : <AuthorityRequestError cause={error.cause} message={error.message} requestKind="write" retryLabel={t("Reload")} onDismiss={() => setError(null)} onRetry={() => void load()} />
       ) : null}
 
       <FilterBar
@@ -486,62 +487,23 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
       ) : null}
 
       {canWrite && publishDraft ? (
-        <section className="rounded-lg border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] p-3">
-          <p className="text-xs font-semibold text-[var(--ad-yellow-text)]">
-            {t(publishDraft.action === "revalidate" ? "Confirm cache refresh" : "Confirm CMS status change")}{" "}
-            <span className="font-mono">{publishDraft.path}</span> →{" "}
-            {valueLabel(publishDraft.nextStatus)}
-          </p>
-          <fieldset className="mt-3 grid gap-3 md:grid-cols-[1fr_260px_auto_auto]" disabled={publishBusy}>
-            <Field label={t("Reason (≥3)")}>
-              <input
-                aria-label={t("CMS publish reason")}
-                className={inputClass}
-                onChange={(event) =>
-                  setPublishDraft({
-                    ...publishDraft,
-                    reason: event.target.value,
-                  })
-                }
-                placeholder={t("Reason (≥3)")}
-                value={publishDraft.reason}
-              />
-            </Field>
-            <Field label={t("Type page path")}>
-              <input
-                aria-label={t("CMS publish confirmation")}
-                className={`${inputClass} font-mono`}
-                onChange={(event) =>
-                  setPublishDraft({
-                    ...publishDraft,
-                    confirmation: event.target.value,
-                  })
-                }
-                placeholder={t("Type page path")}
-                value={publishDraft.confirmation}
-              />
-            </Field>
-            <button
-              className="rounded-md inline-flex h-10 items-center justify-center border border-[var(--ad-border)] px-3 text-sm"
-              disabled={publishBusy}
-              onClick={() => setPublishDraft(null)}
-              type="button"
-            >
-              {t("Cancel")}
-            </button>
-            <button
-              className="inline-flex h-10 items-center justify-center bg-[var(--ad-yellow-bg)] px-3 text-sm font-semibold text-[var(--ad-yellow-text)] disabled:opacity-50"
-              disabled={publishBusy || !canConfirmPublish(publishDraft)}
-              onClick={() => void publish()}
-              type="button"
-            >
-              {publishBusy ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : null}
-              {t(publishDraft.action === "revalidate" ? "Confirm cache refresh" : "Confirm publish change")}
-            </button>
-          </fieldset>
-        </section>
+        // INTENT: 这是针对列表上那一个行版本的一次性命令：失败时 publish() 自己关框并把失败留在页面上，
+        //         绝不带着旧的 expectedUpdatedAt 留一个可以再点一次的确认。
+        <ConfirmDialog
+          onClose={() => setPublishDraft(null)}
+          spec={{
+            title: publishDraft.action === "revalidate" ? t("Confirm cache refresh") : t("Confirm CMS status change"),
+            summary: `${publishDraft.path} → ${valueLabel(publishDraft.nextStatus)}`,
+            consequence: publishDraft.action === "revalidate"
+              ? { effect: t("Asks the site to refresh its cached copy of this page. Its publication state does not change."), reversible: true }
+              : publishDraft.nextStatus === "published"
+                ? { effect: t("Visitors can reach this page as soon as it is published. Unpublish takes it down again."), reversible: true }
+                : { effect: t("This page stops being served right away. Publishing it again brings it back."), reversible: true },
+            destructive: { expectedName: publishDraft.path, inputLabel: t("Type page path") },
+            submitLabel: publishDraft.action === "revalidate" ? t("Confirm cache refresh") : t("Confirm publish change"),
+            onSubmit: publish,
+          }}
+        />
       ) : null}
 
       {(error || list.error) && pages.length === 0 ? null : (
@@ -901,16 +863,9 @@ function CreatePageForm({ canWrite, onCreated, reload }: { canWrite: boolean; on
         </button>
       </fieldset>
       {err ? (
-        <AuthorityRequestError cause={err.cause} message={err.message} onRetry={() => void reload()} />
+        <AuthorityRequestError cause={err.cause} message={err.message} onRetry={() => void create()} />
       ) : null}
     </details>
-  );
-}
-
-function canConfirmPublish(draft: PublishDraft) {
-  return (
-    draft.reason.trim().length >= 3 &&
-    draft.confirmation.trim() === draft.path
   );
 }
 
@@ -925,9 +880,9 @@ function canSaveEdit(draft: EditDraft) {
 // INTENT: 文案由调用方注入——这是个模块级纯函数，拿不到 t()，硬编码英文会在中文 locale 露馅。
 function parseBodyObject(value: string, invalidMessage: string): Record<string, unknown> {
   let parsed: unknown;
-  try { parsed = JSON.parse(value); } catch { throw new Error(invalidMessage); }
+  try { parsed = JSON.parse(value); } catch { throw new OperatorInputError(invalidMessage); }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(invalidMessage);
+    throw new OperatorInputError(invalidMessage);
   }
   return parsed as Record<string, unknown>;
 }

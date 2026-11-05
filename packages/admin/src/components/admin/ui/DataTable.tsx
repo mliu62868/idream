@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 import type { ReactNode } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { AuthorityRequestError } from "./AuthorityRequestError";
 import { EmptyState } from "./EmptyState";
 
 export type DataTableAlign = "left" | "center" | "right";
@@ -64,6 +65,7 @@ export function DataTable({
   loading = false,
   skeletonRows = 5,
   error = null,
+  errorCause,
   onRetry,
   selection,
   sort = null,
@@ -84,6 +86,8 @@ export function DataTable({
   /** Skeleton row count — pass the page size so the table does not resize when data lands. */
   skeletonRows?: number;
   error?: string | null;
+  /** The original failure. Given it, the banner speaks operator copy and folds the raw text into technical details. */
+  errorCause?: unknown;
   onRetry?: () => void;
   selection?: DataTableSelection;
   sort?: DataTableSort | null;
@@ -95,7 +99,9 @@ export function DataTable({
   const padding = CELL_PADDING[density];
 
   // SPEC: 出错时先说出错，而不是把零行说成"没有数据"。还有旧数据就把横幅压在表格上方。
-  const errorBanner = error ? (
+  const errorBanner = error && errorCause !== undefined && onRetry ? (
+    <AuthorityRequestError cause={errorCause} message={error} onRetry={onRetry} requestKind="read" />
+  ) : error ? (
     <div className="rounded-lg border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] px-4 py-3 text-sm text-[var(--ad-red-text)]" role="alert">
       {error}
       {onRetry ? (

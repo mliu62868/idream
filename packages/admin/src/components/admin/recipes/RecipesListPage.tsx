@@ -3,8 +3,9 @@ import Link from "next/link";
 import { useCallback, useRef, useState } from "react";
 import { Plus } from "lucide-react";
 import { apiGet } from "@/components/admin/api";
-import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
+import { useAdminI18n } from "@/components/admin/i18n";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { formatDate } from "@/components/admin/ui/format";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { FilterBar } from "@/components/admin/ui/FilterBar";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
@@ -113,7 +114,7 @@ export function RecipesListPage({ canWrite }: { canWrite: boolean }) {
       row.label,
       `v${row.version}`,
       <StatusPill key="status" label={t(recipeStateLabelKey(row))} status={row.status} />,
-      new Date(row.updatedAt).toLocaleDateString(adminDateLocale(locale)),
+      formatDate(row.updatedAt, locale),
     ],
   }));
 

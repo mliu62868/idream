@@ -28,6 +28,7 @@ import {
   withCharacterWorkspaceDetail,
 } from "./character-workspace-fixture";
 import { CharacterAssetStudio } from "./CharacterAssetStudio";
+import { characterAssetDraftSelectionRequestKey, purposeConfig } from "./character-asset-studio-authority";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import {
   beginDurableMutationIntent,
@@ -2521,7 +2522,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
     expect(createPosts).toBe(2);
   });
 
-  it("keeps an unknown first-portrait intent after a forbidden replay and recovers the original request", async () => {
+  it("keeps an unknown first-portrait intent after a forbidden replay and recovers it through its server receipt", async () => {
     const bootstrapData = withCharacterWorkspaceDetail(data, {
       visual: {
         identityBootstrap: {
@@ -2539,6 +2540,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
     });
     const scope = `character-asset:create:operator-replay:${bootstrapData.character.id}`;
     const creates: Array<{ key: string; body: unknown }> = [];
+    const reconciles: string[] = [];
     let detailReads = 0;
     adminV2Request.mockImplementation(async (path, options) => {
       if (path.includes("/api/v2/admin/creative/runs?")) {
@@ -2547,8 +2549,15 @@ describe("Character Asset Studio bootstrap route projection", () => {
       if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
         creates.push({ key: options.idempotencyKey ?? "", body: options.body });
         if (creates.length === 1) throw new TypeError("Response ended after server commit");
-        if (creates.length === 2) throw new AdminV2RequestError("Permission expired before replay", 403, "forbidden");
-        return { batch: { id: "replayed-portrait-run" }, replayed: true };
+        throw new AdminV2RequestError("Permission expired before replay", 403, "forbidden");
+      }
+      if (path === "/api/v2/admin/mutation-receipts/reconcile" && options?.method === "POST") {
+        reconciles.push(options.idempotencyKey ?? "");
+        return {
+          state: "committed", commandType: "creative.run.create", commandId: "replayed-command",
+          status: "succeeded", committedTargetId: "replayed-portrait-run",
+          verification: { kind: "creative_run", runId: "replayed-portrait-run", requestSnapshot: creates[0].body },
+        };
       }
       if (path === "/api/v2/admin/creative/runs/replayed-portrait-run") {
         detailReads += 1;
@@ -2589,15 +2598,15 @@ describe("Character Asset Studio bootstrap route projection", () => {
     expect(creates).toHaveLength(2);
     expect(creates[1]).toEqual(creates[0]);
     expect(readActiveDurableMutationIntent({ scope })?.idempotencyKey).toBe(creates[0].key);
-    expect(button("Resume generation")).toBeDefined();
+    expect(button("Reconcile saved request")).toBeDefined();
     expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label*="creative brief"]')?.disabled).toBe(true);
 
-    await act(async () => button("Resume generation")!.click());
+    await act(async () => button("Reconcile saved request")!.click());
     await waitUntil(() => readActiveDurableMutationIntent({ scope }) === null);
-    expect(creates).toHaveLength(3);
-    expect(creates[2]).toEqual(creates[0]);
+    expect(creates).toHaveLength(2);
+    expect(reconciles).toEqual([creates[0].key]);
     expect(detailReads).toBeGreaterThan(0);
-    expect(container.textContent).toContain("The image request is in progress.");
+    expect(container.textContent).toContain("The committed generation receipt was recovered from the server.");
   });
 
   it("keeps a recovered selection locked until the exact Character projection arrives", async () => {
@@ -3266,5 +3275,430 @@ describe("Character Asset Studio bootstrap route projection", () => {
           path.includes("/decisions") && options?.method === "POST",
       ),
     ).toBe(false);
+  });
+});
+
+describe("Character Asset Studio list races and saved-intent recovery", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  const permissions = { read: true, create: true, review: true, selectDraft: true };
+  const commitProjectMutation: Parameters<typeof CharacterAssetStudio>[0]["commitProjectMutation"] =
+    async ({ commit }) => ({ result: await commit(), refreshed: true });
+  const button = (label: string) =>
+    [...container.querySelectorAll("button")].find((candidate) => candidate.textContent?.includes(label));
+  const emptyPage = { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
+  const settle = async () => {
+    for (let index = 0; index < 8; index += 1) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+  };
+  const readyData = (
+    project: NonNullable<Parameters<typeof withCharacterWorkspaceDetail>[1]>["project"] = {},
+    journey = journeyFor(),
+  ) => withCharacterWorkspaceDetail(data, {
+    journey,
+    project,
+    visual: {
+      activeIdentity: { id: "race-identity", version: 1, immutableHash: "identity-hash" },
+      activeReferenceSet: {
+        id: "race-references",
+        references: [{ mediaAssetId: "anchor-1", role: "primary_face", available: true, url: "/anchor.png", thumbnailUrl: null, qualityScore: null, identityScore: null }],
+      },
+      routeQualifications: [routeQualification()],
+      identityBootstrap: { allowed: false, state: "blocked_existing_authority" },
+      readiness: { ready: true, blockers: [] },
+    },
+  });
+  const runSummary = (id: string, executionOutcome: string, purpose = "character_cover") => ({
+    id, purpose, executionOutcome, reviewState: "not_ready", lifecycleState: "active",
+    counts: { total: 1, generated: 0, reviewed: 0, approved: 0, placed: 0, failed: 0 },
+    updatedAt: "2026-10-25T12:00:00.000Z", version: 1, items: [],
+  });
+  const seedIntent = (scope: string, requestSnapshot: unknown) => updateDurableMutationIntent(
+    beginDurableMutationIntent({
+      scope, signature: `${scope}:signature`, requestSnapshot,
+      createIdempotencyKey: () => "saved-idempotency-key",
+    }),
+    { status: "outcome_unknown" },
+  );
+
+  beforeEach(() => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    adminV2Request.mockReset();
+    adminV2Request.mockResolvedValue(emptyPage);
+    Object.defineProperty(window, "localStorage", { configurable: true, value: createMemoryStorage() });
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    vi.useRealTimers();
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  describe("polling", () => {
+    const running = runSummary("running-run", "running");
+    let holdActive: ReturnType<typeof deferred<void>> | null;
+    let holdCursor: ReturnType<typeof deferred<void>> | null;
+    let failDetailOnce: boolean;
+    const detailReads = () => adminV2Request.mock.calls.filter(([path]) => path.endsWith("/running-run")).length;
+    const mountPolling = async () => {
+      vi.useFakeTimers();
+      holdActive = null;
+      holdCursor = null;
+      failDetailOnce = false;
+      adminV2Request.mockImplementation(async (path) => {
+        if (path.includes("/api/v2/admin/creative/runs?")) {
+          const query = new URL(path, "http://admin.test").searchParams;
+          if (query.has("executionOutcome")) {
+            if (holdActive) await holdActive.promise;
+            return { items: query.get("executionOutcome") === "running" ? [running] : [], pageInfo: { endCursor: null, hasNextPage: false } };
+          }
+          if (!query.has("cursor")) return { items: [], pageInfo: { endCursor: "next", hasNextPage: true } };
+          if (holdCursor) await holdCursor.promise;
+          return { items: [runSummary("older-history-page", "succeeded")], pageInfo: { endCursor: null, hasNextPage: false } };
+        }
+        if (path.endsWith("/running-run")) {
+          if (failDetailOnce) {
+            failDetailOnce = false;
+            throw new Error("Temporary read failure");
+          }
+          return running;
+        }
+        throw new Error(`Unexpected Admin request: ${path}`);
+      });
+      await act(async () => {
+        root.render(<CharacterAssetStudio commitProjectMutation={commitProjectMutation} data={readyData()}
+          onContinue={() => undefined} onProjectReload={async () => undefined} permissions={permissions} />);
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      const baseline = detailReads();
+      await act(async () => { await vi.advanceTimersByTimeAsync(8_000); });
+      expect(detailReads()).toBeGreaterThan(baseline);
+    };
+
+    it("keeps polling when Load more lands during a poll round", async () => {
+      await mountPolling();
+      const round = deferred<void>();
+      holdActive = round;
+      await act(async () => { await vi.advanceTimersByTimeAsync(4_000); });
+      holdActive = null;
+      await act(async () => {
+        button("Load more")?.click();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {
+        round.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      const afterRace = detailReads();
+      await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+      expect(detailReads()).toBeGreaterThan(afterRace);
+    });
+
+    it("keeps an in-flight Load more page when a poll tick lands before it returns", async () => {
+      await mountPolling();
+      const page = deferred<void>();
+      holdCursor = page;
+      await act(async () => {
+        button("Load more")?.click();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(4_000); });
+      await act(async () => {
+        page.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(container.textContent).toContain("older-history-page");
+      expect(button("Image request in progress")?.disabled).toBe(true);
+    });
+
+    it("keeps polling when a Refresh supersedes an in-flight poll round", async () => {
+      await mountPolling();
+      failDetailOnce = true;
+      await act(async () => { await vi.advanceTimersByTimeAsync(4_000); });
+      expect(container.textContent).toContain("Automatic refresh was delayed");
+      const round = deferred<void>();
+      holdActive = round;
+      await act(async () => { await vi.advanceTimersByTimeAsync(8_000); });
+      holdActive = null;
+      await act(async () => {
+        button("Refresh")?.click();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {
+        round.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      const afterRace = detailReads();
+      await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+      expect(detailReads()).toBeGreaterThan(afterRace);
+      expect(container.textContent).not.toContain("Automatic refresh was delayed");
+    });
+  });
+
+  describe("Refresh clearing a project-reload warning", () => {
+    const done = { ...runSummary("done-run", "succeeded"), reviewState: "complete" };
+    const mountWarned = async (holdList: () => ReturnType<typeof deferred<void>> | null) => {
+      let reloadFails = true;
+      adminV2Request.mockImplementation(async (path) => {
+        if (path.includes("/api/v2/admin/creative/runs?")) {
+          const hold = holdList();
+          if (hold) await hold.promise;
+          const query = new URL(path, "http://admin.test").searchParams;
+          return { items: query.has("executionOutcome") ? [] : [done], pageInfo: { endCursor: null, hasNextPage: false } };
+        }
+        if (path.endsWith("/done-run")) return done;
+        throw new Error(`Unexpected Admin request: ${path}`);
+      });
+      function Host() {
+        const [current, setCurrent] = useState(() => readyData());
+        return <CharacterAssetStudio commitProjectMutation={commitProjectMutation} data={current} onContinue={() => undefined}
+          onProjectReload={async () => {
+            if (reloadFails) throw new Error("reload failed");
+            // Every project reload returns new selection identity, which re-arms the list effect.
+            setCurrent((value) => ({ ...value, project: { ...value.project, draftAssetSelections: { ...value.project.draftAssetSelections } } }));
+          }} permissions={permissions} />;
+      }
+      await act(async () => root.render(<Host />));
+      await settle();
+      expect(container.textContent).toContain("reload failed");
+      return { recover: () => { reloadFails = false; } };
+    };
+    const lastRefresh = () => [...container.querySelectorAll("button")].filter((candidate) => candidate.textContent?.includes("Refresh")).at(-1);
+
+    it("clears the warning when the reload's replacement read finishes before the superseded read", async () => {
+      const manual = deferred<void>();
+      let heldReads = 0;
+      let holding = false;
+      const { recover } = await mountWarned(() => {
+        if (!holding || heldReads >= 3) return null;
+        heldReads += 1;
+        return manual;
+      });
+      recover();
+      holding = true;
+      await act(async () => lastRefresh()?.click());
+      await settle();
+      await act(async () => manual.resolve());
+      await settle();
+      expect(container.textContent).not.toContain("reload failed");
+      expect(button("Generate 1 portrait")?.disabled).toBe(false);
+    });
+
+    it("clears the warning when the superseded read finishes before the reload's replacement read", async () => {
+      const manual = deferred<void>();
+      const replacement = deferred<void>();
+      let heldReads = 0;
+      let holding = false;
+      const { recover } = await mountWarned(() => {
+        if (!holding) return null;
+        heldReads += 1;
+        return heldReads <= 3 ? manual : replacement;
+      });
+      recover();
+      holding = true;
+      await act(async () => lastRefresh()?.click());
+      await settle();
+      await act(async () => manual.resolve());
+      await settle();
+      await act(async () => replacement.resolve());
+      await settle();
+      expect(container.textContent).not.toContain("reload failed");
+      expect(button("Generate 1 portrait")?.disabled).toBe(false);
+    });
+
+    it("keeps the warning when the project still cannot reload", async () => {
+      await mountWarned(() => null);
+      await act(async () => lastRefresh()?.click());
+      await settle();
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("reload failed");
+      expect(button("Generate 1 portrait")?.disabled).toBe(true);
+    });
+  });
+
+  describe("regenerating a purpose that is not open", () => {
+    const pack = (stale: boolean) => readyData({
+      draftAssetPack: { character_cover: "cover-old-route" },
+      draftImageAssetId: "cover-old-route",
+      draftAssetSelections: {
+        character_cover: {
+          assetId: "cover-old-route", runId: "cover-old-run", itemId: "cover-old-item", reviewDecisionId: null,
+          generationJobId: "cover-old-job", bootstrapIdentity: false, generationRouteFingerprint: "old-route", routeCurrent: !stale,
+        },
+      },
+      ...(stale ? { draftAssetRouteAuthority: { status: "stale", currentRouteFingerprint: "route-fingerprint", stalePurposes: ["character_cover"], recoveryPurpose: "character_cover" } } : {}),
+    } as never, journeyFor(["character_cover"]));
+    const posts = () => adminV2Request.mock.calls.filter(([, options]) => options?.method === "POST");
+    const mount = async () => {
+      const render = (current: CharacterWorkspaceDetail) => <CharacterAssetStudio commitProjectMutation={commitProjectMutation} data={current}
+        onContinue={() => undefined} onProjectReload={async () => undefined} permissions={permissions} />;
+      // Opens on the next incomplete purpose (hero); the route then goes stale for the cover.
+      await act(async () => root.render(render(pack(false))));
+      await settle();
+      await act(async () => root.render(render(pack(true))));
+      await settle();
+    };
+
+    it("creates exactly one Run from one click once the purpose's list has loaded", async () => {
+      adminV2Request.mockImplementation(async (path, options) => {
+        if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") return { batch: { id: "regenerated-run" }, replayed: false };
+        if (path.includes("/api/v2/admin/creative/runs?")) return emptyPage;
+        if (path.endsWith("/regenerated-run")) return runSummary("regenerated-run", "running");
+        throw new Error(`Unexpected Admin request: ${path}`);
+      });
+      await mount();
+      await act(async () => button("Regenerate Primary portrait")?.click());
+      await settle();
+      expect(posts()).toHaveLength(1);
+      expect(posts()[0][1]?.body).toMatchObject({ purpose: "character_cover" });
+    });
+
+    it("does not generate later when that purpose's list could not be loaded", async () => {
+      let failCover = true;
+      adminV2Request.mockImplementation(async (path, options) => {
+        if (options?.method === "POST") return { batch: { id: "regenerated-run" }, replayed: false };
+        if (path.includes("purpose=character_cover") && failCover) throw new Error("List unavailable");
+        return emptyPage;
+      });
+      await mount();
+      await act(async () => button("Regenerate Primary portrait")?.click());
+      await settle();
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("List unavailable");
+      failCover = false;
+      // The next successful read of this purpose must not spend money on a stale click.
+      await act(async () => root.render(<CharacterAssetStudio commitProjectMutation={commitProjectMutation} data={withCharacterWorkspaceDetail(pack(true), { project: { draftAssetSelections: { ...pack(true).project.draftAssetSelections } } })}
+        onContinue={() => undefined} onProjectReload={async () => undefined} permissions={permissions} />));
+      await settle();
+      expect(posts()).toHaveLength(0);
+    });
+  });
+
+  describe("rejected replays keep the recovery receipt", () => {
+    const actorId = "operator-replay-keeps";
+    const cancelledReceipt = (commandType: string) => ({ state: "cancelled", commandType, commandId: null, status: null, committedTargetId: null });
+    const mount = async (current: CharacterWorkspaceDetail) => {
+      await act(async () => root.render(<CharacterAssetStudio actorId={actorId} commitProjectMutation={commitProjectMutation} data={current}
+        onContinue={() => undefined} onProjectReload={async () => undefined} permissions={permissions} />));
+      await waitUntil(() => container.textContent?.includes("Loading character assets") === false);
+    };
+
+    it.each([[401, "unauthorized"], [403, "forbidden"], [409, "conflict"]] as const)("moves a rejected review replay to reconciliation (%s)", async (status, code) => {
+      const scope = `character-asset:review:${actorId}:${data.character.id}`;
+      const saved = seedIntent(scope, {
+        runId: "review-run", itemId: "review-item",
+        body: {
+          entityVersion: 2, decision: "approved", identityConsistency: "unscored", score: 94,
+          quality: { artifactFree: true, singleSubject: true, intentMatch: true, noVisibleText: true },
+          reason: "Saved review evidence passed",
+        },
+      });
+      adminV2Request.mockImplementation(async (path, options) => {
+        if (path.endsWith("/decisions")) throw new AdminV2RequestError("Replay rejected", status, code);
+        if (path === "/api/v2/admin/mutation-receipts/reconcile") {
+          expect(options?.idempotencyKey).toBe(saved.idempotencyKey);
+          return cancelledReceipt("creative.review.decision");
+        }
+        return emptyPage;
+      });
+      await mount(data);
+      await act(async () => button("Resume review")?.click());
+      await waitUntil(() => button("Reconcile review") !== undefined);
+      expect(readActiveDurableMutationIntent({ scope })).toMatchObject({ idempotencyKey: saved.idempotencyKey, status: "reconciliation_required" });
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Replay rejected");
+
+      await act(async () => button("Reconcile review")?.click());
+      await waitUntil(() => readActiveDurableMutationIntent({ scope }) === null);
+      expect(adminV2Request.mock.calls.filter(([path]) => path.endsWith("/decisions"))).toHaveLength(1);
+    });
+
+    it.each([[401, "unauthorized"], [403, "forbidden"], [409, "conflict"]] as const)("moves a rejected selection replay to reconciliation (%s)", async (status, code) => {
+      const scope = `character-asset:selection:${actorId}:${data.character.id}`;
+      const saved = seedIntent(scope, {
+        kind: "draft_selection",
+        body: {
+          entityVersion: 1, purpose: "character_hero", runId: "selection-run", itemId: "selection-item",
+          assetId: "selection-asset", reason: "Operator selected the saved hero",
+        },
+      });
+      adminV2Request.mockImplementation(async (path, options) => {
+        if (path.endsWith("/draft-image")) throw new AdminV2RequestError("Replay rejected", status, code);
+        if (path === "/api/v2/admin/mutation-receipts/reconcile") {
+          expect(options?.idempotencyKey).toBe(saved.idempotencyKey);
+          return cancelledReceipt("character.project.draft_image.select");
+        }
+        return emptyPage;
+      });
+      await mount(readyData());
+      await act(async () => button("Resume selection")?.click());
+      await waitUntil(() => button("Reconcile selection") !== undefined);
+      expect(readActiveDurableMutationIntent({ scope })).toMatchObject({ idempotencyKey: saved.idempotencyKey, status: "reconciliation_required" });
+
+      await act(async () => button("Reconcile selection")?.click());
+      await waitUntil(() => readActiveDurableMutationIntent({ scope }) === null);
+      expect(adminV2Request.mock.calls.filter(([path]) => path.endsWith("/draft-image"))).toHaveLength(1);
+    });
+
+    describe("first selection click", () => {
+      const scope = `character-asset:selection:${actorId}:${data.character.id}`;
+      const hero = { ...runSummary("hero-run", "succeeded", "character_hero"), counts: { total: 1, generated: 1, reviewed: 0, approved: 0, placed: 0, failed: 0 } };
+      const mockSelection = (rejection: AdminV2RequestError) => {
+        adminV2Request.mockImplementation(async (path) => {
+          if (path.includes("/api/v2/admin/creative/runs?")) return { items: [hero], pageInfo: { endCursor: null, hasNextPage: false } };
+          if (path.endsWith("/hero-run")) {
+            return { ...hero, items: [{
+              id: "hero-item", ordinal: 0, status: "generated", executionState: "ready", version: 1,
+              asset: { id: "hero-asset", url: "/hero.png", thumbnailUrl: "/hero.png" }, review: null,
+              lineage: { requestId: "hero-job" },
+            }] };
+          }
+          if (path.endsWith("/draft-image")) throw rejection;
+          throw new Error(`Unexpected Admin request: ${path}`);
+        });
+      };
+      const openCandidate = async (selectable: CharacterWorkspaceDetail) => {
+        await mount(selectable);
+        await waitUntil(() => container.querySelector('[aria-label="View candidate 1"]') !== null);
+        await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="View candidate 1"]')?.click());
+      };
+
+      it("releases a newly claimed intent on a definite rejection", async () => {
+        mockSelection(new AdminV2RequestError("Selection rejected", 409, "conflict"));
+        await openCandidate(readyData({}, journeyFor(["character_cover"])));
+        await act(async () => button("Select hero")?.click());
+        await waitUntil(() => container.querySelector('[role="alert"]')?.textContent?.includes("Selection rejected") === true);
+        expect(readActiveDurableMutationIntent({ scope })).toBeNull();
+      });
+
+      it("keeps another tab's identical unresolved intent when its replay is rejected", async () => {
+        const selectable = readyData({}, journeyFor(["character_cover"]));
+        mockSelection(new AdminV2RequestError("Selection rejected", 409, "conflict"));
+        await openCandidate(selectable);
+        // Another tab claimed the same request after this page rendered, so this click is a replay.
+        const otherTab = updateDurableMutationIntent(beginDurableMutationIntent({
+          scope,
+          signature: characterAssetDraftSelectionRequestKey({
+            characterId: selectable.character.id,
+            body: {
+              entityVersion: selectable.project.version, purpose: "character_hero", runId: "hero-run", itemId: "hero-item", assetId: "hero-asset",
+              reason: `Operator selected ${purposeConfig.character_hero.label.toLowerCase()} for the next Character Release`,
+            },
+          }),
+          createIdempotencyKey: () => "other-tab-idempotency-key",
+        }), { status: "outcome_unknown" });
+        await act(async () => button("Select hero")?.click());
+        await waitUntil(() => container.querySelector('[role="alert"]')?.textContent?.includes("Selection rejected") === true);
+        expect(readActiveDurableMutationIntent({ scope })).toMatchObject({ idempotencyKey: otherTab.idempotencyKey, status: "reconciliation_required" });
+        expect(button("Reconcile selection")).toBeDefined();
+      });
+    });
   });
 });

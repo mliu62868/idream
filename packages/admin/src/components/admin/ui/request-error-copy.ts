@@ -150,13 +150,36 @@ const SUPPORT_CASE_SUPERSEDED: Copy = {
   nextStep: "Open case {caseId} and reopen it there. This historical case was not changed.",
 };
 
+const INPUT_NOT_SENT_NEXT_STEP = "Correct the input and submit again — nothing was written.";
+
 const APPROVAL_RENEWAL_REQUIRED: Copy = {
   headline: "This approval must be requested again.",
   nextStep: "Return to the original action, check its current values, and request a new approval. The old approval remains in the history.",
 };
 
+// SPEC: 控制台自己在发请求之前拦下的校验失败；message 就是运营要读的那句话。
+// INTENT: 校验曾经抛裸 Error，于是落进 UNMAPPED，运营看到「原因未识别，发给工程」——
+//         可原因就是我们自己写的那句，工程什么也做不了。
+// INVARIANT: 只用于请求还没发出去的情形，所以默认下一步可以如实说「什么都没写」。
+//            message / nextStep 由调用方给：前者已 t() 过（再过一次是恒等），后者是 i18n key。
+export class OperatorInputError extends Error {
+  readonly nextStep: string;
+  constructor(message: string, nextStep = INPUT_NOT_SENT_NEXT_STEP) {
+    super(message);
+    this.name = "OperatorInputError";
+    this.nextStep = nextStep;
+  }
+}
+
 export function operatorErrorCopy(cause: unknown): OperatorErrorCopy {
   const message = errorText(cause);
+  if (cause instanceof OperatorInputError) {
+    return {
+      headline: cause.message,
+      nextStep: cause.nextStep,
+      technical: { code: null, status: null, requestId: null, message },
+    };
+  }
   if (cause instanceof AdminV2RequestError) {
     // Unknown proxy codes still carry a meaningful HTTP outcome; keep the raw code below.
     const inferredCode = cause.code && Object.hasOwn(COPY_BY_CODE, cause.code)

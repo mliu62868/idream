@@ -133,6 +133,20 @@ describe("Creative Run list projection", () => {
     ).not.toBeNull();
   });
 
+  it("submits the outcome enum, not its translated label", async () => {
+    await mount();
+    const select = container.querySelector<HTMLSelectElement>("form select")!;
+    const option = [...select.options].find((candidate) => candidate.textContent === "partially succeeded")!;
+    await act(async () => {
+      select.value = option.value;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () => { container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(requested.at(-1)).toContain("executionOutcome=partially_succeeded");
+    expect(requested.at(-1)).not.toContain("partially+succeeded");
+  });
+
   it("does not refetch while the operator is still typing in the filter form", async () => {
     await mount();
     expect(requested).toHaveLength(1);

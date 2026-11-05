@@ -10,6 +10,7 @@ const { apiGet } = vi.hoisted(() => ({ apiGet: vi.fn<(path: string) => Promise<u
 vi.mock("@/components/admin/api", () => ({ apiGet, apiWrite: vi.fn(), apiDelete: vi.fn() }));
 
 import { AuditWorkspace } from "./AuditWorkspace";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -224,6 +225,35 @@ describe("audit repeat collapsing and row selection", () => {
     expect(details?.textContent).toContain("[redacted]");
     expect(apiGet.mock.calls).toHaveLength(1);
     expect(apiGet.mock.calls[0][0]).toContain("/api/v2/admin/audit-log");
+  });
+
+  it("treats the deep-linked command as a clearable filter instead of claiming no command was ever recorded", async () => {
+    window.history.replaceState(null, "", "/admin/system/audit?commandId=linked-command");
+    apiGet.mockImplementation(async (path) => path.includes("/commands/") ? {
+      commandId: "linked-command", commandType: "character.serving.resume", target: { type: "character_serving", id: "target" },
+      status: "failed", verificationState: "failed", needsReconciliation: false, updatedAt: "2026-10-02T14:53:30.000Z",
+    } : path.includes("commandId=") ? { items: [], pageInfo: { endCursor: null, hasNextPage: false } } : { items: batchRun, pageInfo: { endCursor: null, hasNextPage: false } });
+    await act(async () => { root = createRoot(container); root.render(<AuditWorkspace />); });
+    await waitUntil(() => container.textContent?.includes("linked-command") === true);
+    expect(container.textContent).toContain("Command ID");
+    expect(container.textContent).not.toContain("will appear after the first consequential command");
+    await clickButton("Clear filters");
+    await waitUntil(() => checkboxes().length > 0);
+    expect(window.location.search).not.toContain("commandId");
+    expect(apiGet.mock.calls.at(-1)![0]).not.toContain("commandId");
+  });
+
+  it("keeps the audit rows when the command lookup is refused and says the lookup failed", async () => {
+    window.history.replaceState(null, "", "/admin/system/audit?commandId=missing-command");
+    apiGet.mockImplementation(async (path) => {
+      if (path.includes("/commands/")) throw new AdminV2RequestError("Command not found", 404, "not_found");
+      return { items: batchRun, pageInfo: { endCursor: null, hasNextPage: false } };
+    });
+    await mounted();
+    expect(checkboxes()).toHaveLength(1);
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("This record no longer exists in the authority.");
+    expect(alert?.textContent).toContain("Command not found");
   });
 
   it("opens the linked failed command with its authoritative failure and Release blockers", async () => {

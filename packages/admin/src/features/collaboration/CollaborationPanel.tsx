@@ -244,7 +244,7 @@ export function CollaborationPanel({
         </WorkspaceButton>
       </div>
       <p className="mt-2 break-words text-xs text-[var(--ad-text-muted)]">
-        {watcherIds.length === 0 ? t("No watchers") : t("{count} watchers: {ids}", { count: watcherIds.length, ids: watcherIds.map(actorLabel).join(", ") })}
+        {watcherIds.length === 0 ? (loadError ? null : t("No watchers")) : t("{count} watchers: {ids}", { count: watcherIds.length, ids: watcherIds.map(actorLabel).join(", ") })}
       </p>
 
       {loadError ? (
@@ -281,7 +281,7 @@ export function CollaborationPanel({
 
       <div className="mt-4">
         <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">{t("Activity timeline")}</h4>
-        {loading && items.length === 0 ? <p className="mt-3 text-sm text-[var(--ad-text-muted)]" role="status">{t("Loading collaboration activity…")}</p> : items.length === 0 ? <p className="mt-3 rounded-md bg-[var(--ad-surface-subtle)] p-3 text-sm text-[var(--ad-text-muted)]">{t("No activity yet. The first comment or handoff will appear here.")}</p> : (
+        {loading && items.length === 0 ? <p className="mt-3 text-sm text-[var(--ad-text-muted)]" role="status">{t("Loading collaboration activity…")}</p> : items.length === 0 ? loadError ? null : <p className="mt-3 rounded-md bg-[var(--ad-surface-subtle)] p-3 text-sm text-[var(--ad-text-muted)]">{t("No activity yet. The first comment or handoff will appear here.")}</p> : (
           <ol className="mt-3 space-y-3">
             {items.map((activity) => <li className="border-l-2 border-[var(--ad-border)] pl-3" key={activity.id}><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs font-semibold">{t(activity.kind.replaceAll("_", " "))} · <span title={activity.actorId}>{actorLabel(activity.actorId)}</span></span><time className="text-xs text-[var(--ad-text-muted)]" dateTime={activity.createdAt}>{format.dateTime(activity.createdAt)}</time></div>{activity.body ? <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6">{activity.body}</p> : null}{activity.mentionedIds.length > 0 ? <p className="mt-1 break-words text-xs text-[var(--ad-text-muted)]">{t("Mentions:")} {activity.mentionedIds.map((id) => `@${actorLabel(id)}`).join(", ")}</p> : null}{activity.metadata.handoffToActorId ? <p className="mt-1 text-xs">{t("Handoff to:")} <span title={activity.metadata.handoffToActorId}>{actorLabel(activity.metadata.handoffToActorId)}</span></p> : null}{activity.metadata.checklistItems.length > 0 ? <ul className="mt-2 space-y-1 text-xs">{activity.metadata.checklistItems.map((item) => <li key={item.id}>{item.completed ? "✓" : "○"} {item.label}{item.ownerId ? ` — ${actorLabel(item.ownerId)}` : ""}</li>)}</ul> : null}{activity.metadata.attachments.length > 0 ? <p className="mt-2 break-words text-xs text-[var(--ad-text-muted)]">{t("Evidence:")} {activity.metadata.attachments.map((item) => item.label).join(", ")}</p> : null}</li>)}
           </ol>

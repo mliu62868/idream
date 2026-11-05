@@ -13,7 +13,8 @@ import { EngineeringDetails } from "@/components/admin/generation/EngineeringDet
 import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
 import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 import { createLatestRequestGate } from "@/lib/latest-request";
-import { InfoGrid, WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { InfoGrid, WriteFeedbackBanner, useWriteFeedback } from "@/components/admin/section-kit";
 import {
   SCOPES,
   STARTER_GENDERS,
@@ -57,7 +58,7 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
   const { t, value } = useAdminI18n();
   const [rows, setRows] = useState<Starter[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
   const [mode, setMode] = useState<Mode>("view");
   const [draft, setDraft] = useState<EditDraft | null>(null);
   const [pending, setPending] = useState<PendingAction>(null);
@@ -76,12 +77,12 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
       return data.template;
     } catch (loadError) {
       if (!request.isCurrent()) return null;
-      setError(requestErrorMessage(loadError, t));
+      setError(loadError);
       return null;
     } finally {
       if (request.isCurrent()) setLoading(false);
     }
-  }, [id, t, requestGate]);
+  }, [id, requestGate]);
 
   const readCommittedWrite = useCallback(async () => {
     const current = await reload();
@@ -151,6 +152,7 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
       return {
         title: t("Publish"),
         destructive: { expectedName: pending.name },
+        consequence: { effect: t("This starter is offered in character creation right away. Offline takes it back out."), reversible: true },
         submitLabel: t("Publish"),
         onSubmit: async (reason) => {
           clearFeedback();
@@ -170,6 +172,7 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
     return {
       title: t("Offline"),
       destructive: { expectedName: pending.name },
+      consequence: { effect: t("This starter stops being offered in character creation right away. Publish brings it back."), reversible: true },
       submitLabel: t("Offline"),
       onSubmit: async (reason) => {
         clearFeedback();
@@ -192,6 +195,8 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
   }
 
   if (!row) {
+    // INVARIANT: 读取失败不等于这个模板不存在。
+    if (error) return <AuthorityRequestError cause={error} message={t("The latest data could not be loaded.")} onRetry={() => void reload()} requestKind="read" />;
     return (
       <EmptyState
         action={
@@ -199,7 +204,6 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
             <PrimaryButton>{t("Back to starter templates")}</PrimaryButton>
           </Link>
         }
-        hint={error ?? undefined}
         title={t("Character not found.")}
       />
     );
@@ -234,8 +238,8 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
     >
       <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
       {awaitingReadback ? <p role="status" className="text-sm text-[var(--ad-yellow-text)]">{t("Changes were saved, but the latest details could not be loaded. Retry before making another change.")}</p> : null}
-      {error ? <p role="alert" className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
-      {awaitingReadback ? <GhostButton disabled={loading} onClick={() => void readCommittedWrite()}>{t("Retry")}</GhostButton> : null}
+      {error ? <AuthorityRequestError cause={error} message={t("The latest data could not be loaded.")} onRetry={() => void (awaitingReadback ? readCommittedWrite() : reload())} requestKind="read" /> : null}
+      {awaitingReadback && !error ? <GhostButton disabled={loading} onClick={() => void readCommittedWrite()}>{t("Retry")}</GhostButton> : null}
 
       {mode === "edit" && draft ? (
         <fieldset disabled={awaitingReadback} className="space-y-6">

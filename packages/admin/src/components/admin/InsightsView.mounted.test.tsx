@@ -4,7 +4,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminPermissionKey } from "@idream/shared/admin/permissions";
 import { AdminI18nProvider } from "./i18n";
-import { navItems } from "./nav-config";
+import { adminV2OperationAllowed } from "@/lib/admin-v2-operation";
+import { InsightsView } from "./InsightsView";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -63,17 +64,9 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 async function mount(locale: "en" | "zh" = "en", canWrite = true) {
-  const workspace = navItems.find((item) => item.id === "insights")!;
   const permissions = new Set<AdminPermissionKey>(["generation.config.read"]);
   if (canWrite) permissions.add("generation.config.write");
-  await act(async () => root.render(<AdminI18nProvider locale={locale}>{workspace.render({
-    permissions,
-    canCreateCharacters: false,
-    canRead: true,
-    workMode: "admin",
-    actorId: "configuration-operator",
-    view: { kind: "list" },
-  })}</AdminI18nProvider>));
+  await act(async () => root.render(<AdminI18nProvider locale={locale}><InsightsView canWrite={adminV2OperationAllowed("POST /api/v2/admin/generation/model-profiles/:id/commands/dry-run", permissions)} /></AdminI18nProvider>));
   await act(async () => vi.advanceTimersByTimeAsync(1));
 }
 function button(label: string, scope: ParentNode = document) {

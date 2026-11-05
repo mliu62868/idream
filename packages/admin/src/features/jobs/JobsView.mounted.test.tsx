@@ -75,6 +75,19 @@ describe("JobsView request cancellation", () => {
     expect(document.body.textContent).toContain("8 Dreamcoins refunded");
   });
 
+  it("reports a created retry attempt instead of closing the dialog silently", async () => {
+    apiGet.mockResolvedValue(jobList("failed"));
+    adminV2Request.mockResolvedValue({ requestId: "job-1", attemptId: "attempt-2", status: "queued", version: 4 });
+    await act(async () => root.render(<ToastProvider><JobsView permissions={allowed} /></ToastProvider>));
+    await waitUntil(() => findButton("Retry") !== null);
+    await click(findButton("Retry"));
+    const dialog = await waitForDialog();
+    await type(dialog, "Reason (≥3)", "Provider recovered");
+    await type(dialog, "Type the name to confirm", "job-1:retry");
+    await click(findButton("Create retry attempt", dialog));
+    await waitUntil(() => document.body.textContent?.includes("Retry attempt created for job-1") === true);
+  });
+
   it("hides Abort and Retry from a read-only role instead of letting the server 403 them", async () => {
     const running = jobList("running");
     apiGet.mockResolvedValue({ ...running, items: [...running.items, { ...jobList("failed").items[0]!, id: "job-2" }] });

@@ -2,6 +2,8 @@
 // INVARIANTS: payload 字段与后端 presetAdminSchema（service.ts:339-346）一致，**无 reason 字段**——
 // 与 Starters/Official 不同，写操作（编辑/归档/恢复）不采集一个后端根本不收的 reason（T14 评审确立的规则）。
 
+import { OperatorInputError } from "@/components/admin/ui/request-error-copy";
+
 export type PresetRow = {
   id: string;
   scope: string;
@@ -39,9 +41,10 @@ export function presetPayload(draft: PresetDraft): Record<string, unknown> {
   const trimmed = draft.controlsJson.trim();
   let controls: Record<string, unknown> = {};
   if (trimmed.length > 0) {
-    const parsed: unknown = JSON.parse(trimmed);
+    let parsed: unknown;
+    try { parsed = JSON.parse(trimmed); } catch { throw new OperatorInputError("controls must be a JSON object"); }
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      throw new Error("controls must be a JSON object");
+      throw new OperatorInputError("controls must be a JSON object");
     }
     controls = parsed as Record<string, unknown>;
   }

@@ -507,6 +507,7 @@ function isoToLocalInput(value: string) {
 
 function CanonicalMetrics({ data }: { data: MetricDashboardResponse }) {
   const { t, value } = useAdminI18n();
+  const format = useAdminFormat();
   return (
     <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <h2 className="text-sm font-semibold">{t("Canonical Metrics v2")}</h2>
@@ -531,10 +532,10 @@ function CanonicalMetrics({ data }: { data: MetricDashboardResponse }) {
                 ? "—"
                 : card.unit === "ratio"
                   ? `${(Number(card.value) * 100).toFixed(1)}%`
-                  : card.value}
+                  : typeof card.value === "number" ? format.count(card.value) : card.value}
             </p>
             <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
-              v{card.definitionVersion}  {t("· sample")} {card.sampleSize} ·{" "}
+              v{card.definitionVersion}  {t("· sample")} {format.count(card.sampleSize)} ·{" "}
               {value(card.qualityState)}
             </p>
             {/* 后端已经算出这张卡为什么不可用，只是从来没有人把它显示出来。 */}
@@ -643,10 +644,11 @@ function LegacyQualityNotes({
 
 function ObservedValue({ label, value }: { label: string; value: number }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   return (
     <div>
       <p className="text-xs text-[var(--ad-text-muted)]">{t(label)}</p>
-      <p className="mt-0.5 text-lg font-semibold text-[var(--ad-text-muted)]">{value}</p>
+      <p className="mt-0.5 text-lg font-semibold text-[var(--ad-text-muted)]">{format.count(value)}</p>
     </div>
   );
 }
@@ -699,10 +701,11 @@ function Metric({
   value: string | number;
 }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   return (
     <div className="rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <p className="text-xs text-[var(--ad-text-muted)]">{t(label)}</p>
-      <p className="mt-2 text-2xl font-semibold">{value}</p>
+      <p className="mt-2 text-2xl font-semibold">{typeof value === "number" ? format.count(value) : value}</p>
       {caveat ? (
         <p className="mt-2 text-xs font-semibold text-[var(--ad-yellow-text)]">
           {t(caveat)}

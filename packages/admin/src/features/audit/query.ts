@@ -61,9 +61,11 @@ export function auditWorkspaceUrl(
   return buildCompatibilityListUrl(pathname, currentSearch, updates, clearKeys);
 }
 
-export type AuditFilterKey = "search" | "action" | "actorId" | "targetType";
+export type AuditFilterKey = "search" | "action" | "actorId" | "targetType" | "commandId";
 
-const filterKeys: AuditFilterKey[] = ["search", "action", "actorId", "targetType"];
+// INVARIANT: commandId 也收窄结果集（从 Incident 等处深链过来时它是唯一的条件），
+// 所以它和别的筛选一样要有芯片、算「已筛选」，也一样能被清掉。
+const filterKeys: AuditFilterKey[] = ["search", "action", "actorId", "targetType", "commandId"];
 
 // SPEC: 相对空查询「填了哪几项」—— 折叠筛选面板后，芯片就是这张表。
 // `reset` 是清掉这枚芯片要打的补丁：键是联合类型，TS 推不出来，只在这一处收敛。

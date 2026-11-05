@@ -332,6 +332,24 @@ describe("ChatOpsWorkspace Main to Chat failed-delivery operations", () => {
     expect(container.textContent).not.toContain("No chat usage exists for the current product day");
   });
 
+  it("formats timestamps and booleans per column instead of printing them raw", async () => {
+    const lastMessageAt = "2026-08-11T12:00:00.000Z";
+    apiGet.mockImplementation(async (path: string) => {
+      if (path.includes("/chat/sessions?")) return { configured: true, pageInfo, items: [{ id: "session-format", userId: "user-1", characterId: "character-1", status: "active", memoryEnabled: true, lastMessageAt, messageCount: 2 }] };
+      if (path.includes("/chat/usage?")) return { configured: true, pageInfo, items: [{ userId: "user-format", unlimitedMessages: false, periodStart: lastMessageAt, messagesUsed: 3 }] };
+      return chatReadFixtures.get(path);
+    });
+    await act(async () => { root.render(<ChatOpsWorkspace canRead />); });
+    await waitUntil(() => container.textContent?.includes("session-format") === true);
+    const row = (id: string) => [...container.querySelectorAll("tr")].find((node) => node.textContent?.includes(id))!;
+    expect(row("session-format").textContent).not.toContain(lastMessageAt);
+    expect(row("session-format").textContent).not.toContain("true");
+    expect(row("session-format").textContent).toContain("yes");
+    expect(row("user-format").textContent).not.toContain(lastMessageAt);
+    expect(row("user-format").textContent).not.toContain("false");
+    expect(row("user-format").textContent).toContain("no");
+  });
+
   it("counts an authority request failure as degraded", async () => {
     apiGet.mockImplementation(async (path: string) => {
       if (path.endsWith("/provider-health")) throw new Error("Provider diagnostics unavailable");

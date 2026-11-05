@@ -69,7 +69,7 @@ describe("ApprovalsWorkspace decision evidence", () => {
     vi.restoreAllMocks();
   });
 
-  async function mount(items: unknown[], options: { canToggleEnforcement?: boolean; enforcementEnabled?: boolean; canReview?: boolean; locale?: "zh" | "en" } = {}) {
+  async function mount(items: unknown[], options: { actorId?: string; canToggleEnforcement?: boolean; enforcementEnabled?: boolean; canReview?: boolean; locale?: "zh" | "en" } = {}) {
     apiGet.mockImplementation(async () => {
       reads += 1;
       return { items, pageInfo: { endCursor: null, hasNextPage: false }, enforcementEnabled: options.enforcementEnabled };
@@ -77,12 +77,40 @@ describe("ApprovalsWorkspace decision evidence", () => {
     await act(async () => {
       root.render(
         <AdminI18nProvider locale={options.locale ?? "en"}><ToastProvider>
-          <ApprovalsWorkspace canReview={options.canReview ?? true} canToggleEnforcement={options.canToggleEnforcement} />
+          <ApprovalsWorkspace actorId={options.actorId} canReview={options.canReview ?? true} canToggleEnforcement={options.canToggleEnforcement} />
         </ToastProvider></AdminI18nProvider>,
       );
     });
     await waitUntil(() => reads >= 1 && container.textContent !== "");
   }
+
+  it("replaces the decision buttons on the operator's own request", async () => {
+    await mount([pendingApproval, { ...pendingApproval, id: "approval-2", requestedById: "operator-b" }], { actorId: "operator-a" });
+    await waitUntil(() => container.textContent?.includes("You requested this; another approver must decide") === true);
+    const row = (id: string) => [...container.querySelectorAll("tr")].find((node) => node.textContent?.includes(id))!;
+    expect(row("approval-1").textContent).toContain("You requested this; another approver must decide");
+    expect(row("approval-1").querySelector('button[title="Approve"], button[aria-label="Approve"]')).toBeNull();
+    expect([...row("approval-1").querySelectorAll("button")].some((node) => node.textContent?.trim() === "Approve")).toBe(false);
+    expect([...row("approval-2").querySelectorAll("button")].some((node) => node.textContent?.trim() === "Approve")).toBe(true);
+  });
+
+  it("keeps the decision buttons when the actor is not known, leaving separation to the server", async () => {
+    await mount([pendingApproval]);
+    await waitUntil(() => container.textContent?.includes(approvalId) === true);
+    expect(container.textContent).not.toContain("You requested this");
+    expect([...container.querySelectorAll("button")].some((node) => node.textContent?.trim() === "Approve")).toBe(true);
+  });
+
+  it("does not invent a page number for a shared cursor and offers a way back to the first page", async () => {
+    window.history.replaceState(null, "", "/admin/system/approvals?approvalCursor=shared-cursor");
+    navigation.search = "approvalCursor=shared-cursor";
+    await mount([pendingApproval]);
+    await waitUntil(() => container.querySelector('[data-testid="admin-pagination"]') !== null);
+    const pagination = container.querySelector('[data-testid="admin-pagination"]')!;
+    expect(pagination.textContent).toContain("Page position unknown");
+    const back = [...pagination.querySelectorAll("button")].find((node) => node.textContent === "Back to first page");
+    expect(back?.disabled).toBe(false);
+  });
 
   // 这是双人确认的整个意义所在：第二个人要挡住的是「动作对、参数错」。
   it("shows the requested parameters in the row and again inside the confirmation", async () => {

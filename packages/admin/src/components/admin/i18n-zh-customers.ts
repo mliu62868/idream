@@ -3,6 +3,8 @@
 // INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhCustomers: Record<string, string> = {
+  "Access is revoked immediately. After the grace period the account's data is erased across Chat and storage. This console has no command to stop it.": "访问权限立即撤销。宽限期结束后，该账号的数据会在 Chat 与存储中被擦除。此控制台没有可以中止它的命令。",
+  "Showing the {shown} most recent of {total} recorded actions. The full history is in the Audit Log.": "这里显示已记录的 {total} 条操作中最近的 {shown} 条。完整历史请看审计日志。",
   "Customer detail request failed": "用户详情加载失败",
   "Review requests, reply to customers, and track resolution.": "查看工单、回复客户并跟进处理。",
 

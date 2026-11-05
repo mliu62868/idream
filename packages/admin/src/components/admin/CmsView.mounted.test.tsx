@@ -31,6 +31,7 @@ describe("CMS operating permissions and article fields", () => {
   });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
   const button = (label: string) => [...container.querySelectorAll("button")].find((node) => node.textContent === label)!;
+  const dialogButton = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find((node) => node.textContent === label)!;
   const field = (label: string) => [...container.querySelectorAll("label")].find((node) => node.firstChild?.textContent === label)!.querySelector<HTMLInputElement | HTMLTextAreaElement>("input,textarea")!;
 
   it("lets a reader inspect article content without offering write operations", async () => {
@@ -141,20 +142,19 @@ describe("CMS operating permissions and article fields", () => {
     await act(async () => root.render(<CmsView canWrite />)); await settle();
     await act(async () => button("Publish").click());
     await act(async () => {
-      input(container.querySelector<HTMLInputElement>('[aria-label="CMS publish reason"]')!, "publish article");
-      input(container.querySelector<HTMLInputElement>('[aria-label="CMS publish confirmation"]')!, page.path);
+      input(document.querySelector<HTMLInputElement>('[role="dialog"] input[aria-label="Reason (≥3)"]')!, "publish article");
+      input(document.querySelector<HTMLInputElement>('[role="dialog"] input[aria-label="Type page path"]')!, page.path);
     });
-    await act(async () => button("Confirm publish change").click()); await settle();
+    await act(async () => dialogButton("Confirm publish change").click()); await settle();
     expect(container.textContent).toContain("cache did not refresh");
     expect(button("Refresh public cache")).toBeDefined();
     expect(button("Unpublish")).toBeDefined();
     await act(async () => button("Refresh public cache").click());
     await act(async () => {
-      input(container.querySelector<HTMLInputElement>('[aria-label="CMS publish reason"]')!, "recover public cache");
-      input(container.querySelector<HTMLInputElement>('[aria-label="CMS publish confirmation"]')!, page.path);
+      input(document.querySelector<HTMLInputElement>('[role="dialog"] input[aria-label="Reason (≥3)"]')!, "recover public cache");
+      input(document.querySelector<HTMLInputElement>('[role="dialog"] input[aria-label="Type page path"]')!, page.path);
     });
-    const confirm = [...container.querySelectorAll("button")].find((node) => node.textContent === "Confirm cache refresh")!;
-    await act(async () => confirm.click()); await settle();
+    await act(async () => dialogButton("Confirm cache refresh").click()); await settle();
     expect(apiWrite).toHaveBeenLastCalledWith("/api/v2/admin/cms/pages/publish", "POST", expect.objectContaining({
       action: "revalidate", contentStatus: "published", expectedUpdatedAt: current.updatedAt,
       path: page.path, reason: "recover public cache", confirmation: page.path,
@@ -335,7 +335,7 @@ describe("CMS operating permissions and article fields", () => {
     expect(editor().querySelector<HTMLInputElement>('[placeholder="Page title"]')!.value).toBe("My unsaved CMS title");
     const dialogButton = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(node => node.textContent === label)!;
     await act(async () => dialogButton("Cancel").click());
-    expect(container.querySelector('[aria-label="CMS publish reason"]')).toBeNull();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
     const editTargets = [...container.querySelectorAll("button")].filter(node => node.textContent === "Edit");
     await act(async () => editTargets[1].click());
     expect(editor().textContent).toContain(page.path);
@@ -398,22 +398,42 @@ describe("CMS operating permissions and article fields", () => {
     expect(apiWrite).not.toHaveBeenCalled();
   });
 
+  it("offers Reload rather than Retry after a failed publish, rereads without writing, and keeps the failure", async () => {
+    apiWrite.mockRejectedValueOnce(new AdminV2RequestError("Publish refused", 409, "conflict"));
+    await act(async () => root.render(<CmsView canWrite />)); await settle();
+    await act(async () => button("Publish").click());
+    await act(async () => {
+      input(document.querySelector<HTMLInputElement>('[role="dialog"] input[aria-label="Reason (≥3)"]')!, "Publish this exact page");
+      input(document.querySelector<HTMLInputElement>('[role="dialog"] input[aria-label="Type page path"]')!, page.path);
+    });
+    await act(async () => dialogButton("Confirm publish change").click()); await settle();
+    const alert = () => container.querySelector('[role="alert"]');
+    expect(alert()?.textContent).toContain("a precondition was not met");
+    expect(button("Retry")).toBeUndefined();
+    const reads = apiGet.mock.calls.length;
+    await act(async () => button("Reload").click()); await settle();
+    expect(apiGet.mock.calls.length).toBe(reads + 1);
+    expect(apiWrite).toHaveBeenCalledTimes(1);
+    expect(alert()?.textContent).toContain("a precondition was not met");
+    await act(async () => button("Dismiss").click());
+    expect(alert()).toBeNull();
+  });
+
   it("freezes a CMS status command's reason and cancellation until the pending request settles", async () => {
     let failWrite!: (reason: unknown) => void;
     apiWrite.mockImplementationOnce(() => new Promise((_resolve, reject) => { failWrite = reject; }));
     await act(async () => root.render(<CmsView canWrite />)); await settle();
     await act(async () => button("Publish").click());
     await act(async () => {
-      input(container.querySelector<HTMLInputElement>('[aria-label="CMS publish reason"]')!, "Publish this exact page");
-      input(container.querySelector<HTMLInputElement>('[aria-label="CMS publish confirmation"]')!, page.path);
+      input(document.querySelector<HTMLInputElement>('[role="dialog"] input[aria-label="Reason (≥3)"]')!, "Publish this exact page");
+      input(document.querySelector<HTMLInputElement>('[role="dialog"] input[aria-label="Type page path"]')!, page.path);
     });
-    await act(async () => button("Confirm publish change").click());
-    expect(container.querySelector<HTMLInputElement>('[aria-label="CMS publish reason"]')!.closest("fieldset")?.disabled).toBe(true);
-    expect(button("Cancel").disabled).toBe(true);
-    await act(async () => button("Cancel").click());
-    expect(container.querySelector<HTMLInputElement>('[aria-label="CMS publish reason"]')!.value).toBe("Publish this exact page");
+    await act(async () => dialogButton("Confirm publish change").click());
+    expect(dialogButton("Cancel").disabled).toBe(true);
+    await act(async () => dialogButton("Cancel").click());
+    expect(document.querySelector<HTMLInputElement>('[role="dialog"] input[aria-label="Reason (≥3)"]')!.value).toBe("Publish this exact page");
     await act(async () => failWrite(new Error("CMS publication unavailable"))); await settle();
-    expect(container.querySelector('[aria-label="CMS publish reason"]')).toBeNull();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(container.textContent).not.toContain("is published and indexable");
     expect(apiWrite).toHaveBeenCalledTimes(1);
     expect(apiWrite).toHaveBeenCalledWith("/api/v2/admin/cms/pages/publish", "POST", expect.objectContaining({ path: page.path, reason: "Publish this exact page", expectedUpdatedAt: page.updatedAt }));

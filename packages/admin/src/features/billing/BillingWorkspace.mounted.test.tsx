@@ -677,6 +677,18 @@ describe("billing query authority", () => {
     expect(pager("Previous page").disabled).toBe(true);
   });
 
+  it("does not state the capped exception list as a total", async () => {
+    const exceptions = Array.from({ length: 100 }, (_, index) => ({ ...reconciliation.checkoutExceptions[0], id: `checkout-${index}` }));
+    apiGet.mockResolvedValue({ ...reconciliation, checkoutExceptions: exceptions });
+    await mount("pending");
+    expect(container.textContent).toContain("Showing the first 100 rows.");
+    expect(container.textContent).toContain("100+");
+    apiGet.mockResolvedValue(reconciliation);
+    await act(async () => window.dispatchEvent(new PopStateEvent("popstate")));
+    await waitUntil(() => !container.textContent?.includes("Showing the first 100 rows."));
+    expect(container.textContent).not.toContain("100+");
+  });
+
   it("clears failed reconciliation data and does not revive it while retrying", async () => {
     apiGet.mockResolvedValue(reconciliation);
     await mount("pending");

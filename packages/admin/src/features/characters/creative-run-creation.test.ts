@@ -78,7 +78,7 @@ describe("Character creative Run creation", () => {
     [403, "Permission denied"],
     [409, "Version changed"],
     [503, "Runtime unavailable. No Run was created."],
-  ])("preserves an unknown submission through a rejected replay (%s)", async (status, message) => {
+  ])("keeps an unknown submission's key through a rejected replay and reconciles it next (%s)", async (status, message) => {
     request.mockRejectedValueOnce(new TypeError("Response ended before receipt"));
     await expect(create()).rejects.toThrow("Response ended before receipt");
     const firstKey = saved()?.idempotencyKey;
@@ -88,11 +88,46 @@ describe("Character creative Run creation", () => {
     intent = saved();
     request.mockRejectedValueOnce(new AdminV2RequestError(message, status, "unavailable"));
     await expect(create({ ...original, brief: "A later unrelated draft" })).rejects.toThrow(message);
-    expect(saved()).toMatchObject({ idempotencyKey: firstKey, status: "outcome_unknown", requestSnapshot: original });
-    request.mockResolvedValueOnce({ batch: { id: "run-1" }, replayed: true });
-    await expect(create()).resolves.toMatchObject({ state: "committed", runId: "run-1", replayed: true });
+    // A refusal of this replay cannot prove that the earlier request did not commit.
+    expect(saved()).toMatchObject({ idempotencyKey: firstKey, status: "reconciliation_required", requestSnapshot: original });
+    request.mockResolvedValueOnce(committedReceipt());
+    await expect(create()).resolves.toMatchObject({ state: "committed", runId: "run-1", source: "reconciliation" });
     expect(request.mock.calls.map(([, options]) => options.idempotencyKey)).toEqual([firstKey, firstKey, firstKey]);
-    expect(request.mock.calls.map(([, options]) => options.body)).toEqual([original, original, original]);
+    expect(request.mock.calls.map(([path]) => path)).toEqual([
+      "/api/v2/admin/creative/runs", "/api/v2/admin/creative/runs", "/api/v2/admin/mutation-receipts/reconcile",
+    ]);
+    expect(request.mock.calls.slice(0, 2).map(([, options]) => options.body)).toEqual([original, original]);
+  });
+
+  it("leaves a permanently rejected replay a server-sealed exit instead of replaying it for 24 hours", async () => {
+    const rejected = new AdminV2RequestError("Additional Creative Run references must be available image assets", 400, "bad_request");
+    request.mockRejectedValueOnce(new AdminV2RequestError("Gateway timeout", 504));
+    await expect(create()).rejects.toThrow("Gateway timeout");
+    const key = saved()?.idempotencyKey;
+    expect(saved()?.status).toBe("outcome_unknown");
+    // The source asset was retired meanwhile, so the frozen request can never be accepted again.
+    request.mockRejectedValueOnce(rejected);
+    await expect(create()).rejects.toThrow(rejected.message);
+    expect(saved()).toMatchObject({ idempotencyKey: key, status: "reconciliation_required" });
+
+    request.mockResolvedValueOnce({ state: "cancelled", commandType: "creative.run.create", commandId: null, status: null, committedTargetId: null });
+    await expect(create()).resolves.toEqual({ state: "cancelled" });
+    expect(request.mock.calls.at(-1)?.[0]).toBe("/api/v2/admin/mutation-receipts/reconcile");
+    expect(request.mock.calls.at(-1)?.[1].idempotencyKey).toBe(key);
+    expect(request.mock.calls.filter(([path]) => path === "/api/v2/admin/creative/runs")).toHaveLength(2);
+    expect(saved()).toBeNull();
+    // Only the sealed key unlocks the composer for a request with a new key.
+    await expect(create()).resolves.toMatchObject({ state: "committed", source: "submission" });
+    expect(request.mock.calls.at(-1)?.[1].idempotencyKey).not.toBe(key);
+  });
+
+  it("keeps a transport failure on replay as an unknown outcome that can replay again", async () => {
+    seed();
+    request.mockRejectedValueOnce(new AdminV2RequestError("Bad gateway", 502));
+    await expect(create()).rejects.toThrow("Bad gateway");
+    expect(saved()?.status).toBe("outcome_unknown");
+    await expect(create()).resolves.toMatchObject({ state: "committed", source: "submission", runId: "run-1" });
+    expect(request.mock.calls.map(([path]) => path)).toEqual(["/api/v2/admin/creative/runs", "/api/v2/admin/creative/runs"]);
   });
 
   it("retains a first submission when a rejection status has no usable receipt", async () => {
@@ -118,7 +153,7 @@ describe("Character creative Run creation", () => {
     expect(active.replayStarted).toBeUndefined();
     request.mockRejectedValueOnce(new AdminV2RequestError("Replay forbidden", 403));
     await expect(create()).rejects.toThrow("Replay forbidden");
-    expect(saved()).toMatchObject({ idempotencyKey: active.idempotencyKey, status: "outcome_unknown", replayStarted: true });
+    expect(saved()).toMatchObject({ idempotencyKey: active.idempotencyKey, status: "reconciliation_required", replayStarted: true });
   });
 
   it("shows another tab's saved request before acting on it", async () => {

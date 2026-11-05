@@ -7,6 +7,7 @@ vi.mock("@/lib/admin-v2-operation", () => ({ adminV2Operation }));
 import { ChatEngagementPanel } from "./ChatEngagementPanel";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
+import { AdminI18nProvider } from "@/components/admin/i18n";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 afterEach(() => { vi.clearAllMocks(); document.body.innerHTML = ""; });
 const response = (id: string) => ({
@@ -69,6 +70,32 @@ describe("Chat engagement operations panel", () => {
     expect(host.querySelector('a[href="/admin/customers/customer"]')).not.toBeNull();
     await act(async () => { root.unmount(); });
   });
+  it("does not render an empty table beneath a failed first read", async () => {
+    const host = document.createElement("div"); document.body.append(host); const root = createRoot(host);
+    adminV2Operation.mockRejectedValue(new Error("connection unavailable"));
+    await act(async () => { root.render(<ChatEngagementPanel userId="" characterId="" />); });
+    await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-pressed]')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    expect(host.querySelector('[role="alert"]')).not.toBeNull();
+    expect(host.textContent).not.toContain("No conversation operations match these filters");
+    await act(async () => { root.unmount(); });
+  });
+
+  it("translates status enums instead of printing the raw value", async () => {
+    const host = document.createElement("div"); document.body.append(host); const root = createRoot(host);
+    adminV2Operation.mockResolvedValue({
+      ...response("zh-row"),
+      items: [{ ...response("zh-row").items[0], latestTurn: { id: "turn", status: "failed", attempt: 1, admissionAttempts: 1, admittedAt: null, hasAdmissionError: false, admissionNextRunAt: null, terminalAt: null } }],
+    });
+    await act(async () => { root.render(<AdminI18nProvider locale="zh"><ChatEngagementPanel userId="" characterId="" /></AdminI18nProvider>); });
+    await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-pressed]')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    expect(host.textContent).toContain("启用");
+    expect(host.textContent).toContain("失败");
+    expect(host.textContent).not.toContain("active");
+    await act(async () => { root.unmount(); });
+  });
+
   it("shows recoverable errors without leaving stale records on screen", async () => {
     const host = document.createElement("div"); document.body.append(host); const root = createRoot(host);
     adminV2Operation.mockRejectedValue(new Error("connection unavailable"));

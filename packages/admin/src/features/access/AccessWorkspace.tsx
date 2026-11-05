@@ -1,5 +1,6 @@
 "use client";
 
+import { OperatorInputError } from "@/components/admin/ui/request-error-copy";
 import { AdminText, useAdminI18n } from "@/components/admin/i18n";
 import {
   ADMIN_DATA_CLASSES,
@@ -177,7 +178,11 @@ export function AccessWorkspace({
   const targetUserId = permissionDraft.userId.trim();
   const needsCharacterScope = bundleNeedsCharacterScope(bundleChoice);
   const bundleAuthority = bundleLookup?.userId === targetUserId ? bundleLookup.data : null;
-  const existingBundle = bundleAuthority?.items.find((bundle) => bundle.bundleKey === bundleChoice);
+  // INVARIANT: 已撤销 / 已过期的行只是历史。再次授予是一次全新的授权，它们的范围和到期时间
+  //            既不该被预填，也不该被说成「将被替换」。
+  const existingBundle = bundleAuthority?.items.find(
+    (bundle) => bundle.bundleKey === bundleChoice && bundle.state === "active",
+  );
   const characterScopeInput = bundleCharacterIds ?? existingBundle?.scope?.characterIds.join(", ") ?? "";
   const scopedCharacterIds = parseCharacterIds(characterScopeInput);
   const originalExpiry = existingBundle?.expiresAt ?? null;
@@ -526,7 +531,7 @@ export function AccessWorkspace({
                     },
                     // INVARIANT: 只有需要范围的包才带 scope —— 服务端对其余包收到 scope 会 400。
                     payload: (reason) => {
-                      if (!grantExpiryIsFuture(bundleExpiresAt)) throw new Error(t("Grant expiry must be in the future."));
+                      if (!grantExpiryIsFuture(bundleExpiresAt)) throw new OperatorInputError(t("Grant expiry must be in the future."));
                       return {
                         bundleKey: bundleChoice, reason, expiresAt: bundleExpiresAt,
                         ...(needsCharacterScope ? { scope: { characterIds: scopedCharacterIds } } : {}),

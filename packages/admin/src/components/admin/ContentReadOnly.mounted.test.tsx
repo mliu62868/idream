@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminPermissionKey } from "@idream/shared/admin/permissions";
 import { navItems, type AdminSubview, type SectionContext } from "./nav-config";
+import { renderAdminSection } from "./nav-sections";
 import { AnnouncementsView } from "./AnnouncementsView";
 import { RecipesDetailPage } from "./recipes/RecipesDetailPage";
 
@@ -60,7 +61,7 @@ describe("content read-only operator journeys", () => {
   function noWrites() { expect(fetchMock.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true); }
   function readerView(sectionId: string, permission: AdminPermissionKey, view: AdminSubview = { kind: "list" }) {
     const context: SectionContext = { permissions: new Set([permission]), canCreateCharacters: false, actorId: "reader", canRead: true, view, workMode: "growth_analyst" };
-    return navItems.find(item => item.id === sectionId)!.render(context);
+    return renderAdminSection(navItems.find(item => item.id === sectionId)!.id, context);
   }
 
   it("lets a promotion reader inspect the full announcement without offering write actions", async () => {

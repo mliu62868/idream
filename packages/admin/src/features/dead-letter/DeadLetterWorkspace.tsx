@@ -10,6 +10,7 @@ import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestErr
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableHeader, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { Pagination } from "@/components/admin/ui/Pagination";
 import { text, useAdminFormat } from "@/components/admin/ui/format";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { useToast, type ToastInput } from "@/components/admin/ui/Toast";
@@ -93,6 +94,8 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
+  // SPEC: 「上一页」走自己走过的游标回头；这个队列是单向 keyset，没有反向游标。
+  const [cursorTrail, setCursorTrail] = useState<string[]>([]);
   const requestGate = useRef(createLatestRequestGate());
   const queryScope = useRef({ key: "" });
 
@@ -122,7 +125,8 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
 
   useEffect(() => {
     const gate = requestGate.current;
-    const restore = () => restoreFromUrl(load, setQuery, setDraft);
+    // 后退 / 前进到的那一页走过什么路，历史条目里没记——清空轨迹，页码如实说未知。
+    const restore = () => { setCursorTrail([]); restoreFromUrl(load, setQuery, setDraft); };
     const refresh = () => restoreFromUrl(load, setQuery, setDraft);
     restore();
     window.addEventListener("popstate", restore);
@@ -135,9 +139,10 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
     };
   }, [load]);
 
-  function navigate(next: DeadLetterQuery, mode: "push" | "replace" = "push") {
+  function navigate(next: DeadLetterQuery, mode: "push" | "replace" = "push", trail: string[] = []) {
     const url = deadLetterWorkspaceUrl(window.location.pathname, window.location.search, next);
     window.history[mode === "push" ? "pushState" : "replaceState"](null, "", url);
+    setCursorTrail(trail);
     setQuery(next);
     setDraft(next);
     void load(next);
@@ -252,7 +257,7 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
           : <span className="text-[var(--ad-text-muted)]" key="failure">—</span>,
         <RetryAuthority key="retry" verdict={row.retryEligibility} />,
         <span className="whitespace-nowrap" key="ledger">{t(LEDGER_LABELS[row.ledgerState])}</span>,
-        format.display(row.costDreamcoins),
+        typeof row.costDreamcoins === "number" ? format.dreamcoins(row.costDreamcoins, { unit: false }) : format.display(row.costDreamcoins),
         format.dateTime(row.updatedAt),
         <div key="actions">{rowActions(row)}</div>,
       ],
@@ -327,7 +332,7 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
                     <RetryAuthority verdict={row.retryEligibility} />
                   </MobileFact>
                   <MobileFact label={t("Ledger")}>{t(LEDGER_LABELS[row.ledgerState])}</MobileFact>
-                  <MobileFact label={t("Estimated cost")}>{format.display(row.costDreamcoins)}</MobileFact>
+                  <MobileFact label={t("Estimated cost")}>{typeof row.costDreamcoins === "number" ? format.dreamcoins(row.costDreamcoins, { unit: false }) : format.display(row.costDreamcoins)}</MobileFact>
                   <MobileFact className="col-span-2" label={t("Updated")}>{format.dateTime(row.updatedAt)}</MobileFact>
                 </dl>
                 <footer className="border-t border-[var(--ad-border)] pt-3">{rowActions(row)}</footer>
@@ -342,6 +347,7 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
           caption="Dead-letter Queue"
           empty={empty}
           error={data ? null : errorMessage}
+          errorCause={error}
           headers={HEADERS}
           loading={loading}
           minimumWidthClassName="min-w-[1600px]"
@@ -388,7 +394,19 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
         />
       </div>
 
-      {data?.pageInfo?.hasNextPage && data.pageInfo.endCursor ? <button className="inline-flex min-h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" disabled={loading} onClick={() => navigate({ ...query, cursor: data.pageInfo?.endCursor ?? "" })} type="button"><RefreshCcw className="h-4 w-4" />{t("Next dead-letter page")}</button> : null}
+      {data ? (
+        <Pagination
+          hasNext={Boolean(data.pageInfo?.hasNextPage && data.pageInfo.endCursor)}
+          hasPrevious={Boolean(query.cursor)}
+          loading={loading}
+          onNext={() => { if (data.pageInfo?.endCursor) navigate({ ...query, cursor: data.pageInfo.endCursor }, "push", [...cursorTrail, query.cursor]); }}
+          onPrevious={() => navigate({ ...query, cursor: cursorTrail.at(-1) ?? "" }, "push", cursorTrail.slice(0, -1))}
+          previousLabel={query.cursor && cursorTrail.length === 0 ? t("Back to first page") : undefined}
+          page={!query.cursor ? 1 : cursorTrail[0] === "" ? cursorTrail.length + 1 : null}
+          pageSize={PAGE_SIZE}
+          rowCount={rows.length}
+        />
+      ) : null}
       {confirmation ? <ConfirmDialog onClose={() => setConfirmation((current) => current === confirmation ? null : current)} spec={confirmation} /> : null}
     </section>
   );

@@ -5,6 +5,9 @@
 // TRAP: 本域约 17 个键是后端下发的短语（packages/main/src/server/modules/admin-v2/creative/**、
 // packages/shared/src/admin/contracts/creative.ts），经 t(后端字符串) 动态取值，静态扫描看不见。
 export const adminZhCreative: Record<string, string> = {
+  "This recipe stops serving generation requests right away. This console has no command to undo a rollback.": "此配方会立刻停止为生成请求提供服务。此控制台没有撤销回滚的命令。",
+  "This preset is no longer offered to users. Restore brings it back.": "此预设将不再提供给用户。恢复即可重新提供。",
+  "Every customer loses access to this Pack's content, including anyone who already claimed it. Claim receipts are retained. This console has no command to lift the block.": "所有客户都会失去此内容包的访问权限，包括已领取的用户。领取凭证会保留。此控制台没有解除封禁的命令。",
   "KB": "KB",
   "Pack operations": "内容包运营",
   "Ordinary withdrawal preserves existing claims. Emergency blocking stops all content access and retains claim receipts.": "普通撤下保留已领取用户的访问权。紧急封禁停止所有内容访问，同时保留领取凭证。",

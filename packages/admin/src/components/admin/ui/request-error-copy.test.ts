@@ -3,11 +3,21 @@ import { hasAdminZh } from "@/components/admin/i18n";
 import { AdminV2RequestError, adminV2Request } from "@/lib/admin-v2-api";
 import {
   OPERATOR_ERROR_COPY_KEYS,
+  OperatorInputError,
   operatorErrorCopy,
   technicalDetailText,
 } from "./request-error-copy";
 
 describe("operatorErrorCopy", () => {
+  it("shows a console-side validation message verbatim instead of blaming an unidentified cause", () => {
+    const copy = operatorErrorCopy(new OperatorInputError("Write a message to the customer before continuing."));
+    expect(copy.headline).toBe("Write a message to the customer before continuing.");
+    expect(copy.nextStep).toBe("Correct the input and submit again — nothing was written.");
+    expect(copy.nextStep).not.toContain("engineering");
+    expect(copy.technical).toEqual({ code: null, status: null, requestId: null, message: "Write a message to the customer before continuing." });
+    expect(operatorErrorCopy(new OperatorInputError("Not ready", "Wait for it.")).nextStep).toBe("Wait for it.");
+  });
+
   it("honors approval renewal recovery before the generic forbidden explanation", () => {
     const details = { recovery: "request_new_approval", action: "billing.ledger.adjust", targetId: "user-1" };
     const error = new AdminV2RequestError("Approval is unbound, expired, or invalid; request a new approval", 403, "forbidden", details, "approval-recovery");

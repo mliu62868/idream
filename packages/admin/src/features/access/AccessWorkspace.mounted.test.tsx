@@ -173,6 +173,36 @@ describe("role and grant bundle commands", () => {
     } : original?.(path));
   }
 
+  it.each([
+    ["revoked", { state: "revoked", revokedAt: "2026-08-10T00:00:00.000Z", expiresAt: "2099-05-02T16:45:37.123Z" }],
+    ["expired", { state: "expired", revokedAt: null, expiresAt: "2020-01-01T00:00:00.000Z" }],
+  ])("treats an ended bundle (%s) as a fresh grant", async (_state, row) => {
+    apiGet.mockImplementation(async (path: string) => path.includes("/grant-bundles") ? {
+      user: { id: "user-9", role: "support", status: "active" },
+      items: [{
+        id: "ended-production", userId: "user-9", bundleKey: "character_producer",
+        scope: { characterIds: ["char-old"] }, createdAt: "2026-08-01T00:00:00.000Z",
+        updatedAt: "2026-08-10T00:00:00.000Z", permissions: ["character.project.read"], ...row,
+      }],
+    } : path.includes("/permissions") ? { role: "support", overrides: [], effective: [] } : emptyUserList);
+    await mountWithTarget();
+    await waitUntil(() => container.textContent?.includes("Grant expiry") === true);
+    const field = (label: string) => [...container.querySelectorAll("label")]
+      .find((candidate) => candidate.textContent?.includes(label))?.querySelector("input");
+    await waitUntil(() => [...container.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Grant bundle"));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(field("Assigned character IDs")?.value).toBe("");
+    expect(field("Grant expiry")?.value).toBe("");
+    expect(container.textContent).not.toContain("Grant expiry must be in the future.");
+    await fillField("Assigned character IDs", "char-new");
+    await clickButton("Grant bundle");
+    expect(document.querySelector('[role="dialog"]')?.textContent).not.toContain("This replaces the bundle's existing scope and expiry.");
+    await confirmDialog("Assign this producer again", "user-9:character_producer:grant");
+    expect(apiWrite).toHaveBeenCalledWith("/api/v2/admin/users/user-9/grant-bundles", "POST", expect.objectContaining({
+      expiresAt: null, scope: { characterIds: ["char-new"] },
+    }));
+  });
+
   it("preserves a temporary grant's exact expiry when changing its character scope", async () => {
     existingTemporaryGrant();
     await mountWithTarget();

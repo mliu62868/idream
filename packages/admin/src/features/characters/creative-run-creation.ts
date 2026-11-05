@@ -185,6 +185,11 @@ export async function createOrRecoverCharacterRun(options: CreateOptions): Promi
           current.status !== "outcome_unknown" && isDefinitiveRejection(cause)) {
           clearDurableMutationIntent(current);
           remember(null);
+        } else if (!prepared.firstSubmission && isDefinitiveRejection(cause)) {
+          // A refused replay proves nothing about the earlier attempt, and replaying
+          // can never succeed once the request itself stopped being valid. The key
+          // stays; only the server's receipt can recover it or seal it as no-effect.
+          remember(updateDurableMutationIntent(current, { status: "reconciliation_required" }));
         } else {
           remember(updateDurableMutationIntent(current, { status: "outcome_unknown" }));
         }

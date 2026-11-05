@@ -450,6 +450,10 @@ function MergeSection({
             target: targetTag.slug,
           }),
           destructive: { expectedName: targetTag.label },
+          consequence: {
+            effect: t("{source} is deleted once its character links move to {target}. Nothing restores the separate tag.", { source: sourceTag.slug, target: targetTag.slug }),
+            reversible: false,
+          },
           submitLabel: t("Merge"),
           onSubmit: async (reason) => {
             const data = await apiWrite<{ merged: boolean; movedCount: number }>(

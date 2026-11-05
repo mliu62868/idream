@@ -6,7 +6,7 @@ import {
   type IncidentCorrelationOutboxEvent,
   type IncidentCorrelationOutboxEventListResponse,
 } from "@idream/shared/admin";
-import { AlertTriangle, Loader2, RefreshCcw, RotateCcw } from "lucide-react";
+import { AlertTriangle, Loader2, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
@@ -17,6 +17,7 @@ import {
 import { DataTable, type DataTableHeader, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { useAdminFormat } from "@/components/admin/ui/format";
+import { Pagination } from "@/components/admin/ui/Pagination";
 import { useToast } from "@/components/admin/ui/Toast";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
@@ -75,6 +76,8 @@ export function summarizeIncidentCorrelationReplay(
     .join(" · ");
 }
 
+const OUTBOX_PAGE_SIZE = 50;
+
 export function IncidentCorrelationOutbox({
   canDiscardAttemptMissing = false,
   canRead,
@@ -94,13 +97,18 @@ export function IncidentCorrelationOutbox({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const gate = useRef(createLatestRequestGate());
+  // SPEC: 「上一页」走自己走过的游标回头；回到第一页的读取（含刷新）同时清空轨迹。
+  const [cursor, setCursor] = useState("");
+  const [cursorTrail, setCursorTrail] = useState<string[]>([]);
 
   const load = useCallback(async (cursor = "") => {
     if (!canRead) return;
     const request = gate.current.begin();
     setLoading(true);
     setError(null);
-    const query = new URLSearchParams({ status: "failed", limit: "50" });
+    setCursor(cursor);
+    if (!cursor) setCursorTrail([]);
+    const query = new URLSearchParams({ status: "failed", limit: String(OUTBOX_PAGE_SIZE) });
     if (cursor) query.set("cursor", cursor);
     try {
       const response = await adminV2Operation(
@@ -369,6 +377,7 @@ export function IncidentCorrelationOutbox({
               />
             }
             error={data ? null : error === null ? null : authorityMessage(error)}
+            errorCause={error}
             headers={headers}
             loading={loading}
             minimumWidthClassName="min-w-[860px]"
@@ -376,16 +385,17 @@ export function IncidentCorrelationOutbox({
             rows={tableRows}
           />
 
-          {data?.pageInfo.hasNextPage && data.pageInfo.endCursor ? (
-            <button
-              className="inline-flex min-h-10 items-center gap-2 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold"
-              disabled={loading}
-              onClick={() => void load(data.pageInfo.endCursor ?? "")}
-              type="button"
-            >
-              <RefreshCcw className="h-4 w-4" />
-              {t("Next failed delivery page")}
-            </button>
+          {data ? (
+            <Pagination
+              hasNext={Boolean(data.pageInfo.hasNextPage && data.pageInfo.endCursor)}
+              hasPrevious={Boolean(cursor)}
+              loading={loading}
+              onNext={() => { if (data.pageInfo.endCursor) { setCursorTrail([...cursorTrail, cursor]); void load(data.pageInfo.endCursor); } }}
+              onPrevious={() => { setCursorTrail(cursorTrail.slice(0, -1)); void load(cursorTrail.at(-1) ?? ""); }}
+              page={cursorTrail.length + 1}
+              pageSize={OUTBOX_PAGE_SIZE}
+              rowCount={rows.length}
+            />
           ) : null}
         </>
       )}

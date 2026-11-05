@@ -351,6 +351,7 @@ export function ModerationWorkspace({ canDecide, canReadComics = false, canRevie
         rows={reportRows(reports.rows ?? [], canDecide, confirmDecision, t, value, format)}
       />
       <QueuePagination
+        cursor={query.reportCursor}
         onNext={(cursor) => goToPage("reports", "reportCursor", cursor)}
         onPrevious={() => goBack("reports", "reportCursor")}
         state={reports}
@@ -374,6 +375,7 @@ export function ModerationWorkspace({ canDecide, canReadComics = false, canRevie
         rows={mediaRows(media.rows ?? [], canDecide, confirmDecision, t, value, format)}
       />
       <QueuePagination
+        cursor={query.mediaCursor}
         onNext={(cursor) => goToPage("media", "mediaCursor", cursor)}
         onPrevious={() => goBack("media", "mediaCursor")}
         state={media}
@@ -397,6 +399,7 @@ export function ModerationWorkspace({ canDecide, canReadComics = false, canRevie
         rows={appealRows(appeals.rows ?? [], canDecide, confirmDecision, t, value, format)}
       />
       <QueuePagination
+        cursor={query.appealCursor}
         onNext={(cursor) => goToPage("appeals", "appealCursor", cursor)}
         onPrevious={() => goBack("appeals", "appealCursor")}
         state={appeals}
@@ -459,7 +462,7 @@ function mediaRows(
             id,
             endpoint: `/api/v2/admin/moderation/media/${id}/decision`,
             method: "POST",
-            title: t("{action} Character image {id}", { action: label, id }),
+            title: t("{action} Character image {id}", { action: t(label), id }),
             payload: () => ({ decision }),
           })
         }
@@ -893,28 +896,34 @@ function AuthorityError({
   );
 }
 function QueuePagination({
+  cursor,
   onNext,
   onPrevious,
   state,
   trail,
 }: {
+  cursor: string;
   onNext: (cursor: string) => void;
   onPrevious: () => void;
   state: AuthorityState;
   trail: string[];
 }) {
-  if (!state.rows?.length) return null;
+  const { t } = useAdminI18n();
+  // 停在一个没有行的游标页时也要留着回头路，否则只能手改地址栏。
+  if (!state.rows?.length && !cursor) return null;
   const { endCursor, hasNextPage } = state.pageInfo;
   return (
     <Pagination
       hasNext={Boolean(hasNextPage && endCursor)}
-      hasPrevious={trail.length > 0}
+      hasPrevious={Boolean(cursor)}
       loading={state.loading}
       onNext={() => endCursor && onNext(endCursor)}
       onPrevious={onPrevious}
-      page={trail.length + 1}
+      previousLabel={cursor && trail.length === 0 ? t("Back to first page") : undefined}
+      // INVARIANT: 轨迹被刷新或后退清空后，手上只剩一个游标——位置未知就说未知，不编页码。
+      page={!cursor ? 1 : trail[0] === "" ? trail.length + 1 : null}
       pageSize={MODERATION_PAGE_SIZE}
-      rowCount={state.rows.length}
+      rowCount={state.rows?.length ?? 0}
     />
   );
 }

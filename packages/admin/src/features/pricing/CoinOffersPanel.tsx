@@ -5,7 +5,11 @@ import { adminCoinOfferCreateRequestSchema, adminCoinOfferListSchema, adminCoinO
 import type { CoinOffer } from "@idream/shared/coins";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
+import { useAdminFormat } from "@/components/admin/ui/format";
+import { OperatorInputError } from "@/components/admin/ui/request-error-copy";
+import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { ApprovalRequiredNotice, isDualApprovalRequired, type BlockedApproval } from "@/features/approvals/ApprovalRequired";
 import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 
@@ -15,11 +19,15 @@ const emptyDraft = { offerKey: "", name: "", dreamcoins: "", priceCents: "", cur
 
 export function CoinOffersPanel({ canWrite }: { canWrite: boolean }) {
   const { t, value: label } = useAdminI18n();
+  const format = useAdminFormat();
+  const { toast } = useToast();
+  const failureToast = useFailureToast();
   const [draft, setDraft] = useState(emptyDraft);
   const [items, setItems] = useState<CoinOffer[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  // 只装读取失败；写失败走 failure toast / ConfirmDialog。
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const [blockedPublish, setBlockedPublish] = useState<{ name: string; approval: BlockedApproval } | null>(null);
   const [previousCanWrite, setPreviousCanWrite] = useState(canWrite);
@@ -46,11 +54,11 @@ export function CoinOffersPanel({ canWrite }: { canWrite: boolean }) {
   }, [canWrite]);
 
   const load = useCallback(async () => {
-    const ticket = ++serial.current; setLoading(true); setError("");
+    const ticket = ++serial.current; setLoading(true); setLoadError(null);
     try {
       const data = adminCoinOfferListSchema.parse(await apiGet("/api/v2/admin/billing/coin-offers"));
       if (mounted.current && ticket === serial.current) setItems(data.items);
-    } catch (cause) { if (mounted.current && ticket === serial.current) setError(cause instanceof Error ? cause.message : "Coin catalog could not load."); }
+    } catch (cause) { if (mounted.current && ticket === serial.current) setLoadError(cause); }
     finally { if (mounted.current && ticket === serial.current) setLoading(false); }
   }, []);
   useWorkspaceRefresh(load);
@@ -68,19 +76,23 @@ export function CoinOffersPanel({ canWrite }: { canWrite: boolean }) {
     event.preventDefault();
     if (busy || !canWrite) return;
     const body = adminCoinOfferCreateRequestSchema.safeParse({ ...draft, dreamcoins: Number(draft.dreamcoins), priceCents: Number(draft.priceCents) });
-    if (!body.success) { setError(t("Complete the offer fields, including the customer purchase and refund terms.")); return; }
-    setBusy(true); setError("");
+    if (!body.success) { failureToast(new OperatorInputError(t("Complete the offer fields, including the customer purchase and refund terms."))); return; }
+    setBusy(true);
     try {
-      await write("/api/v2/admin/billing/coin-offers", body.data);
-      if (mounted.current) { setDraft(emptyDraft); await load(); }
-    } catch (cause) { if (mounted.current) setError(cause instanceof Error ? cause.message : "Coin draft could not be saved."); }
+      const saved = await write("/api/v2/admin/billing/coin-offers", body.data);
+      if (mounted.current) {
+        setDraft(emptyDraft);
+        toast({ tone: "success", title: t("Coin offer draft saved: {name}", { name: saved.name }) });
+        await load();
+      }
+    } catch (cause) { if (mounted.current) failureToast(cause); }
     finally { if (mounted.current) setBusy(false); }
   }
   function change(offer: CoinOffer, action: "publish" | "retire") {
     if (!writeAuthority.current || busy) return;
     const spec: ConfirmSpec = {
       title: action === "publish" ? "Publish coin offer" : "Retire coin offer",
-      summary: <div className="space-y-3"><p>{offer.name} · {offer.dreamcoins.toLocaleString()} {t("Dreamcoins")} · {(offer.priceCents / 100).toFixed(2)} {offer.currency.toUpperCase()}</p><p className="whitespace-pre-line text-sm">{offer.terms}</p></div>,
+      summary: <div className="space-y-3"><p>{offer.name} · {format.count(offer.dreamcoins)} {t("Dreamcoins")} · {format.money(offer.priceCents, offer.currency.toUpperCase())}</p><p className="whitespace-pre-line text-sm">{offer.terms}</p></div>,
       destructive: { expectedName: offer.name },
       consequence: { reversible: true, effect: action === "publish"
         ? "New purchases use this version. Previously accepted invoices keep their original price, coin amount, and terms."
@@ -99,6 +111,7 @@ export function CoinOffersPanel({ canWrite }: { canWrite: boolean }) {
         }
         if (!isCurrent()) return;
         if (action === "publish") setBlockedPublish(null);
+        toast({ tone: "success", title: action === "publish" ? t("Coin offer published: {name}", { name: offer.name }) : t("Coin offer retired: {name}", { name: offer.name }) });
         if (mounted.current) await load();
       },
     };
@@ -109,9 +122,9 @@ export function CoinOffersPanel({ canWrite }: { canWrite: boolean }) {
 
   return <section aria-label={t("Dreamcoin offers")} className="space-y-4 rounded-xl border border-[var(--ad-border)] p-4 md:p-5">
     <header className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">{t("Dreamcoin offers")}</h2><p className="mt-1 max-w-prose text-sm text-[var(--ad-text-muted)]">{t("Create a draft with approved commercial terms. Publishing replaces the previous live version of the same offer.")}</p></div><button className={button} disabled={loading || busy} onClick={() => void load()} type="button">{t("Refresh")}</button></header>
-    {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
+    {loadError !== null && <AuthorityRequestError cause={loadError} message={t("Coin catalog could not load.")} onRetry={() => void load()} requestKind="read" />}
     {blockedPublish && <ApprovalRequiredNotice blocked={blockedPublish.approval} message={t("Publishing {name} needs a second approver. Submit an approval request; once approved, publish it again.", { name: blockedPublish.name })} onRequested={() => setBlockedPublish(null)} testId="coin-offer-publish-approval-required" />}
-    {loading ? <p role="status" className="text-sm">{t("Loading coin offers…")}</p> : !items.length ? <p className="text-sm text-[var(--ad-text-muted)]">{t("No coin offers have been configured.")}</p> : <div className="divide-y divide-[var(--ad-border)]">{items.map((offer) => <article className="py-4" key={offer.id}><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-semibold">{offer.name} · {t("Version")} {offer.version}</h3><p className="mt-1 text-sm">{offer.dreamcoins.toLocaleString()} {t("Dreamcoins")} · {(offer.priceCents / 100).toFixed(2)} {offer.currency.toUpperCase()} · {label(offer.status)}</p></div>{canWrite && offer.status !== "retired" && <button className={button} disabled={busy} onClick={() => change(offer, offer.status === "draft" ? "publish" : "retire")} type="button">{offer.status === "draft" ? t("Publish coin offer") : t("Retire coin offer")}</button>}</div><details className="mt-3 text-sm"><summary>{t("Purchase terms")}</summary><p className="mt-2 whitespace-pre-line">{offer.terms}</p></details></article>)}</div>}
+    {loading ? <p role="status" className="text-sm">{t("Loading coin offers…")}</p> : !items.length ? loadError !== null ? null : <p className="text-sm text-[var(--ad-text-muted)]">{t("No coin offers have been configured.")}</p> : <div className="divide-y divide-[var(--ad-border)]">{items.map((offer) => <article className="py-4" key={offer.id}><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-semibold">{offer.name} · {t("Version")} {offer.version}</h3><p className="mt-1 text-sm">{format.count(offer.dreamcoins)} {t("Dreamcoins")} · {format.money(offer.priceCents, offer.currency.toUpperCase())} · {label(offer.status)}</p></div>{canWrite && offer.status !== "retired" && <button className={button} disabled={busy} onClick={() => change(offer, offer.status === "draft" ? "publish" : "retire")} type="button">{offer.status === "draft" ? t("Publish coin offer") : t("Retire coin offer")}</button>}</div><details className="mt-3 text-sm"><summary>{t("Purchase terms")}</summary><p className="mt-2 whitespace-pre-line">{offer.terms}</p></details></article>)}</div>}
     {canWrite && <form aria-label={t("Create coin offer draft")} className="border-t border-[var(--ad-border)] pt-4" onSubmit={(event) => void create(event)}>
       <h3 className="mb-4 font-semibold">{t("Create coin offer draft")}</h3><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{([
         ["offerKey", "Offer key"], ["name", "Offer name"], ["dreamcoins", "Dreamcoin amount"], ["priceCents", "Price in cents"], ["currency", "Currency"], ["reason", "Reason (≥3)"],

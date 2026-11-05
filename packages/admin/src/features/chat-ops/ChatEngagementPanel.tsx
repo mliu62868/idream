@@ -8,17 +8,22 @@ import { useAdminI18n } from "@/components/admin/i18n";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { DataTable } from "@/components/admin/ui/DataTable";
 import { useAdminFormat } from "@/components/admin/ui/format";
+import { Pagination } from "@/components/admin/ui/Pagination";
+
+const ENGAGEMENT_PAGE_SIZE = 25;
 
 export function ChatEngagementPanel({
   userId,
   characterId,
 }: { userId: string; characterId: string }) {
-  const { t } = useAdminI18n();
-  const { dateTime, text: value } = useAdminFormat();
+  const { t, value } = useAdminI18n();
+  const { dateTime } = useAdminFormat();
   const [kind, setKind] = useState<"groups" | "proactive" | null>(null);
   const [cursor, setCursor] = useState("");
+  // 「上一页」走自己走过的游标回头；这个接口是单向 keyset，没有反向游标。
+  const [cursorTrail, setCursorTrail] = useState<string[]>([]);
   const load = useCallback(() => {
-    const query = new URLSearchParams({ kind: kind ?? "groups", limit: "25" });
+    const query = new URLSearchParams({ kind: kind ?? "groups", limit: String(ENGAGEMENT_PAGE_SIZE) });
     if (userId) query.set("userId", userId);
     if (characterId) query.set("characterId", characterId);
     if (cursor) query.set("cursor", cursor);
@@ -37,6 +42,7 @@ export function ChatEngagementPanel({
     else {
       setKind(next);
       setCursor("");
+      setCursorTrail([]);
     }
   }
 
@@ -65,7 +71,7 @@ export function ChatEngagementPanel({
         onRetry={() => void resource.refresh()}
         snapshotAt={data ? resource.refreshedAt : null}
       />}
-      <DataTable
+      {resource.error && !data ? null : <DataTable
         caption={t(kind === "groups" ? "Group conversations" : "Proactive messages")}
         headers={[t("Conversation / customer"), t("Participants"), t("Schedule / unread"), t("Latest Turn / admission")]}
         loading={loading}
@@ -109,24 +115,29 @@ export function ChatEngagementPanel({
             </div> : t("No durable Turn yet"),
           ],
         }))}
-      />
+      />}
       <div className="flex gap-3">
         <button
           type="button"
           className="min-h-9 text-sm underline disabled:opacity-50"
           disabled={loading}
           onClick={() => {
+            setCursorTrail([]);
             if (cursor) setCursor("");
             else void resource.refresh();
           }}
         >{t("Refresh from first page")}</button>
-        <button
-          type="button"
-          className="min-h-9 text-sm underline disabled:opacity-50"
-          disabled={loading || !data?.pageInfo.hasNextPage}
-          onClick={() => setCursor(data?.pageInfo.endCursor ?? "")}
-        >{t("Next page")}</button>
       </div>
+      {data || cursor ? <Pagination
+        hasNext={Boolean(data?.pageInfo.hasNextPage && data.pageInfo.endCursor)}
+        hasPrevious={Boolean(cursor)}
+        loading={loading}
+        onNext={() => { if (data?.pageInfo.endCursor) { setCursorTrail([...cursorTrail, cursor]); setCursor(data.pageInfo.endCursor); } }}
+        onPrevious={() => { setCursor(cursorTrail.at(-1) ?? ""); setCursorTrail(cursorTrail.slice(0, -1)); }}
+        page={cursorTrail.length + 1}
+        pageSize={ENGAGEMENT_PAGE_SIZE}
+        rowCount={data?.items.length ?? 0}
+      /> : null}
     </>}
   </section>;
 }

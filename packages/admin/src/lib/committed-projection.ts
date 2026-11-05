@@ -4,7 +4,7 @@ import {
   withDurableMutationIntentLock,
   type DurableMutationIntent,
 } from "./durable-mutation-intent";
-import { createLatestRequestGate } from "./latest-request";
+import { createLatestRequestGate, type LatestRequestToken } from "./latest-request";
 
 /**
  * SPEC: 两阶段提交的第二阶段 ——「提交已经发生 → 精确读一份服务端投影确认它是否已反映
@@ -125,9 +125,14 @@ export function createCommittedProjectionLoader<TProjection>(
   readOptions: () => CommittedProjectionLoaderOptions<TProjection>,
 ): CommittedProjectionLoader<TProjection> {
   const gate = createLatestRequestGate();
-  // INVARIANT: 同一个 targetId 的在途请求只有一个。第二个调用方拿到同一个 Promise，
+  // INVARIANT: 同一个 targetId 的「当前」在途请求只有一个。第二个调用方拿到同一个 Promise，
   //            因此服务端只被问一次，commit 也只会发生一次。
-  const inFlight = new Map<string, Promise<TProjection>>();
+  // INTENT: 已被 invalidate 或被更新请求取代的那份注定以 Superseded 收场，并进去就是
+  //         把最新的调用方一起拖下水——所以只并入令牌仍然有效的请求。
+  const inFlight = new Map<
+    string,
+    { readonly request: Promise<TProjection>; readonly token: LatestRequestToken }
+  >();
 
   const load = async (
     targetId: string,
@@ -138,9 +143,9 @@ export function createCommittedProjectionLoader<TProjection>(
       throw new SupersededProjectionError();
     }
     const existing = inFlight.get(targetId);
-    if (existing) return existing;
+    if (existing?.token.isCurrent()) return existing.request;
+    const token = gate.begin();
     const request = (async () => {
-      const token = gate.begin();
       const projection = await readOptions().fetch(targetId, options.signal);
       const pendingIntent = readOptions().committed.current();
       const commitProjection = () => {
@@ -184,11 +189,11 @@ export function createCommittedProjectionLoader<TProjection>(
       }
       return projection;
     })();
-    inFlight.set(targetId, request);
+    inFlight.set(targetId, { request, token });
     try {
       return await request;
     } finally {
-      if (inFlight.get(targetId) === request) inFlight.delete(targetId);
+      if (inFlight.get(targetId)?.request === request) inFlight.delete(targetId);
     }
   };
 

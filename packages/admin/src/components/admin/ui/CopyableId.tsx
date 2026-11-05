@@ -6,7 +6,8 @@ import { useAdminI18n } from "@/components/admin/i18n";
 // SPEC: 表格里的 ID 单元格 —— 截断显示 + title 看全 + 一键复制。
 // INTENT: 运营在 jobs / audit 里看到的是 `cmsr2c2t…`，既看不全也拿不走；要么手抄，要么开详情
 //         再选中复制。ID 是他们粘进工单和 SQL 的东西，复制必须是一次点击。
-export function CopyableId({ value, head = 8 }: { value: string; head?: number }) {
+// `full`：要读的就是完整值（如 incidentId@version 这种要照抄的引用）时不截断，长串在容器内折行。
+export function CopyableId({ value, head = 8, full = false }: { value: string; head?: number; full?: boolean }) {
   const { t } = useAdminI18n();
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -26,9 +27,9 @@ export function CopyableId({ value, head = 8 }: { value: string; head?: number }
   }
 
   return (
-    <span className="inline-flex items-center gap-1 whitespace-nowrap">
-      <code className="font-mono text-xs text-[var(--ad-text)]" title={value}>
-        {value.length > head ? `${value.slice(0, head)}…` : value}
+    <span className={full ? "inline-flex min-w-0 items-center gap-1" : "inline-flex items-center gap-1 whitespace-nowrap"}>
+      <code className={`font-mono text-xs text-[var(--ad-text)]${full ? " break-all" : ""}`} title={value}>
+        {full || value.length <= head ? value : `${value.slice(0, head)}…`}
       </code>
       <button
         aria-label={copied ? t("Copied") : t("Copy {value}", { value })}

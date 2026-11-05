@@ -25,6 +25,7 @@ import {
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { useAdminFormat } from "@/components/admin/ui/format";
 import { Pagination } from "@/components/admin/ui/Pagination";
+import { OperatorInputError } from "@/components/admin/ui/request-error-copy";
 import { FilterBar, type FilterChip } from "@/components/admin/ui/FilterBar";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { useUnsavedChanges } from "@/components/admin/ui/useUnsavedChanges";
@@ -99,6 +100,11 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, canReadSup
   const detailRequestId = useRef(0);
   const mounted = useRef(false);
   const activeOperations = useRef(new Set<symbol>());
+  // INTENT: 确认框的 onSubmit 是打开那一刻捕获的闭包，读 state 只能读到旧值；门禁要看现在的读取状态。
+  const detailReadState = useRef({ loading: false, failed: false });
+  useEffect(() => {
+    detailReadState.current = { loading: detailLoading, failed: detailError !== null };
+  }, [detailError, detailLoading]);
 
   useEffect(() => {
     const operations = activeOperations.current;
@@ -290,7 +296,12 @@ export function CaseWorkspace({ actorId = null, canAssign, canDecide, canReadSup
   }
 
   async function command<Result>(label: string, execute: () => Promise<Result>) {
-    if (!workspaceIsCurrent() || activeOperations.current.size > 0 || detailLoading || detailError !== null) return;
+    if (!workspaceIsCurrent()) return;
+    // INVARIANT: ConfirmDialog 把「正常返回」当成写入成功。这里不能静默 return，否则它带着运营敲好的
+    //            理由关掉，而什么都没写；抛出去才能留在框里显示原因。
+    if (activeOperations.current.size > 0 || detailReadState.current.loading || detailReadState.current.failed) {
+      throw new OperatorInputError(t("This record's latest details are not ready."), "Wait for them to load, or retry the read, then submit again — nothing was written.");
+    }
     const operation = Symbol("case-mutation");
     activeOperations.current.add(operation);
     const isCurrent = () => workspaceIsCurrent() && activeOperations.current.has(operation);
@@ -482,12 +493,16 @@ function CaseTabs({ active, onChange }: { active: string; onChange: (view: strin
   return <div aria-label={t("Case queue views")} className="flex gap-1 overflow-x-auto rounded-lg bg-[var(--ad-surface-subtle)] p-1" role="group">{caseViews.map((view, index) => <button aria-pressed={active === view} className={`min-h-11 shrink-0 rounded-md px-3 text-sm font-semibold transition ${active === view ? "bg-[var(--ad-surface)] text-[var(--ad-ink)] shadow-sm" : "text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]"}`} key={view} onClick={() => onChange(view)} onKeyDown={(event) => onKeyDown(event, index)} ref={(node) => { refs.current[index] = node; }} type="button">{value(view)}</button>)}</div>;
 }
 
+// SPEC: 审计轨迹只铺最近 20 条；权威这个响应最多给 100 条（cases/query.ts `take: 100`）。
+const AUDIT_TRAIL_SHOWN = 20;
+const AUDIT_TRAIL_AUTHORITY_CAP = 100;
+
 // SPEC: 行上必须回答"卡了多久 / 上次谁动过"——队列按 updated_at 排序，却从不显示 updated_at，
 // 运营只能靠 SLA 倒推。Opened 是工单真实年龄，Last touch 是它上次被人碰的时间。
 function CaseRow({ active, adminCase, onSelect, referenceTime }: { active: boolean; adminCase: OperationsCase; onSelect: () => void; referenceTime: string }) {
   const { value } = useAdminI18n();
   const overdue = new Date(adminCase.slaDueAt).getTime() < new Date(referenceTime).getTime() && !["resolved", "closed"].includes(adminCase.status);
-  return <button aria-current={active ? "true" : undefined} className={`group w-full rounded-lg bg-[var(--ad-surface)] p-4 text-left transition hover:-translate-y-0.5 hover:shadow-[var(--ad-shadow-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)] ${active ? "ring-1 ring-[var(--ad-ink)]" : ""}`} onClick={onSelect} type="button"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="text-xs font-semibold text-[var(--ad-text-muted)]">{value(adminCase.type)} · {value(adminCase.target.type)}</p><p className="mt-1 truncate font-mono text-sm font-semibold">{caseTicketId(adminCase) ?? adminCase.target.id}</p></div><ArrowRight className="mt-1 h-4 w-4 shrink-0 text-[var(--ad-text-muted)] transition group-hover:translate-x-0.5" /></div><div className="mt-3 flex flex-wrap gap-2"><StatusBadge value={adminCase.priority} /><StatusBadge value={adminCase.status} />{overdue ? <StatusBadge tone="bad" value="overdue" /> : null}</div><dl className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4"><Stat label="Owner" value={adminCase.ownerId === null ? value("unassigned") : adminCase.ownerName ?? adminCase.ownerId} /><Stat label="SLA" value={<RelativeTime referenceTime={referenceTime} value={adminCase.slaDueAt} />} /><Stat label="Opened" value={<RelativeTime referenceTime={referenceTime} value={adminCase.createdAt} />} /><Stat label="Last touch" value={<RelativeTime referenceTime={referenceTime} value={adminCase.updatedAt} />} /></dl></button>;
+  return <button aria-current={active ? "true" : undefined} className={`group w-full rounded-lg bg-[var(--ad-surface)] p-4 text-left transition hover:-translate-y-0.5 hover:shadow-[var(--ad-shadow-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)] ${active ? "ring-1 ring-[var(--ad-ink)]" : ""}`} onClick={onSelect} type="button"><span className="flex items-start justify-between gap-3"><span className="min-w-0"><span className="block text-xs font-semibold text-[var(--ad-text-muted)]">{value(adminCase.type)} · {value(adminCase.target.type)}</span><span className="mt-1 block truncate font-mono text-sm font-semibold">{caseTicketId(adminCase) ?? adminCase.target.id}</span></span><ArrowRight className="mt-1 h-4 w-4 shrink-0 text-[var(--ad-text-muted)] transition group-hover:translate-x-0.5" /></span><span className="mt-3 flex flex-wrap gap-2"><StatusBadge value={adminCase.priority} /><StatusBadge value={adminCase.status} />{overdue ? <StatusBadge tone="bad" value="overdue" /> : null}</span><span className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4"><RowStat label="Owner" value={adminCase.ownerId === null ? value("unassigned") : adminCase.ownerName ?? adminCase.ownerId} /><RowStat label="SLA" value={<RelativeTime referenceTime={referenceTime} value={adminCase.slaDueAt} />} /><RowStat label="Opened" value={<RelativeTime referenceTime={referenceTime} value={adminCase.createdAt} />} /><RowStat label="Last touch" value={<RelativeTime referenceTime={referenceTime} value={adminCase.updatedAt} />} /></span></button>;
 }
 
 // SPEC: 详情里的所有相对时间都以列表快照 asOf 为基准，跟队列行保持同一个"现在"。
@@ -717,7 +732,7 @@ function CaseInspector({ actorId, busy, canAssign, canDecide, canReadSupport, ca
       <div className={`${mobileStepClass("evidence")} space-y-5`} data-case-step="evidence">
       {detail.decisions.length > 0 ? <section aria-labelledby="case-decisions-title" className="border-t border-[var(--ad-border)] pt-5"><h4 className="text-sm font-semibold" id="case-decisions-title">{t("Recorded decisions")}</h4><ol className="mt-3 space-y-2">{detail.decisions.map((item) => <li className="rounded-md bg-[var(--ad-surface-subtle)] p-3" key={item.id}><div className="flex flex-wrap items-center justify-between gap-2"><StatusBadge value={item.decision} /><time className="text-xs text-[var(--ad-text-muted)]" dateTime={item.createdAt}>{format.dateTime(item.createdAt)}</time></div><p className="mt-2 text-sm leading-6">{item.question}</p><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("Owner")}: <span className="font-mono">{item.ownerId}</span> · {t("Evidence level")}: {value(item.evidenceLevel)}</p></li>)}</ol></section> : null}
 
-      <section aria-labelledby="case-audit-title" className="border-t border-[var(--ad-border)] pt-5"><h4 className="text-sm font-semibold" id="case-audit-title">{t("Audit trail")}</h4>{detail.activity.length === 0 ? <p className="mt-3 text-sm text-[var(--ad-text-muted)]">{t("No operator actions recorded on this case yet.")}</p> : <ol className="mt-3 space-y-2">{detail.activity.slice(0, 20).map((item) => <li className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-l-2 border-[var(--ad-border)] pl-3 text-xs" key={item.id}><span className="min-w-0"><code className="break-all font-semibold">{item.action}</code><span className="mt-0.5 block text-[var(--ad-text-muted)]">{item.actorId} · {value(item.actorRole)}</span>{item.reason ? <span className="mt-0.5 block break-words leading-5">{item.reason}</span> : null}</span><span className="shrink-0 text-[var(--ad-text-muted)]"><RelativeTime referenceTime={referenceTime} value={item.createdAt} /></span></li>)}</ol>}</section>
+      <section aria-labelledby="case-audit-title" className="border-t border-[var(--ad-border)] pt-5"><h4 className="text-sm font-semibold" id="case-audit-title">{t("Audit trail")}</h4>{detail.activity.length === 0 ? <p className="mt-3 text-sm text-[var(--ad-text-muted)]">{t("No operator actions recorded on this case yet.")}</p> : <><ol className="mt-3 space-y-2">{detail.activity.slice(0, AUDIT_TRAIL_SHOWN).map((item) => <li className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-l-2 border-[var(--ad-border)] pl-3 text-xs" key={item.id}><span className="min-w-0"><code className="break-all font-semibold">{item.action}</code><span className="mt-0.5 block text-[var(--ad-text-muted)]">{item.actorId} · {value(item.actorRole)}</span>{item.reason ? <span className="mt-0.5 block break-words leading-5">{item.reason}</span> : null}</span><span className="shrink-0 text-[var(--ad-text-muted)]"><RelativeTime referenceTime={referenceTime} value={item.createdAt} /></span></li>)}</ol>{detail.activity.length > AUDIT_TRAIL_SHOWN ? <p className="mt-3 text-xs text-[var(--ad-text-muted)]" role="status">{t("Showing the {shown} most recent of {total} recorded actions. The full history is in the Audit Log.", { shown: AUDIT_TRAIL_SHOWN, total: detail.activity.length >= AUDIT_TRAIL_AUTHORITY_CAP ? `${format.count(AUDIT_TRAIL_AUTHORITY_CAP)}+` : format.count(detail.activity.length) })}</p> : null}</>}</section>
       </div>
 
       {canReadSupport && caseTicketId(adminCase) ? <SupportConversationPanel ticketId={caseTicketId(adminCase)!} key={caseTicketId(adminCase)} canWrite={canReplySupport && !busy} canViewPlaintext={canViewPlaintext} refreshRevision={adminCase.version} onUpdated={() => void onConfirmed("The case was reloaded from authority.")} /> : null}
@@ -733,6 +748,8 @@ function CaseInspector({ actorId, busy, canAssign, canDecide, canReadSupport, ca
 // INVARIANT: 选项是枚举，走 value()（zhValues 下划线键），不是 t(空格形态) —— 后者查的是
 // 主表里根本不存在的键，中文界面上会原样吐出 "content report" 这种英文。
 function Select({ label, onChange, options, value }: { label: string; onChange: (value: string) => void; options: readonly string[]; value: string }) { const { t, value: enumLabel } = useAdminI18n(); return <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t(label)}<select className={fieldClass} onChange={(event) => onChange(event.target.value)} value={value}>{options.map((option) => <option key={option || "all"} value={option}>{option ? enumLabel(option) : enumLabel("all")}</option>)}</select></label>; }
+// 列表行是 <button>，里面不能放 <dl>；视觉上与 Stat 一致，语义上是按钮名称的一部分。
+function RowStat({ label, value }: { label: string; value: ReactNode }) { const { t } = useAdminI18n(); return <span className="block"><span className="block text-[10px] font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">{t(label)}</span><span className="mt-1 block truncate font-mono text-sm text-[var(--ad-ink)]" title={typeof value === "string" ? value : undefined}>{value}</span></span>; }
 function Stat({ label, value }: { label: string; value: ReactNode }) { const { t } = useAdminI18n(); return <div><dt className="text-[10px] font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">{t(label)}</dt><dd className="mt-1 truncate font-mono text-sm text-[var(--ad-ink)]" title={typeof value === "string" ? value : undefined}>{value}</dd></div>; }
 // INVARIANT: server and first browser render must use the same state; location is restored after hydration.
 function initialCaseWorkspaceState(initialCaseId: string | null): CaseWorkspaceUrlState {

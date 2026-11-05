@@ -66,6 +66,17 @@ describe("collaboration write safety", () => {
     vi.restoreAllMocks();
   });
 
+  it("does not claim there is no activity or no watchers when the activity read failed", async () => {
+    adminV2Request.mockRejectedValue(new Error("Collaboration authority unavailable"));
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<CollaborationPanel canWrite onAuthorityChange={async () => undefined} targetId="case-1" targetType="case" targetVersion={1} />);
+    });
+    await waitUntil(() => container.querySelector('[role="alert"]') !== null);
+    expect(container.textContent).not.toContain("No activity yet.");
+    expect(container.textContent).not.toContain("No watchers");
+  });
+
   // 覆盖个人已保存视图不可恢复，必须保留确认。
   it("requires a confirmation before overwriting the operator's Saved View", async () => {
     adminV2Request.mockImplementation(async () => ({ items: [savedView] }));

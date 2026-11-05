@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet } from "@/components/admin/api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { useAdminFormat } from "@/components/admin/ui/format";
 import { DetailPage, DetailSection } from "@/components/admin/ui/DetailPage";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
@@ -49,7 +50,7 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
   const format = useAdminFormat();
   const [rows, setRows] = useState<Placement[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingAction | null>(null);
   const [copy, setCopy] = useState<CopyDraft | null>(null);
@@ -77,12 +78,12 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
       setRefreshWarning(null);
     } catch (loadError) {
       if (!request.isCurrent()) return;
-      setError(requestErrorMessage(loadError, t));
+      setError(loadError);
       if (propagateError) throw loadError;
     } finally {
       if (request.isCurrent()) setLoading(false);
     }
-  }, [id, t, requestGate]);
+  }, [id, requestGate]);
 
   useWorkspaceRefresh(reload);
 
@@ -164,6 +165,10 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
     return {
       title: t("Archive"),
       destructive: { expectedName: target.slot },
+      consequence: {
+        effect: t("This placement stops serving and retires for good. To show it again, create a new placement."),
+        reversible: false,
+      },
       submitLabel: t("Archive"),
       onSubmit: async (reason) => {
         await adminV2Operation("PATCH /api/v2/admin/content/placements/:id", {
@@ -198,12 +203,7 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
   if (!row) {
     if (error) {
       return (
-        <div className="rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">
-          {error}{" "}
-          <button className="font-semibold underline" onClick={() => void reload()} type="button">
-            {t("Retry")}
-          </button>
-        </div>
+        <AuthorityRequestError cause={error} message={t("The latest data could not be loaded.")} onRetry={() => void reload()} requestKind="read" />
       );
     }
     return (
@@ -213,7 +213,6 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
             <PrimaryButton>{t("Back to placements")}</PrimaryButton>
           </Link>
         }
-        hint={error ?? undefined}
         title={t("Placement not found.")}
       />
     );
@@ -246,7 +245,7 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
     >
       {guard}
       <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
-      {error ? <p role="alert" className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
+      {error ? <AuthorityRequestError cause={error} message={t("The latest data could not be loaded.")} onRetry={() => void reload()} requestKind="read" /> : null}
       {refreshWarning ? <p role="status" className="rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]">{refreshWarning}</p> : null}
 
       {row.managedRunId ? (

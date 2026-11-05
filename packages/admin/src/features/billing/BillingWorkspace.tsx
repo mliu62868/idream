@@ -76,6 +76,9 @@ const emptyAdjustment: AdjustmentDraft = { userId: "", delta: "" };
 type BillingTrails = { ledger: string[]; subscription: string[] };
 const emptyTrails: BillingTrails = { ledger: [], subscription: [] };
 
+// SPEC: 权威 billing/query.ts 对结算异常固定 `take: 100`，没有游标。数到 100 就不能再说「一共 100」。
+const CHECKOUT_EXCEPTION_CAP = 100;
+
 export function BillingWorkspace({
   canAdjust,
   canReconcile,
@@ -560,10 +563,11 @@ export function BillingWorkspace({
             minimumWidthClassName="min-w-[640px]"
             rows={reconciliationRows}
           />
+          {reconciliation.checkoutExceptions.length >= CHECKOUT_EXCEPTION_CAP ? <p className="text-xs text-[var(--ad-yellow-text)]" role="status">{t("Showing the first {count} rows. The authority returns at most {count} here and has no next page, so more may exist.", { count: format.count(CHECKOUT_EXCEPTION_CAP) })}</p> : null}
           <details className="rounded-lg border border-[var(--ad-border)] p-4"><summary className="cursor-pointer text-sm font-semibold">{t("Reconciliation by reason")}</summary><div className="mt-3 space-y-3">          <div className="grid gap-px overflow-hidden rounded-lg border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
             <Metric label="Net coins (window)" meta={t("{count} ledger entries", { count: format.count(reconciliation.totals.entries) })} value={format.dreamcoins(reconciliation.totals.net, { signed: true, unit: false })} />
             <Metric label="Active subscriptions" meta="status = active" value={format.count(reconciliation.activeSubscriptions)} />
-            <Metric label="Checkout exceptions" meta="provider reconciliation queue" value={format.count(reconciliation.checkoutExceptions.length)} />
+            <Metric label="Checkout exceptions" meta="provider reconciliation queue" value={reconciliation.checkoutExceptions.length >= CHECKOUT_EXCEPTION_CAP ? `${format.count(CHECKOUT_EXCEPTION_CAP)}+` : format.count(reconciliation.checkoutExceptions.length)} />
             {/* INTENT: 箭头跟着窗口结束时间走，不吊在开始时间后面 —— 卡片只有四分之一宽，
                 "起始时间 →" 换行后箭头会孤零零落到第二行。现在读作「起 / → 止」。 */}
             <Metric label="Window" meta={`→ ${format.dateTime(reconciliation.window.to)}`} value={format.dateTime(reconciliation.window.from)} />
