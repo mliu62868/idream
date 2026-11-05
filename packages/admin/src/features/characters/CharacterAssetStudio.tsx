@@ -23,7 +23,7 @@ import {
 } from "@/features/operations/WorkspaceUi";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
-import { createOrRecoverCharacterRun } from "./creative-run-creation";
+import { createOrRecoverCharacterRun, defaultCharacterImageBrief } from "./creative-run-creation";
 import { useCharacterDraftImageSelection } from "./useCharacterDraftImageSelection";
 import {
   clearDurableMutationIntent,
@@ -157,9 +157,9 @@ export function CharacterAssetStudio({
     () => ({
       character_cover: data.visual.identityBootstrap.allowed
         ? `Create the first definitive portrait of ${subject.name} from the approved visual direction. This portrait will define the identity for future images.`
-        : `Head-and-shoulders portrait of ${subject.name} facing the camera, soft even studio light, plain neutral backdrop, relaxed confident smile, sharp focus on the face.`,
-      character_hero: `Full-body shot of ${subject.name} alone in a stylish city apartment at golden hour, warm window light, relaxed confident pose, wide cinematic framing, no other people anywhere in the scene.`,
-      character_chat: `Candid close-up selfie of ${subject.name} alone, curled up on a cozy sofa at home in the evening, warm lamp light, casual comfortable clothes, playful smile at the camera, no other people.`,
+        : defaultCharacterImageBrief("character_cover", subject.name),
+      character_hero: defaultCharacterImageBrief("character_hero", subject.name),
+      character_chat: defaultCharacterImageBrief("character_chat", subject.name),
       ...(savedCreateRequest ? { [savedCreateRequest.purpose]: savedCreateRequest.brief } : {}),
     }),
   );

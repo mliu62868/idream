@@ -6,7 +6,10 @@ const { adminV2Operation, createOrRecoverCharacterRun } = vi.hoisted(() => ({
   createOrRecoverCharacterRun: vi.fn(),
 }));
 vi.mock("@/lib/admin-v2-operation", () => ({ adminV2Operation }));
-vi.mock("./creative-run-creation", () => ({ createOrRecoverCharacterRun }));
+vi.mock("./creative-run-creation", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./creative-run-creation")>()),
+  createOrRecoverCharacterRun,
+}));
 
 import {
   BULK_CONCURRENCY,

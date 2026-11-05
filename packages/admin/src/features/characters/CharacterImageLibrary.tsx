@@ -234,7 +234,7 @@ export function CharacterImageLibrary({
         : t("If any of these images is in use, none will be removed. Replace it in its placement first."),
       consequence: {
         effect: single ? "The image will be archived and hidden from this Character's library." : "These images will be archived and hidden from this Character's library.",
-        reversible: true,
+        reversible: false,
       },
       reasonOptional: true,
       reasonLabel: "Removal reason (optional)",

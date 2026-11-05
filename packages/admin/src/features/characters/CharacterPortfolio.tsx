@@ -34,6 +34,7 @@ import { permissionDenied } from "./character-permission-denied";
 import { CharacterListEmptyState } from "./CharacterListEmptyState";
 import { UnpreparedCharacters } from "./UnpreparedCharacters";
 import { CharacterBulkBar } from "./CharacterBulkBar";
+import { CharacterFeaturedToggle, FeaturedAuthorityProvider } from "@/features/content-merchandising/CharacterFeaturedToggle";
 import { CharacterPerformanceBoard } from "./CharacterPerformanceBoard";
 import { CharacterPortfolioCard } from "./CharacterPortfolioCard";
 import { CharacterBatchImport } from "./CharacterBatchImport";
@@ -71,15 +72,27 @@ type CharacterPortfolioProps = {
 
 // SPEC: 表现页是比较页，不是又一份按更新时间排的角色列表；两个页面只共用数据接口。
 export function CharacterPortfolio(props: CharacterPortfolioProps) {
-  return props.mode === "performance" ? (
+  if (props.mode !== "performance") return <CharacterRoster {...props} />;
+  const board = (
     <CharacterPerformanceBoard
       canOpenProject={props.canOpenProjects}
       canRead={props.canRead}
       permissions={props.permissions}
+      renderRowExtras={props.permissions?.has("content.read")
+        ? (item) => item.serving.state === "live" ? (
+            <CharacterFeaturedToggle
+              canWrite={props.permissions?.has("content.featured.write") ?? false}
+              characterId={item.characterId}
+              compact
+            />
+          ) : null
+        : undefined}
     />
-  ) : (
-    <CharacterRoster {...props} />
   );
+  // INVARIANT: 读精选需要 content.read；没有就不发必定被拒的请求。
+  return props.permissions?.has("content.read")
+    ? <FeaturedAuthorityProvider>{board}</FeaturedAuthorityProvider>
+    : board;
 }
 
 // SPEC: 视图按钮的顺序和文案。计数来自服务端，翻页不影响。

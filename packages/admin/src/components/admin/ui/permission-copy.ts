@@ -19,6 +19,7 @@ const PERMISSION_LABEL: Record<AdminPermissionKey, string> = {
   "content.asset.read": "Viewing the image library",
   "content.asset.review": "Reviewing and approving image assets",
   "content.placement.write": "Editing placements",
+  "content.featured.write": "Editing Featured",
   "generation.job.read": "Viewing generation jobs",
   "generation.job.requeue": "Requeueing and discarding generation jobs",
   "generation.config.read": "Viewing generation profiles",

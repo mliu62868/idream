@@ -113,7 +113,7 @@ const SECTION_RENDERERS: Record<AdminSectionId, (ctx: SectionContext) => ReactNo
   />,
   "growth/characters": (ctx) => <CharacterPerformanceWorkspace permissions={ctx.permissions} />,
   experiments: (ctx) => <ExperimentsView canReadFlagMonitoring={adminV2OperationAllowed("GET /api/v2/admin/analytics/flag-monitoring", ctx.permissions)} />,
-  content: (ctx) => <ContentMerchandisingWorkspace canCurate={ctx.permissions.has("content.placement.write")} canWrite={ctx.permissions.has("content.takedown.write")} />,
+  content: (ctx) => <ContentMerchandisingWorkspace canCurate={ctx.permissions.has("content.featured.write")} canWrite={ctx.permissions.has("content.takedown.write")} />,
   announcements: (ctx) => <AnnouncementsView canWrite={ctx.permissions.has("growth.promo.write")} />,
   cms: (ctx) => <CmsView canWrite={ctx.permissions.has("content.cms.write")} />,
   pricing: (ctx) => <PricingWorkspace canWrite={ctx.permissions.has("config.pricing.write")} />,

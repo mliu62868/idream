@@ -207,6 +207,7 @@ export const adminZhCommon: Record<string, string> = {
   "Editing content tags": "编辑内容标签",
   "Editing official characters": "编辑官方角色",
   "Editing placements": "编辑投放位",
+  "Editing Featured": "编辑精选推荐",
   "Empty": "暂无数据",
   "Enable": "启用",
   "Engine": "运行引擎",

@@ -142,7 +142,7 @@ export function ContentMerchandisingWorkspace({
 }: {
   /** 目录行的下架 / 可见性动作：content.takedown.write。 */
   canWrite: boolean;
-  /** 精选编排：content.placement.write。 */
+  /** 精选编排：content.featured.write。 */
   canCurate?: boolean;
 }) {
   const { t, value: valueLabel } = useAdminI18n();
@@ -391,7 +391,7 @@ export function ContentMerchandisingWorkspace({
           <Freshness authority="Characters" state={characters} />
           <Freshness authority="Featured" state={featured} />
         </div>
-        {!canCurate ? <PermissionNotice permission="content.placement.write" /> : null}
+        {!canCurate ? <PermissionNotice permission="content.featured.write" /> : null}
         {!canWrite ? <PermissionNotice permission="content.takedown.write" /> : null}
       </div>
       <form

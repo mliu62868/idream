@@ -166,7 +166,7 @@ export function CharacterVideoLibrary({
       summary: t("Videos used by an active campaign or release must be replaced first."),
       consequence: {
         effect: "The video will be archived and hidden from this Character's library.",
-        reversible: true,
+        reversible: false,
       },
       reasonOptional: true,
       reasonLabel: "Removal reason (optional)",

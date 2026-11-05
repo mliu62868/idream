@@ -9,7 +9,7 @@ import {
   readActiveDurableMutationIntent,
 } from "@/lib/durable-mutation-intent";
 import { purposeConfig, type CharacterAssetPurpose } from "./character-asset-studio-authority";
-import { createOrRecoverCharacterRun } from "./creative-run-creation";
+import { createOrRecoverCharacterRun, defaultCharacterImageBrief } from "./creative-run-creation";
 
 // SPEC: 列表批量操作：逐项调用现有单角色命令，每项独立成败。不新增服务端 bulk 命令，
 //       不做键入确认或预览闸门；幂等、CAS 和不可变 Release 都还由单角色命令保证。
@@ -126,17 +126,6 @@ export async function runBulkTasks<T extends { readonly id: string }>(
   );
 }
 
-// SPEC: 与 Asset Studio 相同的默认 brief：具体场景才能让三个槽位不是同一张图。
-// INTENT: 生成输入不翻译。Studio 的同款文案在组件 state 初值里，本任务不改 Studio，所以这里有一份。
-export function bulkGenerationBrief(purpose: CharacterAssetPurpose, name: string) {
-  if (purpose === "character_cover") {
-    return `Head-and-shoulders portrait of ${name} facing the camera, soft even studio light, plain neutral backdrop, relaxed confident smile, sharp focus on the face.`;
-  }
-  return purpose === "character_hero"
-    ? `Full-body shot of ${name} alone in a stylish city apartment at golden hour, warm window light, relaxed confident pose, wide cinematic framing, no other people anywhere in the scene.`
-    : `Candid close-up selfie of ${name} alone, curled up on a cozy sofa at home in the evening, warm lamp light, casual comfortable clothes, playful smile at the camera, no other people.`;
-}
-
 // SPEC: count=1；路线与画幅规则同 Asset Studio。bootstrap 的第一张身份肖像不走批量，要人看。
 export function bulkGenerationRequest(
   detail: CharacterWorkspaceDetail,
@@ -171,7 +160,7 @@ export function bulkGenerationRequest(
     bootstrapIdentity: false,
     ...(orientation ? { orientation } : {}),
     count: 1,
-    brief: bulkGenerationBrief(purpose, name),
+    brief: defaultCharacterImageBrief(purpose, name),
     consistencyMode: "strict" as const,
     priority: "normal" as const,
     reason: "Fill a missing image from the Character list",

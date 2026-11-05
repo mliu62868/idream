@@ -2195,9 +2195,9 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation(
     "PUT",
     "/api/v2/admin/content/featured",
-    // INTENT: 精选是展示位决策。这里曾借用 content.takedown.write（下架 / 可见性），
-    //         于是增长运营要改精选就得同时拿到下架权。
-    allOf("content.placement.write"),
+    // INTENT: 精选有自己的权限。这里曾借用 content.takedown.write（下架 / 可见性）；
+    //         借 content.placement.write 又会连带放开展示位发布（见 effective-permissions 的兼容映射）。
+    allOf("content.featured.write"),
     "contentFeaturedUpdateRequestSchema+idempotency-key",
     "contentFeaturedUpdateResponseSchema",
     undefined,

@@ -54,7 +54,7 @@ describe("Admin v2 permission contract", () => {
     const publisher = expandAdminGrantBundles(["character_publisher"]);
     expect(publisher).toContain("character.release.publish");
     expect(publisher).toContain("character.project.write");
-    expect(publisher).toContain("content.placement.write");
+    expect(publisher).toContain("content.featured.write");
     expect([...expandAdminGrantBundles(["character_producer"])].sort()).toEqual([
       "character.performance.read",
       "character.project.read",
@@ -68,12 +68,13 @@ describe("Admin v2 permission contract", () => {
     expect(adminGrantBundleRequiresCharacterScope("growth_operator")).toBe(false);
   });
 
-  // SPEC: 精选写权限是 content.placement.write：增长运营能用，且不因此拿到下架权。
+  // SPEC: 精选写权限是 content.featured.write：增长运营能用，且不因此拿到下架权或展示位发布权。
   it("gives the growth operator Featured curation without takedown rights", () => {
     const featured = ADMIN_V2_API_OPERATIONS.find(({ id }) => id === "PUT /api/v2/admin/content/featured");
-    expect(featured?.authorization).toEqual({ kind: "all_of", permissions: ["content.placement.write"] });
+    expect(featured?.authorization).toEqual({ kind: "all_of", permissions: ["content.featured.write"] });
     const growth = expandAdminGrantBundles(["growth_operator"]);
-    expect(growth).toContain("content.placement.write");
+    expect(growth).toContain("content.featured.write");
+    expect(growth).not.toContain("content.placement.write");
     expect(growth).toContain("content.read");
     expect(growth).not.toContain("content.takedown.write");
   });

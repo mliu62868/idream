@@ -19,7 +19,7 @@ export const CHARACTER_WORKSPACE_WRITES = {
   writeTags: "content.tag.write",
   manageChatTools: "content.production.write",
   manageCatalogVisibility: "content.takedown.write",
-  manageFeatured: "content.placement.write",
+  manageFeatured: "content.featured.write",
 } as const satisfies Record<string, AdminPermissionKey>;
 
 type CharacterWorkspaceWrite = keyof typeof CHARACTER_WORKSPACE_WRITES;

@@ -216,3 +216,17 @@ function isDefinitiveRejection(cause: unknown) {
     (cause.status === 503 && cause.code === "unavailable" && cause.message.includes("No Run was created"))
   );
 }
+
+// SPEC: 三个用途的默认 brief；具体场景才能让三个槽位不是同一张图。生成输入不翻译。
+// INVARIANT: Asset Studio 和批量生成共用这一份，不各写一遍。
+export function defaultCharacterImageBrief(
+  purpose: "character_cover" | "character_hero" | "character_chat",
+  name: string,
+) {
+  if (purpose === "character_cover") {
+    return `Head-and-shoulders portrait of ${name} facing the camera, soft even studio light, plain neutral backdrop, relaxed confident smile, sharp focus on the face.`;
+  }
+  return purpose === "character_hero"
+    ? `Full-body shot of ${name} alone in a stylish city apartment at golden hour, warm window light, relaxed confident pose, wide cinematic framing, no other people anywhere in the scene.`
+    : `Candid close-up selfie of ${name} alone, curled up on a cozy sofa at home in the evening, warm lamp light, casual comfortable clothes, playful smile at the camera, no other people.`;
+}

@@ -8,6 +8,7 @@ import { AdminI18nProvider } from "@/components/admin/i18n";
 import * as transport from "@/lib/admin-v2-api";
 import { CandidateDiscardAction } from "./CandidateDiscardAction";
 import { CharacterDistributionCard } from "./CharacterDistributionCard";
+import { CharacterFeaturedToggle, FeaturedAuthorityProvider } from "@/features/content-merchandising/CharacterFeaturedToggle";
 import { CharacterHandoffAction, CharacterHandoffNotice } from "./CharacterHandoff";
 import { createCharacterCommandJournal } from "./character-command-journal";
 import { CharacterWorkspaceActionsProvider } from "./character-workspace-actions";
@@ -240,7 +241,7 @@ describe("character workspace one-line actions", () => {
         }
         return featuredBody(ids, ids.length);
       });
-      await render(["content.read", "content.placement.write", "creative.placement.read"]);
+      await render(["content.read", "content.featured.write", "creative.placement.read"]);
       expect(container.textContent).toContain("未加入精选");
       expect(container.textContent).toContain("home hero");
       await act(async () => button("加入精选")!.click());
@@ -250,6 +251,43 @@ describe("character workspace one-line actions", () => {
       expect(container.textContent).toContain("已配置 · 未上线");
       expect(container.querySelector('a[href="/admin/characters/character-fixture?tab=release"]')).not.toBeNull();
       expect(button("移出精选")).toBeDefined();
+    });
+
+    it("shares one featured read across table rows and refreshes them after a save", async () => {
+      let ids: string[] = [];
+      let version = 1;
+      const request = vi.spyOn(transport, "adminV2Request").mockImplementation(async (_path, init) => {
+        if (init?.method === "PUT") {
+          ids = (init.body as { characterIds: string[] }).characterIds;
+          version += 1;
+          return {};
+        }
+        return featuredBody(ids, version);
+      });
+      const rowContainer = document.createElement("div");
+      document.body.append(rowContainer);
+      const rowRoot = createRoot(rowContainer);
+      await act(async () => {
+        rowRoot.render(
+          <AdminI18nProvider locale="zh">
+            <FeaturedAuthorityProvider>
+              <CharacterFeaturedToggle canWrite characterId="row-a" compact />
+              <CharacterFeaturedToggle canWrite characterId="row-b" compact />
+              <CharacterFeaturedToggle canWrite characterId="row-c" compact />
+            </FeaturedAuthorityProvider>
+          </AdminI18nProvider>,
+        );
+      });
+      expect(request.mock.calls.filter(([, init]) => init?.method !== "PUT")).toHaveLength(1);
+      const addButtons = () => [...rowContainer.querySelectorAll("button")];
+      await act(async () => addButtons()[1]!.click());
+      const put = request.mock.calls.find(([, init]) => init?.method === "PUT");
+      expect((put?.[1]?.body as { characterIds: string[] }).characterIds).toEqual(["row-b"]);
+      await act(async () => addButtons()[2]!.click());
+      const puts = request.mock.calls.filter(([, init]) => init?.method === "PUT");
+      expect(puts[1]?.[1]?.body).toMatchObject({ characterIds: ["row-b", "row-c"], expectedVersion: 2 });
+      await act(async () => rowRoot.unmount());
+      rowContainer.remove();
     });
 
     it("reloads instead of overwriting when another operator saved first", async () => {
@@ -263,7 +301,7 @@ describe("character workspace one-line actions", () => {
         }
         return featuredBody(version === 1 ? [] : ["newer"], version);
       });
-      await render(["content.read", "content.placement.write"]);
+      await render(["content.read", "content.featured.write"]);
       await act(async () => button("加入精选")!.click());
       expect(request.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
       expect(container.querySelector('[role="alert"]')?.textContent).toContain("请再点一次");
@@ -272,7 +310,7 @@ describe("character workspace one-line actions", () => {
       expect(puts[1]?.[1]?.body).toMatchObject({ characterIds: ["newer", "character-fixture"], expectedVersion: 2 });
     });
 
-    it("keeps the toggle read-only without content.placement.write", async () => {
+    it("keeps the toggle read-only without content.featured.write", async () => {
       vi.spyOn(transport, "adminV2Request").mockResolvedValue(featuredBody([], 0));
       await render(["content.read"]);
       expect(button("加入精选")?.disabled).toBe(true);

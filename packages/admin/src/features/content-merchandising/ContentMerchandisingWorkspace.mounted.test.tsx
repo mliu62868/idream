@@ -272,7 +272,7 @@ describe("ContentMerchandisingWorkspace Featured concurrency", () => {
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
   });
 
-  it("offers no curation controls without content.placement.write", async () => {
+  it("offers no curation controls without content.featured.write", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
       if (String(input).includes("/api/v2/admin/content/characters")) return charactersFixture(String(input));
       return Response.json({ ok: true, data: {
@@ -284,7 +284,7 @@ describe("ContentMerchandisingWorkspace Featured concurrency", () => {
     await waitFor(() => container.textContent?.includes("Ada") ?? false);
     expect(saveFeaturedButtonOrNull()).toBeUndefined();
     expect(container.querySelector('button[aria-label="Move Ada up"]')).toBeNull();
-    expect(container.textContent).toContain("Editing placements is unavailable");
+    expect(container.textContent).toContain("Editing Featured is unavailable");
   });
 
   // SPEC: Unlist / Make private 是可逆动作：普通确认，不键入、不填原因。

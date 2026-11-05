@@ -14,6 +14,7 @@ export const ADMIN_PERMISSION_KEYS = [
   "content.asset.read",
   "content.asset.review",
   "content.placement.write",
+  "content.featured.write",
   "generation.job.read",
   "generation.job.requeue",
   "generation.config.read",
@@ -83,6 +84,7 @@ export const ADMIN_ROLE_PERMISSIONS = {
     "user.read",
     "content.read",
     "content.takedown.write",
+    "content.featured.write",
     "content.official.write",
     "content.template.write",
     "content.tag.write",
@@ -198,7 +200,7 @@ export const ADMIN_GRANT_BUNDLES = {
   },
   // SPEC: 发布运营管上线与分发。
   // INTENT: 保留 character.project.write：选产品槽位（draft-image）与读图片库（image-sources）
-  //         现在只认它，拆掉就选不了图。与 character_producer 的差别在于精选 / 展示位。
+  //         现在只认它，拆掉就选不了图。与 character_producer 的差别在于精选。
   character_publisher: {
     permissions: [
       "character.project.read",
@@ -207,7 +209,7 @@ export const ADMIN_GRANT_BUNDLES = {
       "character.release.publish",
       "character.performance.read",
       "content.read",
-      "content.placement.write",
+      "content.featured.write",
     ],
     scopes: { "character.performance.read": "assigned_characters" },
   },
@@ -223,8 +225,8 @@ export const ADMIN_GRANT_BUNDLES = {
     scopes: {},
   },
   growth_operator: {
-    // INTENT: 精选是增长运营的日常动作；只开目录读取与展示位写入，不含下架 / 可见性。
-    permissions: ["analytics.metric.read", "experiment.manage", "content.read", "content.placement.write"],
+    // INTENT: 精选是增长运营的日常动作；只开目录读取与精选写入，不含下架 / 可见性，也不含展示位发布。
+    permissions: ["analytics.metric.read", "experiment.manage", "content.read", "content.featured.write"],
     scopes: {},
   },
 } as const satisfies Record<
