@@ -179,14 +179,51 @@ describe("Character performance panel — zh operators", () => {
     expect(container.textContent).toContain("距发布还不满 7d 观察窗口");
     expect(container.textContent).not.toContain("检查铺位定向与事件上报");
 
+    // 窗口走完但权威没判零流量（比如有人聊但没走曝光入口）：只陈述事实，不派人查投放。
     render(staleNoDataWorkspace);
-    expect(container.textContent).toContain("整个 7d 窗口零观测");
+    expect(container.textContent).toContain("这个 7d 窗口没有曝光或漏斗数据");
+    expect(container.textContent).not.toContain("检查铺位定向与事件上报");
+
+    render(withCharacterWorkspaceDetail(staleNoDataWorkspace, {
+      portfolio: { needsAttention: true, attentionReason: "no_traffic_after_window" },
+    }));
+    expect(container.textContent).toContain("整个 7d 窗口没有流量");
     expect(container.textContent).toContain("检查铺位定向与事件上报");
+  });
+
+  // SPEC: Admin 曾零渲染建议与新旧对比。方向性证据要标注，没有证据不显示数字。
+  it("renders the suggestion and a labelled Release comparison", () => {
+    render(withCharacterWorkspaceDetail(workspace, {
+      portfolio: {
+        recommendation: {
+          window: "28d",
+          recommendation: "improve",
+          reasonCode: "high_starts_low_qce",
+          targetTab: "soul",
+          baseline: null,
+        },
+        changeMarkers: [{
+          currentReleaseId: "release-2",
+          previousReleaseId: "release-1",
+          changedAt: "2026-07-16T12:00:00.000Z",
+          window: "28d",
+          comparable: true,
+          comparisonQuality: "directional",
+          qceRateDelta: 0.05,
+          sameCharacterD7Delta: null,
+          contributionMarginDeltaMicros: null,
+          evidence: ["matched_post_release_28d_windows"],
+        }],
+      },
+    }));
+    expect(container.textContent).toContain("建议改进");
+    expect(container.textContent).toContain("QCE +5.0");
+    expect(container.textContent).toContain("方向性");
   });
 
   it("states a repeated no-data diagnosis once above compact metric rows", () => {
     render(repeatedNoDataWorkspace);
-    expect(container.textContent?.match(/整个 7d 窗口零观测/g)).toHaveLength(1);
+    expect(container.textContent?.match(/这个 7d 窗口没有曝光或漏斗数据/g)).toHaveLength(1);
     expect(container.textContent).toContain("暂无表现数据");
     expect(container.textContent).toContain("正在监控 2 个窗口");
     expect(container.querySelectorAll("article")).toHaveLength(0);

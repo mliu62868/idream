@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import {
+  imageRunIssueFromItems,
   projectCharacterProductionJourneys,
   projectCharacterProductionJourneySnapshot,
   type CharacterProductionPurpose,
@@ -30,7 +31,6 @@ function journey(
     currentReleaseId: null,
     candidateReleaseId: null,
     pendingRevision: null,
-    draftPurposesNeedingReview: [],
     activeCommand: null,
     ...overrides,
   });
@@ -76,8 +76,8 @@ describe("Character Production Journey", () => {
       );
       return { queries, size: result.size };
     };
-    await expect(run(1)).resolves.toEqual({ queries: 8, size: 1 });
-    await expect(run(25)).resolves.toEqual({ queries: 8, size: 25 });
+    await expect(run(1)).resolves.toEqual({ queries: 9, size: 1 });
+    await expect(run(25)).resolves.toEqual({ queries: 9, size: 25 });
   });
 
   // SPEC: 已上线角色的项目里出现比线上 Release 更新的 Revision（创作者改了已发布角色），
@@ -306,11 +306,98 @@ describe("Character Production Journey", () => {
     }).primaryAction.code).toBe("preview_character");
   });
 
+  // SPEC: 暂停的角色保留 Release。空草稿不是「该补图」，而是和线上一样只剩恢复或继续隐藏的决定。
+  it("does not send a paused Character with an empty draft back to filling images", () => {
+    expect(
+      journey({ servingState: "paused", currentReleaseId: "release-1", livePurposes: allPurposes }).primaryAction.code,
+    ).toBe("monitor_live_character");
+    // 线上包本身不齐时才补图。
+    expect(
+      journey({ servingState: "paused", currentReleaseId: "release-1", livePurposes: ["character_cover"] }).primaryAction.code,
+    ).toBe("continue_asset_pack");
+  });
+
+  // SPEC: 路线不合格是平台问题。把运营带到角色页的只读路线区，他在那里什么也做不了。
+  it("sends an unqualified route to platform operations instead of the read-only route section", () => {
+    const blocked = journey({ routeQualified: false });
+    expect(blocked.status).toBe("blocked");
+    expect(blocked.primaryAction).toMatchObject({
+      code: "platform_route_unavailable",
+      deepLink: "/admin/ops/profiles",
+    });
+    expect(blocked.blockers[0]).toMatchObject({
+      code: "generation_route_unqualified",
+      deepLink: "/admin/ops/profiles",
+    });
+    expect(blocked.blockers[0].message).toContain("platform");
+    // 缺参考集是运营能修的，留在角色页。
+    expect(journey({ referenceCount: 0 }).primaryAction).toMatchObject({
+      code: "complete_image_route",
+      deepLink: "/admin/characters/character-1?tab=visual#visual-reference-set",
+    });
+  });
+
+  it("keeps a healthy live Character quiet even if its route later lost qualification", () => {
+    expect(
+      journey({
+        routeQualified: false,
+        servingState: "live",
+        currentReleaseId: "release-1",
+        livePurposes: allPurposes,
+      }),
+    ).toMatchObject({ status: "live", blockers: [], primaryAction: { code: "monitor_live_character" } });
+    // 有活要干时才拦。
+    expect(
+      journey({
+        routeQualified: false,
+        servingState: "live",
+        currentReleaseId: "release-1",
+        livePurposes: allPurposes,
+        pendingRevision: { id: "revision-2", revision: 2, createdAt: new Date("2026-10-01T00:00:00Z") },
+      }).primaryAction.code,
+    ).toBe("platform_route_unavailable");
+  });
+
+  // SPEC: Journey 曾只看 queued/running：失败的 Run 被说成「继续补图」，未知结局被说成「继续当前图片」。
+  it("gives a failed or unknown image Run its own next step", () => {
+    expect(journey({ imageRunIssue: "failed" })).toMatchObject({
+      status: "in_progress",
+      primaryAction: { code: "retry_failed_image_run", deepLink: "/admin/characters/character-1?tab=assets" },
+      blockers: [{ code: "image_run_failed" }],
+    });
+    // 未知结局排在进行中之前：Job 可能永远停在 running，再生成又可能重复扣费。
+    expect(journey({ imageRunIssue: "unknown", hasActiveImageRun: true })).toMatchObject({
+      status: "blocked",
+      primaryAction: { code: "resolve_unknown_image_run" },
+      blockers: [{ code: "image_run_outcome_unknown" }],
+    });
+    // 进行中的下一轮优先于上一轮的失败。
+    expect(journey({ imageRunIssue: "failed", hasActiveImageRun: true }).primaryAction.code).toBe("continue_image_run");
+    // 健康线上角色不因历史失败被制造待办。
+    expect(
+      journey({
+        imageRunIssue: "failed",
+        servingState: "live",
+        currentReleaseId: "release-1",
+        livePurposes: allPurposes,
+      }).primaryAction.code,
+    ).toBe("monitor_live_character");
+  });
+
+  it("classifies a Run by its item outcomes", () => {
+    const item = { status: "queued", mediaAssetId: null, jobStatus: "running", jobErrorCode: null, attemptUnknown: false };
+    expect(imageRunIssueFromItems([])).toBeNull();
+    expect(imageRunIssueFromItems([item])).toBeNull();
+    expect(imageRunIssueFromItems([{ ...item, status: "failed", jobStatus: "failed" }])).toBe("failed");
+    expect(imageRunIssueFromItems([{ ...item, attemptUnknown: true }])).toBe("unknown");
+    expect(imageRunIssueFromItems([{ ...item, attemptUnknown: true }, { ...item, mediaAssetId: "asset-1", status: "generated" }])).toBeNull();
+    expect(imageRunIssueFromItems([{ ...item, status: "failed", jobStatus: "failed" }, item])).toBeNull();
+  });
+
   it("takes a complete image pack directly to preview without manual review", () => {
     expect(
       journey({
         draftPurposes: allPurposes,
-        draftPurposesNeedingReview: ["character_cover", "character_hero"],
       }),
     ).toMatchObject({
       stage: "preview",
@@ -338,7 +425,6 @@ describe("Character Production Journey", () => {
     expect(
       journey({
         draftPurposes: allPurposes,
-        draftPurposesNeedingReview: ["character_cover"],
         hasActiveImageRun: true,
       }).primaryAction.code,
     ).toBe("continue_image_run");

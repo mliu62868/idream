@@ -218,11 +218,31 @@ describe("Character Portfolio v2 contracts", () => {
         changedAt: "2026-07-01T00:00:00.000Z",
         window: "28d",
         comparable: false,
+        comparisonQuality: null,
         qceRateDelta: 0.1,
         sameCharacterD7Delta: null,
         contributionMarginDeltaMicros: null,
         evidence: ["previous release has insufficient sample"],
       }).success,
+    ).toBe(false);
+  });
+
+  it("labels a comparable release change with its comparison quality", () => {
+    const marker = {
+      currentReleaseId: "release-v2",
+      previousReleaseId: "release-v1",
+      changedAt: "2026-07-01T00:00:00.000Z",
+      window: "28d",
+      comparable: true,
+      comparisonQuality: "directional",
+      qceRateDelta: 0.1,
+      sameCharacterD7Delta: null,
+      contributionMarginDeltaMicros: null,
+      evidence: ["matched_post_release_28d_windows"],
+    };
+    expect(characterReleaseChangeMarkerSchema.safeParse(marker).success).toBe(true);
+    expect(
+      characterReleaseChangeMarkerSchema.safeParse({ ...marker, comparisonQuality: null }).success,
     ).toBe(false);
   });
 

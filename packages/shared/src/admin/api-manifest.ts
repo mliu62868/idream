@@ -396,6 +396,13 @@ export const ADMIN_V2_API_OPERATIONS = [
     "characterPortfolioResponseSchema",
   ),
   operation(
+    "GET",
+    "/api/v2/admin/characters/performance/operations-summary",
+    allOf("character.performance.read"),
+    "characterOperationsSummaryQuerySchema",
+    "characterOperationsSummarySchema",
+  ),
+  operation(
     "POST",
     "/api/v2/admin/characters/performance/backfill",
     allOf("analytics.metric.export"),

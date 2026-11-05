@@ -1,83 +1,19 @@
 import { characterPortfolioQuerySchema } from "@idream/shared/admin";
 import { describe, expect, it } from "vitest";
-import {
-  charactersNeedingAttention,
-  draftAssetReviewAttentionCharacterIds,
-} from "./portfolio";
+import { characterAttentionCopy, characterAttentionReason } from "./character-attention";
 
-function attention(overrides: {
-  live: readonly { characterId: string; currentReleaseId: string | null }[];
-  windowClosed?: readonly string[];
-  observed?: readonly string[];
-}) {
-  return charactersNeedingAttention({
-    live: overrides.live,
-    windowClosedReleaseIds: new Set(overrides.windowClosed ?? []),
-    observedReleaseIds: new Set(overrides.observed ?? []),
-  });
-}
-
-describe("characters needing attention", () => {
-  // SPEC: 观察窗口整段走完还是零观测 = 铺位定向或事件上报没通，投放在空转。
-  it("catches a live character starved of observations after the window closed", () => {
-    expect(attention({
-      live: [{ characterId: "alexa", currentReleaseId: "release-1" }],
-      windowClosed: ["release-1"],
-    })).toEqual(["alexa"]);
+// SPEC: 列表与 Today 读同一份原因。
+describe("character attention reason", () => {
+  it("prefers the monitor action and stays silent without a fact", () => {
+    expect(characterAttentionReason({ monitorActionRequired: true, noTraffic: true })).toBe("release_monitor_action");
+    expect(characterAttentionReason({ monitorActionRequired: false, noTraffic: true })).toBe("no_traffic_after_window");
+    expect(characterAttentionReason({ monitorActionRequired: false, noTraffic: false })).toBeNull();
+    expect(characterAttentionCopy(null)).toBeNull();
   });
 
-  it("leaves a freshly published character alone until its window closes", () => {
-    expect(attention({
-      live: [{ characterId: "alexa", currentReleaseId: "release-1" }],
-    })).toEqual([]);
-  });
-
-  it("clears a character once observations start arriving", () => {
-    expect(attention({
-      live: [{ characterId: "alexa", currentReleaseId: "release-1" }],
-      windowClosed: ["release-1"],
-      observed: ["release-1"],
-    })).toEqual([]);
-  });
-
-  // SPEC: 筛子只有保持锐利才有人点。健康角色必须不被捞进来。
-  it("keeps healthy live characters out so the filter keeps its meaning", () => {
-    expect(attention({
-      live: [
-        { characterId: "healthy", currentReleaseId: "release-1" },
-        { characterId: "starved", currentReleaseId: "release-2" },
-      ],
-      windowClosed: ["release-1", "release-2"],
-      observed: ["release-1"],
-    })).toEqual(["starved"]);
-  });
-
-  it("never flags a live character that has no current release to measure", () => {
-    expect(attention({
-      live: [{ characterId: "alexa", currentReleaseId: null }],
-      windowClosed: ["release-1"],
-    })).toEqual([]);
-  });
-
-  it("does not add manual-review attention to complete draft packs", () => {
-    expect(
-      draftAssetReviewAttentionCharacterIds([
-        {
-          characterId: "needs-review",
-          draftAssetPack: {
-            character_cover: { assetId: "cover", reviewDecisionId: null },
-            character_hero: { assetId: "hero", reviewDecisionId: "review-2" },
-            character_chat: { assetId: "chat", reviewDecisionId: "review-3" },
-          },
-        },
-        {
-          characterId: "still-producing",
-          draftAssetPack: {
-            character_cover: { assetId: "cover", reviewDecisionId: null },
-          },
-        },
-      ]),
-    ).toEqual([]);
+  it("only sends operators to placement and event delivery on genuine zero traffic", () => {
+    expect(characterAttentionCopy("no_traffic_after_window")?.recommendedAction).toContain("event delivery");
+    expect(characterAttentionCopy("release_monitor_action")?.recommendedAction).not.toContain("event delivery");
   });
 });
 

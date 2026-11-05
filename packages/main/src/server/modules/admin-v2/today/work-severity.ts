@@ -100,15 +100,39 @@ export function releaseMonitorActionSql(table: Prisma.Sql) {
   `;
 }
 
+export const ATTENTION_NO_DATA_WINDOW_DAYS = 7;
+
+// SPEC: 线上 Release 走完整个观察窗，没有曝光、没有漏斗、也没有合格聊天，才算真的零流量。
+// INTENT: 曝光链断了也可能有人在聊（漏斗只收带 entryExposureId 的交换）。只看曝光和漏斗，
+//         有人聊的角色也会被报成「无观测」，运营被派去查一条没坏的投放链路。
+// INVARIANT: 列表 attention 与 Today 共用这一份判定。
+export function releaseNoTrafficSql(table: Prisma.Sql, asOf: Date) {
+  const windowClosedBy = new Date(asOf.getTime() - ATTENTION_NO_DATA_WINDOW_DAYS * 24 * 60 * 60 * 1_000);
+  return Prisma.sql`(
+    EXISTS (
+      SELECT 1 FROM "character_serving" live_serving
+      WHERE live_serving."currentReleaseId" = ${table}.id AND live_serving.state = 'live'
+    )
+    AND ${table}."publishedAt" <= ${windowClosedBy}
+    AND NOT EXISTS (SELECT 1 FROM "character_exposure_facts" exposure WHERE exposure."characterReleaseId" = ${table}.id)
+    AND NOT EXISTS (SELECT 1 FROM "character_funnel_daily" funnel WHERE funnel."characterReleaseId" = ${table}.id)
+    AND NOT EXISTS (SELECT 1 FROM "chat_exchange_facts" exchange WHERE exchange."characterReleaseId" = ${table}.id AND exchange.eligible = true)
+  )`;
+}
+
 export const RELEASE_SEVERITY = {
-  of(row: { readonly readiness: string; readonly monitorActionRequired: boolean }): WorkSeverity {
+  of(row: {
+    readonly readiness: string;
+    readonly monitorActionRequired: boolean;
+    readonly noTraffic?: boolean;
+  }): WorkSeverity {
     if (row.monitorActionRequired || row.readiness === "blocked") return "high";
-    return row.readiness === "stale" ? "medium" : "low";
+    return row.readiness === "stale" || row.noTraffic ? "medium" : "low";
   },
-  rankSql(table: Prisma.Sql) {
+  rankSql(table: Prisma.Sql, asOf: Date) {
     return Prisma.sql`CASE
       WHEN ${releaseMonitorActionSql(table)} OR ${table}.readiness = 'blocked' THEN ${rank("high")}
-      WHEN ${table}.readiness = 'stale' THEN ${rank("medium")}
+      WHEN ${table}.readiness = 'stale' OR ${releaseNoTrafficSql(table, asOf)} THEN ${rank("medium")}
       ELSE ${rank("low")} END`;
   },
 } as const;

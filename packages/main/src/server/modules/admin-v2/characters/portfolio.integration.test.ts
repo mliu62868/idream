@@ -736,6 +736,41 @@ describe("Character Portfolio authority/read model", () => {
     }
   });
 
+  // SPEC: 队列判定直接读 Journey：卡片说「重新生成」，「最近生成失败」就收它。
+  it("queues a failed image Run under the same next step the card shows", async () => {
+    const runId = `portfolio-failed-run-${suffix}`;
+    await prisma.contentProductionBatch.create({
+      data: {
+        id: runId,
+        title: "Failed hero",
+        purpose: "character_hero",
+        targetType: "character",
+        targetId: characterB,
+        presetIds: [],
+        createdById: adminId,
+        totalItems: 1,
+        failedItems: 1,
+        status: "failed",
+        lifecycleState: "closed",
+        items: { create: { status: "failed", tags: [] } },
+      },
+    });
+    try {
+      const queue = await listCharacterPortfolioData(
+        prisma,
+        characterPortfolioQuerySchema.parse({ limit: 50, workQueue: "recent_generation_failed" }),
+        { asOf, authorizedDraftAssetCharacterIds: null },
+      );
+      expect(queue.items.map((item) => item.characterId)).toContain(characterB);
+      expect(
+        queue.items.find((item) => item.characterId === characterB)?.journey.primaryAction,
+      ).toMatchObject({ code: "retry_failed_image_run" });
+      expect(queue.items.map((item) => item.characterId)).not.toContain(characterA);
+    } finally {
+      await prisma.contentProductionBatch.delete({ where: { id: runId } });
+    }
+  });
+
   it("returns a cross-page work queue for incomplete live image packs", async () => {
     const queue = await listCharacterPortfolioData(
       prisma,

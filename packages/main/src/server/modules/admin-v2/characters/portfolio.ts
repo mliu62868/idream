@@ -1,5 +1,6 @@
 import {
   characterPortfolioResponseSchema,
+  type CharacterPortfolioFacets,
   type CharacterPerformanceSummary,
   type CharacterPerformanceWindow,
   type CharacterPortfolioQuery,
@@ -44,6 +45,22 @@ import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-validation";
 import { findOperationalGenerationRoute } from "./visual-authority";
 import { characterWorkspaceTabLink } from "./character-deep-link";
 import {
+  characterAttentionReason,
+  type CharacterAttentionReason,
+} from "./character-attention";
+import {
+  characterPeerBaselines,
+  characterPerformanceRecommendation,
+  characterPlatformDecliners,
+  peerKey,
+  type CharacterPeerFunnelRow,
+} from "./performance-recommendation";
+import { workQueueCharacterIds } from "./portfolio-work-queue";
+import {
+  releaseMonitorActionSql,
+  releaseNoTrafficSql,
+} from "../today/work-severity";
+import {
   availablePurposes,
   characterProductionPurposes,
   projectCharacterProductionJourneys,
@@ -56,41 +73,6 @@ const DAY_MS = 24 * 60 * 60 * 1_000;
 
 const characterAssetPurposes = characterProductionPurposes;
 type CharacterAssetPack = CharacterProductionAssetPack;
-
-// SPEC: 「需要处理」只收两类会让运营链路静默停住的事实：完整草稿包缺审核，或已上线且
-//       观察窗口整段走完却没有任何观测。两者都必须给出下一步动作。
-// INTENT: 判定必须只依赖分页前可精确查询的权威事实，才能形成真正的跨页工作队列；
-//         不把普通的制作中状态塞进来，避免筛选退化成恒真告警。
-export const ATTENTION_NO_DATA_WINDOW_DAYS = 7;
-
-export function charactersNeedingAttention(input: {
-  readonly live: readonly {
-    readonly characterId: string;
-    readonly currentReleaseId: string | null;
-  }[];
-  readonly windowClosedReleaseIds: ReadonlySet<string>;
-  readonly observedReleaseIds: ReadonlySet<string>;
-}) {
-  return input.live
-    .filter(
-      ({ currentReleaseId }) =>
-        currentReleaseId !== null &&
-        input.windowClosedReleaseIds.has(currentReleaseId) &&
-        !input.observedReleaseIds.has(currentReleaseId),
-    )
-    .map(({ characterId }) => characterId);
-}
-
-export function draftAssetReviewAttentionCharacterIds(
-  projects: readonly {
-    readonly characterId: string;
-    readonly draftAssetPack: Prisma.JsonValue;
-  }[],
-) {
-  // 历史字段保留兼容旧查询；人工审核不再产生运营待办。
-  void projects;
-  return [] as string[];
-}
 
 function assetIds(pack: CharacterAssetPack) {
   return characterAssetPurposes.flatMap((purpose) => {
@@ -228,15 +210,21 @@ async function changeMarkers(
               asOf: previousMatureAt,
             })
           : null;
-      const comparable =
-        currentSummary.qualityState === "certified" &&
-        currentSummary.maturity === "mature" &&
-        previousSummary?.qualityState === "certified" &&
-        previousSummary.maturity === "mature" &&
-        currentSummary.qceRate !== null &&
-        previousSummary.qceRate !== null &&
+      // SPEC: 漏斗投影写不出 exact（付费归因不可用），质量最多 directional。对比接受它并如实
+      //       标注；只要求两侧窗口成熟、口径可用。QCE 与 D7 各自有分母才各自出差值。
+      const usable = (quality: string | undefined) =>
+        quality === "certified" || quality === "directional";
+      const qceComparable =
+        currentSummary.qceRate !== null && previousSummary?.qceRate !== null && previousSummary?.qceRate !== undefined;
+      const d7Comparable =
         currentSummary.sameCharacterD7 !== null &&
-        previousSummary.sameCharacterD7 !== null;
+        previousSummary?.sameCharacterD7 !== null && previousSummary?.sameCharacterD7 !== undefined;
+      const comparable =
+        usable(currentSummary.qualityState) &&
+        currentSummary.maturity === "mature" &&
+        usable(previousSummary?.qualityState) &&
+        previousSummary?.maturity === "mature" &&
+        (qceComparable || d7Comparable);
       const currentMargin = currentSummary.contributionMargin;
       const previousMargin = previousSummary?.contributionMargin ?? null;
       return {
@@ -245,11 +233,16 @@ async function changeMarkers(
         changedAt: (current.publishedAt ?? current.createdAt).toISOString(),
         window,
         comparable: Boolean(comparable),
-        qceRateDelta: comparable
+        comparisonQuality: comparable
+          ? currentSummary.qualityState === "certified" && previousSummary?.qualityState === "certified"
+            ? ("certified" as const)
+            : ("directional" as const)
+          : null,
+        qceRateDelta: comparable && qceComparable
           ? (currentSummary.qceRate as number) -
             (previousSummary?.qceRate as number)
           : null,
-        sameCharacterD7Delta: comparable
+        sameCharacterD7Delta: comparable && d7Comparable
           ? (currentSummary.sameCharacterD7 as number) -
             (previousSummary?.sameCharacterD7 as number)
           : null,
@@ -282,77 +275,37 @@ async function changeMarkers(
   );
 }
 
-async function liveObservationAttentionCharacterIds(
+// SPEC: 「需要处理」只收会让线上运营静默出问题的事实，原因函数与 Today 共用。
+// INTENT: 判定只依赖分页前可精确查询的权威事实，才能形成真正的跨页工作队列；
+//         不把普通的制作中状态塞进来，避免筛选退化成恒真告警。
+async function attentionByCharacter(
   db: PrismaClient,
   asOf: Date,
   characterIds?: readonly string[],
 ) {
-  if (characterIds?.length === 0) return [];
-  const live = await db.characterServing.findMany({
-    where: {
-      state: "live",
-      ...(characterIds ? { characterId: { in: [...characterIds] } } : {}),
-    },
-    select: { characterId: true, currentReleaseId: true },
-  });
-  const releaseIds = live
-    .map((row) => row.currentReleaseId)
-    .filter((id): id is string => id !== null);
-  if (releaseIds.length === 0) return [];
-  const [windowClosed, exposures, funnels] = await Promise.all([
-    db.characterRelease.findMany({
-      where: {
-        id: { in: releaseIds },
-        publishedAt: {
-          lte: new Date(
-            asOf.getTime() -
-              ATTENTION_NO_DATA_WINDOW_DAYS * 24 * 60 * 60 * 1_000,
-          ),
-        },
-      },
-      select: { id: true },
+  if (characterIds?.length === 0) return new Map<string, CharacterAttentionReason>();
+  const release = Prisma.sql`release`;
+  const rows = await db.$queryRaw<Array<{
+    characterId: string;
+    monitorActionRequired: boolean;
+    noTraffic: boolean;
+  }>>(Prisma.sql`
+    SELECT * FROM (
+      SELECT serving."characterId",
+        ${releaseMonitorActionSql(release)} AS "monitorActionRequired",
+        ${releaseNoTrafficSql(release, asOf)} AS "noTraffic"
+      FROM "character_serving" serving
+      JOIN "character_releases" release ON release.id = serving."currentReleaseId"
+      ${characterIds ? Prisma.sql`WHERE serving."characterId" = ANY(${[...characterIds]}::text[])` : Prisma.empty}
+    ) AS facts
+    WHERE "monitorActionRequired" OR "noTraffic"
+  `);
+  return new Map(
+    rows.flatMap((row) => {
+      const reason = characterAttentionReason(row);
+      return reason ? [[row.characterId, reason] as const] : [];
     }),
-    db.characterExposureFact.findMany({
-      where: { characterReleaseId: { in: releaseIds } },
-      select: { characterReleaseId: true },
-      distinct: ["characterReleaseId"],
-    }),
-    db.characterFunnelDaily.findMany({
-      where: { characterReleaseId: { in: releaseIds } },
-      select: { characterReleaseId: true },
-      distinct: ["characterReleaseId"],
-    }),
-  ]);
-  return charactersNeedingAttention({
-    live,
-    windowClosedReleaseIds: new Set(windowClosed.map((row) => row.id)),
-    observedReleaseIds: new Set(
-      [...exposures, ...funnels].flatMap((row) =>
-        row.characterReleaseId ? [row.characterReleaseId] : [],
-      ),
-    ),
-  });
-}
-
-async function attentionCharacterIds(
-  db: PrismaClient,
-  asOf: Date,
-  characterIds?: readonly string[],
-) {
-  if (characterIds?.length === 0) return [];
-  const [liveObservationIds, projects] = await Promise.all([
-    liveObservationAttentionCharacterIds(db, asOf, characterIds),
-    db.characterProject.findMany({
-      where: characterIds ? { characterId: { in: [...characterIds] } } : {},
-      select: { characterId: true, draftAssetPack: true },
-    }),
-  ]);
-  return [
-    ...new Set([
-      ...liveObservationIds,
-      ...draftAssetReviewAttentionCharacterIds(projects),
-    ]),
-  ];
+  );
 }
 
 // SPEC: 这个筛选必须与 Journey 的 Live x/3 使用同一套 Release placement、素材可用性与归属规则。
@@ -436,7 +389,7 @@ async function incompleteLiveAssetPackCharacterIds(db: PrismaClient) {
 // INVARIANT: equivalent to operationalCharacterWhere({ deletedAt: null }).
 // The SQL population is shared by names, page rows and counts; it never expands
 // all operational IDs into one bind parameter per Character.
-const operationalPortfolioCharacterSql = Prisma.sql`
+export const operationalPortfolioCharacterSql = Prisma.sql`
   c."deletedAt" IS NULL AND (
     c.source = 'official' OR (
       c.source = 'user' AND EXISTS (
@@ -488,23 +441,15 @@ async function filteredCharacterIds(
 ) {
   const filters: string[][] = [];
   if (authorizedCharacterIds !== null) filters.push([...authorizedCharacterIds]);
-  if (query.attention) filters.push(await attentionCharacterIds(db, asOf));
+  if (query.attention) filters.push([...(await attentionByCharacter(db, asOf)).keys()]);
   if (query.workQueue === "live_asset_pack_incomplete") {
     filters.push(await incompleteLiveAssetPackCharacterIds(db));
+  } else if (query.workQueue) {
+    filters.push([...(await workQueueCharacterIds(db, asOf))[query.workQueue]]);
   }
   if (query.search) {
     const drafts = await latestDraftNames(db, authorizedCharacterIds, query.search);
     filters.push(drafts.map((row) => row.characterId));
-  }
-  if (query.servingState) {
-    filters.push(
-      (
-        await db.characterServing.findMany({
-          where: { state: query.servingState },
-          select: { characterId: true },
-        })
-      ).map((row) => row.characterId),
-    );
   }
   if (query.readiness) {
     const releases = await db.characterRelease.findMany({
@@ -539,10 +484,10 @@ const PORTFOLIO_ID_KEY: AdminKeysetKey<CharacterProject> = {
   direction: "asc",
   value: (project) => project.id,
 };
-const PORTFOLIO_SORT_KEYS: Record<
+const PORTFOLIO_SORT_KEYS: Partial<Record<
   CharacterPortfolioQuery["sort"],
   readonly AdminKeysetKey<CharacterProject>[]
-> = {
+>> = {
   project_id_asc: [PORTFOLIO_ID_KEY],
   updated_desc: [
     {
@@ -573,10 +518,131 @@ const PORTFOLIO_SORT_KEYS: Record<
   ],
 };
 
+type PortfolioRow = CharacterProject & { readonly performanceSortValue?: number };
+
+// SPEC: 表现排序键是 funnel 窗口聚合。keyset 要求键非空，率没有分母时取方向上的末尾值，
+//       「没数据」永远排在有数据的后面，不会被读成最好或最差。
+type FunnelSums = Readonly<Record<"qce" | "d7Pairs" | "d7Returns" | "impressions", Prisma.Sql>>;
+function performanceSort(
+  direction: "asc" | "desc",
+  sql: (chatStarts: Prisma.Sql, sums: FunnelSums) => Prisma.Sql,
+) {
+  return {
+    sql,
+    keys: [
+      {
+        field: "performanceSortValue",
+        direction,
+        type: "number",
+        value: (row: PortfolioRow) => Number(row.performanceSortValue),
+      },
+      { ...PORTFOLIO_ID_KEY, direction },
+    ] as readonly AdminKeysetKey<PortfolioRow>[],
+  };
+}
+function rateSort(
+  direction: "asc" | "desc",
+  numerator: (chatStarts: Prisma.Sql, sums: FunnelSums) => Prisma.Sql,
+  denominator: (chatStarts: Prisma.Sql, sums: FunnelSums) => Prisma.Sql,
+) {
+  const missing = direction === "desc" ? Prisma.sql`-1` : Prisma.sql`2`;
+  return performanceSort(direction, (chatStarts, sums) => Prisma.sql`
+    COALESCE(${numerator(chatStarts, sums)}::float8 / NULLIF(${denominator(chatStarts, sums)}, 0)::float8, ${missing})::float8
+  `);
+}
+const countSort = (
+  direction: "asc" | "desc",
+  value: (chatStarts: Prisma.Sql, sums: FunnelSums) => Prisma.Sql,
+) => performanceSort(direction, (chatStarts, sums) => Prisma.sql`${value(chatStarts, sums)}::float8`);
+const qceNumerator = (_: Prisma.Sql, sums: FunnelSums) => sums.qce;
+const chatStartsValue = (chatStarts: Prisma.Sql) => chatStarts;
+const d7Numerator = (_: Prisma.Sql, sums: FunnelSums) => sums.d7Returns;
+const d7Denominator = (_: Prisma.Sql, sums: FunnelSums) => sums.d7Pairs;
+const impressionsValue = (_: Prisma.Sql, sums: FunnelSums) => sums.impressions;
+const PERFORMANCE_SORTS: Partial<Record<CharacterPortfolioQuery["sort"], ReturnType<typeof performanceSort>>> = {
+  qce_rate_desc: rateSort("desc", qceNumerator, chatStartsValue),
+  qce_rate_asc: rateSort("asc", qceNumerator, chatStartsValue),
+  same_character_d7_desc: rateSort("desc", d7Numerator, d7Denominator),
+  same_character_d7_asc: rateSort("asc", d7Numerator, d7Denominator),
+  chat_starts_desc: countSort("desc", chatStartsValue),
+  chat_starts_asc: countSort("asc", chatStartsValue),
+  impressions_desc: countSort("desc", impressionsValue),
+  impressions_asc: countSort("asc", impressionsValue),
+};
+
+// SPEC: 同类基线与平台下跌共用一份窗口聚合，一次查询，规模跟线上角色数走。
+async function characterPeerFunnelRows(
+  db: PrismaClient,
+  asOf: Date,
+  window: CharacterPerformanceWindow,
+): Promise<CharacterPeerFunnelRow[]> {
+  const { start, end } = completedUtcCharacterPerformanceWindow({ asOf, window });
+  const priorStart = new Date(start.getTime() - (end.getTime() - start.getTime()));
+  const inWindow = Prisma.sql`f."characterReleaseId" = s."currentReleaseId" AND f."productDay" >= ${start} AND f."productDay" < ${end}`;
+  const inPrior = Prisma.sql`f."productDay" >= ${priorStart} AND f."productDay" < ${start}`;
+  const rows = await db.$queryRaw<Array<Record<string, unknown>>>(Prisma.sql`
+    SELECT c.id AS "characterId", c.style, c.gender,
+      (release."publishedAt" IS NOT NULL AND release."publishedAt" <= ${start}) AS matured,
+      COALESCE(SUM(f."eligibleImpressions") FILTER (WHERE ${inWindow}), 0)::int AS impressions,
+      COALESCE(SUM(f."detailViews") FILTER (WHERE ${inWindow}), 0)::int AS "detailViews",
+      COALESCE(SUM(f."firstSuccessfulExchanges") FILTER (WHERE ${inWindow}), 0)::int AS "chatStarts",
+      COALESCE(SUM(f."qceCount") FILTER (WHERE ${inWindow}), 0)::int AS qce,
+      COALESCE(SUM(f."sameCharacterD7EligiblePairs") FILTER (WHERE ${inWindow}), 0)::int AS "d7Pairs",
+      COALESCE(SUM(f."sameCharacterD7Returns") FILTER (WHERE ${inWindow}), 0)::int AS "d7Returns",
+      COALESCE(SUM(f."firstSuccessfulExchanges") FILTER (WHERE ${inPrior}), 0)::int AS "priorChatStarts",
+      COALESCE(SUM(f."qceCount") FILTER (WHERE ${inPrior}), 0)::int AS "priorQce"
+    FROM "character_serving" s
+    JOIN "characters" c ON c.id = s."characterId"
+    JOIN "character_releases" release ON release.id = s."currentReleaseId"
+    LEFT JOIN "character_funnel_daily" f ON f."characterId" = c.id
+      AND f."placementId" IS NULL AND f."metricVersion" = 1
+      AND f."productDay" >= ${priorStart} AND f."productDay" < ${end}
+    WHERE s.state = 'live' AND ${operationalPortfolioCharacterSql}
+    GROUP BY c.id, c.style, c.gender, release."publishedAt"
+  `);
+  return rows as unknown as CharacterPeerFunnelRow[];
+}
+
+// SPEC: 各视图计数跟随搜索、来源与权限范围，不受视图自身筛选影响；分页前一次算清。
+async function portfolioViewCounts(
+  db: PrismaClient,
+  scopeSql: Prisma.Sql,
+  asOf: Date,
+): Promise<CharacterPortfolioFacets["viewCounts"]> {
+  const [attention, incomplete, queues] = await Promise.all([
+    attentionByCharacter(db, asOf),
+    incompleteLiveAssetPackCharacterIds(db),
+    workQueueCharacterIds(db, asOf),
+  ]);
+  const within = (ids: Iterable<string>) => Prisma.sql`p."characterId" = ANY(${[...ids]}::text[])`;
+  const state = Prisma.sql`COALESCE(s.state, 'inactive')`;
+  const [row] = await db.$queryRaw<Array<CharacterPortfolioFacets["viewCounts"]>>(Prisma.sql`
+    SELECT
+      COUNT(*) FILTER (WHERE ${state} <> 'retired')::int AS "all",
+      COUNT(*) FILTER (WHERE ${state} = 'inactive')::int AS draft,
+      COUNT(*) FILTER (WHERE ${state} = 'live')::int AS live,
+      COUNT(*) FILTER (WHERE ${state} = 'paused')::int AS paused,
+      COUNT(*) FILTER (WHERE ${state} = 'retired')::int AS archived,
+      COUNT(*) FILTER (WHERE ${within(attention.keys())})::int AS attention,
+      COUNT(*) FILTER (WHERE ${within(incomplete)})::int AS live_asset_pack_incomplete,
+      COUNT(*) FILTER (WHERE ${within(queues.pending_changes)})::int AS pending_changes,
+      COUNT(*) FILTER (WHERE ${within(queues.candidate_unpublished)})::int AS candidate_unpublished,
+      COUNT(*) FILTER (WHERE ${within(queues.publish_blocked)})::int AS publish_blocked,
+      COUNT(*) FILTER (WHERE ${within(queues.recent_generation_failed)})::int AS recent_generation_failed,
+      COUNT(*) FILTER (WHERE ${within(queues.ready_to_publish)})::int AS ready_to_publish
+    FROM "character_projects" p
+    JOIN "characters" c ON c.id = p."characterId"
+    LEFT JOIN "character_serving" s ON s."characterId" = p."characterId"
+    WHERE ${scopeSql}
+  `);
+  return row;
+}
+
 const portfolioPageColumns: Record<string, Prisma.Sql> = {
   id: Prisma.sql`p.id`,
   updatedAt: Prisma.sql`p."updatedAt"`,
   createdAt: Prisma.sql`p."createdAt"`,
+  performanceSortValue: Prisma.sql`metric.sort_value`,
 };
 
 // The existing paginator owns cursor validation and direction. This adapter only
@@ -590,7 +656,7 @@ function portfolioPageSql(paging: AdminKeysetPaging) {
     if (!Array.isArray(group.OR)) throw new Error("Unsupported Character portfolio cursor predicate");
     const clauses = group.OR.map((clause: Record<string, unknown>) => Prisma.sql`(${Prisma.join(
       Object.entries(clause).map(([field, operand]) => {
-        if (typeof operand === "string" || operand instanceof Date) return Prisma.sql`${column(field)} = ${operand}`;
+        if (typeof operand === "string" || typeof operand === "number" || operand instanceof Date) return Prisma.sql`${column(field)} = ${operand}`;
         if (operand === null || typeof operand !== "object" || Object.keys(operand).length !== 1) throw new Error("Unsupported Character portfolio cursor operand");
         if (Object.hasOwn(operand, "gt")) return Prisma.sql`${column(field)} > ${(operand as { gt: unknown }).gt}`;
         if (Object.hasOwn(operand, "lt")) return Prisma.sql`${column(field)} < ${(operand as { lt: unknown }).lt}`;
@@ -628,10 +694,40 @@ export async function listCharacterPortfolioData(
     input.authorizedCharacterIds ?? null,
     asOf,
   );
+  // INTENT: 没有 Serving 行的角色对外显示 inactive，筛选必须按同一口径，否则「草稿」视图漏人。
+  const servingStateSql = Prisma.sql`COALESCE(s.state, 'inactive')`;
+  const scopeSql = Prisma.sql`
+    ${operationalPortfolioCharacterSql}
+    ${characterIds === null ? Prisma.empty : Prisma.sql`AND p."characterId" = ANY(${characterIds}::text[])`}
+    ${query.source ? Prisma.sql`AND c.source = ${query.source}` : Prisma.empty}
+  `;
+  const performanceSort = PERFORMANCE_SORTS[query.sort];
+  const performanceWindow = completedUtcCharacterPerformanceWindow({ asOf, window: query.performanceWindow });
+  const sortJoin = performanceSort ? Prisma.sql`
+    LEFT JOIN LATERAL (
+      SELECT ${performanceSort.sql(Prisma.sql`COALESCE(SUM(f."firstSuccessfulExchanges"), 0)`, {
+        qce: Prisma.sql`COALESCE(SUM(f."qceCount"), 0)`,
+        d7Pairs: Prisma.sql`COALESCE(SUM(f."sameCharacterD7EligiblePairs"), 0)`,
+        d7Returns: Prisma.sql`COALESCE(SUM(f."sameCharacterD7Returns"), 0)`,
+        impressions: Prisma.sql`COALESCE(SUM(f."eligibleImpressions"), 0)`,
+      })} AS sort_value
+      FROM "character_funnel_daily" f
+      WHERE f."characterId" = p."characterId"
+        AND f."characterReleaseId" = s."currentReleaseId"
+        AND f."placementId" IS NULL
+        AND f."metricVersion" = 1
+        AND f."productDay" >= ${performanceWindow.start}
+        AND f."productDay" < ${performanceWindow.end}
+    ) AS metric ON TRUE
+  ` : Prisma.empty;
   const population = Prisma.sql`
     FROM "character_projects" p JOIN "characters" c ON c.id = p."characterId"
-    WHERE ${operationalPortfolioCharacterSql}
-      ${characterIds === null ? Prisma.empty : Prisma.sql`AND p."characterId" = ANY(${characterIds}::text[])`}
+    LEFT JOIN "character_serving" s ON s."characterId" = p."characterId"
+    ${sortJoin}
+    WHERE ${scopeSql}
+      ${query.servingState ? Prisma.sql`AND ${servingStateSql} = ${query.servingState}` : Prisma.empty}
+      ${query.excludeArchived ? Prisma.sql`AND ${servingStateSql} <> 'retired'` : Prisma.empty}
+      ${query.operating ? Prisma.sql`AND ${servingStateSql} IN ('live', 'paused')` : Prisma.empty}
   `;
   const { items: page, pageInfo } = await paginateAdminKeyset({
     scope: "character_portfolio",
@@ -645,11 +741,12 @@ export async function listCharacterPortfolioData(
     cursor: query.cursor,
     before: query.before,
     limit: query.limit,
-    keys: PORTFOLIO_SORT_KEYS[query.sort],
+    keys: performanceSort?.keys ?? PORTFOLIO_SORT_KEYS[query.sort] ?? [PORTFOLIO_ID_KEY],
     fetch: (paging: AdminKeysetPaging) => {
       const pageSql = portfolioPageSql(paging);
-      return db.$queryRaw<CharacterProject[]>(Prisma.sql`
-        SELECT p.* ${population} ${pageSql.cursor}
+      return db.$queryRaw<PortfolioRow[]>(Prisma.sql`
+        SELECT p.* ${performanceSort ? Prisma.sql`, metric.sort_value AS "performanceSortValue"` : Prisma.empty}
+        ${population} ${pageSql.cursor}
         ORDER BY ${pageSql.order} LIMIT ${paging.take}
       `);
     },
@@ -664,13 +761,13 @@ export async function listCharacterPortfolioData(
   const draftNameByCharacter = new Map(
     (await latestDraftNames(db, pageCharacterIds)).map((row) => [row.characterId, row.name]),
   );
-  // INTENT: attention=true 的分页集合已经由同一权威函数筛过；不要为当前页重复跑一次
-  //         Live observation 与草稿 Review 查询。
-  const pageNeedsAttention = new Set(
-    query.attention
-      ? pageCharacterIds
-      : await attentionCharacterIds(db, asOf, pageCharacterIds),
-  );
+  // INTENT: 页内也重查一次：attention=true 只说明「有原因」，卡片要的是具体哪一个原因。
+  const pageAttention = await attentionByCharacter(db, asOf, pageCharacterIds);
+  const peerRows = includePerformance
+    ? await characterPeerFunnelRows(db, asOf, query.performanceWindow)
+    : [];
+  const peerBaselines = characterPeerBaselines(peerRows);
+  const platformDecliners = characterPlatformDecliners(peerRows);
   const activeVisualAuthorities =
     pageCharacterIds.length > 0
       ? await db.characterVisualProfile.findMany({
@@ -872,14 +969,6 @@ export async function listCharacterPortfolioData(
       const currentRelease = serving?.currentReleaseId
         ? (currentReleaseById.get(serving.currentReleaseId) ?? null)
         : null;
-      const candidateRelease = await db.characterRelease.findFirst({
-        where: {
-          projectId: project.id,
-          id: currentRelease ? { not: currentRelease.id } : undefined,
-          status: "approved",
-        },
-        orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
-      });
       const previousRelease = currentRelease && includePerformance
         ? currentRelease.supersedesId
           ? await db.characterRelease.findUnique({
@@ -907,11 +996,13 @@ export async function listCharacterPortfolioData(
             ]),
           ]
         : [];
-      const placements = query.placementId
-        ? availablePlacements.filter(
-            (placementId) => placementId === query.placementId,
-          )
-        : availablePlacements;
+      const placements = query.aggregateOnly
+        ? [null]
+        : query.placementId
+          ? availablePlacements.filter(
+              (placementId) => placementId === query.placementId,
+            )
+          : availablePlacements;
       const performance = currentRelease && includePerformance
         ? await Promise.all(
             placements.flatMap((placementId) =>
@@ -1016,7 +1107,11 @@ export async function listCharacterPortfolioData(
       return {
         characterId: character.id,
         name: draftNameByCharacter.get(character.id) || character.name,
-        needsAttention: pageNeedsAttention.has(character.id),
+        source: character.source,
+        visibility: character.visibility,
+        updatedAt: project.updatedAt.toISOString(),
+        needsAttention: pageAttention.has(character.id),
+        attentionReason: pageAttention.get(character.id) ?? null,
         serving: {
           characterId: character.id,
           state: serving?.state ?? "inactive",
@@ -1027,9 +1122,6 @@ export async function listCharacterPortfolioData(
         currentRelease: currentRelease
           ? characterReleaseContract(currentRelease)
           : null,
-        candidateRelease: candidateRelease
-          ? characterReleaseContract(candidateRelease)
-          : null,
         readiness,
         verificationState:
           validation?.result === "passed"
@@ -1037,12 +1129,6 @@ export async function listCharacterPortfolioData(
             : validation
               ? "failed"
               : "pending",
-        priority:
-          readiness === "blocked"
-            ? "urgent"
-            : readiness === "stale"
-              ? "high"
-              : "normal",
         performance,
         changeMarkers: currentRelease && includePerformance
           ? await changeMarkers(
@@ -1053,6 +1139,18 @@ export async function listCharacterPortfolioData(
               asOf,
             )
           : [],
+        recommendation: currentRelease && includePerformance
+          ? characterPerformanceRecommendation({
+              window: query.performanceWindow,
+              summary:
+                performance.find(
+                  (row) => row.window === query.performanceWindow && row.placementId === null,
+                ) ?? null,
+              baseline: peerBaselines.get(peerKey(character)) ?? null,
+              servingState: serving?.state ?? "inactive",
+              declinedWithPlatform: platformDecliners.has(character.id),
+            })
+          : null,
         visualProduction: {
           primaryImageUrl: primaryImageAsset?.imageUrl ?? null,
           primaryImageSource: primaryImageAsset ? primaryImageSource : null,
@@ -1132,6 +1230,13 @@ export async function listCharacterPortfolioData(
   return characterPortfolioResponseSchema.parse({
     items,
     pageInfo,
+    ...(query.includeFacets
+      ? {
+          facets: {
+            viewCounts: await portfolioViewCounts(db, scopeSql, asOf),
+          },
+        }
+      : {}),
     asOf: asOf.toISOString(),
     freshness: orphanProjectIds.length > 0 ? "degraded" : "fresh",
     dataQuality,

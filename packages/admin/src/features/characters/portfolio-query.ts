@@ -1,23 +1,30 @@
 import {
+  characterPortfolioWorkQueueSchema,
   characterServingStateSchema,
   type CharacterPortfolioQuery,
 } from "@idream/shared/admin";
 
-export type CharacterPortfolioSort = NonNullable<CharacterPortfolioQuery["sort"]>;
+// INTENT: 角色列表只提供这四种时间/ID 排序；表现排序属于表现页，见 CharacterPerformanceBoard。
+export type CharacterPortfolioSort = Extract<
+  NonNullable<CharacterPortfolioQuery["sort"]>,
+  "updated_desc" | "updated_asc" | "created_desc" | "project_id_asc"
+>;
 export type CharacterPortfolioWorkQueue = NonNullable<
   CharacterPortfolioQuery["workQueue"]
 >;
+export type CharacterPortfolioSource = NonNullable<CharacterPortfolioQuery["source"]>;
 export type CharacterPortfolioEmptyView =
   | "all"
   | "filtered"
   | "attention"
-  | "live_asset_pack_incomplete";
+  | CharacterPortfolioWorkQueue;
 
 export interface CharacterPortfolioUrlState {
   readonly search: string;
   readonly servingState?: string;
   readonly attention?: boolean;
   readonly workQueue?: CharacterPortfolioWorkQueue;
+  readonly source?: CharacterPortfolioSource;
   readonly sort?: CharacterPortfolioSort;
   readonly cursor?: string;
 }
@@ -57,7 +64,12 @@ function parseSort(value: string | null): CharacterPortfolioSort | undefined {
 function parseWorkQueue(
   value: string | null,
 ): CharacterPortfolioWorkQueue | undefined {
-  return value === "live_asset_pack_incomplete" ? value : undefined;
+  const parsed = characterPortfolioWorkQueueSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
+function parseSource(value: string | null): CharacterPortfolioSource | undefined {
+  return value === "official" || value === "user" ? value : undefined;
 }
 
 export function parseCharacterPortfolioUrl(search: string): CharacterPortfolioUrlState {
@@ -68,6 +80,7 @@ export function parseCharacterPortfolioUrl(search: string): CharacterPortfolioUr
     servingState: servingState.success ? servingState.data : undefined,
     attention: params.get("attention") === "true" ? true : undefined,
     workQueue: parseWorkQueue(params.get("workQueue")),
+    source: parseSource(params.get("source")),
     sort: parseSort(params.get("sort")),
     cursor: optionalValue(params.get("cursor")),
   };
@@ -89,6 +102,7 @@ export function characterPortfolioQuery(
   if (state.servingState) params.set("servingState", state.servingState);
   if (state.attention) params.set("attention", "true");
   if (state.workQueue) params.set("workQueue", state.workQueue);
+  if (state.source) params.set("source", state.source);
   if (state.cursor) params.set("cursor", state.cursor);
   return params.toString();
 }
@@ -101,8 +115,14 @@ export function characterPortfolioEmptyView(
 ): CharacterPortfolioEmptyView {
   if (state.search.trim()) return "filtered";
   if (state.attention) return "attention";
-  if (state.workQueue === "live_asset_pack_incomplete") {
-    return "live_asset_pack_incomplete";
-  }
-  return state.servingState ? "filtered" : "all";
+  if (state.workQueue) return state.workQueue;
+  return state.servingState || state.source ? "filtered" : "all";
+}
+
+// SPEC: 地址栏之外、只属于请求的默认值。「全部」不含归档，归档有自己的视图；计数随列表一起取。
+export function characterPortfolioRequestParams(state: CharacterPortfolioUrlState) {
+  const params = new URLSearchParams(characterPortfolioQuery(state, true));
+  if (state.servingState !== "retired") params.set("excludeArchived", "true");
+  params.set("includeFacets", "true");
+  return params;
 }

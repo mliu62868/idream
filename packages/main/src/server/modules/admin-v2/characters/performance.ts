@@ -5,8 +5,8 @@ import type {
 } from "@idream/shared/admin";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
-const MIN_IMPRESSIONS = 100;
-const MIN_CHAT_STARTS = 20;
+export const MIN_IMPRESSIONS = 100;
+export const MIN_CHAT_STARTS = 20;
 
 export interface CharacterFunnelRow {
   readonly eligibleImpressions: number;

@@ -2,7 +2,7 @@
 
 import { useAdminI18n } from "@/components/admin/i18n";
 import Link from "next/link";
-import type { AdminPageInfo, CharacterPortfolioItem, DataQualityIssue } from "@idream/shared/admin";
+import { characterPortfolioWorkQueueSchema, type AdminPageInfo, type AdminPermissionKey, type CharacterPortfolioItem, type DataQualityIssue } from "@idream/shared/admin";
 import { Plus, Search } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -23,14 +23,18 @@ import {
   CHARACTER_PORTFOLIO_SORTS,
   characterPortfolioEmptyView,
   characterPortfolioQuery,
+  characterPortfolioRequestParams,
   parseCharacterPortfolioUrl,
   type CharacterPortfolioSort,
+  type CharacterPortfolioSource,
   type CharacterPortfolioUrlState,
   type CharacterPortfolioWorkQueue,
 } from "./portfolio-query";
 import { permissionDenied } from "./character-permission-denied";
 import { CharacterListEmptyState } from "./CharacterListEmptyState";
 import { UnpreparedCharacters } from "./UnpreparedCharacters";
+import { CharacterBulkBar } from "./CharacterBulkBar";
+import { CharacterPerformanceBoard } from "./CharacterPerformanceBoard";
 import { CharacterPortfolioCard } from "./CharacterPortfolioCard";
 
 // INTENT: 稳定引用，避免"投影还没到"时每次渲染都换一个新的空值。
@@ -53,31 +57,78 @@ function restoredCursorStack(): readonly string[] {
   return Array.isArray(state?.cursorStack) ? state.cursorStack : [];
 }
 
-export function CharacterPortfolio({
-  canReadUnprepared = false,
-  canOpenAssets,
-  canCreate,
-  canOpenProjects,
-  canRead,
-  mode,
-}: {
+type CharacterPortfolioProps = {
+  actorId?: string;
   canReadUnprepared?: boolean;
   canOpenAssets: boolean;
   canCreate: boolean;
   canOpenProjects: boolean;
   canRead: boolean;
   mode: "studio" | "performance";
-}) {
+  permissions?: ReadonlySet<AdminPermissionKey>;
+};
+
+// SPEC: 表现页是比较页，不是又一份按更新时间排的角色列表；两个页面只共用数据接口。
+export function CharacterPortfolio(props: CharacterPortfolioProps) {
+  return props.mode === "performance" ? (
+    <CharacterPerformanceBoard
+      canOpenProject={props.canOpenProjects}
+      canRead={props.canRead}
+      permissions={props.permissions}
+    />
+  ) : (
+    <CharacterRoster {...props} />
+  );
+}
+
+// SPEC: 视图按钮的顺序和文案。计数来自服务端，翻页不影响。
+const ROSTER_VIEWS = [
+  ["all", "All"],
+  ["draft", "Draft"],
+  ["live", "Live"],
+  ["paused", "Paused"],
+  ["archived", "Archived"],
+] as const;
+const WORK_QUEUE_VIEWS = [
+  ["attention", "Needs attention"],
+  ["publish_blocked", "Publish blocked"],
+  ["recent_generation_failed", "Generation failed"],
+  ["pending_changes", "Unpublished changes"],
+  ["candidate_unpublished", "Candidate not published"],
+  ["ready_to_publish", "Ready to publish"],
+  ["live_asset_pack_incomplete", "Incomplete packs"],
+] as const;
+type RosterView = (typeof ROSTER_VIEWS)[number][0] | (typeof WORK_QUEUE_VIEWS)[number][0];
+
+const SERVING_STATE_BY_VIEW: Partial<Record<RosterView, string>> = {
+  draft: "inactive",
+  live: "live",
+  paused: "paused",
+  archived: "retired",
+};
+const WORK_QUEUES: readonly string[] = characterPortfolioWorkQueueSchema.options;
+
+function CharacterRoster({
+  actorId = "",
+  canReadUnprepared = false,
+  canOpenAssets,
+  canCreate,
+  canOpenProjects,
+  canRead,
+  permissions,
+}: CharacterPortfolioProps) {
   const { t } = useAdminI18n();
   const format = useAdminFormat();
-  const performanceMode = mode === "performance";
   const [search, setSearch] = useState("");
   const [servingState, setServingState] = useState("");
   const [attention, setAttention] = useState(false);
   const [workQueue, setWorkQueue] = useState<CharacterPortfolioWorkQueue | "">(
     "",
   );
+  const [source, setSource] = useState<CharacterPortfolioSource | "">("");
   const [sort, setSort] = useState<CharacterPortfolioSort>(CHARACTER_PORTFOLIO_DEFAULT_SORT);
+  // SPEC: 选中绑定具体角色 ID。翻页和筛选都不改变已选集合。
+  const [selection, setSelection] = useState<ReadonlyMap<string, CharacterPortfolioItem>>(new Map());
   // SPEC: 已生效的查询与筛选表单草稿分开保存。
   // INTENT: 上面六个 state 直接绑在输入框上，改一个下拉不该触发取数——只有 Apply /
   //         翻页 / 地址栏恢复才更新 applied，也就是 useAuthorityResource 的 query key。
@@ -94,8 +145,8 @@ export function CharacterPortfolio({
   //         自己 push/replace 写出去的 URL 与这里相同，回流时跳过，免得冲掉搜索框草稿。
   const locationQuery = useSearchParams()?.toString() ?? "";
   const stateQuery = useRef<string | null>(null);
-  const portfolioRequestQuery = new URLSearchParams(characterPortfolioQuery(applied, true));
-  portfolioRequestQuery.set("includePerformance", String(performanceMode));
+  const portfolioRequestQuery = characterPortfolioRequestParams(applied);
+  portfolioRequestQuery.set("includePerformance", "false");
   const portfolioRequestKey = portfolioRequestQuery.toString();
 
   const portfolio = useAuthorityResource({
@@ -107,14 +158,10 @@ export function CharacterPortfolio({
           query: portfolioRequestKey,
         });
       } catch (reason) {
-        // INTENT: 两种模式各有一句能读懂的兜底；抛出去让 resource 统一收成 error。
-        throw reason instanceof Error ? reason : new Error(
-          performanceMode
-            ? "Character portfolio could not be loaded"
-            : "Characters could not be loaded",
-        );
+        // INTENT: 一句能读懂的兜底；抛出去让 resource 统一收成 error。
+        throw reason instanceof Error ? reason : new Error("Characters could not be loaded");
       }
-    }, [portfolioRequestKey, performanceMode]),
+    }, [portfolioRequestKey]),
   });
   const { refresh } = portfolio;
   useEffect(() => {
@@ -132,7 +179,7 @@ export function CharacterPortfolio({
   //         items/pageInfo/asOf，两条都被丢掉，运营在这页做下架和资源分配决定时看不到它们。
   const dataQuality = portfolio.data?.dataQuality ?? EMPTY_PORTFOLIO_DATA_QUALITY;
   // 只有与当前任务无关的毛利提示折叠；数据缺失和发布阻塞继续常驻。
-  const backgroundQuality = performanceMode ? [] : dataQuality.filter((note) => note.code === "character_margin_payment_authority_unavailable" && note.severity !== "error");
+  const backgroundQuality = dataQuality.filter((note) => note.code === "character_margin_payment_authority_unavailable" && note.severity !== "error");
   const visibleQuality = dataQuality.filter((note) => !backgroundQuality.includes(note));
   const freshness = portfolio.data?.freshness ?? null;
   const loading = portfolio.loading;
@@ -149,6 +196,7 @@ export function CharacterPortfolio({
       setServingState(next.servingState ?? "");
       setAttention(next.attention ?? false);
       setWorkQueue(next.workQueue ?? "");
+      setSource(next.source ?? "");
       setSort(next.sort ?? CHARACTER_PORTFOLIO_DEFAULT_SORT);
       setApplied(next);
       setCursorStack(nextCursorStack);
@@ -186,6 +234,7 @@ export function CharacterPortfolio({
         servingState: servingState || undefined,
         attention: attention || undefined,
         workQueue: workQueue || undefined,
+        source: source || undefined,
         sort,
         cursor: nextCursor,
       },
@@ -214,25 +263,29 @@ export function CharacterPortfolio({
     applyQuery({ ...applied, cursor: cursorStack.at(-1) || undefined }, "push", previous, true);
   }
 
-  const rosterView = attention
+  const rosterView: RosterView = attention
     ? "attention"
-    : workQueue === "live_asset_pack_incomplete"
-      ? "image_pack"
-    : servingState === "live"
-      ? "live"
-      : servingState === "inactive"
-        ? "draft"
-        : "all";
+    : workQueue
+      ? workQueue
+      : servingState === "live"
+        ? "live"
+        : servingState === "inactive"
+          ? "draft"
+          : servingState === "paused"
+            ? "paused"
+            : servingState === "retired"
+              ? "archived"
+              : "all";
+  const viewCounts = portfolio.data?.facets?.viewCounts;
 
-  // SPEC: 视图仍写回同一个 portfolio 查询；Image packs 是服务端工作清单，不是当前页的客户端过滤。
+  // SPEC: 视图仍写回同一个 portfolio 查询；工作清单是服务端筛选，不是当前页的客户端过滤。
   // INTENT: 运营先回答「我现在要看哪批角色」，再进入单个角色处理素材或上线动作。
-  function changeRosterView(
-    next: "all" | "draft" | "live" | "attention" | "image_pack",
-  ) {
+  function changeRosterView(next: RosterView) {
     const nextAttention = next === "attention";
-    const nextWorkQueue =
-      next === "image_pack" ? "live_asset_pack_incomplete" : undefined;
-    const nextServingState = next === "draft" ? "inactive" : next === "live" ? "live" : undefined;
+    const nextWorkQueue = WORK_QUEUES.includes(next)
+      ? (next as CharacterPortfolioWorkQueue)
+      : undefined;
+    const nextServingState = SERVING_STATE_BY_VIEW[next];
     setAttention(nextAttention);
     setWorkQueue(nextWorkQueue ?? "");
     setServingState(nextServingState ?? "");
@@ -242,6 +295,7 @@ export function CharacterPortfolio({
         servingState: nextServingState,
         attention: nextAttention || undefined,
         workQueue: nextWorkQueue,
+        source: applied.source,
         sort,
       },
       "push",
@@ -249,10 +303,34 @@ export function CharacterPortfolio({
       true,
     );
   }
+  function changeSource(next: CharacterPortfolioSource | "") {
+    applyQuery({ ...applied, cursor: undefined, source: next || undefined }, "push", [], true);
+  }
+  const toggleSelected = (item: CharacterPortfolioItem) =>
+    setSelection((current) => {
+      const next = new Map(current);
+      if (!next.delete(item.characterId)) next.set(item.characterId, item);
+      return next;
+    });
+  // 选中时存的快照可能已过期；当前页有新数据就用新的，版本号和 Journey 都跟着更新。
+  const selectedItems = [...selection.values()].map(
+    (item) => items.find((row) => row.characterId === item.characterId) ?? item,
+  );
+  const canBulk = Boolean(permissions) && actorId !== "";
+  const pageAllSelected = items.length > 0 && items.every((item) => selection.has(item.characterId));
+  const togglePage = () =>
+    setSelection((current) => {
+      const next = new Map(current);
+      for (const item of items) {
+        if (pageAllSelected) next.delete(item.characterId);
+        else next.set(item.characterId, item);
+      }
+      return next;
+    });
   const filterForm = (
     <form
       aria-label={t("Search and filter characters")}
-      className="grid w-full gap-2 sm:grid-cols-[minmax(14rem,1fr)_auto_auto] sm:items-center"
+      className="grid w-full gap-2 sm:grid-cols-[minmax(14rem,1fr)_auto_auto_auto] sm:items-center"
       onSubmit={(event) => {
         event.preventDefault();
         apply();
@@ -268,11 +346,24 @@ export function CharacterPortfolio({
           aria-label={t("Search characters")}
           className={`${fieldClass} pl-9`}
           onChange={(event) => setSearch(event.target.value)}
-          placeholder={t("Search name or character ID")}
+          placeholder={t("Search name, description, or character ID")}
           value={search}
         />
       </label>
       <WorkspaceButton type="submit">{t("Search")}</WorkspaceButton>
+      <label className="shrink-0 text-xs font-semibold text-[var(--ad-text-muted)]">
+        <span className="sr-only">{t("Source")}</span>
+        <select
+          aria-label={t("Filter by source")}
+          className={fieldClass}
+          onChange={(event) => changeSource(event.target.value as CharacterPortfolioSource | "")}
+          value={source}
+        >
+          <option value="">{t("All sources")}</option>
+          <option value="official">{t("Official")}</option>
+          <option value="user">{t("User-created")}</option>
+        </select>
+      </label>
       <label className="shrink-0 text-xs font-semibold text-[var(--ad-text-muted)]">
         <span className="sr-only">{t("Sort")}</span>
         <select
@@ -292,86 +383,40 @@ export function CharacterPortfolio({
   );
 
   if (!canRead)
-    return permissionDenied(
-      mode === "performance"
-        ? "character.performance.read"
-        : "character.project.read",
-    );
+    return permissionDenied("character.project.read");
   return (
     <section aria-labelledby="character-list-title">
       <div className="flex flex-col gap-5 border-b border-[var(--ad-border)] pb-6 sm:flex-row sm:items-start sm:justify-between">
-        {performanceMode ? (
-          <div>
-            <h2
-              className="mt-1 text-2xl font-semibold"
-              id="character-list-title"
-            >
-              {t("Character Performance")}
-            </h2>
-            <p className="mt-2 max-w-2xl text-sm text-[var(--ad-text-muted)]">
-              {t(
-                "Compare release-attributed value and maturity.",
-              )}
-            </p>
-          </div>
-        ) : (
-          <div>
-            <h2 className="text-3xl font-semibold tracking-[-0.025em]" id="character-list-title">
-              {t("Characters")}
-            </h2>
-            <p className="mt-2 text-sm text-[var(--ad-text-muted)]">
-              {t("Manage Character settings, assets, and live operations")}
-            </p>
-          </div>
-        )}
-        {!performanceMode ? (
-          canCreate ? (
-              <Link
-                className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md bg-[var(--ad-ink)] px-5 text-sm font-semibold text-[var(--ad-surface)] hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
-                href="/admin/characters/new"
-              >
-                <Plus aria-hidden="true" className="h-4 w-4" />
-                {t("Create Character")}
-              </Link>
-            ) : null
+        <div>
+          <h2 className="text-3xl font-semibold tracking-[-0.025em]" id="character-list-title">
+            {t("Characters")}
+          </h2>
+          <p className="mt-2 text-sm text-[var(--ad-text-muted)]">
+            {t("Manage Character settings, assets, and live operations")}
+          </p>
+        </div>
+        {canCreate ? (
+          <Link
+            className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md bg-[var(--ad-ink)] px-5 text-sm font-semibold text-[var(--ad-surface)] hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
+            href="/admin/characters/new"
+          >
+            <Plus aria-hidden="true" className="h-4 w-4" />
+            {t("Create Character")}
+          </Link>
         ) : null}
       </div>
-      {!performanceMode && canReadUnprepared ? <UnpreparedCharacters /> : null}
-      {performanceMode ? (
-        <div className="mt-4 flex flex-col justify-end gap-2 lg:flex-row">
-          <div className="w-full lg:max-w-[42rem]">{filterForm}</div>
-          <button
-            aria-pressed={attention}
-            className={cn(
-              "min-h-11 shrink-0 rounded-md border px-4 text-sm font-semibold",
-              attention
-                ? "border-[var(--ad-ink)] bg-[var(--ad-ink)] text-[var(--ad-surface)]"
-                : "border-[var(--ad-border)] bg-[var(--ad-surface)] text-[var(--ad-ink)]",
-            )}
-            onClick={() => changeRosterView(attention ? "all" : "attention")}
-            type="button"
-          >
-            {t("Needs attention")}
-          </button>
-        </div>
-      ) : (
+      {canReadUnprepared ? <UnpreparedCharacters /> : null}
         <div className="mt-4 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div
             aria-label={t("Character operations filters")}
             className="inline-flex w-full shrink-0 overflow-x-auto rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] sm:w-auto xl:w-max"
             role="group"
           >
-            {([
-              ["all", "All"],
-              ["draft", "Draft"],
-              ["live", "Live"],
-              ["image_pack", "Incomplete packs"],
-              ["attention", "Needs attention"],
-            ] as const).map(([value, label]) => (
+            {ROSTER_VIEWS.map(([value, label]) => (
               <button
                 aria-pressed={rosterView === value}
                 className={cn(
-                  "min-h-10 shrink-0 border-r border-[var(--ad-border)] px-5 text-sm font-medium last:border-r-0",
+                  "min-h-10 shrink-0 border-r border-[var(--ad-border)] px-4 text-sm font-medium last:border-r-0",
                   rosterView === value
                     ? "bg-[var(--ad-ink)] text-[var(--ad-surface)]"
                     : "text-[var(--ad-text-muted)] hover:bg-black/[0.03] hover:text-[var(--ad-ink)]",
@@ -381,12 +426,42 @@ export function CharacterPortfolio({
                 type="button"
               >
                 {t(label)}
+                {viewCounts ? <span className="ml-1.5 text-xs opacity-70">{viewCounts[value]}</span> : null}
               </button>
             ))}
           </div>
-          <div className="w-full xl:max-w-[42rem]">{filterForm}</div>
+          <div className="w-full xl:max-w-[46rem]">{filterForm}</div>
         </div>
-      )}
+        <div aria-label={t("Today's work queues")} className="mt-3 flex flex-wrap items-center gap-2" role="group">
+          {WORK_QUEUE_VIEWS.map(([value, label]) => {
+            const count = viewCounts?.[value];
+            return (
+              <button
+                aria-pressed={rosterView === value}
+                className={cn(
+                  "min-h-9 rounded-full border px-3 text-xs font-medium",
+                  rosterView === value
+                    ? "border-[var(--ad-ink)] bg-[var(--ad-ink)] text-[var(--ad-surface)]"
+                    : count
+                      ? "border-[var(--ad-border)] text-[var(--ad-ink)] hover:bg-black/[0.03]"
+                      : "border-[var(--ad-border)] text-[var(--ad-text-muted)] hover:bg-black/[0.03]",
+                )}
+                key={value}
+                onClick={() => changeRosterView(value)}
+                type="button"
+              >
+                {t(label)}
+                {count === undefined ? null : <span className="ml-1.5 font-semibold">{count}</span>}
+              </button>
+            );
+          })}
+          {canBulk && items.length > 0 ? (
+            <label className="ml-auto inline-flex items-center gap-2 text-xs text-[var(--ad-text-muted)]">
+              <input checked={pageAllSelected} className="h-4 w-4" onChange={togglePage} type="checkbox" />
+              {t("Select this page")}
+            </label>
+          ) : null}
+        </div>
       {error ? (
         <div
           className="mt-5 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]"
@@ -422,10 +497,10 @@ export function CharacterPortfolio({
       ) : null}
       <div className="mt-6">
         {loading && items.length === 0 ? (
-          <div role="status" aria-label={t(performanceMode ? "Loading release-attributed portfolio" : "Loading characters")} className={performanceMode ? "grid gap-3" : "grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"}>
-            {Array.from({ length: performanceMode ? 4 : 8 }, (_, index) => (
+          <div role="status" aria-label={t("Loading characters")} className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {Array.from({ length: 8 }, (_, index) => (
               <div aria-hidden="true" className="overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" key={index}>
-                {!performanceMode ? <div className="aspect-[6/5] animate-pulse bg-[var(--ad-surface-subtle)]" /> : null}
+                <div className="aspect-[6/5] animate-pulse bg-[var(--ad-surface-subtle)]" />
                 <div className="space-y-3 p-4"><div className="h-5 w-2/3 animate-pulse rounded bg-[var(--ad-surface-subtle)]" /><div className="h-4 w-1/2 animate-pulse rounded bg-[var(--ad-surface-subtle)]" /></div>
                 <div className="h-12 border-t border-[var(--ad-border)]" />
               </div>
@@ -440,27 +515,31 @@ export function CharacterPortfolio({
           )
         ) : (
           <>
-            <div
-              className={
-                performanceMode
-                  ? "grid gap-3"
-                  : "grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
-              }
-            >
+            <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {items.map((item, index) => (
                 <CharacterPortfolioCard
                   canOpenAssets={canOpenAssets}
                   canOpenProject={canOpenProjects}
-                  eager={index < (performanceMode ? 1 : 8)}
+                  eager={index < 8}
                   item={item}
                   key={item.characterId}
-                  mode={mode}
+                  onToggleSelected={canBulk ? () => toggleSelected(item) : undefined}
+                  selected={selection.has(item.characterId)}
                 />
               ))}
             </div>
           </>
         )}
       </div>
+      {canBulk && permissions ? (
+        <CharacterBulkBar
+          actorId={actorId}
+          onClear={() => setSelection(new Map())}
+          onSettled={() => void refresh()}
+          permissions={permissions}
+          selected={selectedItems}
+        />
+      ) : null}
       {backgroundQuality.length > 0 ? <details className="mt-4 text-xs text-[var(--ad-text-muted)]">
         <summary className="cursor-pointer">{t("Data quality")}</summary>
         {backgroundQuality.map((note) => <p className="mt-2" key={note.code}>{t(note.message)}</p>)}

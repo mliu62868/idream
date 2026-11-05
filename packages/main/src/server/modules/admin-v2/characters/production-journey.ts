@@ -8,6 +8,7 @@ import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-authority";
 import { operationalMediaAssetWhere } from "@/server/modules/metric-data-scope";
+import { deriveCreativeItemExecutionState } from "../creative/run-state";
 import { ACTIVE_CONTROL_PLANE_COMMAND_STATUSES } from "../shared/control-plane-command";
 import { characterCommandCoordinationKey } from "./command-coordination";
 import {
@@ -38,6 +39,9 @@ export type CharacterProductionAssetPack = Partial<
 >;
 
 type Db = PrismaClient;
+
+// SPEC: 路线资格的运维入口。不走 character-deep-link：它不在角色工作台内。
+const PLATFORM_ROUTE_ADMIN_LINK = "/admin/ops/profiles";
 
 export function distinctPurposeAssetPack(
   input: Partial<Record<CharacterProductionPurpose, string>>,
@@ -181,10 +185,19 @@ function actionIndex(
       "create_primary_portrait",
       "prepare_image_production",
       "complete_image_route",
+      "platform_route_unavailable",
     ].includes(code)
   )
     return 0;
-  if (["continue_image_run", "continue_asset_pack"].includes(code)) return 1;
+  if (
+    [
+      "continue_image_run",
+      "continue_asset_pack",
+      "retry_failed_image_run",
+      "resolve_unknown_image_run",
+    ].includes(code)
+  )
+    return 1;
   if (code === "preview_character" || code === "repair_character_soul") return 2;
   if (code === "publish_character") return 3;
   return 4;
@@ -196,6 +209,35 @@ function activeCommandStage(commandType: string) {
     : { stage: "publishing" as const, step: 3 };
 }
 
+export type CharacterImageRunIssue = "failed" | "unknown";
+
+// SPEC: 一次 Run 的结局按它的 item 判：有图就不是问题；任何一项结局未知，发出去的请求可能已经
+//       产生费用，要先核对；全部失败才算失败。仍在进行的返回 null，由 hasActiveImageRun 负责。
+export function imageRunIssueFromItems(
+  items: ReadonlyArray<{
+    readonly status: string;
+    readonly mediaAssetId: string | null;
+    readonly jobStatus: string | null;
+    readonly jobErrorCode: string | null;
+    readonly attemptUnknown: boolean;
+  }>,
+): CharacterImageRunIssue | null {
+  if (items.length === 0) return null;
+  const states = items.map((item) =>
+    deriveCreativeItemExecutionState({
+      itemStatus: item.status,
+      jobStatus: item.jobStatus,
+      jobErrorCode: item.jobErrorCode,
+      attemptStatus: item.attemptUnknown ? "unknown" : null,
+      transportStatus: null,
+      hasAsset: item.mediaAssetId !== null,
+    }),
+  );
+  if (states.includes("ready")) return null;
+  if (states.includes("unknown")) return "unknown";
+  return states.every((state) => state === "failed") ? "failed" : null;
+}
+
 export function projectCharacterProductionJourneySnapshot(input: {
   characterId: string;
   asOf: Date;
@@ -204,7 +246,8 @@ export function projectCharacterProductionJourneySnapshot(input: {
   routeQualified: boolean;
   hasActiveImageRun: boolean;
   draftPurposes: readonly CharacterProductionPurpose[];
-  draftPurposesNeedingReview: readonly CharacterProductionPurpose[];
+  /** Latest Run of a still-missing purpose ended without an image, or its outcome is unknown. */
+  imageRunIssue?: CharacterImageRunIssue | null;
   livePurposes: readonly CharacterProductionPurpose[];
   /** The draft pack selects exactly the images the live Release serves. */
   draftPackMatchesLive?: boolean;
@@ -227,6 +270,16 @@ export function projectCharacterProductionJourneySnapshot(input: {
   let stage: CharacterProductionJourney["stage"];
   let status: CharacterProductionJourney["status"];
   let activeStep: number | null = null;
+  // SPEC: 暂停的角色保留 Release，与线上同样不需要补草稿；线上图齐、草稿没有新东西、
+  //       也没有待发布修订时，生产环节没有活可干，路线或 Run 的问题都不构成待办。
+  const servesRelease =
+    input.servingState === "live" || input.servingState === "paused";
+  const nothingToProduce =
+    servesRelease &&
+    live.completed === live.total &&
+    !input.candidateReleaseId &&
+    !input.pendingRevision &&
+    (draft.completed === 0 || input.draftPackMatchesLive === true);
   if (input.activeCommand) {
     const deepLink = commandDeepLink(
       input.characterId,
@@ -267,26 +320,44 @@ export function projectCharacterProductionJourneySnapshot(input: {
     };
     stage = "visual_setup";
     status = "in_progress";
-  } else if (input.referenceCount === 0 || !input.routeQualified) {
-    const deepLink = characterWorkspaceAnchorLink(
-      input.characterId,
-      input.referenceCount === 0
-        ? "visual_reference_set"
-        : "route_qualification_workbench",
-    );
+  } else if (
+    (input.referenceCount === 0 || !input.routeQualified) &&
+    !nothingToProduce
+  ) {
+    const operatorFixable = input.referenceCount === 0;
+    // INTENT: 路线资格由平台运维管理；角色页的路线区只读，把运营带过去只会让他对着看不懂的
+    //         区块找不存在的按钮。缺参考集才是运营在角色页能修的。
+    const deepLink = operatorFixable
+      ? characterWorkspaceAnchorLink(input.characterId, "visual_reference_set")
+      : PLATFORM_ROUTE_ADMIN_LINK;
     blockers.push({
-      code:
-        input.referenceCount === 0
-          ? "reference_set_not_active"
-          : "generation_route_unqualified",
-      message:
-        input.referenceCount === 0
-          ? "A sealed active Reference Set is required."
-          : "No qualified image route can consume the current Reference Set.",
+      code: operatorFixable
+        ? "reference_set_not_active"
+        : "generation_route_unqualified",
+      message: operatorFixable
+        ? "A sealed active Reference Set is required."
+        : "No qualified image route can consume this Character's Reference Set. This is a platform configuration issue; platform operations can fix it under Profiles & Rollout.",
       deepLink,
     });
-    primaryAction = { code: "complete_image_route", deepLink, command: null };
+    primaryAction = {
+      code: operatorFixable ? "complete_image_route" : "platform_route_unavailable",
+      deepLink,
+      command: null,
+    };
     stage = "visual_setup";
+    status = "blocked";
+  } else if (input.imageRunIssue === "unknown" && !nothingToProduce) {
+    // INTENT: 结局未知的 Run 往往还挂着 running 的 Job，必须排在「继续当前图片」之前，
+    //         否则运营会对着一个永远不会结束的进度等下去；也不能直接再生成——可能重复扣费。
+    const deepLink = tabLink("assets");
+    blockers.push({
+      code: "image_run_outcome_unknown",
+      message:
+        "The latest image Run has an unknown outcome and may already have cost money. Check that Run before generating again.",
+      deepLink,
+    });
+    primaryAction = { code: "resolve_unknown_image_run", deepLink, command: null };
+    stage = "image_production";
     status = "blocked";
   } else if (input.hasActiveImageRun) {
     primaryAction = {
@@ -297,9 +368,18 @@ export function projectCharacterProductionJourneySnapshot(input: {
     stage = "image_production";
     status = "in_progress";
   } else {
-    const liveNow = input.servingState === "live";
-    const workingPack = liveNow && draft.completed === 0 ? live : draft;
-    if (workingPack.completed < workingPack.total) {
+    const workingPack = servesRelease && draft.completed === 0 ? live : draft;
+    if (workingPack.completed < workingPack.total && input.imageRunIssue === "failed") {
+      const deepLink = tabLink("assets");
+      blockers.push({
+        code: "image_run_failed",
+        message: "The latest image Run failed without producing an image. Generate it again.",
+        deepLink,
+      });
+      primaryAction = { code: "retry_failed_image_run", deepLink, command: null };
+      stage = "image_production";
+      status = "in_progress";
+    } else if (workingPack.completed < workingPack.total) {
       primaryAction = {
         code: "continue_asset_pack",
         deepLink: tabLink("assets"),
@@ -315,11 +395,7 @@ export function projectCharacterProductionJourneySnapshot(input: {
       };
       stage = "publishing";
       status = "ready";
-    } else if (
-      (liveNow || input.servingState === "paused") &&
-      !input.pendingRevision &&
-      (draft.completed === 0 || input.draftPackMatchesLive === true)
-    ) {
+    } else if (nothingToProduce) {
       // SPEC: publishing leaves the draft pack in place, so a live Character whose
       // draft pack is empty or equals the live pack, with no newer Revision, has
       // nothing to preview; an unpublished Revision always goes back to Preview.
@@ -413,7 +489,7 @@ export async function projectCharacterProductionJourneys(
   const ids = [...new Set(characterIds)];
   if (ids.length === 0) return new Map();
   const coordinationKeys = ids.map(characterCommandCoordinationKey);
-  const [projects, servings, profiles, activeRuns, commands, contents] =
+  const [projects, servings, profiles, activeRuns, latestRuns, commands, contents] =
     await Promise.all([
       db.characterProject.findMany({
         where: { characterId: { in: ids } },
@@ -450,6 +526,28 @@ export async function projectCharacterProductionJourneys(
         },
         select: { targetId: true },
       }),
+      db.contentProductionBatch.findMany({
+        where: {
+          targetType: "character",
+          targetId: { in: ids },
+          purpose: { in: [...characterProductionPurposes] },
+          lifecycleState: { not: "archived" },
+        },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        distinct: ["targetId", "purpose"],
+        select: {
+          targetId: true,
+          purpose: true,
+          items: {
+            select: {
+              status: true,
+              mediaAssetId: true,
+              jobId: true,
+              job: { select: { status: true, errorCode: true } },
+            },
+          },
+        },
+      }),
       db.controlPlaneCommand.findMany({
         where: {
           coordinationKey: { in: coordinationKeys },
@@ -472,6 +570,40 @@ export async function projectCharacterProductionJourneys(
       }),
     ]);
   const contentByCharacter = new Map(contents.map((content) => [content.characterId, content]));
+  const latestRunJobIds = latestRuns.flatMap((run) =>
+    run.items.flatMap((item) => (item.jobId ? [item.jobId] : [])),
+  );
+  const unknownJobIds = new Set(
+    latestRunJobIds.length > 0
+      ? (
+          await db.generationAttempt.findMany({
+            where: { requestId: { in: latestRunJobIds }, status: "unknown" },
+            select: { requestId: true },
+          })
+        ).map((attempt) => attempt.requestId)
+      : [],
+  );
+  const runIssuesByCharacter = new Map<
+    string,
+    Partial<Record<CharacterProductionPurpose, CharacterImageRunIssue>>
+  >();
+  for (const run of latestRuns) {
+    if (!run.targetId) continue;
+    const issue = imageRunIssueFromItems(
+      run.items.map((item) => ({
+        status: item.status,
+        mediaAssetId: item.mediaAssetId,
+        jobStatus: item.job?.status ?? null,
+        jobErrorCode: item.job?.errorCode ?? null,
+        attemptUnknown: item.jobId !== null && unknownJobIds.has(item.jobId),
+      })),
+    );
+    if (!issue) continue;
+    runIssuesByCharacter.set(run.targetId, {
+      ...runIssuesByCharacter.get(run.targetId),
+      [run.purpose as CharacterProductionPurpose]: issue,
+    });
+  }
   const projectByCharacter = new Map<string, CharacterProject>();
   for (const project of projects) {
     if (!projectByCharacter.has(project.characterId)) {
@@ -675,6 +807,15 @@ export async function projectCharacterProductionJourneys(
       commandByCoordinationKey.get(
         characterCommandCoordinationKey(characterId),
       ) ?? null;
+    const draftPurposes = availablePurposes(
+      draftPackByCharacter.get(characterId) ?? {},
+      availableIds,
+    );
+    // Only a purpose still missing from the draft needs another image.
+    const runIssues = characterProductionPurposes.flatMap((purpose) => {
+      const issue = runIssuesByCharacter.get(characterId)?.[purpose];
+      return issue && !draftPurposes.includes(purpose) ? [issue] : [];
+    });
     journeys.set(
       characterId,
       projectCharacterProductionJourneySnapshot({
@@ -684,11 +825,12 @@ export async function projectCharacterProductionJourneys(
         referenceCount,
         routeQualified: route !== null,
         hasActiveImageRun: activeRunIds.has(characterId),
-        draftPurposes: availablePurposes(
-          draftPackByCharacter.get(characterId) ?? {},
-          availableIds,
-        ),
-        draftPurposesNeedingReview: [],
+        draftPurposes,
+        imageRunIssue: runIssues.includes("unknown")
+          ? "unknown"
+          : runIssues.includes("failed")
+            ? "failed"
+            : null,
         livePurposes: availablePurposes(
           livePackByCharacter.get(characterId) ?? {},
           availableIds,
