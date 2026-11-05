@@ -120,6 +120,11 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await prisma.appSetting.deleteMany({ where: { key: FEATURED_SETTING_KEY } });
+  // INVARIANT: 指标回填和质量测试按全库扫描事实，这里投影出的生产事实不能留下。
+  const characterScope = { characterId: { startsWith: prefix } };
+  await prisma.chatExchangeFact.deleteMany({ where: characterScope });
+  await prisma.characterFunnelDaily.deleteMany({ where: characterScope });
+  await prisma.characterExposureFact.deleteMany({ where: characterScope });
   await prisma.character.updateMany({ where: { id: { startsWith: prefix } }, data: { visibility: "private", status: "archived" } });
   await prisma.user.updateMany({ where: { id: { in: [viewerId, creatorId] } }, data: { dataClass: "audit" } });
 });

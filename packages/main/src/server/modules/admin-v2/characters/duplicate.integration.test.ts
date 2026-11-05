@@ -63,6 +63,8 @@ describe("Character duplicate", () => {
   });
 
   afterAll(async () => {
+    // INVARIANT: 目录类测试（probe-public-catalog、public-content-cleanup）按全库计数，公开夹具不能留下。
+    await prisma.character.update({ where: { id: sourceId }, data: { visibility: "private", status: "archived" } });
     await prisma.$disconnect();
   });
 
