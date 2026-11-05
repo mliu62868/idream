@@ -60,6 +60,12 @@ const TEST_USER_IDS = [
   `${P}voice-late-put-inflight`,
   `${P}voice-put-takeover`,
   `${P}voice-expired-running`,
+  `${P}voice-live-lease`,
+  `${P}voice-unbounded`,
+  `${P}voice-open-account`,
+  `${P}voice-slow-owner`,
+  `${P}voice-crash-upload`,
+  `${P}voice-crash-commit`,
   `${P}import-authority`,
   `${P}import-old-receipt`,
   `${P}import-stage`,
@@ -764,21 +770,154 @@ describe("account deletion authority", () => {
     } finally { release(); await pending; put.mockRestore(); compensation.mockRestore(); }
   });
 
-  it("keeps expired running Voice authority pending without deleting bytes or invoking provider erasure", async () => {
-    const user = await createUser({ id: `${P}voice-expired-running`, dataClass: "customer" });
-    const character = await createCharacter({ id: `${user.id}-character`, creatorId: user.id });
-    await prisma.voiceClipRequest.create({ data: { id: `${user.id}-request`, userId: user.id, characterId: character.id, messageId: `${user.id}-message`,
-      requestFingerprint: "controlled-unknown-writer", providerPayload: { providerKey: "pocket_tts" }, status: "running", leaseExpiresAt: new Date(0) } });
-    const requested = await requestDeletionPastGrace(user.id), now = new Date();
-    await prisma.mainOutboxEvent.update({ where: { id: `user_deleted_${user.id}` }, data: { status: "delivered", deliveredAt: now, nextRunAt: now } });
-    await applyChatEvent({ eventId: `${user.id}-completion`, eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2, schemaVersion: 2,
-      sourceService: ACCOUNT_ERASURE_COMPLETION_V2_SOURCE_SERVICE, aggregateId: user.id, payload: chatCompletionPayload(user.id, `${user.id}-file-mutation`) });
-    const remove = vi.fn(async () => ({ ok: true as const, data: { deleted: true as const } }));
+  // Every crash below leaves a row that only this worker can ever resolve.
+  async function closeAccountAfterChat(userId: string) {
+    const requested = await requestDeletionPastGrace(userId), now = new Date();
+    await prisma.mainOutboxEvent.update({ where: { id: `user_deleted_${userId}` }, data: { status: "delivered", deliveredAt: now, nextRunAt: now } });
+    await applyChatEvent({ eventId: `${userId}-completion`, eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2, schemaVersion: 2,
+      sourceService: ACCOUNT_ERASURE_COMPLETION_V2_SOURCE_SERVICE, aggregateId: userId, payload: chatCompletionPayload(userId, `${userId}-file-mutation`) });
+    return requested;
+  }
+  function erasureWorker(stored?: Map<string, Uint8Array>) {
+    const remove = vi.fn(async ({ key }: { key: string }) => { stored?.delete(key); return { ok: true as const, data: { deleted: true as const } }; });
     const blob: BlobStore = { putPrivate: async () => { throw new Error("Worker must not upload"); }, signGetUrl: async () => { throw new Error("Worker must not publish"); }, delete: remove };
     const erase = vi.fn<NonNullable<VoiceClipPort["eraseAccount"]>>().mockResolvedValue({ ok: true, data: { erased: true } });
-    expect((await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], blob, voice: providerKey => ({ providerKey, eraseAccount: erase, synthesize: async () => { throw new Error("Worker must not synthesize"); } }) })).completed).toBe(0);
-    expect(remove).not.toHaveBeenCalled(); expect(erase).not.toHaveBeenCalled();
+    const voice = (providerKey: VoiceProviderKey): VoiceClipPort => ({ providerKey, eraseAccount: erase, synthesize: async () => { throw new Error("Worker must not synthesize"); } });
+    return { blob, voice, remove, erase };
+  }
+
+  it("finishes erasure after an owner died during synthesis, whatever its attempt count", async () => {
+    const user = await createUser({ id: `${P}voice-expired-running`, dataClass: "customer" });
+    const character = await createCharacter({ id: `${user.id}-character`, creatorId: user.id });
+    await prisma.voiceClipRequest.create({ data: { id: `${user.id}-request`, userId: user.id, characterId: character.id, messageId: `${user.id}-message`, attemptNo: 3,
+      requestFingerprint: "controlled-dead-owner", providerPayload: { providerKey: "pocket_tts" }, status: "running", leaseOwner: "crashed", leaseExpiresAt: new Date(0) } });
+    const requested = await closeAccountAfterChat(user.id);
+    const worker = erasureWorker();
+    expect((await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], ...worker, now: new Date() })).completed).toBe(1);
+    expect(worker.erase).toHaveBeenCalledOnce();
+    expect(await prisma.user.findUnique({ where: { id: user.id } })).toBeNull();
+  });
+
+  it("keeps waiting while a running owner's lease is live", async () => {
+    const user = await createUser({ id: `${P}voice-live-lease`, dataClass: "customer" });
+    const character = await createCharacter({ id: `${user.id}-character`, creatorId: user.id });
+    const now = new Date();
+    await prisma.voiceClipRequest.create({ data: { id: `${user.id}-request`, userId: user.id, characterId: character.id, messageId: `${user.id}-message`,
+      requestFingerprint: "controlled-live-owner", providerPayload: { providerKey: "pocket_tts" }, status: "running", leaseOwner: "alive", leaseExpiresAt: new Date(now.getTime() + 60_000) } });
+    const requested = await closeAccountAfterChat(user.id);
+    const worker = erasureWorker();
+    expect((await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], ...worker, now })).completed).toBe(0);
+    expect(worker.remove).not.toHaveBeenCalled(); expect(worker.erase).not.toHaveBeenCalled();
+    expect(await prisma.voiceClipRequest.findUniqueOrThrow({ where: { id: `${user.id}-request` } })).toMatchObject({ status: "running", leaseOwner: "alive" });
+    await prisma.voiceClipRequest.update({ where: { id: `${user.id}-request` }, data: { leaseExpiresAt: new Date(0) } });
+    expect((await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], ...worker, now: new Date(now.getTime() + 300_000) })).completed).toBe(1);
+  });
+
+  it("never lets an owner with no recorded write bound be treated as gone", async () => {
+    const user = await createUser({ id: `${P}voice-unbounded`, dataClass: "customer" });
+    const character = await createCharacter({ id: `${user.id}-character`, creatorId: user.id });
+    await prisma.voiceClipRequest.create({ data: { id: `${user.id}-request`, userId: user.id, characterId: character.id, messageId: `${user.id}-message`,
+      requestFingerprint: "controlled-unbounded-writer", providerPayload: { providerKey: "pocket_tts" }, status: "failed", activeArtifactOwners: ["unbounded"] } });
+    const requested = await closeAccountAfterChat(user.id);
+    const worker = erasureWorker();
+    expect((await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], ...worker, now: new Date(Date.now() + 365 * 86_400_000) })).completed).toBe(0);
+    expect(worker.remove).not.toHaveBeenCalled();
     expect(await prisma.user.findUnique({ where: { id: user.id } })).not.toBeNull();
+    await prisma.voiceClipRequest.update({ where: { id: `${user.id}-request` }, data: { activeArtifactOwners: [] } });
+  });
+
+  it("does not resolve an expired row for an account that is still open", async () => {
+    const user = await createUser({ id: `${P}voice-open-account`, dataClass: "customer" });
+    const character = await createCharacter({ id: `${user.id}-character`, creatorId: user.id });
+    await prisma.voiceClipRequest.create({ data: { id: `${user.id}-request`, userId: user.id, characterId: character.id, messageId: `${user.id}-message`,
+      requestFingerprint: "controlled-open-account", providerPayload: { providerKey: "pocket_tts" }, status: "running", leaseOwner: "crashed", leaseExpiresAt: new Date(0) } });
+    const requested = await closeAccountAfterChat(user.id);
+    await prisma.user.update({ where: { id: user.id }, data: { status: "active", deletedAt: null } });
+    const worker = erasureWorker();
+    expect((await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], ...worker, now: new Date() })).completed).toBe(0);
+    expect(await prisma.voiceClipRequest.findUniqueOrThrow({ where: { id: `${user.id}-request` } })).toMatchObject({ status: "running", leaseOwner: "crashed" });
+    await prisma.user.update({ where: { id: user.id }, data: { status: "deleted", deletedAt: new Date() } });
+    await prisma.voiceClipRequest.update({ where: { id: `${user.id}-request` }, data: { status: "failed", leaseOwner: null, leaseExpiresAt: null } });
+  });
+
+  it("refuses a slow owner's upload once its expired lease has let erasure finish", async () => {
+    const userId = `${P}voice-slow-owner`, characterId = `${userId}-character`;
+    await createUser({ id: userId, dataClass: "customer" });
+    await createCharacter({ id: characterId, creatorId: userId, visibility: "private" });
+    await grantCoins(userId, 4, "voice-erasure-test");
+    await prisma.entitlement.create({ data: { userId, key: "voice_enabled", value: true, source: "subscription" } });
+    await prisma.featureFlag.upsert({ where: { key: "voice_gen" }, create: { key: "voice_gen", label: "Voice", enabled: true, rolloutPercent: 100, targetRoles: [], targetPlans: [] }, update: { enabled: true, rolloutPercent: 100 } });
+    const body = await voiceReplyBody(userId, { characterId, messageId: `${userId}-message`, text: "This private reply must not survive account erasure." });
+    let ready!: () => void, release!: () => void;
+    const readyPromise = new Promise<void>(resolve => { ready = resolve; });
+    const releasePromise = new Promise<void>(resolve => { release = resolve; });
+    const originalSynthesize = providers.voice.clip.synthesize.bind(providers.voice.clip);
+    const synthesize = vi.spyOn(providers.voice.clip, "synthesize").mockImplementation(async input => {
+      const result = await originalSynthesize(input);
+      ready(); await releasePromise;
+      return result;
+    });
+    const put = vi.spyOn(providers.blob, "putPrivate");
+    const pending = api("POST", "generation/voice", { userId, ageGate: true, body });
+    try {
+      await Promise.race([readyPromise, pending.then(() => { throw new Error("Voice did not reach the controlled pause"); })]);
+      const request = await prisma.voiceClipRequest.findFirstOrThrow({ where: { userId } });
+      await prisma.voiceClipRequest.update({ where: { id: request.id }, data: { leaseExpiresAt: new Date(0) } });
+      const requested = await closeAccountAfterChat(userId);
+      const worker = erasureWorker();
+      expect((await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], ...worker, now: new Date() })).completed).toBe(1);
+      expect(await prisma.user.findUnique({ where: { id: userId } })).toBeNull();
+      release();
+      expect((await pending).status).toBeGreaterThanOrEqual(400);
+      expect(put).not.toHaveBeenCalled();
+    } finally { release(); await pending; synthesize.mockRestore(); put.mockRestore(); }
+  });
+
+  it.each(["upload", "commit"])("waits out the recorded write bound, then finishes erasure after an owner died during %s", async stage => {
+    const userId = `${P}voice-crash-${stage}`, characterId = `${userId}-character`;
+    await createUser({ id: userId, dataClass: "customer" });
+    await createCharacter({ id: characterId, creatorId: userId, visibility: "private" });
+    await grantCoins(userId, 4, "voice-erasure-test");
+    await prisma.entitlement.create({ data: { userId, key: "voice_enabled", value: true, source: "subscription" } });
+    await prisma.featureFlag.upsert({ where: { key: "voice_gen" }, create: { key: "voice_gen", label: "Voice", enabled: true, rolloutPercent: 100, targetRoles: [], targetPlans: [] }, update: { enabled: true, rolloutPercent: 100 } });
+    const body = await voiceReplyBody(userId, { characterId, messageId: `${userId}-message`, text: "This private reply must not survive account erasure." });
+    const stored = new Map<string, Uint8Array>();
+    let ready!: () => void, revive!: () => void, putSignal: AbortSignal | undefined;
+    const readyPromise = new Promise<void>(resolve => { ready = resolve; });
+    const dead = new Promise<void>(resolve => { revive = resolve; });
+    // The awaited promise never settling stands in for the process being gone: nothing
+    // after this point runs, so the registration below is never released by its owner.
+    const put = vi.spyOn(providers.blob, "putPrivate").mockImplementation(async input => {
+      putSignal = input.signal;
+      if (stage === "commit") stored.set(input.key, input.body);
+      ready(); await dead;
+      return { ok: false, error: { code: "controlled_process_gone", message: "Controlled", retryable: true } };
+    });
+    const pending = api("POST", "generation/voice", { userId, ageGate: true, body });
+    try {
+      await Promise.race([readyPromise, pending.then(() => { throw new Error("Voice did not reach the controlled crash"); })]);
+      expect(putSignal).toBeInstanceOf(AbortSignal);
+      const request = await prisma.voiceClipRequest.findFirstOrThrow({ where: { userId } });
+      expect(request.activeArtifactOwners).toHaveLength(1);
+      const deadline = request.artifactWriteDeadlineAt!;
+      expect(deadline.getTime()).toBeGreaterThan(Date.now());
+      await prisma.voiceClipRequest.update({ where: { id: request.id }, data: { leaseExpiresAt: new Date(0) } });
+      const requested = await closeAccountAfterChat(userId);
+      const worker = erasureWorker(stored);
+
+      // The lease has expired, yet this writer could still be inside its PUT.
+      expect((await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], ...worker, now: new Date(deadline.getTime() - 1_000) })).completed).toBe(0);
+      expect(worker.remove).not.toHaveBeenCalled(); expect(worker.erase).not.toHaveBeenCalled();
+      expect(await prisma.user.findUnique({ where: { id: userId } })).not.toBeNull();
+      expect(await prisma.accountDeletion.findUniqueOrThrow({ where: { id: requested.id } })).toMatchObject({ lastError: { code: "account_deletion_voice_authority_pending" } });
+
+      const finished = await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], ...worker, now: new Date(deadline.getTime() + 1_000) });
+      const again = finished.completed ? finished : await dispatchPendingAccountDeletionBlobDeletes({ deletionIds: [requested.id], ...worker, now: new Date(deadline.getTime() + 301_000) });
+      expect(again.completed).toBe(1);
+      expect(stored.size).toBe(0);
+      expect(await prisma.user.findUnique({ where: { id: userId } })).toBeNull();
+      expect(await prisma.voiceClipRequest.count({ where: { userId } })).toBe(0);
+    } finally { revive(); await pending; put.mockRestore(); }
   });
 
   it("finalizes a no-media account without requiring a Blob receipt to be touched", async () => {

@@ -13,6 +13,8 @@ export async function recoverExpiredVoiceClips(input: {
     where: {
       status: "running",
       attemptNo: { lt: 3 },
+      // Recovery renders for a user; a closed account's rows converge in erasure instead.
+      user: { status: "active", deletedAt: null },
       AND: [
         { OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: new Date() } }] },
         { OR: [{ errorCode: null }, { errorCode: { not: "provider_outcome_unknown" } }] },

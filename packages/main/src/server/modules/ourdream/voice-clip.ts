@@ -122,6 +122,13 @@ const VOICE_CLIP_POLL_MS = 500;
 //   wasteful rather than unsafe.
 const VOICE_CLIP_LEASE_MS = 30_000;
 const VOICE_CLIP_HEARTBEAT_MS = 10_000;
+// SPEC: a registered writer has a durable bound, because erasure cannot wait forever on
+//   an owner that crashed mid-upload and a lease timeout does not show its PUT stopped.
+// INVARIANT: the owner refuses to start, and aborts, its PUT at the budget. The settle
+//   margin outlives bytes the object store had already received and clock skew between
+//   hosts. A process frozen mid-PUT cannot resume it: the store drops the idle connection.
+const VOICE_ARTIFACT_PUT_BUDGET_MS = 120_000;
+const VOICE_ARTIFACT_WRITE_SETTLE_MS = 60_000;
 
 type VoiceCharacter = {
   id: string;
@@ -940,12 +947,20 @@ async function renderOwnedVoiceClaim(input: OwnedVoiceClaimInput): Promise<Voice
   // Persist this I/O owner's lifetime independently of lease/status takeover.
   // Erasure waits even after another owner delivers. No lock spans the upload;
   // a stale HTTP authentication snapshot is not upload permission.
-  await authorizeVoiceArtifactWrite(claim);
+  const putDeadline = await authorizeVoiceArtifactWrite(claim);
   try {
+    // A process that froze after registering must not begin a PUT once erasure may
+    // already have treated it as gone, so the budget is checked as well as enforced.
+    const putBudgetMs = putDeadline - Date.now();
+    if (putBudgetMs <= 0) {
+      await failOwnedVoiceRequest(claim, "voice_artifact_write_expired", "Registered too long before the upload could start");
+      throw Errors.conflict("Voice artifact write budget expired before upload", { requestId: claim.request.id });
+    }
     const stored = await providers.blob.putPrivate({
       key: storageKey,
       body: artifact.body,
       contentType: artifact.contentType,
+      signal: AbortSignal.timeout(putBudgetMs),
     });
     if (!stored.ok) {
       await failOwnedVoiceRequest(claim, stored.error.code, stored.error);
@@ -1658,6 +1673,7 @@ async function reserveVoiceProviderInvocation(input: {
 }
 
 async function authorizeVoiceArtifactWrite(claim: Extract<VoiceRequestClaim, { kind: "owner" }>) {
+  let putDeadline = 0;
   const rejection = await prisma.$transaction(async tx => {
     const userActive = await lockUser(tx, claim.request.userId);
     await lockVoiceRequest(tx, claim.request.id);
@@ -1667,8 +1683,12 @@ async function authorizeVoiceArtifactWrite(claim: Extract<VoiceRequestClaim, { k
     }
     const leaseActive = owned.leaseExpiresAt !== null && owned.leaseExpiresAt > new Date();
     if (userActive && leaseActive) {
+      putDeadline = Date.now() + VOICE_ARTIFACT_PUT_BUDGET_MS;
+      const writerGoneAt = putDeadline + VOICE_ARTIFACT_WRITE_SETTLE_MS;
       await tx.voiceClipRequest.update({ where: { id: owned.id }, data: {
         activeArtifactOwners: [...new Set([...owned.activeArtifactOwners, claim.leaseOwner])],
+        // An old owner may still be registered after a takeover; keep the later bound.
+        artifactWriteDeadlineAt: new Date(Math.max(writerGoneAt, owned.artifactWriteDeadlineAt?.getTime() ?? 0)),
       } });
       return null;
     }
@@ -1681,6 +1701,7 @@ async function authorizeVoiceArtifactWrite(claim: Extract<VoiceRequestClaim, { k
   });
   if (rejection === "account_revoked") throw Errors.gone("Account is no longer active; no voice artifact was uploaded or delivered");
   if (rejection) throw Errors.conflict("Voice clip request lease changed before artifact upload", { requestId: claim.request.id, reason: rejection });
+  return putDeadline;
 }
 
 async function releaseVoiceArtifactOwner(claim: Extract<VoiceRequestClaim, { kind: "owner" }>) {
@@ -1691,8 +1712,10 @@ async function releaseVoiceArtifactOwner(claim: Extract<VoiceRequestClaim, { kin
     await lockVoiceRequest(tx, claim.request.id);
     const request = await tx.voiceClipRequest.findUnique({ where: { id: claim.request.id }, select: { activeArtifactOwners: true } });
     if (!request?.activeArtifactOwners.includes(claim.leaseOwner)) return;
+    const remaining = request.activeArtifactOwners.filter(owner => owner !== claim.leaseOwner);
     await tx.voiceClipRequest.update({ where: { id: claim.request.id }, data: {
-      activeArtifactOwners: request.activeArtifactOwners.filter(owner => owner !== claim.leaseOwner),
+      activeArtifactOwners: remaining,
+      ...(remaining.length ? {} : { artifactWriteDeadlineAt: null }),
     } });
   });
 }

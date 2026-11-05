@@ -571,7 +571,7 @@ admission/direct producer，后停 Gen worker，finalizer 最后。`pm2 jlist` �
 receipt 使用独立 namespace，不能被旧 generic no-op receipt 阻断；Chat 前滚时把旧 `consumed`
 receipt 视为可修复证据，只有专属 Main ACK 后才写 `consumed_v2`。
 
-Chat ACK 也不代替媒体擦除完成。Main 保留所有者映射，直到生成执行、Main 语音写入与视频合成均已收敛、私有 Blob 删除回执完成，以及每个历史 pinned TTS provider 的擦除回执完成。租约过期允许受控恢复，不能证明旧调用已经停止 I/O；取消或接班后的产品终态也不能自动抹掉旧写入者的执行证据。新接纳、恢复、写入和交付须在 User 根锁下重新验证账号权威，数据库锁不跨 provider/Blob I/O。
+Chat ACK 也不代替媒体擦除完成。Main 保留所有者映射，直到生成执行、Main 语音写入与视频合成均已收敛、私有 Blob 删除回执完成，以及每个历史 pinned TTS provider 的擦除回执完成。租约过期允许受控恢复，不能证明旧调用已经停止 I/O；取消或接班后的产品终态也不能自动抹掉旧写入者的执行证据。新接纳、恢复、写入和交付须在 User 根锁下重新验证账号权威，数据库锁不跨 provider/Blob I/O。语音崩溃后的收敛证据：写入者在 PUT 前持久登记硬截止时间（`artifactWriteDeadlineAt`），到期前自行中止 PUT；账号关闭后，未登记写入的请求在租约过期后即可终止（其写入授权已被 User 根锁拒绝），已登记的写入者须等截止时间过后才视为退出，没有截止时间的登记永远阻塞。残留文件仍由 canonical request key 枚举删除。
 
 TTS gateway 持久化账号、精确 request key 和 clone alias 的擦除屏障，拒绝迟到写入与重启重放；Main `AccountDeletion.voiceErasure` 按历史 provider 保存独立 ACK，最终只留完成证据。官方声音属于既有平台 owner，运营 `createdById` 是审计来源；私人角色声音属于 creator。未交付或提交结果未知的语音仍可按 canonical request key 枚举全部支持格式，不依赖 MediaAsset 必须存在。未决执行或删除失败保留映射和待处理回执，不得宣称账号擦除完成。
 

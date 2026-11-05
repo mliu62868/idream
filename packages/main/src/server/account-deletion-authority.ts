@@ -357,7 +357,7 @@ export async function dispatchPendingAccountDeletionBlobDeletes(input: {
         await deferForMediaIo(tx, row.deletionId, "legacy_import");
         return true;
       }
-      if (!await checkVoiceAuthorityTerminal(tx, deletion.userId)) {
+      if (!await settleVoiceAuthorityForErasure(tx, deletion.userId, now)) {
         await deferForMediaIo(tx, row.deletionId, "voice");
         return true;
       }
@@ -564,7 +564,7 @@ export async function finalizeReadyAccountDeletions(input: {
         await deferForMediaIo(tx, deletion.id, "legacy_import");
         return null;
       }
-      if (!await checkVoiceAuthorityTerminal(tx, deletion.userId)) {
+      if (!await settleVoiceAuthorityForErasure(tx, deletion.userId, now)) {
         await deferForMediaIo(tx, deletion.id, "voice");
         return null;
       }
@@ -603,7 +603,7 @@ export async function finalizeReadyAccountDeletions(input: {
         await deferForMediaIo(tx, deletion.id, "legacy_import");
         return false;
       }
-      if (!await checkVoiceAuthorityTerminal(tx, deletion.userId)) {
+      if (!await settleVoiceAuthorityForErasure(tx, deletion.userId, now)) {
         await deferForMediaIo(tx, deletion.id, "voice");
         return false;
       }
@@ -698,11 +698,43 @@ export async function finalizeReadyAccountDeletions(input: {
   return completed;
 }
 
-// Caller holds User. A lease timeout permits recovery while the account is
-// active; it does not prove that an old Main invocation has stopped writing.
-// New claims and recoveries reject deleted users under this same root lock.
-async function checkVoiceAuthorityTerminal(tx: Prisma.TransactionClient, userId: string) {
-  return await tx.voiceClipRequest.count({ where: { userId, OR: [{ status: "running" }, { activeArtifactOwners: { isEmpty: false } }] } }) === 0;
+// SPEC: true once no Main voice invocation can still write for this account, resolving
+//   what a crashed owner left behind, because nobody else ever would: recovery refuses a
+//   closed account and only the owner clears its registration.
+// INVARIANT: a lease timeout alone proves nothing about an old invocation (ADR-13 §6).
+//   Each outcome below rests on different evidence, under the User lock the caller holds:
+//   - An owner that has not registered can no longer write. Registration takes this same
+//     lock and rejects a closed account or a row that is no longer its own, so an expired
+//     lease is enough to close that row even if the owner is merely slow.
+//   - A registered owner may have a PUT in flight, so it blocks erasure until the write
+//     deadline it durably recorded before that PUT, which it enforces on itself.
+//   - Registered owners without a deadline have no bound at all and keep blocking.
+//   The gateway's own late writes are stopped separately by its persistent erasure barrier.
+//   Files a dead owner did leave are found by the canonical key enumeration, which does
+//   not depend on a MediaAsset or on this row's status.
+async function settleVoiceAuthorityForErasure(tx: Prisma.TransactionClient, userId: string, now: Date) {
+  const rows = await tx.voiceClipRequest.findMany({
+    where: { userId, OR: [{ status: "running" }, { activeArtifactOwners: { isEmpty: false } }] },
+    select: { id: true, status: true, leaseExpiresAt: true, activeArtifactOwners: true, artifactWriteDeadlineAt: true },
+  });
+  if (rows.length === 0) return true;
+  const user = await tx.user.findUnique({ where: { id: userId }, select: { status: true, deletedAt: true } });
+  // Registration only rejects a closed account, so nothing below holds for an open one.
+  if (user?.status !== "deleted" || !user.deletedAt) return false;
+  let settled = true;
+  for (const row of rows) {
+    const writerGone = row.activeArtifactOwners.length === 0 || (row.artifactWriteDeadlineAt !== null && row.artifactWriteDeadlineAt <= now);
+    const leaseGone = row.status !== "running" || row.leaseExpiresAt === null || row.leaseExpiresAt <= now;
+    if (!writerGone || !leaseGone) { settled = false; continue; }
+    await tx.voiceClipRequest.update({ where: { id: row.id }, data: {
+      activeArtifactOwners: [], artifactWriteDeadlineAt: null,
+      ...(row.status === "running" ? {
+        status: "failed", errorCode: "voice_account_revoked", error: toInputJson({ reason: "owner_never_returned_after_account_closed" }),
+        leaseOwner: null, leaseExpiresAt: null, completedAt: now,
+      } : {}),
+    } });
+  }
+  return settled;
 }
 
 async function checkVideoCompositionTerminal(tx: Prisma.TransactionClient, userId: string) {
