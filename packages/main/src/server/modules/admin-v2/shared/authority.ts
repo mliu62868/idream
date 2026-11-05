@@ -14,8 +14,10 @@ import {
 import { requireExecutableAdminV2Contract } from "@idream/shared/admin";
 import type { PermissionKey } from "@/server/admin/permissions";
 import {
+  canCreateCharacterProjects,
   effectiveCharacterIdsForPermission,
   effectivePermissions,
+  userHasPermission,
 } from "@/server/admin/effective-permissions";
 import { getAuthCtx, requireUser, type ActorRole } from "@/server/lib/auth";
 import { Errors } from "@/server/lib/errors";
@@ -89,6 +91,24 @@ export async function actorWithPermission(
 ): Promise<AdminActor> {
   const actor = await authenticatedAdminActor(request);
   return requireActorPermission(request, actor, permission, resource);
+}
+
+/**
+ * SPEC: 创建向导的 AI 预填。内容运营凭自己的内容权限；角色创作者凭创建角色的全局判据。
+ *       范围受限的 producer 不能建角色，也就不开放。
+ */
+export async function actorForCharacterCreationAid(
+  request: Request,
+  contentPermission: PermissionKey,
+): Promise<AdminActor> {
+  const actor = await authenticatedAdminActor(request);
+  if (await userHasPermission(actor.id, actor.role, contentPermission)) {
+    return requireActorPermission(request, actor, contentPermission);
+  }
+  if (!await canCreateCharacterProjects(actor.id, actor.role)) {
+    throw Errors.forbidden("Missing admin permission", { permission: contentPermission });
+  }
+  return requireActorPermission(request, actor, "character.project.write");
 }
 
 type AdminContracts = typeof adminContracts;

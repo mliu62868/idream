@@ -24,14 +24,12 @@ import {
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { createOrRecoverCharacterRun } from "./creative-run-creation";
+import { useCharacterDraftImageSelection } from "./useCharacterDraftImageSelection";
 import {
-  claimDurableMutationIntent,
   clearDurableMutationIntent,
   readActiveDurableMutationIntent,
-  updateDurableMutationIntent,
   type DurableMutationIntent,
 } from "@/lib/durable-mutation-intent";
-import { reconcileDurableMutationIntent } from "@/lib/durable-mutation-recovery";
 import { usePollingTask, type PollingTask } from "@/lib/authority-resource";
 import {
   committedProjectionTargetId,
@@ -47,14 +45,11 @@ import { ImagePackResetNotice, draftSelectedImageCount } from "./ImagePackResetN
 import {
   canChooseCharacterAssetPurpose,
   candidateState,
+  characterAssetPurposes,
   characterAssetBootstrapRequestKey,
   characterAssetDraftSelectionRequestKey,
-  characterAssetReviewIntentSnapshot,
   characterAssetRunRequestKey,
   characterAssetRunReceiptMessage,
-  characterAssetSelectionIntentCommandType,
-  characterAssetSelectionIntentSnapshot,
-  characterAssetSelectionRecoveryVerification,
   characterAssetStudioLayoutClass,
   characterSourceVariationBlockerMessage,
   characterSourceVariationAvailabilityMessage,
@@ -96,7 +91,6 @@ export function CharacterAssetStudio({
   permissions: {
     read: boolean;
     create: boolean;
-    review: boolean;
     selectDraft: boolean;
   };
   onContinue: (tab: "visual" | "preview") => void;
@@ -179,23 +173,11 @@ export function CharacterAssetStudio({
   }));
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<
-    "generate" | "review" | "select" | "prepare" | null
+    "generate" | "select" | "prepare" | null
   >(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | { readonly runId: string } | null>(null);
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
-  const [reviewMutationIntent, setReviewMutationIntent] =
-    useState<DurableMutationIntent | null>(() =>
-      readActiveDurableMutationIntent({
-        scope: `character-asset:review:${actorId}:${data.character.id}`,
-      }),
-    );
-  const [selectionMutationIntent, setSelectionMutationIntent] =
-    useState<DurableMutationIntent | null>(() =>
-      readActiveDurableMutationIntent({
-        scope: `character-asset:selection:${actorId}:${data.character.id}`,
-      }),
-    );
   // SPEC: 三种列表读取各有一道闸门，只有「整表重读」能作废另外两种。
   // INTENT: 它们曾共用一道闸门：Load more 取消轮询（轮询就此永久停摆），轮询又丢弃在途的
   //         下一页。轮询只写 active，翻页只写 history，两者本来就互不覆盖。
@@ -206,6 +188,22 @@ export function CharacterAssetStudio({
   const refreshAttempt = useRef<{ replaced: boolean; awaitingReplacement: boolean } | null>(null);
   const [pendingRegeneratePurpose, setPendingRegeneratePurpose] =
     useState<CharacterAssetPurpose | null>(null);
+  const awaitingDeliveryRunIds = useRef(new Set<string>());
+  const reloadSelectionProjections = useRef<() => Promise<void>>(async () => undefined);
+  const selection = useCharacterDraftImageSelection({
+    actorId,
+    data,
+    canWrite: permissions.selectDraft,
+    commitProjectMutation,
+    reloadProject: () => reloadSelectionProjections.current(),
+    feedback: {
+      error: (next) => setError(next),
+      message: (next) => setMessage(next),
+      warning: (next) => setRefreshWarning(next),
+      busy: (next) => setBusy(next ? "select" : null),
+    },
+  });
+  const selectionMutationIntent = selection.intent;
   const selectRunId = useCallback(
     (runId: string | null) => {
       selectedRunIdRef.current = runId;
@@ -439,6 +437,13 @@ export function CharacterAssetStudio({
     },
     commit: (detail, verdict) => {
       setSelectedRun(detail);
+      // SPEC: 刚生成完的图直接进入可采用状态，不让运营再去 Inspect 里找按钮。
+      if (["pending", "running"].includes(detail.executionOutcome)) {
+        awaitingDeliveryRunIds.current.add(detail.id);
+      } else if (awaitingDeliveryRunIds.current.has(detail.id) && detail.items.some((item) => item.asset)) {
+        awaitingDeliveryRunIds.current.delete(detail.id);
+        setWorkspaceMode("review");
+      }
       // The selected exact Run remains visible independently of the current history page.
       setSelectedIndex((current) => {
         if (isCharacterAssetPurpose(detail.purpose)) {
@@ -464,6 +469,12 @@ export function CharacterAssetStudio({
   const unconfirmedOperations = data.mediaOperations.operations.filter((operation) =>
     operation.modality === "image" && operation.status === "unknown" && operation.requestId,
   );
+
+  useEffect(() => {
+    reloadSelectionProjections.current = async () => {
+      await Promise.all([onProjectReload(), loadRuns()]);
+    };
+  });
 
   const refreshedDeliveries = useRef(new Set<string>());
   useEffect(() => {
@@ -646,6 +657,11 @@ export function CharacterAssetStudio({
     Boolean(data.visual.imageReadiness.repair);
   const recurringProductionReady = !bootstrapMode && !productionBlocked;
   const readinessDescriptionId = `character-image-readiness-${data.character.id}`;
+  const missingPurposes = characterAssetPurposes.filter((purpose) =>
+    !data.project.draftAssetPack[purpose] &&
+    !(purpose === "character_cover" && data.project.draftImageAssetId));
+  const canGenerateMissing = recurringProductionReady && permissions.create && Boolean(qualifiedRoute) &&
+    !mutationContextLocked && unconfirmedOperations.length === 0 && !refreshWarning;
   const canUseGenerationAction = runCreationIntent
     ? permissions.create
     : canGenerate;
@@ -750,6 +766,113 @@ export function CharacterAssetStudio({
     if (!bootstrapMode || options.identityCommitted) setWorkspaceMode("library");
   };
 
+  const runRequestDraft = (
+    purpose: CharacterAssetPurpose,
+    referenceAssetIds: string[] = [],
+  ) => ({
+    // This title is persisted creative input, not translated interface copy.
+    title: `${subject.name} · ${purposeConfig[purpose].label}`,
+    purpose,
+    targetType: "character" as const,
+    targetId: data.character.id,
+    profileId: (bootstrapMode ? bootstrapProfile?.profileKey : qualifiedRoute?.generationProfileKey) ?? "",
+    presetIds: [],
+    referenceAssetIds,
+    bootstrapIdentity: bootstrapMode,
+    orientation: orientationForPurpose(purpose),
+    count: 1,
+    brief: briefs[purpose].trim(),
+    ...(negativePrompts[purpose].trim() ? { negativePrompt: negativePrompts[purpose].trim() } : {}),
+    consistencyMode: "strict" as const,
+    priority: "normal" as const,
+    reason: bootstrapMode
+      ? "Create the first identity portrait"
+      : referenceAssetIds.length
+        ? "Create identity-preserving variations from the selected character asset"
+        : "Create a customer-facing character asset pack candidate",
+  });
+  const parseRunRequest = (snapshot: unknown) => {
+    const parsed = creativeRunCreateRequestSchema.safeParse(snapshot);
+    return parsed.success && parsed.data.targetType === "character" &&
+      parsed.data.targetId === data.character.id && isCharacterAssetPurpose(parsed.data.purpose)
+      ? parsed.data : null;
+  };
+  const runRequestSignature = (body: ReturnType<typeof creativeRunCreateRequestSchema.parse>) => characterAssetRunRequestKey({
+    characterId: data.character.id,
+    title: body.title ?? `${subject.name} · ${purposeConfig[body.purpose as CharacterAssetPurpose].label}`,
+    purpose: body.purpose as CharacterAssetPurpose,
+    profileId: body.profileId,
+    referenceAssetIds: body.referenceAssetIds,
+    bootstrapIdentity: body.bootstrapIdentity,
+    orientation: body.orientation ?? "",
+    count: body.count,
+    brief: body.brief,
+    negativePrompt: body.negativePrompt,
+  });
+
+  // SPEC: 为每个还没选图的用途各建一个 count=1 的 Run（ADR-16 §3.1），互不等待。
+  // INTENT: 每个用途一条独立的持久意图，所以「创建中断」可以逐个靠再次点击，用原幂等键恢复；
+  //         已有在跑的请求时跳过，只有服务端的列表能回答这个问题。
+  const startMissingImageRun = async (purpose: CharacterAssetPurpose) => {
+    const readActive = (executionOutcome: string) => adminV2Operation("GET /api/v2/admin/creative/runs", {
+      query: new URLSearchParams({
+        limit: "1", targetType: "character", targetId: data.character.id, purpose, executionOutcome,
+      }),
+    });
+    const scope = `character-asset:create-missing:${actorId}:${data.character.id}:${purpose}`;
+    let intent = readActiveDurableMutationIntent({ scope });
+    if (!intent) {
+      const [pending, running] = await Promise.all([readActive("pending"), readActive("running")]);
+      if (pending.items.length + running.items.length > 0) return { purpose, state: "already_running" as const };
+    }
+    const result = await createOrRecoverCharacterRun({
+      scope,
+      characterId: data.character.id,
+      intent,
+      request: runRequestDraft(purpose),
+      parseRequest: parseRunRequest,
+      signature: runRequestSignature,
+      onIntentChange: (next) => { intent = next; },
+    });
+    if (result.state !== "committed") return { purpose, state: "not_started" as const };
+    awaitingDeliveryRunIds.current.add(result.runId);
+    const detail = await adminV2Operation("GET /api/v2/admin/creative/runs/:id", { path: { id: result.runId } });
+    if (intent && committedCharacterRunProjectionMatches(intent, detail, data.character.id)) {
+      clearDurableMutationIntent(intent);
+    }
+    return { purpose, state: "started" as const, runId: result.runId };
+  };
+
+  const generateMissingImages = async () => {
+    setBusy("generate");
+    setError(null);
+    setMessage(null);
+    try {
+      const outcomes = await Promise.allSettled(missingPurposes.map(startMissingImageRun));
+      const started = outcomes.flatMap((outcome) => outcome.status === "fulfilled" && outcome.value.state === "started" ? [outcome.value] : []);
+      const failed = outcomes.filter((outcome) => outcome.status === "rejected" || outcome.value.state === "not_started").length;
+      if (failed > 0) {
+        setError(t("{failed} of {total} images could not be started. Try again to resume them; nothing will be generated twice.", { failed, total: outcomes.length }));
+      }
+      if (started.length > 0) {
+        setMessage(t("Generating {count} images. Results will appear here automatically; you can leave this page and come back.", { count: started.length }));
+      }
+      const current = started.find((run) => run.purpose === activePurpose) ?? started[0];
+      if (current?.purpose === activePurpose) {
+        runLoader.invalidate();
+        selectRunId(current.runId);
+        setSelectedRun(null);
+        await loadRuns();
+      } else if (current) {
+        choosePurpose(current.purpose);
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The missing images could not be started.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const createRun = async (
     purpose: CharacterAssetPurpose,
     referenceAssetIds: string[] = [],
@@ -768,29 +891,7 @@ export function CharacterAssetStudio({
       : qualifiedRoute?.generationProfileKey;
     const orientation = orientationForPurpose(purpose);
     if (!intent && (!profileId || (bootstrapMode && (!orientation || purpose !== "character_cover")))) return;
-    // This title is persisted creative input, not translated interface copy.
-    const title = `${subject.name} · ${purposeConfig[purpose].label}`;
-    const draft = {
-      title,
-      purpose,
-      targetType: "character" as const,
-      targetId: data.character.id,
-      profileId: profileId ?? "",
-      presetIds: [],
-      referenceAssetIds,
-      bootstrapIdentity: bootstrapMode,
-      orientation,
-      count: 1,
-      brief: briefs[purpose].trim(),
-      ...(negativePrompts[purpose].trim() ? { negativePrompt: negativePrompts[purpose].trim() } : {}),
-      consistencyMode: "strict" as const,
-      priority: "normal" as const,
-      reason: bootstrapMode
-        ? "Create the first identity portrait"
-        : referenceAssetIds.length
-          ? "Create identity-preserving variations from the selected character asset"
-          : "Create a customer-facing character asset pack candidate",
-    };
+    const draft = runRequestDraft(purpose, referenceAssetIds);
     let committedRun = false;
     setBusy("generate");
     setError(null);
@@ -805,27 +906,12 @@ export function CharacterAssetStudio({
           ? { expectedPurpose: recovered.data.purpose } : {}),
         intent,
         request: draft,
-        parseRequest: (snapshot) => {
-          const parsed = creativeRunCreateRequestSchema.safeParse(snapshot);
-          return parsed.success && parsed.data.targetType === "character" &&
-            parsed.data.targetId === data.character.id && isCharacterAssetPurpose(parsed.data.purpose)
-            ? parsed.data : null;
-        },
-        signature: (body) => characterAssetRunRequestKey({
-          characterId: data.character.id,
-          title: body.title ?? title,
-          purpose: body.purpose as CharacterAssetPurpose,
-          profileId: body.profileId,
-          referenceAssetIds: body.referenceAssetIds,
-          bootstrapIdentity: body.bootstrapIdentity,
-          orientation: body.orientation ?? "",
-          count: body.count,
-          brief: body.brief,
-          negativePrompt: body.negativePrompt,
-        }),
+        parseRequest: parseRunRequest,
+        signature: runRequestSignature,
         onIntentChange: (next) => {
           updateRunCreationIntentState(next);
           if (next?.status === "committed_projection_pending" && next.committedTargetId) {
+            awaitingDeliveryRunIds.current.add(next.committedTargetId);
             // The visible receipt and its exact read target change together, even
             // before the shared creation promise returns to this handler.
             runLoader.invalidate();
@@ -973,442 +1059,9 @@ export function CharacterAssetStudio({
     }
   };
 
-  const verifyReviewIntentProjection = async (
-    intent: DurableMutationIntent,
-    snapshot: {
-      readonly runId: string;
-      readonly itemId: string;
-    },
-  ) => {
-    runLoader.invalidate();
-    selectRunId(snapshot.runId);
-    const detail = await loadRun(snapshot.runId);
-    await loadRuns();
-    const projected = detail.items.some(
-      (item) =>
-        item.id === snapshot.itemId &&
-        item.review?.id === intent.committedTargetId,
-    );
-    if (!projected) {
-      throw new Error(
-        "The exact review receipt is not present in the latest Run projection yet.",
-      );
-    }
-    // The surrounding library must observe the same committed review as the inspector.
-    await onProjectReload();
-    clearDurableMutationIntent(intent);
-    setReviewMutationIntent(null);
-    setRefreshWarning(null);
-    return detail;
-  };
-
-  const resumeReviewMutation = async () => {
-    if (!permissions.review || !reviewMutationIntent) return;
-    const snapshot = characterAssetReviewIntentSnapshot(
-      reviewMutationIntent.requestSnapshot,
-    );
-    if (
-      reviewMutationIntent.status === "reconciliation_required" ||
-      !snapshot
-    ) {
-      setBusy("review");
-      setError(null);
-      setMessage(null);
-      try {
-        const receipt = await reconcileDurableMutationIntent({
-          intent: reviewMutationIntent,
-          commandType: "creative.review.decision",
-        });
-        if (receipt.state === "committed") {
-          if (
-            !receipt.committedTargetId ||
-            receipt.verification?.kind !== "creative_review_decision" ||
-            receipt.verification.decisionId !== receipt.committedTargetId
-          ) {
-            throw new Error(
-              "The committed review receipt is missing exact projection evidence. The workspace remains locked.",
-            );
-          }
-          const committed = updateDurableMutationIntent(reviewMutationIntent, {
-            status: "committed_projection_pending",
-            committedTargetId: receipt.committedTargetId,
-            requestSnapshot: receipt.verification.requestSnapshot,
-          });
-          setReviewMutationIntent(committed);
-          selectRunId(receipt.verification.runId);
-          await verifyReviewIntentProjection(committed, receipt.verification);
-          setMessage(
-            "The committed review receipt was recovered and verified against its exact Run item.",
-          );
-          return;
-        }
-        if (receipt.state === "cancelled") {
-          clearDurableMutationIntent(reviewMutationIntent);
-          setReviewMutationIntent(null);
-          setMessage(
-            "The old review request had no committed effect. Its key was sealed, so a new decision is safe.",
-          );
-          return;
-        }
-        setError(
-          receipt.state === "failed"
-            ? t("The saved review command {commandId} is terminally failed. Its key remains locked for operator investigation; do not submit a replacement decision.", { commandId: receipt.commandId ?? "—" })
-            : t("The saved review request is {state}. Keep this workspace locked and reconcile again after the server reaches a terminal receipt.", { state: value(receipt.state) }),
-        );
-      } catch (cause) {
-        setError(
-          cause instanceof Error
-            ? cause.message
-            : "The saved review request could not be reconciled.",
-        );
-      } finally {
-        setBusy(null);
-      }
-      return;
-    }
-    setBusy("review");
-    setError(null);
-    setRefreshWarning(null);
-    let currentIntent = reviewMutationIntent;
-    try {
-      if (reviewMutationIntent.status === "committed_projection_pending") {
-        await verifyReviewIntentProjection(reviewMutationIntent, snapshot);
-        return;
-      }
-      const result = await adminV2Operation(
-        "POST /api/v2/admin/creative/runs/:id/items/:itemId/decisions",
-        {
-          path: { id: snapshot.runId, itemId: snapshot.itemId },
-          replayIdempotencyKey: reviewMutationIntent.idempotencyKey,
-          body: snapshot.body,
-        },
-      );
-      const committed = updateDurableMutationIntent(reviewMutationIntent, {
-        status: "committed_projection_pending",
-        committedTargetId: result.decisionId,
-      });
-      currentIntent = committed;
-      setReviewMutationIntent(committed);
-      await verifyReviewIntentProjection(committed, snapshot);
-    } catch (cause) {
-      if (currentIntent.status === "committed_projection_pending") {
-        setRefreshWarning(
-          cause instanceof Error
-            ? t("The review was committed, but verification is still pending: {detail}", { detail: t(cause.message) })
-            : "The review was committed, but verification is still pending.",
-        );
-      } else if (
-        cause instanceof AdminV2RequestError &&
-        cause.outcome === "answered" &&
-        [400, 401, 403, 404, 409, 422].includes(cause.status)
-      ) {
-        // A refused replay proves nothing about the earlier attempt: the saved key is
-        // the only recovery receipt, and only the server can recover or seal it.
-        setReviewMutationIntent(updateDurableMutationIntent(currentIntent, {
-          status: "reconciliation_required",
-        }));
-        setError(cause.message);
-      } else {
-        const unknown = updateDurableMutationIntent(currentIntent, {
-          status: "outcome_unknown",
-        });
-        setReviewMutationIntent(unknown);
-        setError(
-          "Review outcome remains unknown. Resume will continue to reuse the same request key.",
-        );
-      }
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  useEffect(() => {
-    if (
-      !selectionMutationIntent ||
-      selectionMutationIntent.status !== "committed_projection_pending"
-    ) {
-      return;
-    }
-    const snapshot = characterAssetSelectionIntentSnapshot(
-      selectionMutationIntent.requestSnapshot,
-    );
-    const recoveryVerification = characterAssetSelectionRecoveryVerification(
-      selectionMutationIntent.requestSnapshot,
-    );
-    if (!snapshot && !recoveryVerification) return;
-    const projected = recoveryVerification
-      ? recoveryVerification.characterId === data.character.id &&
-        (recoveryVerification.kind === "character_identity_bootstrap"
-          ? data.visual.activeReferenceSet?.id ===
-              recoveryVerification.referenceSetRevisionId &&
-            data.visual.activeReferenceSet.references.some(
-              (reference) =>
-                reference.mediaAssetId === recoveryVerification.anchorAssetId,
-            ) &&
-            data.project.draftImageAssetId ===
-              recoveryVerification.draftImageAssetId &&
-            data.project.draftAssetPack.character_cover ===
-              recoveryVerification.draftImageAssetId &&
-            data.visual.activeIdentity !== null
-          : isCharacterAssetPurpose(recoveryVerification.selectedPurpose) &&
-            data.project.draftAssetPack[
-              recoveryVerification.selectedPurpose
-            ] === recoveryVerification.selectedAssetId &&
-            data.project.draftAssetSelections?.[
-              recoveryVerification.selectedPurpose
-            ]?.assetId === recoveryVerification.selectedAssetId)
-      : snapshot
-        ? snapshot.kind === "bootstrap"
-          ? data.visual.activeReferenceSet?.id ===
-              selectionMutationIntent.committedTargetId &&
-            data.project.draftAssetPack.character_cover ===
-              snapshot.body.assetId &&
-            data.visual.activeIdentity !== null
-          : (() => {
-              const selection =
-                data.project.draftAssetSelections?.[snapshot.body.purpose];
-              return (
-                data.project.draftAssetPack[snapshot.body.purpose] ===
-                  snapshot.body.assetId &&
-                selection?.runId === snapshot.body.runId &&
-                selection?.itemId === snapshot.body.itemId &&
-                (selection?.reviewDecisionId ?? null) ===
-                  (snapshot.body.reviewDecisionId ?? null)
-              );
-            })()
-        : false;
-    if (!projected) return;
-    const timer = window.setTimeout(() => {
-      clearDurableMutationIntent(selectionMutationIntent);
-      setSelectionMutationIntent(null);
-      setRefreshWarning(null);
-      setMessage(
-        recoveryVerification?.kind === "character_identity_bootstrap" ||
-          snapshot?.kind === "bootstrap"
-          ? "Identity bootstrap authority is verified in the Character workspace."
-          : "The exact draft asset selection is verified in the Character workspace.",
-      );
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [
-    data.character.id,
-    data.project.draftAssetPack,
-    data.project.draftAssetSelections,
-    data.project.draftImageAssetId,
-    data.visual.activeIdentity,
-    data.visual.activeReferenceSet?.id,
-    data.visual.activeReferenceSet?.references,
-    selectionMutationIntent,
-  ]);
-
-  const resumeSelectionMutation = async () => {
-    if (!permissions.selectDraft || !selectionMutationIntent) return;
-    const snapshot = characterAssetSelectionIntentSnapshot(
-      selectionMutationIntent.requestSnapshot,
-    );
-    const recoveryVerification = characterAssetSelectionRecoveryVerification(
-      selectionMutationIntent.requestSnapshot,
-    );
-    if (
-      selectionMutationIntent.status === "reconciliation_required" ||
-      (!snapshot && !recoveryVerification)
-    ) {
-      setBusy("select");
-      setError(null);
-      setMessage(null);
-      try {
-        let commandType = characterAssetSelectionIntentCommandType(
-          selectionMutationIntent,
-        );
-        let receipt: Awaited<ReturnType<typeof reconcileDurableMutationIntent>>;
-        try {
-          receipt = await reconcileDurableMutationIntent({
-            intent: selectionMutationIntent,
-            commandType,
-            expectedCharacterId: data.character.id,
-          });
-        } catch (cause) {
-          const details =
-            cause instanceof AdminV2RequestError &&
-            cause.status === 409 &&
-            cause.details &&
-            typeof cause.details === "object" &&
-            !Array.isArray(cause.details)
-              ? (cause.details as Record<string, unknown>)
-              : null;
-          const existingCommandType = details?.existingCommandType;
-          if (
-            existingCommandType !== "character.identity.bootstrap" &&
-            existingCommandType !== "character.project.draft_image.select"
-          ) {
-            throw cause;
-          }
-          commandType = existingCommandType;
-          receipt = await reconcileDurableMutationIntent({
-            intent: selectionMutationIntent,
-            commandType,
-            expectedCharacterId: data.character.id,
-          });
-        }
-        if (receipt.state === "committed") {
-          const verification = receipt.verification;
-          const matchesBootstrap =
-            commandType === "character.identity.bootstrap" &&
-            verification?.kind === "character_identity_bootstrap" &&
-            verification.characterId === data.character.id &&
-            verification.referenceSetRevisionId === receipt.committedTargetId;
-          const matchesDraftSelection =
-            commandType === "character.project.draft_image.select" &&
-            verification?.kind === "character_draft_image_selection" &&
-            verification.characterId === data.character.id &&
-            verification.selectedAssetId === receipt.committedTargetId;
-          if (
-            !receipt.committedTargetId ||
-            (!matchesBootstrap && !matchesDraftSelection)
-          ) {
-            throw new Error(
-              "The committed selection receipt is missing exact Character projection evidence. The workspace remains locked.",
-            );
-          }
-          const committed = updateDurableMutationIntent(
-            selectionMutationIntent,
-            {
-              status: "committed_projection_pending",
-              committedTargetId: receipt.committedTargetId,
-              requestSnapshot: verification,
-            },
-          );
-          setSelectionMutationIntent(committed);
-          await Promise.all([onProjectReload(), loadRuns()]);
-          setMessage(
-            "The committed selection receipt was recovered. It remains locked until the exact Character authority is visible.",
-          );
-          return;
-        }
-        if (receipt.state === "cancelled") {
-          clearDurableMutationIntent(selectionMutationIntent);
-          setSelectionMutationIntent(null);
-          setMessage(
-            "The old selection request had no committed effect. Its key was sealed, so a new selection is safe.",
-          );
-          return;
-        }
-        setError(
-          receipt.state === "failed"
-            ? t("The saved selection command {commandId} is terminally failed. Its key remains locked for operator investigation; do not submit a replacement selection.", { commandId: receipt.commandId ?? "—" })
-            : t("The saved selection request is {state}. Keep this workspace locked and reconcile again after the server reaches a terminal receipt.", { state: value(receipt.state) }),
-        );
-      } catch (cause) {
-        setError(
-          cause instanceof Error
-            ? cause.message
-            : "The saved selection request could not be reconciled.",
-        );
-      } finally {
-        setBusy(null);
-      }
-      return;
-    }
-    if (!snapshot) {
-      setBusy("select");
-      setError(null);
-      try {
-        await onProjectReload();
-      } catch (cause) {
-        setRefreshWarning(
-          cause instanceof Error
-            ? t("Selection authority is still refreshing: {detail}", { detail: t(cause.message) })
-            : "Selection authority is still refreshing.",
-        );
-      } finally {
-        setBusy(null);
-      }
-      return;
-    }
-    setBusy("select");
-    setError(null);
-    let currentIntent = selectionMutationIntent;
-    try {
-      if (currentIntent.status === "committed_projection_pending") {
-        await onProjectReload();
-        return;
-      }
-      await commitProjectMutation({
-        action:
-          snapshot.kind === "bootstrap"
-            ? "Identity bootstrap recovery"
-            : "Draft asset selection recovery",
-        commit: async () => {
-          if (snapshot.kind === "bootstrap") {
-            const result = await adminV2Operation(
-              "POST /api/v2/admin/characters/:id/identity-bootstrap",
-              {
-                path: { id: data.character.id },
-                replayIdempotencyKey: currentIntent.idempotencyKey,
-                ifMatch: snapshot.body.entityVersion,
-                body: snapshot.body,
-              },
-            );
-            currentIntent = updateDurableMutationIntent(currentIntent, {
-              status: "committed_projection_pending",
-              committedTargetId: result.referenceSetRevisionId,
-            });
-            setSelectionMutationIntent(currentIntent);
-            return result;
-          }
-          const result = await adminV2Operation(
-            "PATCH /api/v2/admin/characters/:id/draft-image",
-            {
-              path: { id: data.character.id },
-              replayIdempotencyKey: currentIntent.idempotencyKey,
-              ifMatch: snapshot.body.entityVersion,
-              body: snapshot.body,
-            },
-          );
-          currentIntent = updateDurableMutationIntent(currentIntent, {
-            status: "committed_projection_pending",
-            committedTargetId: result.selectedAssetId,
-          });
-          setSelectionMutationIntent(currentIntent);
-          return result;
-        },
-      });
-    } catch (cause) {
-      if (currentIntent.status === "committed_projection_pending") {
-        setRefreshWarning(
-          cause instanceof Error
-            ? t("Selection was committed, but authority verification is still pending: {detail}", { detail: t(cause.message) })
-            : "Selection was committed, but authority verification is still pending.",
-        );
-      } else if (
-        cause instanceof AdminV2RequestError &&
-        cause.outcome === "answered" &&
-        [400, 401, 403, 404, 409, 422].includes(cause.status)
-      ) {
-        // A refused replay proves nothing about the earlier attempt: the saved key is
-        // the only recovery receipt, and only the server can recover or seal it.
-        currentIntent = updateDurableMutationIntent(currentIntent, {
-          status: "reconciliation_required",
-        });
-        setSelectionMutationIntent(currentIntent);
-        setError(cause.message);
-      } else {
-        currentIntent = updateDurableMutationIntent(currentIntent, {
-          status: "outcome_unknown",
-        });
-        setSelectionMutationIntent(currentIntent);
-        setError(
-          "Selection outcome remains unknown. Resume will continue to reuse the same request key.",
-        );
-      }
-    } finally {
-      setBusy(null);
-    }
-  };
-
   const approveAndContinue = async () => {
     if (selectionMutationIntent) {
-      await resumeSelectionMutation();
+      await selection.resume();
       return;
     }
     if (refreshWarning) return;
@@ -1445,151 +1098,73 @@ export function CharacterAssetStudio({
         : {}),
       reason: `Operator selected ${activeConfig.label.toLowerCase()} for the next Character Release`,
     };
-    const selectionSignature = bootstrapMode
-      ? characterAssetBootstrapRequestKey({
-          characterId: data.character.id,
-          entityVersion: bootstrapBody.entityVersion,
-          runId: bootstrapBody.runId,
-          itemId: bootstrapBody.itemId,
-          assetId: bootstrapBody.assetId,
-          reviewDecisionId: bootstrapBody.reviewDecisionId,
-          reason: bootstrapReason,
-        })
-      : characterAssetDraftSelectionRequestKey({
-          characterId: data.character.id,
-          body: draftSelectionBody,
-        });
-    const selectionSnapshot = bootstrapMode
-      ? { kind: "bootstrap" as const, body: bootstrapBody }
-      : {
-          kind: "draft_selection" as const,
-          body: draftSelectionBody,
-        };
-    const claim = await claimDurableMutationIntent({
-      scope: `character-asset:selection:${actorId}:${data.character.id}`,
-      signature: selectionSignature,
-      requestSnapshot: selectionSnapshot,
-    });
-    const intent = claim.intent;
-    if (
-      intent.signature !== selectionSignature ||
-      ["committed_projection_pending", "reconciliation_required"].includes(
-        intent.status,
-      )
-    ) {
-      setSelectionMutationIntent(intent);
-      setError(
-        intent.status === "committed_projection_pending"
-          ? "Another tab already committed an asset selection receipt. Verify it before selecting again."
-          : intent.status === "reconciliation_required"
-            ? "Another tab has an aged asset-selection receipt. Reconcile it with the server before selecting again."
-            : "Another tab already started a different asset selection. Resume its exact locked request first.",
-      );
-      return;
-    }
-    setSelectionMutationIntent(intent);
-    setBusy("select");
-    setError(null);
-    let committedIntent: DurableMutationIntent | null = null;
-    try {
-      await commitProjectMutation({
-        action: bootstrapMode
-          ? "Identity bootstrap selection"
-          : `${activeConfig.label} selection`,
-        commit: async () => {
-          if (bootstrapMode) {
-            const mutation = characterIdentityBootstrapMutation(
-              data.character.id,
-              data.project.version,
-              activeRunDetail.id,
-              selectedItem.id,
-              selectedAsset.id,
-              selectedItem.review?.id,
-              bootstrapReason,
-              intent.idempotencyKey,
-            );
-            const result = await adminV2Operation(
-              mutation.operationId,
-              mutation.options,
-            );
-            committedIntent = updateDurableMutationIntent(intent, {
-              status: "committed_projection_pending",
-              committedTargetId: result.referenceSetRevisionId,
-            });
-            setSelectionMutationIntent(committedIntent);
-            setMessage(
-              t("Identity version {version}, its sealed Reference Set, and the draft primary image were committed.", { version: nextIdentityVersion }),
-            );
-            return result;
-          }
-          const result = await adminV2Operation(
-            "PATCH /api/v2/admin/characters/:id/draft-image",
-            {
-              path: { id: data.character.id },
-              replayIdempotencyKey: intent.idempotencyKey,
-              ifMatch: data.project.version,
-              body: draftSelectionBody,
-            },
+    await selection.submit<unknown>({
+      signature: bootstrapMode
+        ? characterAssetBootstrapRequestKey({
+            characterId: data.character.id,
+            entityVersion: bootstrapBody.entityVersion,
+            runId: bootstrapBody.runId,
+            itemId: bootstrapBody.itemId,
+            assetId: bootstrapBody.assetId,
+            reviewDecisionId: bootstrapBody.reviewDecisionId,
+            reason: bootstrapReason,
+          })
+        : characterAssetDraftSelectionRequestKey({
+            characterId: data.character.id,
+            body: draftSelectionBody,
+          }),
+      snapshot: bootstrapMode
+        ? { kind: "bootstrap" as const, body: bootstrapBody }
+        : { kind: "draft_selection" as const, body: draftSelectionBody },
+      action: bootstrapMode
+        ? "Identity bootstrap selection"
+        : `${activeConfig.label} selection`,
+      request: async (intent) => {
+        if (bootstrapMode) {
+          const mutation = characterIdentityBootstrapMutation(
+            data.character.id,
+            data.project.version,
+            activeRunDetail.id,
+            selectedItem.id,
+            selectedAsset.id,
+            selectedItem.review?.id,
+            bootstrapReason,
+            intent.idempotencyKey,
           );
-          committedIntent = updateDurableMutationIntent(intent, {
-            status: "committed_projection_pending",
-            committedTargetId: result.selectedAssetId,
-          });
-          setSelectionMutationIntent(committedIntent);
-          setMessage(
-            `${activeConfig.label} was committed to the next Character Release draft.`,
-          );
-          return result;
-        },
-        afterRefresh: () => {
-          setRefreshWarning(null);
-          if (activePurpose === "character_cover") {
-            choosePurpose("character_hero", {
-              identityCommitted: bootstrapMode,
-            });
-          } else if (activePurpose === "character_hero") {
-            choosePurpose("character_chat");
-          } else {
-            onContinue("preview");
-          }
-        },
-      });
-    } catch (cause) {
-      if (
-        intent &&
-        cause instanceof AdminV2RequestError &&
-        cause.outcome === "answered" &&
-        [400, 401, 403, 404, 409, 422].includes(cause.status)
-      ) {
-        // INVARIANT: only a newly claimed intent can be released by a rejection. An
-        // existing claim means another attempt already used this key.
-        if (claim.created) {
-          clearDurableMutationIntent(intent);
-          setSelectionMutationIntent(null);
-        } else {
-          setSelectionMutationIntent(updateDurableMutationIntent(intent, {
-            status: "reconciliation_required",
-          }));
+          const result = await adminV2Operation(mutation.operationId, mutation.options);
+          return {
+            result,
+            committedTargetId: result.referenceSetRevisionId,
+            message: t("Identity version {version}, its sealed Reference Set, and the draft primary image were committed.", { version: nextIdentityVersion }),
+          };
         }
-        setError(cause.message);
-      } else if (intent) {
-        const unknown = updateDurableMutationIntent(intent, {
-          status: "outcome_unknown",
-        });
-        setSelectionMutationIntent(unknown);
-        setError(
-          "Selection outcome is unknown. Repeat the same selection to resume it with the same idempotency key.",
+        const result = await adminV2Operation(
+          "PATCH /api/v2/admin/characters/:id/draft-image",
+          {
+            path: { id: data.character.id },
+            replayIdempotencyKey: intent.idempotencyKey,
+            ifMatch: data.project.version,
+            body: draftSelectionBody,
+          },
         );
-      } else {
-        setError(
-          cause instanceof Error
-            ? cause.message
-            : "Character asset could not be selected",
-        );
-      }
-    } finally {
-      setBusy(null);
-    }
+        return {
+          result,
+          committedTargetId: result.selectedAssetId,
+          message: `${activeConfig.label} was committed to the next Character Release draft.`,
+        };
+      },
+      afterRefresh: () => {
+        if (activePurpose === "character_cover") {
+          choosePurpose("character_hero", {
+            identityCommitted: bootstrapMode,
+          });
+        } else if (activePurpose === "character_hero") {
+          choosePurpose("character_chat");
+        } else {
+          onContinue("preview");
+        }
+      },
+    });
   };
 
   if (!permissions.read)
@@ -1623,23 +1198,6 @@ export function CharacterAssetStudio({
       !creativeRunCreateRequestSchema.safeParse(
         runCreationIntent.requestSnapshot,
       ).success),
-  );
-  const reviewIntentNeedsReconciliation = Boolean(
-    reviewMutationIntent &&
-    (reviewMutationIntent.status === "reconciliation_required" ||
-      !characterAssetReviewIntentSnapshot(
-        reviewMutationIntent.requestSnapshot,
-      )),
-  );
-  const selectionIntentNeedsReconciliation = Boolean(
-    selectionMutationIntent &&
-    (selectionMutationIntent.status === "reconciliation_required" ||
-      (!characterAssetSelectionIntentSnapshot(
-        selectionMutationIntent.requestSnapshot,
-      ) &&
-        !characterAssetSelectionRecoveryVerification(
-          selectionMutationIntent.requestSnapshot,
-        ))),
   );
   const generationActionLabel = runIntentNeedsReconciliation
     ? "Reconcile saved request"
@@ -1789,12 +1347,12 @@ export function CharacterAssetStudio({
             >
               <p>
                 {bootstrapProfile
-                  ? `${bootstrapProfile.label} · ${bootstrapProfile.orientation} · ${t(
+                  ? t(
                       identityBootstrap.state === "recoverable_empty_history"
                         ? "No reference image is needed. Your selected portrait becomes identity version {version}; earlier candidates remain in history."
                         : "No reference image is needed. Your selected portrait becomes the reference for later images.",
                       { version: identityBootstrap.nextIdentityVersion },
-                    )}`
+                    )
                   : t(
                       "No active text-to-image bootstrap profile is available. Generation remains blocked until one is published.",
                     )}
@@ -1861,6 +1419,23 @@ export function CharacterAssetStudio({
 
       <IdentityRail data={data} onRepair={() => onContinue("visual")} />
 
+      {canGenerateMissing && missingPurposes.length > 0 ? (
+        <div
+          className="flex flex-col gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
+          data-testid="generate-missing-images"
+        >
+          <span>
+            {t("Still needs: {purposes}. Default briefs are ready, and you can adjust them below.", {
+              purposes: missingPurposes.map((purpose) => t(purposeConfig[purpose].label)).join(" · "),
+            })}
+          </span>
+          <WorkspaceButton disabled={busy !== null} onClick={() => void generateMissingImages()} tone="primary">
+            {busy === "generate" ? <Loader2 className="h-4 w-4 animate-spin" /> : <WandSparkles className="h-4 w-4" />}
+            {t("Generate missing images")}
+          </WorkspaceButton>
+        </div>
+      ) : null}
+
       {runCreationIntent?.committedTargetId ? (
         <p
           className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-sm"
@@ -1875,43 +1450,13 @@ export function CharacterAssetStudio({
           )}
         </p>
       ) : null}
-      {reviewMutationIntent ? (
-        <div
-          className="flex flex-col gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
-          role="status"
-        >
-          <span>
-            {reviewIntentNeedsReconciliation
-              ? t(
-                  "This saved review is aged or no longer matches the active contract. Reconcile its server receipt before another decision.",
-                )
-              : reviewMutationIntent.status === "committed_projection_pending"
-                ? t(
-                    "Review receipt is committed; verify the exact decision in the latest Run projection.",
-                  )
-                : t(
-                    "Review submission is ready to resume with the same request key.",
-                  )}
-          </span>
-          <WorkspaceButton
-            disabled={!permissions.review || busy !== null}
-            onClick={() => void resumeReviewMutation()}
-          >
-            {reviewIntentNeedsReconciliation
-              ? t("Reconcile review")
-              : reviewMutationIntent.status === "committed_projection_pending"
-                ? t("Verify review")
-                : t("Resume review")}
-          </WorkspaceButton>
-        </div>
-      ) : null}
       {selectionMutationIntent ? (
         <div
           className="flex flex-col gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
           role="status"
         >
           <span>
-            {selectionIntentNeedsReconciliation
+            {selection.needsReconciliation
               ? t(
                   "This saved selection is aged or no longer matches the active contract. Reconcile its server receipt before another selection.",
                 )
@@ -1926,9 +1471,9 @@ export function CharacterAssetStudio({
           </span>
           <WorkspaceButton
             disabled={!permissions.selectDraft || busy !== null}
-            onClick={() => void resumeSelectionMutation()}
+            onClick={() => void selection.resume()}
           >
-            {selectionIntentNeedsReconciliation
+            {selection.needsReconciliation
               ? t("Reconcile selection")
               : selectionMutationIntent.status ===
                   "committed_projection_pending"
@@ -1972,7 +1517,6 @@ export function CharacterAssetStudio({
                 {activeRunDetail.items.some((item) => !item.asset && unconfirmedOperations.some((operation) => operation.requestId === item.lineage?.requestId))
                   ? <span className="rounded bg-[var(--ad-yellow-bg)] px-2 py-1 text-xs">{t("Generation result awaiting confirmation")}</span>
                   : <StatusBadge value={activeRunDetail.executionOutcome} />}
-                <StatusBadge value={activeRunDetail.reviewState} />
               </div>
             ) : null}
           </div>
@@ -2248,7 +1792,7 @@ export function CharacterAssetStudio({
 
       {selectedItem &&
       !productionBlocked &&
-      (!recurringProductionReady || workspaceMode === "review") ? (
+      (!recurringProductionReady || workspaceMode === "review" || selectedItem.asset) ? (
         <section
           aria-label={t("Current candidate actions")}
           className="flex flex-col gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 sm:flex-row sm:items-center sm:justify-between"
@@ -2384,6 +1928,13 @@ export function CharacterAssetStudio({
             if (!isProjectionRequestCancellation(cause)) setError(cause instanceof Error ? cause.message : "Character assets could not be loaded");
           }).finally(() => setLoadingHistory(false));
         }}>{t("Load more")}</WorkspaceButton> : null}
+        {bootstrapProfile || qualifiedRoute ? (
+          <p className="mt-4 break-all border-t border-[var(--ad-border)] pt-4 text-xs text-[var(--ad-text-muted)]">
+            {t("Current image route")}: {bootstrapMode
+              ? `${bootstrapProfile?.label ?? ""} · ${bootstrapProfile?.orientation ?? ""}`
+              : qualifiedRoute?.generationProfileKey}
+          </p>
+        ) : null}
         {selectedItem ? (
           <dl className="mt-4 grid gap-2 border-t border-[var(--ad-border)] pt-4 text-xs sm:grid-cols-2">
             <div>

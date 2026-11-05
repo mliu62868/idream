@@ -27,7 +27,7 @@ describe("draft image pack reset warning", () => {
         actorId="admin"
         data={data}
         navigateToTab={() => undefined}
-        permissions={{ writeVisual: true, evaluateRoute: false }}
+        permissions={{ writeVisual: true }}
         runCommittedMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
       />,
     );

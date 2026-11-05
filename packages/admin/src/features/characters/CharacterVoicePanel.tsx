@@ -426,7 +426,7 @@ export function CharacterVoicePanel({
       setMessage(
         mutation.result.replayed
           ? "The existing voice activation result was recovered."
-          : "The selected voice is now active for new chat speech.",
+          : "The selected voice is now active. New conversations use it right away.",
       );
     });
   }
@@ -455,7 +455,7 @@ export function CharacterVoicePanel({
       setMessage(
         mutation.result.replayed
           ? "The existing reset to system default was recovered."
-          : "This character now inherits the system voice default.",
+          : "This character now inherits the system voice default. New conversations use it right away.",
       );
     } finally {
       setBusyAction(null);
@@ -719,6 +719,9 @@ export function CharacterVoicePanel({
                 <CheckCircle2 aria-hidden="true" className="h-4 w-4" />
                 {busyAction === "activate" ? t("Activating voice…") : t("Activate voice")}
               </WorkspaceButton>
+              <p className="text-xs leading-5 text-[var(--ad-text-muted)]" data-testid="voice-effect-note">
+                {t("New conversations use this voice right away. It does not go through a Release.")}
+              </p>
             </div>
           </div>
           {!canActivate && !busy ? (
@@ -1058,12 +1061,13 @@ export function CharacterVoicePanel({
             </div>
             <div>
               <h3 className="font-semibold" id="system-voice-defaults-title">
-                {t("System voice defaults")}
+                {t("Advanced: voice defaults for all characters")}
               </h3>
               <p className="mt-1 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
-                {t("Controls every character without a voice override.")}
+                {t("Affects every character without its own voice, not just this one. New conversations use a saved change right away.")}
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
+                <StatusBadge tone="warn" value={t("Affects all characters")} />
                 <StatusBadge
                   value={voice.systemDefaults.source === "app_setting" ? t("saved in Admin") : t("environment fallback")}
                 />

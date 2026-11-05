@@ -26,11 +26,6 @@ const SHARED_PKG = "shared";
  * keeps them in shared. Anything not listed here must have >= 2 consumers.
  */
 const SINGLE_CONSUMER_LEDGER: Record<string, { consumer: string; reason: string }> = {
-  "@idream/shared/catalog": {
-    consumer: "main",
-    reason:
-      "Product catalog (plans/pricing) is re-exported from the root barrel, which all four packages import. The subpath exists so main's server code can pull the catalog without dragging in the whole root barrel. Retire it if main stops being the only direct importer.",
-  },
   "@idream/shared/chat/persona": {
     consumer: "main",
     reason:

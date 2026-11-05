@@ -22,6 +22,7 @@ import {
   STARTERS_LIST,
   starterDetailsMarkdown,
   starterPayload,
+  starterPreservedFields,
   starterTextField,
   type Starter,
   type StarterDraft,
@@ -52,6 +53,32 @@ function draftFromRow(row: Starter): EditDraft {
       starterTextField(row.advancedDetails, "visualBrief"),
     reason: "",
   };
+}
+
+const PRESERVED_FIELD_LABELS: Record<string, string> = {
+  face: "Face",
+  hair: "Hair",
+  body: "Body",
+  description: "Prefilled description",
+};
+
+function PreservedFields({ row }: { row: Starter }) {
+  const { t } = useAdminI18n();
+  const fields = starterPreservedFields(row);
+  if (fields.length === 0) return null;
+  return (
+    <DetailSection title={t("Existing look and intro")}>
+      <p className="text-xs text-[var(--ad-text-muted)]">{t("Saved with this template and used to prefill the storefront creator. Editing the fields here keeps them.")}</p>
+      <dl className="mt-3 grid gap-3 md:grid-cols-2" data-testid="starter-preserved-fields">
+        {fields.map((field) => (
+          <div key={field.key}>
+            <dt className="text-xs text-[var(--ad-text-muted)]">{PRESERVED_FIELD_LABELS[field.key] ? t(PRESERVED_FIELD_LABELS[field.key]) : field.key}</dt>
+            <dd className="mt-1 whitespace-pre-wrap text-sm text-[var(--ad-text)]">{field.text}</dd>
+          </div>
+        ))}
+      </dl>
+    </DetailSection>
+  );
 }
 
 export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boolean }) {
@@ -243,6 +270,7 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
 
       {mode === "edit" && draft ? (
         <fieldset disabled={awaitingReadback} className="space-y-6">
+          <PreservedFields row={row} />
           <FormSection title={t("Basic info")}>
             <Field label={t("Name (≥1)")}>
               <input
@@ -363,6 +391,8 @@ export function StartersDetailPage({ id, canWrite }: { id: string; canWrite: boo
               <div><p className="text-xs text-[var(--ad-text-muted)]">{t("Visual direction")}</p><p className="mt-1 whitespace-pre-wrap text-sm text-[var(--ad-text)]">{starterTextField(row.appearance, "visualBrief") || starterTextField(row.advancedDetails, "visualBrief") || "—"}</p></div>
             </div>
           </DetailSection>
+
+          <PreservedFields row={row} />
 
           <EngineeringDetails summary={t("Engineering details")}>
             <div>{t("starter.id =")} {row.id}</div>

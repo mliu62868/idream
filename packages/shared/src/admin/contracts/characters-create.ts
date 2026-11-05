@@ -134,6 +134,18 @@ export const characterProjectCreateResponseSchema = z
   })
   .strict();
 
+// SPEC: 复制为独立私有草稿，请求没有可变内容，全部来自源角色。
+export const characterProjectDuplicateRequestSchema = z.object({}).strict();
+
+export const characterProjectDuplicateResponseSchema = characterProjectCreateResponseSchema
+  .extend({
+    sourceCharacterId: adminIdSchema,
+    copiedImageCount: z.number().int().nonnegative(),
+    skippedImageCount: z.number().int().nonnegative(),
+    identityCopied: z.boolean(),
+  })
+  .strict();
+
 export const customerCharacterPublicationPrepRequestSchema = z
   .object({
     submissionId: adminIdSchema,
@@ -225,6 +237,10 @@ export type CharacterProjectCreateRequest = z.infer<
 
 export type CharacterProjectCreateResponse = z.infer<
   typeof characterProjectCreateResponseSchema
+>;
+
+export type CharacterProjectDuplicateResponse = z.infer<
+  typeof characterProjectDuplicateResponseSchema
 >;
 
 export type CustomerCharacterPublicationPrepRequest = z.infer<

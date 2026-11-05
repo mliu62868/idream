@@ -99,7 +99,7 @@ it.each([false, true])("refreshes the library when a generated candidate is deli
         journey: { assetPack: { draft: { missingPurposes: ["character_cover", "character_hero", "character_chat"] } } },
         visual: { identityBootstrap: { allowed: true } },
       })}
-      canRead canReadProduction canCreate canReview canArchive={false}
+      canRead canReadProduction canCreate canArchive={false}
       onContinue={() => undefined}
       onProjectReload={onProjectReload}
       commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
@@ -171,7 +171,7 @@ it("uses an unknown request's recovery authority without declaring failure or al
   });
   try {
     await act(async () => root.render(<CharacterImageLibrary actorId="unknown-operator" data={data}
-      canRead canReadProduction canCreate canReview canArchive={false} onContinue={() => undefined}
+      canRead canReadProduction canCreate canArchive={false} onContinue={() => undefined}
       onProjectReload={async () => undefined}
       commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })} />));
     const deadline = Date.now() + 2_000;

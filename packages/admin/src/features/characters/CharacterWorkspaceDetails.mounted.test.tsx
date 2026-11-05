@@ -640,7 +640,7 @@ describe("Character workspace details", () => {
       );
     });
     await waitUntil(
-      () => container.textContent?.includes("System voice defaults") === true,
+      () => container.textContent?.includes("Advanced: voice defaults for all characters") === true,
       "the system voice defaults panel",
     );
 

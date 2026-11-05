@@ -174,7 +174,7 @@ describe("Visual Identity operator workbench", () => {
     const html = renderToStaticMarkup(
       <VisualIdentityPanel
         data={data}
-        permissions={{ writeVisual: true, evaluateRoute: true }}
+        permissions={{ writeVisual: true }}
         runCommittedMutation={runCommittedMutation}
       />,
     );
@@ -186,7 +186,7 @@ describe("Visual Identity operator workbench", () => {
     expect(html).toContain("Locked seed");
     expect(html).toContain("Creation history");
     expect(html).toContain("Open any image");
-    expect(html).toContain("Official identity and production settings");
+    expect(html).toContain("Diagnostics and advanced settings");
     expect(html).toContain("Publish the approved identity references");
     // 服务端下发的 deepLink 原样透传，前端不再自建 code→锚点映射。
     expect(html).toContain(
@@ -211,7 +211,7 @@ describe("Visual Identity operator workbench", () => {
     expect(html).not.toContain("Generate 40 route test images");
     expect(html).not.toContain("Batch IDs");
     expect(html.indexOf("Visual identity")).toBeLessThan(
-      html.indexOf("Official identity and production settings"),
+      html.indexOf("Diagnostics and advanced settings"),
     );
   });
 
@@ -219,11 +219,11 @@ describe("Visual Identity operator workbench", () => {
     const blockedHtml = renderToStaticMarkup(
       <VisualIdentityPanel
         data={data}
-        permissions={{ writeVisual: true, evaluateRoute: true }}
+        permissions={{ writeVisual: true }}
         runCommittedMutation={runCommittedMutation}
       />,
     );
-    const blockedSummary = blockedHtml.indexOf("Official identity and production settings");
+    const blockedSummary = blockedHtml.indexOf("Diagnostics and advanced settings");
     expect(
       blockedHtml.slice(Math.max(0, blockedSummary - 260), blockedSummary),
     ).toContain('open=""');
@@ -248,11 +248,11 @@ describe("Visual Identity operator workbench", () => {
             },
           },
         }}
-        permissions={{ writeVisual: true, evaluateRoute: true }}
+        permissions={{ writeVisual: true }}
         runCommittedMutation={runCommittedMutation}
       />,
     );
-    const productionSettingsSummary = html.indexOf("Official identity and production settings");
+    const productionSettingsSummary = html.indexOf("Diagnostics and advanced settings");
 
     expect(productionSettingsSummary).toBeGreaterThan(0);
     expect(
@@ -267,7 +267,7 @@ describe("Visual Identity operator workbench", () => {
     const html = renderToStaticMarkup(
       <VisualIdentityPanel
         data={data}
-        permissions={{ writeVisual: false, evaluateRoute: false }}
+        permissions={{ writeVisual: false }}
         runCommittedMutation={runCommittedMutation}
       />,
     );
@@ -302,7 +302,7 @@ describe("Visual Identity operator workbench", () => {
           },
         }}
         navigateToTab={() => undefined}
-        permissions={{ writeVisual: true, evaluateRoute: true }}
+        permissions={{ writeVisual: true }}
         runCommittedMutation={runCommittedMutation}
       />,
     );
@@ -333,7 +333,7 @@ describe("Visual Identity operator workbench", () => {
             },
           },
         }}
-        permissions={{ writeVisual: true, evaluateRoute: true }}
+        permissions={{ writeVisual: true }}
         runCommittedMutation={runCommittedMutation}
       />,
     );

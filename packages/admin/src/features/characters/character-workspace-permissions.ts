@@ -12,9 +12,7 @@ export const CHARACTER_WORKSPACE_WRITES = {
   writeProject: "character.project.write",
   publishRelease: "character.release.publish",
   writeVisual: "content.official.write",
-  evaluateRoute: "content.production.write",
   createAssets: "creative.run.write",
-  reviewAssets: "creative.run.review",
   archiveAssets: "content.asset.review",
   manageVoiceDefaults: "generation.config.write",
   // SPEC: 内容设置使用各自的写权限，character.project.write 不授予这些操作。

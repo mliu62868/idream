@@ -1117,6 +1117,33 @@ describe("CreateWorkspace Quick Start intent restoration", () => {
     expect(JSON.stringify(calls)).not.toContain("private unsent garden teacher idea");
   });
 
+  it.each([
+    {
+      shape: "Admin-saved",
+      template: {
+        appearance: { notes: "Freckles across the nose", visualBrief: "Soft window light" },
+        advancedDetails: { detailsMarkdown: "## Voice\n\nDry and unhurried", firstMessage: "Your light was on." },
+      },
+      expected: { appearance: "Freckles across the nose\nSoft window light", detailsMarkdown: "## Voice\n\nDry and unhurried", firstMessage: "Your light was on." },
+    },
+    {
+      shape: "seed edited in Admin",
+      template: {
+        appearance: { face: { prompt: "Warm open face", eyes: "Hazel" }, hair: { prompt: "Dark waves" }, notes: "", visualBrief: "Window light" },
+        advancedDetails: { description: "Your neighbour.", personality: "Warm", detailsMarkdown: "## Personality\n\nWarm", firstMessage: "Hi." },
+      },
+      expected: { appearance: "Warm open face\nWindow light", eyeColor: "Hazel", hair: "Dark waves", description: "Your neighbour.", detailsMarkdown: "## Personality\n\nWarm" },
+    },
+  ])("prefills the storefront creator from a $shape template", async ({ template, expected }) => {
+    const normal = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((input, init) => String(input) === "/api/v1/character-templates"
+      ? Promise.resolve(Response.json({ ok: true, data: { items: [{ id: "shaped-template", name: "Shaped Template", ...template }] } }))
+      : normal(input, init));
+    viewer = "creator-a"; await mount();
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Shaped Template")!.click()); await settle();
+    expect(JSON.parse(window.localStorage.getItem(draftStorageKeyForScope("user:creator-a"))!)).toMatchObject(expected);
+  });
+
   it("lets the user apply a template without submitting or erasing the separate idea", async () => {
     const normal = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation((input, init) => String(input) === "/api/v1/character-templates"

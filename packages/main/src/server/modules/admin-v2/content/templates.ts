@@ -40,6 +40,15 @@ function templateDTO(template: CharacterTemplate) {
   };
 }
 
+// INVARIANT: 模板 JSON 有多种来源（种子 SQL 的 face/hair/body 与 description/tone/...，
+//            后台表单的 notes/visualBrief 与 detailsMarkdown/firstMessage）。编辑只覆盖请求里
+//            带的键，其余键原样保留——主站预填读的正是这些键。
+function mergeTemplateJson(existing: unknown, patch: Record<string, unknown>) {
+  return existing !== null && typeof existing === "object" && !Array.isArray(existing)
+    ? { ...(existing as Record<string, unknown>), ...patch }
+    : patch;
+}
+
 // SPEC: 文本签名 = name + summary + advancedDetails + tags，喂给 moderation 的 input 层。
 async function moderateTemplate(
   targetId: string,
@@ -160,7 +169,9 @@ export async function updateTemplate(request: Request, id: string) {
             name: body.name ?? existing.name,
             // null clears the summary; it must not fall back to the old value.
             summary: body.summary !== undefined ? body.summary : existing.summary,
-            advancedDetails: body.advancedDetails ?? existing.advancedDetails,
+            advancedDetails: body.advancedDetails
+              ? mergeTemplateJson(existing.advancedDetails, body.advancedDetails)
+              : existing.advancedDetails,
             tags: body.tags ?? (existing.tags as string[]),
           });
         }
@@ -180,8 +191,12 @@ export async function updateTemplate(request: Request, id: string) {
             summary: body.summary,
             gender: body.gender,
             style: body.style,
-            appearance: body.appearance !== undefined ? toInputJson(body.appearance) : undefined,
-            advancedDetails: body.advancedDetails !== undefined ? toInputJson(body.advancedDetails) : undefined,
+            appearance: body.appearance !== undefined
+              ? toInputJson(mergeTemplateJson(existing.appearance, body.appearance))
+              : undefined,
+            advancedDetails: body.advancedDetails !== undefined
+              ? toInputJson(mergeTemplateJson(existing.advancedDetails, body.advancedDetails))
+              : undefined,
             tags: body.tags !== undefined ? toInputJson(body.tags) : undefined,
             coverAssetId: body.coverAssetId,
             sortOrder: body.sortOrder,

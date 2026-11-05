@@ -23,7 +23,8 @@ export type AdminV2ResourcePermissionResolver =
   | "mutation_recovery_command_type"
   | "saved_view_scope_read"
   | "today_claim_source_write"
-  | "character_media_library_status_write";
+  | "character_media_library_status_write"
+  | "character_creation_aid";
 
 export type AdminV2Authorization =
   | { readonly kind: "bootstrap" }
@@ -387,6 +388,22 @@ export const ADMIN_V2_API_OPERATIONS = [
     allOf("character.project.write"),
     "characterProjectCreateRequestSchema+idempotency-key",
     "characterProjectCreateResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/characters/creation-templates",
+    allOf("character.project.write"),
+    "none",
+    "contentTemplateListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/duplicate",
+    allOf("character.project.write"),
+    "characterProjectDuplicateRequestSchema+idempotency-key",
+    "characterProjectDuplicateResponseSchema",
+    undefined,
+    { commandType: "character.project.duplicate" },
   ),
   operation(
     "GET",
@@ -2295,7 +2312,7 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation(
     "POST",
     "/api/v2/admin/content/character-assist",
-    allOf("content.official.write"),
+    oneOfBy("character_creation_aid", "content.official.write", "character.project.write"),
     "contentCharacterAssistRequestSchema",
     "contentCharacterAssistResponseSchema",
   ),

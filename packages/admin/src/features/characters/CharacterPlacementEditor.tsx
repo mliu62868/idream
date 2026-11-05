@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
-import { Check, ImageIcon, Loader2, Replace } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Check, ImageIcon, Loader2, Replace, Search } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import type {
@@ -12,9 +12,12 @@ import { useAdminI18n } from "@/components/admin/i18n";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
 import { RequestErrorDetails } from "@/components/admin/ui/RequestErrorDetails";
 import { operatorErrorCopy, type OperatorErrorCopy } from "@/components/admin/ui/request-error-copy";
-import { WorkspaceButton } from "@/features/operations/WorkspaceUi";
+import { WorkspaceButton, fieldClass } from "@/features/operations/WorkspaceUi";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import type { RunCommittedCharacterMutation } from "./character-workspace-permissions";
+import { draftImageSelectionFrozen, useCharacterDraftImageSelection } from "./useCharacterDraftImageSelection";
+
+const SEARCH_DEBOUNCE_MS = 300;
 
 const placements = [
   { purpose: "character_cover", label: "Cover", description: "Character cards and primary portrait", aspect: "aspect-[4/5]" },
@@ -25,11 +28,13 @@ const placements = [
 type PlacementPurpose = (typeof placements)[number]["purpose"];
 
 export function CharacterPlacementEditor({
+  actorId = "anonymous",
   data,
   canRead,
   canWrite,
   runCommittedMutation,
 }: {
+  actorId?: string;
   data: CharacterWorkspaceDetail;
   canRead: boolean;
   canWrite: boolean;
@@ -44,8 +49,19 @@ export function CharacterPlacementEditor({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<OperatorErrorCopy | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const chooserHeading = useRef<HTMLHeadingElement | null>(null);
+  const selection = useCharacterDraftImageSelection({
+    actorId,
+    data,
+    canWrite,
+    commitProjectMutation: runCommittedMutation,
+    feedback: {
+      error: (message, cause) => setError(message === null ? null : operatorErrorCopy(cause ?? new Error(message))),
+    },
+  });
 
-  const loadAssets = useCallback(async (cursor: string | null = null) => {
+  const loadAssets = useCallback(async (cursor: string | null = null, term = "") => {
     if (!canRead) return;
     const version = ++requestVersion.current;
     setLoading(true);
@@ -55,7 +71,11 @@ export function CharacterPlacementEditor({
         "GET /api/v2/admin/characters/:id/image-sources",
         {
           path: { id: data.character.id },
-          query: new URLSearchParams({ purpose: "character_library", ...(cursor ? { cursor } : {}) }),
+          query: new URLSearchParams({
+            purpose: "character_library",
+            ...(term.trim() ? { search: term.trim() } : {}),
+            ...(cursor ? { cursor } : {}),
+          }),
         },
       );
       if (version !== requestVersion.current) return;
@@ -68,16 +88,35 @@ export function CharacterPlacementEditor({
     }
   }, [canRead, data.character.id, t]);
 
-  // INVARIANT: same freeze the server enforces (candidate-release-guard); predicting it
-  // here keeps operators from picking an image only to be refused.
-  const candidatePending = data.journey.release.candidateReleaseId !== null ||
-    data.releases.some(({ release }) => release.status === "approved");
+  const candidatePending = draftImageSelectionFrozen(data);
 
   function openChooser(purpose: PlacementPurpose) {
     if (!canRead || !canWrite || candidatePending) return;
     setChoosing(purpose);
     setError(null);
+    setSearch("");
     void loadAssets();
+  }
+
+  // INTENT: 选择器开在卡片网格之后、首屏以下，不滚动的话「选择图片」看上去没有反应。
+  useEffect(() => {
+    if (!choosing) return;
+    chooserHeading.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    chooserHeading.current?.focus({ preventScroll: true });
+  }, [choosing]);
+
+  useEffect(() => {
+    if (!choosing) return;
+    const term = search.trim();
+    if (!term) return;
+    const timer = window.setTimeout(() => void loadAssets(null, term), SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [choosing, loadAssets, search]);
+
+  function changeSearch(next: string) {
+    setSearch(next);
+    // Clearing shows the whole library again right away.
+    if (!next.trim() && search.trim()) void loadAssets();
   }
 
   async function selectAsset(
@@ -85,34 +124,8 @@ export function CharacterPlacementEditor({
     asset: CharacterImageSourceAsset,
   ) {
     setBusyAssetId(asset.id);
-    setError(null);
-    const body = {
-      entityVersion: data.project.version,
-      purpose,
-      assetId: asset.id,
-      ...(asset.qualification?.authority.runId
-        ? { runId: asset.qualification.authority.runId } : {}),
-      ...(asset.qualification?.authority.itemId
-        ? { itemId: asset.qualification.authority.itemId } : {}),
-      ...(asset.qualification?.authority.reviewDecisionId
-        ? { reviewDecisionId: asset.qualification.authority.reviewDecisionId } : {}),
-      reason: `Selected from ${data.character.name}'s image library`,
-    };
     try {
-      await runCommittedMutation({
-        action: `${purpose} image selection`,
-        commit: () => adminV2Operation(
-          "PATCH /api/v2/admin/characters/:id/draft-image",
-          {
-            path: { id: data.character.id },
-            ifMatch: data.project.version,
-            body,
-          },
-        ),
-        afterRefresh: () => setChoosing(null),
-      });
-    } catch (cause) {
-      setError(operatorErrorCopy(cause));
+      await selection.selectLibraryAsset(purpose, asset, () => setChoosing(null));
     } finally {
       setBusyAssetId(null);
     }
@@ -179,9 +192,27 @@ export function CharacterPlacementEditor({
       {choosing ? (
         <div className="mt-5 border-t border-[var(--ad-border)] pt-5" aria-live="polite">
           <div className="flex items-center justify-between gap-3">
-            <h4 className="font-semibold">{t("Choose {placement} image", { placement: t(placements.find((item) => item.purpose === choosing)?.label ?? choosing) })}</h4>
+            <h4 className="font-semibold focus:outline-none" ref={chooserHeading} tabIndex={-1}>{t("Choose {placement} image", { placement: t(placements.find((item) => item.purpose === choosing)?.label ?? choosing) })}</h4>
             <button className="min-h-10 text-sm font-semibold text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]" onClick={() => setChoosing(null)} type="button">{t("Cancel")}</button>
           </div>
+          <label className="relative mt-3 block max-w-md">
+            <span className="sr-only">{t("Search images")}</span>
+            <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-[var(--ad-text-muted)]" />
+            <input
+              className={`${fieldClass} pl-9`}
+              onChange={(event) => changeSearch(event.target.value)}
+              placeholder={t("Search by file name, tag, description or date")}
+              value={search}
+            />
+          </label>
+          {selection.intent ? (
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--ad-border)] p-3 text-sm" role="status">
+              <span>{t("Asset selection is ready to resume with the same request key.")}</span>
+              <WorkspaceButton disabled={busyAssetId !== null} onClick={() => void selection.resume()}>
+                {t(selection.needsReconciliation ? "Reconcile selection" : "Resume selection")}
+              </WorkspaceButton>
+            </div>
+          ) : null}
           {error ? (
             <div className="mt-3 rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">
               <p className="font-semibold">{t(error.headline)}</p>
@@ -251,7 +282,7 @@ export function CharacterPlacementEditor({
             </div>
           )}
           {nextCursor ? (
-            <WorkspaceButton className="mt-4" disabled={loading} onClick={() => void loadAssets(nextCursor)}>
+            <WorkspaceButton className="mt-4" disabled={loading} onClick={() => void loadAssets(nextCursor, search)}>
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               {t("Load more images")}
             </WorkspaceButton>

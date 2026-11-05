@@ -149,8 +149,10 @@ export async function listCharacterImageSources(input: {
       : new Map<string, CharacterImageQualification>();
     for (const asset of visibleAssets) {
       const dto = characterImageSourceAssetDto(asset, qualifications.get(asset.id) ?? null);
-      if (search && ![dto.id, dto.filename, dto.qualification?.source ?? "", dto.qualification?.state ?? ""]
-        .join(" ").toLowerCase().includes(search)) continue;
+      if (search && ![
+        dto.id, dto.filename, dto.createdAt, dto.qualification?.source ?? "", dto.qualification?.state ?? "",
+        ...assetSearchableMetadata(asset.metadata),
+      ].join(" ").toLowerCase().includes(search)) continue;
       items.push(dto);
       if (items.length > limit) break;
     }
@@ -232,7 +234,7 @@ export async function createCharacterImageSource(input: {
             ownerId: input.actor.id,
             characterId: input.characterId,
             type: "image",
-            url: mediaViewUrl(assetId, input.form.image.extension),
+            url: characterMediaViewUrl(assetId, input.form.image.extension),
             storageKey,
             contentType: input.form.image.contentType,
             width: input.form.image.width,
@@ -320,6 +322,16 @@ export async function createCharacterImageSource(input: {
   }
 }
 
+// SPEC: 搜索范围 = ID、文件名、创建日期、来源、状态，以及运营在图片库维护的标签与描述。
+function assetSearchableMetadata(value: MediaAsset["metadata"]): string[] {
+  const metadata = jsonObject(value);
+  const platform = jsonObject(metadata.platformAsset as MediaAsset["metadata"]);
+  return [metadata, platform].flatMap((source) => [
+    ...(typeof source.description === "string" ? [source.description] : []),
+    ...(Array.isArray(source.tags) ? source.tags.filter((tag): tag is string => typeof tag === "string") : []),
+  ]);
+}
+
 function characterImageSourceAssetDto(
   asset: MediaAsset,
   qualification: CharacterImageQualification | null,
@@ -380,7 +392,7 @@ function extensionForContentType(value: string | null) {
   return ".jpg";
 }
 
-function mediaViewUrl(assetId: string, extension: string) {
+export function characterMediaViewUrl(assetId: string, extension: string) {
   const token = Buffer.from(assetId, "utf8").toString("base64url");
   return `/user-content/${token}/content${extension}`;
 }

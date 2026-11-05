@@ -43,7 +43,7 @@
 
 ### 3.2 采用
 
-- 已完成且通过基础自动检查的素材可直接采用，不创建虚假的评分或人工批准；
+- 已完成且通过基础自动检查的素材可直接采用，不创建虚假的评分或人工批准；设为当前形象同样不需要评分决策，身份、参考集、来源与单人单画面自动检查仍是硬校验；
 - Asset 必须存在、可用，并精确属于所提交的 Run Item；
 - Run 的 target 必须属于同一 Character；生成图片可以被选择到任一产品槽位，不要求 generation purpose 等于 selection purpose；
 - 采用固定原 Run/Item/Job lineage，不改写生成请求或伪造一个与新槽位同名的 Run。发布重验 Job 的 source metadata 与原 Run 相符；
@@ -125,7 +125,8 @@ sequenceDiagram
 | 查询角色 Runs | `GET /api/v2/admin/creative/runs?targetType=character&targetId=…&sort=updated_desc` | `creative.run.read` | cursor query |
 | 创建 Run | `POST /api/v2/admin/creative/runs` | `creative.run.write` | `Idempotency-Key` |
 | 查询 Run lineage | `GET /api/v2/admin/creative/runs/:id` | `creative.run.read` | read |
-| 采用草稿素材 | `PATCH /api/v2/admin/characters/:id/draft-image` | `character.project.write` | `If-Match` + entity version |
+| 采用草稿素材 | `PATCH /api/v2/admin/characters/:id/draft-image` | `character.project.write` | `If-Match` + entity version；Admin 三个入口共用 `useCharacterDraftImageSelection` 的持久意图 |
+| 复制为私有草稿 | `POST /api/v2/admin/characters/:id/duplicate` | 创建角色的全局判据 | `Idempotency-Key` |
 | 创建 Release proposal | `POST /api/v2/admin/characters/:id/releases` | `character.release.propose` | `Idempotency-Key` |
 | 校验 Release | `POST /api/v2/admin/characters/:id/releases/:releaseId/validation` | `character.release.publish` | `Idempotency-Key` |
 | 发布 Release | `POST /api/v2/admin/characters/:id/releases/:releaseId/commands/publish` | `character.release.publish` | `Idempotency-Key` |

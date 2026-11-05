@@ -94,74 +94,112 @@ describe("character AI assist", () => {
     };
     const body = contentCharacterAssistRequestSchema.parse({ seed: "A 30-year-old botanical curator", includeNameIdeas });
     const draft = generateCharacterDraft(body, runtime, "unused-names-trace");
+    const result = contentCharacterAssistResponseSchema.parse(await draft);
+    expect(result).toMatchObject({
+      description: outputs[0],
+      nameIdeas: [],
+      advancedDetails: { detailsMarkdown: outputs[1], firstMessage: outputs[2], visualBrief: outputs[3] },
+    });
     if (includeNameIdeas === false) {
-      const result = contentCharacterAssistResponseSchema.parse(await draft);
-      expect(result).toMatchObject({
-        description: outputs[0],
-        nameIdeas: [],
-        advancedDetails: { detailsMarkdown: outputs[1], firstMessage: outputs[2], visualBrief: outputs[3] },
-      });
+      expect(result.failedStages).toEqual([]);
       expect(requests.map(request => request.max_tokens)).toEqual([192, 512, 192, 320]);
     } else {
-      await expect(draft).rejects.toMatchObject({
-        code: "unavailable", status: 503,
-        details: { stage: "nameIdeas", failureKind: "output_limit", finishReason: "length", requestId: "unused-names-trace" },
-      });
+      // A truncated name list is one empty suggestion, not a lost draft.
+      expect(result.failedStages).toEqual(["nameIdeas"]);
       expect(requests.map(request => request.max_tokens)).toEqual([192, 512, 192, 320, 64]);
     }
   });
 
-  it("rejects an overlong summary instead of silently cutting its second sentence at 200 characters", async () => {
-    const completeSentence = "An adult botanical curator welcomes visitors with warmth and quiet precision.";
+  const fullDraft = (systemPrompt: string) => {
+    if (systemPrompt.includes("background bio")) return "An adult botanical curator welcomes visitors with warmth.";
+    if (systemPrompt.includes("Markdown details")) return "## Personality\nObservant.";
+    if (systemPrompt.includes("first message")) return "You found the quiet path. Stay a while.";
+    if (systemPrompt.includes("visual art direction")) return "Dark hair, green jacket, warm daylight.";
+    if (systemPrompt.includes("recognize this ADULT")) return "Adult botanical curator\n- Dark wavy hair\n- Warm brown eyes";
+    if (systemPrompt.includes("exactly 3 distinctive character names")) return "Mara Vale\nElin Rowe\nNora Voss";
+    throw new Error(`Unexpected system prompt: ${systemPrompt}`);
+  };
+
+  it("keeps the rest of the draft when an overlong summary fails its own field", async () => {
     const runtime = pipelineRuntime(systemPrompt => systemPrompt.includes("background bio")
-      ? `${completeSentence} She guides visitors through the conservatory with warmth and patient botanical knowledge while remembering their favorite plants and explaining their seasonal care in careful detail.`
-      : systemPrompt.includes("exactly 3 distinctive character names") ? "Mara\nElin\nNora" : "Complete operator draft.");
-    await expect(generateCharacterDraft({ seed: "A 30-year-old botanical curator" }, runtime)).rejects.toMatchObject({
-      code: "unavailable", details: { stage: "description", failureKind: "summary_limit", maxCharacters: 200 },
-    });
+      ? "An adult conservatory curator welcomes visitors with warmth ".repeat(5)
+      : fullDraft(systemPrompt));
+    const result = contentCharacterAssistResponseSchema.parse(
+      await generateCharacterDraft({ seed: "A 30-year-old botanical curator" }, runtime),
+    );
+    expect(result.description).toBe("");
+    expect(result.failedStages).toEqual(["description"]);
+    expect(result.advancedDetails.firstMessage).toBe("You found the quiet path. Stay a while.");
+    expect(result.nameIdeas).toEqual(["Mara Vale", "Elin Rowe", "Nora Voss"]);
   });
 
-  it("rejects an overlong summary without a complete sentence inside the limit before consuming later stages", async () => {
-    let requests = 0;
-    const runtime = pipelineRuntime(() => { requests += 1; return "An adult conservatory curator welcomes visitors with warmth ".repeat(5); });
-    await expect(generateCharacterDraft({ seed: "A 30-year-old botanical curator" }, runtime, "bounded-summary-trace")).rejects.toMatchObject({
-      code: "unavailable", status: 503,
-      details: { stage: "description", failureKind: "summary_limit", maxCharacters: 200, requestId: "bounded-summary-trace", modelRequestId: expect.any(String) },
-    });
-    expect(requests).toBe(1);
-  });
-
-  it("rejects a model-truncated personality and stops before consuming the remaining draft phases", async () => {
-    let requests = 0;
+  it("does not make truncated text editable, and still fills the other fields", async () => {
     const model = new PipelineChatModel({
       baseUrl: "http://model.test/v1",
       model: "test-model",
-      fetchImpl: async () => {
-        requests += 1;
-        const content = requests === 1 ? "A patient adult botanist tending a conservatory." : "## Boundaries\nConsent is never forced, always";
-        return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: requests === 1 ? "stop" : "length" }] })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+      fetchImpl: async (_url, init) => {
+        const prompt = JSON.parse(String(init?.body)).messages[0].content as string;
+        const truncated = prompt.includes("Markdown details");
+        const content = truncated ? "## Boundaries\nConsent is never forced, always" : fullDraft(prompt);
+        return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: truncated ? "length" : "stop" }] })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
       },
     });
     const runtime: AdminTextGenerationRuntime = {
       provider: "pipeline", pipelineUrl: "http://model.test/v1", model: "test-model", stream: input => model.stream(input),
     };
-    await expect(generateCharacterDraft({ seed: "A 30-year-old botanical curator" }, runtime, "operator-draft-trace")).rejects.toMatchObject({
-      code: "unavailable", status: 503,
-      details: { stage: "detailsMarkdown", failureKind: "output_limit", finishReason: "length", requestId: "operator-draft-trace", modelRequestId: expect.any(String) },
-    });
-    expect(requests).toBe(2);
+    const result = await generateCharacterDraft({ seed: "A 30-year-old botanical curator" }, runtime, "operator-draft-trace");
+    expect(result.advancedDetails.detailsMarkdown).toBe("");
+    expect(result.advancedDetails.firstMessage).toBe("You found the quiet path. Stay a while.");
+    expect(result.failedStages).toEqual(["detailsMarkdown"]);
   });
 
-  it("identifies the failed draft phase and distinguishes a model timeout from a generic 503", async () => {
+  it("stops waiting on a model that timed out and returns what it already produced", async () => {
+    const prompts: string[] = [];
     const runtime = pipelineRuntime((systemPrompt) => {
+      prompts.push(systemPrompt);
       if (systemPrompt.includes("background bio")) return "A patient botanist tending an adult companion's conservatory.";
       throw new DOMException("The model stream was aborted", "AbortError");
     });
+    const result = await generateCharacterDraft({ seed: "A 30-year-old botanical curator", includeVisualDirection: true }, runtime);
+    expect(prompts).toHaveLength(2);
+    expect(result.description).toContain("patient botanist");
+    expect(result.failedStages).toEqual(["detailsMarkdown", "firstMessage", "visualBrief", "visualIdentity", "nameIdeas"]);
+    expect(result.visualDirection).toBeUndefined();
+  });
+
+  it("identifies the first failure and distinguishes a timeout when nothing could be generated", async () => {
+    const runtime = pipelineRuntime(() => { throw new DOMException("The model stream was aborted", "AbortError"); });
     await expect(generateCharacterDraft({ seed: "A 30-year-old botanical curator" }, runtime)).rejects.toMatchObject({
       code: "unavailable",
       status: 503,
-      details: { stage: "detailsMarkdown", failureKind: "timeout", model: "test-model" },
+      details: { stage: "description", failureKind: "timeout", model: "test-model" },
     });
+  });
+
+  it("fills the create wizard's visual fields in one request when asked", async () => {
+    const result = contentCharacterAssistResponseSchema.parse(await generateCharacterDraft(
+      { seed: "A 30-year-old botanical curator", includeVisualDirection: true },
+      pipelineRuntime(fullDraft),
+    ));
+    expect(result.visualDirection).toEqual({
+      identityAnchor: "Adult botanical curator",
+      stableTraits: ["Dark wavy hair", "Warm brown eyes"],
+    });
+    expect(result.failedStages).toEqual([]);
+  });
+
+  it("leaves the visual fields empty instead of inventing traits from a one-line answer", async () => {
+    const result = await generateCharacterDraft(
+      { seed: "A 30-year-old botanical curator", includeVisualDirection: true },
+      pipelineRuntime(prompt => prompt.includes("recognize this ADULT") ? "Adult botanical curator" : fullDraft(prompt)),
+    );
+    expect(result.visualDirection).toBeUndefined();
+    expect(result.failedStages).toEqual(["visualIdentity"]);
+  });
+
+  it("blocks a partial draft the same way as a complete one", async () => {
+    const runtime = pipelineRuntime(prompt => prompt.includes("Markdown details") ? "An underage minor character." : fullDraft(prompt));
+    await expect(generateCharacterDraft({ seed: "A 30-year-old botanical curator" }, runtime)).rejects.toMatchObject({ status: 403 });
   });
 
   it("fails closed instead of returning saveable fields from the mock chat provider", async () => {
@@ -219,6 +257,7 @@ describe("character AI assist", () => {
         visualBrief:
           "Soft brown eyes, dark wavy hair, paint-marked linen, amber and slate palette.",
       },
+      failedStages: [],
       runtime: {
         provider: "pipeline",
         pipelineUrl: "https://pipeline.test.invalid/v1",
@@ -276,6 +315,26 @@ describe("character AI assist", () => {
     expect(result.status).toBe(503);
     expect(result.errorCode).toBe("unavailable");
     expect(result.data).toBeUndefined();
+  });
+
+  it("lets a global character creator use the wizard assist and keeps others out", async () => {
+    await createUser({ id: `${P}creator`, role: "analyst" });
+    await prisma.adminUserPermission.create({
+      data: { userId: `${P}creator`, permissionKey: "character.project.write", effect: "grant", reason: "assist test", createdById: `${P}admin` },
+    });
+    const allowed = await adminV2Api("POST", ASSIST, {
+      userId: `${P}creator`,
+      role: "analyst",
+      body: { seed: "a thoughtful astronomer" },
+    });
+    // Past the permission check: the test runtime is the mock provider, which fails closed.
+    expect(allowed.status).toBe(503);
+    const templates = await adminV2Api("GET", "/api/v2/admin/characters/creation-templates", { userId: `${P}creator`, role: "analyst" });
+    expect(templates.status).toBe(200);
+    // The wizard's template list does not open the template library itself.
+    const library = await adminV2Api("GET", "/api/v2/admin/content/templates", { userId: `${P}creator`, role: "analyst" });
+    expect(library.status).toBe(403);
+    await prisma.adminUserPermission.deleteMany({ where: { userId: `${P}creator` } });
   });
 
   it("rejects roles without content.official.write (403)", async () => {

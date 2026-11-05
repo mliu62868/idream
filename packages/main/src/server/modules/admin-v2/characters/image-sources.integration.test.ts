@@ -339,6 +339,25 @@ describe("Character local image source authority", () => {
       await prisma.character.delete({ where: { id: otherCharacterId } });
     }
   });
+  it("searches the tags and description operators maintain, not only file names", async () => {
+    const id = `search-metadata-${suffix}`;
+    await prisma.mediaAsset.create({ data: {
+      id, ownerId: actorId, characterId, type: "image", url: `https://example.test/${id}.png`,
+      safetyStatus: "passed", visibility: "private", contentType: "image/png",
+      metadata: { purpose: "character_library", platformAsset: { tags: ["Rainy Window"], description: "Kitchen at dusk" } },
+    } });
+    try {
+      const byTag = await listCharacterImageSources({ characterId, purpose: "character_library", search: "rainy" });
+      const byDescription = await listCharacterImageSources({ characterId, purpose: "character_library", search: "dusk" });
+      const none = await listCharacterImageSources({ characterId, purpose: "character_library", search: "absent-term" });
+      expect(byTag.items.map((item) => item.id)).toEqual([id]);
+      expect(byDescription.items.map((item) => item.id)).toEqual([id]);
+      expect(none.items).toEqual([]);
+    } finally {
+      await prisma.mediaAsset.delete({ where: { id } });
+    }
+  });
+
   it("paginates beyond 100 images after archive filtering and searches the entire library", async () => {
     const prefix = `pagination-${suffix}`;
     const createdAt = new Date("2030-01-01T00:00:00.000Z");

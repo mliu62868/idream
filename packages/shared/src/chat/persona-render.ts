@@ -101,6 +101,19 @@ export function legacySoulDetailsMarkdown(
   return sections.join("\n\n");
 }
 
+/**
+ * Character templates may carry both the saved Markdown and the structured seed
+ * fields it was folded from, because saving never deletes unknown keys. Once
+ * `detailsMarkdown` exists it is the operator's current text, including an
+ * intentionally empty one; folding again would duplicate or resurrect sections.
+ */
+export function characterTemplateDetailsMarkdown(value: unknown): string {
+  const row = record(value);
+  return row && hasOwn(row, "detailsMarkdown")
+    ? markdownText(row.detailsMarkdown)
+    : legacySoulDetailsMarkdown(value);
+}
+
 function legacyStringList(value: unknown): string[] {
   if (typeof value === "string") {
     const normalized = value.trim();

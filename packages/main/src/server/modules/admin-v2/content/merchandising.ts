@@ -433,9 +433,8 @@ export async function setCharacterStatus(input: {
 /**
  * SPEC: 设置某个角色挂载的标签（整组替换）。perm: content.tag.write。
  *
- * INTENT: 补上分类法链路里唯一缺失的一环——「把标签挂到角色上」。此前标签只能在
- * `createCharacterProject` 的 `legacyTagLabels` 里随创建写一次，而唯一传它的入口是官方角色 CMS，
- * 官方角色的 profile 编辑还会显式拒绝改标签并让运营「去 Taxonomy workspace」，但 Taxonomy 只治理
+ * INTENT: 补上分类法链路里唯一缺失的一环——「把标签挂到角色上」。此前标签只能随官方角色 CMS
+ * 的创建写一次，官方角色的 profile 编辑还会显式拒绝改标签并让运营「去 Taxonomy workspace」，但 Taxonomy 只治理
  * 词表本身，挂载能力根本不存在。
  *
  * INVARIANT: 与 visibility / status 不同，这里**不** rejectOfficialCharacter —— 需要打标签的恰恰

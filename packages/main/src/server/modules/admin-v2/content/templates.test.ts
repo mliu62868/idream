@@ -138,6 +138,54 @@ describe("character template library service (feature B)", () => {
     ).toBe(2);
   });
 
+  it("editing a seed-shaped template keeps every key the storefront prefill reads", async () => {
+    const admin = await setupAdmin("seed-merge");
+    const seeded = await prisma.characterTemplate.create({
+      data: {
+        id: `${P}seed-merge`,
+        scope: "built_in",
+        name: "Seed Neighbour",
+        tags: [],
+        appearance: { face: { prompt: "Warm open face", eyes: "Hazel" }, hair: { prompt: "Dark waves" }, body: { type: "Athletic" } },
+        advancedDetails: {
+          description: "Your upstairs neighbour.",
+          firstMessage: "Your light was still on.",
+          personality: "Warm, observant",
+          backstory: "Moved in last year.",
+          tone: "Unhurried",
+          interaction: { pacing: "Slow burn" },
+        },
+      },
+    });
+    const updated = await call("PATCH", `${TEMPLATES}/${seeded.id}`, {
+      userId: admin,
+      role: "admin",
+      body: {
+        expectedUpdatedAt: seeded.updatedAt.toISOString(),
+        appearance: { notes: "Freckles", visualBrief: "Soft window light" },
+        advancedDetails: { detailsMarkdown: "## Personality\n\nWarm", firstMessage: "New opening." },
+        reason: "edit from Admin form",
+      },
+    });
+    expect(updated.status).toBe(200);
+    expect(updated.data.template.appearance).toEqual({
+      face: { prompt: "Warm open face", eyes: "Hazel" },
+      hair: { prompt: "Dark waves" },
+      body: { type: "Athletic" },
+      notes: "Freckles",
+      visualBrief: "Soft window light",
+    });
+    expect(updated.data.template.advancedDetails).toEqual({
+      description: "Your upstairs neighbour.",
+      personality: "Warm, observant",
+      backstory: "Moved in last year.",
+      tone: "Unhurried",
+      interaction: { pacing: "Slow burn" },
+      detailsMarkdown: "## Personality\n\nWarm",
+      firstMessage: "New opening.",
+    });
+  });
+
   it("rejects active toggles when confirmation is not the template id", async () => {
     const admin = await setupAdmin("active-confirmation");
     const created = await call("POST", TEMPLATES, {

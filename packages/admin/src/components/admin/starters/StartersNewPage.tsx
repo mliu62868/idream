@@ -28,6 +28,7 @@ export function StartersNewPage({ canWrite, canAssist }: { canWrite: boolean; ca
   const [assisting, setAssisting] = useState(false);
   const [creating, setCreating] = useState(false);
   const [assistError, setAssistError] = useState<{ message: string; cause: unknown } | null>(null);
+  const [assistPartial, setAssistPartial] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
   function patch(partial: Partial<StarterDraft>) {
@@ -39,19 +40,23 @@ export function StartersNewPage({ canWrite, canAssist }: { canWrite: boolean; ca
     if (seed.trim().length === 0) return;
     setAssisting(true);
     setAssistError(null);
+    setAssistPartial(false);
     try {
       const data = await apiWrite<{
         description: string;
         advancedDetails: { detailsMarkdown: string; firstMessage: string; visualBrief: string };
+        failedStages?: string[];
       }>(
         "/api/v2/admin/content/character-assist", "POST", { seed: seed.trim(), includeNameIdeas: false },
       );
+      setAssistPartial((data.failedStages?.length ?? 0) > 0);
       const existing = tagsFromText(draft.tags);
+      // A stage that failed comes back empty and must not erase the field.
       patch({
-        summary: data.description,
-        detailsMarkdown: data.advancedDetails.detailsMarkdown,
-        firstMessage: data.advancedDetails.firstMessage,
-        visualBrief: data.advancedDetails.visualBrief,
+        ...(data.description ? { summary: data.description } : {}),
+        ...(data.advancedDetails.detailsMarkdown ? { detailsMarkdown: data.advancedDetails.detailsMarkdown } : {}),
+        ...(data.advancedDetails.firstMessage ? { firstMessage: data.advancedDetails.firstMessage } : {}),
+        ...(data.advancedDetails.visualBrief ? { visualBrief: data.advancedDetails.visualBrief } : {}),
         tags: existing.join(", "),
       });
     } catch (assistError) {
@@ -99,6 +104,7 @@ export function StartersNewPage({ canWrite, canAssist }: { canWrite: boolean; ca
             {t("Generate with AI")}
           </GhostButton>
         </div>
+        {assistPartial ? <p className="text-sm text-[var(--ad-yellow-text)]" role="status">{t("AI could not draft every field. Fill in the rest or try again.")}</p> : null}
         {assistError ? (
           <div className="text-sm text-[var(--ad-red-text)]" role="alert">
             <p>{t(assistError.message)}</p>

@@ -40,7 +40,7 @@ describe.each(["image", "video"] as const)("real %s library to chat editor inter
   it("loads the clicked source and opens the real child editor", async () => {
     const data = characterWorkspaceDetail({ visual: { identityBootstrap: { allowed: false } } });
     await act(async () => root.render(<StrictMode><AdminI18nProvider locale="en">{mediaType === "image"
-      ? <CharacterImageLibrary actorId="operator" data={data} canRead canReadProduction canCreate canPublish canReview canArchive={false} onContinue={() => undefined} onProjectReload={async () => undefined} commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })} />
+      ? <CharacterImageLibrary actorId="operator" data={data} canRead canReadProduction canCreate canPublish canArchive={false} onContinue={() => undefined} onProjectReload={async () => undefined} commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })} />
       : <CharacterVideoLibrary actorId="operator" data={data} canRead canReadProduction canCreate canImport canPublish canArchive={false} onCreateImage={() => undefined} onProjectReload={async () => undefined} runCommittedMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })} />
     }</AdminI18nProvider></StrictMode>));
     await waitUntil(() => [...container.querySelectorAll("button")].some(button => button.textContent === "Set up chat content"));

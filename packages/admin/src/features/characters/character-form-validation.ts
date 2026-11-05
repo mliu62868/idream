@@ -11,10 +11,10 @@ const requiredCopy: Record<string, string> = {
   characterPromise: "Write a one-line description.",
   detailsMarkdown: "Enter valid character details.",
   firstMessage: "Write the first message users will receive.",
-  identityAnchor: "Describe the visual identity to establish.",
-  stableTraits: "Add at least one stable visual trait.",
+  identityAnchor: "Say who the character looks like in one line.",
+  stableTraits: "Add at least one feature that never changes.",
   style: "Select a supported visual style.",
-  referenceDirection: "Describe the portrait's visual direction.",
+  referenceDirection: "Describe the image mood and framing.",
 };
 
 const limitCopy: Record<string, string> = {
@@ -23,9 +23,9 @@ const limitCopy: Record<string, string> = {
   characterPromise: "Short description must be 1000 characters or fewer.",
   detailsMarkdown: "Additional details must be 24000 characters or fewer.",
   firstMessage: "Opening message must be 4000 characters or fewer.",
-  identityAnchor: "Identity anchor must be 2000 characters or fewer.",
-  stableTraits: "Each stable visual trait must be 500 characters or fewer.",
-  referenceDirection: "Reference direction must be 4000 characters or fewer.",
+  identityAnchor: "This line must be 2000 characters or fewer.",
+  stableTraits: "Each feature must be 500 characters or fewer.",
+  referenceDirection: "Image mood and framing must be 4000 characters or fewer.",
 };
 
 // INVARIANT: nested array errors belong to the editable field, never its item index.
@@ -45,7 +45,7 @@ export function characterCreateStepFieldErrors(draft: CharacterProjectDraft, ste
       ? "Replace the placeholder with real character information."
       : issue.code === "too_big"
         ? field === "stableTraits" && issue.origin === "array"
-          ? "Add no more than 24 stable visual traits."
+          ? "Add no more than 24 features."
           : limitCopy[field] ?? requiredCopy[field]
         : requiredCopy[field];
   }
