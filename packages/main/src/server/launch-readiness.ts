@@ -7,6 +7,7 @@ import {
   resolveChatFsRoot,
   characterVideoProductionRecipe,
   characterVideoProductionRecipes,
+  comfyUiModalityForVideoRecipe,
   minimaxH3VideoProductionRecipe,
   redgraftLtx25VideoProductionRecipe,
   type CharacterVideoProductionRecipe,
@@ -1504,8 +1505,7 @@ function addVideoPipelineChecks(
   productConfigProbe: ProductConfigProbeEvidence | null,
 ) {
   const configured = env.GEN_VIDEO_PROVIDER ?? "mock";
-  const genComfyuiApiUrl = genComfyUiAuthority(env,
-    characterVideoProductionRecipe.workflowKey === minimaxH3VideoProductionRecipe.workflowKey ? "h3" : "video");
+  const genComfyuiApiUrl = genComfyUiAuthority(env, comfyUiModalityForVideoRecipe(characterVideoProductionRecipe));
   if (!configured || configured === "mock") {
     const productConfigOk =
       productConfigProbe?.ok === true && !productConfigProbe.loadError;
@@ -1572,12 +1572,7 @@ function addVideoGenerationProbeCheck(
   probeName: ProbeName,
   checkId: string,
 ) {
-  const genComfyuiApiUrl = genComfyUiAuthority(
-    env,
-    recipe.workflowKey === minimaxH3VideoProductionRecipe.workflowKey
-      ? "h3"
-      : "video",
-  );
+  const genComfyuiApiUrl = genComfyUiAuthority(env, comfyUiModalityForVideoRecipe(recipe));
   if (
     productConfigProbe?.ok === true &&
     !productConfigProbe.loadError &&

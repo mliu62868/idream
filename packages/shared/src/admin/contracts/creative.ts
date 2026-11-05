@@ -163,6 +163,16 @@ export const characterVideoProductionRecipes = [
 export type CharacterVideoProductionRecipe =
   (typeof characterVideoProductionRecipes)[number];
 
+export type VideoComfyUiModality = "h3" | "video";
+
+// SPEC: H3 跑在独立的 ComfyUI listener 上，其他视频配方共用 video listener。
+// INVARIANT: 上线检查和 Today 服务状态共用这一个判定，默认路线换了两边一起跟着换。
+export function comfyUiModalityForVideoRecipe(
+  recipe: Pick<CharacterVideoProductionRecipe, "workflowKey">,
+): VideoComfyUiModality {
+  return recipe.workflowKey === minimaxH3VideoProductionRecipe.workflowKey ? "h3" : "video";
+}
+
 export function characterVideoProductionRecipeForWorkflow(
   workflowKey: string,
 ): CharacterVideoProductionRecipe | null {

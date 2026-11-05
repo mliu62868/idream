@@ -95,6 +95,7 @@ export const adminZhDashboard: Record<string, string> = {
   "Image generation": "图片生成",
   "Video generation": "视频生成",
   "Down": "停机",
+  "Default route up, another route down": "默认路线正常，其他路线不可用",
   "Up": "正常",
   "{failures} of {attempts} failed in the last hour": "近一小时 {attempts} 次中失败 {failures} 次",
   "{attempts} in the last hour": "近一小时 {attempts} 次",

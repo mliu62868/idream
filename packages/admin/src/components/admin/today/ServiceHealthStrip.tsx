@@ -55,6 +55,8 @@ export function ServiceHealthStrip() {
           <span className={service.state === "ok" ? "text-[var(--ad-text-muted)]" : "font-semibold text-[var(--ad-red-text)]"}>
             {service.state === "down"
               ? t("Down")
+              : service.state === "degraded" && service.failuresLastHour === 0
+                ? t("Default route up, another route down")
               : service.state === "degraded"
                 ? t("{failures} of {attempts} failed in the last hour", { failures: service.failuresLastHour, attempts: service.attemptsLastHour })
                 : service.attemptsLastHour > 0

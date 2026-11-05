@@ -864,6 +864,8 @@ export const opsHealthServiceSchema = z
     key: z.enum(["chat", "image", "video"]),
     state: z.enum(["ok", "degraded", "down"]),
     probeOk: z.boolean(),
+    // Default route answers, another route of the same service does not.
+    optionalRouteDown: z.boolean(),
     detail: z.string().nullable(),
     attemptsLastHour: z.number().int().nonnegative(),
     failuresLastHour: z.number().int().nonnegative(),

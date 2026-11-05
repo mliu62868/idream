@@ -20,8 +20,8 @@ import { ServiceHealthStrip } from "./ServiceHealthStrip";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const service = (key: "chat" | "image" | "video", state: "ok" | "degraded" | "down", attempts = 0, failures = 0) => ({
-  key, state, probeOk: state !== "down", detail: state === "down" ? "connect ECONNREFUSED 127.0.0.1:8061" : null, attemptsLastHour: attempts, failuresLastHour: failures,
+const service = (key: "chat" | "image" | "video", state: "ok" | "degraded" | "down", attempts = 0, failures = 0, optionalRouteDown = false) => ({
+  key, state, probeOk: state !== "down", optionalRouteDown, detail: state === "down" ? "connect ECONNREFUSED 127.0.0.1:8061" : null, attemptsLastHour: attempts, failuresLastHour: failures,
 });
 
 describe("ServiceHealthStrip", () => {
@@ -42,6 +42,15 @@ describe("ServiceHealthStrip", () => {
     await act(async () => root.render(createElement(ServiceHealthStrip)));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   }
+
+  it("says another route is down instead of inventing a failure rate", async () => {
+    adminV2Request.mockResolvedValue({ checkedAt: "2026-09-29T00:00:00.000Z", services: [service("chat", "ok"), service("image", "ok"), service("video", "degraded", 0, 0, true)] });
+    await mount();
+    const strip = container.querySelector('[data-testid="service-health"]')!;
+    expect(strip.getAttribute("role")).toBe("alert");
+    expect(strip.textContent).toContain("Default route up, another route down");
+    expect(strip.textContent).not.toContain("0 of 0");
+  });
 
   it("raises an alert naming the service that is down and how the others fare", async () => {
     adminV2Request.mockResolvedValue({ checkedAt: "2026-09-29T00:00:00.000Z", services: [service("chat", "down"), service("image", "degraded", 10, 3), service("video", "ok", 4, 0)] });
