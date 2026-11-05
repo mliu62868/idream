@@ -372,6 +372,13 @@ export interface BlobStore {
     signal?: AbortSignal;
     maxBytes?: number;
   }): Promise<ProviderResult<{ body: Uint8Array; contentType: string | null }>>;
+  /** Copies an object to a new local file without holding it in memory. */
+  getPrivateToFile?(input: {
+    key: string;
+    path: string;
+    maxBytes: number;
+    signal?: AbortSignal;
+  }): Promise<ProviderResult<{ size: number }>>;
 }
 
 export interface AgeVerificationProvider {

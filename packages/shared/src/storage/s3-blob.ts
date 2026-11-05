@@ -1,4 +1,5 @@
 import { createHash, createHmac, randomBytes } from "node:crypto";
+import { open, rm } from "node:fs/promises";
 
 export type BlobProviderResult<T> =
   | { ok: true; data: T }
@@ -333,6 +334,50 @@ export class S3CompatibleBlobStore {
       };
     } catch (error) {
       return networkFailure("get_failed", error);
+    }
+  }
+
+  // SPEC: copy an object to a local file without holding it in memory, so a caller
+  // that only hands the bytes to a child process never buffers the whole object.
+  // INVARIANT: the size bound holds even when the object has no Content-Length, and
+  // an interrupted or oversized read leaves no partial file behind.
+  async getPrivateToFile(input: { key: string; path: string; maxBytes: number; signal?: AbortSignal }): Promise<BlobProviderResult<{ size: number }>> {
+    const signed = await this.signGetUrl({ key: input.key, expiresInSeconds: 60 });
+    if (!signed.ok) return signed;
+    let file: Awaited<ReturnType<typeof open>> | null = null;
+    let complete = false;
+    try {
+      const response = await this.fetchImpl(signed.data.url, { signal: input.signal });
+      if (!response.ok) return blobFailure(response.status === 404 ? "not_found" : "get_failed", response);
+      const tooLarge = { ok: false as const, error: { code: "too_large", message: "Object is larger than this reader accepts", retryable: false } };
+      if (Number(response.headers.get("content-length") ?? 0) > input.maxBytes) {
+        await response.body?.cancel();
+        return tooLarge;
+      }
+      file = await open(input.path, "wx");
+      let size = 0;
+      if (response.body) {
+        const reader = response.body.getReader();
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            size += value.byteLength;
+            if (size > input.maxBytes) {
+              await reader.cancel();
+              return tooLarge;
+            }
+            await file.write(value);
+          }
+        } finally { reader.releaseLock(); }
+      }
+      complete = true;
+      return { ok: true, data: { size } };
+    } catch (error) {
+      return networkFailure("get_failed", error);
+    } finally {
+      await file?.close().catch(() => undefined);
+      if (file && !complete) await rm(input.path, { force: true }).catch(() => undefined);
     }
   }
 

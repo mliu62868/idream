@@ -584,6 +584,8 @@ receipt 视为可修复证据，只有专属 Main ACK 后才写 `consumed_v2`。
 
 Chat ACK 也不代替媒体擦除完成。Main 保留所有者映射，直到生成执行、Main 语音写入与视频合成均已收敛、私有 Blob 删除回执完成，以及每个历史 pinned TTS provider 的擦除回执完成。租约过期允许受控恢复，不能证明旧调用已经停止 I/O；取消或接班后的产品终态也不能自动抹掉旧写入者的执行证据。新接纳、恢复、写入和交付须在 User 根锁下重新验证账号权威，数据库锁不跨 provider/Blob I/O。
 
+视频合成 lane 不改变这条规则：所有者在进入 lane 之前、由认领事务写入 `activeCompositionOwners`，在最后一次 Blob 补偿之后才移除；优雅停机等待 lane 排空。lane 已满时不认领，序列保持可认领，不留下多余的所有者。
+
 TTS gateway 持久化账号、精确 request key 和 clone alias 的擦除屏障，拒绝迟到写入与重启重放；Main `AccountDeletion.voiceErasure` 按历史 provider 保存独立 ACK，最终只留完成证据。官方声音属于既有平台 owner，运营 `createdById` 是审计来源；私人角色声音属于 creator。未交付或提交结果未知的语音仍可按 canonical request key 枚举全部支持格式，不依赖 MediaAsset 必须存在。未决执行或删除失败保留映射和待处理回执，不得宣称账号擦除完成。
 
 本 ADR 不要求新增数据库表。必要 schema 变更交付 migration/SQL；开发/专用测试库按项目授权核对目标与隔离后执行，生产库由用户或发布系统执行。

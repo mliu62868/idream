@@ -58,12 +58,35 @@ it("carries the video sweep cursor past unresolved rows and wraps after the last
   const loop = runFinalizerLoop();
   try {
     await vi.advanceTimersByTimeAsync(2_001);
-    expect(mocks.advanceVideos).toHaveBeenNthCalledWith(1, 10, null);
-    expect(mocks.advanceVideos).toHaveBeenNthCalledWith(2, 10, cursor);
-    expect(mocks.advanceVideos).toHaveBeenNthCalledWith(3, 10, null);
+    expect(mocks.advanceVideos).toHaveBeenNthCalledWith(1, 10, null, expect.anything());
+    expect(mocks.advanceVideos).toHaveBeenNthCalledWith(2, 10, cursor, expect.anything());
+    expect(mocks.advanceVideos).toHaveBeenNthCalledWith(3, 10, null, expect.anything());
   } finally {
     const shutdown = awaitFinalizerShutdown(loop);
     await vi.advanceTimersByTimeAsync(1_000);
     await shutdown;
   }
+});
+
+it("keeps sweeping while a composition runs on its lane and waits for it on shutdown", async () => {
+  mocks.recover.mockResolvedValue({ examined: 0, recovered: 0, nextCursorId: null });
+  let finishComposition!: () => void;
+  const composition = new Promise<void>((resolve) => { finishComposition = resolve; });
+  mocks.advanceVideos.mockImplementationOnce(async (_limit: number, _cursor: unknown, options: { compositionLane: { run(job: () => Promise<void>): void } }) => {
+    options.compositionLane.run(() => composition);
+    return { nextCursor: null };
+  });
+  const { runFinalizerLoop, awaitFinalizerShutdown } = await import("./finalizer");
+  const loop = runFinalizerLoop();
+  await vi.advanceTimersByTimeAsync(3_100);
+  // Scene dispatch and failure settlement live in the sweep, so they must not wait.
+  expect(mocks.advanceVideos.mock.calls.length).toBeGreaterThan(1);
+  let stopped = false;
+  const shutdown = awaitFinalizerShutdown(loop).then(() => { stopped = true; });
+  await vi.advanceTimersByTimeAsync(2_000);
+  expect(stopped).toBe(false);
+  finishComposition();
+  await vi.advanceTimersByTimeAsync(1_000);
+  await shutdown;
+  expect(stopped).toBe(true);
 });

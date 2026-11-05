@@ -1,10 +1,10 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { videoFixture, narrationFixture } from "@/server/test/video-fixtures";
+import { videoFixture, narrationFixture, sceneFiles } from "@/server/test/video-fixtures";
 import { composeVideoScenes } from "./video-composition";
 
 vi.mock("@/server/lib/env", () => ({ env: { VOICE_FFMPEG_BIN: "ffmpeg", VIDEO_FFPROBE_BIN: "ffprobe" } }));
@@ -14,19 +14,19 @@ beforeAll(async () => { red = await videoFixture({ color: "red" }); blue = await
 
 describe("real local video packaging", () => {
   it("concatenates actual decodable clips in the accepted dimensions with generated sound", async () => {
-    const result = await composeVideoScenes({ scenes: [{ video: red }, { video: blue }], audio: "generated" });
+    const result = await composeVideoScenes({ scenes: await sceneFiles([{ video: red }, { video: blue }]), audio: "generated" });
     expect(result.media).toMatchObject({ width: 64, height: 96, framesPerSecond: 24, hasAudio: true, frameCount: 26 });
     expect(result.media.durationSeconds).toBeCloseTo(26 / 24, 1);
     expect(result.sceneDurations).toHaveLength(2);
   });
 
   it("removes the entire audio stream for silent output", async () => {
-    const result = await composeVideoScenes({ scenes: [{ video: red }, { video: blue }], audio: "silent" });
+    const result = await composeVideoScenes({ scenes: await sceneFiles([{ video: red }, { video: blue }]), audio: "silent" });
     expect(result.media).toMatchObject({ hasAudio: false, frameCount: 26, width: 64, height: 96 });
   });
 
   it("keeps a complete longer narration by extending its last frame and pads a shorter line", async () => {
-    const result = await composeVideoScenes({ scenes: [{ video: red, narration: await narrationFixture(1.4) }, { video: blue, narration: await narrationFixture(0.2) }], audio: "narration" });
+    const result = await composeVideoScenes({ scenes: await sceneFiles([{ video: red, narration: await narrationFixture(1.4) }, { video: blue, narration: await narrationFixture(0.2) }]), audio: "narration" });
     expect(result.sceneDurations[0]).toBeCloseTo(34 / 24, 3);
     expect(result.sceneDurations[1]).toBeGreaterThanOrEqual(13 / 24);
     expect(result.media).toMatchObject({ width: 64, height: 96, framesPerSecond: 24, hasAudio: true });
@@ -38,7 +38,7 @@ describe("real local video packaging", () => {
     const green = await videoFixture({ color: "lime" });
     const speechLengths = [1.4, 0.2, 1.1], frequencies = [550, 880, 1320];
     const scenes = await Promise.all([red, green, blue].map(async (video, index) => ({ video, narration: await narrationFixture(speechLengths[index]!, frequencies[index]!) })));
-    const result = await composeVideoScenes({ scenes, audio: "narration" });
+    const result = await composeVideoScenes({ scenes: await sceneFiles(scenes), audio: "narration" });
     const directory = await mkdtemp(join(tmpdir(), "idream-three-scene-check-"));
     try {
       const path = join(directory, "sequence.mp4");
@@ -79,7 +79,7 @@ describe("real local video packaging", () => {
       const source = join(directory, "source.mp4"), extended = join(directory, "long-native-sound.mp4");
       await writeFile(source, red);
       await run("ffmpeg", ["-nostdin", "-v", "error", "-y", "-i", source, "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy", "-af", "apad=whole_dur=2", "-c:a", "aac", extended]);
-      const result = await composeVideoScenes({ scenes: [{ video: new Uint8Array(await readFile(extended)), narration: await narrationFixture(1.4) }, { video: blue, narration: await narrationFixture(0.2) }, { video: red, narration: await narrationFixture(1.1) }], audio: "narration" });
+      const result = await composeVideoScenes({ scenes: await sceneFiles([{ video: new Uint8Array(await readFile(extended)), narration: await narrationFixture(1.4) }, { video: blue, narration: await narrationFixture(0.2) }, { video: red, narration: await narrationFixture(1.1) }]), audio: "narration" });
       expect(result.sceneDurations).toEqual([34 / 24, 13 / 24, 27 / 24]);
       expect(result.media.frameCount).toBe(34 + 13 + 27);
     } finally { await rm(directory, { recursive: true, force: true }); }
@@ -91,17 +91,55 @@ describe("real local video packaging", () => {
       const source = join(directory, "source.mp4"), extended = join(directory, "long-native-sound.mp4");
       await writeFile(source, red);
       await run("ffmpeg", ["-nostdin", "-v", "error", "-y", "-i", source, "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy", "-af", "apad=whole_dur=2", "-c:a", "aac", extended]);
-      const result = await composeVideoScenes({ scenes: [{ video: new Uint8Array(await readFile(extended)) }, { video: blue }], audio: "silent" });
+      const result = await composeVideoScenes({ scenes: await sceneFiles([{ video: new Uint8Array(await readFile(extended)) }, { video: blue }]), audio: "silent" });
       expect(result.media).toMatchObject({ hasAudio: false, frameCount: 26 });
       expect(result.sceneDurations).toEqual([13 / 24, 13 / 24]);
       expect(result.media.durationSeconds).toBeCloseTo(26 / 24, 2);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
+  // Records each real ffmpeg call. The picture and sound still come from real bytes.
+  async function loggingFfmpeg() {
+    const directory = await mkdtemp(join(tmpdir(), "idream-ffmpeg-log-"));
+    const log = join(directory, "calls.log"), bin = join(directory, "ffmpeg");
+    await writeFile(bin, `#!/bin/sh\nprintf '%s\\n' "$*" >> "${log}"\nexec ffmpeg "$@"\n`);
+    await chmod(bin, 0o755);
+    return { bin, directory, calls: async () => (await readFile(log, "utf8")).trim().split("\n") };
+  }
+
+  it("encodes a narrated sequence once, with every ffmpeg thread count capped", async () => {
+    const logged = await loggingFfmpeg();
+    try {
+      const scenes = await sceneFiles([{ video: red, narration: await narrationFixture(1.4) }, { video: blue, narration: await narrationFixture(0.2) }]);
+      const result = await composeVideoScenes({ scenes, audio: "narration", ffmpegBin: logged.bin });
+      expect(result.media).toMatchObject({ width: 64, height: 96, hasAudio: true, frameCount: 34 + 13 });
+      const calls = await logged.calls();
+      const encodes = calls.filter(call => call.includes("libx264"));
+      expect(encodes).toHaveLength(1);
+      const encode = encodes[0]!;
+      // Two scenes, each with a video and a speech input, each decoded on one thread.
+      expect(encode.match(/-threads 1 -i /g)).toHaveLength(4);
+      expect(encode).toMatch(/-filter_complex_threads 1 /);
+      expect(encode).toMatch(/libx264 -threads 2 /);
+      // The decode verification ffmpeg runs must not take every core either.
+      for (const call of calls.filter(call => !call.includes("libx264"))) expect(call).toMatch(/-threads 2 -i /);
+    } finally { await rm(logged.directory, { recursive: true, force: true }); }
+  });
+
+  it("does not re-encode or touch its source files", async () => {
+    const scenes = await sceneFiles([{ video: red }]);
+    await composeVideoScenes({ scenes, audio: "generated" });
+    expect(new Uint8Array(await readFile(scenes[0]!.videoPath))).toEqual(red);
+  });
+
+  it("refuses to buffer an output past its bound", async () => {
+    await expect(composeVideoScenes({ scenes: await sceneFiles([{ video: red }]), audio: "generated", maxOutputBytes: 16 })).rejects.toThrow("output bound");
+  });
+
   it("fails closed on incompatible dimensions, missing sound, or an absent narration", async () => {
-    await expect(composeVideoScenes({ scenes: [{ video: red }, { video: await videoFixture({ width: 96, height: 64 }) }], audio: "generated" })).rejects.toThrow("different dimensions");
-    await expect(composeVideoScenes({ scenes: [{ video: await videoFixture({ audio: false }) }], audio: "generated" })).rejects.toThrow("soundtrack is missing");
-    await expect(composeVideoScenes({ scenes: [{ video: red }], audio: "narration" })).rejects.toThrow("Narration bytes are missing");
-    await expect(composeVideoScenes({ scenes: [{ video: await videoFixture({ fps: 30 }) }], audio: "silent" })).rejects.toThrow("24fps");
+    await expect(composeVideoScenes({ scenes: await sceneFiles([{ video: red }, { video: await videoFixture({ width: 96, height: 64 }) }]), audio: "generated" })).rejects.toThrow("different dimensions");
+    await expect(composeVideoScenes({ scenes: await sceneFiles([{ video: await videoFixture({ audio: false }) }]), audio: "generated" })).rejects.toThrow("soundtrack is missing");
+    await expect(composeVideoScenes({ scenes: await sceneFiles([{ video: red }]), audio: "narration" })).rejects.toThrow("Narration bytes are missing");
+    await expect(composeVideoScenes({ scenes: await sceneFiles([{ video: await videoFixture({ fps: 30 }) }]), audio: "silent" })).rejects.toThrow("24fps");
   });
 });
