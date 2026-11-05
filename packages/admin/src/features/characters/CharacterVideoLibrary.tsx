@@ -23,6 +23,7 @@ import {
   type RunCommittedMutation,
 } from "./CharacterVideoStudio";
 import { CharacterChatLibrary, type CharacterChatLibrarySource } from "./CharacterChatLibrary";
+import { operatorReasonOrDefault, CHARACTER_LIBRARY_ARCHIVE_DEFAULT_REASON } from "./character-library-archive";
 
 type CharacterVideoLibraryProps = {
   actorId: string;
@@ -165,17 +166,17 @@ export function CharacterVideoLibrary({
       summary: t("Videos used by an active campaign or release must be replaced first."),
       consequence: {
         effect: "The video will be archived and hidden from this Character's library.",
-        reversible: false,
+        reversible: true,
       },
-      destructive: { expectedName: asset.id.slice(0, 8) },
-      reasonLabel: "Removal reason",
+      reasonOptional: true,
+      reasonLabel: "Removal reason (optional)",
       submitLabel: "Remove from library",
       onSubmit: async (reason) => {
         if (generation !== archiveGeneration.current) return;
         try {
           await bulkArchiveAssets({
             assetIds: [asset.id],
-            reason,
+            reason: operatorReasonOrDefault(reason, CHARACTER_LIBRARY_ARCHIVE_DEFAULT_REASON),
           });
           if (generation !== archiveGeneration.current) return;
           setMessage(t("Video removed from the library"));

@@ -26,6 +26,7 @@ import {
 import type { AdminSubview } from "@/components/admin/nav-config";
 import { CharacterVideoLibrary } from "@/features/characters/CharacterVideoLibrary";
 import { CharacterCreateWizard } from "@/features/characters/CharacterCreateWizard";
+import { CharacterDuplicateButton } from "@/features/characters/CharacterDuplicateButton";
 import { CharacterVoicePanel } from "@/features/characters/CharacterVoicePanel";
 import { CharacterSoulPanel } from "@/features/characters/CharacterSoulPanel";
 import {
@@ -242,12 +243,59 @@ const characterCommandRecoveryCopy: CharacterCommandRecoveryCopy = {
     characterCommandMessage("{action} could not be reconciled with server authority{detail}. Character writes remain locked until the authoritative workspace refreshes.", { action, detail: cause instanceof Error ? `: ${cause.message}` : "" }),
 };
 
+function CharacterCommandNotice({
+  actionsClassName,
+  canResume,
+  className,
+  notice,
+  onRefresh,
+  onResume,
+  refreshLabel,
+}: {
+  actionsClassName: string;
+  canResume: boolean;
+  className: string;
+  notice: NonNullable<ReturnType<ReturnType<typeof createCharacterCommandJournal>["getSnapshot"]>["notice"]>;
+  onRefresh: () => void;
+  onResume: () => void;
+  refreshLabel: "Retry" | "Refresh";
+}) {
+  const { t } = useAdminI18n();
+  return (
+    <div className={className} role="status">
+      <p>{renderCharacterCommandMessage(notice.message, t)}</p>
+      <div className={`${actionsClassName} flex flex-wrap gap-3`}>
+        {notice.kind === "refresh_required" ? (
+          <button className="font-semibold underline" onClick={onRefresh} type="button">
+            {t(refreshLabel)}
+          </button>
+        ) : null}
+        {notice.kind === "command_reconfirmation_required" && canResume ? (
+          <button className="font-semibold underline" onClick={onResume} type="button">
+            {t("Review and resume saved command")}
+          </button>
+        ) : null}
+        {"commandId" in notice && notice.commandId ? (
+          <Link
+            className="font-semibold underline"
+            href={`/admin/system/audit?commandId=${encodeURIComponent(notice.commandId)}`}
+          >
+            {t("Open command evidence")}
+          </Link>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function CharacterDetail({
   actorId,
+  canCreateCharacters,
   id,
   permissions: granted,
 }: {
   actorId: string;
+  canCreateCharacters: boolean;
   id: string;
   permissions: ReadonlySet<AdminPermissionKey>;
 }) {
@@ -361,25 +409,19 @@ function CharacterDetail({
   );
   const loadAuthoritative = load;
   const reloadProject = useCallback(async () => { await load(); }, [load]);
-  const refreshCommittedProjection = useCallback(
-    async (action: string, commandId?: string, afterRefresh?: () => void) => {
-      const result = await journal.refresh({
-        load: loadAuthoritative,
-        onUnlock: () => {
-          journal.setNotice(null);
-          afterRefresh?.();
-        },
-      });
+  // SPEC: journal.refresh 的结果只有这一处翻译成界面状态；两个调用方只在「需要刷新时显示什么」上不同。
+  // Returns whether the workspace now shows authority it can act on.
+  const settleWorkspaceRefresh = useCallback(
+    (
+      result: Awaited<ReturnType<typeof journal.refresh>>,
+      refreshRequired: (cause: unknown) => Parameters<typeof journal.setNotice>[0],
+    ) => {
       if (result.status === "superseded") {
         return !("error" in result);
       }
       if (result.status === "failed") {
         setError(null);
-        journal.setNotice({
-          kind: "refresh_required",
-          message: committedCharacterProjectionWarning(action, result.error),
-          ...(commandId ? { commandId } : {}),
-        });
+        journal.setNotice(refreshRequired(result.error));
         return false;
       }
       // SPEC: kept_locked 说明服务端仍有命令在跑；journal 已把日志改挂到那一条上。
@@ -390,7 +432,24 @@ function CharacterDetail({
       }
       return true;
     },
-    [journal, loadAuthoritative],
+    [journal],
+  );
+  const refreshCommittedProjection = useCallback(
+    async (action: string, commandId?: string, afterRefresh?: () => void) => {
+      const result = await journal.refresh({
+        load: loadAuthoritative,
+        onUnlock: () => {
+          journal.setNotice(null);
+          afterRefresh?.();
+        },
+      });
+      return settleWorkspaceRefresh(result, (cause) => ({
+        kind: "refresh_required",
+        message: committedCharacterProjectionWarning(action, cause),
+        ...(commandId ? { commandId } : {}),
+      }));
+    },
+    [journal, loadAuthoritative, settleWorkspaceRefresh],
   );
   const runCommittedMutation = useCallback(
     async <T,>(input: {
@@ -481,33 +540,17 @@ function CharacterDetail({
       load: loadAuthoritative,
       reusePendingCleanup: true,
     });
-    if (result.status === "superseded") {
-      return !("error" in result);
-    }
-    if (result.status === "failed") {
-      setError(null);
-      journal.setNotice({
-        kind: "refresh_required",
-        message:
-          current?.kind === "refresh_required"
-            ? current.message
-            : committedCharacterProjectionWarning(
-                "Character mutation",
-                result.error,
-              ),
-        ...(current?.kind === "refresh_required" && current.commandId
-          ? { commandId: current.commandId }
-          : {}),
-      });
-      return false;
-    }
-    if (result.status === "kept_locked") return true;
-    setError(null);
-    if (result.status === "cleanup_failed") {
-      journal.setRecoveryError(localCleanupWarning(result.error));
-    }
-    return true;
-  }, [journal, loadAuthoritative]);
+    return settleWorkspaceRefresh(result, (cause) => ({
+      kind: "refresh_required",
+      message:
+        current?.kind === "refresh_required"
+          ? current.message
+          : committedCharacterProjectionWarning("Character mutation", cause),
+      ...(current?.kind === "refresh_required" && current.commandId
+        ? { commandId: current.commandId }
+        : {}),
+    }));
+  }, [journal, loadAuthoritative, settleWorkspaceRefresh]);
   useEffect(() => {
     if (!permissions.read) return;
     const gate = requestGate.current;
@@ -667,41 +710,15 @@ function CharacterDetail({
     return (
       <section className="space-y-3">
         {mutationNotice ? (
-          <div
+          <CharacterCommandNotice
+            actionsClassName="mt-3"
+            canResume={Boolean(pendingCommand)}
             className="rounded-xl bg-[var(--ad-blue-bg)] p-4 text-sm text-[var(--ad-blue-text)]"
-            role="status"
-          >
-            <p>{renderCharacterCommandMessage(mutationNotice.message, t)}</p>
-            <div className="mt-3 flex flex-wrap gap-3">
-              {mutationNotice.kind === "refresh_required" ? (
-                <button
-                  className="font-semibold underline"
-                  onClick={() => void refreshAuthoritativeWorkspace()}
-                  type="button"
-                >
-                  {t("Retry")}
-                </button>
-              ) : null}
-              {mutationNotice.kind === "command_reconfirmation_required" &&
-              pendingCommand ? (
-                <button
-                  className="font-semibold underline"
-                  onClick={() => journal.authorizeReplay()}
-                  type="button"
-                >
-                  {t("Review and resume saved command")}
-                </button>
-              ) : null}
-              {"commandId" in mutationNotice && mutationNotice.commandId ? (
-                <Link
-                  className="font-semibold underline"
-                  href={`/admin/system/audit?commandId=${encodeURIComponent(mutationNotice.commandId)}`}
-                >
-                  {t("Open command evidence")}
-                </Link>
-              ) : null}
-            </div>
-          </div>
+            notice={mutationNotice}
+            onRefresh={() => void refreshAuthoritativeWorkspace()}
+            onResume={() => journal.authorizeReplay()}
+            refreshLabel="Retry"
+          />
         ) : null}
         {commandRecoveryError ? (
           <p
@@ -942,6 +959,10 @@ function CharacterDetail({
             </p>
           </div>
         </div>
+        <div className="flex flex-wrap items-center gap-3 lg:justify-end">
+        {canCreateCharacters && permissions.writeProject ? (
+          <CharacterDuplicateButton characterId={id} />
+        ) : null}
         <details className="text-xs text-[var(--ad-text-muted)] sm:text-right">
           <summary className="cursor-pointer py-2 font-semibold">
             {t("Technical status")}
@@ -958,6 +979,7 @@ function CharacterDetail({
             {t("Workspace ID")} · {data.project.id}
           </p>
         </details>
+        </div>
       </div>
       {error ? (
         <div
@@ -988,7 +1010,9 @@ function CharacterDetail({
         </p>
       ) : null}
       {mutationNotice ? (
-        <div
+        <CharacterCommandNotice
+          actionsClassName="mt-2"
+          canResume={Boolean(pendingCommand)}
           className={cn(
             "mt-4 rounded-lg p-3 text-sm",
             [
@@ -999,39 +1023,11 @@ function CharacterDetail({
               ? "bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]"
               : "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]",
           )}
-          role="status"
-        >
-          <p>{renderCharacterCommandMessage(mutationNotice.message, t)}</p>
-          <div className="mt-2 flex flex-wrap gap-3">
-            {mutationNotice.kind === "refresh_required" ? (
-              <button
-                className="font-semibold underline"
-                onClick={() => void refreshAuthoritativeWorkspace()}
-                type="button"
-              >
-                {t("Refresh")}
-              </button>
-            ) : null}
-            {mutationNotice.kind === "command_reconfirmation_required" &&
-            pendingCommand ? (
-              <button
-                className="font-semibold underline"
-                onClick={() => journal.authorizeReplay()}
-                type="button"
-              >
-                {t("Review and resume saved command")}
-              </button>
-            ) : null}
-            {"commandId" in mutationNotice && mutationNotice.commandId ? (
-              <Link
-                className="font-semibold underline"
-                href={`/admin/system/audit?commandId=${encodeURIComponent(mutationNotice.commandId)}`}
-              >
-                {t("Open command evidence")}
-              </Link>
-            ) : null}
-          </div>
-        </div>
+          notice={mutationNotice}
+          onRefresh={() => void refreshAuthoritativeWorkspace()}
+          onResume={() => journal.authorizeReplay()}
+          refreshLabel="Refresh"
+        />
       ) : null}
       {!attentionDiagnosis && nextStepTab !== tab ? (
         <div
@@ -1197,6 +1193,7 @@ function CharacterDetail({
           // INTENT: 位置编辑器曾放在「运营 → 上线预览」，导入的图只能跨区去那里才能用上。
           <div id="character-image-studio">
             <CharacterPlacementEditor
+              actorId={actorId}
               canRead={permissions.readImages}
               canWrite={guardedPermissions.writeProject}
               data={data}
@@ -1210,7 +1207,6 @@ function CharacterDetail({
                 guardedPermissions.createAssets &&
                 guardedPermissions.writeProject
               }
-              canReview={guardedPermissions.reviewAssets}
               canRead={permissions.readImages}
               canReadProduction={permissions.readProduction}
               commitProjectMutation={runCommittedMutation}
@@ -1308,6 +1304,7 @@ export function CharacterWorkspace({
         actorId={actorId}
         canCreate={canCreateCharacters && permissions.writeProject}
         canResumeDraft={permissions.writeProject}
+        canTag={granted.has("content.tag.write") && granted.has("content.read")}
         key={actorId}
       />
     );
@@ -1315,6 +1312,7 @@ export function CharacterWorkspace({
   return view.kind === "detail" ? (
     <CharacterDetail
       actorId={actorId}
+      canCreateCharacters={canCreateCharacters}
       id={view.id}
       key={`${actorId}:${view.id}`}
       permissions={granted}

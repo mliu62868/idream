@@ -79,7 +79,7 @@ function jsonRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
-async function reviewedIdentityCandidate(
+async function identityCandidateForPromotion(
   tx: Prisma.TransactionClient,
   input: {
     readonly characterId: string;
@@ -102,7 +102,7 @@ async function reviewedIdentityCandidate(
     item.batch.purpose !== "identity_calibration" ||
     item.batch.targetType !== "character" ||
     item.batch.targetId !== input.characterId ||
-    item.status !== "approved" ||
+    !["generated", "approved"].includes(item.status) ||
     !item.mediaAsset ||
     item.mediaAsset.characterId !== input.characterId ||
     item.mediaAsset.type !== "image" ||
@@ -124,38 +124,26 @@ async function reviewedIdentityCandidate(
       { deepLink: `/admin/characters/${input.characterId}?tab=visual` },
     );
   }
-  const decision = await tx.creativeReviewDecision.findFirst({
-    where: {
-      id: input.authority.reviewDecisionId,
-      runItemId: item.id,
-      artifactId: item.mediaAsset.id,
-    },
-  });
-  const latestDecision = await tx.creativeReviewDecision.findFirst({
-    where: { runItemId: item.id },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    select: { id: true },
-  });
-  if (
-    !decision ||
-    latestDecision?.id !== decision.id ||
-    decision.decision !== "approved" ||
-    decision.identityConsistency !== "unscored" ||
-    !creativeReviewQualityPassed(decision.evidence)
-  ) {
+  // SPEC: 设为当前形象不需要评分决策（ADR-16 §3.2）。历史客户端带来的决策只作为来源记录，
+  //       仍必须属于这张图；身份、来源、单人单画面的自动检查才是硬校验。
+  const decision = input.authority.reviewDecisionId
+    ? await tx.creativeReviewDecision.findFirst({
+        where: {
+          id: input.authority.reviewDecisionId,
+          runItemId: item.id,
+          artifactId: item.mediaAsset.id,
+        },
+      })
+    : null;
+  if (input.authority.reviewDecisionId && !decision) {
     throw Errors.conflict(
-      "The identity candidate requires the latest approved identity-defining review with complete visible evidence",
+      "The referenced review does not belong to this identity candidate",
       { deepLink: `/admin/characters/${input.characterId}?tab=visual` },
     );
   }
-  const assetQuality = jsonRecord(item.mediaAsset.metadata).quality;
-  const decisionEvidence = jsonRecord(decision.evidence);
-  if (
-    !parseSingleContinuousFrameEvidence(assetQuality) ||
-    !parseSingleContinuousFrameEvidence(decisionEvidence.automaticComposition)
-  ) {
+  if (!parseSingleContinuousFrameEvidence(jsonRecord(item.mediaAsset.metadata).quality)) {
     throw Errors.conflict(
-      "The identity candidate requires current system and human review evidence before activation",
+      "The identity candidate requires the current automatic image check before activation",
       {
         code: "identity_candidate_evidence_incomplete",
         deepLink: `/admin/characters/${input.characterId}?tab=visual`,
@@ -474,7 +462,7 @@ export async function createCharacterVisualProfile(input: {
     );
   }
   const candidate = body.candidateAuthority
-    ? await reviewedIdentityCandidate(tx, {
+    ? await identityCandidateForPromotion(tx, {
         characterId,
         authority: body.candidateAuthority,
       })
@@ -558,7 +546,7 @@ export async function createCharacterVisualProfile(input: {
           identityCalibration: {
             runId: candidate.item.batch.id,
             itemId: candidate.item.id,
-            reviewDecisionId: candidate.decision.id,
+            ...(candidate.decision ? { reviewDecisionId: candidate.decision.id } : {}),
             generationJobId: candidate.item.job!.id,
           },
         } : {}),
@@ -591,7 +579,7 @@ export async function createCharacterVisualProfile(input: {
         position: 0,
         role: "primary_face",
         weight: 1,
-        qualityScore: candidate.decision.score,
+        qualityScore: candidate.decision?.score ?? null,
       }]
     : inheritedRows.length > 0
       ? inheritedRows.map((reference) => ({ ...reference }))
@@ -642,7 +630,7 @@ export async function createCharacterVisualProfile(input: {
         mediaAssetId,
         sourceJobId: candidate.item.job!.id,
         proposedRole: "primary_face",
-        qualityScore: candidate.decision.score,
+        qualityScore: candidate.decision?.score ?? null,
         identityScore: null,
         source: "identity_calibration",
         status: "promoted",

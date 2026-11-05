@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { starterPayload } from "./starters-api";
+import { starterDetailsMarkdown, starterPayload, starterPreservedFields } from "./starters-api";
 
 const creativeFields = {
   detailsMarkdown: "",
@@ -7,6 +7,35 @@ const creativeFields = {
   appearanceNotes: "",
   visualBrief: "",
 };
+
+describe("seed-shaped starters", () => {
+  const seed = {
+    appearance: {
+      face: { prompt: "Warm open face", eyes: "Hazel" },
+      hair: { prompt: "Dark waves" },
+      body: { type: "Athletic" },
+      notes: "Operator note",
+      visualBrief: "Window light",
+    },
+    advancedDetails: { description: "Your neighbour.", personality: "Warm", firstMessage: "Hi." },
+  };
+
+  it("surfaces the seed fields the form cannot edit, without repeating the editable ones", () => {
+    expect(starterPreservedFields(seed)).toEqual([
+      { key: "face", text: "Warm open face · eyes: Hazel" },
+      { key: "hair", text: "Dark waves" },
+      { key: "body", text: "type: Athletic" },
+      { key: "description", text: "Your neighbour." },
+    ]);
+    expect(starterPreservedFields({ appearance: { notes: "n", visualBrief: "v" }, advancedDetails: {} })).toEqual([]);
+  });
+
+  it("folds structured persona only until an operator text exists", () => {
+    expect(starterDetailsMarkdown({ personality: "Warm" })).toContain("Warm");
+    expect(starterDetailsMarkdown({ personality: "Warm", detailsMarkdown: "Mine" })).toBe("Mine");
+    expect(starterDetailsMarkdown({ personality: "Warm", detailsMarkdown: "" })).toBe("");
+  });
+});
 
 describe("starterPayload", () => {
   it("trims fields, keeps scope/reason as-is", () => {

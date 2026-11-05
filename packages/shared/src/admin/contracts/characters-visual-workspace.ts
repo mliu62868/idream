@@ -73,7 +73,8 @@ export const characterVisualProfileCreateRequestSchema = z
         runId: adminIdSchema,
         itemId: adminIdSchema,
         assetId: adminIdSchema,
-        reviewDecisionId: adminIdSchema,
+        // Historical clients pin a decision; setting the current look does not need one.
+        reviewDecisionId: adminIdSchema.optional(),
       })
       .strict()
       .optional(),

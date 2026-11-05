@@ -5,11 +5,8 @@ import { describe, expect, it } from "vitest";
 import {
   candidateState,
   canChooseCharacterAssetPurpose,
-  canOfferCharacterAssetTerminalRejection,
   characterAssetBootstrapRequestKey,
   characterAssetDraftSelectionRequestKey,
-  characterAssetReviewRequestKey,
-  characterAssetReviewDefinesIdentity,
   characterAssetRunRequestKey,
   characterAssetPurposes,
   characterAssetStudioLayoutClass,
@@ -17,13 +14,11 @@ import {
   characterSourceVariationAvailabilityMessage,
   characterAssetReadinessSummary,
   characterAssetRunReceiptMessage,
-  isCharacterAssetApprovalActionable,
   isCharacterIdentityAuthorityReady,
   nextIncompleteCharacterAssetPurpose,
   preferredCharacterAssetRunId,
   resolveCharacterCandidateVisualState,
   resolveCharacterCustomerPreviewAssets,
-  resolveCharacterAssetReviewEvidence,
   resolveCharacterAssetSubject,
 } from "./character-asset-studio-authority";
 
@@ -152,54 +147,6 @@ describe("Character Asset Studio flow", () => {
     })).toBe(true);
   });
 
-  it("keeps a low-score identity-preserving approval out of draft authority", () => {
-    expect(isCharacterAssetApprovalActionable({
-      bootstrapIdentity: false,
-      decision: "approved",
-      identityConsistency: "passed",
-      score: 89,
-      quality: {
-        artifactFree: true,
-        singleSubject: true,
-        intentMatch: true,
-        noVisibleText: true,
-      },
-    })).toBe(false);
-    expect(isCharacterAssetApprovalActionable({
-      bootstrapIdentity: false,
-      decision: "approved",
-      identityConsistency: "passed",
-      score: 90,
-      quality: {
-        artifactFree: true,
-        singleSubject: true,
-        intentMatch: true,
-        noVisibleText: true,
-      },
-    })).toBe(true);
-  });
-
-  it("uses the immutable Run item mode for identity-defining review", () => {
-    expect(characterAssetReviewDefinesIdentity({
-      identityReviewMode: "defines_identity",
-    })).toBe(true);
-    expect(characterAssetReviewDefinesIdentity({
-      identityReviewMode: "preserves_identity",
-    })).toBe(false);
-    expect(isCharacterAssetApprovalActionable({
-      bootstrapIdentity: true,
-      decision: "approved",
-      identityConsistency: "unscored",
-      score: 95,
-      quality: {
-        artifactFree: true,
-        singleSubject: true,
-        intentMatch: true,
-        noVisibleText: true,
-      },
-    })).toBe(true);
-  });
-
   it("explains the exact source-variation runtime blocker instead of guessing from workflow shape", () => {
     expect(characterSourceVariationBlockerMessage(
       "profile_init_image_unsupported",
@@ -210,59 +157,6 @@ describe("Character Asset Studio flow", () => {
     expect(characterSourceVariationBlockerMessage(
       "reference_slot_assignment_unsupported",
     )).toContain("distinct semantic slots");
-  });
-
-  it("offers a terminal rejection only for a reviewed approval that is no longer draft authority", () => {
-    expect(canOfferCharacterAssetTerminalRejection({
-      lifecycleState: "closed",
-      decision: "approved",
-      hasCompleteEvidence: true,
-      isDraftAuthority: false,
-    })).toBe(true);
-    expect(canOfferCharacterAssetTerminalRejection({
-      lifecycleState: "closed",
-      decision: "approved",
-      hasCompleteEvidence: true,
-      isDraftAuthority: true,
-    })).toBe(false);
-    expect(canOfferCharacterAssetTerminalRejection({
-      lifecycleState: "active",
-      decision: "approved",
-      hasCompleteEvidence: false,
-      isDraftAuthority: false,
-    })).toBe(false);
-  });
-
-  it("preserves the immutable approval evidence when recording its terminal rejection", () => {
-    const approvedQuality = {
-      artifactFree: true,
-      singleSubject: true,
-      intentMatch: true,
-      noVisibleText: true,
-    };
-    expect(resolveCharacterAssetReviewEvidence({
-      decision: "rejected",
-      draft: {
-        identityConsistency: "failed",
-        score: undefined,
-        quality: {
-          artifactFree: false,
-          singleSubject: false,
-          intentMatch: false,
-          noVisibleText: false,
-        },
-      },
-      previous: {
-        decision: "approved",
-        identityConsistency: "passed",
-        score: 96,
-        quality: approvedQuality,
-      },
-    })).toEqual({
-      identityConsistency: "passed",
-      score: 96,
-      quality: approvedQuality,
-    });
   });
 
   it("keeps current, comparison, review, and draft states semantically distinct", () => {
@@ -423,79 +317,6 @@ describe("Character Asset Studio flow", () => {
     }
   });
 
-  it("pins review replay identity to the complete review authority tuple", () => {
-    const request: Parameters<typeof characterAssetReviewRequestKey>[0] = {
-      runId: "run-1",
-      itemId: "item-1",
-      body: {
-        entityVersion: 3,
-        supersedesDecisionId: "decision-0",
-        decision: "approved",
-        identityConsistency: "passed",
-        score: 92,
-        quality: {
-          artifactFree: true,
-          singleSubject: true,
-          intentMatch: true,
-          noVisibleText: true,
-        },
-        reason: "  Concrete visible evidence  ",
-      },
-    };
-    expect(characterAssetReviewRequestKey(request)).toBe(
-      characterAssetReviewRequestKey({
-        ...request,
-        body: {
-          ...request.body,
-          reason: "Concrete visible evidence",
-        },
-      }),
-    );
-    const changedRequests: Parameters<typeof characterAssetReviewRequestKey>[0][] = [
-      { ...request, runId: "run-2" },
-      { ...request, itemId: "item-2" },
-      { ...request, body: { ...request.body, entityVersion: 4 } },
-      { ...request, body: { ...request.body, supersedesDecisionId: "decision-1" } },
-      { ...request, body: { ...request.body, decision: "rejected" } },
-      { ...request, body: { ...request.body, identityConsistency: "failed" } },
-      { ...request, body: { ...request.body, score: 91 } },
-      {
-        ...request,
-        body: {
-          ...request.body,
-          quality: { ...request.body.quality, artifactFree: false },
-        },
-      },
-      {
-        ...request,
-        body: {
-          ...request.body,
-          quality: { ...request.body.quality, singleSubject: false },
-        },
-      },
-      {
-        ...request,
-        body: {
-          ...request.body,
-          quality: { ...request.body.quality, intentMatch: false },
-        },
-      },
-      {
-        ...request,
-        body: {
-          ...request.body,
-          quality: { ...request.body.quality, noVisibleText: false },
-        },
-      },
-      { ...request, body: { ...request.body, reason: "Different evidence" } },
-    ];
-    for (const changed of changedRequests) {
-      expect(characterAssetReviewRequestKey(changed)).not.toBe(
-        characterAssetReviewRequestKey(request),
-      );
-    }
-  });
-
   it("pins bootstrap replay identity to Project, Run, Item, Asset, and Review authority", () => {
     const request: Parameters<typeof characterAssetBootstrapRequestKey>[0] = {
       characterId: "character-1",
@@ -609,27 +430,20 @@ describe("Character Asset Studio flow", () => {
 
   it("keeps a committed selection locked in the shared Project mutation coordinator", () => {
     const source = readFileSync(new URL("./CharacterAssetStudio.tsx", import.meta.url), "utf8");
+    const hook = readFileSync(new URL("./useCharacterDraftImageSelection.ts", import.meta.url), "utf8");
     const selectionStart = source.indexOf("const approveAndContinue");
     const selectionFlow = source.slice(
       selectionStart,
       source.indexOf("if (!permissions.read)", selectionStart),
     );
-    const coordinatorIndex = selectionFlow.indexOf("await commitProjectMutation({");
+    const coordinatorIndex = hook.indexOf("await commitProjectMutation({\n        action: submission.action");
     const afterRefreshIndex = selectionFlow.indexOf("afterRefresh:");
-    const committedIntentCount = selectionFlow.match(
-      /committedIntent = updateDurableMutationIntent\(intent, \{/g,
-    )?.length ?? 0;
 
     expect(coordinatorIndex).toBeGreaterThan(-1);
-    expect(selectionFlow).toContain("commit: async () =>");
-    expect(afterRefreshIndex).toBeGreaterThan(coordinatorIndex);
-    expect(committedIntentCount).toBe(2);
-    expect(source).toContain(
-      "clearDurableMutationIntent(selectionMutationIntent)",
-    );
-    expect(source).toContain(
-      "(selection?.reviewDecisionId ?? null) ===",
-    );
+    expect(selectionFlow).toContain("await selection.submit");
+    expect(afterRefreshIndex).toBeGreaterThan(-1);
+    expect(hook).toContain("clearDurableMutationIntent(intent)");
+    expect(hook).toContain("(selection?.reviewDecisionId ?? null) ===");
     const afterRefreshFlow = selectionFlow.slice(
       afterRefreshIndex,
       selectionFlow.indexOf("      });", afterRefreshIndex),
@@ -640,32 +454,7 @@ describe("Character Asset Studio flow", () => {
     expect(selectionFlow).not.toContain("await onProjectReload()");
   });
 
-  it("keeps review commands replayable until their projections refresh", () => {
-    const source = readFileSync(new URL("./CharacterAssetStudio.tsx", import.meta.url), "utf8");
-    const reviewFlow = source.slice(
-      source.indexOf("const verifyReviewIntentProjection"),
-      source.indexOf("const approveAndContinue"),
-    );
-    const reviewReloadIndex = reviewFlow.indexOf(
-      "const detail = await loadRun(snapshot.runId)",
-    );
-    const reviewListReloadIndex = reviewFlow.indexOf(
-      "await loadRuns()",
-      reviewReloadIndex,
-    );
-    const reviewKeyReleaseIndex = reviewFlow.indexOf(
-      "clearDurableMutationIntent(intent)",
-    );
-
-    expect(reviewReloadIndex).toBeGreaterThan(-1);
-    expect(reviewListReloadIndex).toBeGreaterThan(reviewReloadIndex);
-    expect(reviewKeyReleaseIndex).toBeGreaterThan(reviewListReloadIndex);
-    expect(reviewFlow).toContain(
-      "item.review?.id === intent.committedTargetId",
-    );
-  });
-
-  it("binds review and selection replay identities to the canonical request body", () => {
+  it("binds selection replay identities to the canonical request body", () => {
     const source = readFileSync(new URL("./CharacterAssetStudio.tsx", import.meta.url), "utf8");
 
     expect(source).not.toContain("const reviewItem = async");

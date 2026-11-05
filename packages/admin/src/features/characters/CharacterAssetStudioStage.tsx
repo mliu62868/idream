@@ -145,7 +145,7 @@ export function IdentityRail({
       <span aria-hidden="true">·</span>
       <span>{t("References")} <strong className="font-semibold text-[var(--ad-ink)]">{identityEstablished ? availableReferenceCount : t("Pending")}</strong></span>
       <span aria-hidden="true">·</span>
-      <span className="max-w-56 truncate"><strong className="font-semibold text-[var(--ad-ink)]">{bootstrapMode ? bootstrapProfile?.label ?? t("Unavailable") : qualifiedRoute?.generationProfileKey ?? t("Unavailable")}</strong></span>
+      <span>{t("Image route")} <strong className="font-semibold text-[var(--ad-ink)]">{(bootstrapMode ? bootstrapProfile : qualifiedRoute) ? t("Ready") : t("Unavailable")}</strong></span>
       {!identityEstablished && identity ? (
         <button className="font-semibold text-[var(--ad-ink)] underline" onClick={onRepair} type="button">{t("Repair visual authority")}</button>
       ) : null}

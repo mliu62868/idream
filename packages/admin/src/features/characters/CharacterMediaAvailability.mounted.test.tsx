@@ -36,7 +36,7 @@ vi.mock("@/components/admin/i18n", () => {
         value,
       ),
   };
-  return { useAdminI18n: () => context };
+  return { adminDateLocale: () => "en-US", useAdminI18n: () => context };
 });
 vi.mock("./CharacterAssetStudio", () => ({
   CharacterAssetStudio: ({ onProjectReload }: { onProjectReload: () => Promise<void> }) => (
@@ -158,7 +158,6 @@ describe("Character media availability", () => {
           canCreate
           canRead
           canReadProduction
-          canReview
           commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
           data={data}
           onContinue={() => undefined}
@@ -223,31 +222,34 @@ describe("Character media availability", () => {
     expect(container.textContent).not.toContain("No matching videos");
   });
 
-  it("videos: removal honestly requires confirmation for an action without an undo path", async () => {
+  it("videos: removal needs no typed confirmation and fills a default reason", async () => {
     apiGet.mockResolvedValue({ items: [video] });
     bulkArchiveAssets.mockResolvedValue(undefined);
     await renderLibrary("videos", true, undefined, true);
     await waitUntil(() => container.querySelector("video") !== null);
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Remove video from library"]')!.click());
     const dialog = document.querySelector('[role="dialog"]')!;
-    expect(dialog.textContent).toContain("This cannot be undone.");
-    expect(dialog.textContent).not.toContain("This can be undone later.");
+    expect(dialog.querySelector('input[aria-label="Type the name to confirm"]')).toBeNull();
     const submit = [...dialog.querySelectorAll("button")].find((element) => element.textContent === "Remove from library")!;
-    const reason = dialog.querySelector<HTMLInputElement>('input[aria-label="Removal reason"]')!;
-    const confirmation = dialog.querySelector<HTMLInputElement>('input[aria-label="Type the name to confirm"]')!;
+    expect(submit.disabled).toBe(false);
+    await act(async () => submit.click());
+    expect(bulkArchiveAssets).toHaveBeenCalledWith(expect.objectContaining({ assetIds: [video.id], reason: "Removed from the Character library" }));
+  });
+
+  it("videos: a reason the operator typed is kept", async () => {
+    apiGet.mockResolvedValue({ items: [video] });
+    bulkArchiveAssets.mockResolvedValue(undefined);
+    await renderLibrary("videos", true, undefined, true);
+    await waitUntil(() => container.querySelector("video") !== null);
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Remove video from library"]')!.click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    const reason = dialog.querySelector<HTMLInputElement>('input[aria-label="Removal reason (optional)"]')!;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
     await act(async () => {
       setter.call(reason, "Retire this unused clip");
       reason.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    expect(submit.disabled).toBe(true);
-    expect(bulkArchiveAssets).not.toHaveBeenCalled();
-    await act(async () => {
-      setter.call(confirmation, video.id.slice(0, 8));
-      confirmation.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    expect(submit.disabled).toBe(false);
-    await act(async () => submit.click());
+    await act(async () => [...dialog.querySelectorAll("button")].find((element) => element.textContent === "Remove from library")!.click());
     expect(bulkArchiveAssets).toHaveBeenCalledWith(expect.objectContaining({ assetIds: [video.id], reason: "Retire this unused clip" }));
   });
 
@@ -281,7 +283,7 @@ describe("Character media availability", () => {
       });
       await renderLibrary(kind);
       await waitUntil(() => container.querySelector("article") !== null);
-      const search = container.querySelector<HTMLInputElement>(`input[placeholder="Search ${kind}"]`);
+      const search = container.querySelector<HTMLInputElement>(kind === "images" ? 'input[placeholder="Search by file name, tag, description or date"]' : `input[placeholder="Search ${kind}"]`);
       expect(search).not.toBeNull();
       await act(async () => {
         Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(search, "no-such-asset");

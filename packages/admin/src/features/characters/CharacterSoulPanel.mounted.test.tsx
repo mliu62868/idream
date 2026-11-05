@@ -185,12 +185,12 @@ describe("Soul draft retention", () => {
     typeInto("Identity anchor", "Composed late-night radio host");
     await act(async () => saveButton().click());
     expect(operation).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("Add at least one stable visual trait.");
-    expect(container.textContent).toContain("Describe the portrait's visual direction.");
+    expect(container.textContent).toContain("Add at least one feature that never changes.");
+    expect(container.textContent).toContain("Describe the image mood and framing.");
 
     typeInto("Stable traits (one per line)", "Dark wavy hair\nWarm brown eyes\n");
     typeInto("Reference direction", "Low-key tungsten portraiture");
-    expect(container.textContent).not.toContain("Add at least one stable visual trait.");
+    expect(container.textContent).not.toContain("Add at least one feature that never changes.");
     committingMutation();
     await act(async () => saveButton().click());
     expect(operation).toHaveBeenCalledWith("POST /api/v2/admin/characters/:id/soul/versions", expect.objectContaining({
@@ -291,7 +291,7 @@ describe("Soul draft retention", () => {
     expect(rejected).not.toBeNull();
     expect(rejected?.value).toHaveLength(501);
     expect(document.activeElement).toBe(rejected);
-    expect(container.textContent).toContain("Each stable visual trait must be 500 characters or fewer.");
+    expect(container.textContent).toContain("Each feature must be 500 characters or fewer.");
     expect(document.getElementById(rejected!.getAttribute("aria-describedby")!)?.textContent).toContain("500");
   });
 

@@ -51,7 +51,7 @@ describe("Visual identity drafts", () => {
   });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
   async function render(next: VisualIdentityPanelData = data, canWrite = true) {
-    await act(async () => root.render(<VisualIdentityPanel actorId={actorId} data={next} permissions={{ writeVisual: canWrite, evaluateRoute: false }} runCommittedMutation={runCommittedMutation} />));
+    await act(async () => root.render(<VisualIdentityPanel actorId={actorId} data={next} permissions={{ writeVisual: canWrite }} runCommittedMutation={runCommittedMutation} />));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   }
   function reference(id: string) {
@@ -96,10 +96,8 @@ describe("Visual identity drafts", () => {
     await render();
     await type("Identity lock", "My unsaved identity description");
     await type("Change reason", "Identity refinement");
-    await act(async () => input("Activate this as a new identity version.").click());
     await act(async () => reference("anchor-2").click());
     await type("Publication reason", "Reference refinement");
-    await act(async () => input("Publish a new immutable reference snapshot").click());
     const next = structuredClone(data);
     next.visual.activeIdentity = { ...next.visual.activeIdentity!, id: "identity-2", version: 2, identityPrompt: "New authority prompt" };
     await render(next);
@@ -123,7 +121,6 @@ describe("Visual identity drafts", () => {
     await type("Identity lock", "My unfinished identity description");
     await act(async () => reference("anchor-2").click());
     await type("Publication reason", "Reference refinement");
-    await act(async () => input("Publish a new immutable reference snapshot").click());
     await act(async () => button("Publish Reference Set").click());
     expect(adminV2Operation).toHaveBeenCalledTimes(1);
     expect(input("Identity lock").value).toBe("My unfinished identity description");
@@ -134,7 +131,6 @@ describe("Visual identity drafts", () => {
     await render();
     await type("Identity lock", "My unsaved identity description");
     await type("Change reason", "Identity refinement");
-    await act(async () => input("Activate this as a new identity version.").click());
     apiWrite.mockRejectedValueOnce(new Error("The active Visual Identity changed before this edit was saved."));
     await act(async () => button("Create & activate version").click());
     expect(apiWrite).toHaveBeenCalledWith(expect.any(String), "POST", expect.objectContaining({
@@ -143,6 +139,37 @@ describe("Visual identity drafts", () => {
     expect(input("Identity lock").value).toBe("My unsaved identity description");
     expect(container.textContent).toContain("Unsaved draft");
     expect(container.textContent).toContain("The active Visual Identity changed");
+  });
+
+  it("publishes and activates without a reason or a checkbox, filling a default reason", async () => {
+    await render();
+    await act(async () => reference("anchor-2").click());
+    expect(button("Publish Reference Set").disabled).toBe(false);
+    await act(async () => button("Publish Reference Set").click());
+    expect(adminV2Operation.mock.calls[0]?.[1]).toMatchObject({
+      body: { reason: { summary: "Update the reference images" }, confirmation: expect.any(String) },
+    });
+    expect(String((adminV2Operation.mock.calls[0]?.[1] as { body: { confirmation: string } }).body.confirmation)).not.toBe("");
+    await type("Identity lock", "A longer identity description");
+    expect(button("Create & activate version").disabled).toBe(false);
+    await act(async () => button("Create & activate version").click());
+    expect(apiWrite).toHaveBeenCalledWith(expect.any(String), "POST", expect.objectContaining({
+      reason: "Update the visual identity",
+      confirmation: `${data.character.id}:visual-profile`,
+    }));
+  });
+
+  it("keeps a reason the operator typed", async () => {
+    await render();
+    await type("Identity lock", "A longer identity description");
+    await type("Change reason", "Identity refinement");
+    await act(async () => button("Create & activate version").click());
+    expect(apiWrite).toHaveBeenCalledWith(expect.any(String), "POST", expect.objectContaining({ reason: "Identity refinement" }));
+  });
+
+  it("keeps the look workbench and diagnostics folded when the character is ready", async () => {
+    await render();
+    expect(container.querySelector<HTMLDetailsElement>('[data-testid="change-look"]')?.open).toBe(false);
   });
 
   it("makes reference selection read-only without visual write permission", async () => {

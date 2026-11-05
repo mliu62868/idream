@@ -6,7 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, ImageIcon, Loader2, Sparkles, Wand2 } from "lucide-react";
 import { CHARACTER_VISIBILITY, isCatalogMember } from "@idream/shared/catalog";
-import { legacySoulDetailsMarkdown, renderCharacterSoulMarkdown } from "@idream/shared/chat/persona-render";
+import { characterTemplateDetailsMarkdown, legacySoulDetailsMarkdown, renderCharacterSoulMarkdown } from "@idream/shared/chat/persona-render";
 import {
   characterStyleFormOptions,
   genderFormOptions,
@@ -133,6 +133,15 @@ function pickVisualText(value: unknown, ...keys: string[]): string {
 /** Historical templates and local drafts are read once into the one current field. */
 function templateDetailsMarkdown(value: unknown): string {
   return legacySoulDetailsMarkdown(value);
+}
+
+/** Seed templates describe the face; Admin-saved ones write notes and an art direction. */
+function templateAppearanceText(template: CreateTemplate, face: unknown): string {
+  return [
+    pickString(face, "prompt", "summary"),
+    pickString(template.appearance, "notes"),
+    pickString(template.appearance, "visualBrief") || pickString(template.advancedDetails, "visualBrief"),
+  ].filter(Boolean).join("\n");
 }
 
 function pickTags(value: unknown): string {
@@ -847,7 +856,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
     prefillDraft((current) => ({
       gender: template.gender || current.gender,
       style: template.style || current.style,
-      appearance: pickString(face, "prompt", "summary") || current.appearance,
+      appearance: templateAppearanceText(template, face) || current.appearance,
       ethnicity: pickString(face, "ethnicity", "race") || current.ethnicity,
       skinTone: pickString(face, "skinTone") || current.skinTone,
       eyeColor: pickString(face, "eyes", "eyeColor") || current.eyeColor,
@@ -857,7 +866,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
       description:
         pickString(template.advancedDetails, "description") || template.summary || current.description,
       detailsMarkdown:
-        templateDetailsMarkdown(template.advancedDetails) || current.detailsMarkdown,
+        characterTemplateDetailsMarkdown(template.advancedDetails) || current.detailsMarkdown,
       firstMessage: pickString(template.advancedDetails, "firstMessage") || current.firstMessage,
       tags: pickTags(template.tags) || current.tags,
     }), `Started from "${template.name}". Edit any field before publishing.`);

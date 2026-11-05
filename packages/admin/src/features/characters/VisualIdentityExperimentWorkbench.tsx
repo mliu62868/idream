@@ -47,6 +47,7 @@ import {
 } from "@/features/operations/WorkspaceUi";
 import { cn } from "@/lib/utils";
 import { useWorkspaceRefresh } from "@/features/workspace-refresh";
+import { operatorReasonOrDefault } from "./character-library-archive";
 
 type VisualIdentityExperimentData = Pick<CharacterWorkspaceDetail, "visual"> & {
   character: Pick<
@@ -174,7 +175,6 @@ type ExperimentNotice =
   | "source_uploaded"
   | "continued_from_candidate"
   | "parameters_reused"
-  | "candidate_adopted"
   | "identity_activated";
 
 function experimentNoticeText(
@@ -202,10 +202,6 @@ function experimentNoticeText(
       return t(
         "Loaded this run's parameter snapshot. Adjust it to create a new run.",
       );
-    case "candidate_adopted":
-      return t(
-        "Candidate adopted. Complete the identity details and activate the new visual identity version.",
-      );
     case "identity_activated":
       return t(
         "Activated a new immutable visual identity and Reference Set. The previous identity is kept as history and live images were not replaced.",
@@ -218,7 +214,6 @@ export function VisualIdentityExperimentWorkbench({
   data,
   canCreate,
   canUploadSource,
-  canReview,
   canActivate,
   onActivateCandidate,
   selectedImageCount = 0,
@@ -227,7 +222,6 @@ export function VisualIdentityExperimentWorkbench({
   data: VisualIdentityExperimentData;
   canCreate: boolean;
   canUploadSource: boolean;
-  canReview: boolean;
   canActivate: boolean;
   /** Draft cover/hero/chat selections that activating a new look will clear. */
   selectedImageCount?: number;
@@ -336,12 +330,11 @@ export function VisualIdentityExperimentWorkbench({
   const selectedRun = selectedRunId ? runDetails[selectedRunId] ?? null : null;
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [resultOpen, setResultOpen] = useState(false);
-  const [busy, setBusy] = useState<"generate" | "review" | "activate" | null>(
+  const [busy, setBusy] = useState<"generate" | "activate" | null>(
     null,
   );
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<ExperimentNotice | null>(null);
-  const [confirmedCandidateKey, setConfirmedCandidateKey] = useState<string | null>(null);
   const [activationOpen, setActivationOpen] = useState(false);
   const [activationPrompt, setActivationPrompt] = useState(
     `${data.character.name}. ${CHARACTER_CANONICAL_PORTRAIT_IDENTITY_PROMPT}.`,
@@ -352,7 +345,6 @@ export function VisualIdentityExperimentWorkbench({
   const [activationSignatureTraits, setActivationSignatureTraits] =
     useState("");
   const [activationReason, setActivationReason] = useState("");
-  const [activationConfirmed, setActivationConfirmed] = useState(false);
   const sourceFileInput = useRef<HTMLInputElement>(null);
   const resolvedOrientation = lockedCreateRequest?.orientation ?? (selectedProfile?.allowedOrientations.includes(
     orientation,
@@ -531,13 +523,6 @@ export function VisualIdentityExperimentWorkbench({
   const selectedItem =
     selectedRun?.items.find((item) => item.id === selectedItemId) ??
     selectedRun?.items[0];
-  const candidateKey = selectedRun && selectedItem
-    ? `${selectedRun.id}:${selectedItem.id}:${selectedItem.asset?.id ?? ""}:${selectedItem.review?.id ?? ""}`
-    : null;
-  const candidateQualityConfirmed = candidateKey !== null && confirmedCandidateKey === candidateKey;
-  function setCandidateQualityConfirmed(confirmed: boolean) {
-    setConfirmedCandidateKey(confirmed ? candidateKey : null);
-  }
   const automaticComposition =
     selectedItem?.asset?.automaticComposition ?? null;
   const systemSingleFramePassed =
@@ -801,72 +786,12 @@ export function VisualIdentityExperimentWorkbench({
     setResultOpen(false);
   };
 
-  const submitCandidate = async () => {
-    if (
-      !selectedRun ||
-      !selectedItem?.asset ||
-      !systemSingleFramePassed ||
-      !candidateQualityConfirmed
-    )
-      return;
-    const body = {
-      entityVersion: selectedRun.version,
-      ...(selectedItem.review
-        ? { supersedesDecisionId: selectedItem.review.id }
-        : {}),
-      decision: "approved" as const,
-      identityConsistency: "unscored" as const,
-      quality: {
-        artifactFree: true,
-        singleSubject: true,
-        intentMatch: true,
-        noVisibleText: true,
-      },
-      reason: "已确认候选图为单人单画面并符合视觉身份要求",
-    };
-    setBusy("review");
-    setError(null);
-    try {
-      await adminV2Operation(
-        "POST /api/v2/admin/creative/runs/:id/items/:itemId/decisions",
-        {
-          path: { id: selectedRun.id, itemId: selectedItem.id },
-          body,
-        },
-      );
-      await loadRun(selectedRun.id);
-      await loadRuns();
-      setCandidateQualityConfirmed(false);
-      setActivationOpen(true);
-      setNotice("candidate_adopted");
-      window.requestAnimationFrame(() => {
-        document
-          .getElementById("identity-candidate-activation")
-          ?.scrollIntoView({
-            behavior: "smooth",
-            block: "start",
-          });
-      });
-    } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : t("Candidate could not be adopted"),
-      );
-    } finally {
-      setBusy(null);
-    }
-  };
-
   const activateCandidate = async () => {
     if (
       !selectedRun ||
       !selectedItem?.asset ||
-      !selectedItem.review ||
       !systemSingleFramePassed ||
-      !selectedApproved ||
-      !onActivateCandidate ||
-      !activationConfirmed
+      !onActivateCandidate
     )
       return;
     setBusy("activate");
@@ -887,17 +812,15 @@ export function VisualIdentityExperimentWorkbench({
         signatureTraits: {
           stableTraits: identityTraitLines(activationSignatureTraits),
         },
-        reason: activationReason.trim(),
+        reason: operatorReasonOrDefault(activationReason, "Set this image as the current look"),
         confirmation: `${data.character.id}:visual-profile`,
         candidateAuthority: {
           runId: selectedRun.id,
           itemId: selectedItem.id,
           assetId: selectedItem.asset.id,
-          reviewDecisionId: selectedItem.review.id,
         },
       });
       setActivationOpen(false);
-      setActivationConfirmed(false);
       setActivationReason("");
       setNotice("identity_activated");
     } catch (cause) {
@@ -920,13 +843,6 @@ export function VisualIdentityExperimentWorkbench({
         (resolvedSeedStrategy !== "reuse_source" ||
           selectedSource?.seed !== null)));
   const canGenerate = canCreate && !needsRunRefresh && (createIntent !== null || composerReady);
-  const selectedApproved =
-    selectedItem?.review?.decision === "approved" &&
-    selectedItem.review.identityConsistency === "unscored" &&
-    Boolean(
-      selectedItem.review.quality &&
-      Object.values(selectedItem.review.quality).every(Boolean),
-    );
   const selectedIsActiveIdentity = Boolean(
     selectedItem?.asset &&
     identity &&
@@ -1446,26 +1362,6 @@ export function VisualIdentityExperimentWorkbench({
                 </p>
               ) : null}
 
-              {!selectedApproved &&
-              selectedItem.asset &&
-              systemSingleFramePassed ? (
-                <label className="mt-5 flex cursor-pointer items-start gap-3 text-sm leading-6">
-                  <input
-                    checked={candidateQualityConfirmed}
-                    className="mt-1 h-4 w-4 shrink-0 accent-[var(--ad-ink)]"
-                    onChange={(event) =>
-                      setCandidateQualityConfirmed(event.target.checked)
-                    }
-                    type="checkbox"
-                  />
-                  <span>
-                    {t(
-                      "I have checked the subject, framing, and image quality, and this image can serve as the visual identity.",
-                    )}
-                  </span>
-                </label>
-              ) : null}
-
               <div className="mt-6 flex flex-wrap gap-2">
                 <WorkspaceButton
                   disabled={composerLocked || !selectedItem.asset || busy !== null}
@@ -1479,12 +1375,11 @@ export function VisualIdentityExperimentWorkbench({
                 >
                   {t("Reuse these parameters")}
                 </WorkspaceButton>
-                {systemSingleFramePassed && selectedApproved ? (
+                {systemSingleFramePassed && selectedItem.asset ? (
                   <WorkspaceButton
                     disabled={
                       !canActivate ||
                       !onActivateCandidate ||
-                      !systemSingleFramePassed ||
                       selectedIsActiveIdentity ||
                       busy !== null
                     }
@@ -1495,25 +1390,10 @@ export function VisualIdentityExperimentWorkbench({
                       ? t("Current look")
                       : t("Set as current look")}
                   </WorkspaceButton>
-                ) : systemSingleFramePassed ? (
-                  <WorkspaceButton
-                    disabled={
-                      !canReview ||
-                      !selectedItem.asset ||
-                      !systemSingleFramePassed ||
-                      !candidateQualityConfirmed ||
-                      busy !== null
-                    }
-                    onClick={() => void submitCandidate()}
-                    tone="primary"
-                  >
-                    {busy === "review" ? t("Adopting…") : t("Adopt this image")}
-                  </WorkspaceButton>
                 ) : null}
               </div>
 
               {activationOpen &&
-              selectedApproved &&
               systemSingleFramePassed &&
               selectedItem.asset ? (
                 <div
@@ -1576,7 +1456,7 @@ export function VisualIdentityExperimentWorkbench({
                       />
                     </label>
                     <label className="text-xs font-medium text-[var(--ad-text-muted)] sm:col-span-2">
-                      {t("Reason for change")}
+                      {t("Reason for change (optional)")}
                       <input
                         className={`${fieldClass} mt-1`}
                         onChange={(event) =>
@@ -1586,21 +1466,9 @@ export function VisualIdentityExperimentWorkbench({
                       />
                     </label>
                   </div>
-                  <label className="mt-4 flex items-start gap-2 text-xs leading-5">
-                    <input
-                      checked={activationConfirmed}
-                      className="mt-1"
-                      onChange={(event) =>
-                        setActivationConfirmed(event.target.checked)
-                      }
-                      type="checkbox"
-                    />
-                    <span>
-                      {t(
-                        "I confirm creating a new visual identity version. Live images are not replaced automatically.",
-                      )}
-                    </span>
-                  </label>
+                  <p className="mt-4 text-xs leading-5 text-[var(--ad-text-muted)]">
+                    {t("This creates a new visual identity version. Live images are not replaced automatically.")}
+                  </p>
                   <div className="mt-4 flex flex-wrap gap-2">
                     <WorkspaceButton
                       disabled={
@@ -1608,9 +1476,7 @@ export function VisualIdentityExperimentWorkbench({
                         activationPrompt.trim().length < 10 ||
                         identityTraitLines(activationFaceTraits).length === 0 ||
                         identityTraitLines(activationHairTraits).length === 0 ||
-                        identityTraitLines(activationBodyTraits).length === 0 ||
-                        activationReason.trim().length < 3 ||
-                        !activationConfirmed
+                        identityTraitLines(activationBodyTraits).length === 0
                       }
                       onClick={() => void activateCandidate()}
                       tone="primary"
@@ -1668,7 +1534,6 @@ export function VisualIdentityExperimentWorkbench({
                         className="group min-w-0 text-left"
                         key={item.id}
                         onClick={() => {
-                          setCandidateQualityConfirmed(false);
                           setActivationOpen(false);
                           setSelectedRunId(runDetail.id);
                           setSelectedItemId(item.id);

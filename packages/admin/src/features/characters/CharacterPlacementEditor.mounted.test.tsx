@@ -94,6 +94,7 @@ describe("Character placement qualification", () => {
   let root: Root;
 
   beforeEach(() => {
+    window.localStorage?.clear();
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -103,6 +104,92 @@ describe("Character placement qualification", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+  });
+
+  it("brings the chooser into view and focuses it when opened", async () => {
+    adminV2Operation.mockResolvedValue({ items: [reviewedUpload("available-cover", "review-cover")] });
+    const scrollIntoView = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    try {
+      await act(async () => root.render(<CharacterPlacementEditor
+        canRead canWrite data={characterWorkspaceDetail()} runCommittedMutation={vi.fn()}
+      />));
+      await act(async () => container.querySelector("article button")?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(document.activeElement?.textContent).toContain("Choose Cover image");
+    } finally {
+      HTMLElement.prototype.scrollIntoView = original;
+    }
+  });
+
+  it("searches the chooser after typing settles and restores the full list when cleared", async () => {
+    vi.useFakeTimers();
+    try {
+      adminV2Operation.mockResolvedValue({ items: [reviewedUpload("available-cover", "review-cover")] });
+      await act(async () => root.render(<CharacterPlacementEditor
+        canRead canWrite data={characterWorkspaceDetail()} runCommittedMutation={vi.fn()}
+      />));
+      await act(async () => container.querySelector("article button")?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      const reads = () => adminV2Operation.mock.calls.filter(([operationId]) => String(operationId).startsWith("GET "));
+      expect(reads()).toHaveLength(1);
+      const input = container.querySelector<HTMLInputElement>('input[placeholder="Search by file name, tag, description or date"]')!;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      for (const value of ["w", "wi", "win"]) {
+        await act(async () => {
+          setter.call(input, value);
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+      }
+      expect(reads()).toHaveLength(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+      expect(reads()).toHaveLength(2);
+      expect((reads()[1]?.[1] as { query: URLSearchParams }).query.get("search")).toBe("win");
+      await act(async () => {
+        setter.call(input, "");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      expect(reads()).toHaveLength(3);
+      expect((reads()[2]?.[1] as { query: URLSearchParams }).query.get("search")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("offers to resume a selection whose outcome is unknown after a reload", async () => {
+    const available = reviewedUpload("available-cover", "review-cover");
+    let writes = 0;
+    adminV2Operation.mockImplementation(async (operationId: string) => {
+      if (operationId.startsWith("GET ")) return { items: [available] };
+      writes += 1;
+      if (writes === 1) throw new TypeError("Connection lost after commit");
+      return { selectedAssetId: available.id };
+    });
+    const runCommittedMutation = vi.fn(async ({ commit, afterRefresh }) => {
+      const result = await commit();
+      afterRefresh?.();
+      return { result, refreshed: true };
+    });
+    const render = () => <CharacterPlacementEditor
+      actorId="operator-reload" canRead canWrite data={characterWorkspaceDetail()} runCommittedMutation={runCommittedMutation}
+    />;
+    await act(async () => root.render(render()));
+    await act(async () => container.querySelector("article button")?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await waitUntil(() => container.textContent?.includes("Use image") === true);
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Use image")!.click());
+    await waitUntil(() => writes === 1 && container.textContent?.includes("Resume selection") === true);
+    // A new page load still knows the saved request and replays its exact key.
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await act(async () => root.render(render()));
+    await act(async () => container.querySelector("article button")?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await waitUntil(() => container.textContent?.includes("Resume selection") === true);
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("Resume selection"))!.click());
+    await waitUntil(() => writes === 2);
+    const requests = adminV2Operation.mock.calls.filter(([operationId]) => String(operationId).startsWith("PATCH "));
+    expect((requests[1]?.[1] as { replayIdempotencyKey?: string }).replayIdempotencyKey)
+      .toBe((requests[0]?.[1] as { replayIdempotencyKey?: string }).replayIdempotencyKey);
+    expect((requests[0]?.[1] as { replayIdempotencyKey?: string }).replayIdempotencyKey).toBeTruthy();
   });
 
   it("does not offer a chooser or request images without image-read permission", async () => {

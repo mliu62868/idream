@@ -22,6 +22,8 @@ export type ConfirmSpec = {
   /** 后端写操作是否收 reason（默认 true）。false 时不显示 reason 输入、不拿它门槛提交，
    * onSubmit 收到 ""——后端契约无 reason 字段的操作不该让运营填一个会被丢弃的原因（T14 评审规则）。 */
   requireReason?: boolean;
+  /** SPEC: 显示原因输入但不门槛提交；留空时 onSubmit 收到 ""，由调用方填默认原因。 */
+  reasonOptional?: boolean;
   reasonLabel?: string;
   submitLabel: string;
   onSubmit: (reason: string) => Promise<void>;
@@ -53,7 +55,7 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
     ? t(spec.destructive.inputLabel)
     : t("Type the name to confirm");
   const nameOk = !spec.destructive || nameInput.trim() === spec.destructive.expectedName;
-  const reasonOk = !requireReason || reason.trim().length >= 3;
+  const reasonOk = !requireReason || spec.reasonOptional === true || reason.trim().length >= 3;
   const canSubmit = !busy && reasonOk && nameOk;
 
   useEffect(() => {

@@ -273,7 +273,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
         <CharacterAssetStudio actorId="operator-zh" data={bootstrapData}
           commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
           onContinue={() => undefined} onProjectReload={async () => undefined}
-          permissions={{ read: true, create: true, review: true, selectDraft: true }} />
+          permissions={{ read: true, create: true, selectDraft: true }} />
       </AdminI18nProvider>,
     ));
     const button = (label: string) => [...container.querySelectorAll("button")]
@@ -356,7 +356,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
       root.render(<CharacterAssetStudio
         actorId="operator-receipt"
         data={readyData}
-        permissions={{ read: true, create: true, review: false, selectDraft: true }}
+        permissions={{ read: true, create: true, selectDraft: true }}
         onContinue={() => undefined}
         onProjectReload={async () => undefined}
         commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
@@ -375,8 +375,14 @@ describe("Character Asset Studio bootstrap route projection", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(4_000); });
     expect(container.textContent).toContain(hasAsset() ? "Ready to decide" : executionState === "unknown" ? "Generation outcome needs confirmation" : "Generation failed");
     if (hasAsset()) {
-      expect(findButton("Generate 1 hero image")?.disabled).toBe(false);
+      // Delivered images land on the adoptable state without another click.
+      expect(findButton("Select hero · next asset")?.disabled).toBe(false);
+      expect(findButton("Generate 1 hero image")).toBeUndefined();
       expect(container.textContent).toContain("Generation is complete. Choose an image to use.");
+      await act(async () => { findButton("New image")?.click(); await vi.advanceTimersByTimeAsync(0); });
+      expect(findButton("Generate 1 hero image")?.disabled).toBe(false);
+      // The adoption action stays visible while composing the next image.
+      expect(findButton("Select hero · next asset")?.disabled).toBe(false);
     } else {
       expect(container.textContent).not.toContain("Generation is complete. Choose an image to use.");
     }
@@ -389,6 +395,112 @@ describe("Character Asset Studio bootstrap route projection", () => {
     expect(container.textContent).not.toContain("The image request is in progress.");
     expect(adminV2Request.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(1);
     expect(adminV2Request.mock.calls.some(([path]) => path.endsWith("/decisions"))).toBe(false);
+  });
+
+  describe("generating the missing images in one click", () => {
+    const missingData = () => withCharacterWorkspaceDetail(data, {
+      journey: journeyFor(["character_cover"]),
+      project: { draftImageAssetId: "portrait-asset", draftAssetPack: { character_cover: "portrait-asset" } },
+      visual: {
+        activeIdentity: { id: "missing-identity", version: 1, immutableHash: "identity-hash" },
+        activeReferenceSet: {
+          id: "missing-references",
+          references: [{ mediaAssetId: "portrait-asset", role: "primary_face", available: true, url: "/portrait.png", thumbnailUrl: null, qualityScore: null, identityScore: null }],
+        },
+        routeQualifications: [routeQualification()],
+        identityBootstrap: { allowed: false, state: "blocked_existing_authority" },
+        readiness: { ready: true, blockers: [] },
+      },
+    });
+    const runDetail = (id: string, purpose: string) => ({
+      id, purpose, lifecycleState: "active", target: { type: "character", id: data.character.id }, version: 1,
+      executionOutcome: "running", reviewState: "not_ready",
+      counts: { total: 1, generated: 0, reviewed: 0, approved: 0, placed: 0, failed: 0 },
+      updatedAt: "2026-10-02T14:05:24.370Z", createdAt: "2026-10-02T14:05:24.370Z",
+      items: [{ id: `${id}-item`, ordinal: 0, version: 1, status: "running", executionState: "generating", asset: null, review: null, lineage: { requestId: `${id}-job` } }],
+    });
+    const renderStudio = async (actorId: string) => {
+      await act(async () => {
+        root.render(<CharacterAssetStudio
+          actorId={actorId}
+          data={missingData()}
+          permissions={{ read: true, create: true, selectDraft: true }}
+          onContinue={() => undefined}
+          onProjectReload={async () => undefined}
+          commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
+        />);
+      });
+      await waitUntil(() => Boolean(container.querySelector('[data-testid="generate-missing-images"]')));
+    };
+    const clickGenerate = async () => {
+      await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="generate-missing-images"] button')?.click());
+    };
+
+    it("creates one count=1 Run per missing purpose without waiting for the other", async () => {
+      const posted: Record<string, unknown>[] = [];
+      let releaseFirst: (() => void) | undefined;
+      adminV2Request.mockImplementation(async (path, options) => {
+        if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+          const body = options.body as Record<string, unknown>;
+          posted.push(body);
+          // The first POST stays open until the second has been sent: they run side by side.
+          if (posted.length === 1) await new Promise<void>((resolve) => { releaseFirst = resolve; });
+          return { batch: { id: `run-${String(body.purpose)}` }, replayed: false };
+        }
+        if (path.includes("/api/v2/admin/creative/runs?")) return { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
+        const match = /creative\/runs\/run-(.+)$/.exec(path);
+        if (match) return runDetail(`run-${match[1]}`, match[1]);
+        throw new Error(`Unexpected Admin request: ${path}`);
+      });
+      await renderStudio("operator-missing-all");
+      await clickGenerate();
+      await waitUntil(() => posted.length === 2);
+      await act(async () => releaseFirst?.());
+      await waitUntil(() => container.textContent?.includes("Generating 2 images") === true);
+      expect(posted.map((body) => body.purpose).sort()).toEqual(["character_chat", "character_hero"]);
+      expect(posted.every((body) => body.count === 1 && String(body.brief).length > 0)).toBe(true);
+    });
+
+    it("skips a purpose that already has a running request", async () => {
+      const posted: Record<string, unknown>[] = [];
+      adminV2Request.mockImplementation(async (path, options) => {
+        if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+          const body = options.body as Record<string, unknown>;
+          posted.push(body);
+          return { batch: { id: `run-${String(body.purpose)}` }, replayed: false };
+        }
+        if (path.includes("/api/v2/admin/creative/runs?")) {
+          const query = new URLSearchParams(path.split("?")[1]);
+          const running = query.get("purpose") === "character_chat" && query.get("executionOutcome") === "running";
+          return { items: running ? [runDetail("run-chat-existing", "character_chat")] : [], pageInfo: { endCursor: null, hasNextPage: false } };
+        }
+        const match = /creative\/runs\/run-(.+)$/.exec(path);
+        if (match) return runDetail(`run-${match[1]}`, match[1]);
+        throw new Error(`Unexpected Admin request: ${path}`);
+      });
+      await renderStudio("operator-missing-skip");
+      await clickGenerate();
+      await waitUntil(() => container.textContent?.includes("Generating 1 images") === true);
+      expect(posted.map((body) => body.purpose)).toEqual(["character_hero"]);
+    });
+
+    it("keeps the started Run and reports the one that failed", async () => {
+      adminV2Request.mockImplementation(async (path, options) => {
+        if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+          const body = options.body as Record<string, unknown>;
+          if (body.purpose === "character_chat") throw new AdminV2RequestError("Rejected", 422, "invalid_request");
+          return { batch: { id: "run-character_hero" }, replayed: false };
+        }
+        if (path.includes("/api/v2/admin/creative/runs?")) return { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
+        const match = /creative\/runs\/run-(.+)$/.exec(path);
+        if (match) return runDetail(`run-${match[1]}`, match[1]);
+        throw new Error(`Unexpected Admin request: ${path}`);
+      });
+      await renderStudio("operator-missing-partial");
+      await clickGenerate();
+      await waitUntil(() => container.querySelector('[role="alert"]')?.textContent?.includes("1 of 2 images could not be started") === true);
+      expect(container.textContent).toContain("Generating 1 images");
+    });
   });
 
   it("unlocks the chat composer after directly selecting a hero without a historical review", async () => {
@@ -466,7 +578,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
       return <CharacterAssetStudio
         actorId={actorId}
         data={current}
-        permissions={{ read: true, create: true, review: false, selectDraft: true }}
+        permissions={{ read: true, create: true, selectDraft: true }}
         onContinue={() => undefined}
         onProjectReload={async () => undefined}
         commitProjectMutation={async ({ commit, afterRefresh }) => {
@@ -554,7 +666,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
       return <CharacterAssetStudio
         actorId="operator-bootstrap"
         data={current}
-        permissions={{ read: true, create: !writesLocked, review: !writesLocked, selectDraft: !writesLocked }}
+        permissions={{ read: true, create: !writesLocked, selectDraft: !writesLocked }}
         onContinue={() => undefined}
         onProjectReload={async () => undefined}
         commitProjectMutation={async ({ commit, afterRefresh }) => {
@@ -594,7 +706,6 @@ describe("Character Asset Studio bootstrap route projection", () => {
           permissions={{
             read: true,
             create: true,
-            review: true,
             selectDraft: true,
           }}
         />,
@@ -647,7 +758,6 @@ describe("Character Asset Studio bootstrap route projection", () => {
           permissions={{
             read: true,
             create: true,
-            review: true,
             selectDraft: true,
           }}
         />,
@@ -727,7 +837,6 @@ describe("Character Asset Studio bootstrap route projection", () => {
           permissions={{
             read: true,
             create: true,
-            review: true,
             selectDraft: true,
           }}
         />,
@@ -824,7 +933,6 @@ describe("Character Asset Studio bootstrap route projection", () => {
           permissions={{
             read: true,
             create: true,
-            review: true,
             selectDraft: true,
           }}
         />,
@@ -904,7 +1012,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
         data={readyData}
         onContinue={() => undefined}
         onProjectReload={async () => undefined}
-        permissions={{ read: true, create: true, review: true, selectDraft: true }}
+        permissions={{ read: true, create: true, selectDraft: true }}
       />,
     ));
     const label = purpose === "character_hero" ? "Generate 1 hero image" : "Generate 1 chat image";
@@ -986,7 +1094,6 @@ describe("Character Asset Studio bootstrap route projection", () => {
           permissions={{
             read: true,
             create: true,
-            review: true,
             selectDraft: true,
           }}
         />,
@@ -1063,7 +1170,6 @@ describe("Character Asset Studio bootstrap route projection", () => {
           permissions={{
             read: true,
             create: true,
-            review: true,
             selectDraft: true,
           }}
         />,
@@ -1232,7 +1338,6 @@ describe("Character Asset Studio bootstrap route projection", () => {
           permissions={{
             read: true,
             create: true,
-            review: true,
             selectDraft: true,
           }}
         />,
@@ -1330,7 +1435,6 @@ describe("Character Asset Studio bootstrap route projection", () => {
           permissions={{
             read: true,
             create: true,
-            review: true,
             selectDraft: true,
           }}
         />,
@@ -1388,7 +1492,6 @@ describe("Character Asset Studio bootstrap route projection", () => {
           permissions={{
             read: true,
             create: true,
-            review: true,
             selectDraft: true,
           }}
         />,
@@ -1485,7 +1588,6 @@ describe("Character Asset Studio bootstrap route projection", () => {
           permissions={{
             read: true,
             create: true,
-            review: true,
             selectDraft: true,
           }}
         />,
@@ -1684,7 +1786,6 @@ describe("Character Asset Studio bootstrap route projection", () => {
           permissions={{
             read: true,
             create: true,
-            review: true,
             selectDraft: true,
           }}
         />,
@@ -1744,7 +1845,6 @@ describe("Character Asset Studio bootstrap route projection", () => {
           permissions={{
             read: true,
             create: true,
-            review: true,
             selectDraft: true,
           }}
         />,
@@ -1945,7 +2045,6 @@ describe("Character Asset Studio bootstrap route projection", () => {
           permissions={{
             read: true,
             create: true,
-            review: true,
             selectDraft: true,
           }}
         />,
@@ -2151,7 +2250,6 @@ describe("Character Asset Studio bootstrap route projection", () => {
           permissions={{
             read: true,
             create: true,
-            review: true,
             selectDraft: true,
           }}
         />,
@@ -2255,7 +2353,6 @@ describe("Character Asset Studio bootstrap route projection", () => {
           permissions={{
             read: true,
             create: true,
-            review: true,
             selectDraft: true,
           }}
         />,
@@ -2337,7 +2434,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
     const button = (host: HTMLElement, label: string) => [...host.querySelectorAll("button")].find((candidate) => candidate.textContent?.trim() === label);
     const render = (target: Root) => target.render(<CharacterAssetStudio
       actorId="operator-shared-hero" data={readyData}
-      permissions={{ read: true, create: true, review: false, selectDraft: true }}
+      permissions={{ read: true, create: true, selectDraft: true }}
       onContinue={() => undefined} onProjectReload={async () => undefined}
       commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
     />);
@@ -2451,7 +2548,6 @@ describe("Character Asset Studio bootstrap route projection", () => {
             permissions={{
               read: true,
               create: true,
-              review: true,
               selectDraft: true,
             }}
           />,
@@ -2580,7 +2676,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
         <CharacterAssetStudio actorId="operator-replay" data={bootstrapData}
           commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
           onContinue={() => undefined} onProjectReload={async () => undefined}
-          permissions={{ read: true, create: true, review: true, selectDraft: true }} />,
+          permissions={{ read: true, create: true, selectDraft: true }} />,
       ));
       await waitUntil(() => container.textContent?.includes("Loading character assets") === false);
     };
@@ -2684,7 +2780,6 @@ describe("Character Asset Studio bootstrap route projection", () => {
             permissions={{
               read: true,
               create: true,
-              review: true,
               selectDraft: true,
             }}
           />,
@@ -2881,7 +2976,6 @@ describe("Character Asset Studio bootstrap route projection", () => {
           permissions={{
             read: true,
             create: true,
-            review: true,
             selectDraft: true,
           }}
         />,
@@ -2994,7 +3088,6 @@ describe("Character Asset Studio bootstrap route projection", () => {
             permissions={{
               read: true,
               create: true,
-              review: true,
               selectDraft: true,
             }}
           />,
@@ -3115,173 +3208,12 @@ describe("Character Asset Studio bootstrap route projection", () => {
       ),
     ).toBe(false);
   });
-
-  it("clears a recovered review only after the exact decision is visible on its Run item", async () => {
-    const characterId = data.character.id;
-    const reviewScope = `character-asset:review:operator-a:${characterId}`;
-    const runId = "recovered-review-run";
-    const itemId = "recovered-review-item";
-    const decisionId = "recovered-review-decision";
-    const canonicalSnapshot = {
-      runId,
-      itemId,
-      body: {
-        entityVersion: 2,
-        decision: "approved",
-        identityConsistency: "unscored",
-        score: 94,
-        quality: {
-          artifactFree: true,
-          singleSubject: true,
-          intentMatch: true,
-          noVisibleText: true,
-        },
-        reason: "Exact recovered candidate evidence passed",
-      },
-    };
-    beginDurableMutationIntent({
-      scope: reviewScope,
-      signature: "legacy-review-without-replay-body",
-      createIdempotencyKey: () => "recovered-review-idempotency-key",
-      requestSnapshot: { legacy: true },
-    });
-    const runSummary = {
-      id: runId,
-      purpose: "character_cover",
-      executionOutcome: "succeeded",
-      reviewState: "approved",
-      counts: {
-        total: 1,
-        generated: 1,
-        reviewed: 1,
-        approved: 1,
-        placed: 0,
-        failed: 0,
-      },
-      updatedAt: "2026-07-17T12:00:00.000Z",
-    };
-    const runDetail = {
-      ...runSummary,
-      version: 2,
-      items: [
-        {
-          id: itemId,
-          ordinal: 0,
-          status: "approved",
-          version: 2,
-          asset: {
-            id: "recovered-review-asset",
-            url: "/recovered-review.webp",
-            thumbnailUrl: "/recovered-review-thumb.webp",
-          },
-          review: {
-            id: decisionId,
-            supersedesDecisionId: null,
-            decision: "approved",
-            identityConsistency: "unscored",
-            score: 94,
-            quality: canonicalSnapshot.body.quality,
-            reason: canonicalSnapshot.body.reason,
-          },
-          lineage: {
-            generationProfileKey: "bootstrap-profile-v1",
-            workflowKey: "bootstrap-workflow",
-            requestId: "recovered-review-request",
-            providerRequestId: "recovered-review-provider",
-          },
-        },
-      ],
-    };
-    let detailReads = 0;
-    adminV2Request.mockImplementation(async (path, options) => {
-      if (path.includes("/api/v2/admin/creative/runs?")) {
-        return {
-          items: [runSummary],
-          pageInfo: { endCursor: null, hasNextPage: false },
-        };
-      }
-      if (path === `/api/v2/admin/creative/runs/${runId}`) {
-        detailReads += 1;
-        return runDetail;
-      }
-      if (
-        path === "/api/v2/admin/mutation-receipts/reconcile" &&
-        options?.method === "POST"
-      ) {
-        return {
-          state: "committed",
-          commandType: "creative.review.decision",
-          commandId: "recovered-review-command",
-          status: "succeeded",
-          committedTargetId: decisionId,
-          verification: {
-            kind: "creative_review_decision",
-            runId,
-            itemId,
-            decisionId,
-            requestSnapshot: canonicalSnapshot,
-          },
-        };
-      }
-      throw new Error(`Unexpected Admin request: ${path}`);
-    });
-
-    await act(async () => {
-      root.render(
-        <CharacterAssetStudio
-          actorId="operator-a"
-          commitProjectMutation={async ({ commit }) => ({
-            result: await commit(),
-            refreshed: true,
-          })}
-          data={data}
-          onContinue={() => undefined}
-          onProjectReload={async () => undefined}
-          permissions={{
-            read: true,
-            create: true,
-            review: true,
-            selectDraft: true,
-          }}
-        />,
-      );
-    });
-    await waitUntil(() =>
-      [...container.querySelectorAll("button")].some((button) =>
-        button.textContent?.includes("Reconcile review"),
-      ),
-    );
-    const reconcile = [...container.querySelectorAll("button")].find((button) =>
-      button.textContent?.includes("Reconcile review"),
-    );
-    await act(async () => {
-      reconcile?.click();
-      await Promise.resolve();
-    });
-    await waitUntil(
-      () =>
-        readActiveDurableMutationIntent({
-          scope: reviewScope,
-        }) === null,
-    );
-
-    expect(detailReads).toBeGreaterThan(0);
-    expect(container.textContent).toContain(
-      "verified against its exact Run item",
-    );
-    expect(
-      adminV2Request.mock.calls.some(
-        ([path, options]) =>
-          path.includes("/decisions") && options?.method === "POST",
-      ),
-    ).toBe(false);
-  });
 });
 
 describe("Character Asset Studio list races and saved-intent recovery", () => {
   let container: HTMLDivElement;
   let root: Root;
-  const permissions = { read: true, create: true, review: true, selectDraft: true };
+  const permissions = { read: true, create: true, selectDraft: true };
   const commitProjectMutation: Parameters<typeof CharacterAssetStudio>[0]["commitProjectMutation"] =
     async ({ commit }) => ({ result: await commit(), refreshed: true });
   const button = (label: string) =>
@@ -3590,35 +3522,6 @@ describe("Character Asset Studio list races and saved-intent recovery", () => {
         onContinue={() => undefined} onProjectReload={async () => undefined} permissions={permissions} />));
       await waitUntil(() => container.textContent?.includes("Loading character assets") === false);
     };
-
-    it.each([[401, "unauthorized"], [403, "forbidden"], [409, "conflict"]] as const)("moves a rejected review replay to reconciliation (%s)", async (status, code) => {
-      const scope = `character-asset:review:${actorId}:${data.character.id}`;
-      const saved = seedIntent(scope, {
-        runId: "review-run", itemId: "review-item",
-        body: {
-          entityVersion: 2, decision: "approved", identityConsistency: "unscored", score: 94,
-          quality: { artifactFree: true, singleSubject: true, intentMatch: true, noVisibleText: true },
-          reason: "Saved review evidence passed",
-        },
-      });
-      adminV2Request.mockImplementation(async (path, options) => {
-        if (path.endsWith("/decisions")) throw new AdminV2RequestError("Replay rejected", status, code);
-        if (path === "/api/v2/admin/mutation-receipts/reconcile") {
-          expect(options?.idempotencyKey).toBe(saved.idempotencyKey);
-          return cancelledReceipt("creative.review.decision");
-        }
-        return emptyPage;
-      });
-      await mount(data);
-      await act(async () => button("Resume review")?.click());
-      await waitUntil(() => button("Reconcile review") !== undefined);
-      expect(readActiveDurableMutationIntent({ scope })).toMatchObject({ idempotencyKey: saved.idempotencyKey, status: "reconciliation_required" });
-      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Replay rejected");
-
-      await act(async () => button("Reconcile review")?.click());
-      await waitUntil(() => readActiveDurableMutationIntent({ scope }) === null);
-      expect(adminV2Request.mock.calls.filter(([path]) => path.endsWith("/decisions"))).toHaveLength(1);
-    });
 
     it.each([[401, "unauthorized"], [403, "forbidden"], [409, "conflict"]] as const)("moves a rejected selection replay to reconciliation (%s)", async (status, code) => {
       const scope = `character-asset:selection:${actorId}:${data.character.id}`;

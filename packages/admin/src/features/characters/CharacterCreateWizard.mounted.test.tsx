@@ -121,6 +121,125 @@ describe("Character create wizard restore authority", () => {
     vi.restoreAllMocks();
   });
 
+  it("fills only the empty fields from one line of inspiration and leaves them editable", async () => {
+    adminV2Request.mockImplementation(async (path) => {
+      if (String(path).includes("character-assist")) {
+        return {
+          description: "A dry night-shift nurse.",
+          nameIdeas: ["Mara Vale"],
+          advancedDetails: { detailsMarkdown: "## Voice", firstMessage: "Long shift?", visualBrief: "Warm low light." },
+          visualDirection: { identityAnchor: "Night-shift nurse", stableTraits: ["Dark hair", "Tired eyes"] },
+          failedStages: ["nameIdeas"],
+          runtime: { provider: "pipeline", pipelineUrl: null, model: "m" },
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    await act(async () => root.render(<CharacterCreateWizard canCreate />));
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="character-create-prefill"]')));
+    const type = async (selector: string, value: string) => {
+      const input = container.querySelector<HTMLInputElement | HTMLTextAreaElement>(selector)!;
+      const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), "value")!.set!;
+      await act(async () => {
+        setter.call(input, value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    };
+    await type('[name="persona.firstMessage"]', "My own opening");
+    await type("#character-create-idea", "A dry night-shift nurse");
+    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Fill with AI"))!.click());
+    await waitUntil(() => container.querySelector<HTMLTextAreaElement>('[name="persona.characterPromise"]')?.value === "A dry night-shift nurse.");
+    expect(container.querySelector<HTMLTextAreaElement>('[name="persona.firstMessage"]')?.value).toBe("My own opening");
+    expect(container.querySelector('[data-testid="character-create-prefill"] [role="status"]')?.textContent).toContain("Opening message");
+    expect(container.querySelector('[data-testid="character-create-prefill"] [role="status"]')?.textContent).toContain("could not draft every field");
+    const request = adminV2Request.mock.calls.find(([path]) => String(path).includes("character-assist"))!;
+    expect(request[1]?.body).toMatchObject({ seed: "A dry night-shift nurse", includeVisualDirection: true });
+    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Continue to visual direction"))!.click());
+    await waitUntil(() => Boolean(container.querySelector('[name="visualDirection.stableTraits"]')));
+    expect(container.querySelector<HTMLTextAreaElement>('[name="visualDirection.stableTraits"]')?.value).toBe("Dark hair\nTired eyes");
+    expect(container.querySelector<HTMLTextAreaElement>('[name="visualDirection.referenceDirection"]')?.value).toBe("Warm low light.");
+  });
+
+  it("keeps the draft and explains in place when inspiration fails", async () => {
+    adminV2Request.mockImplementation(async () => {
+      throw new Error("model down");
+    });
+    await act(async () => root.render(<CharacterCreateWizard canCreate />));
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="character-create-prefill"]')));
+    const input = container.querySelector<HTMLInputElement>("#character-create-idea")!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(input, "An idea that fails");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Fill with AI"))!.click());
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="character-create-prefill"] [role="alert"]')));
+    expect(input.value).toBe("An idea that fails");
+    expect(container.querySelector<HTMLInputElement>('[name="persona.name"]')?.value).toBe("");
+  });
+
+  it("prefills from ?template once and then detaches from it", async () => {
+    window.history.replaceState(null, "", "/admin/characters/new?template=tpl-1");
+    adminV2Request.mockImplementation(async (path) => {
+      if (String(path).endsWith("/characters/creation-templates")) {
+        return {
+          items: [{
+            id: "tpl-1", scope: "built_in", name: "Neighbour", summary: "Lives one floor up.", gender: "male", style: "anime",
+            appearance: { face: { prompt: "Warm open face" }, hair: { prompt: "Dark waves" } },
+            advancedDetails: { firstMessage: "Your light was on." }, tags: [], coverAssetId: null, isActive: true, sortOrder: 0,
+            createdById: null, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+          }],
+          pageInfo: { endCursor: null, hasNextPage: false },
+          asOf: "2026-01-01T00:00:00.000Z",
+          freshness: "fresh",
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    await act(async () => root.render(<CharacterCreateWizard canCreate />));
+    await waitUntil(() => container.querySelector<HTMLTextAreaElement>('[name="persona.firstMessage"]')?.value === "Your light was on.");
+    await waitUntil(() => !window.location.search.includes("template"));
+    expect(container.querySelector<HTMLInputElement>('[name="persona.name"]')?.value).toBe("");
+    expect([...container.querySelectorAll("select")].some((select) => select.value === "male")).toBe(true);
+    // A template never creates anything: it was only read.
+    expect(adminV2Request.mock.calls.every(([, options]) => !options?.method || options.method === "GET")).toBe(true);
+  });
+
+  it("saves optional tags after creating, and tags never hold up creating", async () => {
+    const seed = {
+      persona: { name: "Mira", age: 30, gender: "female", characterPromise: "A warm host", detailsMarkdown: "", firstMessage: "Hello there." },
+      visualDirection: { identityAnchor: "Adult radio host", stableTraits: ["Dark hair"], style: "realistic", referenceDirection: "Warm portrait light" },
+    };
+    window.localStorage.setItem("idream.admin.character-create-draft.v3:operator-tags", JSON.stringify(seed));
+    const puts: unknown[] = [];
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path === "/api/v2/admin/content/tags") return { items: [{ id: "tag-1", label: "Slow burn" }] };
+      if (path === "/api/v2/admin/characters" && options?.method === "POST") {
+        return { characterId: "chr-1", characterContentVersionId: "v1", projectId: "p1", revisionId: "r1", projectVersion: 1, contentVersion: 1, deepLink: "/admin/characters/chr-1?tab=assets", replayed: false };
+      }
+      if (String(path).endsWith("/content/characters/chr-1/tags")) {
+        puts.push(options?.body);
+        return { characterId: "chr-1", tags: [] };
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    await act(async () => root.render(<CharacterCreateWizard actorId="operator-tags" canCreate canTag />));
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="character-create-tags"] button')));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="character-create-tags"] button')!.click());
+    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Save character"))!.click());
+    await waitUntil(() => routerPush.mock.calls.length === 1);
+    expect(puts).toEqual([{ tagIds: ["tag-1"], confirmation: "chr-1:tags" }]);
+    expect(routerPush).toHaveBeenCalledWith("/admin/characters/chr-1?tab=assets");
+  });
+
+  it("offers neither inspiration nor templates to someone who cannot create", async () => {
+    window.history.replaceState(null, "", "/admin/characters/new?draft=chr-1");
+    adminV2Request.mockImplementation(() => new Promise(() => undefined));
+    await act(async () => root.render(<CharacterCreateWizard canCreate={false} canResumeDraft />));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(container.querySelector('[data-testid="character-create-prefill"]')).toBeNull();
+  });
+
   it("retains every field when autofill updates the persona in one render batch", async () => {
     await act(async () => {
       root.render(<CharacterCreateWizard actorId="operator-a" canCreate />);
@@ -210,7 +329,7 @@ describe("Character create wizard restore authority", () => {
     await waitUntil(() => container.querySelector('[name="persona.detailsMarkdown"]')?.getAttribute("aria-invalid") === "true");
     const details = container.querySelector('[name="persona.detailsMarkdown"]')!;
     expect(container.textContent).toContain("Additional details must be 24000 characters or fewer.");
-    expect(document.activeElement).toBe(details);
+    await waitUntil(() => document.activeElement === details);
     expect(adminV2Request).not.toHaveBeenCalled();
   });
 

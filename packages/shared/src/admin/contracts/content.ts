@@ -603,7 +603,18 @@ export const contentCharacterAssistRequestSchema = z.object({
   style: z.enum(CHARACTER_STYLES).optional(),
   // Existing probes consume nameIdeas; omission keeps that generation enabled.
   includeNameIdeas: z.boolean().optional(),
+  // The create wizard also needs the look it will generate from; Starters do not.
+  includeVisualDirection: z.boolean().optional(),
 }).strict();
+
+export const contentCharacterAssistStageSchema = z.enum([
+  "description",
+  "detailsMarkdown",
+  "firstMessage",
+  "visualBrief",
+  "visualIdentity",
+  "nameIdeas",
+]);
 
 export const contentCharacterAssistResponseSchema = z.object({
   description: z.string(),
@@ -613,9 +624,17 @@ export const contentCharacterAssistResponseSchema = z.object({
     firstMessage: z.string(),
     visualBrief: z.string(),
   }).strict(),
+  visualDirection: z.object({
+    identityAnchor: z.string(),
+    stableTraits: z.array(z.string()),
+  }).strict().optional(),
+  // A failed stage leaves its field empty; the rest of the draft stays usable.
+  failedStages: z.array(contentCharacterAssistStageSchema),
   runtime: adminTextRuntimeIdentitySchema,
 }).strict();
 
+export type ContentCharacterAssistStage = z.infer<typeof contentCharacterAssistStageSchema>;
+export type ContentCharacterAssistResponse = z.infer<typeof contentCharacterAssistResponseSchema>;
 export type ContentCharacterQuery = z.infer<typeof contentCharacterQuerySchema>;
 export type ContentCharacterListItem = z.infer<typeof contentCharacterListItemSchema>;
 export type ContentCharacterExploreListing = z.infer<

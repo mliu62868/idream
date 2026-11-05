@@ -26,6 +26,7 @@ import type {
   CharacterWorkspacePermissions,
   RunCommittedCharacterMutation,
 } from "./character-workspace-permissions";
+import { operatorReasonOrDefault } from "./character-library-archive";
 
 export type VisualIdentityPanelData = Pick<
   CharacterWorkspaceDetail,
@@ -78,14 +79,11 @@ export function VisualIdentityPanel({
 }: {
   actorId?: string;
   data: VisualIdentityPanelData;
-  permissions: Pick<
-    CharacterWorkspacePermissions,
-    "writeVisual" | "evaluateRoute"
-  > &
+  permissions: Pick<CharacterWorkspacePermissions, "writeVisual"> &
     Partial<
       Pick<
         CharacterWorkspacePermissions,
-        "writeProject" | "createAssets" | "reviewAssets"
+        "writeProject" | "createAssets"
       >
     >;
   runCommittedMutation: RunCommittedCharacterMutation;
@@ -109,7 +107,6 @@ export function VisualIdentityPanel({
   };
   const { identityPrompt, negativeIdentityPrompt, style, defaultSeed, reason: identityReason } = identityForm;
   const identityStale = identityForm.identityId !== (identity?.id ?? null) || identityForm.identityVersion !== (identity?.version ?? 0);
-  const [identityConfirmed, setIdentityConfirmed] = useState(false);
   const routeEvaluation = data.visual.routeEvaluation;
   const activeGenerationRoute =
     data.visual.routeQualifications.find(
@@ -197,7 +194,6 @@ export function VisualIdentityPanel({
   };
   const { selectedIds: selectedReferenceIds, reason: referenceReason } = referenceForm;
   const referencesStale = referenceForm.authority !== referenceAuthority;
-  const [referenceConfirmed, setReferenceConfirmed] = useState(false);
   const [selectedLookId, setSelectedLookId] = useState<string | null>(null);
   const [lookArchiveReason, setLookArchiveReason] = useState("");
   const [busy, setBusy] = useState<"identity" | "references" | "look" | null>(
@@ -271,10 +267,8 @@ export function VisualIdentityPanel({
       negativeIdentityPrompt: negativeIdentityPrompt.trim(),
       style,
       defaultSeed: defaultSeed.trim(),
-      reason: identityReason.trim(),
-      confirmation: identityConfirmed
-        ? `${data.character.id}:visual-profile`
-        : "",
+      reason: operatorReasonOrDefault(identityReason, "Update the visual identity"),
+      confirmation: `${data.character.id}:visual-profile`,
     };
     try {
       await runCommittedMutation({
@@ -287,7 +281,6 @@ export function VisualIdentityPanel({
           ),
         afterRefresh: () => {
           clearDraftPart("identity");
-          setIdentityConfirmed(false);
         },
       });
     } catch (cause) {
@@ -340,11 +333,9 @@ export function VisualIdentityPanel({
       })),
       reason: {
         code: "reference_snapshot_publish",
-        summary: referenceReason.trim(),
+        summary: operatorReasonOrDefault(referenceReason, "Update the reference images"),
       },
-      confirmation: referenceConfirmed
-        ? `PUBLISH REFERENCES ${data.character.id}`
-        : "",
+      confirmation: `PUBLISH REFERENCES ${data.character.id}`,
     };
     try {
       await runCommittedMutation({
@@ -356,7 +347,6 @@ export function VisualIdentityPanel({
           }),
         afterRefresh: () => {
           clearDraftPart("references");
-          setReferenceConfirmed(false);
         },
       });
     } catch (cause) {
@@ -416,19 +406,28 @@ export function VisualIdentityPanel({
         <span>{t(identityStale || referencesStale ? "Draft is based on an older version. Copy or discard it." : "Unsaved draft · kept in this tab")}</span>
         <button className="min-h-9 underline" disabled={busy !== null} onClick={() => setDiscardOpen(true)} type="button">{t("Discard draft")}</button>
       </div> : null}
-      <VisualIdentityExperimentWorkbench
-        actorId={actorId}
-        canActivate={permissions.writeVisual}
-        canCreate={permissions.createAssets ?? false}
-        canUploadSource={
-          (permissions.writeProject ?? false) &&
-          (permissions.createAssets ?? false)
-        }
-        canReview={permissions.reviewAssets ?? false}
-        data={data}
-        onActivateCandidate={activateIdentityCandidate}
-        selectedImageCount={draftSelectedImageCount(data)}
-      />
+      <details
+        className="rounded-xl border border-[var(--ad-border)] bg-black/[0.015]"
+        data-testid="change-look"
+      >
+        <summary className="cursor-pointer px-4 py-4 text-sm font-semibold sm:px-5">
+          {t("Change look")}
+        </summary>
+        <div className="border-t border-[var(--ad-border)] p-4 sm:p-5">
+          <VisualIdentityExperimentWorkbench
+            actorId={actorId}
+            canActivate={permissions.writeVisual}
+            canCreate={permissions.createAssets ?? false}
+            canUploadSource={
+              (permissions.writeProject ?? false) &&
+              (permissions.createAssets ?? false)
+            }
+            data={data}
+            onActivateCandidate={activateIdentityCandidate}
+            selectedImageCount={draftSelectedImageCount(data)}
+          />
+        </div>
+      </details>
       <details
         className="scroll-mt-4 rounded-xl border border-[var(--ad-border)] bg-black/[0.015]"
         id="visual-production-readiness"
@@ -438,7 +437,7 @@ export function VisualIdentityPanel({
         open={productionSettingsOpen || !data.visual.readiness.ready}
       >
         <summary className="cursor-pointer px-4 py-4 text-sm font-semibold sm:px-5">
-          {t("Official identity and production settings")}
+          {t("Diagnostics and advanced settings")}
         </summary>
         <div className="grid gap-5 border-t border-[var(--ad-border)] p-4 xl:grid-cols-[minmax(0,1fr)_380px] sm:p-5">
           <div className="space-y-5">
@@ -694,7 +693,7 @@ export function VisualIdentityPanel({
                     </p>
                   ) : null}
                   <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
-                    {t("Publication reason")}
+                    {t("Publication reason (optional)")}
                     <input
                       className={`${fieldClass} mt-1`}
                       disabled={!permissions.writeVisual || busy !== null}
@@ -704,22 +703,9 @@ export function VisualIdentityPanel({
                       value={referenceReason}
                     />
                   </label>
-                  <label className="mt-3 flex items-start gap-2 text-xs">
-                    <input
-                      checked={referenceConfirmed}
-                      className="mt-0.5"
-                      disabled={!permissions.writeVisual || busy !== null}
-                      onChange={(event) =>
-                        setReferenceConfirmed(event.target.checked)
-                      }
-                      type="checkbox"
-                    />
-                    <span>
-                      {t(
-                        "Publish a new immutable reference snapshot and supersede the active revision.",
-                      )}
-                    </span>
-                  </label>
+                  <p className="mt-3 text-xs text-[var(--ad-text-muted)]">
+                    {t("Publish a new immutable reference snapshot and supersede the active revision.")}
+                  </p>
                   <ImagePackResetNotice count={draftSelectedImageCount(data)} />
                   <div className="mt-4">
                     <WorkspaceButton
@@ -727,9 +713,7 @@ export function VisualIdentityPanel({
                         referencesStale ||
                         !permissions.writeVisual ||
                         busy !== null ||
-                        selectedReferenceIds.length === 0 ||
-                        referenceReason.trim().length < 3 ||
-                        !referenceConfirmed
+                        selectedReferenceIds.length === 0
                       }
                       onClick={() => void publishReferenceSet()}
                       tone="primary"
@@ -964,24 +948,16 @@ export function VisualIdentityPanel({
                   </label>
                 </div>
                 <label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">
-                  {t("Change reason")}
+                  {t("Change reason (optional)")}
                   <input
                     className={`${fieldClass} mt-1`}
                     onChange={(event) => editIdentity({ reason: event.target.value })}
                     value={identityReason}
                   />
                 </label>
-                <label className="mt-3 flex items-start gap-2 text-xs">
-                  <input
-                    checked={identityConfirmed}
-                    className="mt-0.5"
-                    onChange={(event) =>
-                      setIdentityConfirmed(event.target.checked)
-                    }
-                    type="checkbox"
-                  />
-                  <span>{t("Activate this as a new identity version.")}</span>
-                </label>
+                <p className="mt-3 text-xs text-[var(--ad-text-muted)]">
+                  {t("This activates as a new identity version.")}
+                </p>
                 <ImagePackResetNotice count={draftSelectedImageCount(data)} />
                 <div className="mt-4">
                   <WorkspaceButton
@@ -990,9 +966,7 @@ export function VisualIdentityPanel({
                       requiresReviewedBootstrap ||
                       blockedIdentityRepair ||
                       !permissions.writeVisual ||
-                      busy !== null ||
-                      identityReason.trim().length < 3 ||
-                      !identityConfirmed
+                      busy !== null
                     }
                     onClick={() => void createIdentityVersion()}
                     tone="primary"
@@ -1078,8 +1052,6 @@ export function VisualIdentityPanel({
         onSubmit: async () => {
           setError(null);
           keepDraft(null);
-          setIdentityConfirmed(false);
-          setReferenceConfirmed(false);
           setDiscardOpen(false);
         },
       }} /> : null}

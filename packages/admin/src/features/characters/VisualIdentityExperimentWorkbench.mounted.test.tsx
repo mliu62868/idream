@@ -280,7 +280,7 @@ describe("Visual Identity experiment activation", () => {
   });
 
   it("reloads uploaded sources and the current experiment through shell refresh while retaining prompt input", async () => {
-    await act(async () => root.render(<VisualIdentityExperimentWorkbench canActivate canCreate canReview canUploadSource
+    await act(async () => root.render(<VisualIdentityExperimentWorkbench canActivate canCreate canUploadSource
       data={data} onActivateCandidate={vi.fn(async () => undefined)} />));
     await waitUntil(() => adminV2Request.mock.calls.some(([path]) => path === `/api/v2/admin/creative/runs/${run.id}`));
     const textarea = container.querySelector<HTMLTextAreaElement>("textarea")!;
@@ -301,7 +301,6 @@ describe("Visual Identity experiment activation", () => {
         <VisualIdentityExperimentWorkbench
           canActivate
           canCreate
-          canReview
           canUploadSource
           data={data}
           onActivateCandidate={vi.fn(async () => undefined)}
@@ -343,7 +342,7 @@ describe("Visual Identity experiment activation", () => {
     document.body.append(other);
     const otherRoot = createRoot(other);
     const generate = (host: HTMLElement) => host.querySelector<HTMLButtonElement>('button[aria-label="Generate 1 candidate image"]');
-    const render = (target: Root) => target.render(<VisualIdentityExperimentWorkbench actorId="shared-experiment" canActivate canCreate canReview canUploadSource data={data} />);
+    const render = (target: Root) => target.render(<VisualIdentityExperimentWorkbench actorId="shared-experiment" canActivate canCreate canUploadSource data={data} />);
     try {
       await act(async () => render(root));
       await waitUntil(() => container.querySelector('button[aria-label^="View candidate"]') !== null);
@@ -405,7 +404,7 @@ describe("Visual Identity experiment activation", () => {
       }
       throw new Error(`Unexpected request: ${path}`);
     });
-    const render = () => root.render(<VisualIdentityExperimentWorkbench actorId="operator-1" canActivate canCreate canReview canUploadSource data={data} />);
+    const render = () => root.render(<VisualIdentityExperimentWorkbench actorId="operator-1" canActivate canCreate canUploadSource data={data} />);
     await act(async () => render());
     await act(async () => setTextAreaValue(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe the look you want"]')!, "Original experiment portrait"));
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Generate 1 candidate image"]')!.click());
@@ -452,7 +451,7 @@ describe("Visual Identity experiment activation", () => {
     });
     const render = async () => {
       await act(async () => root.render(
-        <VisualIdentityExperimentWorkbench actorId="operator-replay" canActivate canCreate canReview canUploadSource data={data} />,
+        <VisualIdentityExperimentWorkbench actorId="operator-replay" canActivate canCreate canUploadSource data={data} />,
       ));
     };
     await render();
@@ -500,7 +499,7 @@ describe("Visual Identity experiment activation", () => {
       },
     });
     await act(async () => root.render(
-      <VisualIdentityExperimentWorkbench canActivate canCreate canReview canUploadSource data={sourceSizingData} />,
+      <VisualIdentityExperimentWorkbench canActivate canCreate canUploadSource data={sourceSizingData} />,
     ));
     const aspect = container.querySelector<HTMLSelectElement>('select[aria-label="Advanced aspect ratio"]')!;
     expect([...aspect.options].map((option) => option.value)).toEqual(["1:1", "4:5"]);
@@ -515,7 +514,6 @@ describe("Visual Identity experiment activation", () => {
         <VisualIdentityExperimentWorkbench
           canActivate
           canCreate
-          canReview
           canUploadSource
           data={data}
           onActivateCandidate={vi.fn(async () => undefined)}
@@ -560,7 +558,7 @@ describe("Visual Identity experiment activation", () => {
         },
       });
       await act(async () => root.render(
-        <VisualIdentityExperimentWorkbench canActivate canCreate canReview canUploadSource data={currentLookData} />,
+        <VisualIdentityExperimentWorkbench canActivate canCreate canUploadSource data={currentLookData} />,
       ));
 
       expect(container.querySelector('img[alt="Active visual identity baseline"]')?.getAttribute("src"))
@@ -584,7 +582,7 @@ describe("Visual Identity experiment activation", () => {
         },
       });
       await act(async () => root.render(
-        <VisualIdentityExperimentWorkbench canActivate canCreate canReview canUploadSource data={currentLookData} />,
+        <VisualIdentityExperimentWorkbench canActivate canCreate canUploadSource data={currentLookData} />,
       ));
 
       expect(container.querySelector('img[alt="Active visual identity baseline"]')).toBeNull();
@@ -598,7 +596,6 @@ describe("Visual Identity experiment activation", () => {
         <VisualIdentityExperimentWorkbench
           canActivate
           canCreate
-          canReview
           canUploadSource
           data={data}
           onActivateCandidate={vi.fn(async () => undefined)}
@@ -661,7 +658,6 @@ describe("Visual Identity experiment activation", () => {
         <VisualIdentityExperimentWorkbench
           canActivate
           canCreate
-          canReview
           canUploadSource
           data={opaqueIdentitySeedData}
           onActivateCandidate={vi.fn(async () => undefined)}
@@ -747,7 +743,6 @@ describe("Visual Identity experiment activation", () => {
         <VisualIdentityExperimentWorkbench
           canActivate
           canCreate
-          canReview
           canUploadSource
           data={data}
           onActivateCandidate={vi.fn(async () => undefined)}
@@ -809,7 +804,6 @@ describe("Visual Identity experiment activation", () => {
         <VisualIdentityExperimentWorkbench
           canActivate
           canCreate
-          canReview
           canUploadSource
           data={multiModelData}
           onActivateCandidate={vi.fn(async () => undefined)}
@@ -877,7 +871,6 @@ describe("Visual Identity experiment activation", () => {
         <VisualIdentityExperimentWorkbench
           canActivate
           canCreate
-          canReview
           canUploadSource
           data={multiSourceData}
           onActivateCandidate={vi.fn(async () => undefined)}
@@ -996,7 +989,6 @@ describe("Visual Identity experiment activation", () => {
         <VisualIdentityExperimentWorkbench
           canActivate
           canCreate
-          canReview
           canUploadSource
           data={multiSourceData}
           onActivateCandidate={vi.fn(async () => undefined)}
@@ -1079,14 +1071,13 @@ describe("Visual Identity experiment activation", () => {
     );
   });
 
-  it("turns a reviewed candidate into an explicit activation command", async () => {
+  it("sets the current look without a confirmation checkbox or a review decision", async () => {
     const onActivateCandidate = vi.fn(async () => undefined);
     await act(async () =>
       root.render(
         <VisualIdentityExperimentWorkbench
           canActivate
           canCreate
-          canReview
           canUploadSource
           data={data}
           onActivateCandidate={onActivateCandidate}
@@ -1119,26 +1110,17 @@ describe("Visual Identity experiment activation", () => {
     const bodyTraits = labels
       .find((label) => label.textContent?.includes("Body traits"))
       ?.querySelector<HTMLTextAreaElement>("textarea");
-    const confirmed = labels
-      .find((label) =>
-        label.textContent?.includes("I confirm creating a new visual identity version"),
-      )
-      ?.querySelector<HTMLInputElement>("input");
+    expect(activationPanel!.querySelector('input[type="checkbox"]')).toBeNull();
     expect(reason).toBeDefined();
     expect(faceTraits).toBeDefined();
     expect(hairTraits).toBeDefined();
     expect(bodyTraits).toBeDefined();
-    expect(confirmed).toBeDefined();
     await act(async () => {
-      if (reason) {
-        setInputValue(reason, "Adopt the reviewed identity candidate");
-      }
       if (faceTraits) setTextAreaValue(faceTraits, "oval face\nblue eyes");
       if (hairTraits) setTextAreaValue(hairTraits, "dark wavy hair");
       if (bodyTraits) {
         setTextAreaValue(bodyTraits, "balanced adult proportions");
       }
-      confirmed?.click();
     });
     const confirm = [
       ...activationPanel!.querySelectorAll<HTMLButtonElement>("button"),
@@ -1159,40 +1141,27 @@ describe("Visual Identity experiment activation", () => {
         },
         hairTraits: { stableTraits: ["dark wavy hair"] },
         bodyTraits: { stableTraits: ["balanced adult proportions"] },
+        reason: "Set this image as the current look",
         confirmation: "character-1:visual-profile",
         candidateAuthority: {
           runId: "identity-run-1",
           itemId: "identity-item-1",
           assetId: "identity-asset-1",
-          reviewDecisionId: "identity-review-1",
         },
       }),
     );
+    expect(adminV2Request.mock.calls.some(([path]) => String(path).endsWith("/decisions"))).toBe(false);
   });
 
-  it("requires a compact single-frame confirmation before adopting an identity image", async () => {
-    let reviewPosted = false;
+  it("offers the current look on an image nobody reviewed, and never posts fabricated scores", async () => {
     adminV2Request.mockImplementation(
-      async (path: string, options?: { method?: string; body?: unknown }) => {
-        if (options?.method === "POST") {
-          reviewPosted = true;
-          return {};
-        }
+      async (path: string) => {
         if (path.endsWith("/image-sources")) return { items: [] };
         if (path.includes("/api/v2/admin/creative/runs?")) {
-          return {
-            items: [run],
-            pageInfo: { endCursor: null, hasNextPage: false },
-          };
+          return { items: [run], pageInfo: { endCursor: null, hasNextPage: false } };
         }
         if (path === `/api/v2/admin/creative/runs/${run.id}`) {
-          return {
-            ...runDetail,
-            items: runDetail.items.map((item) => ({
-              ...item,
-              review: reviewPosted ? item.review : null,
-            })),
-          };
+          return { ...runDetail, items: runDetail.items.map((item) => ({ ...item, review: null })) };
         }
         throw new Error(`Unexpected request: ${path}`);
       },
@@ -1202,7 +1171,6 @@ describe("Visual Identity experiment activation", () => {
         <VisualIdentityExperimentWorkbench
           canActivate
           canCreate
-          canReview
           canUploadSource
           data={data}
           onActivateCandidate={vi.fn(async () => undefined)}
@@ -1210,54 +1178,9 @@ describe("Visual Identity experiment activation", () => {
       ),
     );
     await openFirstHistoryItem(container);
-    await waitUntil(
-      () => container.textContent?.includes("Adopt this image") === true,
-    );
-    expect(container.textContent).toContain("Actual seed");
-    expect(container.textContent).toContain(
-      "I have checked the subject, framing, and image quality, and this image can serve as the visual identity",
-    );
-
-    const adopt = [
-      ...container.querySelectorAll<HTMLButtonElement>("button"),
-    ].find((button) => button.textContent === "Adopt this image");
-    const qualityConfirmation = [...container.querySelectorAll("label")]
-      .find((label) =>
-        label.textContent?.includes("I have checked the subject, framing"),
-      )
-      ?.querySelector<HTMLInputElement>("input");
-    expect(qualityConfirmation).toBeDefined();
-    expect(adopt?.disabled).toBe(true);
-
-    await act(async () => qualityConfirmation?.click());
-    expect(adopt?.disabled).toBe(false);
-    await act(async () => adopt?.click());
-    await waitUntil(() =>
-      adminV2Request.mock.calls.some(
-        ([, options]) => options?.method === "POST",
-      ),
-    );
-    await waitUntil(
-      () => container.textContent?.includes("Set as current look") === true,
-    );
-    expect(adminV2Request).toHaveBeenCalledWith(
-      `/api/v2/admin/creative/runs/${run.id}/items/identity-item-1/decisions`,
-      expect.objectContaining({
-        method: "POST",
-        body: {
-          entityVersion: runDetail.version,
-          decision: "approved",
-          identityConsistency: "unscored",
-          quality: {
-            artifactFree: true,
-            singleSubject: true,
-            intentMatch: true,
-            noVisibleText: true,
-          },
-          reason: "已确认候选图为单人单画面并符合视觉身份要求",
-        },
-      }),
-    );
+    await waitUntil(() => container.textContent?.includes("Set as current look") === true);
+    expect(container.textContent).not.toContain("Adopt this image");
+    expect(adminV2Request.mock.calls.every(([, options]) => (options as { method?: string } | undefined)?.method !== "POST")).toBe(true);
   });
 
   it("does not let an old candidate without system composition evidence be adopted", async () => {
@@ -1290,7 +1213,6 @@ describe("Visual Identity experiment activation", () => {
         <VisualIdentityExperimentWorkbench
           canActivate
           canCreate
-          canReview
           canUploadSource
           data={data}
           onActivateCandidate={vi.fn(async () => undefined)}
@@ -1343,7 +1265,6 @@ describe("Visual Identity experiment activation", () => {
         <VisualIdentityExperimentWorkbench
           canActivate
           canCreate
-          canReview
           canUploadSource
           data={data}
           onActivateCandidate={vi.fn(async () => undefined)}
@@ -1398,7 +1319,6 @@ describe("Visual Identity experiment activation", () => {
         <VisualIdentityExperimentWorkbench
           canActivate
           canCreate
-          canReview
           canUploadSource
           data={data}
           onActivateCandidate={vi.fn(async () => undefined)}
@@ -1423,7 +1343,6 @@ describe("Visual Identity experiment activation", () => {
         <VisualIdentityExperimentWorkbench
           canActivate
           canCreate
-          canReview
           canUploadSource
           data={data}
           onActivateCandidate={vi.fn(async () => undefined)}
@@ -1444,7 +1363,6 @@ describe("Visual Identity experiment activation", () => {
           <VisualIdentityExperimentWorkbench
             canActivate
             canCreate
-            canReview
             canUploadSource
             data={data}
             onActivateCandidate={vi.fn(async () => undefined)}
@@ -1486,7 +1404,7 @@ describe("Visual Identity experiment activation", () => {
         throw new Error(`Unexpected request: ${path}`);
       });
       await act(async () => {
-        root.render(<VisualIdentityExperimentWorkbench canActivate canCreate canReview canUploadSource
+        root.render(<VisualIdentityExperimentWorkbench canActivate canCreate canUploadSource
           data={data} onActivateCandidate={vi.fn(async () => undefined)} />);
         await vi.advanceTimersByTimeAsync(0);
       });

@@ -2,11 +2,9 @@
 // INTENT: 从 CharacterAssetStudio.tsx 原样移出（同目录已有 character-workspace-format.ts、
 //         portfolio-query.ts 等先例）。纯机械搬运，没有任何行为改动。
 import {
-  CHARACTER_IDENTITY_APPROVAL_MIN_SCORE,
   adminMutationRecoveryVerificationSchema,
   characterDraftImageSelectionRequestSchema,
   characterIdentityBootstrapRequestSchema,
-  creativeReviewDecisionRequestSchema,
   creativeRunCreateRequestSchema,
   type CharacterWorkspaceDetail,
   type CreativeRun,
@@ -94,18 +92,6 @@ export function characterAssetRunReceiptMessage(input: {
     : null;
 }
 
-export function canOfferCharacterAssetTerminalRejection(input: {
-  readonly lifecycleState: string;
-  readonly decision: string | null;
-  readonly hasCompleteEvidence: boolean;
-  readonly isDraftAuthority: boolean;
-}) {
-  return ["active", "closed"].includes(input.lifecycleState) &&
-    input.decision === "approved" &&
-    input.hasCompleteEvidence &&
-    !input.isDraftAuthority;
-}
-
 export type CharacterAssetProjectMutation = <T>(input: {
   readonly action: string;
   readonly commit: () => Promise<T>;
@@ -150,53 +136,6 @@ export const purposeConfig: Record<CharacterAssetPurpose, {
 export function characterAssetPurposeLabel(purpose: string) {
   return purposeConfig[purpose as CharacterAssetPurpose]?.label ?? purpose;
 }
-
-export const reviewQualityChecks = [
-  ["artifactFree", "No visible artifacts"],
-  ["singleSubject", "Exactly one intended subject"],
-  ["intentMatch", "Composition matches the customer intent"],
-  ["noVisibleText", "No visible text, watermark, or contact sheet"],
-] as const;
-
-export type ReviewQuality = Record<(typeof reviewQualityChecks)[number][0], boolean>;
-
-export function characterAssetReviewDefinesIdentity(
-  item: Pick<CreativeRunDetail["items"][number], "identityReviewMode"> | null,
-) {
-  return item?.identityReviewMode === "defines_identity";
-}
-
-export function resolveCharacterAssetReviewEvidence(input: {
-  readonly decision: "approved" | "rejected";
-  readonly draft: {
-    readonly identityConsistency: "passed" | "failed" | "unscored";
-    readonly score?: number;
-    readonly quality: Readonly<ReviewQuality>;
-  };
-  readonly previous?: {
-    readonly decision: "approved" | "rejected";
-    readonly identityConsistency: "passed" | "failed" | "unscored";
-    readonly score: number | null;
-    readonly quality: Readonly<ReviewQuality> | null;
-  } | null;
-}) {
-  const preserveApprovedEvidence =
-    input.decision === "rejected" &&
-    input.previous?.decision === "approved" &&
-    input.previous.quality !== null;
-  return {
-    identityConsistency: preserveApprovedEvidence
-      ? input.previous.identityConsistency
-      : input.draft.identityConsistency,
-    score: preserveApprovedEvidence
-      ? input.previous.score ?? undefined
-      : input.draft.score,
-    quality: preserveApprovedEvidence
-      ? input.previous.quality
-      : input.draft.quality,
-  };
-}
-
 
 export function resolveCharacterAssetSubject(input: {
   draftName?: string | null;
@@ -263,41 +202,6 @@ export function characterAssetRunRequestKey(input: {
   );
 }
 
-export function characterAssetReviewRequestKey(input: {
-  readonly runId: string;
-  readonly itemId: string;
-  readonly body: {
-    readonly entityVersion: number;
-    readonly supersedesDecisionId?: string;
-    readonly decision: "approved" | "rejected";
-    readonly identityConsistency: "passed" | "failed" | "unscored";
-    readonly score?: number;
-    readonly quality: Readonly<ReviewQuality>;
-    readonly reason: string;
-  };
-}) {
-  return JSON.stringify({
-    runId: input.runId,
-    itemId: input.itemId,
-    body: {
-      entityVersion: input.body.entityVersion,
-      ...(input.body.supersedesDecisionId !== undefined
-        ? { supersedesDecisionId: input.body.supersedesDecisionId }
-        : {}),
-      decision: input.body.decision,
-      identityConsistency: input.body.identityConsistency,
-      ...(input.body.score !== undefined ? { score: input.body.score } : {}),
-      quality: {
-        artifactFree: input.body.quality.artifactFree,
-        singleSubject: input.body.quality.singleSubject,
-        intentMatch: input.body.quality.intentMatch,
-        noVisibleText: input.body.quality.noVisibleText,
-      },
-      reason: input.body.reason.trim(),
-    },
-  });
-}
-
 export function characterAssetBootstrapRequestKey(input: {
   readonly characterId: string;
   readonly entityVersion: number;
@@ -342,29 +246,6 @@ export function characterAssetDraftSelectionRequestKey(input: {
       reason: input.body.reason.trim(),
     },
   });
-}
-
-export function characterAssetReviewIntentSnapshot(value: unknown) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  const snapshot = value as Record<string, unknown>;
-  if (
-    typeof snapshot.runId !== "string" ||
-    typeof snapshot.itemId !== "string"
-  ) {
-    return null;
-  }
-  const body = creativeReviewDecisionRequestSchema.safeParse(
-    snapshot.body,
-  );
-  return body.success
-    ? {
-        runId: snapshot.runId,
-        itemId: snapshot.itemId,
-        body: body.data,
-      }
-    : null;
 }
 
 export function characterAssetSelectionIntentSnapshot(value: unknown) {
@@ -576,29 +457,3 @@ export function isCharacterIdentityAuthorityReady(input: {
     !input.blockerCodes.some((code) => identityAuthorityBlockerCodes.has(code));
 }
 
-export function isCharacterAssetApprovalActionable(input: {
-  readonly bootstrapIdentity: boolean;
-  readonly decision: string | null;
-  readonly identityConsistency: string | null;
-  readonly score: number | null;
-  readonly quality: {
-    readonly artifactFree: boolean;
-    readonly singleSubject: boolean;
-    readonly intentMatch: boolean;
-    readonly noVisibleText: boolean;
-  } | null;
-}) {
-  if (input.decision !== "approved") return false;
-  if (
-    input.identityConsistency !==
-      (input.bootstrapIdentity ? "unscored" : "passed")
-  ) return false;
-  if (!input.quality || Object.values(input.quality).some((passed) => !passed)) {
-    return false;
-  }
-  return input.bootstrapIdentity ||
-    (
-      typeof input.score === "number" &&
-      input.score >= CHARACTER_IDENTITY_APPROVAL_MIN_SCORE
-    );
-}

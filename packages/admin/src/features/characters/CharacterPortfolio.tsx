@@ -36,6 +36,7 @@ import { UnpreparedCharacters } from "./UnpreparedCharacters";
 import { CharacterBulkBar } from "./CharacterBulkBar";
 import { CharacterPerformanceBoard } from "./CharacterPerformanceBoard";
 import { CharacterPortfolioCard } from "./CharacterPortfolioCard";
+import { CharacterBatchImport } from "./CharacterBatchImport";
 
 // INTENT: 稳定引用，避免"投影还没到"时每次渲染都换一个新的空值。
 const EMPTY_PORTFOLIO_ITEMS: readonly CharacterPortfolioItem[] = [];
@@ -396,13 +397,16 @@ function CharacterRoster({
           </p>
         </div>
         {canCreate ? (
-          <Link
-            className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md bg-[var(--ad-ink)] px-5 text-sm font-semibold text-[var(--ad-surface)] hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
-            href="/admin/characters/new"
-          >
-            <Plus aria-hidden="true" className="h-4 w-4" />
-            {t("Create Character")}
-          </Link>
+          <div className="flex shrink-0 flex-wrap gap-2">
+            <CharacterBatchImport />
+            <Link
+              className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md bg-[var(--ad-ink)] px-5 text-sm font-semibold text-[var(--ad-surface)] hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
+              href="/admin/characters/new"
+            >
+              <Plus aria-hidden="true" className="h-4 w-4" />
+              {t("Create Character")}
+            </Link>
+          </div>
         ) : null}
       </div>
       {canReadUnprepared ? <UnpreparedCharacters /> : null}

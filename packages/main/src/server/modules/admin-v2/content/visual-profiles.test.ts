@@ -949,7 +949,85 @@ describe("Visual Passport (character visual profiles)", () => {
     expect(item.identityStale).toBe(false);
   });
 
-  it("promotes only a reviewed identity-calibration candidate into a new immutable identity", async () => {
+  it("sets the current look from a generated candidate with no review decision, keeping the source checks", async () => {
+    const admin = await seedActor("admin", "candidate-no-review");
+    const characterId = `${P}char-candidate-no-review`;
+    const originalAssetId = `${P}image-no-review-original`;
+    const candidateAssetId = `${P}image-no-review-candidate`;
+    const runId = `${P}run-no-review`;
+    const itemId = `${P}item-no-review`;
+    const jobId = `${P}job-no-review`;
+    await createMedia({ id: originalAssetId, ownerId: admin });
+    await createMedia({ id: candidateAssetId, ownerId: admin });
+    await createCharacter({ id: characterId, name: "No Review Candidate", imageAssetId: originalAssetId });
+    await prisma.mediaAsset.updateMany({ where: { id: { in: [originalAssetId, candidateAssetId] } }, data: { characterId } });
+    const original = await seedVisualProfile({
+      characterId, version: 1, status: "active", identityPrompt: "Original identity",
+      anchorAssetIds: [originalAssetId], referenceAssetIds: [originalAssetId],
+    });
+    await prisma.contentProductionBatch.create({ data: {
+      id: runId, title: "Identity calibration", purpose: "identity_calibration", targetType: "character", targetId: characterId,
+      presetIds: [], count: 1, totalItems: 1, completedItems: 1, status: "completed", lifecycleState: "open",
+      workflowStage: "completed", verificationState: "passed", createdById: admin,
+    } });
+    await prisma.contentProductionItem.create({ data: { id: itemId, batchId: runId, mediaAssetId: candidateAssetId, itemIndex: 0, status: "generated", tags: [] } });
+    await prisma.generationJob.create({ data: {
+      id: jobId, userId: admin, characterId, mode: "image", controls: {}, presetIds: [], outputCount: 1, deliveredOutputCount: 1,
+      seed: "42", status: "completed", sourceType: "content_production_item", sourceId: itemId,
+      sourceMeta: { batchId: runId, purpose: "identity_calibration", targetType: "character", targetId: characterId,
+        identityExperiment: { mode: "text_to_image", positivePrompt: "A controlled candidate portrait" } },
+      model: "identity-candidate-test", provider: "comfyui", completedAt: new Date(),
+    } });
+    await prisma.contentProductionItem.update({ where: { id: itemId }, data: { jobId } });
+    await prisma.mediaAsset.update({ where: { id: candidateAssetId }, data: { sourceJobId: jobId } });
+    const attempt = (authority: Record<string, unknown>) => call(createCharacterVisualProfile(
+      makeRequest("POST", `/${characterId}/visual-profiles`, {
+        userId: admin,
+        role: "admin",
+        body: {
+          expectedActiveIdentityId: original.id,
+          expectedActiveIdentityVersion: original.version,
+          identityPrompt: "Preserve the exact person shown in the canonical portrait.",
+          faceTraits: { canonicalPortraitAuthority: true, stableTraits: ["oval face"] },
+          hairTraits: { stableTraits: ["dark wavy hair"] },
+          bodyTraits: { stableTraits: ["balanced adult proportions"] },
+          reason: "Set this image as the current look",
+          confirmation: confirmationFor(characterId),
+          candidateAuthority: authority,
+        },
+      }),
+      characterId,
+    ));
+    const authority = { runId, itemId, assetId: candidateAssetId };
+
+    // The automatic single-frame check stays a hard gate.
+    await expect(attempt(authority)).resolves.toMatchObject({
+      status: 409, errorDetails: { code: "identity_candidate_evidence_incomplete" },
+    });
+    await prisma.mediaAsset.update({
+      where: { id: candidateAssetId },
+      data: { metadata: { quality: {
+        schemaVersion: "1",
+        evaluatorVersion: "generated-image-sanity-v2",
+        composition: { status: "passed", reason: "single_continuous_frame_detected" },
+      } } },
+    });
+    // A decision that belongs to nothing here is still refused.
+    await expect(attempt({ ...authority, reviewDecisionId: "no-such-decision" })).resolves.toMatchObject({ status: 409 });
+    // Another Character's run cannot become this identity.
+    await expect(attempt({ ...authority, assetId: originalAssetId })).resolves.toMatchObject({ status: 409 });
+
+    const result = await attempt(authority);
+    expect(result.ok).toBe(true);
+    expect(result.data?.item).toMatchObject({ version: 2, status: "active", anchorAssetIds: [candidateAssetId] });
+    await expect(prisma.creativeReviewDecision.count({ where: { runItemId: itemId } })).resolves.toBe(0);
+    const promoted = await prisma.characterVisualProfile.findFirstOrThrow({ where: { characterId, status: "active" } });
+    expect((promoted.adapterRefs as { identityCalibration: Record<string, unknown> }).identityCalibration).toEqual({
+      runId, itemId, generationJobId: jobId,
+    });
+  });
+
+  it("keeps a historical review as lineage when promoting an identity-calibration candidate", async () => {
     const admin = await seedActor("admin", "candidate-promotion");
     const characterId = `${P}char-candidate-promotion`;
     const originalAssetId = `${P}image-candidate-original`;

@@ -34,7 +34,7 @@ describe.each(["image", "video"] as const)("Character %s archive permission", mo
   async function render(canArchive: boolean) {
     await act(async () => root.render(modality === "image"
       ? <CharacterImageLibrary actorId="operator-1" data={data} canRead canReadProduction={false} canCreate={false}
-          canReview={false} canArchive={canArchive} onContinue={() => undefined} onProjectReload={async () => undefined}
+          canArchive={canArchive} onContinue={() => undefined} onProjectReload={async () => undefined}
           commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })} />
       : <CharacterVideoLibrary actorId="operator-1" data={data} canRead canReadProduction={false} canImport={false}
           canCreate={false} canArchive={canArchive} onCreateImage={() => undefined} onProjectReload={async () => undefined}

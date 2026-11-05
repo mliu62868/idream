@@ -72,38 +72,15 @@ async function resolveExisting(
   });
 }
 
-export async function createCharacterProject(input: {
-  actor: AdminActor;
-  request: CharacterProjectCreateRequest;
-  idempotencyKey: string;
-  requestId: string;
-  legacyTagLabels?: readonly string[];
-}): Promise<CharacterProjectCreateResponse> {
-  const legacyTagLabels = [
-    ...new Set(
-      (input.legacyTagLabels ?? [])
-        .map((label) => label.trim())
-        .filter(Boolean),
-    ),
-  ];
-  const requestHash = canonicalSha256({
-    commandType: CREATE_COMMAND,
-    payload: input.request,
-    legacyTagLabels,
-  });
-  const prior = await resolveExisting({
-    actorId: input.actor.id,
-    idempotencyKey: input.idempotencyKey,
-    requestHash,
-  });
-  if (prior) return prior;
+export type PreparedCharacterProject = Awaited<ReturnType<typeof prepareCharacterProject>>;
 
+// SPEC: 落库前的一切：分配 ID、编译快照、过 moderation。不写库，复制角色也走这里。
+export async function prepareCharacterProject(request: CharacterProjectCreateRequest) {
   const characterId = randomUUID();
   const contentVersionId = randomUUID();
   const projectId = randomUUID();
   const revisionId = randomUUID();
-  const commandId = randomUUID();
-  const { persona, visualDirection } = input.request;
+  const { persona, visualDirection } = request;
   const { personaSnapshot, openingSnapshot, appearanceSnapshot, contentHash } =
     characterDraftSnapshots({
       persona,
@@ -113,9 +90,6 @@ export async function createCharacterProject(input: {
     personaSnapshot, openingSnapshot, appearanceSnapshot,
   }), "character_authoring");
   if (moderation.status === "blocked") throw Errors.forbidden("Character failed safety checks", moderation);
-  const projectSnapshot = {
-    contentHash,
-  };
   const response = characterProjectCreateResponseSchema.parse({
     characterId,
     characterContentVersionId: contentVersionId,
@@ -126,6 +100,145 @@ export async function createCharacterProject(input: {
     deepLink: characterWorkspaceTabLink(characterId, "assets"),
     replayed: false,
   });
+  return {
+    characterId, contentVersionId, projectId, revisionId,
+    persona, visualDirection, personaSnapshot, openingSnapshot, appearanceSnapshot, contentHash,
+    projectSnapshot: { contentHash },
+    response,
+  };
+}
+
+export async function writeCharacterProject(
+  tx: Prisma.TransactionClient,
+  input: {
+    readonly actor: AdminActor;
+    readonly request: CharacterProjectCreateRequest;
+    readonly requestId: string;
+    readonly requestHash: string;
+    readonly project: PreparedCharacterProject;
+  },
+) {
+  const { requestHash } = input;
+  const {
+    characterId, contentVersionId, projectId, revisionId,
+    persona, visualDirection, personaSnapshot, openingSnapshot, appearanceSnapshot, contentHash,
+    projectSnapshot, response,
+  } = input.project;
+  await tx.character.create({
+    data: {
+      id: characterId,
+      name: persona.name,
+      age: persona.age,
+      description: persona.characterPromise,
+      systemPrompt: personaSnapshot.compiled.systemPrompt,
+      visibility: "private",
+      status: "draft",
+      source: "official",
+      style: visualDirection.style,
+      gender: persona.gender,
+      appearance: toInputJson(appearanceSnapshot),
+      advancedDetails: toInputJson({
+        detailsMarkdown: persona.detailsMarkdown,
+        firstMessage: openingSnapshot.firstMessage,
+        soulFingerprint: personaSnapshot.compiled.fingerprint,
+      }),
+    },
+  });
+  await tx.characterStats.create({ data: { characterId } });
+  await tx.characterContentVersion.create({
+    data: {
+      id: contentVersionId,
+      characterId,
+      version: 1,
+      contentHash,
+      personaSnapshot: toInputJson(personaSnapshot),
+      openingSnapshot: toInputJson(openingSnapshot),
+      appearanceSnapshot: toInputJson(appearanceSnapshot),
+      sourceType: "admin_character_project_create",
+      sourceId: projectId,
+      createdById: input.actor.id,
+    },
+  });
+  await tx.characterProject.create({
+    data: {
+      id: projectId,
+      characterId,
+      activeKey: `official:${characterId}`,
+    },
+  });
+  await tx.characterServing.create({
+    data: {
+      characterId,
+      state: "inactive",
+    },
+  });
+  await tx.characterRevision.create({
+    data: {
+      id: revisionId,
+      projectId,
+      revision: 1,
+      characterContentVersionId: contentVersionId,
+      projectSnapshot: toInputJson(projectSnapshot),
+      createdById: input.actor.id,
+    },
+  });
+  await tx.adminAuditLog.create({
+    data: {
+      actorId: input.actor.id,
+      actorRole: input.actor.role,
+      action: "character.project.created",
+      targetType: "character_project",
+      targetId: projectId,
+      reason: input.request.reason.summary,
+      after: toInputJson({
+        ...response,
+        requestHash,
+        reason: input.request.reason,
+      }),
+      requestId: input.requestId,
+    },
+  });
+  await tx.mainOutboxEvent.create({
+    data: {
+      eventType: "character.project.created.v2",
+      aggregateType: "character_project",
+      aggregateId: projectId,
+      payload: toInputJson({
+        projectId,
+        characterId,
+        characterContentVersionId: contentVersionId,
+        revisionId,
+        projectVersion: 1,
+        contentVersion: 1,
+        actorId: input.actor.id,
+        requestHash,
+      }),
+    },
+  });
+}
+
+export async function createCharacterProject(input: {
+  actor: AdminActor;
+  request: CharacterProjectCreateRequest;
+  idempotencyKey: string;
+  requestId: string;
+}): Promise<CharacterProjectCreateResponse> {
+  const requestHash = canonicalSha256({
+    commandType: CREATE_COMMAND,
+    payload: input.request,
+    // INVARIANT: 历史 requestHash 含这个成员（恒为空数组）；去掉会让旧幂等键的重放变成冲突。
+    legacyTagLabels: [],
+  });
+  const prior = await resolveExisting({
+    actorId: input.actor.id,
+    idempotencyKey: input.idempotencyKey,
+    requestHash,
+  });
+  if (prior) return prior;
+
+  const project = await prepareCharacterProject(input.request);
+  const { projectId, response } = project;
+  const commandId = randomUUID();
 
   try {
     return await prisma.$transaction(async (tx) => {
@@ -161,110 +274,12 @@ export async function createCharacterProject(input: {
           finishedAt: new Date(),
         },
       });
-      await tx.character.create({
-        data: {
-          id: characterId,
-          name: persona.name,
-          age: persona.age,
-          description: persona.characterPromise,
-          systemPrompt: personaSnapshot.compiled.systemPrompt,
-          visibility: "private",
-          status: "draft",
-          source: "official",
-          style: visualDirection.style,
-          gender: persona.gender,
-          appearance: toInputJson(appearanceSnapshot),
-          advancedDetails: toInputJson({
-            detailsMarkdown: persona.detailsMarkdown,
-            firstMessage: openingSnapshot.firstMessage,
-            soulFingerprint: personaSnapshot.compiled.fingerprint,
-          }),
-        },
-      });
-      await tx.characterStats.create({ data: { characterId } });
-      for (const label of legacyTagLabels) {
-        const slug = tagSlug(label);
-        if (!slug) continue;
-        const tag = await tx.tag.upsert({
-          where: { slug },
-          create: { slug, label },
-          update: {},
-        });
-        await tx.characterTag.upsert({
-          where: { characterId_tagId: { characterId, tagId: tag.id } },
-          create: { characterId, tagId: tag.id },
-          update: {},
-        });
-      }
-      await tx.characterContentVersion.create({
-        data: {
-          id: contentVersionId,
-          characterId,
-          version: 1,
-          contentHash,
-          personaSnapshot: toInputJson(personaSnapshot),
-          openingSnapshot: toInputJson(openingSnapshot),
-          appearanceSnapshot: toInputJson(appearanceSnapshot),
-          sourceType: "admin_character_project_create",
-          sourceId: projectId,
-          createdById: input.actor.id,
-        },
-      });
-      await tx.characterProject.create({
-        data: {
-          id: projectId,
-          characterId,
-          activeKey: `official:${characterId}`,
-        },
-      });
-      await tx.characterServing.create({
-        data: {
-          characterId,
-          state: "inactive",
-        },
-      });
-      await tx.characterRevision.create({
-        data: {
-          id: revisionId,
-          projectId,
-          revision: 1,
-          characterContentVersionId: contentVersionId,
-          projectSnapshot: toInputJson(projectSnapshot),
-          createdById: input.actor.id,
-        },
-      });
-      await tx.adminAuditLog.create({
-        data: {
-          actorId: input.actor.id,
-          actorRole: input.actor.role,
-          action: "character.project.created",
-          targetType: "character_project",
-          targetId: projectId,
-          reason: input.request.reason.summary,
-          after: toInputJson({
-            ...response,
-            requestHash,
-            reason: input.request.reason,
-          }),
-          requestId: input.requestId,
-        },
-      });
-      await tx.mainOutboxEvent.create({
-        data: {
-          eventType: "character.project.created.v2",
-          aggregateType: "character_project",
-          aggregateId: projectId,
-          payload: toInputJson({
-            projectId,
-            characterId,
-            characterContentVersionId: contentVersionId,
-            revisionId,
-            projectVersion: 1,
-            contentVersion: 1,
-            actorId: input.actor.id,
-            requestHash,
-          }),
-        },
+      await writeCharacterProject(tx, {
+        actor: input.actor,
+        request: input.request,
+        requestId: input.requestId,
+        requestHash,
+        project,
       });
       return response;
     });
