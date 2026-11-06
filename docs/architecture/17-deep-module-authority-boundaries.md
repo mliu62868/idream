@@ -140,6 +140,8 @@ Main 在不可变 dispatch 校验后，验证 `gen/{requestId}/attempts/{attempt
 - prompt 连续两次既不在 `/history` 也不在 `/queue`（重启或队列被清）是确定失败。两次是因为这是两个独立读取，一次可能恰好撞上完成瞬间。不可读的 `/queue` 不计入。
 - 超出执行预算时，定向取消（`/queue` delete + `/interrupt` 带 `prompt_id`）并在持有租约时等待：已完成则交付产物，已停止则确定失败，仍在运行或失联才是 `unknown`。
 
+执行预算只计算主机醒着的时间（`performance.now()`）。墙钟预算会被睡眠耗尽：合盖的笔记本上一次 H3 实际只执行了 158 秒，就因 30 分钟预算到期被取消并退款。
+
 这不放宽「不自动重放 provider」：确定失败只走退款，由用户重新发起新 Request。`retryable` 只表示同样输入值得再试，与 Attempt 重放无关。
 
 worker 崩溃后的重试同样问 runner（后端可选能力 `findPriorSubmission`；Draw Things 与 local-image 没有此能力，行为不变）：

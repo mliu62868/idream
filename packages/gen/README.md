@@ -418,6 +418,12 @@ established.
 | Execution budget expired | Cancels the prompt and waits up to 3 minutes under the lease. Finished output is delivered; a stopped prompt is definitive and retryable |
 | Prompt still running after cancellation, or the runner stays silent | `unknown` |
 
+Budgets count time the host was awake, so a sleeping machine does not expire a
+render. A closed laptop still sleeps during renders, however, despite the lease's
+`caffeinate -i`: run workers on a host that stays awake with its lid closed, or
+keep the lid open. A run that looks ten times slower is worth checking against
+`pmset -g log` before suspecting the code.
+
 Nothing crosses into blob storage with provider metadata. ComfyUI writes the full
 prompt and workflow into PNG text chunks and MP4 tags, so the pipeline strips PNG
 chunks without touching pixels and the backend remuxes every MP4 (no metadata, moov
