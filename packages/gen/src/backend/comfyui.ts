@@ -293,7 +293,7 @@ export class ComfyUIBackend implements GenBackend {
     const controller = new AbortController();
     // The outer guard has to cover queue wait too, otherwise it aborts the poll
     // at exactly the execution budget and re-creates the bug waitForOutput fixes.
-    const timeout = setTimeout(
+    const cancelTotalWait = awakeTimeout(
       () => controller.abort(),
       timeoutMs * COMFY_TOTAL_WAIT_BUDGET_MULTIPLIER,
     );
@@ -370,7 +370,7 @@ export class ComfyUIBackend implements GenBackend {
         "ambiguous",
       );
     } finally {
-      clearTimeout(timeout);
+      cancelTotalWait();
       this.pending.delete(handle.id);
     }
   }
@@ -387,7 +387,7 @@ export class ComfyUIBackend implements GenBackend {
     outputKind: "image" | "video";
   }): Promise<BackendPriorSubmission> {
     const { promptId } = input;
-    let lastAnsweredAt = Date.now();
+    let lastAnsweredAt = performance.now();
     let absentObservations = 0;
     const present = (): BackendPriorSubmission => {
       this.pending.set(promptId, {
@@ -406,7 +406,7 @@ export class ComfyUIBackend implements GenBackend {
         const placement = await this.queuePlacement(promptId, signal);
         if (placement === "running" || placement === "pending") return present();
         if (placement === "absent") {
-          lastAnsweredAt = Date.now();
+          lastAnsweredAt = performance.now();
           absentObservations += 1;
           if (absentObservations >= PROMPT_LOST_OBSERVATIONS) {
             return {
@@ -426,7 +426,7 @@ export class ComfyUIBackend implements GenBackend {
         if (error instanceof BackendInvocationError && error.outcome === "definitive") return present();
         absentObservations = 0;
       }
-      if (Date.now() - lastAnsweredAt >= this.runnerOutageGraceMs) {
+      if (performance.now() - lastAnsweredAt >= this.runnerOutageGraceMs) {
         throw new BackendInvocationError(
           "backend_error",
           `ComfyUI did not answer about prompt ${promptId} within ${this.runnerOutageGraceMs}ms`,
@@ -594,7 +594,7 @@ export class ComfyUIBackend implements GenBackend {
     timeoutMs: number,
     signal: AbortSignal,
   ): Promise<ComfyOutputEvidence> {
-    const startedAt = Date.now();
+    const startedAt = performance.now();
     const totalWaitDeadlineAt =
       startedAt + timeoutMs * COMFY_TOTAL_WAIT_BUDGET_MULTIPLIER;
     let executionDeadlineAt = startedAt + timeoutMs;
@@ -607,10 +607,10 @@ export class ComfyUIBackend implements GenBackend {
     // the total queue-wait cap, and observing running starts the final budget.
     const executionController = new AbortController();
     const deadlineSignal = AbortSignal.any([signal, executionController.signal]);
-    let executionTimeout = setTimeout(() => executionController.abort(), timeoutMs);
+    let cancelExecutionTimeout = awakeTimeout(() => executionController.abort(), timeoutMs);
     const deadlineReached = () => deadlineSignal.aborted ||
-      Date.now() >= executionDeadlineAt || Date.now() >= totalWaitDeadlineAt;
-    const pause = () => sleep(Math.min(this.pollIntervalMs, Math.max(0, Math.min(executionDeadlineAt, totalWaitDeadlineAt) - Date.now())));
+      performance.now() >= executionDeadlineAt || performance.now() >= totalWaitDeadlineAt;
+    const pause = () => sleep(Math.min(this.pollIntervalMs, Math.max(0, Math.min(executionDeadlineAt, totalWaitDeadlineAt) - performance.now())));
     try {
       while (!deadlineReached()) {
         let evidence: ComfyOutputEvidence | null;
@@ -620,17 +620,17 @@ export class ComfyUIBackend implements GenBackend {
           if (error instanceof BackendInvocationError || deadlineReached()) throw error;
           // Connection trouble alone proves nothing about the prompt. Keep polling
           // through a restart so the runner's own answer decides the outcome.
-          if (Date.now() - lastAnsweredAt >= this.runnerOutageGraceMs) throw error;
+          if (performance.now() - lastAnsweredAt >= this.runnerOutageGraceMs) throw error;
           await pause();
           continue;
         }
         if (evidence) return evidence;
         if (deadlineReached()) break;
-        lastAnsweredAt = Date.now();
-        if (!observedExecuting || Date.now() >= nextLivenessCheckAt) {
+        lastAnsweredAt = performance.now();
+        if (!observedExecuting || performance.now() >= nextLivenessCheckAt) {
           const placement = await this.queuePlacement(promptId, deadlineSignal);
           if (deadlineReached()) break;
-          nextLivenessCheckAt = Date.now() + PROMPT_LIVENESS_CHECK_INTERVAL_MS;
+          nextLivenessCheckAt = performance.now() + PROMPT_LIVENESS_CHECK_INTERVAL_MS;
           // An unreadable queue is no evidence either way, so it leaves the count alone.
           if (placement === "absent") absentObservations += 1;
           else if (placement !== "unreadable") absentObservations = 0;
@@ -647,9 +647,9 @@ export class ComfyUIBackend implements GenBackend {
           }
           if (!observedExecuting && (placement === "pending" || placement === "running")) {
             observedExecuting = placement === "running";
-            executionDeadlineAt = Date.now() + timeoutMs;
-            clearTimeout(executionTimeout);
-            executionTimeout = setTimeout(() => executionController.abort(), timeoutMs);
+            executionDeadlineAt = performance.now() + timeoutMs;
+            cancelExecutionTimeout();
+            cancelExecutionTimeout = awakeTimeout(() => executionController.abort(), timeoutMs);
           }
         }
         await pause();
@@ -657,12 +657,12 @@ export class ComfyUIBackend implements GenBackend {
     } catch (error) {
       if (!deadlineReached()) throw error;
     } finally {
-      clearTimeout(executionTimeout);
+      cancelExecutionTimeout();
       executionController.abort();
     }
-    const waitedMs = Date.now() - startedAt;
+    const waitedMs = performance.now() - startedAt;
     // 两条上限只会跳其中一条：没开始执行过、又把总等待耗光了，才是「一直没排上」。
-    const neverLeftQueue = !observedExecuting && Date.now() >= totalWaitDeadlineAt;
+    const neverLeftQueue = !observedExecuting && performance.now() >= totalWaitDeadlineAt;
     const message = neverLeftQueue
       ? `ComfyUI prompt never left the queue within ${waitedMs}ms: ${promptId}`
       : `ComfyUI prompt timed out after ${timeoutMs}ms of execution (waited ${waitedMs}ms): ${promptId}`;
@@ -725,7 +725,7 @@ export class ComfyUIBackend implements GenBackend {
     | { kind: "unresolved" }
   > {
     if (this.promptCancelGraceMs <= 0) return { kind: "unresolved" };
-    const deadlineAt = Date.now() + this.promptCancelGraceMs;
+    const deadlineAt = performance.now() + this.promptCancelGraceMs;
     const signal = AbortSignal.timeout(this.promptCancelGraceMs);
     const post = (route: string, body: JsonRecord) => fetch(`${this.apiUrl}${route}`, {
       method: "POST",
@@ -736,7 +736,7 @@ export class ComfyUIBackend implements GenBackend {
     // /queue removes it while pending; /interrupt ignores any other running prompt.
     await Promise.allSettled([post("/queue", { delete: [promptId] }), post("/interrupt", { prompt_id: promptId })]);
     let absentObservations = 0;
-    while (Date.now() < deadlineAt) {
+    while (performance.now() < deadlineAt) {
       try {
         const evidence = await this.readPromptHistory(promptId, signal);
         if (evidence) return { kind: "completed", evidence };
@@ -747,7 +747,7 @@ export class ComfyUIBackend implements GenBackend {
         if (error instanceof BackendInvocationError && error.outcome === "definitive") return { kind: "stopped" };
         absentObservations = 0;
       }
-      await sleep(Math.min(this.pollIntervalMs, Math.max(0, deadlineAt - Date.now())));
+      await sleep(Math.min(this.pollIntervalMs, Math.max(0, deadlineAt - performance.now())));
     }
     return { kind: "unresolved" };
   }
@@ -872,6 +872,22 @@ function stringField(value: JsonRecord, key: string) {
 
 function trimTrailingSlash(value: string) {
   return value.replace(/\/+$/, "");
+}
+
+// SPEC: budgets count time the host was awake. performance.now() stops while a Mac
+// sleeps and timers can fire on waking, so both are checked against it. On the wall
+// clock one sleeping laptop spent a 30-minute budget on 158s of real H3 execution and
+// a render that would have finished was cancelled and refunded.
+function awakeTimeout(onExpire: () => void, ms: number) {
+  const deadline = performance.now() + ms;
+  let timer: ReturnType<typeof setTimeout>;
+  const check = () => {
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) onExpire();
+    else timer = setTimeout(check, remaining);
+  };
+  timer = setTimeout(check, ms);
+  return () => clearTimeout(timer);
 }
 
 function sleep(ms: number) {

@@ -458,6 +458,25 @@ describe("ComfyUIBackend prompt lifecycle", () => {
     await delivered;
   });
 
+  it("does not spend the budget while the host sleeps", async () => {
+    let finished = false;
+    const cancellations = scriptedRunner("p-asleep", { history: () => (finished ? FINISHED : NOT_FINISHED), queue: () => queueWith(["p-asleep"]) });
+    const backend = backendFor({ promptCancelGraceMs: 1_000 });
+    vi.useFakeTimers();
+    const handle = await backend.submit({ descriptor, slots: { prompt: "cat" }, timeoutMs: 100 });
+    const polling = backend.poll(handle);
+    const delivered = expect(polling).resolves.toMatchObject({ assets: [{ contentType: "image/png" }] });
+    await vi.advanceTimersByTimeAsync(20);
+    // Two wall-clock hours pass with no awake time, then the render finishes.
+    vi.setSystemTime(Date.now() + 2 * 60 * 60 * 1_000);
+    await vi.advanceTimersByTimeAsync(10);
+    finished = true;
+    await vi.advanceTimersByTimeAsync(5);
+    vi.useRealTimers();
+    await delivered;
+    expect(cancellations).toEqual([]);
+  });
+
   it("stays ambiguous when a cancelled prompt keeps running past the grace", async () => {
     scriptedRunner("p-stuck-running", { history: () => NOT_FINISHED, queue: () => queueWith(["p-stuck-running"]) });
     const { outcome } = await settle(backendFor({ promptCancelGraceMs: 50 }), 200, 50);
