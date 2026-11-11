@@ -45,8 +45,13 @@ import { COMPANION_MEDIA_LIBRARY_GUIDANCE, COMPANION_MEDIA_RESEND_GUIDANCE } fro
  * constraints stay in query and are checked against returned observations.
  * v19: asynchronous edits acknowledge processing until delivery; no receipt
  * establishes visual correctness or pixel preservation.
+ * v20: confirmed image edit provenance stays distinct from observed content.
+ * v21: prepared-media observations preserve explicit constraints and pending
+ * offers; an unresolved lookup failure cannot authorize a paid fallback.
+ * v22: entering prepared-media lookup fixes the attempt to stock search/send;
+ * new generation and edits require a new user request after that boundary.
  */
-export const COMPANION_PRODUCT_PROMPT_VERSION = "companion-product-20" as const;
+export const COMPANION_PRODUCT_PROMPT_VERSION = "companion-product-22" as const;
 
 export function companionProductAgentPrompt(characterName: string): string {
   const name = characterName.trim() || "the Character";

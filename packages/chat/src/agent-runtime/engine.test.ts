@@ -169,6 +169,9 @@ function mediaInvocation(): CompanionInvocation {
     tools: [...value.preparedTurn.tools, ...CHARACTER_MEDIA_TOOL_DEFINITIONS] } });
 }
 
+const preparedImageCandidate = { candidateToken: "prepared-seaside-photo", kind: "image", description: "Mira by the seaside.",
+  facts: ["seaside"], absentFacts: [], nudity: "none", durationSeconds: null, hasAudio: null, alreadySent: false, score: 0.8 };
+
 async function engine(
   adapter: FixtureAdapter,
   memoryBuilder?: CompanionEngineOptions["memoryBuilder"],
@@ -1533,9 +1536,9 @@ describe("Chat embedded companion runtime", () => {
     const searchArgs = { kind: "image", query: "Mira in a blue dress by the seaside, without a hat", requestedNudity: "none", unseenOnly: true };
     const matches = [
       { candidateToken: "high-ranked-other", kind: "image", description: "Mira in a blue dress indoors.",
-        facts: ["blue dress", "indoors"], absentFacts: ["hat"], durationSeconds: null, hasAudio: null, alreadySent: false, score: 0.94 },
+        facts: ["blue dress", "indoors"], absentFacts: ["hat"], nudity: "none", durationSeconds: null, hasAudio: null, alreadySent: false, score: 0.94 },
       { candidateToken: "exact-seaside-result", kind: "image", description,
-        facts: ["blue dress", "seaside"], absentFacts: ["hat"], durationSeconds: null, hasAudio: null, alreadySent: false, score: 0.81 },
+        facts: ["blue dress", "seaside"], absentFacts: ["hat"], nudity: "none", durationSeconds: null, hasAudio: null, alreadySent: false, score: 0.81 },
     ];
     const receipt = { accepted: true, duplicate: false, status: "completed", attachmentId: "attachment-free",
       mediaAssetId: "media-free", generationJobId: null, costDreamcoins: 0, source: "library", description };
@@ -1601,33 +1604,6 @@ describe("Chat embedded companion runtime", () => {
     expect(connection.candidates[0]?.execution).toEqual({ steps: 3, toolCalls: 1 });
   });
 
-  it("leaves the existing image action available after a completed no-match observation", async () => {
-    let requests = 0;
-    const calls: CompanionToolCall[] = [];
-    const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
-      requests++;
-      if (requests > 2) return response({ content: "Give me a moment, love." });
-      return response({ tool_calls: [{ index: 0, id: `media-${requests}`, function: {
-        name: requests === 1 ? "search_character_media" : "generate_image_async",
-        arguments: JSON.stringify(requests === 1 ? { kind: "image", query: "Mira fully clothed by the seaside without a hat" }
-          : { prompt: "Mira fully clothed by the seaside without a hat", subject: "companion", requestedNudity: "none" }),
-      } }] }, "tool_calls");
-    } });
-    const runtime = await engine(adapter);
-    const connection = port({ executeTool: async call => {
-      calls.push(call);
-      const output: Extract<CompanionToolResult, { outcome: "succeeded" }>["output"] = call.name === "search_character_media"
-        ? { accepted: true, status: "no_match", matches: [] }
-        : { accepted: true, status: "accepted", attachmentId: "real-attachment", generationJobId: "new-image-job" };
-      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
-        output };
-    } });
-    await runtime.run(mediaInvocation(), connection.runtimePort);
-    expect(calls.map(call => call.name)).toEqual(["search_character_media", "generate_image_async"]);
-    expect(connection.candidates).toHaveLength(1);
-    expect(connection.candidates[0]?.execution).toEqual({ steps: 4, toolCalls: 2 });
-  });
-
   it.each(["failed", "unknown"] as const)("does not turn a %s lookup into a delivery or an unconfirmed purchase", async outcome => {
     const requests: WireRequest[] = [];
     const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async (_url, init) => {
@@ -1649,6 +1625,209 @@ describe("Chat embedded companion runtime", () => {
     expect(requests[1]?.messages.find(message => message.role === "tool")?.content).toContain("not evidence that the library is empty");
     expect(connection.candidates).toHaveLength(1);
     expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
+  });
+
+  describe.each(["matches", "no_match", "failed", "unknown", "exception", "malformed_success"] as const)("after a %s media lookup", outcome => {
+    it.each(["generate_image_async", "edit_last_image"] as const)("blocks an adversarial %s before Main receives it", async name => {
+      let requests = 0;
+      const calls: CompanionToolCall[] = [];
+      const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
+        requests++;
+        if (requests > 2) return response({ content: "I can't confirm that photo right now." });
+        return response({ tool_calls: [{ index: 0, id: `unavailable-${requests}`, function: {
+          name: requests === 1 ? "search_character_media" : name,
+          arguments: JSON.stringify(requests === 1 ? { kind: "image", query: "Mira fully clothed by the seaside without a hat" }
+            : name === "generate_image_async" ? { prompt: "A replacement seaside portrait", subject: "companion" }
+              : { instruction: "Replace the background with the seaside", editScope: { mode: "whole_image" } }),
+        } }] }, "tool_calls");
+      } });
+      const source = mediaInvocation();
+      const value = companionInvocationSchema.parse({ ...source, preparedTurn: { ...source.preparedTurn,
+        tools: [...IMAGE_AGENT_TOOL_DEFINITIONS, ...CHARACTER_MEDIA_TOOL_DEFINITIONS] } });
+      value.preparedTurn.messages.at(-1)!.content = "Send an existing photo only. Do not generate or edit anything.";
+      const runtime = await engine(adapter);
+      const connection = port({ executeTool: async (call): Promise<CompanionToolResult> => {
+        calls.push(call);
+        if (call.name !== "search_character_media") {
+          return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
+            output: { accepted: true, status: "accepted", attachmentId: "charged-attachment", generationJobId: "charged-job" } };
+        }
+        if (outcome === "exception") throw new Error("Search transport failed");
+        if (outcome === "malformed_success") {
+          return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded", output: { accepted: true } };
+        }
+        if (outcome === "matches" || outcome === "no_match") {
+          return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
+            output: { accepted: true, status: outcome, matches: outcome === "matches" ? [preparedImageCandidate] : [] } };
+        }
+        return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome,
+          error: { code: "media_search_unavailable", message: "Search unavailable", retryable: true } };
+      } });
+      try {
+        await runtime.run(value, connection.runtimePort);
+        expect(calls.map(call => call.name)).toEqual(["search_character_media"]);
+        expect(connection.events.filter(event => event.type === "tool_started").map(event => event.name)).toEqual(["search_character_media"]);
+        expect(connection.candidates).toEqual([]);
+      } finally { await runtime.shutdown(); }
+    });
+  });
+
+  it.each(["failed", "unknown"] as const)("allows another stock search and free send after a %s lookup", async outcome => {
+    let requests = 0;
+    const calls: CompanionToolCall[] = [];
+    const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
+      requests++;
+      if (requests > 3) return response({ content: "I can't confirm that photo right now." });
+      return response({ tool_calls: [{ index: 0, id: `retry-${requests}`, function: {
+        name: requests < 3 ? "search_character_media" : "send_character_media",
+        arguments: JSON.stringify(requests < 3 ? { kind: "image", query: "Mira by the seaside" }
+          : { candidateToken: preparedImageCandidate.candidateToken }),
+      } }] }, "tool_calls");
+    } });
+    const runtime = await engine(adapter);
+    const connection = port({ executeTool: async (call): Promise<CompanionToolResult> => {
+      calls.push(call);
+      if (calls.length === 1) return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome,
+        error: { code: "media_search_unavailable", message: "Search unavailable", retryable: true } };
+      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
+        output: call.name === "search_character_media" ? { accepted: true, status: "matches", matches: [preparedImageCandidate] }
+          : { accepted: true, duplicate: false, status: "completed", attachmentId: "after-retry", generationJobId: null,
+            mediaAssetId: "after-retry-media", costDreamcoins: 0, source: "library" } };
+    } });
+    try {
+      await runtime.run(mediaInvocation(), connection.runtimePort);
+      expect(calls.map(call => call.name)).toEqual(["search_character_media", "search_character_media", "send_character_media"]);
+      expect(connection.candidates).toHaveLength(1);
+      expect(connection.candidates[0]?.tools.map(tool => tool.name)).toEqual(calls.map(call => call.name));
+    } finally { await runtime.shutdown(); }
+  });
+
+  it.each(["failed", "succeeded"] as const)("keeps stock-only execution after a cached %s lookup and a fresh result", async first => {
+    let requests = 0;
+    const calls: CompanionToolCall[] = [];
+    const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
+      requests++;
+      if (requests > 4) return response({ content: "I can't confirm that photo right now." });
+      return response({ tool_calls: [{ index: 0, id: requests === 3 ? "lookup-1" : `lookup-${requests}`, function: {
+        name: requests < 4 ? "search_character_media" : "generate_image_async",
+        arguments: JSON.stringify(requests < 4 ? { kind: "image", query: "Mira by the seaside" }
+          : { prompt: "Mira posing by the seaside", subject: "companion" }),
+      } }] }, "tool_calls");
+    } });
+    const runtime = await engine(adapter);
+    const connection = port({ executeTool: async (call): Promise<CompanionToolResult> => {
+      calls.push(call);
+      if (call.name === "search_character_media") {
+        const succeeds = calls.length === 1 ? first === "succeeded" : first === "failed";
+        return succeeds ? { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
+          output: { accepted: true, status: "no_match", matches: [] } }
+          : { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "failed",
+            error: { code: "media_search_unavailable", message: "Search unavailable", retryable: true } };
+      }
+      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
+        output: { accepted: true, status: "accepted", attachmentId: "after-replay", generationJobId: "after-replay-job" } };
+    } });
+    try {
+      await runtime.run(mediaInvocation(), connection.runtimePort);
+      expect(calls.map(call => call.name)).toEqual(["search_character_media", "search_character_media"]);
+      expect(connection.candidates).toEqual([]);
+    } finally { await runtime.shutdown(); }
+  });
+
+  it("does not reserve a blocked paid call or prevent a later stock send", async () => {
+    let requests = 0;
+    const calls: CompanionToolCall[] = [];
+    const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
+      requests++;
+      if (requests > 4) return response({ content: "Give me a moment, love." });
+      const lookup = requests === 1 || requests === 3;
+      return response({ tool_calls: [{ index: 0, id: lookup ? `retry-lookup-${requests}` : `action-${requests}`, function: {
+        name: lookup ? "search_character_media" : requests === 2 ? "generate_image_async" : "send_character_media",
+        arguments: JSON.stringify(lookup ? { kind: "image", query: "Mira by the seaside" }
+          : requests === 2 ? { prompt: "Mira posing by the seaside", subject: "companion" }
+            : { candidateToken: preparedImageCandidate.candidateToken }),
+      } }] }, "tool_calls");
+    } });
+    const runtime = await engine(adapter);
+    const connection = port({ executeTool: async (call): Promise<CompanionToolResult> => {
+      calls.push(call);
+      if (calls.length === 1) return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "failed",
+        error: { code: "media_search_unavailable", message: "Search unavailable", retryable: true } };
+      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
+        output: call.name === "search_character_media" ? { accepted: true, status: "matches", matches: [preparedImageCandidate] }
+          : { accepted: true, duplicate: false, status: "completed", attachmentId: "retried-stock-attachment", generationJobId: null,
+            mediaAssetId: "retried-stock-media", costDreamcoins: 0, source: "library" } };
+    } });
+    try {
+      await runtime.run(mediaInvocation(), connection.runtimePort);
+      expect(calls.map(call => call.callId)).toEqual(["retry-lookup-1", "retry-lookup-3", "action-4"]);
+      expect(connection.events.filter(event => event.type === "tool_started").map(event => event.callId)).toEqual(calls.map(call => call.callId));
+      expect(connection.candidates[0]?.execution.toolCalls).toBe(3);
+      expect(connection.candidates[0]?.tools.map(tool => tool.callId)).toEqual(calls.map(call => call.callId));
+    } finally { await runtime.shutdown(); }
+  });
+
+  it("allows explicit generation in the next Turn after a stock-only attempt", async () => {
+    let requests = 0;
+    const calls: CompanionToolCall[] = [];
+    const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
+      requests++;
+      if (requests === 3 || requests === 5) return response({ content: "No matching prepared photo is ready." });
+      return response({ tool_calls: [{ index: 0, id: `next-turn-${requests}`, function: {
+        name: requests === 1 ? "search_character_media" : "generate_image_async",
+        arguments: JSON.stringify(requests === 1 ? { kind: "image", query: "Mira by the seaside" }
+          : { prompt: "Mira posing by the seaside", subject: "companion" }),
+      } }] }, "tool_calls");
+    } });
+    const runtime = await engine(adapter);
+    const connection = port({ executeTool: async (call): Promise<CompanionToolResult> => {
+      calls.push(call);
+      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
+        output: call.name === "search_character_media" ? { accepted: true, status: "no_match", matches: [] }
+          : { accepted: true, status: "accepted", attachmentId: "next-turn-image", generationJobId: "next-turn-job" } };
+    } });
+    try {
+      const stock = mediaInvocation();
+      await runtime.run(stock, connection.runtimePort);
+      expect(calls.map(call => call.name)).toEqual(["search_character_media"]);
+      expect(connection.candidates).toEqual([]);
+
+      const next = mediaInvocation();
+      next.invocationId = "invocation-next-turn";
+      next.attemptId = "attempt-next-turn";
+      next.preparedTurn.messages.at(-1)!.content = "Generate a new seaside portrait of yourself.";
+      await runtime.run(next, connection.runtimePort);
+      expect(calls.map(call => [call.attemptId, call.name])).toEqual([
+        [stock.attemptId, "search_character_media"], [next.attemptId, "generate_image_async"],
+      ]);
+      expect(connection.candidates).toHaveLength(1);
+      expect(connection.candidates[0]?.mediaResponse).toEqual({ version: 1, attachmentId: "next-turn-image" });
+    } finally { await runtime.shutdown(); }
+  });
+
+  it("blocks paid fallback when the selected lookup has invalid arguments", async () => {
+    let requests = 0;
+    const calls: CompanionToolCall[] = [];
+    const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
+      requests++;
+      if (requests > 2) return response({ content: "I can't confirm that photo right now." });
+      return response({ tool_calls: [{ index: 0, id: `invalid-lookup-${requests}`, function: {
+        name: requests === 1 ? "search_character_media" : "generate_image_async",
+        arguments: JSON.stringify(requests === 1 ? { kind: "image", query: "" }
+          : { prompt: "Mira posing by the seaside", subject: "companion" }),
+      } }] }, "tool_calls");
+    } });
+    const runtime = await engine(adapter);
+    const connection = port({ executeTool: async call => {
+      calls.push(call);
+      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
+        output: { accepted: true, status: "accepted", attachmentId: "unexpected-paid-attachment", generationJobId: "unexpected-paid-job" } };
+    } });
+    try {
+      await runtime.run(mediaInvocation(), connection.runtimePort);
+      expect(calls).toEqual([]);
+      expect(connection.candidates).toEqual([]);
+    } finally { await runtime.shutdown(); }
   });
 
   it.each(["unknown", "malformed_success"] as const)("stops on %s media delivery and cannot continue into another purchase", async failure => {

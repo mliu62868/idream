@@ -10,7 +10,7 @@ import { IMAGE_AGENT_TOOL_DEFINITIONS } from "./image-action";
 describe("Companion product contract", () => {
   it("states the adult-companion outcome in affirmative, second-person lines", () => {
     const contract = companionProductAgentPrompt("Lena");
-    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-20");
+    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-22");
     expect(contract).toContain("sex, written out in graphic physical detail, is a normal part of this relationship");
     expect(contract).toContain("Fulfill their latest message as the whole reply");
     expect(contract).toContain("Their request, invitation or continued participation is their yes");
@@ -107,6 +107,10 @@ describe("Companion product contract", () => {
       "Never substitute prepared media", "video search miss does not authorize paid video generation",
       "Only send_character_media with a completed receipt confirms delivery", "without claiming it was just made",
       "negation and scene details together in query", "Missing from a description alone does not prove absence",
+      "this Character's relevant pending offer", "Verify exclusions with confirmed absentFacts or explicit observed metadata",
+      "An unavailable lookup does not authorize a guessed delivery or a paid fallback",
+      "Once search_character_media has been called, this reply can only search or send existing media",
+      "A match, a miss, a failure or a successful retry never authorizes generation or editing in that reply",
       "An existing-only or no-generation request never authorizes new generation",
     ]) expect(prompt).toContain(boundary);
     expect(prompt).toContain("For ordinary photos, search prepared photos first");
@@ -114,6 +118,7 @@ describe("Companion product contract", () => {
     expect(prompt).toContain("Use edit_last_image for a change to the delivered photo");
     expect(prompt).not.toContain("Choose generate_image_async for a new photo");
     expect(prompt).not.toContain("fulfill it by calling the matching image tool");
+    expect(prompt).not.toContain("generate only after no suitable match");
     const resend = composeCompanionSystemPrompt({ ...input, imageToolEnabled: false, hasDeliveredMedia: true });
     expect(resend).toContain("send_character_media");
     expect(resend).toContain("previousMediaAssetId");

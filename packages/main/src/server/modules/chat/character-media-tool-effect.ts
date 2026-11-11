@@ -1,6 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
-import { searchCharacterMediaArgsSchema, sendCharacterMediaArgsSchema, type SearchCharacterMediaResult, type SendCharacterMediaResult } from "@idream/shared/chat/media-library";
+import { searchCharacterMediaArgsSchema, searchCharacterMediaResultSchema, sendCharacterMediaArgsSchema, type SearchCharacterMediaResult, type SendCharacterMediaResult } from "@idream/shared/chat/media-library";
 import { chatExecutionSnapshotSchema, type ChatExecutionSnapshot, type ChatToolEffect } from "@idream/shared/contracts";
 import type { CharacterMediaLibraryEntry, ChatTurn, ChatTurnAttachment, Prisma, RecentChat } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
@@ -9,8 +9,8 @@ import { Errors } from "@/server/lib/errors";
 import { resolveMediaAssetBlobLocator, SHARED_IMMUTABLE_BLOB_LOCATOR_SCHEMA } from "@/server/lib/media-asset-authority";
 import { providers } from "@/server/providers";
 import { lockCharacterGenerationAuthority, lockMediaAssetAuthority } from "@/server/modules/admin-v2/characters/generation-authority-lock";
-import { assertLibraryEntryAvailable, searchCharacterMediaLibrary } from "@/server/modules/character-media-library/service";
-import { mediaViewUrl } from "@/server/modules/ourdream/public-read-model";
+import { assertLibraryEntryAvailable, deliveredLibraryMedia, searchCharacterMediaLibrary } from "@/server/modules/character-media-library/service";
+import { mediaLibraryPosterViewUrl, mediaViewUrl } from "@/server/modules/ourdream/public-read-model";
 import { deliveredChatMedia } from "./chat-media-history";
 import { createToolEffectAttachment, transitionToolEffectAttachment } from "./tool-effect-attachment";
 import { assertChatSessionServingAuthority } from "./turn-ledger";
@@ -54,16 +54,16 @@ export async function searchChatCharacterMedia(effect: ChatToolEffect, turn: Tur
     userId: snapshot.userId, characterId: snapshot.characterId,
     visualProfileId: snapshot.characterVisualProfileId, visualProfileVersion: snapshot.characterVisualProfileVersion,
   });
-  return {
+  return searchCharacterMediaResultSchema.parse({
     accepted: true, status: matches.length ? "matches" : "no_match",
     matches: matches.slice(0, 10).map(({ entry, score, alreadySent }) => ({
       candidateToken: signCandidate(snapshot, entry, {
         requestedNudity: effect.intent.requestedNudity, unseenOnly: args.unseenOnly !== false,
       }),
-      kind: entry.kind as "image" | "video", description: entry.description, facts: entry.facts,
+      kind: entry.kind, description: entry.description, facts: entry.facts, nudity: entry.nudity,
       absentFacts: entry.absentFacts, durationSeconds: entry.durationSeconds, hasAudio: entry.hasAudio, score, alreadySent,
     })),
-  };
+  });
 }
 
 /** A free delivery and its owned MediaAsset commit together, without a Generation Request. */
@@ -72,13 +72,18 @@ export async function deliverChatCharacterMedia(input: {
 }): Promise<SendCharacterMediaResult> {
   const { effect, judged, attachmentId, requestDigest } = input;
   const args = sendCharacterMediaArgsSchema.parse(effect.arguments);
-  const candidate = "candidateToken" in args ? readCandidate(args.candidateToken) : null;
+  // A concurrent commit can win even if this check fails. Consult the locked
+  // receipt before surfacing the failure or attempting a new delivery.
+  const checked = await ("candidateToken" in args
+    ? checkLibraryBlob(judged, effect, readCandidate(args.candidateToken))
+    : checkPreviousMediaBlob(judged, effect, args.previousMediaAssetId)).then(
+    value => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
   return prisma.$transaction(async tx => {
     const scope = await lockChatScope(tx, { userId: judged.session.userId, at: { turn: effect.turnId },
-      expect: { attempt: effect.attempt, assistantStatus: ["pending", "generating"] } });
+      expect: { attempt: effect.attempt } });
     const turn = scope.turn!;
-    const snapshot = frozen(turn, scope.session, effect);
-    if (scope.session.status !== "active") throw Errors.gone("Chat session is archived");
     const raced = await tx.chatTurnAttachment.findUnique({ where: { id: attachmentId } });
     if (raced) {
       const receipt = record(record(raced.metadata).effect);
@@ -86,23 +91,29 @@ export async function deliverChatCharacterMedia(input: {
         || attachmentAttempt(raced.metadata) !== effect.attempt) throw Errors.conflict("This Turn already has a different media action");
       return characterMediaReceipt(raced, true);
     }
+    if (!["pending", "generating"].includes(turn.assistantStatus)) {
+      throw Errors.conflict("Media delivery does not belong to an active Chat attempt");
+    }
+    if (scope.session.status !== "active") throw Errors.gone("Chat session is archived");
+    const snapshot = frozen(turn, scope.session, effect);
     await lockCharacterGenerationAuthority(tx, snapshot.characterId);
     await assertChatSessionServingAuthority(tx, snapshot.userId, scope.session);
+    if (!checked.ok) throw checked.error;
 
     let asset: Awaited<ReturnType<typeof tx.mediaAsset.findUniqueOrThrow>>;
-    let source: "library" | "previous_media";
+    const source = checked.value.source;
     let description: string | null;
-    if (candidate) {
+    if (checked.value.source === "library") {
+      const { candidate, entry: beforeLock } = checked.value;
       if (!snapshot.characterVisualProfileId || !snapshot.characterVisualProfileVersion) {
         throw Errors.forbidden("Prepared media requires a frozen Character visual identity");
       }
-      const beforeLock = await tx.characterMediaLibraryEntry.findUnique({ where: { id: candidate.entryId } });
-      if (!beforeLock) throw Errors.notFound("Prepared media is no longer available");
-      assertCandidate(candidate, snapshot, beforeLock);
       if (beforeLock.sourceAssetId) await lockMediaAssetAuthority(tx, beforeLock.sourceAssetId);
       await tx.$queryRaw`SELECT id FROM "character_media_library_entries" WHERE id = ${candidate.entryId} FOR UPDATE`;
-      const entry = await tx.characterMediaLibraryEntry.findUniqueOrThrow({ where: { id: candidate.entryId } });
-      if (entry.sourceAssetId !== beforeLock.sourceAssetId) {
+      const entry = await tx.characterMediaLibraryEntry.findUnique({ where: { id: candidate.entryId } });
+      if (!entry) throw Errors.notFound("Prepared media is no longer available");
+      if (entry.sourceAssetId !== beforeLock.sourceAssetId || entry.storageKey !== beforeLock.storageKey
+        || entry.contentHash !== beforeLock.contentHash || entry.kind !== beforeLock.kind) {
         throw Errors.conflict("Prepared media changed after the lookup; search again");
       }
       assertCandidate(candidate, snapshot, entry);
@@ -113,17 +124,19 @@ export async function deliverChatCharacterMedia(input: {
       if (candidate.requestedNudity !== "unspecified" && entry.nudity !== candidate.requestedNudity) {
         throw Errors.conflict("Prepared media no longer matches the original wardrobe requirement");
       }
-      if (candidate.unseenOnly && await wasLibraryMediaDelivered(tx, snapshot.userId, entry)) {
-        throw Errors.conflict("This prepared media has already been delivered; search for another result");
+      if (candidate.unseenOnly) {
+        const delivered = await deliveredLibraryMedia(tx, { userId: snapshot.userId, characterId: snapshot.characterId, entries: [entry] });
+        if (delivered.has(entry.id)) throw Errors.conflict("This prepared media has already been delivered; search for another result");
       }
-      await assertBlobReadable(entry.storageKey, entry.contentHash, entry.kind);
       const sourceAssetId = entry.sourceAssetId ?? record(entry.sourceSnapshot).assetId;
       if (typeof sourceAssetId !== "string" || !sourceAssetId) throw Errors.conflict("Prepared media has no immutable source identity");
       const id = `chatmedia_${hash(attachmentId).slice(0, 40)}`;
       const url = mediaViewUrl({ id, type: entry.kind, contentType: entry.contentType, storageKey: null, url: "" });
+      const posterKey = entry.kind === "video" ? entry.thumbnailKey : null;
       asset = await tx.mediaAsset.create({ data: {
         id, ownerId: snapshot.userId, characterId: snapshot.characterId, type: entry.kind,
-        url, thumbnailUrl: entry.kind === "image" ? url : null, storageKey: null, contentType: entry.contentType,
+        url, thumbnailUrl: posterKey ? mediaLibraryPosterViewUrl({ id }) : entry.kind === "image" ? url : null,
+        storageKey: null, contentType: entry.contentType,
         width: entry.width, height: entry.height, sourceJobId: null, prompt: null,
         visibility: "private", safetyStatus: "passed", metadata: json({
           source: "character_media_library", synthetic: false, sha256: entry.contentHash,
@@ -132,13 +145,13 @@ export async function deliverChatCharacterMedia(input: {
           libraryDelivery: { schemaVersion: 1, entryId: entry.id, revision: entry.revision, contentHash: entry.contentHash,
             description: entry.description, facts: entry.facts, absentFacts: entry.absentFacts,
             visualProfileId: entry.visualProfileId, visualProfileVersion: entry.visualProfileVersion,
-            durationSeconds: entry.durationSeconds, hasAudio: entry.hasAudio },
+            durationSeconds: entry.durationSeconds, hasAudio: entry.hasAudio, ...(posterKey ? { posterKey } : {}) },
         }),
       } });
-      source = "library";
       description = entry.description;
     } else {
-      const previousMediaAssetId = "previousMediaAssetId" in args ? args.previousMediaAssetId : "";
+      const { previous: beforeLock, locator: checkedLocator, digest: checkedDigest } = checked.value;
+      const previousMediaAssetId = beforeLock.asset.id;
       if (!snapshot.recentMedia?.some(item => item.mediaAssetId === previousMediaAssetId)) {
         throw Errors.forbidden("The previous media is not a delivered result in this Chat context");
       }
@@ -149,9 +162,14 @@ export async function deliverChatCharacterMedia(input: {
       const locator = resolveMediaAssetBlobLocator(previous.asset);
       if (!locator) throw Errors.notFound("The previous media has no readable immutable bytes");
       const digest = record(previous.asset.metadata).sha256;
-      await assertBlobReadable(locator.key, typeof digest === "string" ? digest : undefined, previous.asset.type);
+      if (previous.asset.type !== beforeLock.asset.type || previous.asset.characterId !== beforeLock.asset.characterId
+        || previous.attachment.id !== beforeLock.attachment.id
+        || attachmentAttempt(previous.attachment.metadata) !== attachmentAttempt(beforeLock.attachment.metadata)
+        || JSON.stringify(locator) !== JSON.stringify(checkedLocator)
+        || (typeof digest === "string" ? digest : undefined) !== checkedDigest) {
+        throw Errors.conflict("The previous media changed while its bytes were checked; retry the request");
+      }
       asset = previous.asset;
-      source = "previous_media";
       description = previous.description;
     }
     const created = await createToolEffectAttachment(tx, { id: attachmentId, turn, attempt: effect.attempt,
@@ -160,13 +178,44 @@ export async function deliverChatCharacterMedia(input: {
         effect: { turnId: effect.turnId, attempt: effect.attempt, callId: effect.callId, name: effect.name,
           effectScope: effect.effectScope, intent: effect.intent, requestDigest },
         request: { name: effect.name, subject: asset.characterId ? "companion" : "scene",
-          ...(candidate ? { requestedNudity: candidate.requestedNudity } : {}) },
+          ...(checked.value.source === "library" ? { requestedNudity: checked.value.candidate.requestedNudity } : {}) },
       },
     });
     const completed = await transitionToolEffectAttachment(tx, created, { to: "completed", generationJobId: null,
       mediaAssetId: asset.id, width: asset.width, height: asset.height });
     return characterMediaReceipt(completed, false);
   }, { timeout: 20_000 });
+}
+
+async function checkLibraryBlob(turn: Turn, effect: ChatToolEffect, candidate: Candidate) {
+  const snapshot = frozen(turn, turn.session, effect);
+  const entry = await prisma.characterMediaLibraryEntry.findUnique({ where: { id: candidate.entryId } });
+  if (!entry) throw Errors.notFound("Prepared media is no longer available");
+  assertCandidate(candidate, snapshot, entry);
+  if (entry.status !== "published") throw Errors.conflict("Prepared media is no longer published");
+  // Library objects are written once at unique entry keys. Withdrawal and
+  // source/account deletion never rewrite or delete the committed library copy.
+  // The locked send must still match this exact locator and revision.
+  await assertBlobReadable(entry.storageKey, entry.contentHash, entry.kind);
+  return { source: "library" as const, candidate, entry };
+}
+
+async function checkPreviousMediaBlob(turn: Turn, effect: ChatToolEffect, mediaAssetId: string) {
+  const snapshot = frozen(turn, turn.session, effect);
+  if (!snapshot.recentMedia?.some(item => item.mediaAssetId === mediaAssetId)) {
+    throw Errors.forbidden("The previous media is not a delivered result in this Chat context");
+  }
+  const previous = (await deliveredChatMedia(prisma, { userId: snapshot.userId, characterId: snapshot.characterId,
+    sessionId: snapshot.sessionId, before: turn.createdAt, mediaAssetId }))[0];
+  if (!previous) throw Errors.notFound("The previous media is no longer available in this Chat");
+  const locator = resolveMediaAssetBlobLocator(previous.asset);
+  if (!locator) throw Errors.notFound("The previous media has no readable immutable bytes");
+  const recordedDigest = record(previous.asset.metadata).sha256;
+  const digest = typeof recordedDigest === "string" ? recordedDigest : undefined;
+  // The final transaction rechecks this delivered owner/attempt grant and its
+  // exact locator. Large-file I/O must not hold the user or Character locks.
+  await assertBlobReadable(locator.key, digest, previous.asset.type);
+  return { source: "previous_media" as const, previous, locator, digest };
 }
 
 export function characterMediaReceipt(attachment: Pick<ChatTurnAttachment, "id" | "status" | "mediaAssetId" | "generationJobId" | "metadata">, duplicate: boolean): SendCharacterMediaResult {
@@ -181,21 +230,13 @@ export function characterMediaReceipt(attachment: Pick<ChatTurnAttachment, "id" 
     description: typeof metadata.description === "string" ? metadata.description : null };
 }
 
-async function wasLibraryMediaDelivered(tx: Prisma.TransactionClient, userId: string, entry: CharacterMediaLibraryEntry) {
-  const assets = await tx.mediaAsset.findMany({ where: { ownerId: userId, OR: [
-    { metadata: { path: ["libraryDelivery", "entryId"], equals: entry.id } },
-    { metadata: { path: ["libraryDelivery", "contentHash"], equals: entry.contentHash } },
-  ] }, select: { id: true } });
-  if (!assets.length) return false;
-  const attachments = await tx.chatTurnAttachment.findMany({ where: { mediaAssetId: { in: assets.map(asset => asset.id) },
-    status: "completed", turn: { session: { userId } } }, select: { metadata: true, turn: { select: { attempt: true } } } });
-  return attachments.some(item => attachmentAttempt(item.metadata) === item.turn.attempt);
-}
-
 async function assertBlobReadable(key: string, digest: string | undefined, kind: string) {
   if (!providers.blob.getPrivate) throw Errors.unavailable("Prepared media storage cannot verify delivery");
   const result = await providers.blob.getPrivate({ key, signal: AbortSignal.timeout(10_000),
     maxBytes: (kind === "video" ? 256 : 64) * 1024 * 1024 });
+  if (!result.ok && result.error.code !== "not_found" && result.error.code !== "too_large") {
+    throw Errors.unavailable("The media bytes could not be verified");
+  }
   if (!result.ok || result.data.body.byteLength === 0 || (digest && hash(result.data.body) !== digest)) {
     throw Errors.gone("The media bytes are no longer available or have changed");
   }

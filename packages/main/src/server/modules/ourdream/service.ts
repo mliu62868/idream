@@ -238,6 +238,7 @@ import {
   mediaFileExtension,
   mediaDerivativeKey,
   mediaGridUrl,
+  mediaLibraryPosterViewUrl,
   mediaViewUrl,
   visualProfileDTO,
   formatCount,
@@ -816,6 +817,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     }
     if (id && action === "content" && method === "GET") return contentMedia(request, id);
     if (id && action === "thumbnail" && method === "GET") return contentMedia(request, id, "thumbnail");
+    if (id && action === "poster" && method === "GET") return contentMedia(request, id, "poster");
     if (id && action === "download" && method === "GET") return downloadMedia(request, id);
     if (id && !action && method === "DELETE") return deleteMedia(request, id);
   }
@@ -4152,9 +4154,8 @@ async function downloadMedia(request: Request, id: string) {
   return ok({ url: signed.data.url });
 }
 
-// INVARIANT: the thumbnail variant passes through every access branch below and
-// only changes which object contentMediaAsset reads. A derivative shows what its
-// asset shows, so it can't have weaker checks than the original.
+// INVARIANT: derivatives pass through every access branch below. A derivative
+// shows what its asset shows, so it can't have weaker checks than the original.
 async function contentMedia(request: Request, id: string, variant: MediaContentVariant = "original") {
   const previewToken = new URL(request.url).searchParams.get("characterPreview");
   if (previewToken) {
@@ -4199,16 +4200,13 @@ async function contentMedia(request: Request, id: string, variant: MediaContentV
   return contentMediaAsset(request, await assertReadableMediaAsset(id, user.id), variant);
 }
 
-type MediaContentVariant = "original" | "thumbnail";
+type MediaContentVariant = "original" | "thumbnail" | "poster";
 
-// SPEC: an asset with no derivative answers the thumbnail route with its original,
-// so a historical row is never a broken image. Downloads never reach this branch:
-// `?download=1` and downloadMedia always read the original.
-async function derivativeMediaResponse(request: Request, key: string) {
+async function derivativeMediaResponse(request: Request, key: string, contentType = "image/webp") {
   if ((process.env.BLOB_PROVIDER ?? "mock") === "mock") {
     const body = await readFile(localBlobPath(key)).catch(() => null);
     if (!body) return null;
-    return localMediaResponse(request, { id: "", type: "image", contentType: "image/webp", storageKey: key, url: "" }, body);
+    return localMediaResponse(request, { id: "", type: "image", contentType, storageKey: key, url: "" }, body);
   }
   const signed = await providers.blob.signGetUrl({ key, expiresInSeconds: signedUrlTtlSeconds() });
   if (!signed.ok) {
@@ -4223,6 +4221,22 @@ async function contentMediaAsset(
   variant: MediaContentVariant = "original",
 ) {
   if (isUnfinishedExternalImageImport(asset.metadata)) throw Errors.notFound("Media not found");
+  if (variant === "poster") {
+    // Read the delivered asset's pinned poster, even after the library item is
+    // withdrawn. A missing poster must never return video bytes as an image.
+    const metadata = jsonRecord(asset.metadata);
+    const delivery = jsonRecord(metadata.libraryDelivery ?? null);
+    const key = delivery.posterKey;
+    if (asset.type !== "video" || metadata.source !== "character_media_library" || delivery.schemaVersion !== 1
+      || asset.thumbnailUrl !== mediaLibraryPosterViewUrl(asset) || typeof key !== "string" || !key) {
+      throw Errors.notFound("Media poster not found");
+    }
+    const response = await derivativeMediaResponse(request, key, "image/jpeg");
+    if (!response) throw Errors.notFound("Media poster not found");
+    return response;
+  }
+  // An asset without a thumbnail can still serve the original at its existing
+  // thumbnail URL. Asset download links always serve the original.
   const derivativeKey = variant === "thumbnail" && new URL(request.url).searchParams.get("download") !== "1"
     ? mediaDerivativeKey(asset)
     : null;

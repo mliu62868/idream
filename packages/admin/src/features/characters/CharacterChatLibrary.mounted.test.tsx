@@ -23,7 +23,9 @@ function entry(status: CharacterMediaLibraryEntry["status"] = "draft"): Characte
     createdAt: "2026-10-29T12:00:00.000Z", updatedAt: "2026-10-29T12:00:00.000Z" };
 }
 function library(items: CharacterMediaLibraryEntry[] = []): CharacterMediaLibraryListResponse {
-  return { items, nextCursor: null, capabilities: { describe: true, search: true }, visualIdentity: { visualProfileId: "visual-1", visualProfileVersion: 3 } };
+  const published = items.filter(item => item.status === "published").length;
+  return { items, nextCursor: null, capabilities: { describe: true, search: true }, visualIdentity: { visualProfileId: "visual-1", visualProfileVersion: 3 },
+    serving: null, coverage: { production: { published, hasEligibleMedia: published > 0 }, serving: null } };
 }
 async function waitUntil(predicate: () => boolean) {
   const deadline = Date.now() + 2_000;
@@ -62,6 +64,10 @@ describe("Character chat library", () => {
     });
   }
   async function click(text: string) { await act(async () => button(text).click()); }
+  async function choose(label: string, value: string) {
+    const select = [...container.querySelectorAll("label")].find(node => node.textContent?.startsWith(label))!.querySelector("select")!;
+    await act(async () => { select.value = value; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  }
 
   it("lets an operator correct recognized content and saves identity pins plus facts before enabling chat", async () => {
     await render();
@@ -78,7 +84,7 @@ describe("Character chat library", () => {
     expect(container.querySelector('[aria-label="Chat description editor"] [data-image-src]')?.getAttribute("data-image-src")).toBe(entry().url);
     await click("Use in chat");
     expect(operation.mock.calls.findLast(([id]) => id.startsWith("PATCH "))?.[1].body).toMatchObject({ expectedRevision: 1, status: "published" });
-    expect(container.textContent).toContain("Media is available in chat");
+    expect(container.textContent).toContain("Chat media enabled for this identity");
   });
 
   it.each(["published", "withdrawn"] as const)("keeps %s content read-only without release permission", async status => {
@@ -137,7 +143,8 @@ describe("Character chat library", () => {
     await edit(textarea("Required facts, one per line"), "blue jacket\nwindow");
     await edit(textarea("Excluded facts, one per line"), "hat");
     await click("Find matching chat media");
-    expect(operation.mock.calls.find(([id]) => id.endsWith("/search-preview"))?.[1].body).toEqual({ mediaType: "image", query: "Show me the blue jacket by the window", requiredFacts: ["blue jacket", "window"], excludedFacts: ["hat"], nudity: "unspecified" });
+    expect(operation.mock.calls.find(([id]) => id.endsWith("/search-preview"))?.[1].body).toEqual({ mediaType: "image", visualIdentity: library().visualIdentity,
+      query: "Show me the blue jacket by the window", requiredFacts: ["blue jacket", "window"], excludedFacts: ["hat"], nudity: "unspecified" });
     expect(container.textContent).toContain("0 matches in 12 ms");
   });
 
@@ -157,18 +164,23 @@ describe("Character chat library", () => {
     const posted = () => operation.mock.calls.filter(([id]) => id === "POST /api/v2/admin/characters/:id/media-library");
     const patched = () => operation.mock.calls.filter(([id]) => String(id).startsWith("PATCH "));
     const grid = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent?.includes("Wearing a blue jacket"))!;
-    const mockList = (items: CharacterMediaLibraryEntry[], visualIdentity = currentIdentity) => {
+    const live = { releaseId: "release-v1", visualIdentity: library().visualIdentity };
+    const mockList = (items: CharacterMediaLibraryEntry[], serving: CharacterMediaLibraryListResponse["serving"] = null) => {
       operation.mockImplementation(async (id, options) => {
-        if (id.startsWith("GET ")) return { ...library(items), visualIdentity };
+        if (id.startsWith("GET ")) return { ...library(items), visualIdentity: currentIdentity, serving,
+          coverage: { production: { published: 0, hasEligibleMedia: false }, serving: serving ? { published: 1, hasEligibleMedia: true } : null } };
         if (id.endsWith("/search-preview")) return { matches: [], elapsedMs: 1 };
-        return { entry: { ...v2(), ...options.body, revision: 1 }, replayed: false };
+        const target = items.find(item => item.id === options.path.entryId) ?? v2();
+        return { entry: { ...target, ...options.body, revision: target.revision + 1 }, replayed: false };
       });
     };
 
-    it("creates an entry for the current identity instead of patching the previous identity's entry", async () => {
+    it("creates for the production identity only after explicitly selecting it from the source", async () => {
       mockList([v1()]);
       await render();
-      expect(container.textContent).toContain("described for a previous visual identity");
+      expect(textarea("Visible content description").value).toBe(v1().description);
+      expect(textarea("Visible content description").disabled).toBe(true);
+      await choose("Visual identity for this media", "visual-2");
       expect(button("Save draft")).toBeDefined();
       expect(textarea("Visible content description").value).toBe("");
       await edit(textarea("Visible content description"), "A blue jacket beside a closed window");
@@ -187,22 +199,40 @@ describe("Character chat library", () => {
       expect(patched()[0][1].path.entryId).toBe("entry-v2");
     });
 
-    it("labels a previous identity's published entry as unavailable to chat and opens it for the current identity", async () => {
+    it("opens the exact historical entry read-only and can still withdraw it", async () => {
       mockList([v1()]);
       await act(async () => root.render(<CharacterChatLibrary characterId="character-1" mediaType="image" canWrite canPublish source={null} onCloseSource={() => undefined} />));
       await waitUntil(() => container.textContent?.includes("Wearing a blue jacket") === true);
       expect(grid().textContent).toContain("From a previous identity");
-      expect(grid().textContent).not.toContain("Available in chat");
       await act(async () => grid().click());
-      expect(button("Save draft")).toBeDefined();
-      expect(textarea("Visible content description").value).toBe("");
+      expect(button("Save description").disabled).toBe(true);
+      expect(textarea("Visible content description").value).toBe(v1().description);
+      await click("Withdraw from chat");
+      expect(patched()[0][1]).toMatchObject({ path: { entryId: "entry-v1" }, body: { expectedRevision: 2, status: "withdrawn" } });
+      expect(posted()).toHaveLength(0);
     });
 
-    it("still labels the current identity's published entry as available in chat", async () => {
-      mockList([{ ...v2(), description: "Wearing a blue jacket" }]);
+    it("keeps the older live identity editable and previews it separately from production", async () => {
+      mockList([v1(), v2()], live);
       await act(async () => root.render(<CharacterChatLibrary characterId="character-1" mediaType="image" canWrite canPublish source={null} onCloseSource={() => undefined} />));
       await waitUntil(() => container.textContent?.includes("Wearing a blue jacket") === true);
-      expect(grid().textContent).toContain("Available in chat");
+      expect(grid().textContent).toContain("Live Release identity (v3)");
+      expect(container.textContent).toContain("Production identity (v4)");
+      expect(container.textContent).toContain("1 published");
+      await act(async () => grid().click());
+      await edit(textarea("Visible content description"), "Reviewed live asset description");
+      await click("Save description");
+      expect(patched()[0][1]).toMatchObject({ path: { entryId: "entry-v1" }, body: { description: "Reviewed live asset description" } });
+      expect(posted()).toHaveLength(0);
+
+      const query = [...container.querySelectorAll("label")].find(node => node.textContent?.startsWith("Example chat request"))!.querySelector("input")!;
+      await edit(query, "Show me the blue jacket");
+      await click("Find matching chat media");
+      const searchRequests = () => operation.mock.calls.filter(([id]) => id.endsWith("/search-preview"));
+      expect(searchRequests()[0][1].body.visualIdentity).toEqual(live.visualIdentity);
+      await choose("Visual identity to search", "visual-2");
+      await click("Find matching chat media");
+      expect(searchRequests()[1][1].body.visualIdentity).toEqual(currentIdentity);
     });
   });
 
@@ -242,6 +272,33 @@ describe("Character chat library", () => {
       failWrites(new AdminV2RequestError(conflict, 409, "conflict", details));
       await click("Use in chat");
       expect(button("Discard edits and reload")).toBeDefined();
+    });
+
+    it.each([false, true])("reloads an unsaved draft onto the available identity after a switch with saved entry=%s", async saved => {
+      await render();
+      await waitUntil(() => !textarea("Visible content description").disabled);
+      await edit(textarea("Visible content description"), "Reviewed doorway portrait");
+      const nextIdentity = { visualProfileId: "visual-2", visualProfileVersion: 4 };
+      const nextEntry = { ...entry(), id: "entry-v2", visualProfileId: "visual-2", visualProfileVersion: 4 };
+      operation.mockImplementation(async id => {
+        if (id.startsWith("GET ")) return { ...library(saved ? [nextEntry] : []), visualIdentity: nextIdentity };
+        throw new AdminV2RequestError("The Character visual identity changed; reload before preparing chat media", 409, "conflict");
+      });
+      await click("Save draft");
+      await click("Discard edits and reload");
+      await waitUntil(() => !!container.querySelector('[aria-label="Chat description editor"]'));
+      expect(textarea("Visible content description").disabled).toBe(false);
+      expect(container.querySelector('[aria-label="Chat description editor"]')?.textContent).toContain("Production identity (v4)");
+      if (saved) expect(textarea("Visible content description").value).toBe(nextEntry.description);
+      operation.mockImplementation(async (id, options) => {
+        if (id.startsWith("GET ")) return { ...library(), visualIdentity: nextIdentity };
+        return { entry: { ...entry(), visualProfileId: "visual-2", visualProfileVersion: 4, ...options.body }, replayed: false };
+      });
+      await edit(textarea("Visible content description"), "Reviewed current identity portrait");
+      await click(saved ? "Save description" : "Save draft");
+      const write = operation.mock.calls.findLast(([id]) => id.startsWith(saved ? "PATCH " : "POST "))!;
+      if (saved) expect(write[1]).toMatchObject({ path: { entryId: nextEntry.id }, body: { expectedRevision: nextEntry.revision } });
+      else expect(write[1].body).toMatchObject({ expectedVisualProfileId: "visual-2", expectedVisualProfileVersion: 4 });
     });
 
     it("explains a source from another identity instead of asking for a permission", async () => {

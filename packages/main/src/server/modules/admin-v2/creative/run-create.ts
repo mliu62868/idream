@@ -47,6 +47,7 @@ import {
 } from "@/server/modules/admin-v2/characters/generation-route-authority";
 import { operationalMediaAssetWhere } from "@/server/modules/metric-data-scope";
 import { isDefaultProductionVideoProfile } from "@/server/modules/generation/production-video-profile";
+import { pinCharacterVideoSourceIdentity } from "@/server/modules/admin-v2/characters/video-source-identity";
 import { resolveImageRecipeNegative } from "@/server/modules/ourdream/generation-profile-selection";
 import { imageNegativePrompt } from "@/server/modules/ourdream/generation-prompt";
 import {
@@ -735,6 +736,7 @@ export async function createCreativeRun(
     }
     let verifiedBootstrapAuthority = bootstrapAuthority;
     let verifiedIdentityBootstrapAuthority = identityBootstrapAuthority;
+    let videoSource = null;
     if (body.bootstrapIdentity && body.targetId) {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`character-identity-bootstrap:${body.targetId}`}))`;
       if (bootstrapAuthority) {
@@ -862,7 +864,6 @@ export async function createCreativeRun(
           deletedAt: null,
           characterId: body.targetId,
         }),
-        select: { id: true, metadata: true },
       });
       if (
         !currentProfile ||
@@ -885,6 +886,7 @@ export async function createCreativeRun(
           },
         );
       }
+      videoSource = currentSource;
     } else if (body.targetType === "character" && body.targetId) {
       if (!visualProfile || !activeReferenceSet) {
         throw Errors.conflict("Character generation authority disappeared before the Run was committed", {
@@ -1087,6 +1089,11 @@ export async function createCreativeRun(
       referenceAssetIds,
       referenceManifest,
     });
+    const frozenVideoSource = videoSource && referenceSnapshots.find(reference =>
+      reference.role === "source_image" && reference.assetId === videoSource.id);
+    // I2V takes a single image. Keep its publication provenance separate from image-generation conditioning.
+    const videoSourceIdentity = videoSource && frozenVideoSource
+      ? await pinCharacterVideoSourceIdentity(tx, videoSource, frozenVideoSource) : null;
     const createdBatch = await tx.contentProductionBatch.create({
       data: {
         title,
@@ -1219,6 +1226,7 @@ export async function createCreativeRun(
               characterVideoRun
                 ? additionalReferenceAssets[0]?.id ?? null
                 : null,
+            ...(videoSourceIdentity ? { videoSourceIdentity } : {}),
             videoDurationSeconds:
               characterVideoRun
                 ? characterVideoProductionRecipe.durationSeconds

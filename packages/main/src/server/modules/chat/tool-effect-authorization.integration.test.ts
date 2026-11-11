@@ -15,6 +15,7 @@ import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import { reserveInitialGenerationAttempt, reserveRetryGenerationAttempt } from "@/server/modules/generation/generation-attempt-authority";
 import { createUser, createCharacter, dreamcoinBalance, purgeTestData } from "@/server/test/helpers";
 import * as generation from "../ourdream/service";
+import * as textModeration from "@/server/moderation/text-authority";
 import { applyChatToolEffect } from "./tool-effect";
 import { beginChatTurn, commitChatTerminal, createChatSession, editChatTurn, getChatSession, regenerateChatTurn } from "./turn-ledger";
 
@@ -571,6 +572,50 @@ describe("Main image action authorization", () => {
     expect(generated).toHaveBeenCalledTimes(1);
     const attachment = await prisma.chatTurnAttachment.findFirstOrThrow({ where: { turnId: snapshot.turnId } });
     expect(attachment.metadata).toMatchObject({ attempt: regenerated.attempt });
+  });
+
+  it("rejects a delayed duplicate edit after its first reply completes without buying another media action", async () => {
+    const { userId, begin, generated } = await fixture();
+    const { snapshot } = await begin("Send me a photo by the cafe window.");
+    if (!snapshot) throw new Error("Missing snapshot");
+    await complete(snapshot);
+    const content = "Send me a photo on the beach at sunset.";
+    const moderate = textModeration.moderateText;
+    let release = () => {};
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let reached = () => {};
+    const ready = new Promise<void>(resolve => { reached = resolve; });
+    vi.spyOn(textModeration, "moderateText").mockImplementationOnce(async (...args) => {
+      const result = await moderate(...args);
+      reached();
+      await held;
+      return result;
+    });
+    const delayed = Promise.allSettled([editChatTurn(userId, snapshot.userMessageId, content)]);
+    await ready;
+    let first: Awaited<ReturnType<typeof editChatTurn>>;
+    let receipt: Awaited<ReturnType<typeof applyChatToolEffect>>;
+    try {
+      first = await editChatTurn(userId, snapshot.userMessageId, content);
+      if (!first.snapshot) throw new Error("Missing edited snapshot");
+      receipt = await applyChatToolEffect(effect(first.snapshot));
+      await complete(first.snapshot);
+      await prisma.mainOutboxEvent.updateMany({ where: { aggregateId: `${userId}:${snapshot.characterId}` }, data: { status: "delivered", deliveredAt: new Date() } });
+    } finally {
+      release();
+    }
+    const [late] = await delayed;
+    if (late.status === "fulfilled" && late.value.snapshot) {
+      await applyChatToolEffect(effect(late.value.snapshot));
+    }
+    expect(generated).toHaveBeenCalledTimes(1);
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(1);
+    expect(late).toMatchObject({ status: "rejected", reason: { code: "conflict" } });
+    expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: snapshot.turnId } })).toMatchObject({ attempt: first.attempt, userContent: content });
+    const regenerated = await regenerateChatTurn(userId, snapshot.assistantMessageId);
+    expect(regenerated.snapshot.recoveredMediaAction?.attachmentId).toBe(receipt.attachmentId);
+    expect(await applyChatToolEffect(effect(regenerated.snapshot))).toMatchObject({ accepted: true, duplicate: true, attachmentId: receipt.attachmentId });
+    expect(generated).toHaveBeenCalledTimes(1);
   });
 
   it("makes a new picture when the latest request is edited into a different picture, and reuses it again on regenerate", async () => {

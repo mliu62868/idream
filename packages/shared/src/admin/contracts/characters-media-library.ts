@@ -11,6 +11,14 @@ const factSchema = z.string().trim().min(1).max(160);
 const factsSchema = z.array(factSchema).max(48);
 const descriptionSchema = z.string().trim().min(3).max(2_000);
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/);
+const visualIdentitySchema = z.object({
+  visualProfileId: adminIdSchema,
+  visualProfileVersion: z.number().int().positive(),
+}).strict();
+const coverageSchema = z.object({
+  published: z.number().int().nonnegative(),
+  hasEligibleMedia: z.boolean(),
+}).strict().nullable();
 
 export const characterMediaLibraryEntrySchema = z.object({
   id: adminIdSchema,
@@ -61,10 +69,10 @@ export const characterMediaLibraryListResponseSchema = z.object({
   items: z.array(characterMediaLibraryEntrySchema),
   nextCursor: z.string().nullable(),
   capabilities: z.object({ describe: z.boolean(), search: z.boolean() }).strict(),
-  visualIdentity: z.object({
-    visualProfileId: adminIdSchema,
-    visualProfileVersion: z.number().int().positive(),
-  }).strict().nullable(),
+  // The active production identity can advance before the public Release does.
+  visualIdentity: visualIdentitySchema.nullable(),
+  serving: z.object({ releaseId: adminIdSchema, visualIdentity: visualIdentitySchema.nullable() }).strict().nullable(),
+  coverage: z.object({ production: coverageSchema, serving: coverageSchema }).strict(),
 }).strict();
 
 const descriptorFields = {
@@ -101,6 +109,7 @@ export const characterMediaLibraryMutationResponseSchema = z.object({
 
 export const characterMediaLibraryDescribeRequestSchema = z.object({
   sourceAssetId: adminIdSchema,
+  visualIdentity: visualIdentitySchema.optional(),
 }).strict();
 
 // A model observation is a draft suggestion. Saving the operator's edited text
@@ -113,6 +122,7 @@ export const characterMediaLibraryDescribeResponseSchema = z.object({
 
 export const characterMediaLibrarySearchRequestSchema = z.object({
   mediaType: characterMediaLibraryTypeSchema,
+  visualIdentity: visualIdentitySchema.optional(),
   query: z.string().trim().min(1).max(2_000),
   requiredFacts: factsSchema.default([]),
   excludedFacts: factsSchema.default([]),
@@ -129,6 +139,7 @@ export const characterMediaLibrarySearchResponseSchema = z.object({
 }).strict();
 
 export type CharacterMediaLibraryEntry = z.infer<typeof characterMediaLibraryEntrySchema>;
+export type CharacterMediaLibraryVisualIdentity = z.infer<typeof visualIdentitySchema>;
 export type CharacterMediaLibraryQuery = z.infer<typeof characterMediaLibraryQuerySchema>;
 export type CharacterMediaLibraryListResponse = z.infer<typeof characterMediaLibraryListResponseSchema>;
 export type CharacterMediaLibraryCreateRequest = z.infer<typeof characterMediaLibraryCreateRequestSchema>;

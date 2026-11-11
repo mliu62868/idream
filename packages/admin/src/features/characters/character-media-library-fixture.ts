@@ -6,5 +6,7 @@ export function emptyCharacterMediaLibrary(): CharacterMediaLibraryListResponse 
     nextCursor: null,
     capabilities: { describe: false, search: false },
     visualIdentity: null,
+    serving: null,
+    coverage: { production: null, serving: null },
   };
 }

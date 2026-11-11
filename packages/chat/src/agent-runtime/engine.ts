@@ -236,6 +236,7 @@ function invocationFailure(input: {
 }
 
 class ToolBridge {
+  private libraryOnly = false;
   private readonly entries = new Map<string, {
     call: CompanionToolCall;
     name: CompanionToolCall["name"];
@@ -270,6 +271,15 @@ class ToolBridge {
     const key = `${call.attemptId}\0${call.callId}`;
     let entry = this.entries.get(key);
     if (!entry) {
+      if ((call.name === "generate_image_async" || call.name === "edit_last_image") && this.libraryOnly) {
+        return {
+          attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "failed",
+          error: { code: "media_library_only", message: "This reply uses prepared media only. New generation or editing requires a new user request", retryable: false },
+        };
+      }
+      // Entering stock lookup fixes this attempt's media workflow. Neither a
+      // match, a miss, nor a retry grants authority for a paid replacement.
+      if (call.name === SEARCH_CHARACTER_MEDIA_TOOL) this.libraryOnly = true;
       const startedAt = Date.now();
       entry = {
         call,
@@ -285,7 +295,7 @@ class ToolBridge {
             .update(stableJson(call.arguments))
             .digest("hex"),
         }),
-        pending: Promise.resolve(this.executeTool(call)).then((result) => {
+        pending: Promise.resolve().then(() => this.executeTool(call)).then((result) => {
           const parsed = companionToolResultSchema.parse(result);
           if (
             parsed.attemptId !== call.attemptId ||

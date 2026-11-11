@@ -7,7 +7,7 @@ import {
 
 const candidate = {
   candidateToken: "signed-candidate", kind: "video", description: "Mira walks beside the sea in a blue dress.",
-  facts: ["blue dress", "seaside"], absentFacts: ["hat"], durationSeconds: 8.5,
+  facts: ["blue dress", "seaside"], absentFacts: ["hat"], nudity: "none", durationSeconds: 8.5,
   hasAudio: false, alreadySent: false, score: 0.78,
 };
 const receipt = {
@@ -54,12 +54,17 @@ describe("Character media lookup and delivery contracts", () => {
 
   it("keeps lookup observations separate from attachment and payment receipts", () => {
     expect(searchCharacterMediaResultSchema.parse({ accepted: true, status: "matches", matches: [candidate] }).matches).toEqual([candidate]);
+    expect(searchCharacterMediaResultSchema.parse({ accepted: true, status: "matches", matches: [
+      { ...candidate, nudity: "unknown", hasAudio: null },
+    ] }).matches[0]).toMatchObject({ nudity: "unknown", hasAudio: null });
     expect(searchCharacterMediaResultSchema.parse({ accepted: true, status: "no_match", matches: [] })).not.toHaveProperty("attachmentId");
     for (const invalid of [
       { accepted: true, status: "completed", matches: [candidate] },
       { accepted: true, status: "no_match", matches: [candidate] },
       { accepted: true, status: "matches", matches: [] },
       { accepted: true, status: "matches", matches: [{ ...candidate, score: Infinity }] },
+      { accepted: true, status: "matches", matches: [{ ...candidate, nudity: "unspecified" }] },
+      { accepted: true, status: "matches", matches: [{ ...candidate, nudity: undefined }] },
       { accepted: true, status: "no_match", matches: [], attachmentId: "invented" },
     ]) expect(searchCharacterMediaResultSchema.safeParse(invalid).success).toBe(false);
     const fullFacts = Array.from({ length: 48 }, (_, index) => `${index}:${"a".repeat(156)}`);

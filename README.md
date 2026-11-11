@@ -288,14 +288,24 @@ description suggestions. A Qwen3.5 vision route must support image inputs and
 JSON-object responses with thinking disabled; see Main's environment examples.
 Re-save/publish entries after changing the embedding model or dimensions.
 
-In Admin, open a Character's image/video library and choose **Edit chat
-description**. Review the actual finished media, enter visible facts and only
+In Admin, open a Character's image/video library and choose **Set up chat
+content** on a finished asset. The chat library distinguishes the live Release
+from the current production identity. Search preview uses the live identity by
+default. Select the exact identity before preparing a new item. Review the
+actual finished media, enter visible facts and only
 verified absent facts, then save a draft or choose **Use in chat** with publication
 permission. **Recognize visible content** supplies an editable suggestion; the
 operator still confirms it. A generation prompt is not observed content, and
 unknown does not mean absent. Video samples cannot certify continuous actions,
 sound or quality. Only platform Character production or authorized operator
-imports may enter this shared library; private customer outputs are excluded.
+imports may enter this shared library. A Character video Run can establish its
+identity through the frozen source image. Choose an image with verified
+production lineage or a sealed identity anchor for the intended visual version.
+An uploaded anchor may belong to the live Release's exact sealed reference set
+while production has moved to a newer identity. Ambiguous anchors cannot grant
+chat publication authority. Reloading after an identity conflict selects the
+available identity and its existing entry, preserving saved historical entries.
+Private customer outputs remain outside the shared library.
 
 The first version scans all eligible vectors for the selected Character identity,
 combines exact vector similarity with keyword ranks, and optionally reranks the
@@ -304,6 +314,12 @@ capacity. The Agent checks each candidate against every current requirement and
 exclusion before sending; rank alone is not eligibility. Ordinary media requests
 search first. Explicit new generation/edit requests keep their original meaning;
 a video miss uses the existing quote flow, never an automatic paid generation.
+An attempt that looks up prepared media can only search and send existing
+results. A miss or a failed lookup requires a new explicit generation request
+in a later Turn before a paid image action can start.
+Main and Chat deploy from the same source revision with the
+`companion-product-22` readiness contract and strict media candidate fields.
+Admin coverage checks use bounded batches and stop at the first verified entry.
 
 Library delivery and explicit resend cost **0 Dreamcoins** and create no
 `GenerationJob`; normal chat usage remains separate. **Withdraw from chat** stops

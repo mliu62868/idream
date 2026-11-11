@@ -200,6 +200,8 @@ export const chatExecutionSnapshotSchema = z.object({
   userPersona: userChatPersonaSchema.nullable().optional(),
   contextRevision: z.number().int().nonnegative(),
   userContent: z.string(),
+  // The attempt where the user last changed the text. Regenerating the reply carries it forward.
+  userMessageRevision: z.number().int().positive().optional(),
   recoveredMediaAction: recoveredMediaActionSchema.optional(),
   // Actual delivered facts only. Generation prompts are intentions, never
   // descriptions of observed pixels. Historical snapshots omit this projection.

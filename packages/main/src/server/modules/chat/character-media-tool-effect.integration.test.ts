@@ -8,12 +8,14 @@ import { generationTerminalRecordChecksum } from "@idream/shared/contracts/durab
 import { recolorRgba } from "@idream/shared/media/image-recolor";
 import type { ChatExecutionSnapshot, ChatToolEffect } from "@idream/shared/contracts";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { GET as userContentRoute } from "@/app/user-content/[id]/[filename]/route";
 import { prisma } from "@/server/lib/db";
 import { OPERATOR_UPLOAD_AUTHORITY_SCHEMA, resolveMediaAssetBlobLocator } from "@/server/lib/media-asset-authority";
 import { providers } from "@/server/providers";
 import { dispatchPendingGenerationTerminalRecords, ingestGenerationTerminalRecord } from "@/server/ai/generation-terminal-record-ingest";
 import { drainGenerationFinalization } from "@/server/ai/generation-finalize-drain";
 import { api, createCharacter, createUser, dreamcoinBalance, expectOk, purgeTestData } from "@/server/test/helpers";
+import { lockCharacterGenerationAndMediaAssetAuthorities } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { characterVisualProfileSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
 import { characterContentHash } from "@/server/modules/admin-v2/shared/character-content-identity";
 import { createReferenceSetRevision } from "@/server/modules/ourdream/generation-reference-set";
@@ -62,6 +64,12 @@ async function fixture(kind: "image" | "video" = "image") {
   keys.push(sourceKey, libraryKey);
   await providers.blob.putPrivate({ key: sourceKey, body: bytes, contentType });
   await providers.blob.putPrivate({ key: libraryKey, body: bytes, contentType });
+  const thumbnailKey = kind === "video" ? `${id}/poster.jpg` : null;
+  const posterBytes = thumbnailKey ? await sharp({ create: { width: 8, height: 8, channels: 3, background: "#2255aa" } }).jpeg().toBuffer() : null;
+  if (thumbnailKey && posterBytes) {
+    keys.push(thumbnailKey);
+    await providers.blob.putPrivate({ key: thumbnailKey, body: posterBytes, contentType: "image/jpeg" });
+  }
   const sourceId = `${id}-source`;
   const source = await prisma.mediaAsset.create({ data: { id: sourceId, ownerId: sourceOwnerId, characterId: character.id, type: kind,
     url: `/api/media/${sourceId}/content.${kind === "image" ? "png" : "mp4"}`, storageKey: sourceKey, contentType,
@@ -86,7 +94,7 @@ async function fixture(kind: "image" | "video" = "image") {
     nudity: "none", durationSeconds: kind === "video" ? 1 : null, hasAudio: kind === "video" ? false : null };
   const entry = await prisma.characterMediaLibraryEntry.create({ data: {
     id: `${id}-entry`, characterId: character.id, sourceAssetId: source.id, visualProfileId: visual.id, visualProfileVersion: visual.version,
-    status: "published", ...descriptor, width: 8, height: 8, contentType, storageKey: libraryKey, contentHash,
+    status: "published", ...descriptor, width: 8, height: 8, contentType, storageKey: libraryKey, thumbnailKey, contentHash,
     embedding: [1, 0], embeddingModel: "fixture-embedding", embeddingDimensions: 2, embeddingHash: libraryDescriptorHash(descriptor),
     sourceSnapshot: { assetId: source.id, sourceStorageKey: sourceKey, visualProfileHash: visual.immutableHash }, createdById: id, updatedById: id,
   } });
@@ -97,7 +105,7 @@ async function fixture(kind: "image" | "video" = "image") {
     if (!result.snapshot) throw new Error("No frozen turn");
     return result.snapshot;
   };
-  return { id, character, session, visual, entry, source, sourceOwnerId, sourceKey, libraryKey, bytes, begin };
+  return { id, character, session, visual, entry, source, sourceOwnerId, sourceKey, libraryKey, bytes, posterBytes, begin };
 }
 
 async function deliveredScene(kind: "image" | "video" = "image") {
@@ -189,6 +197,9 @@ async function search(snapshot: ChatExecutionSnapshot, kind: "image" | "video" =
 }
 async function send(snapshot: ChatExecutionSnapshot, candidateToken: string) {
   return sendCharacterMediaResultSchema.parse(await applyChatToolEffect(effect(snapshot, "send_character_media", { candidateToken })));
+}
+async function resend(snapshot: ChatExecutionSnapshot, previousMediaAssetId: string) {
+  return sendCharacterMediaResultSchema.parse(await applyChatToolEffect(effect(snapshot, "send_character_media", { previousMediaAssetId })));
 }
 async function complete(snapshot: ChatExecutionSnapshot, attachmentId?: string) {
   return commitChatTerminal({ version: 1, turnId: snapshot.turnId, sessionId: snapshot.sessionId, assistantMessageId: snapshot.assistantMessageId,
@@ -344,6 +355,105 @@ describe("Main Character media delivery authority", () => {
     expect(await prisma.dreamcoinLedger.count({ where: { userId: f.id, reason: "generation_spend" } })).toBe(0);
   });
 
+  it.each(["unchanged", "deleted", "locator", "digest"] as const)("keeps resend I/O outside locks and rechecks %s media before committing", async change => {
+    const f = await deliveredScene("video");
+    const next = await f.begin("Resend that exact video.");
+    const replacementKey = `${f.id}/replacement.mp4`;
+    if (change === "locator") {
+      keys.push(replacementKey);
+      await providers.blob.putPrivate({ key: replacementKey, body: f.bytes, contentType: "video/mp4" });
+    }
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const get = providers.blob.getPrivate!.bind(providers.blob);
+    vi.spyOn(providers.blob, "getPrivate").mockImplementation(async input => {
+      if (input.key === f.asset.storageKey) {
+        entered.resolve();
+        await resume.promise;
+      }
+      return get(input);
+    });
+    const result = resend(next, f.asset.id).then(receipt => ({ receipt }), (error: unknown) => ({ error }));
+    try {
+      await Promise.race([entered.promise, result.then(() => { throw new Error("Resend settled before reading the delivered object"); })]);
+      await prisma.$transaction(async tx => {
+        await tx.$executeRaw`SET LOCAL lock_timeout = '1000ms'`;
+        await lockChatScope(tx, { userId: f.id, at: { turn: next.turnId }, expect: { attempt: next.attempt } });
+        await lockCharacterGenerationAndMediaAssetAuthorities(tx, f.character.id, [f.asset.id]);
+        if (change === "deleted") await tx.mediaAsset.update({ where: { id: f.asset.id }, data: { deletedAt: new Date() } });
+        if (change === "locator") await tx.mediaAsset.update({ where: { id: f.asset.id }, data: { storageKey: replacementKey } });
+        if (change === "digest") await tx.mediaAsset.update({ where: { id: f.asset.id }, data: { metadata: { synthetic: false, sha256: "f".repeat(64) } } });
+      });
+    } finally {
+      resume.resolve();
+    }
+    const outcome = await result;
+    if (change === "unchanged") {
+      expect(outcome).toMatchObject({ receipt: { accepted: true, source: "previous_media", mediaAssetId: f.asset.id, costDreamcoins: 0 } });
+    } else {
+      expect(outcome).toMatchObject({ error: { code: change === "deleted" ? "not_found" : "conflict" } });
+    }
+    expect(await prisma.chatTurnAttachment.count({ where: { turnId: next.turnId } })).toBe(change === "unchanged" ? 1 : 0);
+    expect(await prisma.generationJob.count({ where: { userId: f.id } })).toBe(0);
+  });
+
+  it("rejects a resend whose destination attempt changed while the bytes were read", async () => {
+    const f = await deliveredScene();
+    const next = await f.begin("Resend that exact scene.");
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const get = providers.blob.getPrivate!.bind(providers.blob);
+    vi.spyOn(providers.blob, "getPrivate").mockImplementation(async input => {
+      if (input.key === f.asset.storageKey) {
+        entered.resolve();
+        await resume.promise;
+      }
+      return get(input);
+    });
+    const delayed = resend(next, f.asset.id).then(receipt => ({ receipt }), (error: unknown) => ({ error }));
+    let regenerated: ChatExecutionSnapshot;
+    try {
+      await Promise.race([entered.promise, delayed.then(() => { throw new Error("Resend settled before reading the delivered object"); })]);
+      await complete(next);
+      regenerated = (await regenerateChatTurn(f.id, next.assistantMessageId)).snapshot;
+    } finally {
+      resume.resolve();
+    }
+    expect(await delayed).toMatchObject({ error: { code: "conflict" } });
+    expect(await prisma.chatTurnAttachment.count({ where: { turnId: next.turnId } })).toBe(0);
+    expect(await resend(regenerated, f.asset.id)).toMatchObject({ accepted: true, mediaAssetId: f.asset.id, source: "previous_media" });
+  });
+
+  it("replays the completed resend winner after a competing byte check fails", async () => {
+    const f = await deliveredScene("video");
+    const next = await f.begin("Resend that exact video.");
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const get = providers.blob.getPrivate!.bind(providers.blob);
+    let first = true;
+    vi.spyOn(providers.blob, "getPrivate").mockImplementation(async input => {
+      if (input.key === f.asset.storageKey && first) {
+        first = false;
+        entered.resolve();
+        await resume.promise;
+        return { ok: false, error: { code: "get_failed", message: "Fixture storage read failed", retryable: true } };
+      }
+      return get(input);
+    });
+    const delayed = resend(next, f.asset.id).then(receipt => ({ receipt }), (error: unknown) => ({ error }));
+    let winner: Awaited<ReturnType<typeof resend>>;
+    try {
+      await Promise.race([entered.promise, delayed.then(() => { throw new Error("Resend settled before reading the delivered object"); })]);
+      winner = await resend(next, f.asset.id);
+      await complete(next, winner.attachmentId);
+    } finally {
+      resume.resolve();
+    }
+    expect(await delayed).toEqual({ receipt: { ...winner, duplicate: true } });
+    expect(winner).toMatchObject({ source: "previous_media", mediaAssetId: f.asset.id, costDreamcoins: 0 });
+    expect(await prisma.chatTurnAttachment.count({ where: { turnId: next.turnId } })).toBe(1);
+  });
+
   it("keeps completed edit provenance through later resends without calling the delivery request an observed description", async () => {
     const f = await deliveredEdit();
     // Mutable Job controls and asset quality are not execution authority.
@@ -424,15 +534,15 @@ describe("Main Character media delivery authority", () => {
     await expect(applyChatToolEffect(effect(next, "send_character_media", { previousMediaAssetId: f.asset.id }))).rejects.toMatchObject({ code: "not_found" });
   });
 
-  it("preserves owned history and explicit resend after withdrawal and original source deletion", async () => {
-    const f = await fixture();
+  it.each(["image", "video"] as const)("preserves owned %s history and explicit resend after withdrawal and original source deletion", async kind => {
+    const f = await fixture(kind);
     const snapshot = await f.begin();
-    const original = await send(snapshot, (await search(snapshot)).matches[0]!.candidateToken);
+    const original = await send(snapshot, (await search(snapshot, kind)).matches[0]!.candidateToken);
     await complete(snapshot);
     await prisma.characterMediaLibraryEntry.update({ where: { id: f.entry.id }, data: { status: "withdrawn", revision: { increment: 1 } } });
     await prisma.user.delete({ where: { id: f.sourceOwnerId } });
     await providers.blob.delete({ key: f.sourceKey });
-    const next = await f.begin("Send the previous picture again.");
+    const next = await f.begin(`Send the previous ${kind} again.`);
     const repeated = sendCharacterMediaResultSchema.parse(await applyChatToolEffect(effect(next, "send_character_media", { previousMediaAssetId: original.mediaAssetId })));
     expect(repeated).toMatchObject({ source: "previous_media", mediaAssetId: original.mediaAssetId, costDreamcoins: 0 });
     const bytes = await api("GET", `media/${original.mediaAssetId}/content`, { userId: f.id, ageGate: true });
@@ -442,6 +552,26 @@ describe("Main Character media delivery authority", () => {
     await createUser({ id: outsider });
     const denied = await api("GET", `media/${original.mediaAssetId}/content`, { userId: outsider, ageGate: true });
     expect(denied.status).toBe(404);
+    if (kind === "video") {
+      const token = Buffer.from(original.mediaAssetId, "utf8").toString("base64url");
+      const filename = "poster.jpg";
+      const path = `/user-content/${token}/${filename}`;
+      const view = await getChatSession(f.id, f.session.id);
+      expect(view.messages.find(message => message.id === snapshot.assistantMessageId)?.attachments).toEqual([
+        expect.objectContaining({ mediaAssetId: original.mediaAssetId, thumbnailUrl: path }),
+      ]);
+      const readPoster = (userId: string) => userContentRoute(new Request(`http://localhost${path}`, {
+        headers: { "x-idream-user-id": userId, cookie: "idream_age_gate=accepted" },
+      }), { params: Promise.resolve({ id: token, filename }) });
+      const poster = await readPoster(f.id);
+      expect(poster.status).toBe(200);
+      expect(poster.headers.get("content-type")).toBe("image/jpeg");
+      expect(Buffer.from(await poster.arrayBuffer())).toEqual(f.posterBytes);
+      expect((await readPoster(outsider)).status).toBe(404);
+      await providers.blob.delete({ key: f.entry.thumbnailKey! });
+      expect((await readPoster(f.id)).status).toBe(404);
+      expectOk(await api("GET", `media/${original.mediaAssetId}/content`, { userId: f.id, ageGate: true }));
+    }
   });
 
   it.each(["none", "full"] as const)("keeps signed %s search intent when the send tool has its default intent", async requestedNudity => {
@@ -494,7 +624,7 @@ describe("Main Character media delivery authority", () => {
     expect(await prisma.chatTurnAttachment.count({ where: { turnId: second.turnId } })).toBe(0);
   });
 
-  it.each(["withdrawn", "revision", "bytes", "account", "signature"])("rejects a candidate after %s changed without creating delivery", async change => {
+  it.each(["withdrawn", "revision", "missing bytes", "changed bytes", "account", "signature"])("rejects a candidate after %s changed without creating delivery", async change => {
     const f = await fixture();
     const snapshot = await f.begin();
     const signed = (await search(snapshot)).matches[0]!.candidateToken;
@@ -503,11 +633,73 @@ describe("Main Character media delivery authority", () => {
     const token = parts.join(".");
     if (change === "withdrawn") await prisma.characterMediaLibraryEntry.update({ where: { id: f.entry.id }, data: { status: "withdrawn" } });
     if (change === "revision") await prisma.characterMediaLibraryEntry.update({ where: { id: f.entry.id }, data: { revision: { increment: 1 } } });
-    if (change === "bytes") await providers.blob.delete({ key: f.libraryKey });
+    if (change === "missing bytes") await providers.blob.delete({ key: f.libraryKey });
+    if (change === "changed bytes") {
+      await providers.blob.putPrivate({ key: f.libraryKey, body: Buffer.alloc(f.bytes.byteLength), contentType: "image/png" });
+    }
     const target = change === "account" ? await (await fixture()).begin() : snapshot;
     await expect(send(target, token)).rejects.toMatchObject({ code: expect.stringMatching(/conflict|gone|forbidden|bad_request/) });
     expect(await prisma.chatTurnAttachment.count({ where: { turnId: target.turnId } })).toBe(0);
     expect(await prisma.generationJob.count({ where: { userId: f.id } })).toBe(0);
+  });
+
+  it("does not hold Character authority during the library read, then rejects a concurrent withdrawal", async () => {
+    const f = await fixture("video");
+    const snapshot = await f.begin();
+    const token = (await search(snapshot, "video")).matches[0]!.candidateToken;
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const get = providers.blob.getPrivate!.bind(providers.blob);
+    vi.spyOn(providers.blob, "getPrivate").mockImplementation(async input => {
+      if (input.key === f.libraryKey) {
+        entered.resolve();
+        await resume.promise;
+      }
+      return get(input);
+    });
+    const result = send(snapshot, token).then(receipt => ({ receipt }), (error: unknown) => ({ error }));
+    try {
+      await Promise.race([entered.promise, result.then(() => { throw new Error("Delivery settled before reading the library object"); })]);
+      await prisma.$transaction(async tx => {
+        await tx.$executeRaw`SET LOCAL lock_timeout = '1000ms'`;
+        await lockCharacterGenerationAndMediaAssetAuthorities(tx, f.character.id, [f.source.id]);
+        await tx.characterMediaLibraryEntry.update({ where: { id: f.entry.id }, data: { status: "withdrawn", revision: { increment: 1 } } });
+      });
+    } finally {
+      resume.resolve();
+    }
+    expect(await result).toMatchObject({ error: { code: "conflict" } });
+    expect(await prisma.chatTurnAttachment.count({ where: { turnId: snapshot.turnId } })).toBe(0);
+  });
+
+  it("returns the winning receipt after a concurrent send commits and finishes during a failed library read", async () => {
+    const f = await fixture();
+    const snapshot = await f.begin();
+    const token = (await search(snapshot)).matches[0]!.candidateToken;
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const get = providers.blob.getPrivate!.bind(providers.blob);
+    let first = true;
+    vi.spyOn(providers.blob, "getPrivate").mockImplementation(async input => {
+      if (input.key === f.libraryKey && first) {
+        first = false;
+        entered.resolve();
+        await resume.promise;
+        return { ok: false, error: { code: "get_failed", message: "Fixture storage read failed", retryable: true } };
+      }
+      return get(input);
+    });
+    const delayed = send(snapshot, token).then(receipt => ({ receipt }), (error: unknown) => ({ error }));
+    let winner: Awaited<ReturnType<typeof send>>;
+    try {
+      await Promise.race([entered.promise, delayed.then(() => { throw new Error("Delivery settled before reading the library object"); })]);
+      winner = await send(snapshot, token);
+      await complete(snapshot, winner.attachmentId);
+    } finally {
+      resume.resolve();
+    }
+    expect(await delayed).toEqual({ receipt: { ...winner, duplicate: true } });
+    expect(await prisma.chatTurnAttachment.count({ where: { turnId: snapshot.turnId } })).toBe(1);
   });
 
   it("rejects stale attempts and guessed previous IDs, while a user edit creates a separate action", async () => {
@@ -529,6 +721,31 @@ describe("Main Character media delivery authority", () => {
     const replacement = await send(edited, newToken);
     expect(replacement.attachmentId).not.toBe(delivered.attachmentId);
     expect(replacement.mediaAssetId).not.toBe(delivered.mediaAssetId);
+    expect(await prisma.generationJob.count({ where: { userId: f.id } })).toBe(0);
+  });
+
+  it("never rebinds an invalidated delivery after the user edits back to the original words", async () => {
+    const f = await fixture();
+    const original = await f.begin();
+    const delivery = await send(original, (await search(original)).matches[0]!.candidateToken);
+    await complete(original, delivery.attachmentId);
+    const changed = (await editChatTurn(f.id, original.userMessageId, "Actually just say hello.")).snapshot!;
+    await complete(changed);
+    const acknowledgeMemoryRebuild = () => prisma.mainOutboxEvent.updateMany({
+      where: { aggregateId: `${f.id}:${f.character.id}` }, data: { status: "delivered", deliveredAt: new Date() },
+    });
+    await acknowledgeMemoryRebuild();
+    const restored = (await editChatTurn(f.id, original.userMessageId, original.userContent)).snapshot!;
+    const token = (await search(restored)).matches[0]!.candidateToken;
+    const newDelivery = await send(restored, token);
+    expect(newDelivery.attachmentId).not.toBe(delivery.attachmentId);
+    expect(newDelivery.mediaAssetId).not.toBe(delivery.mediaAssetId);
+    await complete(restored, newDelivery.attachmentId);
+
+    await acknowledgeMemoryRebuild();
+    const regenerated = (await regenerateChatTurn(f.id, original.assistantMessageId)).snapshot;
+    expect(regenerated.recoveredMediaAction?.attachmentId).toBe(newDelivery.attachmentId);
+    expect(await send(regenerated, token)).toMatchObject({ duplicate: true, attachmentId: newDelivery.attachmentId });
     expect(await prisma.generationJob.count({ where: { userId: f.id } })).toBe(0);
   });
 

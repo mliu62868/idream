@@ -9,6 +9,7 @@ import { fitCompanionMessages, messageText, projectPiMessage, toPiMessage } from
 import { ProviderError, type OpenAiCompatibleAdapter } from "./openai-adapter";
 import { projectRecall } from "./session-recall";
 import { estimateModelRequestInputTokens } from "./model-request-format";
+import { SEARCH_CHARACTER_MEDIA_TOOL, searchCharacterMediaArgsSchema } from "@idream/shared/chat/media-library";
 
 export interface PiExecutionOptions {
   invocation: CompanionInvocation;
@@ -103,6 +104,14 @@ export async function executePiConversation(options: PiExecutionOptions): Promis
   const registry = createRegistry();
   registry.install(defineExtension({ name: "idream.companion", tools: options.tools(() => conversation), hooks: [
     hook(GenerationTask, {
+      afterResponse(message) {
+        // Pi rejects invalid tool arguments before the host tool executes. A
+        // malformed lookup must therefore fail here, before a paid fallback.
+        if (message.content.some(part => part.type === "toolCall" && part.name === SEARCH_CHARACTER_MEDIA_TOOL
+          && !searchCharacterMediaArgsSchema.safeParse(part.arguments).success)) {
+          fail(new Error("prepared-media lookup arguments are invalid"));
+        }
+      },
       async beforeRequest(request, api) {
         try {
           if (streamed) { streamed = false; options.reset(); }

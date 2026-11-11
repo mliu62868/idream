@@ -18,7 +18,8 @@ vi.mock("./CharacterVideoStudio", () => ({ CharacterVideoStudio: () => <span /> 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const source = { id: "chat-setup-source", url: "/user-content/chat-setup-source/content.png", thumbnailUrl: null, filename: "source.png", contentType: "image/png", sizeBytes: 2048, width: 32, height: 48, createdAt: "2026-10-29T12:00:00.000Z", qualification: null };
-const result = { items: [], nextCursor: null, capabilities: { describe: true, search: true }, visualIdentity: { visualProfileId: "visual-fixture", visualProfileVersion: 1 } };
+const result = { items: [], nextCursor: null, capabilities: { describe: true, search: true }, visualIdentity: { visualProfileId: "visual-fixture", visualProfileVersion: 1 },
+  serving: null, coverage: { production: { published: 0, hasEligibleMedia: false }, serving: null } };
 async function waitUntil(predicate: () => boolean) {
   const deadline = Date.now() + 2_000;
   while (!predicate()) { if (Date.now() >= deadline) throw new Error("Chat source click did not open its editor"); await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); }); }

@@ -104,7 +104,7 @@ describe("shared companion authority contracts", () => {
     expect(projectCompanionProbeRuntimeEvidence(evidence, "normal")).toMatchObject({ ok: false, error: expect.stringContaining("execution.tools") });
   });
 
-  it.each(["companion-product-1", "companion-product-6"])("does not relabel prior-contract terminal evidence as current probe qualification (%s)", (version) => {
+  it.each(["companion-product-1", "companion-product-6", "companion-product-20", "companion-product-21"])("does not relabel prior-contract terminal evidence as current probe qualification (%s)", (version) => {
     const evidence = imageToolEvidence(imageReservation);
     const historical = { ...evidence, prompt: { ...evidence.prompt, productPromptVersion: version } };
     expect(projectCompanionProbeRuntimeEvidence(historical, "normal"))

@@ -5,6 +5,7 @@ import type {
   CharacterMediaLibraryEntry,
   CharacterMediaLibraryListResponse,
   CharacterMediaLibrarySearchResponse,
+  CharacterMediaLibraryVisualIdentity,
 } from "@idream/shared/admin";
 import { Loader2, MessageCircle, Search, WandSparkles, X } from "lucide-react";
 import { useAdminI18n } from "@/components/admin/i18n";
@@ -26,10 +27,11 @@ export type CharacterChatLibrarySource = {
 type Selection = {
   source: CharacterChatLibrarySource;
   entry: CharacterMediaLibraryEntry | null;
-  /** The source was described for an earlier identity, whose entry chat no longer uses. */
-  supersededIdentity?: boolean;
+  visualIdentity: VisualIdentity;
+  sourceEntries?: CharacterMediaLibraryEntry[];
 };
-type VisualIdentity = CharacterMediaLibraryListResponse["visualIdentity"];
+type VisualIdentity = CharacterMediaLibraryVisualIdentity | null;
+type VisualIdentityChoice = { pin: CharacterMediaLibraryVisualIdentity; label: string };
 type EditorFailure = { action: string; copy: OperatorErrorCopy; versionConflict: boolean };
 type Props = {
   characterId: string;
@@ -83,7 +85,7 @@ export function CharacterChatLibrary({ characterId, mediaType, canWrite, canPubl
     };
   }, [load]);
 
-  const loadSource = useCallback(async (selectedSource: CharacterChatLibrarySource) => {
+  const loadSource = useCallback(async (selectedSource: CharacterChatLibrarySource, preferredIdentity?: VisualIdentity) => {
     const gate = selectionGate.current;
     const request = gate.begin();
     setLoadingSource(true);
@@ -96,10 +98,14 @@ export function CharacterChatLibrary({ characterId, mediaType, canWrite, canPubl
         path: { id: characterId }, query: new URLSearchParams({ mediaType, sourceAssetId: selectedSource.id, limit: "100" }),
       });
       if (request.isCurrent()) {
-        const current = result.items.find(item => entryBelongsToIdentity(item, result.visualIdentity));
-        setSelection(current || !result.visualIdentity
-          ? { source: selectedSource, entry: current ?? result.items[0] ?? null }
-          : { source: selectedSource, entry: null, supersededIdentity: result.items.length > 0 });
+        const live = result.serving?.visualIdentity ?? null;
+        const preferred = preferredIdentity ?? null;
+        const preferredIsCurrent = sameVisualIdentity(preferred, result.visualIdentity) || sameVisualIdentity(preferred, live);
+        const entry = result.items.find(item => sameVisualIdentity(item, preferred))
+          ?? (preferredIsCurrent ? undefined : result.items.find(item => sameVisualIdentity(item, result.visualIdentity))
+            ?? result.items.find(item => sameVisualIdentity(item, live)) ?? result.items[0]);
+        setSelection({ source: selectedSource, entry: entry ?? null, sourceEntries: result.items,
+          visualIdentity: entry ? entryVisualIdentity(entry) : preferredIsCurrent ? preferred : result.visualIdentity ?? live });
       }
     } catch (cause) {
       if (request.isCurrent()) setError({ cause, message: t("Chat media could not be loaded") });
@@ -118,11 +124,21 @@ export function CharacterChatLibrary({ characterId, mediaType, canWrite, canPubl
     setLoadingSource(false);
     onCloseSource();
     const source = { id: entry.sourceAssetId, url: entry.url, thumbnailUrl: entry.thumbnailUrl };
-    const visualIdentity = library?.visualIdentity ?? null;
-    setSelection(!visualIdentity || entryBelongsToIdentity(entry, visualIdentity)
-      ? { entry, source }
-      : { entry: null, source, supersededIdentity: true });
+    setSelection({ entry, source, visualIdentity: entryVisualIdentity(entry) });
   }
+
+  const liveIdentity = library?.serving?.visualIdentity ?? null;
+  const productionIdentity = library?.visualIdentity ?? null;
+  const choices = distinctVisualIdentities([liveIdentity, productionIdentity]);
+  const describeIdentity = (pin: CharacterMediaLibraryVisualIdentity) => t(
+    sameVisualIdentity(pin, liveIdentity) ? "Live Release identity (v{version})"
+      : sameVisualIdentity(pin, productionIdentity) ? "Production identity (v{version})" : "From a previous identity (v{version})",
+    { version: pin.visualProfileVersion },
+  );
+  const previewChoices = choices.map(pin => ({ pin, label: describeIdentity(pin) }));
+  const editorChoices = selection?.sourceEntries
+    ? distinctVisualIdentities([...choices, ...selection.sourceEntries.map(entryVisualIdentity)]).map(pin => ({ pin, label: describeIdentity(pin) })) : [];
+  const previewIdentity = library?.serving ? liveIdentity : productionIdentity;
 
   return (
     <section ref={sectionRef} aria-label={t("Chat media library")} className="space-y-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:p-5">
@@ -134,24 +150,37 @@ export function CharacterChatLibrary({ characterId, mediaType, canWrite, canPubl
         <label className="text-xs">{t("Chat availability")}
           <select aria-label={t("Chat availability")} className={`${fieldClass} mt-1`} value={status} onChange={event => setStatus(event.target.value)}>
             <option value="all">{t("All")}</option><option value="draft">{t("Draft")}</option>
-            <option value="published">{t("Available in chat")}</option><option value="withdrawn">{t("Withdrawn from chat")}</option>
+            <option value="published">{t("Published")}</option><option value="withdrawn">{t("Withdrawn from chat")}</option>
           </select>
         </label>
       </div>
       {error ? <AuthorityRequestError cause={error.cause} message={error.message} requestKind="read" onRetry={() => { void load(); if (source) void loadSource(source); }} /> : null}
       {message ? <p role="status" className="text-sm text-[var(--ad-green-text)]">{message}</p> : null}
+      {library ? <div className="space-y-1 text-sm text-[var(--ad-text-muted)]">
+        {previewChoices.map(({ pin, label }) => {
+          const coverage = sameVisualIdentity(pin, liveIdentity) ? library.coverage.serving : library.coverage.production;
+          return coverage ? <p key={pin.visualProfileId}><strong>{label}</strong> · {t("{count} published", { count: coverage.published })}
+            {!coverage.hasEligibleMedia ? ` · ${t("No eligible indexed media")}` : null}</p> : null;
+        })}
+        {library.serving && !liveIdentity ? <p>{t("The live Release has no verified visual identity.")}</p> : null}
+      </div> : null}
       {loadingSource ? <p role="status" className="flex items-center gap-2 text-sm"><Loader2 className="h-4 w-4 animate-spin" />{t("Loading chat description")}</p> : null}
       {selection && !loadingSource ? (
         <ChatMediaEditor
-          key={`${selection.source.id}:${selection.entry?.revision ?? "new"}:${canWrite}:${canPublish}`}
+          key={`${characterId}:${selection.source.id}:${selection.visualIdentity?.visualProfileId}:${selection.entry?.revision ?? "new"}:${canWrite}:${canPublish}`}
           characterId={characterId} mediaType={mediaType} selection={selection}
           canWrite={canWrite} canPublish={canPublish} canDescribe={library?.capabilities.describe ?? false}
-          visualIdentity={library?.visualIdentity ?? null}
+          canEditIdentity={choices.some(pin => sameVisualIdentity(pin, selection.visualIdentity))}
+          identityLabel={selection.visualIdentity ? describeIdentity(selection.visualIdentity) : null}
+          identityChoices={editorChoices}
+          onIdentityChange={pin => setSelection({ ...selection, visualIdentity: pin,
+            entry: selection.sourceEntries?.find(item => sameVisualIdentity(item, pin)) ?? null })}
           onClose={() => { selectionGate.current.invalidate(); setSelection(null); onCloseSource(); }}
-          onReload={() => { void load(); void loadSource(selection.source); }}
+          onReload={() => { void load(); void loadSource(selection.source, selection.visualIdentity); }}
           onSaved={entry => {
-            setSelection({ entry, source: { id: entry.sourceAssetId, url: entry.url, thumbnailUrl: entry.thumbnailUrl } });
-            setMessage(t(entry.status === "published" ? "Media is available in chat" : entry.status === "withdrawn" ? "Media withdrawn from chat" : "Chat description saved"));
+            setSelection({ ...selection, entry, visualIdentity: entryVisualIdentity(entry),
+              ...(selection.sourceEntries ? { sourceEntries: [entry, ...selection.sourceEntries.filter(item => item.id !== entry.id)] } : {}) });
+            setMessage(t(entry.status === "published" ? "Chat media enabled for this identity" : entry.status === "withdrawn" ? "Media withdrawn from chat" : "Chat description saved"));
             void load();
           }}
         />
@@ -162,26 +191,28 @@ export function CharacterChatLibrary({ characterId, mediaType, canWrite, canPubl
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
           {library.items.map(entry => <button key={entry.id} type="button" className="overflow-hidden rounded-lg border border-[var(--ad-border)] text-left hover:border-[var(--ad-text-muted)]" onClick={() => openEntry(entry)}>
             {mediaType === "image" ? <AssetImage asset={{ url: entry.url, thumbnailUrl: entry.thumbnailUrl ?? entry.url }} /> : <video className="aspect-video w-full bg-black object-contain" src={entry.url} poster={entry.thumbnailUrl ?? undefined} preload="metadata" muted />}
-            {/* INVARIANT: chat only searches the current identity, so an older entry is never "available". */}
-            <span className="block p-3"><span className="block text-xs font-semibold">{t(!entryBelongsToIdentity(entry, library.visualIdentity) ? "From a previous identity" : entry.status === "published" ? "Available in chat" : entry.status === "withdrawn" ? "Withdrawn from chat" : "Draft")}</span>
+            <span className="block p-3"><span className="block text-xs font-semibold">{describeIdentity(entry)}</span>
               <span className="mt-1 block line-clamp-3 text-sm">{entry.description}</span>
-              <span className="mt-2 block text-xs text-[var(--ad-text-muted)]">{t(library.visualIdentity && !entryBelongsToIdentity(entry, library.visualIdentity) ? "Describe for the current identity" : "Edit chat description")}</span></span>
+              <span className="mt-2 block text-xs text-[var(--ad-text-muted)]">{t(entry.status === "published" ? "Published" : entry.status === "withdrawn" ? "Withdrawn from chat" : "Draft")}</span></span>
           </button>)}
         </div>
       ) : null}
       {library?.nextCursor ? <WorkspaceButton disabled={loading} onClick={() => void load(library.nextCursor ?? undefined)}>{t("Load more chat media")}</WorkspaceButton> : null}
-      <ChatLibrarySearch key={`${characterId}:${mediaType}:${library?.capabilities.search ?? false}`} characterId={characterId} mediaType={mediaType} enabled={library?.capabilities.search ?? false} onSelect={openEntry} />
+      <ChatLibrarySearch key={`${characterId}:${mediaType}:${library?.serving?.releaseId}:${productionIdentity?.visualProfileId}:${previewIdentity?.visualProfileId}:${library?.capabilities.search ?? false}`}
+        characterId={characterId} mediaType={mediaType} enabled={library?.capabilities.search ?? false}
+        defaultIdentity={previewIdentity} identityChoices={previewChoices} onSelect={openEntry} />
     </section>
   );
 }
 
-function ChatMediaEditor({ characterId, mediaType, selection, canWrite, canPublish, canDescribe, visualIdentity, onSaved, onClose, onReload }: {
+function ChatMediaEditor({ characterId, mediaType, selection, canWrite, canPublish, canDescribe, canEditIdentity, identityLabel, identityChoices, onIdentityChange, onSaved, onClose, onReload }: {
   characterId: string; mediaType: "image" | "video"; selection: Selection; canWrite: boolean; canPublish: boolean;
-  canDescribe: boolean; visualIdentity: CharacterMediaLibraryListResponse["visualIdentity"];
+  canDescribe: boolean; canEditIdentity: boolean; identityLabel: string | null; identityChoices: VisualIdentityChoice[];
+  onIdentityChange: (pin: CharacterMediaLibraryVisualIdentity) => void;
   onSaved: (entry: CharacterMediaLibraryEntry) => void; onClose: () => void; onReload: () => void;
 }) {
   const { t } = useAdminI18n();
-  const { source, entry, supersededIdentity } = selection;
+  const { source, entry, visualIdentity } = selection;
   const [description, setDescription] = useState(entry?.description ?? "");
   const [facts, setFacts] = useState(entry?.facts.join("\n") ?? "");
   const [absentFacts, setAbsentFacts] = useState(entry?.absentFacts.join("\n") ?? "");
@@ -191,16 +222,19 @@ function ChatMediaEditor({ characterId, mediaType, selection, canWrite, canPubli
   const [suggestion, setSuggestion] = useState<string | null>(null);
   const gate = useRef(createLatestRequestGate());
   useEffect(() => { const current = gate.current; return () => current.invalidate(); }, [canWrite, canPublish]);
-  const editable = canWrite && (!entry || entry.status === "draft" || canPublish);
+  const editable = canWrite && canEditIdentity && (!entry || entry.status === "draft" || canPublish);
+  const canWithdraw = canWrite && canPublish && entry?.status === "published";
   const locked = !editable || busy;
   const valid = description.trim().length >= 3 && description.trim().length <= 2_000 && factsValid(facts) && factsValid(absentFacts);
 
   async function describe() {
-    if (locked || !canDescribe) return;
+    if (locked || !canDescribe || !visualIdentity) return;
     const request = gate.current.begin();
     setBusy(true); setError(null);
     try {
-      const result = await adminV2Operation("POST /api/v2/admin/characters/:id/media-library/describe", { path: { id: characterId }, body: { sourceAssetId: source.id } });
+      const result = await adminV2Operation("POST /api/v2/admin/characters/:id/media-library/describe", {
+        path: { id: characterId }, body: { sourceAssetId: source.id, visualIdentity },
+      });
       if (!request.isCurrent()) return;
       setDescription(result.description); setFacts(result.facts.join("\n")); setAbsentFacts(result.absentFacts.join("\n")); setNudity(result.nudity);
       setSuggestion(t("Content recognition is a draft. Review the preview and correct it before saving."));
@@ -209,7 +243,7 @@ function ChatMediaEditor({ characterId, mediaType, selection, canWrite, canPubli
   }
 
   async function save(status?: CharacterMediaLibraryEntry["status"]) {
-    if (locked || (status !== "withdrawn" && !valid) || (!entry && !visualIdentity) || (status && status !== "draft" && !canPublish)) return;
+    if (!visualIdentity || busy || (status === "withdrawn" ? !canWithdraw : !editable || !valid || (status === "published" && !canPublish))) return;
     const request = gate.current.begin();
     setBusy(true); setError(null);
     const descriptor = { description: description.trim(), facts: splitFacts(facts), absentFacts: splitFacts(absentFacts), nudity };
@@ -219,8 +253,8 @@ function ChatMediaEditor({ characterId, mediaType, selection, canWrite, canPubli
           path: { id: characterId, entryId: entry.id }, body: { expectedRevision: entry.revision, ...(status === "withdrawn" ? { status } : { ...descriptor, ...(status ? { status } : {}) }) },
         })
         : await adminV2Operation("POST /api/v2/admin/characters/:id/media-library", {
-          path: { id: characterId }, body: { sourceAssetId: source.id, expectedVisualProfileId: visualIdentity!.visualProfileId,
-            expectedVisualProfileVersion: visualIdentity!.visualProfileVersion, ...descriptor, status: status === "published" ? "published" : "draft" },
+          path: { id: characterId }, body: { sourceAssetId: source.id, expectedVisualProfileId: visualIdentity.visualProfileId,
+            expectedVisualProfileVersion: visualIdentity.visualProfileVersion, ...descriptor, status: status === "published" ? "published" : "draft" },
         });
       if (request.isCurrent()) onSaved(result.entry);
     } catch (cause) { if (request.isCurrent()) setError(editorFailure(cause, t("Chat description could not be saved"))); }
@@ -234,6 +268,14 @@ function ChatMediaEditor({ characterId, mediaType, selection, canWrite, canPubli
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)]">
         <div>{mediaType === "image" ? <AssetImage preview asset={{ url: previewUrl, thumbnailUrl: entry?.thumbnailUrl ?? source.thumbnailUrl ?? previewUrl }} /> : <video controls className="max-h-[28rem] w-full bg-black object-contain" src={previewUrl} poster={entry?.thumbnailUrl ?? source.thumbnailUrl ?? undefined} preload="metadata" />}</div>
         <div className="space-y-3">
+          {identityChoices.length > 1 ? <label className="block text-sm">{t("Visual identity for this media")}
+            <select className={`${fieldClass} mt-1`} value={visualIdentity?.visualProfileId ?? ""} disabled={busy} onChange={event => {
+              const selected = identityChoices.find(choice => choice.pin.visualProfileId === event.target.value);
+              if (selected) onIdentityChange(selected.pin);
+            }}>
+              {identityChoices.map(({ pin, label }) => <option key={pin.visualProfileId} value={pin.visualProfileId}>{label}</option>)}
+            </select>
+          </label> : identityLabel ? <p className="text-sm font-semibold">{identityLabel}</p> : null}
           <label className="block text-sm">{t("Visible content description")}<textarea className={`${fieldClass} mt-1 min-h-28`} disabled={locked} maxLength={2000} value={description} onChange={event => setDescription(event.target.value)} /></label>
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="block text-sm">{t("Visible facts, one per line")}<textarea className={`${fieldClass} mt-1 min-h-24`} disabled={locked} value={facts} onChange={event => setFacts(event.target.value)} /></label>
@@ -244,7 +286,7 @@ function ChatMediaEditor({ characterId, mediaType, selection, canWrite, canPubli
             <option value="unknown">{t("Not verified")}</option><option value="none">{t("No nudity")}</option><option value="partial">{t("Partial nudity")}</option><option value="full">{t("Full nudity")}</option>
           </select></label>
           {!visualIdentity && !entry ? <p role="alert" className="text-sm text-[var(--ad-yellow-text)]">{t("Set the Character visual identity before adding chat media.")}</p> : null}
-          {supersededIdentity && visualIdentity ? <p role="status" className="text-sm text-[var(--ad-yellow-text)]">{t("This media was described for a previous visual identity, which chat no longer uses. Save a description to add it for the current identity; generated media must come from that identity.")}</p> : null}
+          {visualIdentity && !canEditIdentity ? <p role="status" className="text-sm text-[var(--ad-yellow-text)]">{t("This identity is outside the live Release and current production. Its chat description is read-only.")}</p> : null}
           {entry && entry.status !== "draft" && !canPublish ? <p className="text-sm text-[var(--ad-text-muted)]">{t("Editing published or withdrawn chat media requires publish permission.")}</p> : null}
           {!canDescribe ? <p className="text-xs text-[var(--ad-text-muted)]">{t("Content recognition is unavailable. Enter a verified description manually.")}</p> : null}
           {suggestion ? <p role="status" className="text-sm text-[var(--ad-text-muted)]">{suggestion}</p> : null}
@@ -256,10 +298,10 @@ function ChatMediaEditor({ characterId, mediaType, selection, canWrite, canPubli
           </div> : null}
           <div className="flex flex-wrap gap-2">
             <WorkspaceButton disabled={locked || !canDescribe} onClick={() => void describe()}><WandSparkles className="h-4 w-4" />{t("Recognize visible content")}</WorkspaceButton>
-            <WorkspaceButton disabled={locked || !valid || (!entry && !visualIdentity)} onClick={() => void save()}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}{t(entry ? "Save description" : "Save draft")}</WorkspaceButton>
+            <WorkspaceButton disabled={locked || !valid} onClick={() => void save()}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}{t(entry ? "Save description" : "Save draft")}</WorkspaceButton>
             {entry?.status === "published"
-              ? <WorkspaceButton disabled={locked || !canPublish} onClick={() => void save("withdrawn")}>{t("Withdraw from chat")}</WorkspaceButton>
-              : <WorkspaceButton tone="primary" disabled={locked || !valid || !canPublish || (!entry && !visualIdentity)} onClick={() => void save("published")}>{t("Use in chat")}</WorkspaceButton>}
+              ? <WorkspaceButton disabled={busy || !canWithdraw} onClick={() => void save("withdrawn")}>{t("Withdraw from chat")}</WorkspaceButton>
+              : <WorkspaceButton tone="primary" disabled={locked || !valid || !canPublish} onClick={() => void save("published")}>{t("Use in chat")}</WorkspaceButton>}
           </div>
         </div>
       </div>
@@ -267,8 +309,12 @@ function ChatMediaEditor({ characterId, mediaType, selection, canWrite, canPubli
   );
 }
 
-function ChatLibrarySearch({ characterId, mediaType, enabled, onSelect }: { characterId: string; mediaType: "image" | "video"; enabled: boolean; onSelect: (entry: CharacterMediaLibraryEntry) => void }) {
+function ChatLibrarySearch({ characterId, mediaType, enabled, defaultIdentity, identityChoices, onSelect }: {
+  characterId: string; mediaType: "image" | "video"; enabled: boolean; defaultIdentity: VisualIdentity;
+  identityChoices: VisualIdentityChoice[]; onSelect: (entry: CharacterMediaLibraryEntry) => void;
+}) {
   const { t } = useAdminI18n();
+  const [visualIdentity, setVisualIdentity] = useState(defaultIdentity);
   const [query, setQuery] = useState("");
   const [requiredFacts, setRequiredFacts] = useState("");
   const [excludedFacts, setExcludedFacts] = useState("");
@@ -278,11 +324,14 @@ function ChatLibrarySearch({ characterId, mediaType, enabled, onSelect }: { char
   const [error, setError] = useState<{ cause: unknown; message: string } | null>(null);
   const gate = useRef(createLatestRequestGate());
   useEffect(() => { const current = gate.current; return () => current.invalidate(); }, [characterId, mediaType, enabled]);
+  const canSearch = enabled && Boolean(visualIdentity);
   async function search() {
-    if (!enabled || busy || !query.trim() || !factsValid(requiredFacts) || !factsValid(excludedFacts)) return;
+    if (!enabled || !visualIdentity || busy || !query.trim() || !factsValid(requiredFacts) || !factsValid(excludedFacts)) return;
     const request = gate.current.begin(); setBusy(true); setError(null); setResult(null);
     try {
-      const response = await adminV2Operation("POST /api/v2/admin/characters/:id/media-library/search-preview", { path: { id: characterId }, body: { mediaType, query: query.trim(), requiredFacts: splitFacts(requiredFacts), excludedFacts: splitFacts(excludedFacts), nudity } });
+      const response = await adminV2Operation("POST /api/v2/admin/characters/:id/media-library/search-preview", {
+        path: { id: characterId }, body: { mediaType, visualIdentity, query: query.trim(), requiredFacts: splitFacts(requiredFacts), excludedFacts: splitFacts(excludedFacts), nudity },
+      });
       if (request.isCurrent()) setResult(response);
     } catch (cause) { if (request.isCurrent()) setError({ cause, message: t("Chat media search failed") }); }
     finally { if (request.isCurrent()) setBusy(false); }
@@ -291,19 +340,35 @@ function ChatLibrarySearch({ characterId, mediaType, enabled, onSelect }: { char
     <summary className="cursor-pointer text-sm font-semibold">{t("Try a chat request")}</summary>
     <div className="mt-3 space-y-3">
       <p className="text-xs text-[var(--ad-text-muted)]">{t("Test which published media matches a request. This does not send a chat message.")}</p>
-      {!enabled ? <p className="text-sm text-[var(--ad-yellow-text)]">{t("Chat media search is unavailable.")}</p> : null}
+      {identityChoices.length > 1 || (!defaultIdentity && identityChoices.length) ? <label className="block text-sm">{t("Visual identity to search")}
+        <select className={`${fieldClass} mt-1`} disabled={busy} value={visualIdentity?.visualProfileId ?? ""} onChange={event => {
+          setVisualIdentity(identityChoices.find(choice => choice.pin.visualProfileId === event.target.value)?.pin ?? null);
+          setResult(null);
+          setError(null);
+        }}>
+          {!defaultIdentity ? <option value="">{t("Live Release has no verified identity")}</option> : null}
+          {identityChoices.map(({ pin, label }) => <option key={pin.visualProfileId} value={pin.visualProfileId}>{label}</option>)}
+        </select>
+      </label> : null}
+      {!canSearch ? <p className="text-sm text-[var(--ad-yellow-text)]">{t("Chat media search is unavailable.")}</p> : null}
       <label className="block text-sm">{t("Example chat request")}<input className={`${fieldClass} mt-1`} value={query} maxLength={2000} onChange={event => setQuery(event.target.value)} /></label>
       <div className="grid gap-3 sm:grid-cols-2"><label className="text-sm">{t("Required facts, one per line")}<textarea className={`${fieldClass} mt-1`} value={requiredFacts} onChange={event => setRequiredFacts(event.target.value)} /></label><label className="text-sm">{t("Excluded facts, one per line")}<textarea className={`${fieldClass} mt-1`} value={excludedFacts} onChange={event => setExcludedFacts(event.target.value)} /></label></div>
       <label className="block text-sm">{t("Requested nudity")}<select className={`${fieldClass} mt-1`} value={nudity} onChange={event => setNudity(event.target.value as typeof nudity)}><option value="unspecified">{t("Unspecified")}</option><option value="none">{t("No nudity")}</option><option value="full">{t("Full nudity")}</option></select></label>
-      <WorkspaceButton disabled={!enabled || busy || !query.trim() || !factsValid(requiredFacts) || !factsValid(excludedFacts)} onClick={() => void search()}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}{t("Find matching chat media")}</WorkspaceButton>
+      <WorkspaceButton disabled={!canSearch || busy || !query.trim() || !factsValid(requiredFacts) || !factsValid(excludedFacts)} onClick={() => void search()}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}{t("Find matching chat media")}</WorkspaceButton>
       {error ? <AuthorityRequestError cause={error.cause} message={error.message} requestKind="read" onRetry={() => void search()} /> : null}
       {result ? <div role="status" className="space-y-2"><p className="text-sm">{t("{count} matches in {milliseconds} ms", { count: result.matches.length, milliseconds: Math.round(result.elapsedMs) })}</p>{result.matches.map(match => <button type="button" key={match.entry.id} onClick={() => onSelect(match.entry)} className="block w-full rounded-lg border border-[var(--ad-border)] p-3 text-left text-sm"><span className="block">{match.entry.description}</span><span className="mt-1 block text-xs text-[var(--ad-text-muted)]">{match.reasons.map(reason => t(reason)).join(" · ")}</span></button>)}</div> : null}
     </div>
   </details>;
 }
 
-function entryBelongsToIdentity(entry: CharacterMediaLibraryEntry, identity: VisualIdentity) {
-  return identity !== null && entry.visualProfileId === identity.visualProfileId && entry.visualProfileVersion === identity.visualProfileVersion;
+function entryVisualIdentity({ visualProfileId, visualProfileVersion }: CharacterMediaLibraryEntry) {
+  return { visualProfileId, visualProfileVersion };
+}
+function sameVisualIdentity(left: VisualIdentity, right: VisualIdentity) {
+  return left !== null && right !== null && left.visualProfileId === right.visualProfileId && left.visualProfileVersion === right.visualProfileVersion;
+}
+function distinctVisualIdentities(identities: VisualIdentity[]): CharacterMediaLibraryVisualIdentity[] {
+  return [...new Map(identities.flatMap(pin => pin ? [[pin.visualProfileId, pin] as const] : [])).values()];
 }
 // SPEC: Discarding edits only helps when the editor is behind the server.
 // INTENT: Main reports these conflicts with no structured blocker, so its exact messages are the

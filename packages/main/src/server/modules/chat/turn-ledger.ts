@@ -498,7 +498,9 @@ export async function regenerateChatTurn(userId: string, messageId: string) {
       purgeRunAttempts: [{ turnId: turn.id, throughAttempt: previousAttempt }],
     });
     const recoveredMediaAction = await rebindDurableTurnMedia(tx, userId, regenerated, previousAttempt);
-    return { turn: regenerated, snapshot: await frozenExecutionSnapshot(tx, regenerated.id, false, contextDirectives, experience, userPersona, recoveredMediaAction) };
+    return { turn: regenerated, snapshot: await frozenExecutionSnapshot(tx, regenerated.id, false, contextDirectives, experience, userPersona, {
+      recoveredMediaAction, userMessageRevision: originalSnapshot?.userMessageRevision,
+    }) };
   });
   return {
     assistantMessageId: updated.turn.assistantMessageId,
@@ -572,6 +574,11 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
     if (current.userMessageId !== messageId) {
       throw Errors.badRequest("Only user messages can be edited");
     }
+    // A delayed retry must not turn an already-applied edit into another paid
+    // message revision after its first reply has finished.
+    if (current.attempt !== turn.attempt) {
+      throw Errors.conflict("This chat turn changed; reload before editing");
+    }
     if (ACTIVE_ASSISTANT_STATES.includes(current.assistantStatus)) {
       throw Errors.conflict("A reply is already generating");
     }
@@ -640,7 +647,9 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
     });
     return {
       turn: edited,
-      snapshot: blocked ? null : await frozenExecutionSnapshot(tx, edited.id, false, contextDirectives, experience, userPersona),
+      snapshot: blocked ? null : await frozenExecutionSnapshot(tx, edited.id, false, contextDirectives, experience, userPersona, {
+        userMessageRevision: edited.attempt,
+      }),
     };
   });
   return {
@@ -1116,7 +1125,7 @@ async function frozenExecutionSnapshot(
   preservedDirectives?: ChatContextDirective[],
   preservedExperience?: ChatExperiencePreference | null,
   preservedUserPersona?: UserChatPersona | null,
-  recoveredMediaAction?: RecoveredMediaAction,
+  media?: { recoveredMediaAction?: RecoveredMediaAction; userMessageRevision?: number },
 ): Promise<ChatExecutionSnapshot> {
   const turn = await tx.chatTurn.findUnique({ where: { id: turnId }, include: { session: true, groupTurn: true } });
   if (!turn) throw Errors.notFound("Chat turn not found");
@@ -1193,7 +1202,8 @@ async function frozenExecutionSnapshot(
       : preservedUserPersona,
     contextRevision: turn.session.contextRevision,
     userContent: turn.userContent,
-    ...(recoveredMediaAction ? { recoveredMediaAction } : {}),
+    ...(media?.userMessageRevision ? { userMessageRevision: media.userMessageRevision } : {}),
+    ...(media?.recoveredMediaAction ? { recoveredMediaAction: media.recoveredMediaAction } : {}),
     ...(turn.groupTurn && groupMembers ? { group: {
       id: turn.groupTurn.groupId,
       ordinal: turn.groupTurn.ordinal,

@@ -133,6 +133,26 @@ describe("AgentRun recovery with interrupted journal writes", () => {
     expect(await readFile(runFile(evidence[0]!))).toEqual(damaged);
   });
 
+  it.each(["failed", "unknown"] as const)("does not resume paid dispatch after a durable %s prepared-media lookup", async outcome => {
+    const request = { bodyDigest: "c".repeat(64), systemPromptDigest: "a".repeat(64), estimatedInputTokens: 20,
+      provider: "openai", model: "test-model", usage: null };
+    await appendAgentRunEvent("turn-journal", 1, "pi.model_request_started", { request });
+    await appendAgentRunEvent("turn-journal", 1, "pi.tool_started", { callId: "lookup-1", name: "search_character_media" });
+    await appendAgentRunEvent("turn-journal", 1, "pi.tool_finished", { callId: "lookup-1", name: "search_character_media", outcome, durationMs: 1 });
+
+    await recoverIncompleteAgentRuns();
+    await vi.waitFor(async () => expect(await readAgentRunCompletion("turn-journal", 1)).toMatchObject({ outcome: "failed" }));
+
+    expect(runtime.runCompanion).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0]?.[1]?.body))).toMatchObject({
+      status: "failed", terminalEvidence: { failureCode: "agent_run_interrupted", modelRequests: [request] },
+    });
+    await expect(recoverIncompleteAgentRuns()).resolves.toEqual({ recovered: 0, failed: 0 });
+    expect(runtime.runCompanion).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it.each(["truncated", "missing newline"])("never dispatches after repairing a %s first record and crashing again before a proposal", async damage => {
     const started = { schemaVersion: 1, sequence: 1, occurredAt: NOW, kind: "pi.started", payload: { modelRequestJournalVersion: 1 } };
     await appendFile(runFile("events.jsonl"), damage === "truncated" ? '{"schemaVersion":1,"kind":' : JSON.stringify(started));

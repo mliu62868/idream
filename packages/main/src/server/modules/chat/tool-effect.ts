@@ -65,9 +65,14 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
     name: effect.name,
     arguments: effect.arguments,
   })));
-  let attachmentId = effectAttachmentId(effect, turn.userContent);
+  const revision = effect.effectScope === "turn_action" ? boundSnapshot(turn)?.userMessageRevision : undefined;
+  let attachmentId = effectAttachmentId(effect, turn.userContent, revision);
   let prior = await prisma.chatTurnAttachment.findUnique({ where: { id: attachmentId } });
-  if (!prior && effect.effectScope === "turn_action") {
+  if (revision === undefined && effect.effectScope === "turn_action" && record(prior?.metadata)?.turnActionInvalidatedByEdit === true) {
+    // A pre-revision snapshot can already have returned to its earlier words.
+    attachmentId = effectAttachmentId(effect, turn.userContent, "historical-edit");
+    prior = await prisma.chatTurnAttachment.findUnique({ where: { id: attachmentId } });
+  } else if (!prior && effect.effectScope === "turn_action" && revision === undefined) {
     // Existing receipts used a tool-specific identity. Read both old names so
     // regenerating with another Agent choice cannot buy a second image action.
     for (const name of ["generate_image_async", "edit_last_image"] as const) {
@@ -304,13 +309,10 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
   }
 }
 
-function effectAttachmentId(effect: ChatToolEffect, userContent: string): string {
-  // INVARIANT: a product image action survives assistant regenerate,
-  // which keeps the user's words; editing them asks for a different picture, so
-  // the frozen words are part of the identity. Historical ordinary-call ACKs
-  // retain their original attempt identity.
+function effectAttachmentId(effect: ChatToolEffect, userContent: string, revision?: number | "historical-edit"): string {
+  // The revision changes only when the user edits. Returning to the same words cannot revive an invalidated action.
   const identity = effect.effectScope === "turn_action"
-    ? `${effect.turnId}:image:${sha256(userContent)}`
+    ? `${effect.turnId}:image:${sha256(userContent)}${revision === undefined ? "" : `:${revision}`}`
     : `${effect.turnId}:${effect.attempt}:${effect.callId}`;
   return `chatfx_${sha256(identity).slice(0, 48)}`;
 }
@@ -552,12 +554,13 @@ function assertTurnActionIntent(
   attachment: { metadata: Prisma.JsonValue },
   expected: ChatToolEffect,
 ) {
-  const effect = record(record(attachment.metadata)?.effect);
+  const metadata = record(attachment.metadata);
+  const effect = record(metadata?.effect);
   const intent = record(effect?.intent);
   // Existing-media sends retain the first signed candidate or prior delivery;
   // their tool has no wardrobe argument to reinterpret during receipt replay.
   if (
-    effect?.effectScope !== "turn_action" ||
+    metadata?.turnActionInvalidatedByEdit === true || effect?.effectScope !== "turn_action" ||
     (effect.name !== undefined && effect.name !== expected.name) ||
     (expected.name === SEND_CHARACTER_MEDIA_TOOL
       ? effect.name !== SEND_CHARACTER_MEDIA_TOOL

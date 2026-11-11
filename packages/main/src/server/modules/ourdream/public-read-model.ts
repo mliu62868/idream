@@ -253,9 +253,14 @@ function mediaRouteToken(id: string) {
 
 /** The /user-content filename that selects an asset's display derivative. */
 export const MEDIA_THUMBNAIL_FILENAME = "thumbnail.webp";
+export const MEDIA_LIBRARY_POSTER_FILENAME = "poster.jpg";
 
 export function mediaThumbnailViewUrl(asset: { id: string }) {
   return `/user-content/${mediaRouteToken(asset.id)}/${MEDIA_THUMBNAIL_FILENAME}`;
+}
+
+export function mediaLibraryPosterViewUrl(asset: { id: string }) {
+  return `/user-content/${mediaRouteToken(asset.id)}/${MEDIA_LIBRARY_POSTER_FILENAME}`;
 }
 
 /**

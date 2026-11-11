@@ -1,12 +1,21 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import sharp from "sharp";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { characterVideoProductionRecipe, compileCharacterSoul } from "@idream/shared";
 import { POST as createCreativeRun } from "@/app/api/v2/admin/creative/runs/route";
+import { createDeliveredGenerationAsset } from "@/server/ai/generation-asset-delivery";
+import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
 import { prisma } from "@/server/lib/db";
+import { OPERATOR_UPLOAD_AUTHORITY_SCHEMA } from "@/server/lib/media-asset-authority";
 import { providers } from "@/server/providers";
+import { characterReleaseSnapshotHash, characterVisualProfileSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
 import { getCharacterWorkspace } from "@/server/modules/admin-v2/characters/workspace";
+import { createCharacterMediaLibraryEntry } from "@/server/modules/character-media-library/admin-service";
+import * as libraryModels from "@/server/modules/character-media-library/media-models";
+import { markProductionItemGenerated } from "@/server/modules/content-production-state";
 import { isDefaultProductionVideoProfile } from "@/server/modules/generation/production-video-profile";
+import { createReferenceSetRevision } from "@/server/modules/ourdream/generation-reference-set";
 import { purgeQueuedGenerationJobs } from "@/server/test/helpers";
 import { toInputJson } from "../shared/prisma-json";
 
@@ -22,6 +31,7 @@ describe("Character video Creative Run authority", () => {
   const sourceAssetId = `character-video-source-${suffix}`;
   const otherSourceAssetId = `character-video-other-source-${suffix}`;
   const batchIds: string[] = [];
+  const deliveredVideos: Array<{ id: string; key: string }> = [];
 
   function request(
     overrides: Record<string, unknown> = {},
@@ -52,6 +62,36 @@ describe("Character video Creative Run authority", () => {
         ...overrides,
       }),
     });
+  }
+
+  async function completeVideoFromSource(referenceAssetId: string, name: string) {
+    const response = await createCreativeRun(request({ referenceAssetIds: [referenceAssetId] }, `character-video-${name}-${suffix}`));
+    expect(response.status).toBe(202);
+    const batchId = (await response.json()).data.batch.id as string;
+    batchIds.push(batchId);
+    const item = await prisma.contentProductionItem.findFirstOrThrow({ where: { batchId }, include: { job: true } });
+    const job = item.job!;
+    const attempt = await prisma.generationAttempt.findFirstOrThrow({ where: { requestId: job.id } });
+    const provider = attempt.provider;
+    if (!provider) throw new Error("Video attempt did not pin its provider");
+    const id = `character-video-delivered-${name}-${suffix}`;
+    const key = `tests/${id}.mp4`;
+    deliveredVideos.push({ id, key });
+    const bytes = await readFile(new URL("../../../../e2e/fixtures/collection-playback.mp4", import.meta.url));
+    expect(await providers.blob.putPrivate({ key, body: bytes, contentType: "video/mp4" })).toMatchObject({ ok: true });
+    // Only the provider output is a fixture. Use the real asset writer and Run terminal transition.
+    await prisma.$transaction(async tx => {
+      await createDeliveredGenerationAsset(tx, { id, request: job,
+        payload: { mode: "video", usage: {} }, provider,
+        asset: { key, contentType: "video/mp4", width: 48, height: 48, providerKey: null },
+        ordinal: 0, safetyStatus: "passed" });
+      const completedAt = new Date();
+      await recordGenerationAttemptEvent(tx, { eventId: `${attempt.id}:terminal`, attemptId: attempt.id,
+        eventType: "generation.attempt.succeeded.v1", outcome: "succeeded", occurredAt: completedAt, payload: { requestId: job.id } });
+      await tx.generationJob.update({ where: { id: job.id }, data: { status: "completed", completedAt } });
+      await markProductionItemGenerated(tx, { jobId: job.id, mediaAssetId: id });
+    });
+    return { batchId, job, mediaAssetId: id };
   }
 
   beforeAll(async () => {
@@ -203,6 +243,14 @@ describe("Character video Creative Run authority", () => {
   });
 
   afterAll(async () => {
+    const entries = await prisma.characterMediaLibraryEntry.findMany({ where: { characterId } });
+    await prisma.characterMediaLibraryEntry.deleteMany({ where: { characterId } });
+    for (const entry of entries) {
+      await providers.blob.delete({ key: entry.storageKey });
+      if (entry.thumbnailKey) await providers.blob.delete({ key: entry.thumbnailKey });
+    }
+    for (const video of deliveredVideos) await providers.blob.delete({ key: video.key });
+    await prisma.mediaAsset.deleteMany({ where: { id: { in: deliveredVideos.map(video => video.id) } } });
     for (const id of [publishedPrimaryAssetId, sourceAssetId, otherSourceAssetId]) {
       await providers.blob.delete({ key: `tests/${id}.webp` });
     }
@@ -228,9 +276,12 @@ describe("Character video Creative Run authority", () => {
       where: { id: { in: jobIds } },
     });
     await prisma.controlPlaneCommand.deleteMany({
-      where: { actorId, commandType: "creative.run.create" },
+      where: { actorId },
     });
     await prisma.adminAuditLog.deleteMany({ where: { actorId } });
+    await prisma.characterServing.deleteMany({ where: { characterId } });
+    await prisma.characterRelease.deleteMany({ where: { projectId } });
+    await prisma.characterVisualProfile.deleteMany({ where: { characterId } });
     await prisma.mediaAsset.deleteMany({
       where: {
         id: {
@@ -328,5 +379,100 @@ describe("Character video Creative Run authority", () => {
         id: { notIn: batchIds },
       },
     })).toBe(0);
+  });
+
+  it("pins the live Release anchor before video generation with a newer production identity, and rejects ambiguous or unsealed anchors", async () => {
+    const anchor = await providers.blob.getPrivate!({ key: `tests/${publishedPrimaryAssetId}.webp` });
+    if (!anchor.ok) throw new Error("Video identity fixture is missing its source bytes");
+    const sha256 = createHash("sha256").update(anchor.data.body).digest("hex");
+    const values = { characterId, version: 1, status: "active", style: "realistic", identityPrompt: "Mara",
+      negativeIdentityPrompt: null, faceTraits: {}, hairTraits: {}, bodyTraits: {}, signatureTraits: {}, styleTraits: {},
+      anchorAssetIds: [publishedPrimaryAssetId], adapterRefs: {}, createdFrom: "test" };
+    const { visual, references } = await prisma.$transaction(async tx => {
+      for (const assetId of [publishedPrimaryAssetId, sourceAssetId]) {
+        await tx.mediaAsset.update({ where: { id: assetId }, data: { metadata: {
+          source: "admin_asset_upload", synthetic: false, sha256, purpose: "character_library",
+          uploadAuthority: { schemaVersion: OPERATOR_UPLOAD_AUTHORITY_SCHEMA, kind: "operator_upload", assetId, uploadedById: actorId, sha256 },
+        } } });
+      }
+      const profile = await tx.characterVisualProfile.create({ data: { ...values, immutableHash: characterVisualProfileSnapshotHash(values) } });
+      const referenceSet = await createReferenceSetRevision(tx, profile, "test", [
+        { mediaAssetId: publishedPrimaryAssetId, position: 0, role: "identity_anchor", weight: 1, selectionReason: "fixture" },
+      ]);
+      return { visual: profile, references: referenceSet };
+    });
+    const snapshot = {
+      projectId, revisionId, characterContentVersionId: contentId,
+      visualProfileId: visual.id, visualProfileVersion: visual.version, referenceSetRevisionId: references.id,
+      generationProvenance: { visualAuthority: { visualProfileHash: visual.immutableHash, referenceSetHash: references.snapshotHash } },
+      releasePlacementManifest: {},
+    };
+    const release = await prisma.characterRelease.create({ data: {
+      ...snapshot, snapshotHash: characterReleaseSnapshotHash(snapshot), status: "published", readiness: "ready", publishedAt: new Date(),
+    } });
+    await prisma.characterServing.create({ data: { characterId, state: "live", currentReleaseId: release.id } });
+    const nextVisual = await prisma.$transaction(async tx => {
+      await tx.characterVisualProfile.update({ where: { id: visual.id }, data: { status: "archived" } });
+      const next = { ...values, version: 2, anchorAssetIds: [sourceAssetId], identityPrompt: "A distinct Mara appearance" };
+      const production = await tx.characterVisualProfile.create({ data: { ...next, immutableHash: characterVisualProfileSnapshotHash(next) } });
+      await createReferenceSetRevision(tx, production, "test", [
+        { mediaAssetId: sourceAssetId, position: 0, role: "identity_anchor", weight: 1, selectionReason: "production v2" },
+      ]);
+      // The live Release keeps its sealed revision even after a later revision replaces it.
+      await createReferenceSetRevision(tx, visual, "test", [
+        { mediaAssetId: sourceAssetId, position: 0, role: "identity_anchor", weight: 1, selectionReason: "later revision" },
+      ]);
+      return production;
+    });
+
+    const { batchId, job, mediaAssetId } = await completeVideoFromSource(publishedPrimaryAssetId, "live-v1");
+    expect(job.referenceAssetIds).toEqual([publishedPrimaryAssetId]);
+    expect(job.sourceMeta).toMatchObject({ videoSourceIdentity: { visualProfileId: visual.id, visualProfileVersion: visual.version, sourceSha256: sha256 } });
+
+    vi.stubEnv("MEDIA_LIBRARY_EMBEDDING_URL", "http://embedding.test.invalid/v1");
+    vi.stubEnv("MEDIA_LIBRARY_EMBEDDING_MODEL", "fixture-embedding");
+    vi.stubEnv("MEDIA_LIBRARY_EMBEDDING_DIMENSIONS", "2");
+    const embedding = vi.spyOn(libraryModels, "embedMediaText").mockResolvedValue({ model: "fixture-embedding", dimensions: 2, vector: [1, 0] });
+    try {
+      await expect(createCharacterMediaLibraryEntry({ characterId, actor: { id: actorId, role: "admin" },
+        idempotencyKey: randomUUID(), requestId: randomUUID(), body: { sourceAssetId: mediaAssetId,
+          expectedVisualProfileId: visual.id, expectedVisualProfileVersion: visual.version,
+          description: "A reviewable short video", facts: [], absentFacts: [], nudity: "none", status: "published" },
+      })).resolves.toMatchObject({ entry: { mediaType: "video", sourceAssetId: mediaAssetId, status: "published", visualProfileId: visual.id } });
+      expect(await prisma.contentProductionBatch.findUniqueOrThrow({ where: { id: batchId } })).toMatchObject({ lifecycleState: "closed", status: "completed" });
+      await expect(createCharacterMediaLibraryEntry({ characterId, actor: { id: actorId, role: "admin" },
+        idempotencyKey: randomUUID(), requestId: randomUUID(), body: { sourceAssetId: mediaAssetId,
+          expectedVisualProfileId: nextVisual.id, expectedVisualProfileVersion: nextVisual.version,
+          description: "The original short video", facts: [], absentFacts: [], nudity: "none", status: "published" },
+      })).rejects.toMatchObject({ code: "forbidden" });
+
+      for (const authority of ["ambiguous", "missing anchor", "unsealed reference", "unsealed Release"] as const) {
+        await prisma.$transaction(async tx => {
+          await createReferenceSetRevision(tx, nextVisual, "test", [{
+            mediaAssetId: authority === "ambiguous" ? publishedPrimaryAssetId : sourceAssetId,
+            position: 0, role: "identity_anchor", weight: 1, selectionReason: authority,
+          }]);
+          await tx.referenceSetRevision.update({ where: { id: references.id }, data: {
+            snapshotHash: authority === "unsealed reference" ? "invalid" : references.snapshotHash,
+          } });
+          await tx.characterRelease.update({ where: { id: release.id }, data: {
+            snapshotHash: authority === "unsealed Release" ? "invalid" : release.snapshotHash,
+            status: authority === "missing anchor" ? "withdrawn" : "published",
+          } });
+        });
+        const result = await completeVideoFromSource(publishedPrimaryAssetId, authority.replaceAll(" ", "-"));
+        expect(result.job.sourceMeta, authority).not.toHaveProperty("videoSourceIdentity");
+        for (const identity of [visual, nextVisual]) {
+          await expect(createCharacterMediaLibraryEntry({ characterId, actor: { id: actorId, role: "admin" },
+            idempotencyKey: randomUUID(), requestId: randomUUID(), body: { sourceAssetId: result.mediaAssetId,
+              expectedVisualProfileId: identity.id, expectedVisualProfileVersion: identity.version,
+              description: "An unqualified video preview", facts: [], absentFacts: [], nudity: "none", status: "published" },
+          })).rejects.toMatchObject({ code: authority === "missing anchor" && identity.id === visual.id ? "conflict" : "forbidden" });
+        }
+      }
+    } finally {
+      embedding.mockRestore();
+      vi.unstubAllEnvs();
+    }
   });
 });

@@ -6,9 +6,11 @@ import { logger } from "@/server/lib/logger";
 import { isMediaAssetOperationalForAuthority, resolveMediaAssetBlobLocator } from "@/server/lib/media-asset-authority";
 import { assertMediaAssetCustomerPublishable, resolveMediaAssetAuthorityMap } from "@/server/lib/media-asset-authority-query";
 import { characterVisualProfileSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
+import { attachmentAttempt } from "@/server/modules/chat/turn-scope";
 import { embedMediaText, mediaLibraryModels, rerankMediaText } from "./media-models";
 
 type Db = Prisma.TransactionClient | PrismaClient;
+type LibraryEntryWithSource = Prisma.CharacterMediaLibraryEntryGetPayload<{ include: { sourceAsset: true } }>;
 export type LibraryIdentity = { characterId: string; visualProfileId: string; visualProfileVersion: number };
 export type LibrarySearchInput = LibraryIdentity & {
   userId: string; kind: "image" | "video"; query: string;
@@ -29,17 +31,46 @@ export async function availableCharacterMediaLibraryKinds(input: LibraryIdentity
   const visual = await prisma.characterVisualProfile.findUnique({ where: { id: input.visualProfileId } });
   if (!visual || visual.characterId !== input.characterId || visual.version !== input.visualProfileVersion ||
       !visual.immutableHash || visual.immutableHash !== characterVisualProfileSnapshotHash(visual)) return [];
-  const entries = await prisma.characterMediaLibraryEntry.findMany({ where: {
-    ...input, status: "published", kind: { in: ["image", "video"] },
+  const visualHash = visual.immutableHash;
+  const kinds = ["image", "video"] as const;
+  // Admission only advertises which lookups are worth offering. It must not
+  // materialize the catalog or authorize a delivery for every text Turn.
+  const present = await Promise.all(kinds.map(kind => prisma.characterMediaLibraryEntry.findFirst({
+    where: {
+      ...input, kind, status: "published", embeddingModel: embedding.model, embeddingDimensions: embedding.dimensions,
+      embeddingHash: { not: null }, sourceSnapshot: { path: ["visualProfileHash"], equals: visualHash },
+      sourceAsset: { is: { type: kind, deletedAt: null, safetyStatus: "passed", characterId: input.characterId } },
+    }, select: { id: true },
+  })));
+  return kinds.filter((_, index) => present[index] !== null);
+}
+
+/** Operator coverage reflects verified source and index eligibility, not the Turn's cheaper tool hint. */
+export async function hasEligibleCharacterMediaLibraryEntries(input: LibraryIdentity & { visualHash: string | null; kind?: "image" | "video" }) {
+  const { visualHash, kind, ...identity } = input;
+  if (!visualHash) return false;
+  let embedding: ReturnType<typeof mediaLibraryModels>["embedding"];
+  try { embedding = mediaLibraryModels().embedding; }
+  catch { return false; }
+  if (!embedding) return false;
+  const where: Prisma.CharacterMediaLibraryEntryWhereInput = {
+    ...identity, status: "published", kind: kind ?? { in: ["image", "video"] },
     embeddingModel: embedding.model, embeddingDimensions: embedding.dimensions,
-    sourceAsset: { is: { deletedAt: null, safetyStatus: "passed", characterId: input.characterId } },
-  }, include: { sourceAsset: true } });
-  const authority = await resolveMediaAssetAuthorityMap(prisma, entries.flatMap(entry => entry.sourceAsset ? [entry.sourceAsset] : []));
-  return [...new Set(entries.filter(entry => entry.sourceAsset && authority.get(entry.sourceAsset.id)?.publishable &&
-    isMediaAssetOperationalForAuthority(entry.sourceAsset.metadata) && indexMatchesDescriptor(entry) &&
-    resolveMediaAssetBlobLocator(entry.sourceAsset)?.key === record(entry.sourceSnapshot).sourceStorageKey &&
-    record(entry.sourceSnapshot).visualProfileHash === visual.immutableHash)
-    .map(entry => entry.kind as "image" | "video"))].sort();
+    sourceAsset: { is: { ...(kind ? { type: kind } : {}), deletedAt: null, safetyStatus: "passed", characterId: identity.characterId } },
+  };
+  // Coverage needs one verified result. Bound each read and stop before loading
+  // the remaining vectors or resolving their generation provenance.
+  const pageSize = 32;
+  let cursor: string | undefined;
+  while (true) {
+    const entries = await prisma.characterMediaLibraryEntry.findMany({
+      where, include: { sourceAsset: true }, orderBy: { id: "asc" }, take: pageSize,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    });
+    if ((await filterVerifiedLibraryEntries(entries, visualHash)).length > 0) return true;
+    if (entries.length < pageSize) return false;
+    cursor = entries[entries.length - 1]!.id;
+  }
 }
 
 export function libraryEntryDescriptor(entry: Pick<CharacterMediaLibraryEntry, "kind" | "description" | "facts" | "absentFacts" | "nudity" | "durationSeconds" | "hasAudio">) {
@@ -98,8 +129,7 @@ export async function searchCharacterMediaLibrary(input: LibrarySearchInput): Pr
   const requiredFacts = normalizedLibraryFacts(input.requiredFacts ?? []);
   const excludedFacts = normalizedLibraryFacts(input.excludedFacts ?? []);
   if (requiredFacts.some(fact => excludedFacts.includes(fact))) return [];
-  const entries = await prisma.characterMediaLibraryEntry.findMany({
-    where: {
+  const verified = await verifiedLibraryEntries({
       characterId: input.characterId, visualProfileId: input.visualProfileId, visualProfileVersion: input.visualProfileVersion,
       kind: input.kind, status: "published", embeddingModel: config.embedding.model, embeddingDimensions: config.embedding.dimensions,
       ...(requiredFacts.length ? { facts: { hasEvery: requiredFacts } } : {}),
@@ -110,32 +140,10 @@ export async function searchCharacterMediaLibrary(input: LibrarySearchInput): Pr
       ...(input.minDurationSeconds === undefined && input.maxDurationSeconds === undefined ? {} : {
         durationSeconds: { ...(input.minDurationSeconds === undefined ? {} : { gte: input.minDurationSeconds }), ...(input.maxDurationSeconds === undefined ? {} : { lte: input.maxDurationSeconds }) },
       }),
-      sourceAsset: { is: { deletedAt: null, safetyStatus: "passed", characterId: input.characterId } },
-    },
-    include: { sourceAsset: true }, orderBy: { id: "asc" },
-  });
-  if (!entries.length) return [];
-  const authority = await resolveMediaAssetAuthorityMap(prisma, entries.flatMap(entry => entry.sourceAsset ? [entry.sourceAsset] : []));
-  const delivered = await prisma.chatTurnAttachment.findMany({
-    where: { status: "completed", turn: { session: { userId: input.userId, characterId: input.characterId } } },
-    select: { metadata: true, mediaAssetId: true, turn: { select: { attempt: true } } },
-  });
-  const deliveredIds = delivered.filter(row => record(row.metadata).attempt === row.turn.attempt).flatMap(row => row.mediaAssetId ? [row.mediaAssetId] : []);
-  const assets = deliveredIds.length ? await prisma.mediaAsset.findMany({
-    where: { id: { in: deliveredIds }, ownerId: input.userId }, select: { metadata: true },
-  }) : [];
-  const seenEntries = new Set<string>();
-  const seenHashes = new Set<string>();
-  for (const asset of assets) {
-    const delivery = record(record(asset.metadata).libraryDelivery);
-    if (typeof delivery.entryId === "string") seenEntries.add(delivery.entryId);
-    if (typeof delivery.contentHash === "string") seenHashes.add(delivery.contentHash);
-  }
-  const eligible = entries.filter(entry => entry.sourceAsset && authority.get(entry.sourceAsset.id)?.publishable &&
-    isMediaAssetOperationalForAuthority(entry.sourceAsset.metadata) && indexMatchesDescriptor(entry) &&
-    resolveMediaAssetBlobLocator(entry.sourceAsset)?.key === record(entry.sourceSnapshot).sourceStorageKey &&
-    record(entry.sourceSnapshot).visualProfileHash === visual.immutableHash)
-    .map(entry => ({ entry, alreadySent: seenEntries.has(entry.id) || seenHashes.has(entry.contentHash) }))
+      sourceAsset: { is: { type: input.kind, deletedAt: null, safetyStatus: "passed", characterId: input.characterId } },
+  }, visual.immutableHash);
+  const delivered = await deliveredLibraryMedia(prisma, { userId: input.userId, characterId: input.characterId, entries: verified });
+  const eligible = verified.map(entry => ({ entry, alreadySent: delivered.has(entry.id) }))
     .filter(candidate => input.unseenOnly === false || !candidate.alreadySent);
   if (!eligible.length) return [];
   const query = await embedMediaText(input.query, config.embedding);
@@ -164,6 +172,53 @@ export async function searchCharacterMediaLibrary(input: LibrarySearchInput): Pr
     .sort((a, b) => b.score - a.score || a.entry.id.localeCompare(b.entry.id))
     : candidates.map(candidate => ({ ...candidate, score: candidate.dense })))
     .slice(0, 6).map(({ entry, score, alreadySent }) => ({ entry, score, alreadySent }));
+}
+
+async function verifiedLibraryEntries(where: Prisma.CharacterMediaLibraryEntryWhereInput, visualHash: string) {
+  const entries = await prisma.characterMediaLibraryEntry.findMany({ where, include: { sourceAsset: true }, orderBy: { id: "asc" } });
+  return filterVerifiedLibraryEntries(entries, visualHash);
+}
+
+async function filterVerifiedLibraryEntries(entries: LibraryEntryWithSource[], visualHash: string) {
+  if (!entries.length) return [];
+  const authority = await resolveMediaAssetAuthorityMap(prisma, entries.flatMap(entry => entry.sourceAsset ? [entry.sourceAsset] : []));
+  return entries.filter(entry => entry.sourceAsset?.type === entry.kind && authority.get(entry.sourceAsset.id)?.publishable &&
+    isMediaAssetOperationalForAuthority(entry.sourceAsset.metadata) && indexMatchesDescriptor(entry) &&
+    resolveMediaAssetBlobLocator(entry.sourceAsset)?.key === record(entry.sourceSnapshot).sourceStorageKey &&
+    record(entry.sourceSnapshot).visualProfileHash === visualHash);
+}
+
+/** Search and the locked delivery use the same viewer/Character history and byte identity. */
+export async function deliveredLibraryMedia(db: Db, input: {
+  userId: string; characterId: string; entries: ReadonlyArray<Pick<CharacterMediaLibraryEntry, "id" | "contentHash">>;
+}): Promise<Set<string>> {
+  // Admin previews have no viewer history. Limit the joined result to
+  // deliveries that can suppress a current candidate.
+  if (!input.userId || !input.entries.length) return new Set();
+  const ids = input.entries.map(entry => entry.id);
+  const hashes = [...new Set(input.entries.map(entry => entry.contentHash))];
+  const rows = await db.$queryRaw<Array<{ delivery: Prisma.JsonValue; attachmentMetadata: Prisma.JsonValue; attempt: number }>>`
+    SELECT DISTINCT asset.metadata -> 'libraryDelivery' AS delivery,
+      attachment.metadata AS "attachmentMetadata", turn.attempt
+    FROM "media_assets" asset
+    JOIN "chat_turn_attachments" attachment ON attachment."mediaAssetId" = asset.id
+    JOIN "chat_turns" turn ON turn.id = attachment."turnId"
+    JOIN "recent_chats" chat ON chat."sessionId" = turn."sessionId"
+      AND chat."userId" = asset."ownerId" AND chat."characterId" = asset."characterId"
+    WHERE asset."ownerId" = ${input.userId} AND asset."characterId" = ${input.characterId}
+      AND attachment.status = 'completed'
+      AND (asset.metadata #>> '{libraryDelivery,entryId}' = ANY(${ids}::text[])
+        OR asset.metadata #>> '{libraryDelivery,contentHash}' = ANY(${hashes}::text[]))
+  `;
+  const seenIds = new Set<string>();
+  const seenHashes = new Set<string>();
+  for (const row of rows) {
+    if (attachmentAttempt(row.attachmentMetadata) !== row.attempt) continue;
+    const { entryId, contentHash } = record(row.delivery);
+    if (typeof entryId === "string") seenIds.add(entryId);
+    if (typeof contentHash === "string") seenHashes.add(contentHash);
+  }
+  return new Set(input.entries.filter(entry => seenIds.has(entry.id) || seenHashes.has(entry.contentHash)).map(entry => entry.id));
 }
 
 function indexMatchesDescriptor(entry: CharacterMediaLibraryEntry) {

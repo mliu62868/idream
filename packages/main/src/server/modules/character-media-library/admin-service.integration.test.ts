@@ -46,6 +46,8 @@ afterAll(async () => {
   await prisma.characterMediaLibraryEntry.deleteMany({ where: { characterId: { startsWith: prefix } } });
   await prisma.controlPlaneCommand.deleteMany({ where: { actorId: { in: [actor.id, editor.id] } } });
   await prisma.adminAuditLog.deleteMany({ where: { actorId: { in: [actor.id, editor.id] } } });
+  await prisma.characterServing.deleteMany({ where: { characterId: { startsWith: prefix } } });
+  await prisma.characterRelease.deleteMany({ where: { id: { startsWith: prefix } } });
   await prisma.characterVisualProfile.deleteMany({ where: { characterId: { startsWith: prefix } } });
   await prisma.mediaAsset.deleteMany({ where: { characterId: { startsWith: prefix } } });
   await prisma.character.deleteMany({ where: { id: { startsWith: prefix } } });
@@ -74,7 +76,7 @@ async function fixture() {
   const visual = await prisma.characterVisualProfile.create({ data: { ...values, immutableHash: characterVisualProfileSnapshotHash(values) } });
   const body: CharacterMediaLibraryCreateRequest = { sourceAssetId, expectedVisualProfileId: visual.id, expectedVisualProfileVersion: visual.version,
     description: "A blue image without text", facts: ["BLUE", "blue"], absentFacts: ["text"], nudity: "none", status: "draft" };
-  return { characterId, sourceAssetId, sourceKey, bytes, digest, visual, body };
+  return { characterId, sourceAssetId, sourceKey, bytes, digest, visual, visualValues: values, body };
 }
 function mutation(characterId: string, who: { id: string; role: "admin" | "user" } = actor) { return { characterId, actor: who, idempotencyKey: randomUUID(), requestId: randomUUID() }; }
 async function stored(entryId: string) { return prisma.characterMediaLibraryEntry.findUniqueOrThrow({ where: { id: entryId } }); }
@@ -168,6 +170,47 @@ describe("Admin Character chat library persistence", () => {
     await updateCharacterMediaLibraryEntry({ ...mutation(f.characterId), entryId: entry.id, body: { expectedRevision: 1, status: "published" } });
     expect((await previewCharacterMediaLibrarySearch({ characterId: f.characterId, body })).matches.map(match => match.entry.id)).toEqual([entry.id]);
     expect((await previewCharacterMediaLibrarySearch({ characterId: f.characterId, body: { ...body, excludedFacts: ["hat"] } })).matches).toEqual([]);
+  });
+
+  it("keeps the live Release pin usable while a new identity is active, then retires the old pin without losing withdrawal", async () => {
+    const f = await fixture();
+    const livePin = { visualProfileId: f.visual.id, visualProfileVersion: f.visual.version };
+    const releaseData = { id: `${f.characterId}-release-v1`, projectId: `${f.characterId}-project`,
+      revisionId: `${f.characterId}-revision`, characterContentVersionId: `${f.characterId}-content`,
+      generationProvenance: {}, releasePlacementManifest: {}, snapshotHash: f.digest, status: "published" };
+    const release = await prisma.characterRelease.create({ data: { ...releaseData, ...livePin } });
+    await prisma.character.update({ where: { id: f.characterId }, data: { visibility: "public" } });
+    await prisma.characterServing.create({ data: { characterId: f.characterId, currentReleaseId: release.id, state: "live" } });
+    await prisma.characterVisualProfile.update({ where: { id: f.visual.id }, data: { status: "archived" } });
+    const values = { ...f.visualValues, version: 2 };
+    const production = await prisma.characterVisualProfile.create({ data: { ...values, immutableHash: characterVisualProfileSnapshotHash(values) } });
+    const productionPin = { visualProfileId: production.id, visualProfileVersion: production.version };
+
+    const observation = { sourceAssetId: f.sourceAssetId, visualIdentity: livePin };
+    await expect(describeCharacterMediaLibraryAsset({ ...mutation(f.characterId), body: observation })).resolves.toMatchObject({ sourceSha256: f.digest });
+    const { entry } = await createCharacterMediaLibraryEntry({ ...mutation(f.characterId), body: { ...f.body, status: "published" } });
+    const query = characterMediaLibraryQuerySchema.parse({ mediaType: "image", status: "draft" });
+    await expect(listCharacterMediaLibrary({ characterId: f.characterId, query })).resolves.toMatchObject({
+      items: [], visualIdentity: productionPin, serving: { releaseId: release.id, visualIdentity: livePin },
+      coverage: { production: { published: 0, hasEligibleMedia: false }, serving: { published: 1, hasEligibleMedia: true } },
+    });
+    const search = { mediaType: "image" as const, query: "blue image", requiredFacts: ["blue"], excludedFacts: [], nudity: "none" as const };
+    expect((await previewCharacterMediaLibrarySearch({ characterId: f.characterId, body: search })).matches.map(match => match.entry.id)).toEqual([entry.id]);
+    expect((await previewCharacterMediaLibrarySearch({ characterId: f.characterId, body: { ...search, visualIdentity: productionPin } })).matches).toEqual([]);
+    const updated = await updateCharacterMediaLibraryEntry({ ...mutation(f.characterId), entryId: entry.id,
+      body: { expectedRevision: entry.revision, description: "Reviewed blue image for the live identity" } });
+    expect(updated.entry).toMatchObject({ ...livePin, status: "published", revision: entry.revision + 1 });
+
+    const next = await prisma.characterRelease.create({ data: { ...releaseData, id: `${f.characterId}-release-v2`, ...productionPin } });
+    await prisma.$transaction([
+      prisma.characterServing.update({ where: { characterId: f.characterId }, data: { currentReleaseId: next.id } }),
+      prisma.characterRelease.update({ where: { id: release.id }, data: { status: "superseded" } }),
+    ]);
+    await expect(previewCharacterMediaLibrarySearch({ characterId: f.characterId, body: { ...search, visualIdentity: livePin } })).rejects.toMatchObject({ status: 409 });
+    await expect(updateCharacterMediaLibraryEntry({ ...mutation(f.characterId), entryId: entry.id,
+      body: { expectedRevision: updated.entry.revision, description: "Cannot edit a retired publication" } })).rejects.toMatchObject({ status: 409 });
+    await expect(updateCharacterMediaLibraryEntry({ ...mutation(f.characterId), entryId: entry.id,
+      body: { expectedRevision: updated.entry.revision, status: "withdrawn" } })).resolves.toMatchObject({ entry: { ...livePin, status: "withdrawn" } });
   });
 
   it("reads the owned copy through scoped authentication and preserves 200/206/416 ranges", async () => {
