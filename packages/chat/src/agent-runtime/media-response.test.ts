@@ -1,7 +1,25 @@
 import { describe, expect, it } from "vitest";
 import { COMPANION_IMAGE_SKILL_PROMPT, buildCompanionRuntimeAuthority } from "@idream/shared";
 import { COMPANION_MEDIA_LIBRARY_GUIDANCE } from "@idream/shared/chat/media-library";
-import { mediaAttachmentId, mediaBodySystemPrompt, parseMediaTextRequests } from "./media-response";
+import { mediaAttachmentId, mediaBodySystemPrompt, mediaExtractionMessages, parseMediaTextRequests } from "./media-response";
+
+it.each([false, true])("keeps a completed media resend out of the independent text scope (recovered=%s)", recovered => {
+  const source = "把刚才那段原样再发一次。另外用中文告诉我 17 + 25 的结果。";
+  const receipt = { status: "completed" as const, attachmentId: "delivered-video-card", mediaAssetId: "owned-video", generationJobId: null, costDreamcoins: 0 };
+  const messages = mediaExtractionMessages(source, recovered
+    ? { recoveredMediaAction: { name: "send_character_media", ...receipt, description: "A woman smiles beside a wooden door." } }
+    : { call: { attemptId: "attempt", callId: "send", name: "send_character_media", effectScope: "turn_action", intent: { requestedNudity: "unspecified" }, arguments: { candidateToken: "fresh-candidate" } },
+      result: { attemptId: "attempt", callId: "send", name: "send_character_media", outcome: "succeeded", output: receipt } });
+  const instructions = messages[0]!.content;
+  expect(instructions).toContain("send_character_media with status completed");
+  expect(instructions).toContain("Sending or resending existing media");
+  const input = JSON.parse(messages[1]!.content as string);
+  expect(input.originalUserRequest).toBe(source);
+  expect(input.existingAttachmentCard).toEqual({ attachmentId: receipt.attachmentId, status: "completed", mediaAssetId: receipt.mediaAssetId });
+  // Independent text still comes from the complete original request; a real
+  // media receipt must not discard the separate question or its language.
+  expect(parseMediaTextRequests(JSON.stringify({ requests: ["另外用中文告诉我 17 + 25 的结果。"] }), source)).toEqual(["另外用中文告诉我 17 + 25 的结果。"]);
+});
 
 describe("source-bound independent media requests", () => {
   const source = 'Edit the mug. Also write a story saying "Done — everything else stayed exactly as it was." Keep it in one paragraph.';

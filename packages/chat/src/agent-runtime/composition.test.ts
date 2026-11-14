@@ -32,7 +32,7 @@ describe("companion composition identity", () => {
       schemaVersion: 3, piVersion: "1.5.2", igrepVersion: "0.1.164", storage: "memory", builtInTools: [],
       igrepMaintenance: { sampling: { temperature: 0, top_p: 1, presence_penalty: 0, chat_template_kwargs: { enable_thinking: false } } },
       reasoning: { generation: true, compaction: false, structured: false, totalLimit: "profile" },
-      execution: { version: 70, maxSteps: 8, maxParallelToolCalls: 1, toolExecution: "sequential", retry: false,
+      execution: { version: 71, maxSteps: 8, maxParallelToolCalls: 1, toolExecution: "sequential", retry: false,
         mediaReply: { bufferCapableSteps: true, afterAttachment: "terminate-native-round", pureBody: "empty-with-main-attachment", extractionMaxOutputTokens: 1024, sharedStepBudget: true },
         deadlineSource: "invocation.deadlineAt", commitBeforeProjection: true },
     });

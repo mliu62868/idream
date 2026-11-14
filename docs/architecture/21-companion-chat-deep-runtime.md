@@ -74,7 +74,7 @@ provider 的工具名分片先累计为完整当前名称，再交给 Pi；参�
 
 2026-11-01 更新：上述三个 Pi 包精确升级为 `1.4.0`，igrep CLI 固定 `0.1.164`。现行执行内核继续是 Pi；`deepseek-harness` 只保留为既有记忆 intake/session 与备份格式标识。文本快照使用 `IGREP_INDEX_LEVEL=none`，移除新版拒绝的 `IGREP_IMAGE_AUGMENTATION_MODE`，并显式关闭未配置的 image embedding 路由。setup/check 增加无模型的真实 CLI 搜索、JSONL ID、UTF-8 分页及版本变化拒绝核验，full readiness 仍另验真实 provider 和记忆生命周期。
 
-2026-11-14 更新：三个 Pi 包精确升级为 `1.5.2`，igrep 仍固定 `0.1.164`。宿主适配带标签的 `onReport`，保留原始异常分类；准入健康和完整认证共用已安装包的版本核验。工具调用 ID 在同一原生响应、后续响应和压缩后均不可复用，移交到独立正文的工具证据也占用原身份，冲突在派发前拒绝。执行 composition 升至 70：Main 确认附件后，媒体工具结果通过 Pi 原生 `control.terminate` 结束该工具轮；混合工具轮仍遵循 Pi 的全部结果终止条件。独立请求提取与正文继续使用剩余总预算，不再先生成随后丢弃的媒体台词。只读库存查询不触发图片回执语言和流程词校验。首 token 计时从请求意图落盘后、物理派发前开始，本地写入继续由 AgentRun 总 deadline 约束。Main 主动消息的无时区时间字段按 UTC 比较和推进，不继承数据库会话时区，避免开启后提前领取或推迟下一周期。
+2026-11-14 更新：三个 Pi 包精确升级为 `1.5.2`，igrep 仍固定 `0.1.164`。宿主适配带标签的 `onReport`，保留原始异常分类；准入健康和完整认证共用已安装包的版本核验。工具调用 ID 在同一原生响应、后续响应和压缩后均不可复用，移交到独立正文的工具证据也占用原身份，冲突在派发前拒绝。执行 composition 升至 71（合并同时更新的既有媒体重发解释规则）：Main 确认附件后，媒体工具结果通过 Pi 原生 `control.terminate` 结束该工具轮；混合工具轮仍遵循 Pi 的全部结果终止条件。独立请求提取与正文继续使用剩余总预算，不再先生成随后丢弃的媒体台词。只读库存查询不触发图片回执语言和流程词校验。首 token 计时从请求意图落盘后、物理派发前开始，本地写入继续由 AgentRun 总 deadline 约束。Main 主动消息的无时区时间字段按 UTC 比较和推进，不继承数据库会话时区，避免开启后提前领取或推迟下一周期。
 
 本地与会话内检索使用公开 `search --strict`，不完整或模型阶段降级均按失败记录。新版 `search-api` 的证据包没有等价的机器可读 complete/degraded 状态，超时可能返回 exit 0 与文本 guidance，因此本宿主保留严格 CLI，不解析英文提示判定完整性。normal/private 都增加只读 `igrep_read_source`，仅接受本 attempt 授权 knowledge 目录内的相对路径，拒绝越界与符号链接；每页至多 6000 字节，续页要求原 fingerprint，保留原始 UTF-8 与源范围语义。该工具同样参与 Pi 的大结果来源 cursor 预算，不能读取跨关系记忆或替代 session_recall 的原文身份绑定。媒体正文使用自己的 `media-body.jsonl` 搜索快照，首阶段 `conversation.jsonl` 保持不变，已返回的版本续页在同一 attempt 的两个 loop 间仍可读取；attempt 结束统一清理。readiness 的本地检索用保留对话中的事实核验，不能要求 system-only 事实出现在检索语料中。
 

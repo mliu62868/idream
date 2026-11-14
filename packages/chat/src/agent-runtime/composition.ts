@@ -44,7 +44,7 @@ export function companionCompositionManifest(mode: CompanionCompositionMode, igr
     corePackages: COMPANION_CORE_PACKAGES, storage: "memory", builtInTools: [],
     compaction: { backend: "pi-durable", ...COMPANION_COMPACTION_CONFIG },
     reasoning: { generation: true, compaction: false, structured: false, totalLimit: "profile" },
-    execution: { version: 70, maxSteps: authority.maxSteps, toolExecution: "sequential", maxParallelToolCalls: 1,
+    execution: { version: 71, maxSteps: authority.maxSteps, toolExecution: "sequential", maxParallelToolCalls: 1,
       mediaReply: { bufferCapableSteps: true, afterAttachment: "terminate-native-round", pureBody: "empty-with-main-attachment", extraction: "ordered-verbatim-native", extractionMaxOutputTokens: 1024, body: "native-loop-without-media-tools", sharedStepBudget: true },
       retry: false, backgroundCompaction: false, deadlineSource: "invocation.deadlineAt", commitBeforeProjection: true,
       recovery: "Main snapshot and immutable local proposal" },
