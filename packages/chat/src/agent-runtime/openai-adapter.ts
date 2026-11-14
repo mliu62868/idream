@@ -369,7 +369,7 @@ export class OpenAiCompatibleAdapter {
     };
     const timeout = linkedSignal(options.signal);
     let firstToken = true;
-    const firstTokenTimer = setTimeout(() => timeout.abort(new ProviderError("model first-token timeout", "MODEL_FIRST_TOKEN_TIMEOUT")), profile.timeout.firstTokenMs);
+    let firstTokenTimer: NodeJS.Timeout | undefined;
     let requestStarted = false;
     let requestEvidence: CompanionModelRequestEvidence | undefined;
     let usage: TokenUsage | undefined;
@@ -391,6 +391,9 @@ export class OpenAiCompatibleAdapter {
       // A process crash after this point must never silently resend it.
       await observeRequest?.(requestEvidence);
       timeout.signal.throwIfAborted();
+      // Local journaling is covered by the attempt deadline. The provider's
+      // first-token window starts only when its physical request can begin.
+      firstTokenTimer = setTimeout(() => timeout.abort(new ProviderError("model first-token timeout", "MODEL_FIRST_TOKEN_TIMEOUT")), profile.timeout.firstTokenMs);
       requestStarted = true;
       const response = await this.request(chatCompletionsUrl(profile.baseUrl), {
         method: "POST", headers: { "user-agent": "idream-chat/pi-provider", authorization: `Bearer ${this.apiKey}`,

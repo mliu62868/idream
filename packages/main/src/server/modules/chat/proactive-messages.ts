@@ -73,20 +73,21 @@ export async function updateProactiveSettings(
  *            数据异常时变成刷屏。开启时一定会写入具体时间。
  * INVARIANT: 只领取 active 且未进入删除流程的账号。待删除（宽限期内）、封禁的账号
  *            Chat 侧会拒绝执行，但 Main 此时已经建好 Turn 和 usage fact —— 在领取处挡住。
+ * INVARIANT: Prisma 的无时区时间字段存 UTC，比较和推进不能继承数据库连接时区。
  */
 async function claimDueProactiveSession() {
   const rows = await prisma.$queryRaw<
     Array<{ sessionId: string; userId: string; awaitingReply: boolean | null }>
   >`
     UPDATE "recent_chats"
-       SET "proactiveNextAt" = now() + ("proactiveIntervalHours" || ' hours')::interval
+       SET "proactiveNextAt" = (now() AT TIME ZONE 'UTC') + ("proactiveIntervalHours" || ' hours')::interval
      WHERE "sessionId" = (
        SELECT c."sessionId" FROM "recent_chats" c
          JOIN "users" u ON u.id = c."userId"
         WHERE c."proactiveEnabled" = true
           AND c."status" = 'active'
           AND c."proactiveNextAt" IS NOT NULL
-          AND c."proactiveNextAt" <= now()
+          AND c."proactiveNextAt" <= (now() AT TIME ZONE 'UTC')
           AND u."status" = 'active'
           AND u."deletedAt" IS NULL
         ORDER BY c."proactiveNextAt" ASC

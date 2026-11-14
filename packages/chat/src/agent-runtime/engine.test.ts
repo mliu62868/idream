@@ -15,6 +15,7 @@ import {
   CompanionEngine,
   CompanionCapacityError,
   buildReplaySeed,
+  probeCompanionBridges,
   type CompanionEngineOptions,
   type CompanionRuntimePort,
 } from "./engine";
@@ -388,6 +389,48 @@ async function waitFor(check: () => boolean): Promise<void> {
 }
 
 describe("Chat embedded companion runtime", () => {
+  it("qualifies the synthetic paid bridge without requiring a product action", async () => {
+    await expect(probeCompanionBridges(imageInvocation())).resolves.toBeUndefined();
+  });
+
+  it("ends native media selection once Main confirms the attachment instead of generating a discarded reply", async () => {
+    const native = vi.fn(async () => response({ tool_calls: [{ index: 0, id: "only-media", function: {
+      name: "generate_image_async", arguments: JSON.stringify({ prompt: "Mira at the seaside", subject: "companion" }),
+    } }] }, "tool_calls"));
+    const extraction = vi.fn(async () => response({ content: '{"requests":[]}' }));
+    const runtime = await engine(new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: native }, extraction));
+    const connection = port();
+    try {
+      await runtime.run(imageInvocation(), connection.runtimePort);
+      expect(native).toHaveBeenCalledOnce();
+      expect(extraction).toHaveBeenCalledOnce();
+      expect(connection.candidates).toHaveLength(1);
+      expect(connection.candidates[0]).toMatchObject({ content: "", mediaResponse: { attachmentId: "attachment-1" }, execution: { steps: 2, toolCalls: 1 } });
+    } finally { await runtime.shutdown(); }
+  });
+
+  it("keeps ordinary requested text after a read-only media search finds no match", async () => {
+    let requests = 0;
+    const reply = "Translation means expressing meaning in another language.";
+    const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
+      if (++requests === 1) return response({ tool_calls: [{ index: 0, id: "stock-search", function: {
+        name: "search_character_media", arguments: JSON.stringify({ kind: "image", query: "Mira at the seaside" }),
+      } }] }, "tool_calls");
+      return response({ content: reply });
+    } });
+    const runtime = await engine(adapter);
+    const connection = port({ executeTool: async call => ({ attemptId: call.attemptId, callId: call.callId, name: call.name,
+      outcome: "succeeded", output: { accepted: true, status: "no_match", matches: [] } }) });
+    const value = mediaInvocation();
+    value.preparedTurn.messages.at(-1)!.content = "Check for a seaside photo. Also explain what translation means.";
+    try {
+      await runtime.run(value, connection.runtimePort);
+      expect(connection.candidates).toHaveLength(1);
+      expect(connection.candidates[0]?.content).toBe(reply);
+      expect(requests).toBe(2);
+    } finally { await runtime.shutdown(); }
+  });
+
   it.each([
     { name: "edit_last_image", status: "awaiting_confirmation", generationJobId: null, mediaAssetId: null, costDreamcoins: 0 },
     { name: "edit_last_image", status: "cancelled", generationJobId: null, mediaAssetId: null, costDreamcoins: 0 },
@@ -511,10 +554,6 @@ describe("Chat embedded companion runtime", () => {
       if (requests.length === 1) return response({ tool_calls: [{ index: 0, id: "pending-edit-call", function: {
         name: "edit_last_image", arguments: JSON.stringify({ instruction: "Change only the green mug to red.", editScope: { mode: "local", target: "the green mug", selection: "one" } }),
       } }] }, "tool_calls", { inputTokens: 10, outputTokens: 2 });
-      if (requests.length === 2) {
-        expect(JSON.parse(request.messages.find(message => message.role === "tool")!.content)).toMatchObject({ outcome: "succeeded", output: receipt });
-        return response({ content: "Done, I already generated the edit." }, "stop", { inputTokens: 10, outputTokens: 2 });
-      }
       expect(request.tools?.map(tool => tool.function.name)).toEqual(expect.arrayContaining(["igrep_search", "session_recall"]));
       expect(request.tools?.some(tool => ["generate_image_async", "edit_last_image", "search_character_media", "send_character_media"].includes(tool.function.name))).toBe(false);
       expect(request.messages).toContainEqual(expect.objectContaining({ role: "user", content: independent }));
@@ -532,13 +571,13 @@ describe("Chat embedded companion runtime", () => {
     const connection = port({ executeTool });
     await runtime.run(value, connection.runtimePort);
     expect(executeTool).toHaveBeenCalledOnce();
-    expect(requests).toHaveLength(mixed ? 3 : 2);
+    expect(requests).toHaveLength(mixed ? 2 : 1);
     expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
     expect(connection.events.filter(event => event.type === "text_delta").map(event => event.delta)).toEqual(mixed ? ["17 + 25 is 42, love."] : []);
     expect(connection.candidates[0]).toMatchObject({ content: mixed ? "17 + 25 is 42, love." : "",
-      mediaResponse: { version: 1, attachmentId: "pending-edit" }, execution: { steps: mixed ? 4 : 3, toolCalls: 1 } });
+      mediaResponse: { version: 1, attachmentId: "pending-edit" }, execution: { steps: mixed ? 3 : 2, toolCalls: 1 } });
     expect(connection.candidates[0]?.modelRequests?.map(request => request.purpose)).toEqual(mixed
-      ? [undefined, undefined, "media_extraction", "media_body"] : [undefined, undefined, "media_extraction"]);
+      ? [undefined, "media_extraction", "media_body"] : [undefined, "media_extraction"]);
     await runtime.shutdown();
   });
 
@@ -571,11 +610,11 @@ describe("Chat embedded companion runtime", () => {
       const runtime = await engine(adapter);
       await runtime.run(value, connection.runtimePort);
       expect(actions).toBe(1);
-      expect(requests).toHaveLength(2);
+      expect(requests).toHaveLength(1);
       expect(connection.events.some(event => event.type === "text_delta" || event.type === "failed")).toBe(false);
       expect(connection.candidates[0]).toMatchObject({ content: "", mediaResponse: { version: 1, attachmentId: "real-attachment" },
-        execution: { steps: 3, toolCalls: 1 }, usage: { promptTokens: 25, completionTokens: 5, reasoningTokens: 0 } });
-      expect(connection.candidates[0]?.modelRequests?.map(request => request.purpose)).toEqual([undefined, undefined, "media_extraction"]);
+        execution: { steps: 2, toolCalls: 1 }, usage: { promptTokens: 15, completionTokens: 3, reasoningTokens: 0 } });
+      expect(connection.candidates[0]?.modelRequests?.map(request => request.purpose)).toEqual([undefined, "media_extraction"]);
       await runtime.shutdown();
     }
   });
@@ -685,7 +724,6 @@ describe("Chat embedded companion runtime", () => {
       requests.push(request);
       if (requests.length === 1) return call(firstLookup, "prior-lookup", { query: "earlier choice" });
       if (requests.length === 2) return call("generate_image_async", "single-media", { prompt: "Mira walking outdoors", subject: "companion" });
-      if (requests.length === 3) return response({ content: "Done, the image is perfect." }, "stop", { inputTokens: 4, outputTokens: 1 });
       const names = request.tools!.map(tool => tool.function.name);
       expect(names).toContain("session_recall");
       expect(names).toContain("igrep_search");
@@ -698,16 +736,16 @@ describe("Chat embedded companion runtime", () => {
       expect(request.messages.some(message => message.content?.includes("<context>\nTheir saved preferences"))).toBe(true);
       expect(request.messages.some(message => message.content === "I chose the cedar path.")).toBe(true);
       expect(request.messages[0]!.content).toContain("Pinned Mira Soul");
-      return requests.length === 4 ? call("session_recall", "body-lookup", {}) : response({ content: "You chose the cedar path, love." }, "stop", { inputTokens: 4, outputTokens: 1 });
+      return requests.length === 3 ? call("session_recall", "body-lookup", {}) : response({ content: "You chose the cedar path, love." }, "stop", { inputTokens: 4, outputTokens: 1 });
     } }, async () => response({ content: JSON.stringify({ requests: [independent] }) }, "stop", { inputTokens: 4, outputTokens: 1 }));
     const runtime = await engine(adapter, undefined, mode === "normal" ? memoryPorts : { runIgrep: async () => ({ results: [] }) });
     const connection = port();
     await runtime.run(value, connection.runtimePort);
-    expect(requests).toHaveLength(5);
+    expect(requests).toHaveLength(4);
     expect(connection.events.filter(event => event.type === "text_delta").map(event => event.delta)).toEqual(["You chose the cedar path, love."]);
     expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
-    expect(connection.candidates[0]).toMatchObject({ content: "You chose the cedar path, love.", execution: { steps: 6, toolCalls: 1 }, mediaResponse: { attachmentId: "attachment-1" } });
-    expect(connection.candidates[0]?.modelRequests?.map(request => request.purpose)).toEqual([undefined, undefined, undefined, "media_extraction", "media_body", "media_body"]);
+    expect(connection.candidates[0]).toMatchObject({ content: "You chose the cedar path, love.", execution: { steps: 5, toolCalls: 1 }, mediaResponse: { attachmentId: "attachment-1" } });
+    expect(connection.candidates[0]?.modelRequests?.map(request => request.purpose)).toEqual([undefined, undefined, "media_extraction", "media_body", "media_body"]);
     await runtime.shutdown();
   });
 
@@ -735,17 +773,16 @@ describe("Chat embedded companion runtime", () => {
         expect(firstPage.next).toMatchObject({ path: "conversation.jsonl", offset: 6_000, fingerprint: firstPage.results[0]!.fingerprint });
         return call("generate_image_async", "single-media", { prompt: "Mira walking outdoors", subject: "companion" });
       }
-      if (requests.length === 3) return response({ content: "Provisional media reply." }, "stop", { inputTokens: 4, outputTokens: 1 });
       expect(request.tools!.some(tool => tool.function.name === "generate_image_async")).toBe(false);
       expect(request.messages).toContainEqual(expect.objectContaining({ role: "user", content: independent }));
-      if (requests.length === 4) {
+      if (requests.length === 3) {
         // The independent loop must continue the cursor actually supplied to
         // the first loop, including that original file's version witness.
         const transferred = result(request, "source-first");
         expect(transferred.next).toEqual(firstPage.next);
         return call("igrep_read_source", "source-rest", transferred.next);
       }
-      if (requests.length === 5) {
+      if (requests.length === 4) {
         const rest = result(request, "source-rest");
         expect(rest.next).toBeNull();
         expect(rest.results[0].fingerprint).toBe(firstPage.results[0]!.fingerprint);
@@ -791,7 +828,7 @@ describe("Chat embedded companion runtime", () => {
       expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
       expect(connection.candidates).toHaveLength(1);
       expect(connection.candidates[0]).toMatchObject({ content: "Your note ended with cedar lantern.",
-        execution: { steps: 7, toolCalls: 1 }, mediaResponse: { attachmentId: "attachment-1" } });
+        execution: { steps: 6, toolCalls: 1 }, mediaResponse: { attachmentId: "attachment-1" } });
       expect(readCalls).toEqual([
         { path: "conversation.jsonl", offset: 0, expected: undefined, fingerprint: readCalls[0]!.fingerprint },
         { path: "conversation.jsonl", offset: 6_000, expected: readCalls[0]!.fingerprint, fingerprint: readCalls[0]!.fingerprint },
@@ -805,18 +842,18 @@ describe("Chat embedded companion runtime", () => {
     const value = imageInvocation();
     const independent = "Also tell me the sum.";
     value.preparedTurn.messages.at(-1)!.content += ` ${independent}`;
-    const maxSteps = kind === "budget" ? 3 : 8;
+    const maxSteps = kind === "budget" ? 2 : 8;
     value.expectedProfileDigest = companionCompositionDigest("private", companionIgrepConfig("private", "igrep"), { maxSteps, igrepLlm: IGREP_LLM });
     let calls = 0;
     const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: async () => {
       calls++;
       if (calls === 1) return response({ tool_calls: [{ index: 0, id: "effect", function: { name: "generate_image_async", arguments: JSON.stringify({ prompt: "Mira at the cafe", subject: "companion" }) } }] }, "tool_calls");
-      return response({ content: calls === 2 ? "Provisional" : kind === "empty" ? " " : "42" }, calls > 2 && kind === "length" ? "length" : "stop");
+      return response({ content: kind === "empty" ? " " : "42" }, kind === "length" ? "length" : "stop");
     } }, async () => response({ content: JSON.stringify({ requests: [independent] }) }));
     const runtime = await engine(adapter, undefined, { maxSteps });
     const connection = port();
     await runtime.run(value, connection.runtimePort);
-    expect(calls).toBe(kind === "budget" ? 2 : 3);
+    expect(calls).toBe(kind === "budget" ? 1 : 2);
     expect(connection.candidates).toEqual([]);
     expect(connection.events.at(-1)).toMatchObject({ type: "failed", error: { code: "media_response_incomplete" } });
     await runtime.shutdown();
@@ -827,21 +864,19 @@ describe("Chat embedded companion runtime", () => {
     { missingAttempt: 2, zero: false, expected: null },
     { missingAttempt: 0, zero: false, expected: { promptTokens: 80, completionTokens: 20, reasoningTokens: null } },
     { missingAttempt: 0, zero: true, expected: { promptTokens: 0, completionTokens: 0, reasoningTokens: null } },
-  ])("preserves complete or unknown usage across native image and answer requests: $missingAttempt $zero", async ({ missingAttempt, zero, expected }) => {
+  ])("preserves complete or unknown usage across native image and extraction requests: $missingAttempt $zero", async ({ missingAttempt, zero, expected }) => {
     const value = imageInvocation();
     let requests = 0;
-    const adapter = new FixtureAdapter({
-      profile: value.preparedTurn.profile, apiKey: "fixture-key",
-      fetch: async () => {
-        requests++;
-        return new Response(`data: ${JSON.stringify({
-          choices: [{ delta: requests === 1
-            ? { tool_calls: [{ index: 0, id: "image-1", function: { name: "generate_image_async", arguments: JSON.stringify({ prompt: "Mira at the observatory", subject: "companion" }) } }] }
-            : { content: "Give me a moment, love." }, finish_reason: requests === 1 ? "tool_calls" : "stop" }],
-          ...(requests === missingAttempt ? {} : { usage: { input_tokens: zero ? 0 : 40, output_tokens: zero ? 0 : 10 } }),
-        })}\n\ndata: [DONE]\n\n`);
-      },
-    });
+    const requestUsage: typeof fetch = async () => {
+      requests++;
+      return new Response(`data: ${JSON.stringify({
+        choices: [{ delta: requests === 1
+          ? { tool_calls: [{ index: 0, id: "image-1", function: { name: "generate_image_async", arguments: JSON.stringify({ prompt: "Mira at the observatory", subject: "companion" }) } }] }
+          : { content: '{"requests":[]}' }, finish_reason: requests === 1 ? "tool_calls" : "stop" }],
+        ...(requests === missingAttempt ? {} : { usage: { input_tokens: zero ? 0 : 40, output_tokens: zero ? 0 : 10 } }),
+      })}\n\ndata: [DONE]\n\n`);
+    };
+    const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture-key", fetch: requestUsage }, requestUsage);
     const runtime = await engine(adapter);
     const connection = port();
     await runtime.run(value, connection.runtimePort);
@@ -852,8 +887,7 @@ describe("Chat embedded companion runtime", () => {
     // Every physical request contributes its own receipt; unknown usage
     // cannot become a known terminal sum by omitting that request.
     expect(connection.events.filter(event => event.type === "usage").map(event => event.usage)).toEqual(
-      [...[1, 2].filter(attempt => attempt !== missingAttempt).map(() => ({ promptTokens: zero ? 0 : 40, completionTokens: zero ? 0 : 10, reasoningTokens: null })),
-        { promptTokens: 0, completionTokens: 0, reasoningTokens: 0 }],
+      [1, 2].filter(attempt => attempt !== missingAttempt).map(() => ({ promptTokens: zero ? 0 : 40, completionTokens: zero ? 0 : 10, reasoningTokens: null })),
     );
   });
 
@@ -1413,17 +1447,21 @@ describe("Chat embedded companion runtime", () => {
           name: "generate_image_async", arguments: JSON.stringify({ prompt: "Mira beside the observatory window", subject: "companion" }),
         } }] }, "tool_calls", { inputTokens: 20, outputTokens: 12, reasoningTokens: 5 })
         : response({ reasoning_content: "PRIVATE_REVIEW", content: "A little glimpse of my evening for you." }, "stop", { inputTokens: 30, outputTokens: 14, reasoningTokens: 6 });
-    } });
+    } }, async (_url, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return response({ reasoning_content: "PRIVATE_REVIEW", content: '{"requests":[]}' }, "stop", { inputTokens: 30, outputTokens: 14, reasoningTokens: 6 });
+    });
     const runtime = await engine(adapter);
     const connection = port();
     await runtime.run(invocation(true), connection.runtimePort);
     expect(connection.candidates).toHaveLength(1);
     expect(connection.candidates[0]).toMatchObject({
-      content: "", mediaResponse: { attachmentId: "attachment-1" }, execution: { steps: 3, toolCalls: 1 },
+      content: "", mediaResponse: { attachmentId: "attachment-1" }, execution: { steps: 2, toolCalls: 1 },
       usage: { promptTokens: 50, completionTokens: 26, reasoningTokens: 11 },
     });
     expect(JSON.stringify({ requests, events: connection.events, candidates: connection.candidates })).not.toContain("PRIVATE_");
-    expect(requests[1]?.messages.some(message => message.role === "tool")).toBe(true);
+    expect(requests).toHaveLength(2);
+    expect(JSON.parse(requests[1]!.messages.at(-1)!.content).mainReceipt).toMatchObject({ callId: "image-reasoned", outcome: "succeeded" });
   });
 
   it("keeps known totals across tool steps when one reasoning subtotal is unknown", async () => {
@@ -1434,8 +1472,8 @@ describe("Chat embedded companion runtime", () => {
           name: "generate_image_async", arguments: JSON.stringify({ prompt: "Mira beside the observatory window", subject: "companion" }),
         } }],
       }, finish_reason: "tool_calls" }], usage: { prompt_tokens: 20, completion_tokens: 12 } })}\n\ndata: [DONE]\n\n`);
-      return response({ content: "A little glimpse of my evening for you." }, "stop", { inputTokens: 30, outputTokens: 14, reasoningTokens: 6 });
-    } });
+      throw new Error("A confirmed attachment must not request a provisional answer");
+    } }, async () => response({ content: '{"requests":[]}' }, "stop", { inputTokens: 30, outputTokens: 14, reasoningTokens: 6 }));
     const runtime = await engine(adapter);
     const connection = port();
     await runtime.run(invocation(true), connection.runtimePort);
@@ -1450,7 +1488,7 @@ describe("Chat embedded companion runtime", () => {
     await runtime.run(invocation(true), connection.runtimePort);
     expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
     expect(connection.candidates[0]?.execution.toolCalls).toBe(1);
-    expect(adapter.calls).toBe(2);
+    expect(adapter.calls).toBe(1);
   });
 
   it("requires the Agent to author and execute the concrete image prompt", async () => {
@@ -1482,7 +1520,7 @@ describe("Chat embedded companion runtime", () => {
       }),
     ]);
     expect(connection.candidates[0]).toMatchObject({
-      execution: { steps: 3, toolCalls: 1 },
+      execution: { steps: 2, toolCalls: 1 },
       tools: [expect.objectContaining({
         effectScope: "turn_action",
         intent: { requestedNudity: "full" },
@@ -1500,15 +1538,18 @@ describe("Chat embedded companion runtime", () => {
     } });
     const requests: WireRequest[] = [];
     const receipts: CompanionToolResult[] = [];
-    const reply = status === "completed" ? "The photo has arrived." : "The photo is still being worked on.";
+    let extractedReceipt: unknown;
     const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: async (_url, init) => {
       requests.push(JSON.parse(String(init?.body)));
       return requests.length === 1
         ? response({ tool_calls: [{ index: 0, id: "image-status", function: { name, arguments: JSON.stringify(name === "edit_last_image"
           ? { instruction: "Change the mug to red.", requestedNudity: "none", editScope: { mode: "local", target: "mug", selection: "one" } }
           : { prompt: "Mira holding a red mug.", subject: "companion", requestedNudity: "none" }) } }] }, "tool_calls")
-        : response({ content: reply });
-    } });
+        : response({ content: "A provisional answer must not be requested." });
+    } }, async (_url, init) => {
+      extractedReceipt = JSON.parse(JSON.parse(String(init?.body)).messages.at(-1).content).mainReceipt;
+      return response({ content: '{"requests":[]}' });
+    });
     const runtime = await engine(adapter);
     const connection = port({ executeTool: async call => {
       const receipt: CompanionToolResult = { attemptId: call.attemptId, callId: call.callId, name: call.name,
@@ -1519,11 +1560,8 @@ describe("Chat embedded companion runtime", () => {
     } });
     try {
       await runtime.run(value, connection.runtimePort);
-      expect(requests).toHaveLength(2);
-      const continuation = requests[1]!.messages.find(message => message.role === "tool");
-      expect(continuation?.tool_call_id).toBe("image-status");
-      const raw = JSON.stringify(receipts[0]);
-      expect(continuation?.content).toBe(raw);
+      expect(requests).toHaveLength(1);
+      expect(extractedReceipt).toEqual(receipts[0]);
       expect(connection.candidates[0]?.content).toBe("");
       expect(connection.candidates[0]?.mediaResponse).toEqual({ version: 1, attachmentId: "attachment-status" });
       expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
@@ -1569,9 +1607,9 @@ describe("Chat embedded companion runtime", () => {
       expect.objectContaining({ name: "search_character_media", effectScope: "attempt", intent: { requestedNudity: "none" }, arguments: searchArgs }),
       expect.objectContaining({ name: "send_character_media", effectScope: "turn_action", arguments: { candidateToken: "exact-seaside-result" } }),
     ]);
-    expect(requests).toHaveLength(3);
-    expect(connection.candidates[0]).toMatchObject({ content: "", mediaResponse: { attachmentId: "attachment-free" }, execution: { steps: 4, toolCalls: 2 },
-      usage: { promptTokens: 60, completionTokens: 9, reasoningTokens: 0 },
+    expect(requests).toHaveLength(2);
+    expect(connection.candidates[0]).toMatchObject({ content: "", mediaResponse: { attachmentId: "attachment-free" }, execution: { steps: 3, toolCalls: 2 },
+      usage: { promptTokens: 40, completionTokens: 6, reasoningTokens: 0 },
       tools: [expect.objectContaining({ name: "search_character_media", effectScope: "attempt" }), expect.objectContaining({ name: "send_character_media", effectScope: "turn_action" })] });
     expect(JSON.stringify(connection.events)).not.toContain("exact-seaside-result");
     expect(JSON.stringify(connection.candidates[0]?.tools)).not.toContain("Mira wears");
@@ -1744,7 +1782,7 @@ describe("Chat embedded companion runtime", () => {
     } });
     await runtime.run(value, connection.runtimePort);
     expect(calls).toEqual([expect.objectContaining({ name: action.name, effectScope: "turn_action", arguments: action.arguments })]);
-    expect(connection.candidates[0]?.execution).toEqual({ steps: 3, toolCalls: 1 });
+    expect(connection.candidates[0]?.execution).toEqual({ steps: 2, toolCalls: 1 });
   });
 
   it("keeps a provider's extra image count out of the paid effect bridge", async () => {
@@ -2367,7 +2405,7 @@ describe("Chat embedded companion runtime", () => {
     const runtime = await engine(adapter);
     const connection = port();
     await runtime.run(value, connection.runtimePort);
-    expect(adapter.calls).toBe(2);
+    expect(adapter.calls).toBe(1);
     expect(connection.candidates[0]).toMatchObject({ content: "", mediaResponse: { attachmentId: "attachment-1" } });
     expect(connection.candidates[0]).not.toHaveProperty("acknowledgement");
     expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
@@ -2378,7 +2416,7 @@ describe("Chat embedded companion runtime", () => {
     const runtime = await engine(adapter);
     const connection = port();
     await runtime.run(imageInvocation(), connection.runtimePort);
-    expect(adapter.calls).toBe(2);
+    expect(adapter.calls).toBe(1);
     expect(connection.events.some(event => event.type === "text_reset")).toBe(false);
     expect(connection.events.filter(event => event.type === "text_delta")).toEqual([]);
     expect(connection.candidates[0]).toMatchObject({ content: "", mediaResponse: { attachmentId: "attachment-1" } });
@@ -2490,19 +2528,22 @@ describe("Chat embedded companion runtime", () => {
     expect(connection.events.at(-1)).toMatchObject({ type: "cancelled", reason: "user" });
   });
 
-  it("retains a known tool request and an unknown interrupted answer when cancelled", async () => {
+  it("retains a known tool request and an unknown interrupted extraction when cancelled", async () => {
     let requests = 0;
     const value = invocation(true);
     const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture",
-      fetch: async (_url, init) => {
+      fetch: async () => {
         if (++requests === 1) return response({ tool_calls: [{ index: 0, id: "image-1", function: {
           name: "generate_image_async", arguments: JSON.stringify({ prompt: "Mira by the observatory", subject: "companion", requestedNudity: "none" }),
         } }] }, "tool_calls", { inputTokens: 25, outputTokens: 6, cacheReadTokens: 4 });
-        return await new Promise<Response>((_resolve, reject) => {
-          const abort = () => reject(init?.signal?.reason);
-          if (init?.signal?.aborted) abort(); else init?.signal?.addEventListener("abort", abort, { once: true });
-        });
+        throw new Error("A confirmed attachment must not request a provisional answer");
       },
+    }, async (_url, init) => {
+      requests++;
+      return new Promise<Response>((_resolve, reject) => {
+        const abort = () => reject(init?.signal?.reason);
+        if (init?.signal?.aborted) abort(); else init?.signal?.addEventListener("abort", abort, { once: true });
+      });
     });
     const runtime = await engine(adapter);
     const connection = port();

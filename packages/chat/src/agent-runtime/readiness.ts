@@ -42,6 +42,13 @@ async function packageVersion(name: string): Promise<string> {
   }
 }
 
+/** Both cheap admission health and full certification must inspect installed code. */
+export async function verifyPiPackages(resolveVersion: (name: string) => Promise<string> = packageVersion): Promise<void> {
+  const versions = await Promise.all(COMPANION_CORE_PACKAGES.map(resolveVersion));
+  const drift = COMPANION_CORE_PACKAGES.filter((_name, index) => versions[index] !== COMPANION_PI_VERSION);
+  if (drift.length) throw new Error(`Pi core version drift: ${drift.join(", ")}`);
+}
+
 export function readinessProfile(model: ChatModelProfile): PreparedTurnProfile {
   return {
     tier: "readiness", adapter: "openai-compatible-v1", provider: model.provider,
@@ -227,9 +234,7 @@ export function createReadinessProbe(options: ReadinessOptions): (force?: boolea
     if (inFlight) return inFlight;
     if (!force && cached) return Promise.resolve(cached);
     const current = (async () => {
-      const versions = await Promise.all(COMPANION_CORE_PACKAGES.map(options.resolvePackageVersion ?? packageVersion));
-      const drift = COMPANION_CORE_PACKAGES.filter((_name, index) => versions[index] !== COMPANION_PI_VERSION);
-      if (drift.length) throw new Error(`Pi core version drift: ${drift.join(", ")}`);
+      await verifyPiPackages(options.resolvePackageVersion);
       const cli = { command: options.config.igrepCommand, env: options.config.igrepEnvironment };
       const resolvedIgrepVersion = await (options.resolveIgrepVersion ?? igrepVersion)(cli);
       if (resolvedIgrepVersion !== COMPANION_IGREP_VERSION) throw new Error("igrepVersion must match the qualified release");

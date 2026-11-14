@@ -37,7 +37,7 @@ describe("fail-closed Pi companion readiness", () => {
       resolveIgrepVersion: async cli => { observedEnvironment = cli.env; return "0.1.164"; },
     })();
     expect(readiness).toMatchObject({
-      ready: true, productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION, piVersion: "1.4.0", igrepVersion: "0.1.164",
+      ready: true, productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION, piVersion: "1.5.2", igrepVersion: "0.1.164",
       kernel: { storage: "memory", publicApi: true }, instance: runtimeInstance,
       provider: { name: "openai", baseUrl: "https://openrouter.ai/api/v1", model: "deepseek/test", resolved: true },
       bridges: { toolReachable: true, commitReachable: true, workspaceRebuildReachable: true }, verification: igrepVerification,
@@ -57,7 +57,7 @@ describe("fail-closed Pi companion readiness", () => {
     for (const version of ["latest", "0.1.150", "9.8.7"]) {
       await expect(createReadinessProbe({ config, ...successfulRuntimeEvidence, providerWarmup, resolveIgrepVersion: async () => version })()).rejects.toThrow(/igrepVersion/);
     }
-    await expect(createReadinessProbe({ config, ...successfulRuntimeEvidence, providerWarmup, resolvePackageVersion: async name => name.endsWith("pi-ai") ? "1.2.0" : "1.4.0" })()).rejects.toThrow(/Pi core version drift/);
+    await expect(createReadinessProbe({ config, ...successfulRuntimeEvidence, providerWarmup, resolvePackageVersion: async name => name.endsWith("pi-ai") ? "1.2.0" : "1.5.2" })()).rejects.toThrow(/Pi core version drift/);
     expect(providerWarmup).not.toHaveBeenCalled();
   });
 

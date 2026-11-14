@@ -73,6 +73,28 @@ async function drain(adapter: OpenAiCompatibleAdapter): Promise<void> {
 }
 
 describe("OpenAI-compatible Pi adapter", () => {
+  it("starts the first-token timeout only after durable dispatch evidence is ready", async () => {
+    vi.useFakeTimers();
+    const gate = Promise.withResolvers<void>();
+    const request = vi.fn(async () => new Response('data: {"choices":[{"delta":{"content":"Done."},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'));
+    const observeRequest = vi.fn(() => gate.promise);
+    const adapter = adapterFor("https://provider.example/v1", request, { observeRequest });
+    const running = drain(adapter);
+    const settled = running.then(() => undefined, error => error);
+    try {
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(observeRequest).toHaveBeenCalledOnce();
+      expect(request).not.toHaveBeenCalled();
+      gate.resolve();
+      expect(await settled).toBeUndefined();
+      expect(request).toHaveBeenCalledOnce();
+    } finally {
+      gate.resolve();
+      await settled;
+      vi.useRealTimers();
+    }
+  });
+
   it("waits for durable dispatch evidence before making the physical request", async () => {
     const gate = Promise.withResolvers<void>();
     const request = vi.fn(async () => new Response('data: {"choices":[{"delta":{"content":"Done."},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'));

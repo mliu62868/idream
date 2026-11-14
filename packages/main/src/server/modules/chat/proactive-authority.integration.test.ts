@@ -252,6 +252,7 @@ describe("proactive cadence without a reply", () => {
     expect(await prisma.chatTurn.count({ where: { sessionId: f.sessionId } })).toBe(1);
     const row = await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: f.sessionId } });
     expect(row.proactiveNextAt!.getTime()).toBeGreaterThan(Date.now() + 23 * 3_600_000);
+    expect(row.proactiveNextAt!.getTime()).toBeLessThan(Date.now() + 25 * 3_600_000);
   });
 
   it.each(["failed", "blocked", "cancelled"] as const)("allows one new check-in at the next cadence after a %s terminal", async (status) => {
@@ -276,6 +277,7 @@ describe("proactive cadence without a reply", () => {
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
     const row = await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: f.sessionId } });
     expect(row.proactiveNextAt!.getTime()).toBeGreaterThan(Date.now() + 23 * 3_600_000);
+    expect(row.proactiveNextAt!.getTime()).toBeLessThan(Date.now() + 25 * 3_600_000);
   });
 
   it("does not let a newer blocked Turn hide a reply that is still active", async () => {
@@ -323,6 +325,7 @@ describe("proactive cadence without a reply", () => {
       expect(await prisma.chatTurn.count({ where: { sessionId: f.sessionId } })).toBe(0);
       const row = await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: f.sessionId } });
       expect(row.proactiveNextAt!.getTime()).toBeGreaterThan(Date.now() + 23 * 3_600_000);
+      expect(row.proactiveNextAt!.getTime()).toBeLessThan(Date.now() + 25 * 3_600_000);
     } finally {
       admission.mockRestore();
     }

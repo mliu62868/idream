@@ -25,7 +25,7 @@ test("bootstrap qualifies the locked public runtime without installing home prof
   const runtime = fixture();
   const report = runPiCompanionBootstrap({ check: false, json: true }, runtime);
   assert.equal(report.ok, true);
-  assert.deepEqual(report.pins, { pi: "1.4.0", igrep: "0.1.164" });
+  assert.deepEqual(report.pins, { pi: "1.5.2", igrep: "0.1.164" });
   assert.deepEqual(Object.keys(report.packages), PI_PACKAGES);
   assert.equal(report.fullReadinessRequired, true);
   assert.deepEqual(report.cli, { search: true, jsonlSearch: true, versionedSourceRead: true, modelCalls: 0 });

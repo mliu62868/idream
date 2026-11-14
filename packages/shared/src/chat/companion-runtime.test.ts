@@ -43,7 +43,7 @@ function imageToolEvidence(tool: unknown) {
     tools: [tool],
     contentDigest: "b".repeat(64),
     igrepVersion: "0.1.164",
-    piVersion: "1.4.0",
+    piVersion: "1.5.2",
     igrepObservations: {
       wake: { calls: 1, hits: 0, failures: 0, evidenceMatches: 0 },
       search: { calls: 0, hits: 0, failures: 0, evidenceMatches: 0 },
@@ -229,7 +229,7 @@ describe("shared companion authority contracts", () => {
       tools: [],
       contentDigest: "b".repeat(64),
       igrepVersion: "0.1.164",
-      piVersion: "1.4.0",
+      piVersion: "1.5.2",
       igrepObservations: {
         wake: { calls: 0, hits: 0, failures: 0, evidenceMatches: 0 },
         search: { calls: 0, hits: 0, failures: 0, evidenceMatches: 0 },

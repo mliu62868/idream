@@ -1,4 +1,6 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { Prisma } from "@prisma/client";
+import pg from "pg";
 import { prisma } from "@/server/lib/db";
 import { AppError } from "@/server/lib/errors";
 import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
@@ -73,6 +75,23 @@ describe("proactive message cadence", () => {
       admitted: 0,
       failed: 0,
     });
+  });
+
+  it.each(["UTC", "Asia/Shanghai", "America/New_York", "Pacific/Kiritimati"])("keeps a new interval in the future with database timezone %s", async timezone => {
+    await updateProactiveSettings(userId, sessionId, { enabled: true, intervalHours: 6 });
+    // Execute the actual claim statement on a dedicated connection. Only
+    // this connection gets the timezone; the product SQL stays unchanged.
+    const database = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    await database.connect();
+    await database.query("SELECT set_config('TimeZone', $1, false)", [timezone]);
+    const query = vi.spyOn(prisma, "$queryRaw").mockImplementation(<T>(statement: TemplateStringsArray | Prisma.Sql, ...values: unknown[]) => {
+      const sql = "text" in statement ? statement : Prisma.sql(statement, ...values);
+      return database.query(sql.text, [...sql.values]).then(result => result.rows) as Prisma.PrismaPromise<T>;
+    });
+    try {
+      await expect(dispatchDueProactiveTurns(5)).resolves.toEqual({ admitted: 0, failed: 0 });
+      expect(await prisma.chatTurn.count({ where: { sessionId } })).toBe(0);
+    } finally { query.mockRestore(); await database.end(); }
   });
 
   it("refuses to switch check-ins on for a group member session", async () => {

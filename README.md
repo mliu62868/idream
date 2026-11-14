@@ -157,7 +157,7 @@ leaves the Generation queues paused for the next controlled start.
 
 ## Chat Runtime
 
-Chat embeds Pi `1.4.0` (`pi-ai`, `pi-durable`, and `chord`) and calls the
+Chat embeds Pi `1.5.2` (`pi-ai`, `pi-durable`, and `chord`) and calls the
 provider-neutral igrep `0.1.164` CLI. Install workspace dependencies, then verify
 the pinned packages, public Pi API, and CLI behavior with no model calls:
 
@@ -179,6 +179,12 @@ attribution, is replayed exactly without another model request. There is no Pi
 session database or persistent inbox. Tools execute sequentially; model retries
 and background compaction are disabled.
 
+Admission health rechecks all three installed Pi package versions. Native tool
+call IDs stay unique throughout an attempt, including after compaction. Once
+Main confirms a media attachment, its tool result can end the native round;
+the request extractor and any independent text loop still share the same step
+budget. This avoids generating a media acknowledgement that would be discarded.
+
 The final provider request uses one input estimate including tool schemas and
 pinned state. If compaction still leaves an oversized request, derived summaries
 can be removed and read-only results paged at whole source-chunk boundaries;
@@ -187,6 +193,8 @@ estimate, not the provider tokenizer's exact count. `CHAT_MODEL_MAX_TOKENS`
 (default 8000) covers thinking and visible output together; reply-length
 preferences do not reserve that total for visible text. A thinking-only exhausted
 request fails without an automatic model retry.
+The provider's first-token timer starts after durable dispatch evidence is
+written; the attempt deadline also covers that local write.
 
 Main's committed Turns own long-term memory. Chat alone invokes official
 `mem ingest`, `maintain`, `wake`, `reproject`, and the neutral memory JSON API.

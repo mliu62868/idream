@@ -390,13 +390,13 @@ export async function probeCompanionBridges(invocation: CompanionInvocation): Pr
     name: call.name,
     outcome: "succeeded",
     output: { status: "readiness" },
-  }), (event) => events.push(event));
+  }), (event) => events.push(event), "paid");
   const controller = new AbortController();
   const call: CompanionToolCall = {
     attemptId: invocation.attemptId,
     callId: "readiness-tool-call",
     name: "generate_image_async",
-    effectScope: "attempt",
+    effectScope: "turn_action",
     intent: { requestedNudity: "unspecified" },
     arguments: { prompt: "readiness", subject: "companion" },
   };
@@ -674,6 +674,9 @@ export class CompanionEngine {
                 if (lookup && result.outcome !== "succeeded") return { isError: true, output: [{ type: "text" as const,
                   text: "Prepared media search is unavailable. No media was sent or generated. This is not evidence that the library is empty; do not claim a match or delivery." }] };
                 return { ...(result.outcome !== "succeeded" ? { isError: true } : {}),
+                  // The attachment card already owns the media outcome. End
+                  // this native round; extraction/body handles remaining text.
+                  ...(!lookup && mediaAttachmentId(result) ? { control: { terminate: true } } : {}),
                   output: [{ type: "text" as const, text: JSON.stringify(result) }] };
               },
             } satisfies ToolRegistration)),

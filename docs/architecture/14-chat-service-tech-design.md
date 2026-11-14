@@ -106,24 +106,22 @@ CHAT_FS_ROOT/
 Agent 工具不能直接扣钱，也不能在 provider 成功后用普通 callback 猜测结算。
 
 ```text
-Pi tool_call
+Pi native tool_call
   -> Chat ToolEffectPort
-  -> Main validates exact active Turn attempt + callId
-  -> Main creates/reserves Generation Request
-  -> Gen executes provider
-  -> Main delivery success settles reservation
-  -> Main terminal failure releases/refunds reservation
-  -> Chat observes tool result and continues Pi
+  -> Main validates frozen Turn/attempt, permissions and effect identity
+  -> Main persists attachment; a paid action uses Generation's atomic reservation
+  -> Chat receives the exact Main receipt and ends a confirmed media-only round
+  -> Request extraction and independent text use the remaining Pi step budget
+  -> Gen/Finalizer settle delivery or failure through Main's ledger
 ```
 
-ToolEffect 明确携带作用域，不能把调用语义编码进模型生成的 `callId`。普通模型 tool call 使用 `effectScope=attempt`，幂等键由 `turnId + attempt + toolCallId` 决定，参数 digest 不同则冲突。`PreparedTurn.requiredAction` 表示产品已经接受的明确用户图片意图，使用 `effectScope=turn_action`，效果身份仅由 `turnId + tool name` 决定：regenerate 即使让 Agent 写出不同的具体场景，也只把首次接受的同一附件重绑到当前 attempt，不创建第二个 Generation Job、不改写已经持久化的生成控制，也不重复扣费。`intent.requestedNudity` 是独立的结构化用户边界，由 Main 编译进最终生图 prompt；Agent 负责具体场景，不负责重建或猜测这条边界。当前 Chat 工具只有图片生成与编辑，因此实现只覆盖 image。将来真实 video tool 出现时复用同一端口和既有 Generation 生命周期，不增加通用 hook 框架。
+当前执行边界以 [ADR-21](21-companion-chat-deep-runtime.md) 为准。Agent 使用原生 `tool_choice=auto` 选择工具、具体方向与 `requestedNudity`；Main 冻结的 `imageActionMode` 和产品权限约束执行，不再使用 `PreparedTurn.requiredAction` 或宿主关键词分类强制调用。
 
-明确图片意图在模型运行前由 `PreparedTurn` 固化授权；Pi Agent 编写画面描述，通过唯一匹配工具向 Main 预留 ToolEffect。Main 接受动作后，Chat 保留版本化动作确认与工具结果，并通过 Pi 公共生命周期完成终态。确认语言由当前消息脚本和冻结的签名用户 locale 决定：
+`search_character_media` 使用 `effectScope=attempt`，查询不占媒体动作；Main 为当前匹配结果签发绑定完整查询的候选 token。生成、编辑与库存发送使用 `effectScope=turn_action`，同一 Turn 的用户消息修订共用一个媒体动作身份。回复重试只重绑 Main 已接纳的附件，不再次购买；编辑原文产生新的修订身份。Pi 在派发前拒绝重复调用 ID，Main 继续校验参数、来源和幂等收据。
 
-- 确认文案一次性进入 SSE 和 Main terminal，不能被 Character Soul 改写成拒绝、交换条件或拖延；
-- 附件状态独立拥有 `requesting/accepted/queued/running/completed/failed` 交付事实，文案不虚构图片已完成；
-- Main ACK 不确定时，Chat 使用完全相同的 effect identity 有界重试并对账；
-- terminal evidence 记录 Product Contract、PreparedTurn、system prompt digest、Soul fingerprint、ToolEffect identity，以及 `acknowledgement.version/locale`。附件表持有 attachment/job/media 交付事实；不能用 内核的 `toolCalls=0` 冒充没有产品动作。`execution.steps` 包含本地确认步骤，模型用量只累计实际 provider 步骤。
+Main 附件拥有 `requesting/awaiting_confirmation/accepted/queued/running/completed/failed` 等真实状态。Chat 不合成角色口吻的媒体回执，不把已接纳请求写成已交付或像素已验证。Main 确认附件后通过 Pi 原生工具结束控制省去无用台词；独立问题或故事仍由提取与正文阶段完成。只有只读查询时，普通文字不受图片回执语言或流程词限制。
+
+Main ACK 未确定时，Chat 以同一效果身份进行有界重试和对账；缺少附件证据不能作为媒体成功。终态证据保留产品契约、PreparedTurn、system prompt digest、Soul、工具效果及每次物理模型请求用量；未知回执保持 null。Main 的 Generation 与计费账本独立拥有预留、扣减、退款和交付事实。
 
 ## 6. API
 

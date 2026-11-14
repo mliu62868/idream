@@ -29,6 +29,7 @@ import {
   createReadinessProbe,
   probeWorkspaceRebuild,
   readinessProfile,
+  verifyPiPackages,
 } from "./readiness.js";
 import type {
   CompanionWorkspaceRebuildPromotion,
@@ -114,6 +115,7 @@ function createRuntime(): AgentRuntime {
     };
     const [resolvedIgrepVersion] = await Promise.all([
       igrepVersion(cli),
+      verifyPiPackages(),
       new OpenAiCompatibleAdapter({
         profile: readinessProfile(config.modelProfile),
         apiKey: config.modelProfile.apiKey,

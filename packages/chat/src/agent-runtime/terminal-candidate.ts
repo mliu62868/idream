@@ -68,7 +68,7 @@ export function evaluateTerminalCandidate(
   }
   // Independent text after a media action is ordinary requested content, not
   // a media acknowledgement. Its words and language may differ from the action.
-  if (facts.toolCalls > 0 && !facts.mediaResponse && content.trim()) {
+  if (facts.reservations.some(tool => tool.name !== SEARCH_CHARACTER_MEDIA_TOOL) && !facts.mediaResponse && content.trim()) {
     if (!imageReplyMatchesUserScript(facts.currentUserText, content)) {
       return {
         accepted: false,

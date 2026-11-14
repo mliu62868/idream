@@ -471,7 +471,7 @@ function passingRuntimeEvidence(mode: "normal" | "private"): ChatProbeRuntimeEvi
     profileDigest: "a".repeat(64),
     runtimeInstanceId: "11111111-1111-4111-8111-111111111111",
     igrepVersion: "0.1.164",
-    piVersion: "1.4.0",
+    piVersion: "1.5.2",
     igrepSearchCalls: 0,
     igrepSearchFailures: 0,
     ...(mode === "normal"

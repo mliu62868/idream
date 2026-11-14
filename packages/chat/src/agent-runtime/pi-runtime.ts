@@ -58,6 +58,8 @@ export async function executePiConversation(options: PiExecutionOptions): Promis
   let latest: AssistantMessage | undefined;
   let latestContext: readonly Message[] = [];
   const selectedMediaCalls = new Map<string, { callId: string; name: string; arguments: unknown }>();
+  const toolCallIds = new Set([...options.seed, ...(options.executionEvidence ?? [])].flatMap(message =>
+    message.role === "assistant" ? (message.tool_calls ?? []).map(call => call.id) : []));
   let steps = 0;
   let streamed = false;
   const providerModels = createModels();
@@ -106,6 +108,13 @@ export async function executePiConversation(options: PiExecutionOptions): Promis
   registry.install(defineExtension({ name: "idream.companion", tools: options.tools(() => conversation), hooks: [
     hook(GenerationTask, {
       afterResponse(message) {
+        // Provider IDs identify both Pi results and Main effect receipts. A
+        // repeated ID cannot safely name another call, even after compaction.
+        for (const part of message.content) {
+          if (part.type !== "toolCall") continue;
+          if (toolCallIds.has(part.id)) fail(new Error("tool call identity was reused"));
+          toolCallIds.add(part.id);
+        }
         // Pi rejects invalid tool arguments before the host tool executes. A
         // malformed lookup must therefore fail here, before a paid fallback.
         for (const part of message.content) {
@@ -201,7 +210,7 @@ export async function executePiConversation(options: PiExecutionOptions): Promis
     messages: [{ role: "user", content: options.afterRetrievalContext.content }],
   }) : 0;
   const harness = await Harness.open(new MemoryStorage(), { models, registry,
-    onReport: error => { fatal ??= error instanceof Error ? error : new Error("Pi reported an execution failure"); },
+    onReport: report => { fatal ??= report.error instanceof Error ? report.error : new Error("Pi reported an execution failure"); },
     settings: {
     retry: { enabled: false }, stream: { maxRetries: 0 }, toolExecution: "sequential",
     compaction: { enabled: true, backgroundTokens: 0,

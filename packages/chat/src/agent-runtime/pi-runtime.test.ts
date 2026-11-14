@@ -6,12 +6,50 @@ import { projectRecall } from "./session-recall";
 import type { CompanionInvocation, PreparedTurnMessage } from "./contracts";
 import { buildReplaySeed } from "./pi-context";
 import { executePiConversation } from "./pi-runtime";
-import { OpenAiCompatibleAdapter, type TokenUsage } from "./openai-adapter";
+import { OpenAiCompatibleAdapter, ProviderError, type TokenUsage } from "./openai-adapter";
 import { estimateModelRequestInputTokens } from "./model-request-format";
 import { IMAGE_AGENT_TOOL_DEFINITIONS } from "@idream/shared/chat/image-action";
 import { CHARACTER_MEDIA_TOOL_DEFINITIONS } from "@idream/shared/chat/media-library";
 
 const speaker = { name: "Briar", characterId: "briar", sessionId: "briar-session" };
+
+it("preserves the original error from Pi's tagged hook-failure report", async () => {
+  const value = invocation(8_000, 0, 0);
+  const failure = new ProviderError("controlled continuation failure", "INPUT_BUDGET_EXCEEDED");
+  const adapter = new OpenAiCompatibleAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", maxInputTokens: 8_000,
+    fetch: async () => {
+      return response({ tool_calls: [{ index: 0, id: "reported-call", function: { name: "search_character_media", arguments: JSON.stringify({ kind: "image", query: "Audit scene" }) } }] }, "tool_calls");
+    },
+  });
+  await expect(executePiConversation({ invocation: value, seed: buildReplaySeed(value), pinned: pinned(value), systemPrompt: "You are Mara.", adapter,
+    signal: AbortSignal.timeout(3_000), maxSteps: 3,
+    assertContinuation() {}, onPreparedMediaLookup() { throw failure; }, text() {}, reset() {}, compaction() {},
+    tools: () => [{ name: "search_character_media", description: "Read a media candidate", parameters: { type: "object", properties: { kind: { type: "string" }, query: { type: "string" } } }, replay: "safe",
+      execute: async () => { throw new Error("The failed continuation must not execute a tool"); } }],
+  })).rejects.toBe(failure);
+});
+
+it.each(["same response", "later response"])("rejects reused native tool IDs in the %s before dispatching an ambiguous call", async scope => {
+  const value = invocation(8_000, 0, 0);
+  let requests = 0;
+  const calls: unknown[] = [];
+  const call = (query: string, index: number) => ({ index, id: "reused-call", function: { name: "read_fact", arguments: JSON.stringify({ query }) } });
+  const adapter = new OpenAiCompatibleAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", maxInputTokens: 8_000,
+    fetch: async () => {
+      requests++;
+      if (scope === "same response" && requests === 1) return response({ tool_calls: [call("first", 0), call("second", 1)] }, "tool_calls");
+      if (requests <= 2 && scope === "later response") return response({ tool_calls: [call(requests === 1 ? "first" : "second", 0)] }, "tool_calls");
+      return response({ content: "A reply based on ambiguous tool evidence." });
+    },
+  });
+  await expect(executePiConversation({ invocation: value, seed: buildReplaySeed(value), pinned: pinned(value), systemPrompt: "You are Mara.", adapter,
+    signal: AbortSignal.timeout(3_000), maxSteps: 5, assertContinuation() {}, text() {}, reset() {}, compaction() {},
+    tools: () => [{ name: "read_fact", description: "Read a fact", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }, replay: "safe",
+      execute: async args => { calls.push(args); return { output: [{ type: "text", text: JSON.stringify(args) }] }; } }],
+  })).rejects.toThrow("tool call identity was reused");
+  expect(calls).toEqual(scope === "same response" ? [] : [{ query: "first" }]);
+  expect(requests).toBe(scope === "same response" ? 1 : 2);
+});
 
 function invocation(budget: number, historyCount: number, historyChars: number): CompanionInvocation {
   const profile = {
