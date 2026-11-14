@@ -99,16 +99,41 @@ export interface EditLastImageToolCall {
 export type ImageAgentToolCall = GenerateImageAsyncToolCall | EditLastImageToolCall;
 export type RequestedNudity = "unspecified" | "none" | "full";
 
+export const LOCAL_IMAGE_EDIT_TOOL_DEFINITION = {
+  name: EDIT_LAST_IMAGE_TOOL,
+  description: "Request a localized edit of the last delivered photo. The user chooses and confirms editable pixels before generation or charging.",
+  parameters: {
+    type: "object",
+    properties: {
+      instruction: {
+        type: "string",
+        description: "English description of every requested edit to the last photo (4-1200 chars)",
+      },
+      editScope: {
+        type: "object",
+        properties: {
+          mode: { type: "string", enum: ["local"] },
+          target: { type: "string", description: "Short English noun phrase identifying the existing object or region to change, e.g. the striped scarf. No editing instructions." },
+          selection: { type: "string", enum: ["one", "all"], description: "one requires an unambiguous single instance; all only when the user asks to edit every matching instance." },
+        },
+        required: ["mode", "target", "selection"],
+        additionalProperties: false,
+      },
+      requestedNudity: { type: "string", enum: ["unspecified", "none", "full"], description: "Wardrobe intent in the current user request; preserve all concrete edit and clothing constraints in instruction." },
+    },
+    required: ["instruction", "editScope"],
+  },
+} satisfies ChatToolDefinition;
+
 export const IMAGE_AGENT_TOOL_DEFINITIONS: readonly ChatToolDefinition[] = [
   {
     name: GENERATE_IMAGE_ASYNC_TOOL,
-    // INTENT: chat renders exactly one image per request (the chat route's
-    // capability). Advertising a count or a square format let the Character
-    // promise "three ways" or "both angles" and deliver one.
+    // One paid Chat action authorizes one photo even when the route supports batches.
     description:
-      "Create exactly one photo. Use directly for explicit new generation; ordinary requests search prepared photos first when available. Existing-only requests prohibit generation. Returns acceptance; attachment delivers.",
+      "Create exactly one photo. Use directly for explicit new generation. Otherwise search available prepared photos first. Existing-only forbids generation. Acceptance only; attachment delivers.",
     parameters: {
       type: "object",
+      additionalProperties: false,
       properties: {
         prompt: {
           type: "string",
@@ -121,35 +146,27 @@ export const IMAGE_AGENT_TOOL_DEFINITIONS: readonly ChatToolDefinition[] = [
         },
         requestedNudity: { type: "string", enum: ["unspecified", "none", "full"], description: "Current wardrobe intent: none for clothed, full for nude, unspecified when neither is requested. All wardrobe clauses in prompt must agree with this value: full depicts a fully nude adult without clothes; none preserves requested clothing. Drop conflicting outfits from earlier photos or default appearance." },
         orientation: { type: "string", enum: ["4:5", "16:9"], description: "4:5 portrait (default) or 16:9 landscape" },
+        outputCount: { type: "integer", enum: [1] },
       },
       required: ["prompt", "subject"],
     },
   },
   {
-    name: EDIT_LAST_IMAGE_TOOL,
+    ...LOCAL_IMAGE_EDIT_TOOL_DEFINITION,
     description:
       "Request an edit of the LAST delivered photo. Local edits return an area-confirmation card; no generation or charge occurs until the user confirms. Whole-image edits run asynchronously. completed confirms delivery, not visual correctness.",
     parameters: {
-      type: "object",
+      ...LOCAL_IMAGE_EDIT_TOOL_DEFINITION.parameters,
       properties: {
-        instruction: {
-          type: "string",
-          description: "English description of every requested edit to the last photo (4-1200 chars)",
-        },
+        ...LOCAL_IMAGE_EDIT_TOOL_DEFINITION.parameters.properties,
         editScope: {
           oneOf: [
-            { type: "object", properties: {
-              mode: { type: "string", enum: ["local"] },
-              target: { type: "string", description: "Short English noun phrase identifying the existing object or region to change, e.g. the striped scarf. No editing instructions." },
-              selection: { type: "string", enum: ["one", "all"], description: "one requires an unambiguous single instance; all only when the user asks to edit every matching instance." },
-            }, required: ["mode", "target", "selection"], additionalProperties: false },
+            LOCAL_IMAGE_EDIT_TOOL_DEFINITION.parameters.properties.editScope,
             { type: "object", properties: { mode: { type: "string", enum: ["whole_image"] } }, required: ["mode"], additionalProperties: false },
           ],
           description: "local for a change to an existing object: the user chooses and confirms editable pixels before execution. whole_image only for an explicitly requested overall restyle, redo, viewpoint, pose or composition change; it does not preserve other pixels. Never use whole_image to bypass confirmation for a localized request.",
         },
-        requestedNudity: { type: "string", enum: ["unspecified", "none", "full"], description: "Wardrobe intent in the current user request; preserve all concrete edit and clothing constraints in instruction." },
       },
-      required: ["instruction", "editScope"],
     },
   },
 ];

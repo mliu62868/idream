@@ -50,8 +50,12 @@ import { COMPANION_MEDIA_LIBRARY_GUIDANCE, COMPANION_MEDIA_RESEND_GUIDANCE } fro
  * offers; an unresolved lookup failure cannot authorize a paid fallback.
  * v22: entering prepared-media lookup fixes the attempt to stock search/send;
  * new generation and edits require a new user request after that boundary.
+ * v23: Main carries the library choice across reply attempts and requires a
+ * user-authorized message for a direct paid image action.
+ * v24: show video facts when a duration or audio-track filter excludes all
+ * candidates, then let the Agent correct any assumed filters.
  */
-export const COMPANION_PRODUCT_PROMPT_VERSION = "companion-product-22" as const;
+export const COMPANION_PRODUCT_PROMPT_VERSION = "companion-product-25" as const;
 
 export function companionProductAgentPrompt(characterName: string): string {
   const name = characterName.trim() || "the Character";

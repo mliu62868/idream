@@ -6,12 +6,12 @@ import {
   COMPANION_PRODUCT_PROMPT_VERSION,
   type ChatToolDefinition,
 } from "@idream/shared";
-import { EDIT_LAST_IMAGE_TOOL } from "@idream/shared/chat/image-action";
+import { EDIT_LAST_IMAGE_TOOL, GENERATE_IMAGE_ASYNC_TOOL, LOCAL_IMAGE_EDIT_TOOL_DEFINITION } from "@idream/shared/chat/image-action";
 import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL } from "@idream/shared/chat/media-library";
 import type { ChatAuthoritySnapshot } from "@idream/shared/bff";
 import type { ChatExecutionSnapshot } from "@idream/shared/contracts";
 import { buildContext, type BuiltContext } from "./context.js";
-import { buildCompanionSystemPrompt, buildTurnPreferencesBlock, buildTurnStateBlock, describeRequestedReplyConstraints, describeUserLanguage } from "./prompt.js";
+import { buildCompanionSystemPrompt, buildTurnPreferencesBlock, buildTurnStateBlock, describeImageActionAuthorization, describeRequestedReplyConstraints, describeUserLanguage } from "./prompt.js";
 import { registryChatTools } from "./agent-tools.js";
 import { dropOldestReplayExchange, estimateModelRequestInputTokens, formatModelRequestInput } from "./agent-runtime/model-request-format.js";
 import {
@@ -78,6 +78,7 @@ export function compilePreparedTurn(
           ? { speaker: message.speaker } : {}),
       })),
     tools: fitted.tools,
+    ...(context.imageActionMode ? { imageActionMode: context.imageActionMode } : {}),
     ...(context.recoveredMediaAction ? { recoveredMediaAction: context.recoveredMediaAction } : {}),
     profile,
     budget: fitted.budget,
@@ -177,20 +178,28 @@ export function fitPreparedTurnBudget(
   // delivered media remains resendable even after a library item is withdrawn.
   // The Agent still interprets the request; no wording classifier selects tools.
   const mediaKinds = [...new Set(fitted.persona.mediaLibraryKinds ?? [])];
+  const lookupKinds = [...new Set([...mediaKinds, ...(fitted.recentMedia ?? []).map(media => media.kind)])];
+  const imageActionMode = fitted.imageActionMode ?? "chat";
   const tools = fitted.policy.modelProfile.supportsTools ? registryChatTools().filter(tool => {
-    if (tool.name === SEARCH_CHARACTER_MEDIA_TOOL) return mediaKinds.length > 0;
+    if (tool.name === SEARCH_CHARACTER_MEDIA_TOOL) return lookupKinds.length > 0;
     if (tool.name === SEND_CHARACTER_MEDIA_TOOL) return mediaKinds.length > 0 || Boolean(fitted.recentMedia?.length);
-    return fitted.policy.imageToolEnabled && (tool.name !== EDIT_LAST_IMAGE_TOOL || fitted.hasRecentImageContext);
-  }).map(tool => tool.name === SEARCH_CHARACTER_MEDIA_TOOL ? {
-    ...tool,
-    parameters: {
-      ...tool.parameters,
-      properties: {
-        ...(tool.parameters.properties as Record<string, unknown>),
-        kind: { type: "string", enum: mediaKinds },
+    if (!fitted.policy.imageToolEnabled) return false;
+    if (tool.name === GENERATE_IMAGE_ASYNC_TOOL) return imageActionMode === "paid";
+    return tool.name === EDIT_LAST_IMAGE_TOOL && imageActionMode !== "library" && fitted.hasRecentImageContext;
+  }).map(tool => {
+    if (tool.name === EDIT_LAST_IMAGE_TOOL && imageActionMode === "chat") return LOCAL_IMAGE_EDIT_TOOL_DEFINITION;
+    if (tool.name !== SEARCH_CHARACTER_MEDIA_TOOL) return tool;
+    return {
+      ...tool,
+      parameters: {
+        ...tool.parameters,
+        properties: {
+          ...(tool.parameters.properties as Record<string, unknown>),
+          kind: { type: "string", enum: lookupKinds },
+        },
       },
-    },
-  } : tool) : [];
+    };
+  }) : [];
   const maxInputTokens = Math.max(1, Math.ceil(fitted.policy.maxContextChars / 4));
   const dropped = new Set(fitted.dropped);
   const replayMessageIds = new Set(fitted.recentMessages.filter(message => message.id !== currentUserMessageId).map(message => message.id));
@@ -199,6 +208,7 @@ export function fitPreparedTurnBudget(
   // Rebuilt on every budget pass so it only quotes dialogue that is still retained.
   const turnState = () => [
     buildTurnStateBlock(fitted, now),
+    ...(fitted.policy.imageToolEnabled && fitted.policy.modelProfile.supportsTools ? [`- ${describeImageActionAuthorization(imageActionMode)}`] : []),
     ...(language ? [`- ${language}`] : []),
     ...(replyConstraints ? [`- ${replyConstraints}`] : []),
     ...recentOpeningsLines(fitted, currentUserMessageId),

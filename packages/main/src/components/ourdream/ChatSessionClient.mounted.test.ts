@@ -3,6 +3,7 @@
 import { act, createElement, Fragment, StrictMode, useLayoutEffect, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CHAT_SEND_PROTOCOL_VERSION } from "@idream/shared/contracts";
 
 vi.mock("next/link", () => ({
   default: ({ children, href, ...props }: ComponentProps<"a">) =>
@@ -585,6 +586,83 @@ describe("ChatSessionClient streaming composer", () => {
     await act(async () => releaseSend?.(sendPayload()));
   });
 
+  it.each([
+    { message: "Send me an existing video of the coast.", quote: false },
+    { message: "Make a video of the coast.", quote: true },
+  ])("routes '$message' to a video quote=$quote", async ({ message, quote }) => {
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => String(input) === "/api/v1/chat/session-1/video"
+      ? Response.json({ data: { capability: { enabled: true } } }) : originalFetch(input, init));
+    await mountSession();
+    await waitUntil(() => [...container.querySelectorAll("button")].some(button => button.textContent === "Video"));
+    await act(async () => typeMessage(message));
+    await act(async () => messageInput()?.form?.requestSubmit());
+
+    const writes = vi.mocked(fetch).mock.calls.filter(([url, init]) => String(url).endsWith("/messages") && init?.method === "POST");
+    expect(Boolean(container.querySelector('[data-testid="chat-video-composer"]'))).toBe(quote);
+    if (quote) expect(writes).toHaveLength(0);
+    else {
+      expect(writes).toHaveLength(1);
+      expect(JSON.parse(String(writes[0]?.[1]?.body))).toEqual({ content: message, sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION });
+      await act(async () => releaseSend?.(sendPayload()));
+    }
+  });
+
+  it("checks the original send key until Main confirms deletion, then requires a new send", async () => {
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    const requests: RequestInit[] = [];
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (!String(input).endsWith("/messages") || init?.method !== "POST") return originalFetch(input, init);
+      requests.push(init);
+      if (requests.length === 1) throw new TypeError("Response lost");
+      if (requests.length === 2) return Response.json({ error: "conflict", details: { reason: "chat_send_deleted" } }, { status: 409 });
+      return sendPayload();
+    });
+    await mountSession();
+    await act(async () => typeMessage("Generate a new image of the garden."));
+    const sendPaidImage = () => container.querySelector<HTMLButtonElement>('[aria-label="Send as paid image request"]')!.click();
+    await act(async () => sendPaidImage());
+    await act(async () => sendPaidImage());
+    expect(requests).toHaveLength(2);
+    const key = (request: RequestInit) => new Headers(request.headers).get("idempotency-key");
+    expect(key(requests[0])).toBeTruthy();
+    expect(key(requests[1])).toBe(key(requests[0]));
+    expect(container.textContent).toContain("That message was deleted.");
+    await act(async () => sendPaidImage());
+    expect(requests).toHaveLength(3);
+    expect(key(requests[2])).not.toBe(key(requests[0]));
+    expect(JSON.parse(String(requests[2].body))).toMatchObject({ allowPaidImage: true });
+  });
+
+  it("retains the draft after an expired send protocol and waits for a new explicit Send", async () => {
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    const requests: RequestInit[] = [];
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (!String(input).endsWith("/messages") || init?.method !== "POST") return originalFetch(input, init);
+      requests.push(init);
+      if (requests.length === 1) throw new TypeError("Response lost");
+      if (requests.length === 2) return Response.json({ error: "conflict", details: { reason: "chat_send_protocol_required" } }, { status: 409 });
+      return sendPayload();
+    });
+    await mountSession();
+    const draft = "Generate one new image of the garden.";
+    await act(async () => typeMessage(draft));
+    const send = () => container.querySelector<HTMLButtonElement>('[aria-label="Send as paid image request"]')!.click();
+    await act(async () => send());
+    await act(async () => send());
+    expect(requests).toHaveLength(2);
+    expect(messageInput()?.value).toBe(draft);
+    expect(container.textContent).toContain("Review your draft and send it again.");
+    const key = (request: RequestInit) => new Headers(request.headers).get("idempotency-key");
+    expect(key(requests[1])).toBe(key(requests[0]));
+    expect(requests[1].body).toBe(requests[0].body);
+    expect(JSON.parse(String(requests[0].body))).toMatchObject({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, allowPaidImage: true });
+    await act(async () => send());
+    expect(requests).toHaveLength(3);
+    expect(key(requests[2])).not.toBe(key(requests[0]));
+    expect(JSON.parse(String(requests[2].body))).toMatchObject({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, allowPaidImage: true });
+  });
+
   it("renders the reader's own turn before the send round-trip resolves", async () => {
     await mountSession();
 
@@ -985,6 +1063,49 @@ describe("ChatSessionClient streaming composer", () => {
     expect(currentStream.closed).toBe(false);
     expect(container.querySelector('[aria-label="Assistant is typing"]')).not.toBeNull();
     expect(replyBubble()?.textContent).not.toContain("Old answer");
+  });
+
+  it.each([{ paid: false }, { paid: true }])("retries an uncertain edit with its original key and observed attempt after a newer session read (paid=$paid)", async ({ paid }) => {
+    sessionMessages = [opening, userTurn, { ...streamingReply, status: "sent", content: "Original answer" }];
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    const patches: { key: string | null; body: unknown }[] = [];
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) !== "/api/v1/messages/user-1" || init?.method !== "PATCH") return originalFetch(input, init);
+      patches.push({ key: new Headers(init.headers).get("idempotency-key"), body: JSON.parse(String(init.body)) });
+      if (patches.length === 1) throw new Error("Connection lost after committing the edit");
+      return Response.json({ assistantMessageId: "assistant-1", attempt: 2, status: "sent", streamUrl: null }, { status: 202 });
+    });
+
+    await mountSession();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="chat-edit-message"]')!.click());
+    const input = container.querySelector<HTMLTextAreaElement>('[data-testid="chat-edit-input"]')!;
+    const changed = "Please describe the coast.";
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, changed);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const form = input.closest("form")!;
+    const submitEdit = () => {
+      if (paid) form.querySelector<HTMLButtonElement>('[aria-label="Save edit as paid image request"]')!.click();
+      else form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    };
+    await act(async () => { submitEdit(); });
+    expect(container.textContent).toContain("Couldn't edit the message. Please try again.");
+    expect(input.value).toBe(changed);
+
+    sessionMessages = [opening, { ...userTurn, content: changed }, { ...streamingReply, attempt: 2, status: "sent", content: "Updated answer" }];
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await waitUntil(() => Boolean(replyBubble()?.textContent?.includes("Updated answer")));
+    await act(async () => { submitEdit(); });
+
+    expect(patches).toEqual([
+      { key: expect.any(String), body: { content: changed, attempt: 1, ...(paid ? { allowPaidImage: true } : {}) } },
+      patches[0],
+    ]);
+    expect(patches[0]?.key).toBeTruthy();
+    expect(container.querySelector('[data-testid="chat-edit-input"]')).toBeNull();
+    expect(replyBubble()?.textContent).toContain("Updated answer");
+    expect(FakeEventSource.instances).toHaveLength(0);
   });
 
   it("reopens a CLOSED transport while allowing CONNECTING to reconnect itself", async () => {
@@ -2198,7 +2319,7 @@ describe("ChatSessionClient streaming composer", () => {
     expect(container.textContent).toContain("No-memory");
     await act(async () => submitComposer());
     const sent = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input) === "/api/v1/chat/groups/group-1/messages" && init?.method === "POST");
-    expect(JSON.parse(String(sent?.[1]?.body))).toEqual({ content: "@Briar Hello from the garden", characterId: "character-2" });
+    expect(JSON.parse(String(sent?.[1]?.body))).toEqual({ content: "@Briar Hello from the garden", sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, characterId: "character-2" });
     await act(async () => releaseSend?.(Response.json({ ok: true, data: {
       userMessage: { ...userTurn, content: "@Briar Hello from the garden", characterId: "character-2", sessionId: "member-2", speakerName: "Briar" },
       assistant: { ...streamingReply, characterId: "character-2", sessionId: "member-2", speakerName: "Briar" },

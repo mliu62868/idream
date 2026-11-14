@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { Message } from "@earendil-works/pi-ai";
 import { COMPANION_IMAGE_SKILL_PROMPT, buildCompanionRuntimeAuthority } from "@idream/shared";
 import { COMPANION_MEDIA_LIBRARY_GUIDANCE, COMPANION_MEDIA_RESEND_GUIDANCE } from "@idream/shared/chat/media-library";
-import { describeRequestedReplyConstraints, describeUserLanguage } from "../prompt";
+import { describeImageActionAuthorization, describeRequestedReplyConstraints, describeUserLanguage } from "../prompt";
 import type { CompanionInvocation, CompanionToolCall, CompanionToolResult, PreparedTurnMessage } from "./contracts";
 
 export const MEDIA_EXTRACTION_MAX_TOKENS = 1_024;
@@ -80,7 +80,8 @@ export function prepareMediaBody(input: {
   const original = input.invocation.preparedTurn.messages.find(message => message.sourceKind === "current_user");
   if (!original || original.role !== "user" || input.requests.length === 0) throw new Error("media body requires an independent current request");
   const current = { ...original, content: input.requests.join("\n\n") };
-  const oldDerived = [describeUserLanguage(original.content), describeRequestedReplyConstraints(original.content)].filter(Boolean).map(line => `- ${line}`);
+  const oldDerived = [describeImageActionAuthorization(input.invocation.preparedTurn.imageActionMode),
+    describeUserLanguage(original.content), describeRequestedReplyConstraints(original.content)].filter(Boolean).map(line => `- ${line}`);
   const newDerived = [describeUserLanguage(current.content), describeRequestedReplyConstraints(current.content)].filter(Boolean).map(line => `- ${line}`);
   const seed = input.seed.filter(message => message.id !== `reply-form:${input.invocation.attemptId}`).map(message => {
     if (message.id !== `state:${original.id}` || message.sourceKind !== "plugin" || message.role !== "user") return message;

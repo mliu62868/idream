@@ -75,6 +75,8 @@ export function buildTurnStateBlock(context: BuiltContext, now: Date): string {
       const description = media.description === null ? null : media.description.length > 1_000
         ? `${media.description.slice(0, 1_000)} [description excerpt]` : media.description;
       lines.push(JSON.stringify({ mediaAssetId: media.mediaAssetId, kind: media.kind, turnId: media.turnId, description,
+        facts: media.facts ?? [], absentFacts: media.absentFacts ?? [], nudity: media.nudity ?? "unknown",
+        durationSeconds: media.durationSeconds ?? null, hasAudio: media.hasAudio ?? null,
         ...(media.editProvenance ? { editProvenance: media.editProvenance } : {}) }));
     }
   }
@@ -88,6 +90,14 @@ export function buildTurnStateBlock(context: BuiltContext, now: Date): string {
   const pins = context.contextDirectives?.filter((item) => item.kind === "pinned_memory") ?? [];
   for (const pin of pins) lines.push(`${them === "them" ? "They" : them} asked you to keep in mind: ${oneLine(pin.content)}`);
   return ["Right now:", ...lines.map((line) => `- ${line}`)].join("\n");
+}
+
+export const PAID_IMAGE_REQUEST_GUIDANCE = 'If the user asks to create a photo or redo the whole image, tell them to choose "Send as paid image request" in the composer.';
+
+export function describeImageActionAuthorization(mode: BuiltContext["imageActionMode"]): string {
+  if (mode === "paid") return "The user authorized a paid image action with this message. Use it only if requested.";
+  if (mode === "library") return "This reply can search prepared media and send matching candidate tokens. Explain an existing-only miss within the request's scope.";
+  return `New photos and whole-image edits require user authorization. ${PAID_IMAGE_REQUEST_GUIDANCE}`;
 }
 
 /** Saved expression choices are the user's own instructions for how to be talked to. */

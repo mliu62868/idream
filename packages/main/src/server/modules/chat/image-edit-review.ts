@@ -14,7 +14,7 @@ import { assertOriginalImageGeometry, prepareGenerationJobForUser } from "@/serv
 import { generationQuoteAuthoritySchema, quoteAuthorityFor, quoteGeneration } from "@/server/modules/ourdream/generation-quote";
 import { freezeGenerationSource, GENERATION_SOURCE_CHUNK_BYTES, type FrozenGenerationSource, withGenerationSnapshotSlot } from "@/server/modules/ourdream/generation-source-snapshot";
 import { chatImageGenerationRequest } from "@/server/modules/ourdream/service";
-import { attachmentAttempt, lockChatScope, type LockedChatScope } from "./turn-scope";
+import { assertChatImageActionAllowed, attachmentAttempt, lockChatScope, type LockedChatScope } from "./turn-scope";
 import { transitionToolEffectAttachment } from "./tool-effect-attachment";
 import { isReadableChatMedia, readableOwnedChatMediaWhere } from "./chat-media-history";
 
@@ -70,6 +70,7 @@ export async function createChatImageEditDraft(payload: ChatImageRequestedPayloa
     if (!attachment || !locked.turn || locked.turn.id !== payload.exchangeId || locked.session.sessionId !== payload.sessionId) throw Errors.conflict("The image edit changed before its source could be frozen.");
     if (attachment.status === "awaiting_confirmation") return attachment;
     if (attachment.status !== "requesting" || attachment.generationJobId) throw Errors.conflict("This image action was already accepted.");
+    assertChatImageActionAllowed(locked.turn, true);
     await lockMediaAssetAuthority(tx, sourceMediaAssetId);
     const source = await withGenerationSnapshotSlot(async () => {
       const verified = await assertGenerationSourceImageAuthority(tx, { sourceImageAssetId: sourceMediaAssetId, userId: payload.userId, characterId: payload.characterId, verifyImagePixels: true });

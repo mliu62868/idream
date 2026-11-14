@@ -3,6 +3,11 @@ import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL } from "../chat/
 import { imageEditOperationSchema } from "../chat/image-action";
 
 export const CHAT_PIN_LIMIT = 8;
+// New user sends opt into this wire before admission. A delayed pre-cutover
+// request may read its existing receipt, but cannot authorize another Turn.
+export const CHAT_SEND_PROTOCOL_VERSION = "chat-send-2" as const;
+
+export const imageActionModeSchema = z.enum(["chat", "paid", "library"]);
 
 // Executed edit facts identify derived media without inventing a visual description.
 export const chatMediaEditProvenanceSchema = z.object({
@@ -200,9 +205,14 @@ export const chatExecutionSnapshotSchema = z.object({
   userPersona: userChatPersonaSchema.nullable().optional(),
   contextRevision: z.number().int().nonnegative(),
   userContent: z.string(),
+  // Older snapshots have no user authorization for a new direct charge.
+  imageActionMode: imageActionModeSchema.optional(),
   // The attempt where the user last changed the text. Regenerating the reply carries it forward.
   userMessageRevision: z.number().int().positive().optional(),
   recoveredMediaAction: recoveredMediaActionSchema.optional(),
+  // The latest readable photo delivered when this user message was admitted.
+  // Null records absence. Only historical snapshots omit the field.
+  imageEditSourceAssetId: z.string().min(1).max(160).nullable().optional(),
   // Actual delivered facts only. Generation prompts are intentions, never
   // descriptions of observed pixels. Historical snapshots omit this projection.
   recentMedia: z.array(z.object({
@@ -210,6 +220,11 @@ export const chatExecutionSnapshotSchema = z.object({
     kind: z.enum(["image", "video"]),
     turnId: z.string().min(1).max(160),
     description: z.string().max(4_000).nullable(),
+    facts: z.array(z.string().max(160)).max(48).optional(),
+    absentFacts: z.array(z.string().max(160)).max(48).optional(),
+    nudity: z.enum(["unknown", "none", "partial", "full"]).optional(),
+    durationSeconds: z.number().finite().nonnegative().nullable().optional(),
+    hasAudio: z.boolean().nullable().optional(),
     editProvenance: chatMediaEditProvenanceSchema.optional(),
   }).strict()).max(8).optional(),
   group: groupChatContextSchema.optional(),

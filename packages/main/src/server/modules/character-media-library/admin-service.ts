@@ -26,7 +26,7 @@ import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { decodeAdminListCursor, encodeAdminListCursor, parseIsoCursorKey } from "@/server/modules/admin-v2/shared/list-cursor";
 import { lockCharacterGenerationAndMediaAssetAuthorities } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { characterVisualProfileSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
-import { characterVideoMatchesSourceIdentity } from "@/server/modules/admin-v2/characters/video-source-identity";
+import { matchCharacterVideoSourceIdentity } from "@/server/modules/admin-v2/characters/video-source-identity";
 import { readLibrarySourceBytes } from "./media-bytes";
 import { describeMediaFrames, embedMediaText, mediaLibraryModels } from "./media-models";
 import { hasEligibleCharacterMediaLibraryEntries, libraryDescriptorHash, libraryDescriptorText, normalizedLibraryFacts, searchCharacterMediaLibrary } from "./service";
@@ -97,7 +97,8 @@ export async function createCharacterMediaLibraryEntry(input: Mutation & { body:
       prepare: async () => {
         if (body.status === "published") await requirePublishPermission(input.actor, input.characterId);
         const visual = await requireLibraryVisual(prisma, input.characterId, visualIdentity);
-        const asset = await requireLibrarySource(prisma, input.characterId, body.sourceAssetId, visual);
+        const source = await requireLibrarySource(prisma, body.sourceAssetId, visual);
+        const { asset } = source;
         const media = await readLibrarySourceBytes(asset);
         const digest = record(asset.metadata).sha256;
         if (typeof digest === "string" && digest !== media.contentHash) throw Errors.conflict("The source file no longer matches its recorded content");
@@ -111,14 +112,15 @@ export async function createCharacterMediaLibraryEntry(input: Mutation & { body:
           const stored = await providers.blob.putPrivate({ ...item, signal: AbortSignal.timeout(30_000) });
           if (!stored.ok) throw Errors.unavailable("The chat library could not preserve its own media file");
         }
-        return { asset, media, index };
+        return { source, media, index };
       },
       mutate: async (tx, prepared) => {
-        await lockCharacterGenerationAndMediaAssetAuthorities(tx, input.characterId, [body.sourceAssetId]);
+        const { legacySourceAssetId } = prepared.source;
+        await lockCharacterGenerationAndMediaAssetAuthorities(tx, input.characterId, sourceAuthorityAssetIds(body.sourceAssetId, legacySourceAssetId));
         if (body.status === "published") await requirePublishPermission(input.actor, input.characterId, tx);
         const visual = await requireLibraryVisual(tx, input.characterId, visualIdentity);
-        const asset = await requireLibrarySource(tx, input.characterId, body.sourceAssetId, visual);
-        assertSourceUnchanged(prepared.asset, asset);
+        const { asset } = await requireLibrarySource(tx, body.sourceAssetId, visual, legacySourceAssetId);
+        assertSourceUnchanged(prepared.source.asset, asset);
         const entry = await tx.characterMediaLibraryEntry.create({ data: {
           id, characterId: input.characterId, sourceAssetId: asset.id,
           visualProfileId: visual.id, visualProfileVersion: visual.version,
@@ -176,14 +178,20 @@ export async function updateCharacterMediaLibraryEntry(input: Mutation & { entry
       const status = body.status ?? entry.status;
       const descriptionChanged = libraryDescriptorHash({ ...entry, ...descriptor }) !== libraryDescriptorHash(entry);
       const withdrawOnly = body.status === "withdrawn" && !descriptionChanged;
-      if (!withdrawOnly) await requireLibraryVisual(prisma, input.characterId, entry);
+      const visual = withdrawOnly ? null : await requireLibraryVisual(prisma, input.characterId, entry);
+      let legacySourceAssetId: string | null = null;
+      if (status === "published" && visual) {
+        if (!entry.sourceAssetId) throw Errors.conflict("This chat library source was deleted");
+        ({ legacySourceAssetId } = await requireLibrarySource(prisma, entry.sourceAssetId, visual));
+      }
       // Withdrawal must remain available when a model or source file is down.
       const index = descriptionChanged || status === "published"
         ? await prepareIndex({ ...entry, ...descriptor }, status === "published") : null;
-      return { entry, descriptor, index, status, withdrawOnly };
+      return { entry, descriptor, index, status, withdrawOnly, legacySourceAssetId };
     },
     mutate: async (tx, prepared) => {
-      await lockCharacterGenerationAndMediaAssetAuthorities(tx, input.characterId, prepared.entry.sourceAssetId ? [prepared.entry.sourceAssetId] : []);
+      await lockCharacterGenerationAndMediaAssetAuthorities(tx, input.characterId,
+        sourceAuthorityAssetIds(prepared.entry.sourceAssetId, prepared.legacySourceAssetId));
       await tx.$queryRaw`SELECT id FROM "character_media_library_entries" WHERE id = ${input.entryId} FOR UPDATE`;
       const entry = await requireEntry(tx, input.characterId, input.entryId);
       if (entry.revision !== body.expectedRevision) throw Errors.conflict("This chat library item has changed; reload it before saving");
@@ -194,8 +202,8 @@ export async function updateCharacterMediaLibraryEntry(input: Mutation & { entry
           throw Errors.conflict("The stored visual identity no longer matches this chat library item");
         }
         if (!entry.sourceAssetId) throw Errors.conflict("This chat library source was deleted");
-        const source = await requireLibrarySource(tx, input.characterId, entry.sourceAssetId, visual);
-        if (resolveMediaAssetBlobLocator(source)?.key !== record(entry.sourceSnapshot).sourceStorageKey) {
+        const { asset } = await requireLibrarySource(tx, entry.sourceAssetId, visual, prepared.legacySourceAssetId);
+        if (resolveMediaAssetBlobLocator(asset)?.key !== record(entry.sourceSnapshot).sourceStorageKey) {
           throw Errors.conflict("This source file was replaced; add the replacement as a new library item");
         }
       } else if (!prepared.withdrawOnly) {
@@ -221,17 +229,17 @@ export async function describeCharacterMediaLibraryAsset(input: Mutation & { bod
     ...mutationIdentity(input, "character.media_library.describe", body.sourceAssetId), payload: body,
     prepare: async () => {
       const visual = await requireLibraryVisual(prisma, input.characterId, body.visualIdentity);
-      const asset = await requireLibrarySource(prisma, input.characterId, body.sourceAssetId, visual);
-      const media = await readLibrarySourceBytes(asset);
+      const source = await requireLibrarySource(prisma, body.sourceAssetId, visual);
+      const media = await readLibrarySourceBytes(source.asset);
       const observation = await describeMediaFrames(media);
-      return { asset, visualIdentity: visualPin(visual), result: { ...normalizeDescriptor(observation), model: observation.model, sourceSha256: media.contentHash } };
+      return { source, visualIdentity: visualPin(visual), result: { ...normalizeDescriptor(observation), model: observation.model, sourceSha256: media.contentHash } };
     },
     mutate: async (tx, prepared) => {
-      await lockCharacterGenerationAndMediaAssetAuthorities(tx, input.characterId, [body.sourceAssetId]);
-      await requireLibraryVisual(tx, input.characterId, prepared.visualIdentity);
-      const asset = await tx.mediaAsset.findUnique({ where: { id: body.sourceAssetId } });
-      if (!asset) throw Errors.notFound("Source media was removed during observation");
-      assertSourceUnchanged(prepared.asset, asset);
+      const { legacySourceAssetId } = prepared.source;
+      await lockCharacterGenerationAndMediaAssetAuthorities(tx, input.characterId, sourceAuthorityAssetIds(body.sourceAssetId, legacySourceAssetId));
+      const visual = await requireLibraryVisual(tx, input.characterId, prepared.visualIdentity);
+      const { asset } = await requireLibrarySource(tx, body.sourceAssetId, visual, legacySourceAssetId);
+      assertSourceUnchanged(prepared.source.asset, asset);
       return prepared.result;
     },
     validateResult: value => characterMediaLibraryDescribeResponseSchema.parse(value),
@@ -352,8 +360,11 @@ async function libraryCoverage(visual: CharacterVisualProfile | null, mediaType:
 /** Platform generation or an explicit operator library import are the only
  * sources. A customer's private output never becomes a shared candidate merely
  * because its characterId matches. */
-async function requireLibrarySource(db: Db, characterId: string, assetId: string, visual: Pick<CharacterVisualProfile, "id" | "version" | "immutableHash">) {
-  await requireCharacter(db, characterId);
+async function requireLibrarySource(
+  db: Db, assetId: string, visual: Pick<CharacterVisualProfile, "id" | "version" | "immutableHash" | "characterId">,
+  lockedLegacySourceAssetId?: string | null,
+) {
+  const { characterId } = visual;
   const asset = await db.mediaAsset.findUnique({ where: { id: assetId } });
   if (!asset || asset.characterId !== characterId || !["image", "video"].includes(asset.type) || asset.deletedAt ||
       asset.safetyStatus !== "passed" || !isMediaAssetOperationalForAuthority(asset.metadata) || !resolveMediaAssetBlobLocator(asset)) {
@@ -362,6 +373,7 @@ async function requireLibrarySource(db: Db, characterId: string, assetId: string
   const metadata = record(asset.metadata);
   const purpose = record(metadata.platformAsset).purpose ?? metadata.purpose;
   const upload = inspectOperatorUploadAuthority(asset);
+  let legacySourceAssetId: string | null = null;
   if (upload?.publishable) {
     if (purpose !== (asset.type === "video" ? "character_video_library" : "character_library")) {
       throw Errors.forbidden("This import is not authorized for the Character media library");
@@ -373,15 +385,24 @@ async function requireLibrarySource(db: Db, characterId: string, assetId: string
       batch: { targetType: "character", targetId: characterId, lifecycleState: { in: ["active", "closed"] } },
     }, include: { job: true } });
     const job = item?.job;
-    const identityMatches = job && ((job.visualProfileId === visual.id && job.visualProfileVersion === visual.version) ||
-      (asset.type === "video" && job.sourceType === "content_production_item" && job.sourceId === item?.id &&
-        characterVideoMatchesSourceIdentity(job, visual)));
-    if (!job || job.id !== asset.sourceJobId || job.characterId !== characterId || !identityMatches) {
+    const belongsToCharacter = job && job.id === asset.sourceJobId && job.characterId === characterId;
+    const hasVideoPin = asset.type === "video" && Object.hasOwn(record(job?.sourceMeta), "videoSourceIdentity");
+    const direct = belongsToCharacter && !hasVideoPin && job.visualProfileId === visual.id && job.visualProfileVersion === visual.version;
+    const source = !direct && belongsToCharacter && asset.type === "video" &&
+      job.sourceType === "content_production_item" && job.sourceId === item?.id
+      ? await matchCharacterVideoSourceIdentity(db, job, asset, visual, lockedLegacySourceAssetId)
+      : null;
+    if (!direct && !source) {
       throw Errors.forbidden("Only platform Character production with this visual identity may enter the shared chat library");
     }
+    legacySourceAssetId = source?.legacySourceAssetId ?? null;
   }
   await assertMediaAssetCustomerPublishable(db, asset);
-  return asset;
+  return { asset, legacySourceAssetId };
+}
+
+function sourceAuthorityAssetIds(assetId: string | null, legacySourceAssetId: string | null) {
+  return [assetId, legacySourceAssetId].filter((id): id is string => id !== null);
 }
 
 function normalizeDescriptor(input: { description: string; facts: string[]; absentFacts: string[]; nudity: string }) {

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import sharp from "sharp";
 import { compileCharacterSoul } from "@idream/shared";
-import { MAIN_QUEUES } from "@idream/shared/contracts";
+import { CHAT_SEND_PROTOCOL_VERSION, MAIN_QUEUES } from "@idream/shared/contracts";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { providers } from "@/server/providers";
@@ -24,14 +24,14 @@ beforeAll(async () => {
   workflowVersion = (await generationWorkflowDescriptor("qwen-image-edit-img2img"))!.version;
   await prisma.generationModelProfile.create({ data: {
     id: profileKey, profileKey, label: "Pinned Chat retry fixture", mode: "image", runner: "comfyui", pipelineModel: "redqw21-image-edit", workflowKey: "qwen-image-edit-img2img", version: 1,
-    runnerConfig: { workflowVersion, capabilities: { textToImage: true, stableSeed: true, referenceImages: true, initImage: true, lora: false } }, allowedOrientations: ["4:5"], maxCount: 1, enabled: true, status: "active", rolloutPercent: 100,
+    runnerConfig: { workflowVersion, capabilities: { textToImage: true, stableSeed: true, referenceImages: true, initImage: true, lora: false } }, allowedOrientations: ["4:5"], maxCount: 4, enabled: true, status: "active", rolloutPercent: 100,
   } });
   if (!await prisma.pricingRule.findFirst({ where: { mode: "image", status: "active" } })) await prisma.pricingRule.create({ data: { id: `${P}price`, ruleKey: `${P}price`, label: "Retry price", mode: "image", baseCost: 5, status: "active" } });
 });
 afterEach(() => vi.restoreAllMocks());
 afterAll(async () => { await purgeTestData(P); await prisma.pricingRule.deleteMany({ where: { id: { startsWith: P } } }); for (const key of sourceKeys) await providers.blob.delete({ key }); });
 
-async function fixture() {
+async function fixture(outputCount = 1) {
   const userId = `${P}${randomUUID()}`;
   await createUser({ id: userId }); await grantCoins(userId, 30);
   const character = await createCharacter({ id: `${userId}-character`, creatorId: userId, source: "user", visibility: "private", advancedDetails: { imageToolEnabled: true } });
@@ -46,7 +46,7 @@ async function fixture() {
   const visual = await prisma.characterVisualProfile.create({ data: { characterId: character.id, identityPrompt: "Avery", faceTraits: {}, hairTraits: {}, bodyTraits: {}, signatureTraits: {}, styleTraits: {}, anchorAssetIds: [source.id], adapterRefs: {}, createdFrom: "test" } });
   const session = await createChatSession(userId, { characterId: character.id });
   await prisma.recentChat.update({ where: { sessionId: session.id }, data: { memoryEnabled: false } });
-  const { snapshot } = await beginChatTurn({ userId, sessionId: session.id, content: "Send me a portrait beside the rainy window.", idempotencyKey: randomUUID() });
+  const { snapshot } = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId, sessionId: session.id, content: "Send me a portrait beside the rainy window.", idempotencyKey: randomUUID(), allowPaidImage: true });
   if (!snapshot) throw new Error("Missing accepted Turn");
   // Start at an already failed provider request. Retry itself uses the real
   // quote, reservation, queue, Gen test adapter and Main delivery transaction.
@@ -54,7 +54,7 @@ async function fixture() {
     const job = await prisma.generationJob.create({ data: {
     id: `${userId}-failed`, userId, characterId: character.id, mode: "image", prompt: payload.promptHint, status: "failed", errorCode: "provider_error", controls: { width: 512, height: 640, workflowKey: "qwen-image-edit-img2img", workflowVersion }, presetIds: [],
     sourceType: "chat_image", sourceId: payload.attachmentId, sourceMeta: { sessionId: session.id, exchangeId: snapshot.turnId, messageId: snapshot.assistantMessageId, promptHint: payload.promptHint },
-    visualProfileId: visual.id, visualProfileVersion: visual.version, referenceAssetIds: [source.id], referenceManifest: [{ mediaAssetId: source.id, role: "identity_anchor" }], model: "qwen-image-edit-img2img", profileId: profileKey, profileVersion: 1, provider: "comfyui", orientation: "4:5", outputCount: 1, costDreamcoins: 5,
+    visualProfileId: visual.id, visualProfileVersion: visual.version, referenceAssetIds: [source.id], referenceManifest: [{ mediaAssetId: source.id, role: "identity_anchor" }], model: "qwen-image-edit-img2img", profileId: profileKey, profileVersion: 1, provider: "comfyui", orientation: "4:5", outputCount, costDreamcoins: 5 * outputCount,
     } });
     const attachment = await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: payload.attachmentId } });
     await prisma.chatTurnAttachment.update({ where: { id: attachment.id }, data: {
@@ -74,7 +74,7 @@ async function fixture() {
   const quoteResponse = await api("POST", `generation/jobs/${accepted.generationJobId}/retry/quote`, { userId, ageGate: true });
   expectOk(quoteResponse);
   const { quote } = parseGenerationRetryQuoteResponse(quoteResponse.json);
-  const quoteAuthority = quoteAuthorityFor(quote, 1)!;
+  const quoteAuthority = quoteAuthorityFor(quote, outputCount)!;
   const retry = (key: string, actorId = userId) => api("POST", `generation/jobs/${accepted.generationJobId}/retry`, { userId: actorId, ageGate: true, headers: { "Idempotency-Key": key }, body: { quoteAuthority } });
   return { userId, session, snapshot, effect, accepted, quoteAuthority, retry };
 }
@@ -188,8 +188,8 @@ describe("Chat image retry delivery authority", () => {
     expect(await prisma.dreamcoinLedger.count({ where: { userId: f.userId, reason: "generation_spend" } })).toBe(0);
   });
 
-  it("rebinds once before dispatch, delivers in the same Chat, and reuses that delivery on regenerate", async () => {
-    const f = await fixture();
+  it.each([1, 4])("rebinds a quoted %i-output historical retry once and reuses its delivery on regenerate", async outputCount => {
+    const f = await fixture(outputCount);
     await grantCoins(f.userId, f.quoteAuthority.costDreamcoins - await dreamcoinBalance(f.userId), "exact_retry_balance");
     const before = await dreamcoinBalance(f.userId);
     const [first, repeated] = await Promise.all([f.retry(`${f.userId}:retry`), f.retry(`${f.userId}:retry`)]);
@@ -199,6 +199,7 @@ describe("Chat image retry delivery authority", () => {
     const original = await prisma.generationJob.findUniqueOrThrow({ where: { id: f.accepted.generationJobId! } });
     const retry = await prisma.generationJob.findUniqueOrThrow({ where: { id: jobId } });
     expect(retry).toMatchObject({ sourceType: "chat_image", sourceId: null, sourceMeta: original.sourceMeta, derivedFromJobId: original.id, visualProfileId: original.visualProfileId, visualProfileVersion: original.visualProfileVersion, referenceManifest: original.referenceManifest });
+    expect(retry).toMatchObject({ outputCount, costDreamcoins: f.quoteAuthority.costDreamcoins });
     expect(await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: f.accepted.attachmentId } })).toMatchObject({ generationJobId: jobId, status: "accepted", errorCode: null, metadata: { attempt: 1, effect: { turnId: f.snapshot.turnId, callId: f.effect.callId } } });
     expect(await dreamcoinBalance(f.userId)).toBe(before - f.quoteAuthority.costDreamcoins);
     expectError(await f.retry(`${f.userId}:second-intent`), 409);

@@ -25,6 +25,7 @@ import {
 } from "@/server/modules/ourdream/public-catalog-qualification";
 import { directCharacterAudienceWhere } from "@/server/modules/ourdream/public-content-audience";
 import { assertFrozenMediaEnhancementSource, assertMediaEnhancementSource } from "@/server/modules/ourdream/media-enhancement-source";
+import { matchesFrozenGenerationSource } from "@/server/modules/ourdream/generation-source-snapshot";
 import { lockCharacterMediaAssetAuthorities } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 
 const LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION_V1 =
@@ -423,7 +424,7 @@ export async function buildGenerationAttemptQueueInput(
       const pin = pins[index]!;
       const snapshotId = stringFromRecord(pin, "snapshotId");
       const snapshot = snapshotId ? byId.get(snapshotId) : undefined;
-      if (!snapshot || pin.assetId !== image.assetId || pin.role !== image.role || pin.sha256 !== snapshot.sha256 || pin.sizeBytes !== snapshot.sizeBytes || pin.contentType !== snapshot.contentType) throw Errors.conflict("Generation reference snapshot authority is invalid");
+      if (!snapshot || pin.assetId !== image.assetId || pin.role !== image.role || !matchesFrozenGenerationSource(pin, snapshot)) throw Errors.conflict("Generation reference snapshot authority is invalid");
       return { ...image, storageKey: undefined, url: undefined, b64Json: undefined, sourceSnapshotId: snapshot.id, contentSha256: snapshot.sha256, contentType: snapshot.contentType };
     });
   }

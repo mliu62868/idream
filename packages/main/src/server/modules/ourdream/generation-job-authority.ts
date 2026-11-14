@@ -24,7 +24,7 @@ import {
   createToolEffectAttachment,
   transitionToolEffectAttachment,
 } from "@/server/modules/chat/tool-effect-attachment";
-import { lockChatScope, type LockedChatTurnAttachment } from "@/server/modules/chat/turn-scope";
+import { assertChatImageActionAllowed, lockChatScope, type LockedChatTurnAttachment } from "@/server/modules/chat/turn-scope";
 import { jsonRecord } from "./json-values";
 import type { GenerationSource } from "./generation-request-schema";
 import { generationSourceLocator } from "./generation-source-snapshot";
@@ -191,6 +191,9 @@ export async function acceptGenerationJobForUser(input: GenerationAdmission, adm
       // Exact replay precedes both charging and attachment checks.
       const accepted = await findAdmissionReplay(tx, input);
       if (accepted) return { job: accepted, outboxId: null };
+      if (!retrySource && data.sourceType === "chat_image" && (data.outputCount ?? 1) !== 1) {
+        throw Errors.badRequest("A paid Chat action can generate one photo");
+      }
       const chatAttachment = await lockGenerationChatAttachment(tx, input, data, retrySource);
       const balance = await dreamcoinBalance(input.userId, tx);
       if (balance < data.costDreamcoins) {
@@ -363,6 +366,7 @@ async function lockGenerationChatAttachment(
   ) {
     throw Errors.conflict(imageConflict);
   }
+  if (!binding.confirmedEdit) assertChatImageActionAllowed(scope.turn!, false);
   return current;
 }
 

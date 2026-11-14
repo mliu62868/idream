@@ -212,6 +212,36 @@ describe("Character chat library", () => {
       expect(posted()).toHaveLength(0);
     });
 
+    it.each([false, true])("reloads a conflicting saved entry after cutover with a current entry=%s", async saved => {
+      current = v1();
+      await render();
+      await waitUntil(() => !textarea("Visible content description").disabled);
+      await edit(textarea("Visible content description"), "Unsaved edits for the retired identity");
+      const nextEntry = v2();
+      const entries = saved ? [current, nextEntry] : [current];
+      operation.mockImplementation(async id => {
+        if (id.startsWith("GET ")) return { ...library(entries), visualIdentity: currentIdentity };
+        throw new AdminV2RequestError("The Character visual identity changed; reload before preparing chat media", 409, "conflict");
+      });
+      await click("Save description");
+      await click("Discard edits and reload");
+      await waitUntil(() => !!container.querySelector('[aria-label="Chat description editor"]'));
+
+      expect(textarea("Visible content description").value).toBe(saved ? nextEntry.description : "");
+      expect(textarea("Visible content description").disabled).toBe(false);
+      mockList(entries);
+      await edit(textarea("Visible content description"), "Reviewed for the current identity");
+      await click(saved ? "Save description" : "Save draft");
+      if (saved) expect(patched().at(-1)?.[1]).toMatchObject({ path: { entryId: nextEntry.id }, body: { expectedRevision: nextEntry.revision } });
+      else expect(posted().at(-1)?.[1].body).toMatchObject({ expectedVisualProfileId: currentIdentity.visualProfileId, expectedVisualProfileVersion: currentIdentity.visualProfileVersion });
+
+      await choose("Visual identity for this media", "visual-1");
+      expect(textarea("Visible content description").value).toBe(current.description);
+      expect(textarea("Visible content description").disabled).toBe(true);
+      await click("Withdraw from chat");
+      expect(patched().at(-1)?.[1]).toMatchObject({ path: { entryId: current.id }, body: { expectedRevision: current.revision, status: "withdrawn" } });
+    });
+
     it("keeps the older live identity editable and previews it separately from production", async () => {
       mockList([v1(), v2()], live);
       await act(async () => root.render(<CharacterChatLibrary characterId="character-1" mediaType="image" canWrite canPublish source={null} onCloseSource={() => undefined} />));

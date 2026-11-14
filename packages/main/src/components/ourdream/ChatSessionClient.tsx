@@ -65,6 +65,8 @@ import {
   isLocalChatMessageId,
   latestTurnUserMessageId,
   LOCAL_CHAT_MESSAGE_ID_PREFIX,
+  prepareChatSendIntent,
+  type ChatSendIntent,
 } from "./chat-message-actions";
 import {
   GenerationRequestError,
@@ -229,9 +231,10 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     text: string;
     quote: VoiceClipQuote;
   } | null>(null);
-  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingTarget, setEditingTarget] = useState<{ messageId: string; attempt: number; originalContent: string } | null>(null);
   const [editingContent, setEditingContent] = useState("");
   const [editingPending, setEditingPending] = useState(false);
+  const editIntentRef = useRef<{ content: string; allowPaidImage: boolean; idempotencyKey: string } | null>(null);
   const [deleteConfirmMessageId, setDeleteConfirmMessageId] = useState<string | null>(null);
   const [variationPendingMediaId, setVariationPendingMediaId] =
     useState<string | null>(null);
@@ -254,12 +257,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
   } = useGenerationReceipts({ ownerScope: receiptOwnerScope, onWarning: setReceiptWarning });
   const [jumpToLatestVisible, setJumpToLatestVisible] = useState(false);
   const pinnedToBottomRef = useRef(true);
-  const sendIntentRef = useRef<{
-    sessionId: string;
-    content: string;
-    idempotencyKey: string;
-    characterId: string | null;
-  } | null>(null);
+  const sendIntentRef = useRef<ChatSendIntent | null>(null);
   const imageRetryPendingRef = useRef(new Set<string>());
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const voicePlaybackIntentRef = useRef(0);
@@ -271,6 +269,18 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const composerDockRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  function stopVoice() {
+    voicePlaybackIntentRef.current += 1;
+    voicePlaybackMessageIdRef.current = null;
+    const audio = audioRef.current;
+    if (audio) {
+      audio.pause();
+      audio.src = "";
+    }
+    audioRef.current = null;
+    setVoicePlayingId(null);
+    setVoiceConfirmation(null);
+  }
   const voiceInput = useVoiceInput({
     sessionPath,
     ownerScope: receiptOwnerScope,
@@ -621,19 +631,6 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     setVoicePreparingIds(current => new Set([...current].filter(id => !messageIds.includes(id))));
   }
 
-  function stopVoice() {
-    voicePlaybackIntentRef.current += 1;
-    voicePlaybackMessageIdRef.current = null;
-    const audio = audioRef.current;
-    if (audio) {
-      audio.pause();
-      audio.src = "";
-    }
-    audioRef.current = null;
-    setVoicePlayingId(null);
-    setVoiceConfirmation(null);
-  }
-
   async function requestVoiceClip(
     messageId: string,
     text: string,
@@ -780,6 +777,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     event.preventDefault();
     if (voiceInput.blocksSend || voiceCall.active) return;
     const text = content.trim();
+    const allowPaidImage = (event.nativeEvent as SubmitEvent).submitter?.dataset.paidImage === "true";
     // SPEC: 输入 @Name 时说话人切换是异步的；切换期间的回车必须有回执。
     // INTENT: 静默 return 会让用户以为消息发出去了 —— 实测第一次回车既不发消息也不报错。
     if (text && speakerPending) {
@@ -796,10 +794,22 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     const mentionedName = group?.members.find(member => member.characterId === mentioned)?.name;
     const videoText = mentionedName ? text.slice(mentionedName.length + 1).replace(/^[,:]\s*/, "").trim() : text;
     // With video unavailable here the words are just roleplay and go to the character.
-    if (videoEnabled && isExplicitChatVideoRequest(videoText) && receiptOwnerScope) {
+    if (!allowPaidImage && videoEnabled && isExplicitChatVideoRequest(videoText) && receiptOwnerScope) {
       openVideoRequest(undefined, videoText);
       return;
     }
+    const prepared = prepareChatSendIntent(sendIntentRef.current, { sessionId: id, content: text, characterId, allowPaidImage }, sendOutcomeUnknown);
+    if (prepared.kind !== "ready") {
+      if (prepared.kind === "protocol_expired") {
+        sendIntentRef.current = null;
+        setSendOutcomeUnknown(false);
+      }
+      setStatus(prepared.kind === "protocol_expired"
+        ? "This send request expired. Review your draft and send it again."
+        : "The last message is unconfirmed. Use the same send option to check it.");
+      return;
+    }
+    const intent = prepared.intent;
     setStatus(null);
     setUpgradeReason(null);
     setContent("");
@@ -815,16 +825,6 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
       ...current,
       { id: localMessageId, role: "user", content: text },
     ]);
-    const previousIntent = sendIntentRef.current;
-    const intent =
-      previousIntent?.sessionId === id && previousIntent.content === text && previousIntent.characterId === characterId
-        ? previousIntent
-        : {
-            sessionId: id,
-            content: text,
-            idempotencyKey: crypto.randomUUID(),
-            characterId,
-          };
     sendIntentRef.current = intent;
     try {
       const response = await fetchForSession(`${sessionPath}/messages`, {
@@ -833,7 +833,8 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
           "content-type": "application/json",
           "idempotency-key": intent.idempotencyKey,
         },
-        body: JSON.stringify({ content: text, ...(groupMode ? { characterId: intent.characterId } : {}) }),
+        body: JSON.stringify({ content: text, sendProtocolVersion: intent.sendProtocolVersion, ...(groupMode ? { characterId: intent.characterId } : {}),
+          ...(intent.allowPaidImage ? { allowPaidImage: true } : {}) }),
       });
       // Quota exhausted: keep the user's input and surface the upgrade path (P0-C).
       if (response.status === 402) {
@@ -846,13 +847,20 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
       }
       if (!response.ok) {
         const failure = await response.json().catch(() => null);
+        const deletedSend = response.status === 409 && failure?.details?.reason === "chat_send_deleted";
+        const expiredProtocol = response.status === 409 && failure?.details?.reason === "chat_send_protocol_required";
+        if ((deletedSend || expiredProtocol) && sendIntentRef.current === intent) sendIntentRef.current = null;
         const updatedCharacterId = response.status === 410 && !groupMode ? chatReleaseChangedCharacterId(failure) : null;
         if (updatedCharacterId && await openUpdatedCharacterChat(updatedCharacterId, text)) return;
         if (response.status === 410) setContinuation(updatedCharacterId ? "character_release_changed" : "character_unavailable");
         setSendOutcomeUnknown(response.status >= 500);
         setStatus(updatedCharacterId
           ? "This Character was updated, so this chat is now read-only. Your message is still below. Open the Character again to continue in a new chat."
-          : chatFailureCopy(failure, "Message failed to send. Please try again."));
+          : deletedSend
+            ? "That message was deleted. Send again to make a new request."
+            : expiredProtocol
+              ? "This send request expired. Review your draft and send it again."
+              : chatFailureCopy(failure, "Message failed to send. Please try again."));
         setContent(text);
         setMessages(dropOptimisticMessage);
         // A reply the page has not seen yet (a proactive check-in) can be the
@@ -907,27 +915,39 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
   }
 
   function beginEdit(message: ChatMessage) {
+    const attempt = messages.find(reply => reply.role === "assistant" && reply.replyToMessageId === message.id)?.attempt;
+    if (typeof attempt !== "number") {
+      setStatus("Reload this chat before editing the message.");
+      return;
+    }
     setStatus(null);
     setDeleteConfirmMessageId(null);
-    setEditingMessageId(message.id);
+    editIntentRef.current = null;
+    setEditingTarget({ messageId: message.id, attempt, originalContent: message.content });
     setEditingContent(message.content);
   }
 
   function cancelEdit() {
-    setEditingMessageId(null);
+    editIntentRef.current = null;
+    setEditingTarget(null);
     setEditingContent("");
   }
 
-  async function saveEditedMessage(messageId: string) {
+  async function saveEditedMessage(allowPaidImage = false) {
     const next = editingContent.trim();
-    if (!next || editingPending) return;
+    if (!next || !editingTarget || editingPending) return;
+    const previous = editIntentRef.current;
+    const intent = previous?.content === next && previous.allowPaidImage === allowPaidImage
+      ? previous : { content: next, allowPaidImage, idempotencyKey: crypto.randomUUID() };
+    editIntentRef.current = intent;
     setStatus(null);
     setDeleteConfirmMessageId(null);
     setUpgradeReason(null);
     setEditingPending(true);
     stopVoice();
     try {
-      const result = await delivery.edit(messageId, next);
+      const { messageId, attempt } = editingTarget;
+      const result = await delivery.edit({ messageId, attempt, ...intent });
       if (result === "quota_exhausted") setUpgradeReason("messages");
       if (result === "applied") cancelEdit();
     } finally {
@@ -1307,7 +1327,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
                   const isUser = message.role === "user";
                   const immutableOpening = isImmutableOpeningMessage(message);
                   const replyInProgress = chatStreamMessageIsInProgress(message);
-                  const isEditing = editingMessageId === message.id;
+                  const isEditing = editingTarget?.messageId === message.id;
                   const messageDeleteConfirm = deleteConfirmMessageId === message.id;
                   const showMessageActions =
                     !isEditing &&
@@ -1348,7 +1368,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
                           className="space-y-2"
                           onSubmit={(event) => {
                             event.preventDefault();
-                            void saveEditedMessage(message.id);
+                            void saveEditedMessage();
                           }}
                         >
                           <label className="sr-only" htmlFor={`edit-${message.id}`}>
@@ -1376,6 +1396,18 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
                               )}
                               Save
                             </button>
+                            {editingContent.trim() && editingContent.trim() !== editingTarget?.originalContent ? (
+                              <button
+                                aria-label="Save edit as paid image request"
+                                className="inline-flex h-9 items-center gap-2 rounded-full bg-black/10 px-3 text-[12px] font-black text-[rgb(13,13,13)] disabled:opacity-50"
+                                disabled={editingPending}
+                                onClick={() => void saveEditedMessage(true)}
+                                title="Save edit as paid image request (uses Dreamcoins)"
+                                type="button"
+                              >
+                                Paid image
+                              </button>
+                            ) : null}
                             <button
                               className="inline-flex h-9 items-center gap-2 rounded-full bg-black/10 px-3 text-[12px] font-black uppercase text-[rgb(13,13,13)]"
                               data-testid="chat-cancel-edit"
@@ -1606,6 +1638,18 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
                 />
                 {!groupMode ? <VoiceCallButton voice={voiceCall} open={voiceCallOpen} onToggle={() => setVoiceCallOpen(value => !value)} /> : null}
                 <VoiceInputButton voice={voiceInput} disabled={voiceCall.active || pending || speakerPending || conversationReadOnly || (groupMode && sendOutcomeUnknown)} />
+                {!hasGeneratingReply ? (
+                  <button
+                    aria-label="Send as paid image request"
+                    className="h-12 shrink-0 rounded-3xl bg-[rgb(36,36,36)] px-3 text-xs font-semibold text-white hover:bg-white/20 disabled:opacity-50"
+                    data-paid-image="true"
+                    disabled={!canSend}
+                    title="Send as paid image request (uses Dreamcoins)"
+                    type="submit"
+                  >
+                    Paid image
+                  </button>
+                ) : null}
                 {hasGeneratingReply ? (
                   <button
                     aria-label="Stop reply"

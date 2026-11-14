@@ -1,3 +1,4 @@
+import { CHAT_SEND_PROTOCOL_VERSION } from "@idream/shared/contracts";
 import { randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
 import { afterAll, describe, expect, it } from "vitest";
@@ -113,7 +114,7 @@ describe("new Chat direct audience and immutable history", () => {
     expect((await getChatSession(f.ownerId, owned.id)).continuation).toBe("available");
     expect((await getGroupConversation(f.readerId, group.id, f.id)).continuation).toBe("character_unavailable");
     expect((await getGroupConversation(f.readerId, group.id, other.id)).continuation).toBe("available");
-    await expect(beginChatTurn({ userId: f.readerId, sessionId: single.id, content: "Continue.", idempotencyKey: randomUUID() })).rejects.toMatchObject({ status: 410 });
+    await expect(beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId: f.readerId, sessionId: single.id, content: "Continue.", idempotencyKey: randomUUID() })).rejects.toMatchObject({ status: 410 });
     expect(await effects(f.readerId)).toEqual(before);
     await prisma.characterServing.update({ where: { id: f.serving.id }, data: { state: "live" } });
     expect((await getChatSession(f.readerId, single.id)).continuation).toBe("available");
@@ -178,7 +179,7 @@ describe("new Chat direct audience and immutable history", () => {
   it("rejects an ineligible group member atomically without disturbing accepted single-character history", async () => {
     const f = await fixture(), other = await fixture();
     const session = await createChatSession(f.readerId, { characterId: f.id });
-    const begun = await beginChatTurn({ userId: f.readerId, sessionId: session.id, content: "Keep me company.", idempotencyKey: randomUUID() });
+    const begun = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId: f.readerId, sessionId: session.id, content: "Keep me company.", idempotencyKey: randomUUID() });
     if (!begun.snapshot) throw new Error("Fixture Turn was not admitted");
     const snapshot = begun.snapshot;
     const terminal = { version: 1 as const, turnId: snapshot.turnId, sessionId: snapshot.sessionId, assistantMessageId: snapshot.assistantMessageId,

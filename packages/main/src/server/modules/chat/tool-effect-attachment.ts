@@ -4,9 +4,10 @@ import type { ChatTurnAttachment, Prisma } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
 import { attachmentAttempt, attachmentLockedByInsert, type LockedChatTurn, type LockedChatTurnAttachment } from "./turn-scope";
 
-/** Identity of persisted actions created before the user-content digest. */
-export function legacyTurnActionAttachmentId(turnId: string, name: ChatToolEffect["name"]): string {
-  return `chatfx_${createHash("sha256").update(`${turnId}:${name}`).digest("hex").slice(0, 48)}`;
+/** Identities of persisted actions from before the shared revision-scoped action. */
+export function legacyTurnActionAttachmentId(turnId: string, name: ChatToolEffect["name"], contentDigest?: string): string {
+  const identity = contentDigest ? `${turnId}:${name}:${contentDigest}` : `${turnId}:${name}`;
+  return `chatfx_${createHash("sha256").update(identity).digest("hex").slice(0, 48)}`;
 }
 
 // SPEC: 工具效果附件（聊天里的生成图片与生成视频）的唯一创建与迁移入口。

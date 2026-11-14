@@ -1,16 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
 import sharp from "sharp";
 import { compileCharacterSoul } from "@idream/shared";
+import { CHAT_SEND_PROTOCOL_VERSION, MAIN_TO_CHAT_EVENTS, type ChatExecutionSnapshot } from "@idream/shared/contracts";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { providers } from "@/server/providers";
 import { api, createCharacter, createUser, dreamcoinBalance, expectOk, generationTestProviders, grantCoins, purgeTestData, runQueuedGenerationJobs } from "@/server/test/helpers";
 import { parseGenerationRetryQuoteResponse } from "@/lib/public-api-contracts";
 import * as generation from "../ourdream/service";
+import { acceptGenerationJobForUser } from "../ourdream/generation-job-authority";
 import { createReferenceSetRevision } from "../ourdream/generation-reference-set";
 import { quoteAuthorityFor } from "../ourdream/generation-quote";
 import { applyChatToolEffect } from "./tool-effect";
-import { beginChatTurn, commitChatTerminal, createChatSession, getChatSession, regenerateChatTurn } from "./turn-ledger";
+import { beginChatTurn, commitChatTerminal, createChatSession, executionSnapshot, getChatSession, regenerateChatTurn } from "./turn-ledger";
 
 const prefix = `zt-chat-effect-delivery-${randomUUID()}-`;
 const sourceKeys: string[] = [];
@@ -37,6 +39,20 @@ afterAll(async () => {
 });
 
 describe("initial Chat image delivery", () => {
+  it("rejects a four-output Chat reservation at the final debit authority", async () => {
+    const userId = `${prefix}${randomUUID()}`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 40);
+    await expect(acceptGenerationJobForUser({ userId, identity: {}, prepare: async () => ({
+      data: { mode: "image", prompt: "A seaside photo", presetIds: [], controls: {},
+        sourceType: "chat_image", outputCount: 4, costDreamcoins: 20 },
+      entitlements: {},
+    }) })).rejects.toMatchObject({ code: "bad_request", message: expect.stringContaining("one photo") });
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(0);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(0);
+    expect(await dreamcoinBalance(userId)).toBe(40);
+  });
+
   it.each((["companion", "scene"] as const).flatMap(subject =>
     (["failed", "completed", "retry-completed", "requesting-recovery"] as const).map(scenario => ({ subject, scenario }))
   ))("preserves $subject $scenario image delivery and reservation identity", async ({ subject, scenario }) => {
@@ -58,7 +74,7 @@ describe("initial Chat image delivery", () => {
     const session = await createChatSession(userId, { characterId: character.id });
     await prisma.recentChat.update({ where: { sessionId: session.id }, data: { memoryEnabled: false } });
     const direction = subject === "scene" ? "A basil plant in a terracotta pot on a sunny balcony. No people visible." : "Avery beside the rainy window.";
-    let { snapshot } = await beginChatTurn({ userId, sessionId: session.id, content: subject === "scene" ? `Generate one picture of ${direction}` : "Send me a portrait beside the rainy window.", idempotencyKey: randomUUID() });
+    let { snapshot } = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId, sessionId: session.id, content: subject === "scene" ? `Generate one picture of ${direction}` : "Send me a portrait beside the rainy window.", idempotencyKey: randomUUID(), allowPaidImage: true });
     if (!snapshot) throw new Error("Missing accepted Turn");
     if (scenario === "requesting-recovery") {
       // Reproduce Main exiting after the action identity was saved but before
@@ -120,6 +136,14 @@ describe("initial Chat image delivery", () => {
     });
     // Recovery must retain the old subject even if a new model proposes the opposite.
     const effect = { version: 2 as const, turnId: snapshot.turnId, attempt: snapshot.attempt, callId: randomUUID(), name: "generate_image_async" as const, effectScope: "turn_action" as const, intent: { requestedNudity: "unspecified" as const }, arguments: { prompt: direction, ...(scenario === "requesting-recovery" && subject === "companion" ? {} : { subject: scenario === "requesting-recovery" ? "companion" : subject }), orientation: "4:5", outputCount: 1 } };
+    if (subject === "scene" && scenario === "completed") {
+      await expect(applyChatToolEffect({ ...effect, arguments: { ...effect.arguments, outputCount: 4 } }))
+        .rejects.toMatchObject({ code: "bad_request", message: expect.stringContaining("one photo") });
+      expect(await prisma.chatTurnAttachment.count({ where: { turnId: snapshot.turnId } })).toBe(0);
+      expect(await prisma.generationJob.count({ where: { userId } })).toBe(0);
+      expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(0);
+      expect(await dreamcoinBalance(userId)).toBe(40);
+    }
     const accepted = await applyChatToolEffect(effect);
     if (creationFailure) throw creationFailure;
     if (outcome === "failed") {
@@ -131,6 +155,7 @@ describe("initial Chat image delivery", () => {
     }
     const finalJobId = replacementJobId ?? originalJobId;
     const stored = await prisma.generationJob.findUniqueOrThrow({ where: { id: finalJobId } });
+    expect(stored.outputCount).toBe(1);
     expect(stored.sourceMeta).toMatchObject({ chatCharacterId: character.id, imageSubject: subject, exchangeId: snapshot.turnId });
     if (subject === "scene") {
       expect(stored).toMatchObject({ characterId: null, visualProfileId: null, referenceSetRevisionId: null, referenceAssetIds: null });
@@ -156,5 +181,115 @@ describe("initial Chat image delivery", () => {
     expect(await prisma.generationJob.count({ where: { userId } })).toBe(outcome === "retry-completed" ? 2 : 1);
     expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(outcome === "retry-completed" ? 2 : 1);
     expect(await dreamcoinBalance(userId)).toBe(outcome === "failed" ? 40 : 40 - finalCost);
+  });
+
+  it("replays a recorded legacy edit without permitting versionless writes or another debit", async () => {
+    const userId = `${prefix}${randomUUID()}`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 40);
+    const character = await createCharacter({ id: `${userId}-character`, creatorId: userId, source: "user", visibility: "private", advancedDetails: { imageToolEnabled: true } });
+    const soul = compileCharacterSoul({ name: "Avery", age: 28, gender: "female", characterPromise: "A warm photographer", detailsMarkdown: "Warm and curious." });
+    if (!soul.ok) throw new Error("Invalid fixture Soul");
+    const content = await prisma.characterContentVersion.create({ data: {
+      characterId: character.id, version: 1, sourceType: "test", contentHash: soul.snapshot.compiled.fingerprint,
+      personaSnapshot: JSON.parse(JSON.stringify(soul.snapshot)), openingSnapshot: { firstMessage: "Hello." }, appearanceSnapshot: {},
+    } });
+    await prisma.character.update({ where: { id: character.id }, data: { currentContentVersionId: content.id } });
+    const session = await createChatSession(userId, { characterId: character.id });
+    const { snapshot } = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId, sessionId: session.id, content: "Say ready.", idempotencyKey: randomUUID() });
+    if (!snapshot) throw new Error("Missing accepted Turn");
+
+    const admit = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      expect(new URL(String(input)).pathname).toBe("/internal/agent-runs");
+      const { turnId, attempt } = JSON.parse(String(init?.body)) as { turnId: string; attempt: number };
+      return Response.json({ ok: true, turnId, attempt, duplicate: false, terminal: false, deadlineAt: new Date(Date.now() + 60_000).toISOString() });
+    });
+    const complete = async (turn: ChatExecutionSnapshot) => {
+      const sceneVersion = turn.sceneVersion + 1;
+      await commitChatTerminal({
+        version: 1, turnId: turn.turnId, sessionId: turn.sessionId, assistantMessageId: turn.assistantMessageId,
+        attempt: turn.attempt, status: "sent", content: "Done.", model: "test", promptTokens: 1, completionTokens: 1,
+        sceneVersion, scene: { schemaVersion: 1, location: null, time: null, participants: [], emotionalBeat: null, unresolvedThreads: [], ...turn.scene, version: sceneVersion },
+        terminalEvidence: { authority: "test", prompt: { productPromptVersion: "companion-product-1", preparedTurnVersion: 5, systemPromptDigest: "a".repeat(64), soulFingerprint: "b".repeat(64) } },
+      });
+      // This test controls Chat admission, so ACK the independent rebuild worker.
+      await prisma.mainOutboxEvent.updateMany({
+        where: { eventType: MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1, aggregateId: `${userId}:${character.id}`, status: "pending" },
+        data: { status: "delivered", deliveredAt: new Date() },
+      });
+    };
+    const patch = (body: object, key?: string) => api("PATCH", `messages/${snapshot.userMessageId}`, {
+      userId, ageGate: true, ...(key ? { headers: { "idempotency-key": key } } : {}), body,
+    });
+    const load = () => executionSnapshot(snapshot.turnId);
+    const wallet = async () => ({
+      balance: await dreamcoinBalance(userId),
+      jobs: await prisma.generationJob.count({ where: { userId } }),
+      spends: await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } }),
+    });
+
+    await complete(snapshot);
+    const paid = { content: "Generate a new seaside landscape without people.", allowPaidImage: true };
+    const paidKey = randomUUID();
+    expect((await patch({ ...paid, attempt: snapshot.attempt }, paidKey)).status).toBe(202);
+    const revised = await load();
+    const generated = await applyChatToolEffect({
+      version: 2, turnId: revised.turnId, attempt: revised.attempt, callId: randomUUID(), name: "generate_image_async",
+      effectScope: "turn_action", intent: { requestedNudity: "unspecified" },
+      arguments: { subject: "scene", prompt: "An empty shore beneath a blue sky.", orientation: "4:5", outputCount: 1 },
+    });
+    if (!generated.accepted || !generated.generationJobId) throw new Error(`No paid generation: ${JSON.stringify(generated)}`);
+    await runQueuedGenerationJobs();
+    const job = await prisma.generationJob.findUniqueOrThrow({ where: { id: generated.generationJobId } });
+    expect(job).toMatchObject({ status: "completed", costDreamcoins: expect.any(Number) });
+    expect(job.costDreamcoins).toBeGreaterThan(0);
+    await complete(revised);
+
+    // The previous API could accept an edit without an observed attempt and
+    // persisted this exact fingerprint for its idempotency key.
+    await prisma.chatTurnEditReceipt.update({
+      where: { turnId_idempotencyKey: { turnId: snapshot.turnId, idempotencyKey: paidKey } },
+      data: { requestHash: createHash("sha256").update(JSON.stringify({ content: paid.content, expectedAttempt: null, allowPaidImage: true })).digest("hex") },
+    });
+    admit.mockClear();
+    const legacyReplay = await patch(paid, paidKey);
+    expect(legacyReplay.status).toBe(202);
+    expect(legacyReplay.json).toMatchObject({ attempt: revised.attempt, status: "sent", streamUrl: null });
+    expect(admit).not.toHaveBeenCalled();
+
+    const replacement = { content: "Only say hello.", attempt: revised.attempt };
+    expect((await patch(replacement)).status).toBe(202);
+    const newer = await load();
+    expect(newer).toMatchObject({ attempt: 3, userContent: replacement.content, imageActionMode: "chat" });
+    await complete(newer);
+    const expectedWallet = { balance: 40 - job.costDreamcoins, jobs: 1, spends: 1 };
+    expect(await wallet()).toEqual(expectedWallet);
+    admit.mockClear();
+    const late = await patch(paid, paidKey);
+    expect(late.status).toBe(409);
+    expect(late.json).toMatchObject({ details: { reason: "edit_attempt_changed", attempt: newer.attempt } });
+    for (const [body, key] of [
+      [paid, undefined],
+      [paid, randomUUID()],
+      [{ content: paid.content }, undefined],
+      [{ content: replacement.content }, undefined],
+    ] as const) {
+      const refused = await patch(body, key);
+      expect(refused.status).toBe(409);
+      expect(refused.json).toMatchObject({ details: { reason: "edit_attempt_required", attempt: newer.attempt } });
+    }
+    expect(admit).not.toHaveBeenCalled();
+    expect(await load()).toEqual(newer);
+    expect(await wallet()).toEqual(expectedWallet);
+
+    expect((await patch({ ...replacement, attempt: newer.attempt, allowPaidImage: true }, randomUUID())).status).toBe(202);
+    const retried = await load();
+    expect(retried).toMatchObject({ attempt: 4, imageActionMode: "chat", userMessageRevision: newer.userMessageRevision });
+    await complete(retried);
+    expect((await patch({ ...paid, attempt: retried.attempt }, randomUUID())).status).toBe(202);
+    const restored = await load();
+    expect(restored).toMatchObject({ attempt: 5, imageActionMode: "paid", userMessageRevision: 5, userContent: paid.content });
+    expect(restored.recoveredMediaAction).toBeUndefined();
+    expect(await wallet()).toEqual(expectedWallet);
   });
 });

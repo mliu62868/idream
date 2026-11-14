@@ -2,11 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
 import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
 import { BFF_HEADER, BFF_USER_HEADER, verifyBffContext, type BffContext } from "@idream/shared/bff";
-import { chatSceneStateSchema, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import { CHAT_SEND_PROTOCOL_VERSION, chatSceneStateSchema, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { Prisma } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
+import { providers } from "@/server/providers";
 import { attemptChatAgentRunAdmission, dispatchPendingChatAgentRuns } from "@/server/modules/chat/agent-run-admission";
 import { dispatchPendingChatEvents } from "@/processes/chat-outbox";
 import {
@@ -48,6 +49,91 @@ const TEST_TERMINAL_EVIDENCE = {
 
 describe("Main-owned Chat façade", () => {
   const fetchMock = vi.fn();
+
+  it.each([true, false])("rejects a pre-cutover deleted send without a retained tombstone (paid=%s)", async allowPaidImage => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const content = "Generate one photo of the quiet garden.";
+    const key = randomUUID();
+    const original = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
+      userId: USER_ID, sessionId, content, idempotencyKey: key, allowPaidImage });
+    // Reproduce deletion before tombstones existed, rather than invoking the
+    // fixed DELETE route which would retain this key.
+    await prisma.chatTurn.delete({ where: { id: original.snapshot!.turnId } });
+    expect(await prisma.deletedChatTurnSend.count({ where: { userId: USER_ID, conversationKey: `session:${sessionId}` } })).toBe(0);
+    const jobs = await prisma.generationJob.count({ where: { userId: USER_ID } });
+    const ledger = await prisma.dreamcoinLedger.findMany({ where: { userId: USER_ID }, orderBy: { id: "asc" } });
+    const usage = await prisma.chatTurnUsageFact.count({ where: { userId: USER_ID } });
+    fetchMock.mockClear();
+    for (const body of [
+      { content, ...(allowPaidImage ? { allowPaidImage: true } : {}) },
+      { content, allowPaidImage, sendProtocolVersion: "chat-send-1", origin: "proactive", voiceCall: { id: "untrusted" } },
+    ]) {
+      const response = await proxyChatRequest(authRequest(`/api/v1/chat/sessions/${sessionId}/messages`, {
+        method: "POST", headers: { "idempotency-key": key }, body: JSON.stringify(body),
+      }, false), ["chat", "sessions", sessionId, "messages"]);
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ details: { reason: "chat_send_protocol_required" } });
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await prisma.chatTurn.count({ where: { sessionId } })).toBe(0);
+    expect(await prisma.chatTurnUsageFact.count({ where: { userId: USER_ID } })).toBe(usage);
+    expect(await prisma.generationJob.count({ where: { userId: USER_ID } })).toBe(jobs);
+    expect(await prisma.dreamcoinLedger.findMany({ where: { userId: USER_ID }, orderBy: { id: "asc" } })).toEqual(ledger);
+  });
+
+  it("reads a known old send receipt without admission and refuses to add a new protocol to its key", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const content = "Generate one photo of the quiet garden.";
+    const key = randomUUID();
+    const original = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
+      userId: USER_ID, sessionId, content, idempotencyKey: key, allowPaidImage: true });
+    const historical = await prisma.chatTurn.update({ where: { id: original.snapshot!.turnId }, data: {
+      requestHash: createHash("sha256").update(JSON.stringify({ sessionId, content, allowPaidImage: true })).digest("hex"),
+    } });
+    fetchMock.mockClear();
+    const replay = await proxyChatRequest(authRequest(`/api/v1/chat/sessions/${sessionId}/messages`, {
+      method: "POST", headers: { "idempotency-key": key }, body: JSON.stringify({ content, allowPaidImage: true }),
+    }, false), ["chat", "sessions", sessionId, "messages"]);
+    expect(replay.status).toBe(202);
+    expect(await replay.json()).toMatchObject({ data: { assistantMessageId: historical.assistantMessageId, assistant: { status: "pending" } } });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: historical.id } })).toEqual(historical);
+    const previousServiceUrl = env.CHAT_SERVICE_URL;
+    env.CHAT_SERVICE_URL = undefined;
+    try {
+      const offlineReplay = await proxyChatRequest(authRequest(`/api/v1/chat/sessions/${sessionId}/messages`, {
+        method: "POST", headers: { "idempotency-key": key }, body: JSON.stringify({ content, allowPaidImage: true }),
+      }, false), ["chat", "sessions", sessionId, "messages"]);
+      expect(offlineReplay.status).toBe(202);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally { env.CHAT_SERVICE_URL = previousServiceUrl; }
+    const changedProtocol = await proxyChatRequest(authRequest(`/api/v1/chat/sessions/${sessionId}/messages`, {
+      method: "POST", headers: { "idempotency-key": key }, body: JSON.stringify({ content, allowPaidImage: true }),
+    }), ["chat", "sessions", sessionId, "messages"]);
+    expect(changedProtocol.status).toBe(409);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("retries one current-protocol send after a lost admission ACK without creating another Turn", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const key = randomUUID();
+    const body = { content: "Generate one new photo of the quiet garden.", allowPaidImage: true, sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION };
+    const post = () => proxyChatRequest(authRequest(`/api/v1/chat/sessions/${sessionId}/messages`, {
+      method: "POST", headers: { "idempotency-key": key }, body: JSON.stringify(body),
+    }), ["chat", "sessions", sessionId, "messages"]);
+    fetchMock.mockImplementationOnce(async () => { throw new Error("Admission ACK lost"); });
+    expect((await post()).status).toBe(202);
+    const original = await prisma.chatTurn.findUniqueOrThrow({ where: { sessionId_idempotencyKey: { sessionId, idempotencyKey: key } } });
+    expect(original).toMatchObject({ assistantStatus: "pending", imageActionMode: "paid" });
+    const replay = await post();
+    expect(replay.status).toBe(202);
+    expect(await replay.json()).toMatchObject({ data: { assistantMessageId: original.assistantMessageId } });
+    expect(await prisma.chatTurn.count({ where: { sessionId } })).toBe(1);
+    expect(await prisma.chatTurnUsageFact.count({ where: { turnId: original.id } })).toBe(1);
+  });
 
   it("allows voice for the session's immutable opening without trusting another session id", async () => {
     const { proxyChatRequest } = await import("./chat-proxy");
@@ -250,7 +336,7 @@ describe("Main-owned Chat façade", () => {
       { method: "POST", body: JSON.stringify({ memoryEnabled }) },
     ), ["chat", "sessions", sessionId, "memory"]);
     expect((await toggle(false)).status).toBe(200);
-    const begun = await beginChatTurn({ userId: USER_ID, sessionId, content: "A temporary detail.", idempotencyKey: randomUUID() });
+    const begun = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId: USER_ID, sessionId, content: "A temporary detail.", idempotencyKey: randomUUID() });
     expect(begun.userMessage).toMatchObject({ memoryEnabled: false });
     expect(begun.assistant).toMatchObject({ memoryEnabled: false });
     expect(begun.snapshot?.memoryEnabled).toBe(false);
@@ -302,7 +388,7 @@ describe("Main-owned Chat façade", () => {
   it("refuses SSE after Chat accepts but Main loses the admission ACK", async () => {
     const { proxyChatRequest } = await import("./chat-proxy");
     const sessionId = await ensureSession(proxyChatRequest);
-    const begun = await beginChatTurn({ userId: USER_ID, sessionId, content: "Admission ACK lost.", idempotencyKey: randomUUID() });
+    const begun = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId: USER_ID, sessionId, content: "Admission ACK lost.", idempotencyKey: randomUUID() });
     fetchMock.mockImplementationOnce(async () => { throw new Error("Chat accepted; its ACK was lost"); });
     await expect(attemptChatAgentRunAdmission(begun.snapshot!)).resolves.toMatchObject({ admitted: false });
     expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: begun.snapshot!.turnId } }))
@@ -380,7 +466,7 @@ describe("Main-owned Chat façade", () => {
   it.each(["admitted", "sent_before_admission_ack"])("allows SSE when Main confirms delivery through %s", async (confirmation) => {
     const { proxyChatRequest } = await import("./chat-proxy");
     const sessionId = await ensureSession(proxyChatRequest);
-    const begun = await beginChatTurn({ userId: USER_ID, sessionId, content: "Deliver the confirmed reply.", idempotencyKey: randomUUID() });
+    const begun = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId: USER_ID, sessionId, content: "Deliver the confirmed reply.", idempotencyKey: randomUUID() });
     const snapshot = begun.snapshot!;
     if (confirmation === "admitted") {
       await expect(attemptChatAgentRunAdmission(snapshot)).resolves.toMatchObject({ admitted: true });
@@ -595,7 +681,7 @@ describe("Main-owned Chat façade", () => {
           // Serving can be revoked while its old session remains active. Both
           // revision entry points must fail before erasing the saved reply.
           await expect(regenerateChatTurn(userId, saved.assistantMessageId)).rejects.toMatchObject({ status: 410 });
-          await expect(editChatTurn(userId, saved.userMessageId, "This replacement must not run.")).rejects.toMatchObject({ status: 410 });
+          await expect(editChatTurn(userId, saved.userMessageId, "This replacement must not run.", { expectedAttempt: saved.attempt })).rejects.toMatchObject({ status: 410 });
           expect(await tx.recentChat.findUniqueOrThrow({ where: { sessionId: session.id } })).toMatchObject({ status: "active" });
           expect(await tx.chatTurn.findUniqueOrThrow({ where: { id: saved.id } })).toEqual(saved);
           expect(await tx.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: saved.id } })).toEqual(usage);
@@ -642,7 +728,7 @@ describe("Main-owned Chat façade", () => {
           where: { characterId },
           data: { state: "paused" },
         });
-        await expect(beginChatTurn({
+        await expect(beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
           userId,
           sessionId: replacement.id,
           content: "This must not run after Serving is paused.",
@@ -934,7 +1020,7 @@ describe("Main-owned Chat façade", () => {
   it("commits without a lock inversion against a concurrent user-first Chat mutation", async () => {
     const { proxyChatRequest } = await import("./chat-proxy");
     const sessionId = await ensureSession(proxyChatRequest);
-    const begun = await beginChatTurn({
+    const begun = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: USER_ID, sessionId, content: "Stay with me.", idempotencyKey: `lock-order-${randomUUID()}`,
     });
     const userLocked = Promise.withResolvers<number>();
@@ -1092,7 +1178,7 @@ describe("Main-owned Chat façade", () => {
   it("echoes the cancelled attempt so the browser can bind its Stop receipt", async () => {
     const { proxyChatRequest } = await import("./chat-proxy");
     const sessionId = await ensureSession(proxyChatRequest);
-    const begun = await beginChatTurn({ userId: USER_ID, sessionId, content: "Stop the observed run.", idempotencyKey: randomUUID() });
+    const begun = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId: USER_ID, sessionId, content: "Stop the observed run.", idempotencyKey: randomUUID() });
     fetchMock.mockImplementation(async () => Response.json({ ok: true, active: false }));
     const response = await proxyChatRequest(authRequest(`/api/v1/messages/${begun.assistant.id}/cancel`, {
       method: "POST", body: JSON.stringify({ attempt: begun.snapshot!.attempt }),
@@ -1117,10 +1203,85 @@ describe("Main-owned Chat façade", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("applies concurrent copies of a keyed edit once and replays its terminal receipt", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const turn = await sendAndCommit(proxyChatRequest, sessionId, "First", "First reply");
+    const key = randomUUID();
+    const request = (body: object, idempotencyKey?: string) => proxyChatRequest(authRequest(`/api/v1/messages/${turn.userMessageId}`, {
+      method: "PATCH", headers: idempotencyKey ? { "idempotency-key": idempotencyKey } : {}, body: JSON.stringify(body),
+    }), ["messages", turn.userMessageId]);
+    const body = { content: "Generate a picture of the coast.", attempt: 1, allowPaidImage: true };
+    fetchMock.mockClear();
+    const responses = await Promise.all([request(body, key), request(body, key)]);
+    for (const response of responses) {
+      expect(response.status).toBe(202);
+      await expect(response.json()).resolves.toMatchObject({ attempt: 2, assistantMessageId: turn.assistantMessageId });
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const revised = await prisma.chatTurn.findUniqueOrThrow({ where: { id: turn.id } });
+    expect(revised).toMatchObject({ attempt: 2, userContent: body.content, imageActionMode: "paid" });
+    await commitChatTerminal({
+      version: 1, turnId: turn.id, sessionId, assistantMessageId: turn.assistantMessageId, attempt: 2,
+      status: "sent", content: "Second reply", model: "test-model", promptTokens: 1, completionTokens: 1,
+      ...nextSceneFixture(revised), terminalEvidence: TEST_TERMINAL_EVIDENCE,
+    });
+    fetchMock.mockClear();
+    const replay = await request(body, key);
+    expect(replay.status).toBe(202);
+    await expect(replay.json()).resolves.toMatchObject({ attempt: 2, status: "sent", streamUrl: null });
+    const differentAuthorization = await request({ ...body, allowPaidImage: false }, key);
+    expect(differentAuthorization.status).toBe(409);
+    await expect(differentAuthorization.json()).resolves.toMatchObject({ details: { reason: "edit_key_conflict" } });
+    const staleObservedAttempt = await request({ content: body.content, attempt: 1 });
+    expect(staleObservedAttempt.status).toBe(409);
+    await expect(staleObservedAttempt.json()).resolves.toMatchObject({ details: { reason: "edit_attempt_changed", attempt: 2 } });
+    expect((await request({ ...body, attempt: "2" })).status).toBe(400);
+    expect((await request({ ...body, allowPaidImage: "true" })).status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await settleMemoryRebuildAndTurn(turn.id);
+    const regenerateKey = randomUUID();
+    const sameText = { content: body.content, attempt: 2 };
+    expect((await request(sameText, regenerateKey)).status).toBe(202);
+    const repeatedRegenerate = await request(sameText, regenerateKey);
+    expect(repeatedRegenerate.status).toBe(202);
+    await expect(repeatedRegenerate.json()).resolves.toMatchObject({ attempt: 3 });
+    await expect(prisma.chatTurn.findUniqueOrThrow({ where: { id: turn.id } })).resolves.toMatchObject({
+      attempt: 3, imageActionMode: "paid", executionSnapshot: { userMessageRevision: 2 },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a legacy edit's pending receipt without requesting admission again", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const original = await sendAndCommit(proxyChatRequest, sessionId, "First", "First reply");
+    const content = "A corrected message.";
+    const edit = await editChatTurn(USER_ID, original.userMessageId, content, { expectedAttempt: original.attempt });
+    const key = randomUUID();
+    await prisma.chatTurnEditReceipt.create({
+      data: {
+        turnId: original.id, idempotencyKey: key, attempt: edit.attempt,
+        requestHash: createHash("sha256").update(JSON.stringify({ content, expectedAttempt: null, allowPaidImage: false })).digest("hex"),
+      },
+    });
+    fetchMock.mockClear();
+    const replay = await proxyChatRequest(authRequest(`/api/v1/messages/${original.userMessageId}`, {
+      method: "PATCH", headers: { "idempotency-key": key }, body: JSON.stringify({ content }),
+    }), ["messages", original.userMessageId]);
+    expect(replay.status).toBe(202);
+    await expect(replay.json()).resolves.toMatchObject({ attempt: edit.attempt, status: "pending", streamUrl: edit.streamUrl });
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expect(prisma.chatTurn.findUniqueOrThrow({ where: { id: original.id } })).resolves.toMatchObject({
+      attempt: edit.attempt, assistantStatus: "pending", admissionAttempts: 0,
+    });
+  });
+
   it.each([{}, { attempt: "1" }, { attempt: 0 }, { attempt: -1 }, { attempt: 1.5 }])("rejects a Stop without a valid observed attempt: %j", async (body) => {
     const { proxyChatRequest } = await import("./chat-proxy");
     const sessionId = await ensureSession(proxyChatRequest);
-    const begun = await beginChatTurn({ userId: USER_ID, sessionId, content: "Still replying.", idempotencyKey: randomUUID() });
+    const begun = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId: USER_ID, sessionId, content: "Still replying.", idempotencyKey: randomUUID() });
     fetchMock.mockClear();
     const response = await proxyChatRequest(authRequest(`/api/v1/chat/messages/${begun.assistant.id}/cancel`, {
       method: "POST", body: JSON.stringify(body),
@@ -1134,7 +1295,7 @@ describe("Main-owned Chat façade", () => {
   it("durably delivers user cancellation for the exact AgentRun attempt", async () => {
     const { proxyChatRequest } = await import("./chat-proxy");
     const sessionId = await ensureSession(proxyChatRequest);
-    const begun = await beginChatTurn({
+    const begun = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: USER_ID,
       sessionId,
       content: "Stop this reply.",
@@ -1182,7 +1343,7 @@ describe("Main-owned Chat façade", () => {
 
     await expect(regenerateChatTurn(USER_ID, first.assistantMessageId))
       .rejects.toThrow("Only the latest chat turn can be changed");
-    await expect(editChatTurn(USER_ID, first.userMessageId, "Rewrite first"))
+    await expect(editChatTurn(USER_ID, first.userMessageId, "Rewrite first", { expectedAttempt: first.attempt }))
       .rejects.toThrow("Only the latest chat turn can be changed");
     await expect(deleteChatMessage(USER_ID, first.userMessageId))
       .rejects.toThrow("Only the latest chat turn can be changed");
@@ -1226,7 +1387,7 @@ describe("Main-owned Chat façade", () => {
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     });
 
-    await expect(editChatTurn(USER_ID, latest.userMessageId, "edited at the quota boundary"))
+    await expect(editChatTurn(USER_ID, latest.userMessageId, "edited at the quota boundary", { expectedAttempt: latest.attempt }))
       .resolves.toMatchObject({ attempt: 2 });
     await settleMemoryRebuildAndTurn(latest.id);
     await expect(regenerateChatTurn(USER_ID, latest.assistantMessageId))
@@ -1291,7 +1452,7 @@ describe("Main-owned Chat façade", () => {
     const { proxyChatRequest } = await import("./chat-proxy");
     const sessionId = await ensureSession(proxyChatRequest);
     const key = `clear-memory-${randomUUID()}`;
-    await beginChatTurn({
+    await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: USER_ID,
       sessionId,
       content: "Forget this after memory is cleared.",
@@ -1361,7 +1522,7 @@ describe("Main-owned Chat façade", () => {
       "I will remember it.",
     );
 
-    const edited = await editChatTurn(USER_ID, original.userMessageId, "Use the red observatory instead.");
+    const edited = await editChatTurn(USER_ID, original.userMessageId, "Use the red observatory instead.", { expectedAttempt: original.attempt });
     expect(edited.snapshot?.memoryEnabled).toBe(false);
     await commitChatTerminal({
       version: 1,
@@ -1386,7 +1547,7 @@ describe("Main-owned Chat façade", () => {
       },
     })).resolves.toBeTruthy();
 
-    const next = await beginChatTurn({
+    const next = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: USER_ID,
       sessionId,
       content: "Can we keep talking now?",
@@ -1400,7 +1561,7 @@ describe("Main-owned Chat façade", () => {
     const { proxyChatRequest } = await import("./chat-proxy");
     const sessionId = await ensureSession(proxyChatRequest);
     const key = `scene-edit-${randomUUID()}`;
-    const begun = await beginChatTurn({
+    const begun = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: USER_ID,
       sessionId,
       content: "We are in Paris.",
@@ -1430,7 +1591,7 @@ describe("Main-owned Chat façade", () => {
       terminalEvidence: TEST_TERMINAL_EVIDENCE,
     });
 
-    const edited = await editChatTurn(USER_ID, begun.userMessage.id, "We are in Tokyo.");
+    const edited = await editChatTurn(USER_ID, begun.userMessage.id, "We are in Tokyo.", { expectedAttempt: begun.assistant.attempt });
     expect(edited.snapshot).toMatchObject({
       attempt: 2,
       userContent: "We are in Tokyo.",
@@ -1502,7 +1663,7 @@ describe("Main-owned Chat façade", () => {
   it("freezes recent delivered-image context for shorthand edit intent", async () => {
     const { proxyChatRequest } = await import("./chat-proxy");
     const sessionId = await ensureSession(proxyChatRequest);
-    const first = await beginChatTurn({
+    const first = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: USER_ID,
       sessionId,
       content: "Send a portrait.",
@@ -1523,25 +1684,38 @@ describe("Main-owned Chat façade", () => {
       ...nextSceneFixture(first.snapshot),
       terminalEvidence: TEST_TERMINAL_EVIDENCE,
     });
-    await prisma.chatTurnAttachment.create({
-      data: {
-        id: `attachment-${randomUUID()}`,
-        turnId: first.snapshot.turnId,
-        kind: "generated_image",
-        status: "completed",
-        mediaAssetId: `media-${randomUUID()}`,
-        metadata: { attempt: 1 },
-      },
-    });
-
-    const second = await beginChatTurn({
-      userId: USER_ID,
-      sessionId,
-      content: "换个姿势",
-      idempotencyKey: `image-context-second-${randomUUID()}`,
-    });
-
-    expect(second.snapshot?.hasRecentImageContext).toBe(true);
+    const mediaAssetId = `media-${randomUUID()}`;
+    const sourceKey = `tests/chat-context/${mediaAssetId}.png`;
+    const bytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jH4cAAAAASUVORK5CYII=", "base64");
+    expect((await providers.blob.putPrivate({ key: sourceKey, body: bytes, contentType: "image/png" })).ok).toBe(true);
+    try {
+      await prisma.mediaAsset.create({ data: {
+        id: mediaAssetId, ownerId: USER_ID, characterId: CHARACTER_ID, type: "image",
+        url: `/user-content/${mediaAssetId}/content.png`, storageKey: sourceKey,
+        contentType: "image/png", width: 1, height: 1, safetyStatus: "passed", metadata: { synthetic: false },
+      } });
+      await prisma.chatTurnAttachment.create({
+        data: {
+          id: `attachment-${randomUUID()}`,
+          turnId: first.snapshot.turnId,
+          kind: "generated_image",
+          status: "completed",
+          mediaAssetId,
+          metadata: { attempt: 1 },
+        },
+      });
+      const second = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
+        userId: USER_ID,
+        sessionId,
+        content: "换个姿势",
+        idempotencyKey: `image-context-second-${randomUUID()}`,
+      });
+      expect(second.snapshot).toMatchObject({ hasRecentImageContext: true, imageEditSourceAssetId: mediaAssetId });
+      expect(second.snapshot?.recentMedia).toEqual([expect.objectContaining({ mediaAssetId, kind: "image" })]);
+    } finally {
+      await prisma.mediaAsset.deleteMany({ where: { id: mediaAssetId } });
+      await providers.blob.delete({ key: sourceKey });
+    }
   });
 
   it("replays an accepted ToolEffect after the Turn is terminal without charging again", async () => {
@@ -1718,7 +1892,7 @@ describe("Main-owned Chat façade", () => {
     await proxyChatRequest(authRequest(`/api/v1/chat/sessions/${sessionId}/messages`, {
       method: "POST",
       headers: { "idempotency-key": key },
-      body: JSON.stringify({ content: "Send a portrait." }),
+      body: JSON.stringify({ content: "Send a portrait.", allowPaidImage: true }),
     }), ["chat", "sessions", sessionId, "messages"]);
     const turn = await prisma.chatTurn.findUniqueOrThrow({
       where: { sessionId_idempotencyKey: { sessionId, idempotencyKey: key } },
@@ -1800,7 +1974,7 @@ describe("Main-owned Chat façade", () => {
         },
       },
     });
-    await editChatTurn(USER_ID, turn.userMessageId, "Use the revised description.");
+    await editChatTurn(USER_ID, turn.userMessageId, "Use the revised description.", { expectedAttempt: turn.attempt });
     expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: editedJobId } }))
       .toMatchObject({
         momentSpec: null,
@@ -1862,11 +2036,16 @@ describe("Main-owned Chat façade", () => {
   });
 });
 
-function authRequest(path: string, init: RequestInit = {}) {
+function authRequest(path: string, init: RequestInit = {}, currentSendProtocol = true) {
   const headers = new Headers(init.headers);
   headers.set("content-type", "application/json");
   headers.set("x-idream-user-id", USER_ID);
-  return new Request(`http://localhost${path}`, { ...init, headers });
+  let body = init.body;
+  if (currentSendProtocol && init.method === "POST" && /^\/api\/v1\/chat\/(sessions|groups)\/[^/]+\/messages$/.test(path) && typeof body === "string") {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    if (!("sendProtocolVersion" in parsed)) body = JSON.stringify({ ...parsed, sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION });
+  }
+  return new Request(`http://localhost${path}`, { ...init, body, headers });
 }
 
 async function ensureSession(proxy: typeof import("./chat-proxy").proxyChatRequest): Promise<string> {

@@ -9,14 +9,11 @@ export type ChatVideoSource = {
   url: string;
 };
 
-// Detection only opens an editable quote form. It never admits a paid effect.
+// Explicit creation opens a quote form. Requests to send or show media belong to Chat.
 export function isExplicitChatVideoRequest(text: string) {
   const value = text.trim();
-  if (/^(?:(?:do\s+not|don't|never)\b|不要|别|不需要)/iu.test(value)) return false;
-  return /^(?:please\s+)?(?:generate|create|make|send(?:\s+me)?|show(?:\s+me)?)\b.{0,160}\b(?:video|animation|clip)\b/iu.test(value) ||
-    /^(?:can|could|would)\s+you\s+(?:please\s+)?(?:generate|create|make|send|show)\b.{0,160}\b(?:video|animation|clip)\b/iu.test(value) ||
-    /^(?:请|帮我|给我|请帮我)?(?:生成|制作|做|发|发送).{0,80}(?:视频|动画)/u.test(value) ||
-    /^(?:please\s+)?animate\b/iu.test(value);
+  return /^(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?(?:(?:generate|create|make)\b.{0,160}\b(?:video|animation|clip)\b|animate\b)/iu.test(value) ||
+    /^请?(?:(?:帮|给)我)?(?:生成|制作|做).{0,80}(?:视频|动画)/u.test(value);
 }
 
 export function chatVideoSources(messages: readonly RuntimeChatMessage[], fallback: { sessionId: string; characterId: string | null }): ChatVideoSource[] {

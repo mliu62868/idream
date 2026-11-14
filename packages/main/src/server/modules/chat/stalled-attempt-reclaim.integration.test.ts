@@ -1,3 +1,4 @@
+import { CHAT_SEND_PROTOCOL_VERSION } from "@idream/shared/contracts";
 import { randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
 import { afterAll, describe, expect, it } from "vitest";
@@ -66,7 +67,7 @@ async function abandonInGenerating(turnId: string, ageMs: number) {
 describe("reclaiming an abandoned Chat attempt", () => {
   it("honors a configured execution deadline beyond the former six-minute watchdog", async () => {
     const f = await fixture();
-    const begun = await beginChatTurn({ userId: f.userId, sessionId: f.sessionId, content: "A longer run.", idempotencyKey: randomUUID() });
+    const begun = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId: f.userId, sessionId: f.sessionId, content: "A longer run.", idempotencyKey: randomUUID() });
     const deadline = new Date(Date.now() + 3 * 60_000);
     await prisma.chatTurn.update({ where: { id: begun.snapshot!.turnId }, data: { executionDeadlineAt: deadline } });
     await abandonInGenerating(begun.snapshot!.turnId, 7 * 60_000);
@@ -77,7 +78,7 @@ describe("reclaiming an abandoned Chat attempt", () => {
 
   it("reclaims an expired short execution deadline even when the row was recently updated", async () => {
     const f = await fixture();
-    const begun = await beginChatTurn({ userId: f.userId, sessionId: f.sessionId, content: "A short run.", idempotencyKey: randomUUID() });
+    const begun = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId: f.userId, sessionId: f.sessionId, content: "A short run.", idempotencyKey: randomUUID() });
     await prisma.chatTurn.update({ where: { id: begun.snapshot!.turnId }, data: {
       assistantStatus: "generating", admittedAt: new Date(), executionDeadlineAt: new Date(Date.now() - 61_000),
     } });
@@ -88,7 +89,7 @@ describe("reclaiming an abandoned Chat attempt", () => {
 
   it("allows the terminal-commit grace after a configured deadline expires", async () => {
     const f = await fixture();
-    const begun = await beginChatTurn({ userId: f.userId, sessionId: f.sessionId, content: "Settling a reply.", idempotencyKey: randomUUID() });
+    const begun = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId: f.userId, sessionId: f.sessionId, content: "Settling a reply.", idempotencyKey: randomUUID() });
     await prisma.chatTurn.update({ where: { id: begun.snapshot!.turnId }, data: { executionDeadlineAt: new Date(Date.now() - 30_000) } });
     await abandonInGenerating(begun.snapshot!.turnId, 7 * 60_000);
     expect(await reclaimStalledChatAgentRuns()).toEqual({ reclaimed: 0 });
@@ -100,7 +101,7 @@ describe("reclaiming an abandoned Chat attempt", () => {
   // 永远转不完的气泡，加上一句「A reply is already generating」。
   it("ends the Turn, releases the relationship and asks Chat to stop", async () => {
     const f = await fixture();
-    const begun = await beginChatTurn({
+    const begun = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: f.userId,
       sessionId: f.sessionId,
       content: "Are you there?",
@@ -111,7 +112,7 @@ describe("reclaiming an abandoned Chat attempt", () => {
 
     // 闸门确实卡死了：修之前这就是用户永远发不出下一句的原因。
     await expect(
-      beginChatTurn({
+      beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
         userId: f.userId,
         sessionId: f.sessionId,
         content: "Hello?",
@@ -136,7 +137,7 @@ describe("reclaiming an abandoned Chat attempt", () => {
     ).toBe(1);
 
     // 关系恢复可用 —— 这才是用户真正感受到的修复。
-    const next = await beginChatTurn({
+    const next = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: f.userId,
       sessionId: f.sessionId,
       content: "Hello?",
@@ -147,7 +148,7 @@ describe("reclaiming an abandoned Chat attempt", () => {
 
   it("leaves an attempt that is still inside its deadline alone", async () => {
     const f = await fixture();
-    const begun = await beginChatTurn({
+    const begun = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: f.userId,
       sessionId: f.sessionId,
       content: "Still thinking?",
@@ -165,7 +166,7 @@ describe("reclaiming an abandoned Chat attempt", () => {
   // 扫描和加锁之间 Chat 可能刚好提交了终态；那条真实终态不能被覆盖。
   it("does not overwrite a reply that arrived before the lock", async () => {
     const f = await fixture();
-    const begun = await beginChatTurn({
+    const begun = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: f.userId,
       sessionId: f.sessionId,
       content: "Made it?",

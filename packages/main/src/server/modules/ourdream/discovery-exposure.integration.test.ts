@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
-import { METRIC_PRODUCT_EVENTS } from "@idream/shared/contracts";
+import { CHAT_SEND_PROTOCOL_VERSION, METRIC_PRODUCT_EVENTS } from "@idream/shared/contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { projectCanonicalMetricEvent } from "@/server/modules/admin-v2/metrics/projector";
@@ -242,7 +242,7 @@ describe("discovery exposure attribution chain", () => {
       entryJourneyId: context.journeyId,
       entryPlacementId: context.placementId,
     });
-    const turn = await beginChatTurn({
+    const turn = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: entryViewerId, sessionId: session.id, content: "Hello from Explore.", idempotencyKey: randomUUID(),
     });
     const snapshot = turn.snapshot;

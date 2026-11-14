@@ -184,7 +184,7 @@ describe("explicit Chat video admission and delivery", () => {
     // Fully entitled, so the rejection below proves Session ownership, not access.
     await prisma.entitlement.createMany({ data: ["premium_controls", "video_generation"].map(key => ({ userId: other, key, value: true, source: "test" })) });
     expectError(await api("POST", `chat/${f.sessionId}/video/quote`, { userId: other, ageGate: true, body }), 403);
-    await editChatTurn(f.userId, f.userMessageId, "Move to a different scene.");
+    await editChatTurn(f.userId, f.userMessageId, "Move to a different scene.", { expectedAttempt: 1 });
     expectError(await submit(f, body, `${f.id}-changed`), 409);
     expect(await prisma.dreamcoinLedger.count({ where: { userId: f.userId, reason: "generation_spend" } })).toBe(0);
   });
@@ -208,7 +208,7 @@ describe("explicit Chat video admission and delivery", () => {
     // A delivered Chat video keeps the user's motion request on its attachment.
     const videoJob = await prisma.generationJob.create({ data: { id: `${f.id}-video-job`, userId: f.userId, characterId: f.characterId, mode: "video", status: "completed", controls: {}, presetIds: [], sourceType: "chat_video", sourceId: `${f.id}-video-attachment`, sourceMeta: { sessionId: f.sessionId, exchangeId: f.turnId }, momentSpec: { rawInput: "Turn slowly toward the blue window." } } });
     await prisma.chatTurnAttachment.create({ data: { id: `${f.id}-video-attachment`, turnId: f.turnId, kind: "generated_video", status: "completed", generationJobId: videoJob.id, promptHint: "Turn slowly toward the blue window.", metadata: { attempt: 1 } } });
-    await editChatTurn(f.userId, f.userMessageId, "Move to a different scene.");
+    await editChatTurn(f.userId, f.userMessageId, "Move to a different scene.", { expectedAttempt: 1 });
     expect(await prisma.chatTurnAttachment.findMany({ where: { turnId: f.turnId }, orderBy: { id: "asc" }, select: { kind: true, promptHint: true } })).toEqual([
       { kind: "generated_image", promptHint: null },
       { kind: "generated_video", promptHint: null },

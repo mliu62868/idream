@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { CHAT_SEND_PROTOCOL_VERSION } from "@idream/shared/contracts";
+import { createHash, randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
 import type { ChatToolEffect } from "@idream/shared/contracts";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -39,7 +40,7 @@ async function fixture(count = 2, extra = 0) {
   }
   const group = await createGroupConversation(userId, { title: "Controlled group", characterIds: characters.slice(0, count).map(character => character.id) });
   const members = await prisma.recentChat.findMany({ where: { groupId: group.id }, orderBy: { groupPosition: "asc" } });
-  const begin = (index: number, content = `Message for companion ${index + 1}`, idempotencyKey = randomUUID()) => beginChatTurn({ userId, sessionId: members[index].sessionId, content, idempotencyKey });
+  const begin = (index: number, content = `Message for companion ${index + 1}`, idempotencyKey = randomUUID(), allowPaidImage = false) => beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId, sessionId: members[index].sessionId, content, idempotencyKey, allowPaidImage });
   const patch = (body: unknown, scope = `user:${userId}`) => proxyChatRequest(new Request(`http://localhost/api/v1/chat/groups/${group.id}`, {
     method: "PATCH", headers: { "x-idream-user-id": userId, "x-idream-viewer-scope": scope, "content-type": "application/json" }, body: JSON.stringify(body),
   }), ["chat", "groups", group.id]);
@@ -61,6 +62,77 @@ async function acknowledgeMemory(userId: string) {
 }
 
 describe("Main group conversation authority", () => {
+  it.each([true, false])("requires a current send protocol after a historical group deletion (paid=%s)", async allowPaidImage => {
+    const f = await fixture();
+    const content = "Make one photo of the shared garden.";
+    const key = randomUUID();
+    const original = await f.begin(0, content, key, allowPaidImage);
+    await finish(original.snapshot!);
+    // Simulate a pre-cutover deletion with no retained POST-key receipt.
+    await prisma.chatTurn.delete({ where: { id: original.snapshot!.turnId } });
+    expect(await prisma.deletedChatTurnSend.count({ where: { userId: f.userId, conversationKey: `group:${f.group.id}` } })).toBe(0);
+    for (const character of f.characters) {
+      const response = await proxyChatRequest(new Request(`http://localhost/api/v1/chat/groups/${f.group.id}/messages`, {
+        method: "POST", headers: { "x-idream-user-id": f.userId, "content-type": "application/json", "idempotency-key": key },
+        body: JSON.stringify({ content, characterId: character.id, ...(allowPaidImage ? { allowPaidImage: true } : {}) }),
+      }), ["chat", "groups", f.group.id, "messages"]);
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ details: { reason: "chat_send_protocol_required" } });
+    }
+    expect(await prisma.chatTurn.count({ where: { session: { userId: f.userId } } })).toBe(0);
+    expect(await prisma.generationJob.count({ where: { userId: f.userId } })).toBe(0);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId: f.userId, reason: "generation_spend" } })).toBe(0);
+    expect(await prisma.chatTurnUsageFact.count({ where: { userId: f.userId } })).toBe(1);
+    const fresh = await f.begin(0, content, randomUUID(), allowPaidImage);
+    expect(fresh.snapshot?.imageActionMode).toBe(allowPaidImage ? "paid" : "chat");
+    expect(fresh.snapshot?.turnId).not.toBe(original.snapshot!.turnId);
+  });
+
+  it("reads an existing legacy group POST receipt without starting an attempt", async () => {
+    const f = await fixture();
+    const content = "Make one photo of the shared garden.";
+    const key = randomUUID();
+    const original = await f.begin(0, content, key, true);
+    const saved = await prisma.chatTurn.update({ where: { id: original.snapshot!.turnId }, data: {
+      requestHash: createHash("sha256").update(JSON.stringify({ sessionId: original.snapshot!.sessionId, content, allowPaidImage: true })).digest("hex"),
+    } });
+    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Legacy receipt must not request admission"));
+    try {
+      const response = await proxyChatRequest(new Request(`http://localhost/api/v1/chat/groups/${f.group.id}/messages`, {
+        method: "POST", headers: { "x-idream-user-id": f.userId, "content-type": "application/json", "idempotency-key": key },
+        body: JSON.stringify({ content, characterId: f.characters[0].id, allowPaidImage: true }),
+      }), ["chat", "groups", f.group.id, "messages"]);
+      expect(response.status).toBe(202);
+      expect(await response.json()).toMatchObject({ data: { assistantMessageId: saved.assistantMessageId, assistant: { status: "pending" } } });
+      expect(fetch).not.toHaveBeenCalled();
+      expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: saved.id } })).toEqual(saved);
+    } finally { fetch.mockRestore(); }
+  });
+
+  it.each(["single", "group"] as const)("keeps a deleted paid send's key fenced in a %s conversation", async (kind) => {
+    const f = await fixture();
+    const single = kind === "single" ? await createChatSession(f.userId, { characterId: f.characters[0].id }) : null;
+    const content = "Make one photo of the shared garden.";
+    const key = randomUUID();
+    const begin = (idempotencyKey: string, speaker: number) => beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
+      userId: f.userId, sessionId: single?.id ?? f.members[speaker]!.sessionId,
+      content, idempotencyKey, allowPaidImage: true,
+    });
+    const original = await begin(key, 0);
+    expect(original.snapshot?.imageActionMode).toBe("paid");
+    await finish(original.snapshot!);
+    await deleteChatMessage(f.userId, original.userMessage.id);
+    expect(await prisma.chatTurn.count({ where: { id: original.snapshot!.turnId } })).toBe(0);
+    await expect(begin(key, 0)).rejects.toMatchObject({ status: 409, details: { reason: "chat_send_deleted" } });
+    if (!single) {
+      // A group's send key belongs to the conversation, including a retry with another speaker.
+      await expect(begin(key, 1)).rejects.toMatchObject({ status: 409, details: { reason: "chat_send_deleted" } });
+    }
+    const intentional = await begin(randomUUID(), 0);
+    expect(intentional.snapshot).toMatchObject({ userContent: content, imageActionMode: "paid" });
+    expect(intentional.snapshot?.turnId).not.toBe(original.snapshot?.turnId);
+  });
+
   it("creates separate immutable member sessions without replacing existing single-character conversations", async () => {
     const f = await fixture();
     const single = await createChatSession(f.userId, { characterId: f.characters[0].id });
@@ -108,7 +180,7 @@ describe("Main group conversation authority", () => {
     const f = await fixture();
     await prisma.chatContextDirective.createMany({ data: f.characters.map((character, index) => ({ id: randomUUID(), userId: f.userId, characterId: character.id, kind: "pinned_memory", content: `Private relationship fact ${index}` })) });
     const solo = await createChatSession(f.userId, { characterId: f.characters[0].id });
-    const privateTurn = await beginChatTurn({ userId: f.userId, sessionId: solo.id, content: "Private solo transcript", idempotencyKey: randomUUID() });
+    const privateTurn = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId: f.userId, sessionId: solo.id, content: "Private solo transcript", idempotencyKey: randomUUID() });
     await finish(privateTurn.snapshot!, "Private solo response");
     const a = await f.begin(0, "The shared notebook is blue.");
     expect(a.snapshot!.recentTurns).toEqual([]);
@@ -149,11 +221,11 @@ describe("Main group conversation authority", () => {
     if (winner?.status !== "fulfilled") throw new Error("No admitted Turn");
     const snapshot = winner.value.snapshot!;
     const saved = await prisma.chatTurn.findUniqueOrThrow({ where: { id: snapshot.turnId } });
-    const replay = await beginChatTurn({ userId: f.userId, sessionId: saved.sessionId, content: saved.userContent, idempotencyKey: saved.idempotencyKey });
+    const replay = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId: f.userId, sessionId: saved.sessionId, content: saved.userContent, idempotencyKey: saved.idempotencyKey });
     expect(replay.duplicate).toBe(true);
     expect(replay.snapshot?.turnId).toBe(snapshot.turnId);
     const other = f.members.find(member => member.sessionId !== snapshot.sessionId)!;
-    await expect(beginChatTurn({ userId: f.userId, sessionId: other.sessionId, content: saved.userContent, idempotencyKey: saved.idempotencyKey })).rejects.toMatchObject({ status: 409 });
+    await expect(beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId: f.userId, sessionId: other.sessionId, content: saved.userContent, idempotencyKey: saved.idempotencyKey })).rejects.toMatchObject({ status: 409 });
     expect(await prisma.groupChatTurn.count({ where: { groupId: f.group.id } })).toBe(1);
     expect(await prisma.chatTurnUsageFact.count({ where: { userId: f.userId } })).toBe(1);
   });
@@ -164,7 +236,7 @@ describe("Main group conversation authority", () => {
     const blocked = await f.begin(1, "minor");
     expect(blocked.assistant.status).toBe("blocked");
     const savedBlocked = await prisma.chatTurn.findUniqueOrThrow({ where: { userMessageId: blocked.userMessage.id } });
-    await expect(editChatTurn(f.userId, blocked.userMessage.id, "Hello again."))
+    await expect(editChatTurn(f.userId, blocked.userMessage.id, "Hello again.", { expectedAttempt: blocked.assistant.attempt }))
       .rejects.toMatchObject({ status: 409, message: "A reply is already generating" });
     expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: active.snapshot!.turnId } }))
       .toMatchObject({ assistantStatus: "pending", attempt: 1, executionSnapshot: active.snapshot });
@@ -178,7 +250,7 @@ describe("Main group conversation authority", () => {
     await grantCoins(f.userId, 40);
     const offer = await f.begin(0, "Let's sit by the cafe window.");
     await finish(offer.snapshot!, "Would you like me to send you a photo by the cafe window?");
-    const confirmation = await f.begin(selectedSpeaker, "Yes, please.");
+    const confirmation = await f.begin(selectedSpeaker, "Yes, please.", randomUUID(), true);
     const snapshot = confirmation.snapshot!;
     expect(snapshot.recentTurns.at(-1)?.speaker?.characterId).toBe(f.characters[0].id);
     expect(snapshot.characterId).toBe(f.characters[selectedSpeaker].id);
@@ -216,7 +288,7 @@ describe("Main group conversation authority", () => {
     const a = await f.begin(0); await finish(a.snapshot!);
     const b = await f.begin(1); await finish(b.snapshot!);
     await expect(regenerateChatTurn(f.userId, a.assistant.id)).rejects.toMatchObject({ status: 409 });
-    await expect(editChatTurn(f.userId, a.userMessage.id, "Old edit")).rejects.toMatchObject({ status: 409 });
+    await expect(editChatTurn(f.userId, a.userMessage.id, "Old edit", { expectedAttempt: a.assistant.attempt })).rejects.toMatchObject({ status: 409 });
     await expect(deleteChatMessage(f.userId, a.userMessage.id)).rejects.toMatchObject({ status: 409 });
     const regenerated = await regenerateChatTurn(f.userId, b.assistant.id);
     expect(regenerated.snapshot).toMatchObject({ attempt: 2, characterId: f.characters[1].id, sceneVersion: 1, group: { ordinal: 2 } });
@@ -247,7 +319,7 @@ describe("Main group conversation authority", () => {
         method: "POST", headers: { "x-idream-user-id": f.userId },
       }), ["messages", original.assistant.id, "regenerate"]);
       const edit = await proxyChatRequest(new Request(`http://localhost/api/v1/messages/${original.userMessage.id}`, {
-        method: "PATCH", headers: { "x-idream-user-id": f.userId, "content-type": "application/json" }, body: JSON.stringify({ content: "A replacement that must not be accepted" }),
+        method: "PATCH", headers: { "x-idream-user-id": f.userId, "content-type": "application/json" }, body: JSON.stringify({ content: "A replacement that must not be accepted", attempt: original.assistant.attempt }),
       }), ["messages", original.userMessage.id]);
       const send = await proxyChatRequest(new Request(`http://localhost/api/v1/chat/groups/${f.group.id}/messages`, {
         method: "POST", headers: { "x-idream-user-id": f.userId, "content-type": "application/json", "idempotency-key": `ended-group-send-${ending}-${f.group.id}` },
@@ -310,7 +382,7 @@ describe("Main group conversation authority", () => {
     expect(members).toHaveLength(3);
     expect(members[2]).toMatchObject({ characterId: added.id, characterContentVersionId: added.contentId, groupPosition: 2, activeKey: null, openingMessage: null, status: "active" });
     expect(await groupSpeakerSession(f.userId, f.group.id, added.id)).toMatchObject({ sessionId: members[2].sessionId });
-    const c = await beginChatTurn({ userId: f.userId, sessionId: members[2].sessionId, content: "Who lit the lantern?", idempotencyKey: randomUUID() });
+    const c = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId: f.userId, sessionId: members[2].sessionId, content: "Who lit the lantern?", idempotencyKey: randomUUID() });
     expect(c.snapshot).toMatchObject({ characterId: added.id, group: { ordinal: 2 } });
     expect(c.snapshot!.group!.members.map(member => member.characterId)).toEqual(f.characters.map(character => character.id));
     expect(c.snapshot!.recentTurns).toEqual([expect.objectContaining({ turnId: a.snapshot!.turnId, assistantContent: "I, companion one, lit it." })]);

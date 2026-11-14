@@ -1,3 +1,4 @@
+import { CHAT_SEND_PROTOCOL_VERSION } from "@idream/shared/contracts";
 import { randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
 import { afterAll, describe, expect, it } from "vitest";
@@ -35,7 +36,7 @@ async function fixture() {
     }), segments);
     return { status: response.status, json: await response.json() };
   };
-  const begin = (key = randomUUID()) => beginChatTurn({ userId, sessionId: session.id, content: "Keep me company.", idempotencyKey: key });
+  const begin = (key = randomUUID()) => beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId, sessionId: session.id, content: "Keep me company.", idempotencyKey: key });
   return { userId, characterId: character.id, sessionId: session.id, call, begin };
 }
 
@@ -99,7 +100,7 @@ describe("explicit user Chat context", () => {
     // Simulate the acknowledged rebuild before the next revision; no provider is invoked here.
     await prisma.mainOutboxEvent.updateMany({ where: { aggregateId: `${f.userId}:${f.characterId}` }, data: { status: "delivered", deliveredAt: new Date() } });
     await finish({ ...first, snapshot: regenerated.snapshot });
-    const edited = await editChatTurn(f.userId, first.snapshot!.userMessageId, "Stay by the window.");
+    const edited = await editChatTurn(f.userId, first.snapshot!.userMessageId, "Stay by the window.", { expectedAttempt: regenerated.attempt });
     expect(edited.snapshot?.contextDirectives).toEqual([pin, custom]);
     await finish({ ...first, snapshot: edited.snapshot });
     const next = await f.begin();
@@ -137,7 +138,7 @@ describe("explicit user Chat context", () => {
     await expect(regenerateChatTurn(f.userId, normalTurn.snapshot!.assistantMessageId))
       .rejects.toMatchObject({ code: "gone" });
     const freshSession = await createChatSession(f.userId, { characterId: f.characterId });
-    const fresh = await beginChatTurn({ userId: f.userId, sessionId: freshSession.id, content: "Hello again.", idempotencyKey: randomUUID() });
+    const fresh = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId: f.userId, sessionId: freshSession.id, content: "Hello again.", idempotencyKey: randomUUID() });
     expect(fresh.snapshot?.contextDirectives).toEqual([custom]);
     const freshPin = await f.call("POST", { kind: "pinned_memory", content: "A newly saved fact." }, undefined, f.userId, randomUUID(), freshSession.id);
     expect(freshPin.status).toBe(201);

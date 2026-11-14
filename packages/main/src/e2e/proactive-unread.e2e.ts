@@ -1,3 +1,4 @@
+import { CHAT_SEND_PROTOCOL_VERSION } from "@idream/shared/contracts";
 import { expect, test, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
@@ -90,7 +91,7 @@ async function characterWithSession(userId: string) {
 
 /** The Character speaks first, exactly the way the dispatcher admits it. */
 async function deliverProactiveReply(page: Page, userId: string, sessionId: string) {
-  const begun = await beginChatTurn({
+  const begun = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
     userId,
     sessionId,
     content:

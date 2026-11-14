@@ -7,6 +7,11 @@ export const GENERATION_SOURCE_MAX_BYTES = 64 * 1024 * 1024;
 
 export type FrozenGenerationSource = { id: string; sha256: string; sizeBytes: number; contentType: string };
 
+export function matchesFrozenGenerationSource(pin: Record<string, unknown>, snapshot: FrozenGenerationSource) {
+  return pin.snapshotId === snapshot.id && pin.sha256 === snapshot.sha256 &&
+    pin.sizeBytes === snapshot.sizeBytes && pin.contentType === snapshot.contentType;
+}
+
 /** A snapshot committed before admission, plus the asset row it was read through. */
 export type PrefrozenGenerationSource = FrozenGenerationSource & {
   assetId: string;

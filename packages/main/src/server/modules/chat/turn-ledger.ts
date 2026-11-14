@@ -9,8 +9,8 @@ import type {
   UserChatPersona,
   RecoveredMediaAction,
 } from "@idream/shared/contracts";
-import { chatContextDirectivesSchema, chatExchangeCompletedV2Schema, chatExchangeCorrectionV2Schema, chatExecutionSnapshotSchema, chatExperiencePreferenceSchema, chatTerminalCommitSchema, recoveredMediaActionSchema, MAIN_TO_CHAT_EVENTS, METRIC_PRODUCT_EVENTS } from "@idream/shared/contracts";
-import { Prisma, type RecentChat } from "@prisma/client";
+import { CHAT_SEND_PROTOCOL_VERSION, chatContextDirectivesSchema, chatExchangeCompletedV2Schema, chatExchangeCorrectionV2Schema, chatExecutionSnapshotSchema, chatExperiencePreferenceSchema, chatTerminalCommitSchema, recoveredMediaActionSchema, MAIN_TO_CHAT_EVENTS, METRIC_PRODUCT_EVENTS } from "@idream/shared/contracts";
+import { Prisma, type ChatTurn, type RecentChat } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { AppError, Errors } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
@@ -35,10 +35,10 @@ import {
   scheduleCompanionMemoryRebuild,
 } from "./companion-memory-authority";
 import { attachmentAttempt, lockChatScope } from "./turn-scope";
-import { hasChatMediaResponseAttachment, transitionToolEffectAttachment } from "./tool-effect-attachment";
+import { hasChatMediaResponseAttachment, legacyTurnActionAttachmentId, transitionToolEffectAttachment } from "./tool-effect-attachment";
 import { userChatPersonaForTurn } from "./user-persona";
 import { DEFAULT_PROFILE_EXPERIENCE } from "./conversation-profiles";
-import { deliveredChatMedia, isReadableChatMedia, readableDeliveredChatMediaWhere } from "./chat-media-history";
+import { deliveredChatMedia, frozenChatImageEditSource, isReadableChatMedia, readableDeliveredChatMediaWhere } from "./chat-media-history";
 import { lockCharacterGenerationAuthority, lockMediaAssetAuthority } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 
 const BLOCKED_NOTICE = "I can’t help with that request.";
@@ -294,12 +294,17 @@ export async function beginChatTurn(input: {
   sessionId: string;
   content: string;
   idempotencyKey: string;
+  sendProtocolVersion?: string;
+  allowPaidImage?: boolean;
   origin?: "user" | "proactive";
   voiceCall?: { id: string; leaseToken: string; utteranceId: string };
 }): Promise<BegunChatTurn> {
   const content = requiredText(input.content, "content", 20_000);
   const idempotencyKey = requiredText(input.idempotencyKey, "Idempotency-Key", 160);
-  const requestHash = sha256(JSON.stringify({ sessionId: input.sessionId, content }));
+  const userSend = input.origin !== "proactive" && !input.voiceCall;
+  const allowPaidImage = input.allowPaidImage === true && userSend;
+  const requestHash = sha256(JSON.stringify({ sessionId: input.sessionId, content, ...(allowPaidImage ? { allowPaidImage } : {}),
+    ...(input.sendProtocolVersion !== undefined ? { sendProtocolVersion: input.sendProtocolVersion } : {}) }));
   const session = await requireActiveSession(input.userId, input.sessionId);
   const turnId = randomUUID();
   const moderation = await moderateText("chat_turn", turnId, content, "input");
@@ -335,6 +340,12 @@ export async function beginChatTurn(input: {
     const duplicate = lockedSession.groupId
       ? await tx.chatTurn.findFirst({ where: { groupTurn: { groupId: lockedSession.groupId }, idempotencyKey } })
       : await tx.chatTurn.findUnique({ where: { sessionId_idempotencyKey: { sessionId: session.sessionId, idempotencyKey } } });
+    if (!duplicate && await tx.deletedChatTurnSend.findUnique({
+      where: { userId_conversationKey_keyHash: deletedChatTurnSendKey(input.userId, lockedSession, idempotencyKey) },
+      select: { keyHash: true },
+    })) {
+      throw Errors.conflict("This message was deleted. Send again to make a new request.", { reason: "chat_send_deleted" });
+    }
     const memoryIsolated = await hasPendingCompanionMemoryMutation(
       tx,
       input.userId,
@@ -346,15 +357,23 @@ export async function beginChatTurn(input: {
       }
       return {
         turn: duplicate,
-        snapshot: await frozenExecutionSnapshot(
+        // An old, exact receipt is readable, but replaying its POST must not
+        // restart execution or upgrade its original authorization protocol.
+        snapshot: !userSend || input.sendProtocolVersion === CHAT_SEND_PROTOCOL_VERSION ? await frozenExecutionSnapshot(
           tx,
           duplicate.id,
           duplicate.memoryEnabled && !memoryIsolated,
           duplicate.executionSnapshot ? undefined : [],
           duplicate.executionSnapshot ? undefined : null,
           duplicate.executionSnapshot ? undefined : null,
-        ),
+          { preservedImageEditSourceAssetId: null },
+        ) : null,
       };
+    }
+    if (userSend && input.sendProtocolVersion !== CHAT_SEND_PROTOCOL_VERSION) {
+      // Deleted pre-cutover keys cannot be reconstructed. A first write from an
+      // old body therefore needs an explicit new Send, even without a tombstone.
+      throw Errors.conflict("This chat changed elsewhere. Copy your draft, reload this page, and send it again.", { reason: "chat_send_protocol_required" });
     }
     if (!blocked) {
       const active = await tx.chatTurn.findFirst({
@@ -387,6 +406,7 @@ export async function beginChatTurn(input: {
         userMessageId: randomUUID(),
         assistantMessageId: randomUUID(),
         userContent: content,
+        imageActionMode: allowPaidImage ? "paid" : "chat",
         userStatus: blocked ? "blocked" : "sent",
         assistantContent: blocked ? BLOCKED_NOTICE : "",
         assistantStatus: blocked ? "blocked" : "pending",
@@ -456,51 +476,8 @@ export async function regenerateChatTurn(userId: string, messageId: string) {
   const turn = await requireTurn(userId, messageId);
   const updated = await prisma.$transaction(async (tx) => {
     const current = await lockLatestTurn(tx, userId, turn, "revise");
-    if (current.userStatus !== "sent") {
-      throw Errors.conflict("A blocked user message cannot be regenerated");
-    }
-    if (ACTIVE_ASSISTANT_STATES.includes(current.assistantStatus)) {
-      throw Errors.conflict("A reply is already generating");
-    }
-    await reserveRevisedChatTurn(tx, userId, current);
-    const previousAttempt = current.attempt;
-    const originalSnapshot = current.executionSnapshot ? chatExecutionSnapshotSchema.parse(current.executionSnapshot) : null;
-    const contextDirectives = originalSnapshot?.contextDirectives ?? [];
-    const experience = originalSnapshot?.experience ?? null;
-    const userPersona = originalSnapshot?.userPersona ?? null;
-    const sceneAnchor = await previousCommittedScene(tx, current);
-    const regenerated = await tx.chatTurn.update({
-      where: { id: turn.id },
-      data: {
-        attempt: { increment: 1 },
-        assistantContent: "",
-        assistantStatus: "pending",
-        model: null,
-        promptTokens: null,
-        completionTokens: null,
-        terminalEvidence: Prisma.JsonNull,
-        terminalAt: null,
-        executionSnapshot: Prisma.JsonNull,
-        sceneVersion: sceneAnchor?.sceneVersion ?? 0,
-        scene: sceneAnchor?.scene == null ? Prisma.JsonNull : toJson(sceneAnchor.scene),
-        admissionAttempts: 0,
-        admissionNextRunAt: new Date(),
-        admissionLeaseToken: null,
-        admissionLeaseUntil: null,
-        admissionLastError: Prisma.JsonNull,
-        admittedAt: null,
-        executionDeadlineAt: null,
-      },
-    });
-    await scheduleCompanionMemoryRebuild(tx, {
-      userId,
-      characterId: turn.session.characterId,
-      purgeRunAttempts: [{ turnId: turn.id, throughAttempt: previousAttempt }],
-    });
-    const recoveredMediaAction = await rebindDurableTurnMedia(tx, userId, regenerated, previousAttempt);
-    return { turn: regenerated, snapshot: await frozenExecutionSnapshot(tx, regenerated.id, false, contextDirectives, experience, userPersona, {
-      recoveredMediaAction, userMessageRevision: originalSnapshot?.userMessageRevision,
-    }) };
+    await assertNoPendingCompanionMemoryRebuild(tx, userId, turn.session.characterId);
+    return regenerateLockedChatTurn(tx, userId, current, turn.session.characterId);
   });
   return {
     assistantMessageId: updated.turn.assistantMessageId,
@@ -511,6 +488,55 @@ export async function regenerateChatTurn(userId: string, messageId: string) {
   };
 }
 
+async function regenerateLockedChatTurn(tx: Prisma.TransactionClient, userId: string, turn: ChatTurn, characterId: string) {
+  if (turn.userStatus !== "sent") {
+    throw Errors.conflict("A blocked user message cannot be regenerated");
+  }
+  if (ACTIVE_ASSISTANT_STATES.includes(turn.assistantStatus)) {
+    throw Errors.conflict("A reply is already generating");
+  }
+  await reserveRevisedChatTurn(tx, userId, turn);
+  const previousAttempt = turn.attempt;
+  const originalSnapshot = turn.executionSnapshot ? chatExecutionSnapshotSchema.parse(turn.executionSnapshot) : null;
+  const contextDirectives = originalSnapshot?.contextDirectives ?? [];
+  const experience = originalSnapshot?.experience ?? null;
+  const userPersona = originalSnapshot?.userPersona ?? null;
+  const sceneAnchor = await previousCommittedScene(tx, turn);
+  const regenerated = await tx.chatTurn.update({
+    where: { id: turn.id },
+    data: {
+      attempt: { increment: 1 },
+      assistantContent: "",
+      assistantStatus: "pending",
+      model: null,
+      promptTokens: null,
+      completionTokens: null,
+      terminalEvidence: Prisma.JsonNull,
+      terminalAt: null,
+      executionSnapshot: Prisma.JsonNull,
+      sceneVersion: sceneAnchor?.sceneVersion ?? 0,
+      scene: sceneAnchor?.scene == null ? Prisma.JsonNull : toJson(sceneAnchor.scene),
+      admissionAttempts: 0,
+      admissionNextRunAt: new Date(),
+      admissionLeaseToken: null,
+      admissionLeaseUntil: null,
+      admissionLastError: Prisma.JsonNull,
+      admittedAt: null,
+      executionDeadlineAt: null,
+    },
+  });
+  await scheduleCompanionMemoryRebuild(tx, {
+    userId,
+    characterId,
+    purgeRunAttempts: [{ turnId: turn.id, throughAttempt: previousAttempt }],
+  });
+  const recoveredMediaAction = await rebindDurableTurnMedia(tx, userId, regenerated, previousAttempt);
+  return { turn: regenerated, snapshot: await frozenExecutionSnapshot(tx, regenerated.id, false, contextDirectives, experience, userPersona, {
+    recoveredMediaAction, userMessageRevision: originalSnapshot?.userMessageRevision,
+    preservedImageEditSourceAssetId: originalSnapshot ? frozenChatImageEditSource(originalSnapshot) : null,
+  }) };
+}
+
 /** Rebind existing product facts before the new immutable execution snapshot. */
 async function rebindDurableTurnMedia(
   tx: Prisma.TransactionClient,
@@ -518,6 +544,7 @@ async function rebindDurableTurnMedia(
   turn: { id: string; attempt: number; userContent: string },
   previousAttempt: number,
 ): Promise<RecoveredMediaAction | undefined> {
+  const contentDigest = sha256(turn.userContent);
   const candidates = await tx.chatTurnAttachment.findMany({ where: { turnId: turn.id, kind: { in: ["generated_image", "generated_video"] } }, orderBy: { createdAt: "desc" } });
   for (const candidate of candidates) {
     if (attachmentAttempt(candidate.metadata) !== previousAttempt) continue;
@@ -537,14 +564,35 @@ async function rebindDurableTurnMedia(
     // A reservation failure with no Job is intentionally left to the Agent's
     // existing retry authority after a user tops up. It is not an executed action.
     const draft = jsonRecord(metadata.editDraft ?? null);
-    const draftSource = draft.version === 1 && draft.userContentDigest === createHash("sha256").update(turn.userContent).digest("hex") && typeof draft.sourceSnapshotId === "string" && typeof draft.sourceMediaAssetId === "string"
+    const draftSource = draft.version === 1 && draft.userContentDigest === contentDigest && typeof draft.sourceSnapshotId === "string" && typeof draft.sourceMediaAssetId === "string"
       ? draft.sourceMediaAssetId : undefined;
-    if (attachment.generationJobId) {
-      const job = await tx.generationJob.findUnique({ where: { id: attachment.generationJobId }, select: { sourceMeta: true } });
-      if (jsonRecord(jsonRecord(job?.sourceMeta ?? null).privacyRedaction ?? null).reason === "logical_turn_edited") continue;
+    const job = attachment.generationJobId ? await tx.generationJob.findUnique({
+      where: { id: attachment.generationJobId }, select: { sourceMeta: true, userId: true, mode: true },
+    }) : null;
+    if (jsonRecord(jsonRecord(job?.sourceMeta ?? null).privacyRedaction ?? null).reason === "logical_turn_edited") continue;
+    let name: unknown = effect.name;
+    if (name == null && attachment.kind === "generated_image") {
+      // Old image receipts can predate effect.name. Recover only a persisted
+      // action whose frozen request or former deterministic identity names it.
+      const requestName = jsonRecord(metadata.request ?? null).name;
+      name = (["generate_image_async", "edit_last_image"] as const).find(candidateName => requestName === candidateName || (
+        requestName == null && [
+          legacyTurnActionAttachmentId(turn.id, candidateName),
+          legacyTurnActionAttachmentId(turn.id, candidateName, contentDigest),
+        ].includes(attachment.id)
+      ));
+      if (!name) continue;
+      if (attachment.status === "completed" && attachment.mediaAssetId) {
+        const media = await tx.mediaAsset.findFirst({ where: {
+          id: attachment.mediaAssetId, ...readableDeliveredChatMediaWhere(userId, scope.session.characterId), type: "image",
+        }, select: { id: true } });
+        if (!media) continue;
+      } else if (job?.userId !== userId || job.mode !== "image") {
+        continue;
+      }
     }
     const parsed = recoveredMediaActionSchema.safeParse({
-      name: effect.name, attachmentId: attachment.id, status: attachment.status,
+      name, attachmentId: attachment.id, status: attachment.status,
       costDreamcoins: attachmentCost(attachment.metadata) ?? 0,
       generationJobId: attachment.generationJobId, mediaAssetId: attachment.mediaAssetId,
       ...(draftSource ? { sourceMediaAssetId: draftSource } : {}),
@@ -552,113 +600,170 @@ async function rebindDurableTurnMedia(
       ...(typeof metadata.description === "string" ? { description: metadata.description } : {}),
     });
     if (!parsed.success) continue;
-    await tx.chatTurnAttachment.update({ where: { id: attachment.id }, data: { metadata: toJson({ ...metadata, attempt: turn.attempt, effect: { ...effect, attempt: turn.attempt } }) } });
+    await tx.chatTurnAttachment.update({ where: { id: attachment.id }, data: {
+      metadata: toJson({ ...metadata, attempt: turn.attempt, effect: { ...effect, name: parsed.data.name, attempt: turn.attempt } }),
+    } });
     return parsed.data;
   }
   return undefined;
 }
 
-export async function editChatTurn(userId: string, messageId: string, nextContent: string) {
+export type ChatTurnEditOptions = {
+  expectedAttempt?: number;
+  idempotencyKey?: string;
+  allowPaidImage?: boolean;
+};
+
+export async function editChatTurn(userId: string, messageId: string, nextContent: string, options: ChatTurnEditOptions = {}) {
   const content = requiredText(nextContent, "content", 20_000);
+  const { expectedAttempt, allowPaidImage = false } = options;
+  if (expectedAttempt !== undefined && (!Number.isSafeInteger(expectedAttempt) || expectedAttempt <= 0)) {
+    throw Errors.badRequest("Edit requires a positive integer attempt");
+  }
+  const idempotencyKey = options.idempotencyKey === undefined ? undefined : requiredText(options.idempotencyKey, "Idempotency-Key", 160);
   const turn = await requireTurn(userId, messageId);
   if (turn.userMessageId !== messageId) throw Errors.badRequest("Only user messages can be edited");
-  if (content === turn.userContent) return regenerateChatTurn(userId, turn.assistantMessageId);
-  if (ACTIVE_ASSISTANT_STATES.includes(turn.assistantStatus)) {
-    throw Errors.conflict("A reply is already generating");
-  }
-  const moderation = await moderateText("chat_turn", turn.id, content, "input_edit");
-  const blocked = moderation.status === "blocked";
-  const now = new Date();
+  const receiptKey = idempotencyKey === undefined ? null : { turnId: turn.id, idempotencyKey };
+  const requestHash = sha256(JSON.stringify({ content, expectedAttempt: expectedAttempt ?? null, allowPaidImage }));
+  const whereReceipt = receiptKey ? { turnId_idempotencyKey: receiptKey } : null;
+  const activeWhenRead = ACTIVE_ASSISTANT_STATES.includes(turn.assistantStatus);
+  // Moderation runs outside the Turn lock. A committed retry needs neither a new
+  // decision nor a new audit event. This read only controls that preparation.
+  const needsModeration = content !== turn.userContent && !activeWhenRead
+    && expectedAttempt === turn.attempt
+    && !(whereReceipt && await prisma.chatTurnEditReceipt.findUnique({ where: whereReceipt, select: { turnId: true } }));
+  const moderation = needsModeration ? await moderateText("chat_turn", turn.id, content, "input_edit") : null;
   const updated = await prisma.$transaction(async (tx) => {
     const current = await lockLatestTurn(tx, userId, turn, "revise");
-    if (current.userMessageId !== messageId) {
-      throw Errors.badRequest("Only user messages can be edited");
+    const receipt = whereReceipt && await tx.chatTurnEditReceipt.findUnique({ where: whereReceipt });
+    if (receipt) {
+      if (receipt.requestHash !== requestHash) {
+        throw Errors.conflict("Idempotency-Key was already used for a different edit", { reason: "edit_key_conflict" });
+      }
+      if (receipt.attempt !== current.attempt) throw staleChatEdit(current.attempt);
+      return {
+        turn: current,
+        snapshot: expectedAttempt !== undefined && current.assistantStatus === "pending" && current.executionSnapshot
+          ? chatExecutionSnapshotSchema.parse(current.executionSnapshot) : null,
+      };
     }
-    // A delayed retry must not turn an already-applied edit into another paid
-    // message revision after its first reply has finished.
-    if (current.attempt !== turn.attempt) {
-      throw Errors.conflict("This chat turn changed; reload before editing");
+    // A known legacy key can read its original receipt. A new revision must
+    // identify what the caller saw before preparing the edit.
+    if (expectedAttempt === undefined) {
+      throw Errors.versionConflict("This edit requires the observed reply attempt. Reopen the editor and try again.", {
+        reason: "edit_attempt_required", attempt: current.attempt,
+      });
     }
-    if (ACTIVE_ASSISTANT_STATES.includes(current.assistantStatus)) {
+    if (current.attempt !== turn.attempt || current.attempt !== expectedAttempt) {
+      throw staleChatEdit(current.attempt);
+    }
+    if (activeWhenRead || ACTIVE_ASSISTANT_STATES.includes(current.assistantStatus)) {
       throw Errors.conflict("A reply is already generating");
     }
-    if (!blocked) await reserveRevisedChatTurn(tx, userId, current);
-    const sceneAnchor = await previousCommittedScene(tx, current);
-    if (content !== current.userContent) {
-      // Edited user words invalidate every old action, including unpaid drafts.
-      // The old source remains a private snapshot, but no surviving card grants access.
-      const actions = await tx.chatTurnAttachment.findMany({ where: { turnId: current.id, kind: { in: ["generated_image", "generated_video"] } }, select: { id: true } });
-      for (const action of actions) {
-        const scope = await lockChatScope(tx, { userId, at: { attachment: action.id } });
-        const attachment = scope.attachment!;
-        if (attachment.status === "awaiting_confirmation") await transitionToolEffectAttachment(tx, attachment, { to: "cancelled", errorCode: "logical_turn_edited" });
-        await tx.chatTurnAttachment.update({ where: { id: action.id }, data: {
-          promptHint: null,
-          metadata: toJson({ ...jsonRecord(attachment.metadata), editDraft: null, turnActionInvalidatedByEdit: true }),
-        } });
-      }
+    await assertNoPendingCompanionMemoryRebuild(tx, userId, turn.session.characterId);
+    if (!moderation && content !== current.userContent) throw Errors.internal("Missing moderation decision for chat edit");
+    const result = moderation
+      ? await replaceLockedChatTurn(tx, { userId, turn: current, characterId: turn.session.characterId, content, moderation, allowPaidImage })
+      : await regenerateLockedChatTurn(tx, userId, current, turn.session.characterId);
+    if (receiptKey) {
+      await tx.chatTurnEditReceipt.create({ data: { ...receiptKey, requestHash, attempt: result.turn.attempt } });
     }
-    await redactChatImageSourceText(tx, {
-      userId,
-      reason: "logical_turn_edited",
-      redactedAt: now,
-      exchangeIds: [turn.id],
-      messageIds: [turn.userMessageId, turn.assistantMessageId],
-    });
-    const previousAttempt = current.attempt;
-    const originalSnapshot = current.executionSnapshot ? chatExecutionSnapshotSchema.parse(current.executionSnapshot) : null;
-    const contextDirectives = originalSnapshot?.contextDirectives ?? [];
-    const experience = originalSnapshot?.experience ?? null;
-    const userPersona = originalSnapshot?.userPersona ?? null;
-    // The edit invalidates every earlier attempt; the replacement reply is the
-    // next attempt and makes the exchange count again once it is sent.
-    await appendChatExchangeCorrected(tx, current, { userId, correctionType: "edited", correctionRevision: previousAttempt }, now);
-    const edited = await tx.chatTurn.update({
-      where: { id: turn.id },
-      data: {
-        attempt: { increment: 1 },
-        userContent: content,
-        userStatus: blocked ? "blocked" : "sent",
-        assistantContent: blocked ? BLOCKED_NOTICE : "",
-        assistantStatus: blocked ? "blocked" : "pending",
-        model: null,
-        promptTokens: null,
-        completionTokens: null,
-        terminalEvidence: blocked
-          ? toJson({ authority: "main_input_moderation", policyCode: moderation.policyCode ?? null })
-          : Prisma.JsonNull,
-        terminalAt: blocked ? now : null,
-        executionSnapshot: Prisma.JsonNull,
-        sceneVersion: sceneAnchor?.sceneVersion ?? 0,
-        scene: sceneAnchor?.scene == null ? Prisma.JsonNull : toJson(sceneAnchor.scene),
-        admissionAttempts: 0,
-        admissionNextRunAt: now,
-        admissionLeaseToken: null,
-        admissionLeaseUntil: null,
-        admissionLastError: Prisma.JsonNull,
-        admittedAt: null,
-        executionDeadlineAt: null,
-      },
-    });
-    await scheduleCompanionMemoryRebuild(tx, {
-      userId,
-      characterId: turn.session.characterId,
-      purgeRunAttempts: [{ turnId: turn.id, throughAttempt: previousAttempt }],
-    });
-    return {
-      turn: edited,
-      snapshot: blocked ? null : await frozenExecutionSnapshot(tx, edited.id, false, contextDirectives, experience, userPersona, {
-        userMessageRevision: edited.attempt,
-      }),
-    };
+    return result;
+  });
+  const { assistantMessageId, assistantStatus: status, attempt, userStatus, terminalEvidence } = updated.turn;
+  const policyCode = jsonRecord(terminalEvidence).policyCode;
+  return {
+    assistantMessageId,
+    attempt,
+    status,
+    streamUrl: ACTIVE_ASSISTANT_STATES.includes(status) ? streamUrl(assistantMessageId, attempt) : null,
+    snapshot: updated.snapshot,
+    ...(userStatus === "blocked" ? { safety: { layer: "input" as const, ...(typeof policyCode === "string" ? { policyCode } : {}) } } : {}),
+  };
+}
+
+function staleChatEdit(attempt: number) {
+  return Errors.versionConflict("This reply changed elsewhere. Reopen the editor to use the latest message.", { reason: "edit_attempt_changed", attempt });
+}
+
+async function replaceLockedChatTurn(tx: Prisma.TransactionClient, input: {
+  userId: string;
+  turn: ChatTurn;
+  characterId: string;
+  content: string;
+  moderation: Awaited<ReturnType<typeof moderateText>>;
+  allowPaidImage: boolean;
+}) {
+  const { userId, turn, characterId, content, moderation, allowPaidImage } = input;
+  const blocked = moderation.status === "blocked";
+  const now = new Date();
+  if (!blocked) await reserveRevisedChatTurn(tx, userId, turn);
+  const sceneAnchor = await previousCommittedScene(tx, turn);
+  // Edited user words invalidate every old action, including unpaid drafts.
+  // The old source remains a private snapshot, but no surviving card grants access.
+  const actions = await tx.chatTurnAttachment.findMany({ where: { turnId: turn.id, kind: { in: ["generated_image", "generated_video"] } }, select: { id: true } });
+  for (const action of actions) {
+    const scope = await lockChatScope(tx, { userId, at: { attachment: action.id } });
+    const attachment = scope.attachment!;
+    if (attachment.status === "awaiting_confirmation") await transitionToolEffectAttachment(tx, attachment, { to: "cancelled", errorCode: "logical_turn_edited" });
+    await tx.chatTurnAttachment.update({ where: { id: action.id }, data: {
+      promptHint: null,
+      metadata: toJson({ ...jsonRecord(attachment.metadata), editDraft: null, turnActionInvalidatedByEdit: true }),
+    } });
+  }
+  await redactChatImageSourceText(tx, {
+    userId,
+    reason: "logical_turn_edited",
+    redactedAt: now,
+    exchangeIds: [turn.id],
+    messageIds: [turn.userMessageId, turn.assistantMessageId],
+  });
+  const previousAttempt = turn.attempt;
+  const originalSnapshot = turn.executionSnapshot ? chatExecutionSnapshotSchema.parse(turn.executionSnapshot) : null;
+  const contextDirectives = originalSnapshot?.contextDirectives ?? [];
+  const experience = originalSnapshot?.experience ?? null;
+  const userPersona = originalSnapshot?.userPersona ?? null;
+  // The replacement reply makes the exchange count again once it is sent.
+  await appendChatExchangeCorrected(tx, turn, { userId, correctionType: "edited", correctionRevision: previousAttempt }, now);
+  const edited = await tx.chatTurn.update({
+    where: { id: turn.id },
+    data: {
+      attempt: { increment: 1 },
+      userContent: content,
+      userStatus: blocked ? "blocked" : "sent",
+      assistantContent: blocked ? BLOCKED_NOTICE : "",
+      assistantStatus: blocked ? "blocked" : "pending",
+      imageActionMode: allowPaidImage ? "paid" : "chat",
+      mediaLookup: Prisma.JsonNull,
+      model: null,
+      promptTokens: null,
+      completionTokens: null,
+      terminalEvidence: blocked
+        ? toJson({ authority: "main_input_moderation", policyCode: moderation.policyCode ?? null })
+        : Prisma.JsonNull,
+      terminalAt: blocked ? now : null,
+      executionSnapshot: Prisma.JsonNull,
+      sceneVersion: sceneAnchor?.sceneVersion ?? 0,
+      scene: sceneAnchor?.scene == null ? Prisma.JsonNull : toJson(sceneAnchor.scene),
+      admissionAttempts: 0,
+      admissionNextRunAt: now,
+      admissionLeaseToken: null,
+      admissionLeaseUntil: null,
+      admissionLastError: Prisma.JsonNull,
+      admittedAt: null,
+      executionDeadlineAt: null,
+    },
+  });
+  await scheduleCompanionMemoryRebuild(tx, {
+    userId,
+    characterId,
+    purgeRunAttempts: [{ turnId: turn.id, throughAttempt: previousAttempt }],
   });
   return {
-    assistantMessageId: updated.turn.assistantMessageId,
-    attempt: updated.turn.attempt,
-    status: blocked ? "blocked" as const : "pending" as const,
-    streamUrl: blocked ? null : streamUrl(updated.turn.assistantMessageId, updated.turn.attempt),
-    snapshot: updated.snapshot,
-    ...(blocked ? { safety: { layer: "input" as const, policyCode: moderation.policyCode } } : {}),
+    turn: edited,
+    snapshot: blocked ? null : await frozenExecutionSnapshot(tx, edited.id, false, contextDirectives, experience, userPersona, {
+      userMessageRevision: edited.attempt,
+    }),
   };
 }
 
@@ -930,6 +1035,7 @@ export async function deleteChatMessage(userId: string, messageId: string) {
   const turn = await requireTurn(userId, messageId);
   await prisma.$transaction(async (tx) => {
     const current = await lockLatestTurn(tx, userId, turn, "delete");
+    await assertNoPendingCompanionMemoryRebuild(tx, userId, turn.session.characterId);
     if (ACTIVE_ASSISTANT_STATES.includes(current.assistantStatus)) {
       throw Errors.conflict("Cancel the active reply before deleting this chat turn");
     }
@@ -947,6 +1053,13 @@ export async function deleteChatMessage(userId: string, messageId: string) {
       exchangeIds: [turn.id],
       messageIds: [turn.userMessageId, turn.assistantMessageId],
     });
+    const groupTurn = await tx.groupChatTurn.findUnique({ where: { turnId: current.id }, select: { groupId: true } });
+    // The send key and transcript deletion commit together. A lost send
+    // response must never reauthorize the deleted message.
+    await tx.deletedChatTurnSend.createMany({
+      data: [deletedChatTurnSendKey(userId, { sessionId: current.sessionId, groupId: groupTurn?.groupId ?? null }, current.idempotencyKey)],
+      skipDuplicates: true,
+    });
     await tx.chatTurn.delete({ where: { id: turn.id } });
     await scheduleCompanionMemoryRebuild(tx, {
       userId,
@@ -956,10 +1069,16 @@ export async function deleteChatMessage(userId: string, messageId: string) {
   });
 }
 
+function deletedChatTurnSendKey(userId: string, scope: Pick<RecentChat, "sessionId" | "groupId">, idempotencyKey: string) {
+  const conversationKey = scope.groupId ? `group:${scope.groupId}` : `session:${scope.sessionId}`;
+  return { userId, conversationKey, keyHash: sha256(idempotencyKey) };
+}
+
 export async function deleteChatSession(userId: string, sessionId: string) {
   await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
     await deleteSessionTranscript(tx, userId, sessionId, null);
+    await tx.deletedChatTurnSend.deleteMany({ where: { userId, conversationKey: `session:${sessionId}` } });
   });
 }
 
@@ -971,6 +1090,7 @@ export async function deleteGroupChatConversation(userId: string, groupId: strin
     if (!group) throw Errors.notFound("Group conversation not found");
     for (const member of group.members) await deleteSessionTranscript(tx, userId, member.sessionId, groupId);
     await tx.groupConversation.delete({ where: { id: groupId } });
+    await tx.deletedChatTurnSend.deleteMany({ where: { userId, conversationKey: `group:${groupId}` } });
   });
 }
 
@@ -1114,7 +1234,7 @@ export async function executionSnapshot(turnId: string): Promise<ChatExecutionSn
     await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${turnId} FOR UPDATE`;
     // Newly accepted Turns already carry their explicit context. A legacy
     // missing snapshot must not acquire today's settings during recovery.
-    return frozenExecutionSnapshot(tx, turnId, true, [], null, null);
+    return frozenExecutionSnapshot(tx, turnId, true, [], null, null, { preservedImageEditSourceAssetId: null });
   });
 }
 
@@ -1125,7 +1245,7 @@ async function frozenExecutionSnapshot(
   preservedDirectives?: ChatContextDirective[],
   preservedExperience?: ChatExperiencePreference | null,
   preservedUserPersona?: UserChatPersona | null,
-  media?: { recoveredMediaAction?: RecoveredMediaAction; userMessageRevision?: number },
+  media?: { recoveredMediaAction?: RecoveredMediaAction; userMessageRevision?: number; preservedImageEditSourceAssetId?: string | null },
 ): Promise<ChatExecutionSnapshot> {
   const turn = await tx.chatTurn.findUnique({ where: { id: turnId }, include: { session: true, groupTurn: true } });
   if (!turn) throw Errors.notFound("Chat turn not found");
@@ -1146,9 +1266,6 @@ async function frozenExecutionSnapshot(
     take: 24,
     include: {
       session: { select: { sessionId: true, characterId: true, title: true } },
-      attachments: {
-        select: { kind: true, status: true, mediaAssetId: true, metadata: true },
-      },
     },
   });
   recent.reverse();
@@ -1178,8 +1295,13 @@ async function frozenExecutionSnapshot(
   const experience = experienceRow
     ? chatExperiencePreferenceSchema.parse({ ...experienceRow, conversationProfile: experienceRow.conversationProfile ?? undefined })
     : preservedExperience === undefined ? DEFAULT_PROFILE_EXPERIENCE : null;
-  const recentMedia = await deliveredChatMedia(tx, { userId: turn.session.userId,
-    characterId: turn.session.characterId, sessionId: turn.sessionId, before: turn.createdAt, limit: 8 });
+  const mediaHistory = { userId: turn.session.userId, characterId: turn.session.characterId,
+    sessionId: turn.sessionId, before: turn.createdAt };
+  const recentMedia = await deliveredChatMedia(tx, { ...mediaHistory, limit: 8 });
+  const imageEditSourceAssetId = media?.preservedImageEditSourceAssetId !== undefined
+    ? media.preservedImageEditSourceAssetId
+    : (recentMedia.find(item => item.asset.type === "image")
+      ?? (await deliveredChatMedia(tx, { ...mediaHistory, kind: "image", limit: 1 }))[0])?.asset.id ?? null;
   const snapshot = chatExecutionSnapshotSchema.parse({
     version: 1,
     turnId: turn.id,
@@ -1202,6 +1324,7 @@ async function frozenExecutionSnapshot(
       : preservedUserPersona,
     contextRevision: turn.session.contextRevision,
     userContent: turn.userContent,
+    imageActionMode: turn.imageActionMode,
     ...(media?.userMessageRevision ? { userMessageRevision: media.userMessageRevision } : {}),
     ...(media?.recoveredMediaAction ? { recoveredMediaAction: media.recoveredMediaAction } : {}),
     ...(turn.groupTurn && groupMembers ? { group: {
@@ -1209,16 +1332,11 @@ async function frozenExecutionSnapshot(
       ordinal: turn.groupTurn.ordinal,
       members: groupMembers.map(member => ({ sessionId: member.sessionId, characterId: member.characterId, name: member.title ?? "Character" })),
     } } : {}),
-    hasRecentImageContext: recentMedia.some(item => item.asset.type === "image") || recent.some((item) =>
-      item.sessionId === turn.sessionId && item.attachments.some((attachment) =>
-        attachment.kind === "generated_image" &&
-        attachment.status === "completed" &&
-        attachment.mediaAssetId !== null &&
-        attachmentAttempt(attachment.metadata) === item.attempt
-      )
-    ),
-    recentMedia: recentMedia.map(({ asset, attachment, description, editProvenance }) => ({
+    imageEditSourceAssetId,
+    hasRecentImageContext: imageEditSourceAssetId !== null,
+    recentMedia: recentMedia.map(({ asset, attachment, description, facts, absentFacts, nudity, durationSeconds, hasAudio, editProvenance }) => ({
       mediaAssetId: asset.id, kind: asset.type, turnId: attachment.turnId, description,
+      facts, absentFacts, nudity, durationSeconds, hasAudio,
       ...(editProvenance ? { editProvenance } : {}),
     })),
     recentTurns: recent.map((item) => ({
@@ -1656,7 +1774,7 @@ async function lockLatestTurn(
   await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
   const session = await tx.recentChat.findFirst({
     where: { sessionId: turn.sessionId, userId },
-    select: { sessionId: true, characterId: true, groupId: true },
+    select: { groupId: true },
   });
   if (!session) throw Errors.notFound("Chat session not found");
   if (session.groupId) await tx.$queryRaw`SELECT id FROM "group_conversations" WHERE id = ${session.groupId} FOR UPDATE`;
@@ -1675,7 +1793,6 @@ async function lockLatestTurn(
     // not preserve permission to execute after public Serving is revoked.
     await assertChatSessionServingAuthority(tx, userId, lockedSession);
   }
-  await assertNoPendingCompanionMemoryRebuild(tx, userId, session.characterId);
   await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${turn.id} FOR UPDATE`;
   const current = await tx.chatTurn.findUnique({ where: { id: turn.id } });
   if (!current) throw Errors.notFound("Chat message not found");

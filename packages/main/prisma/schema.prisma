@@ -35,6 +35,7 @@ model User {
   recentChats        RecentChat[]
   groupConversations GroupConversation[]
   chatTurnUsageFacts ChatTurnUsageFact[]
+  deletedChatTurnSends DeletedChatTurnSend[]
   chatContextDirectives ChatContextDirective[]
   generationJobs     GenerationJob[]
   generationSourceSnapshots GenerationSourceSnapshot[]
@@ -855,6 +856,8 @@ model ChatTurn {
   userMessageId                 String               @unique
   assistantMessageId            String               @unique
   userContent                   String
+  imageActionMode               String               @default("chat") // chat | paid | library
+  mediaLookup                   Json? // Latest attempt-bound lookup; a new observation invalidates older candidates.
   userStatus                    String               @default("sent")
   assistantContent              String               @default("")
   assistantStatus               String               @default("pending") // pending | generating | sent | blocked | failed | cancelled
@@ -884,6 +887,7 @@ model ChatTurn {
   terminalAt                    DateTime?
   session                       RecentChat           @relation(fields: [sessionId], references: [sessionId], onDelete: Cascade)
   attachments                   ChatTurnAttachment[]
+  editReceipts                  ChatTurnEditReceipt[]
   groupTurn                     GroupChatTurn?
 
   @@unique([sessionId, idempotencyKey])
@@ -892,6 +896,29 @@ model ChatTurn {
   @@index([assistantStatus, executionDeadlineAt])
   @@index([assistantStatus, admissionNextRunAt, admissionLeaseUntil])
   @@map("chat_turns")
+}
+
+// An accepted edit keeps its request identity after later attempts replace the Turn.
+model ChatTurnEditReceipt {
+  turnId         String
+  idempotencyKey String
+  requestHash    String
+  attempt        Int
+  turn           ChatTurn @relation(fields: [turnId], references: [id], onDelete: Cascade)
+
+  @@id([turnId, idempotencyKey])
+  @@map("chat_turn_edit_receipts")
+}
+
+// A deleted message's send key remains consumed without retaining transcript content.
+model DeletedChatTurnSend {
+  userId          String
+  conversationKey String
+  keyHash         String
+  user            User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, conversationKey, keyHash])
+  @@map("deleted_chat_turn_sends")
 }
 
 // One accepted product Turn consumes one daily allowance, even when privacy

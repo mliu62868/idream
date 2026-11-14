@@ -6,6 +6,7 @@ import { characterVideoProductionRecipe, compileCharacterSoul } from "@idream/sh
 import { POST as createCreativeRun } from "@/app/api/v2/admin/creative/runs/route";
 import { createDeliveredGenerationAsset } from "@/server/ai/generation-asset-delivery";
 import { recordGenerationAttemptEvent } from "@/server/ai/generation-attempt-events";
+import { deliverGenerationArtifacts, ensureProducedGenerationArtifact } from "@/server/ai/generation-evidence-transition-authority";
 import { prisma } from "@/server/lib/db";
 import { OPERATOR_UPLOAD_AUTHORITY_SCHEMA } from "@/server/lib/media-asset-authority";
 import { providers } from "@/server/providers";
@@ -16,6 +17,7 @@ import * as libraryModels from "@/server/modules/character-media-library/media-m
 import { markProductionItemGenerated } from "@/server/modules/content-production-state";
 import { isDefaultProductionVideoProfile } from "@/server/modules/generation/production-video-profile";
 import { createReferenceSetRevision } from "@/server/modules/ourdream/generation-reference-set";
+import { jsonRecord } from "@/server/modules/ourdream/json-values";
 import { purgeQueuedGenerationJobs } from "@/server/test/helpers";
 import { toInputJson } from "../shared/prisma-json";
 
@@ -86,9 +88,13 @@ describe("Character video Creative Run authority", () => {
         asset: { key, contentType: "video/mp4", width: 48, height: 48, providerKey: null },
         ordinal: 0, safetyStatus: "passed" });
       const completedAt = new Date();
+      await ensureProducedGenerationArtifact(tx, { attemptId: attempt.id, ordinal: 0, providerRef: null,
+        terminalRecordChecksum: createHash("sha256").update(bytes).digest("hex") });
+      await deliverGenerationArtifacts(tx, { requestId: job.id, attemptId: attempt.id, targetId: job.userId,
+        assets: [{ ordinal: 0, assetId: id }], occurredAt: completedAt });
       await recordGenerationAttemptEvent(tx, { eventId: `${attempt.id}:terminal`, attemptId: attempt.id,
         eventType: "generation.attempt.succeeded.v1", outcome: "succeeded", occurredAt: completedAt, payload: { requestId: job.id } });
-      await tx.generationJob.update({ where: { id: job.id }, data: { status: "completed", completedAt } });
+      await tx.generationJob.update({ where: { id: job.id }, data: { status: "completed", completedAt, deliveredOutputCount: 1 } });
       await markProductionItemGenerated(tx, { jobId: job.id, mediaAssetId: id });
     });
     return { batchId, job, mediaAssetId: id };
@@ -259,6 +265,8 @@ describe("Character video Creative Run authority", () => {
       select: { jobId: true },
     });
     const jobIds = items.flatMap((item) => item.jobId ? [item.jobId] : []);
+    await prisma.generationDelivery.deleteMany({ where: { requestId: { in: jobIds } } });
+    await prisma.generationArtifact.deleteMany({ where: { assetId: { in: [...deliveredVideos.map(video => video.id), sourceAssetId] } } });
     await purgeQueuedGenerationJobs(jobIds);
     await prisma.mainOutboxEvent.deleteMany({
       where: { aggregateId: { in: batchIds } },
@@ -433,18 +441,93 @@ describe("Character video Creative Run authority", () => {
     vi.stubEnv("MEDIA_LIBRARY_EMBEDDING_MODEL", "fixture-embedding");
     vi.stubEnv("MEDIA_LIBRARY_EMBEDDING_DIMENSIONS", "2");
     const embedding = vi.spyOn(libraryModels, "embedMediaText").mockResolvedValue({ model: "fixture-embedding", dimensions: 2, vector: [1, 0] });
+    const publish = (sourceAssetId: string, identity: { id: string; version: number }) => createCharacterMediaLibraryEntry({
+      characterId, actor: { id: actorId, role: "admin" }, idempotencyKey: randomUUID(), requestId: randomUUID(),
+      body: { sourceAssetId, expectedVisualProfileId: identity.id, expectedVisualProfileVersion: identity.version,
+        description: "A reviewable short video", facts: [], absentFacts: [], nudity: "none", status: "published" },
+    });
     try {
-      await expect(createCharacterMediaLibraryEntry({ characterId, actor: { id: actorId, role: "admin" },
-        idempotencyKey: randomUUID(), requestId: randomUUID(), body: { sourceAssetId: mediaAssetId,
-          expectedVisualProfileId: visual.id, expectedVisualProfileVersion: visual.version,
-          description: "A reviewable short video", facts: [], absentFacts: [], nudity: "none", status: "published" },
-      })).resolves.toMatchObject({ entry: { mediaType: "video", sourceAssetId: mediaAssetId, status: "published", visualProfileId: visual.id } });
+      await expect(publish(mediaAssetId, visual)).resolves.toMatchObject({ entry: { mediaType: "video",
+        sourceAssetId: mediaAssetId, status: "published", visualProfileId: visual.id } });
       expect(await prisma.contentProductionBatch.findUniqueOrThrow({ where: { id: batchId } })).toMatchObject({ lifecycleState: "closed", status: "completed" });
-      await expect(createCharacterMediaLibraryEntry({ characterId, actor: { id: actorId, role: "admin" },
-        idempotencyKey: randomUUID(), requestId: randomUUID(), body: { sourceAssetId: mediaAssetId,
-          expectedVisualProfileId: nextVisual.id, expectedVisualProfileVersion: nextVisual.version,
-          description: "The original short video", facts: [], absentFacts: [], nudity: "none", status: "published" },
-      })).rejects.toMatchObject({ code: "forbidden" });
+      await expect(publish(mediaAssetId, nextVisual)).rejects.toMatchObject({ code: "forbidden" });
+
+      const legacy = await completeVideoFromSource(publishedPrimaryAssetId, "old-native-i2v");
+      expect(legacy.job).toMatchObject({ visualProfileId: null, visualProfileVersion: null });
+      const legacyMeta = jsonRecord(legacy.job.sourceMeta);
+      delete legacyMeta.videoSourceIdentity;
+      const controls = jsonRecord(legacy.job.controls);
+      const frozen = Array.isArray(controls.referenceSnapshots) ? jsonRecord(controls.referenceSnapshots[0]) : {};
+      expect(frozen).toMatchObject({ role: "source_image", assetId: publishedPrimaryAssetId, sha256 });
+      const legacyJob = { id: legacy.job.id };
+      const forbidden = { code: "forbidden" };
+      await prisma.generationJob.update({ where: legacyJob, data: { sourceMeta: toInputJson({ ...legacyMeta, videoSourceIdentity: null }) } });
+      await expect(publish(legacy.mediaAssetId, visual)).rejects.toMatchObject(forbidden);
+      await prisma.generationJob.update({ where: legacyJob, data: { sourceMeta: toInputJson(legacyMeta) } });
+
+      for (const referenceSnapshots of [[{ ...frozen, sha256: "b".repeat(64) }], [frozen, frozen], [{ ...frozen, role: "identity_anchor" }]]) {
+        await prisma.generationJob.update({ where: legacyJob, data: { controls: toInputJson({ ...controls, referenceSnapshots }) } });
+        await expect(publish(legacy.mediaAssetId, visual)).rejects.toMatchObject(forbidden);
+      }
+      await prisma.generationJob.update({ where: legacyJob, data: { controls: toInputJson(controls) } });
+      const unrelatedOwner = await prisma.user.create({ data: { email: `unrelated-video-snapshot-${suffix}@idream.internal` } });
+      const sourceSnapshot = { id: String(frozen.snapshotId) };
+      try {
+        await prisma.generationSourceSnapshot.update({ where: sourceSnapshot, data: { userId: unrelatedOwner.id } });
+        await expect(publish(legacy.mediaAssetId, visual)).rejects.toMatchObject(forbidden);
+      } finally {
+        await prisma.generationSourceSnapshot.update({ where: sourceSnapshot, data: { userId: actorId } });
+        await prisma.user.delete({ where: { id: unrelatedOwner.id } });
+      }
+      const delivery = await prisma.generationDelivery.findFirstOrThrow({ where: { requestId: legacy.job.id } });
+      await prisma.generationDelivery.update({ where: { id: delivery.id }, data: { status: "suppressed" } });
+      await expect(publish(legacy.mediaAssetId, visual)).rejects.toMatchObject(forbidden);
+      await prisma.generationDelivery.update({ where: { id: delivery.id }, data: { status: "delivered" } });
+      await prisma.referenceSetRevision.update({ where: { id: references.id },
+        data: { availableAtSnapshot: new Date(legacy.job.createdAt.getTime() + 1_000) } });
+      await expect(publish(legacy.mediaAssetId, visual)).rejects.toMatchObject(forbidden);
+      await prisma.referenceSetRevision.update({ where: { id: references.id }, data: { availableAtSnapshot: references.availableAtSnapshot } });
+      await expect(publish(legacy.mediaAssetId, nextVisual)).rejects.toMatchObject(forbidden);
+      await expect(publish(legacy.mediaAssetId, visual)).resolves.toMatchObject({ entry: { mediaType: "video",
+        sourceAssetId: legacy.mediaAssetId, status: "published", visualProfileId: visual.id } });
+
+      // A generated source retains its own identity even if production v2 also uses it as an anchor.
+      const sourceImageDelivery = await prisma.$transaction(async tx => {
+        const batch = await tx.contentProductionBatch.create({ data: {
+          title: "Delivered source portrait", purpose: "character_cover", targetType: "character", targetId: characterId,
+          presetIds: [], createdById: actorId, lifecycleState: "closed", status: "completed",
+        } });
+        batchIds.push(batch.id);
+        const item = await tx.contentProductionItem.create({ data: { batchId: batch.id, mediaAssetId: sourceAssetId, tags: [], status: "generated" } });
+        const completedAt = new Date();
+        const sourceJob = await tx.generationJob.create({ data: {
+          userId: actorId, characterId, visualProfileId: visual.id, visualProfileVersion: visual.version,
+          mode: "image", controls: {}, presetIds: [], status: "completed", completedAt, deliveredOutputCount: 1,
+          provider: "comfyui", sourceType: "content_production_item", sourceId: item.id,
+        } });
+        await tx.contentProductionItem.update({ where: { id: item.id }, data: { jobId: sourceJob.id } });
+        await tx.mediaAsset.update({ where: { id: sourceAssetId }, data: { sourceJobId: sourceJob.id,
+          metadata: { provider: "comfyui", synthetic: false, sha256, index: 0 } } });
+        const attempt = await tx.generationAttempt.create({ data: {
+          requestId: sourceJob.id, attemptNo: 1, provider: "comfyui", status: "succeeded",
+        } });
+        await ensureProducedGenerationArtifact(tx, { attemptId: attempt.id, ordinal: 0, providerRef: null, terminalRecordChecksum: sha256 });
+        await deliverGenerationArtifacts(tx, { requestId: sourceJob.id, attemptId: attempt.id, targetId: actorId,
+          assets: [{ ordinal: 0, assetId: sourceAssetId }], occurredAt: completedAt });
+        return tx.generationDelivery.findFirstOrThrow({ where: { requestId: sourceJob.id } });
+      });
+      const fromGeneratedImage = await completeVideoFromSource(sourceAssetId, "old-from-delivered-image");
+      const generatedLegacyMeta = jsonRecord(fromGeneratedImage.job.sourceMeta);
+      expect(generatedLegacyMeta.videoSourceIdentity).toMatchObject({ visualProfileId: visual.id });
+      delete generatedLegacyMeta.videoSourceIdentity;
+      await prisma.generationJob.update({ where: { id: fromGeneratedImage.job.id }, data: { sourceMeta: toInputJson(generatedLegacyMeta) } });
+      await expect(publish(fromGeneratedImage.mediaAssetId, nextVisual)).rejects.toMatchObject(forbidden);
+      await prisma.generationDelivery.update({ where: { id: sourceImageDelivery.id }, data: { status: "suppressed" } });
+      await expect(publish(fromGeneratedImage.mediaAssetId, visual)).rejects.toMatchObject(forbidden);
+      await prisma.generationDelivery.update({ where: { id: sourceImageDelivery.id }, data: { status: "delivered" } });
+      await expect(publish(fromGeneratedImage.mediaAssetId, visual)).resolves.toMatchObject({ entry: {
+        sourceAssetId: fromGeneratedImage.mediaAssetId, status: "published", visualProfileId: visual.id,
+      } });
 
       for (const authority of ["ambiguous", "missing anchor", "unsealed reference", "unsealed Release"] as const) {
         await prisma.$transaction(async tx => {
@@ -463,11 +546,8 @@ describe("Character video Creative Run authority", () => {
         const result = await completeVideoFromSource(publishedPrimaryAssetId, authority.replaceAll(" ", "-"));
         expect(result.job.sourceMeta, authority).not.toHaveProperty("videoSourceIdentity");
         for (const identity of [visual, nextVisual]) {
-          await expect(createCharacterMediaLibraryEntry({ characterId, actor: { id: actorId, role: "admin" },
-            idempotencyKey: randomUUID(), requestId: randomUUID(), body: { sourceAssetId: result.mediaAssetId,
-              expectedVisualProfileId: identity.id, expectedVisualProfileVersion: identity.version,
-              description: "An unqualified video preview", facts: [], absentFacts: [], nudity: "none", status: "published" },
-          })).rejects.toMatchObject({ code: authority === "missing anchor" && identity.id === visual.id ? "conflict" : "forbidden" });
+          await expect(publish(result.mediaAssetId, identity))
+            .rejects.toMatchObject({ code: authority === "missing anchor" && identity.id === visual.id ? "conflict" : "forbidden" });
         }
       }
     } finally {

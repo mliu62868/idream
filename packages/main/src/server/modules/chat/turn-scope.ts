@@ -34,6 +34,16 @@ export type LockedChatTurnAttachment = ChatTurnAttachment & {
 
 export type LockedChatTurn = ChatTurn & { readonly [lockedChatRow]: "chat_turns" };
 
+/** A direct charge needs a user action. A local edit gets its own confirmation. */
+export function assertChatImageActionAllowed(turn: Pick<ChatTurn, "imageActionMode">, localEdit: boolean) {
+  if (turn.imageActionMode === "library") {
+    throw Errors.conflict("This message is limited to existing media after a library lookup");
+  }
+  if (!localEdit && turn.imageActionMode !== "paid") {
+    throw Errors.forbidden("Use Send as paid image request to authorize a new image or whole-image edit");
+  }
+}
+
 /** 入口只允许一个，阶梯的其余层级由本 module 反查，调用方无从指定顺序。 */
 export type ChatScopeAnchor =
   | { readonly session: string }

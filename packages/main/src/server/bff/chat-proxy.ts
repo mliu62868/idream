@@ -99,7 +99,7 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
       const idempotencyKey = request.headers.get("idempotency-key")?.trim();
       if (!idempotencyKey) throw Errors.badRequest("Idempotency-Key is required");
       const speaker = await groupSpeakerSession(userId, groupId, text(body.characterId));
-      const result = await beginAdmittedChatTurn({ userId, sessionId: speaker.sessionId, content: text(body.content), idempotencyKey });
+      const result = await beginAdmittedChatTurn({ userId, sessionId: speaker.sessionId, content: text(body.content), idempotencyKey, sendProtocolVersion: sendProtocolVersion(body), allowPaidImage: paidImageRequest(body) });
       return envelope({ ...result, userMessage: { ...result.userMessage, ...speaker }, assistant: { ...result.assistant, ...speaker } }, 202);
     }
     throw Errors.notFound("Group chat route not found");
@@ -164,6 +164,8 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
         sessionId,
         content: text(body.content),
         idempotencyKey,
+        sendProtocolVersion: sendProtocolVersion(body),
+        allowPaidImage: paidImageRequest(body),
       }), 202);
     }
     if (path.length === 3 && path[2] === "archive" && method === "POST") {
@@ -189,7 +191,13 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
       return json({ ok: true });
     }
     if (path.length === 2 && method === "PATCH") {
-      return json(await editAndAdmitChatTurn(userId, messageId, text(body.content)), 202);
+      const { attempt } = body;
+      if (attempt !== undefined && typeof attempt !== "number") throw Errors.badRequest("Edit requires a positive integer attempt");
+      return json(await editAndAdmitChatTurn(userId, messageId, text(body.content), {
+        expectedAttempt: attempt,
+        idempotencyKey: request.headers.get("idempotency-key") ?? undefined,
+        allowPaidImage: paidImageRequest(body),
+      }), 202);
     }
     if (path.length === 3 && path[2] === "regenerate" && method === "POST") {
       return json(await regenerateAndAdmitChatTurn(userId, messageId), 202);
@@ -291,6 +299,18 @@ async function jsonBody(request: Request): Promise<Record<string, unknown>> {
   } catch {
     throw Errors.badRequest("Invalid JSON body");
   }
+}
+
+function paidImageRequest(body: Record<string, unknown>): boolean | undefined {
+  const value = body.allowPaidImage;
+  if (value !== undefined && typeof value !== "boolean") throw Errors.badRequest("allowPaidImage must be a boolean");
+  return value;
+}
+
+function sendProtocolVersion(body: Record<string, unknown>): string | undefined {
+  const value = body.sendProtocolVersion;
+  if (value !== undefined && typeof value !== "string") throw Errors.badRequest("sendProtocolVersion must be a string");
+  return value;
 }
 
 function text(value: unknown): string {

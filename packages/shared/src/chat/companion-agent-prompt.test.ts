@@ -10,7 +10,7 @@ import { IMAGE_AGENT_TOOL_DEFINITIONS } from "./image-action";
 describe("Companion product contract", () => {
   it("states the adult-companion outcome in affirmative, second-person lines", () => {
     const contract = companionProductAgentPrompt("Lena");
-    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-22");
+    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-25");
     expect(contract).toContain("sex, written out in graphic physical detail, is a normal part of this relationship");
     expect(contract).toContain("Fulfill their latest message as the whole reply");
     expect(contract).toContain("Their request, invitation or continued participation is their yes");
@@ -109,12 +109,17 @@ describe("Companion product contract", () => {
       "negation and scene details together in query", "Missing from a description alone does not prove absence",
       "this Character's relevant pending offer", "Verify exclusions with confirmed absentFacts or explicit observed metadata",
       "An unavailable lookup does not authorize a guessed delivery or a paid fallback",
-      "Once search_character_media has been called, this reply can only search or send existing media",
-      "A match, a miss, a failure or a successful retry never authorizes generation or editing in that reply",
+      "Once search_character_media has been called, this user message can only search or send existing media across reply retries",
+      "A match, a miss, a failure or a successful retry never authorizes generation or editing for that message",
       "An existing-only or no-generation request never authorizes new generation",
+      "Keep qualitative lengths like short clip in query",
+      "A review_video_filters result shows observedVideos",
+      "search again without it while keeping every explicit requirement",
+      "If the user only wants existing media, answer within that scope",
     ]) expect(prompt).toContain(boundary);
     expect(prompt).toContain("For ordinary photos, search prepared photos first");
-    expect(prompt).toContain("Choose generate_image_async directly for explicit new generation");
+    expect(prompt).toContain("Direct generation and whole-image edits require this message's paid image authorization");
+    expect(prompt).toContain("Choose generate_image_async for authorized new generation");
     expect(prompt).toContain("Use edit_last_image for a change to the delivered photo");
     expect(prompt).not.toContain("Choose generate_image_async for a new photo");
     expect(prompt).not.toContain("fulfill it by calling the matching image tool");
@@ -122,7 +127,7 @@ describe("Companion product contract", () => {
     const resend = composeCompanionSystemPrompt({ ...input, imageToolEnabled: false, hasDeliveredMedia: true });
     expect(resend).toContain("send_character_media");
     expect(resend).toContain("previousMediaAssetId");
-    expect(resend).not.toContain("search_character_media");
+    expect(resend).toContain("search_character_media");
     expect(resend).not.toContain("generate_image_async");
   });
 
@@ -236,12 +241,12 @@ She carries a blue notebook.`);
 
   it("advertises only what one chat image can deliver", () => {
     const generate = IMAGE_AGENT_TOOL_DEFINITIONS.find((tool) => tool.name === "generate_image_async");
-    const properties = (generate?.parameters as { properties: Record<string, { enum?: string[] }> }).properties;
+    const properties = (generate?.parameters as { properties: Record<string, { enum?: (string | number)[] }> }).properties;
     expect(generate?.description).toContain("exactly one photo");
     expect(generate?.description).toContain("Use directly for explicit new generation");
-    expect(generate?.description).toContain("search prepared photos first");
-    expect(generate?.description).toContain("Existing-only requests prohibit generation");
-    expect(properties.outputCount).toBeUndefined();
+    expect(generate?.description).toContain("search available prepared photos first");
+    expect(generate?.description).toContain("Existing-only forbids generation");
+    expect(properties.outputCount?.enum).toEqual([1]);
     expect(properties.orientation?.enum).toEqual(["4:5", "16:9"]);
   });
 });

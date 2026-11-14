@@ -1,3 +1,4 @@
+import { CHAT_SEND_PROTOCOL_VERSION } from "@idream/shared/contracts";
 import { randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
 import type { ChatExecutionSnapshot, ChatTerminalCommit } from "@idream/shared/contracts";
@@ -29,7 +30,7 @@ async function fixture() {
   await prisma.character.update({ where: { id: character.id }, data: { currentContentVersionId: content.id } });
   const session = await createChatSession(userId, { characterId: character.id });
   const begin = async () => {
-    const result = await beginChatTurn({ userId, sessionId: session.id, content: "Keep me company.", idempotencyKey: randomUUID() });
+    const result = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId, sessionId: session.id, content: "Keep me company.", idempotencyKey: randomUUID() });
     if (!result.snapshot) throw new Error("Fixture Turn was not admitted");
     return result.snapshot;
   };
@@ -217,7 +218,7 @@ describe("Main Scene terminal authority", () => {
 
     const revised = operation === "regenerate"
       ? await regenerateChatTurn(f.userId, second.assistantMessageId)
-      : await editChatTurn(f.userId, second.userMessageId, "Let's stay at the station.");
+      : await editChatTurn(f.userId, second.userMessageId, "Let's stay at the station.", { expectedAttempt: second.attempt });
     expect(revised.snapshot).toMatchObject({ attempt: 2, sceneVersion: 1, scene: second.scene });
     if (!revised.snapshot) throw new Error("Revised Turn was not admitted");
     await expect(commitChatTerminal(discarded)).rejects.toThrow("CAS");

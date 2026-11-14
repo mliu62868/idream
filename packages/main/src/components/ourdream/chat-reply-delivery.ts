@@ -316,13 +316,21 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
     }
   }
 
-  async function edit(messageId: string, content: string): Promise<"applied" | "quota_exhausted" | "failed"> {
+  async function edit({ messageId, content, attempt, idempotencyKey, allowPaidImage }: {
+    messageId: string;
+    content: string;
+    attempt: number;
+    idempotencyKey: string;
+    allowPaidImage: boolean;
+  }): Promise<"applied" | "quota_exhausted" | "failed"> {
     const isActive = currentLifecycle();
     context({ invalidate: true });
     let accepted = false;
     try {
       const response = await fetchForSession(`/api/v1/messages/${encodeURIComponent(messageId)}`, {
-        method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ content }),
+        method: "PATCH",
+        headers: { "content-type": "application/json", "idempotency-key": idempotencyKey },
+        body: JSON.stringify({ content, attempt, ...(allowPaidImage ? { allowPaidImage } : {}) }),
       });
       if (!isActive()) return "failed";
       if (response.status === 402) {
@@ -331,23 +339,27 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
       }
       if (!response.ok) {
         const failure = await response.json().catch(() => null);
+        if (response.status === 409) await refresh().catch(() => undefined);
         if (isActive()) setStatus(chatFailureCopy(failure, "Couldn't edit the message. Please try again."));
         return "failed";
       }
-      const payload = await response.json() as { assistantMessageId?: string; streamUrl?: string | null; status?: "pending" | "generating" | "blocked" };
+      const payload = await response.json() as { assistantMessageId?: string; attempt?: number; status?: string };
       if (!isActive()) return "failed";
+      const { assistantMessageId, attempt: revisedAttempt, status } = payload;
+      if (!assistantMessageId || revisedAttempt !== attempt + 1 || !status) throw new Error("Invalid chat edit receipt");
       accepted = true;
+      const reply = { id: assistantMessageId, role: "assistant", attempt: revisedAttempt, content: "", status };
+      if (replyHasRegressed(reply)) return "applied";
       // Also reject GETs started while PATCH was in flight.
       const revision = context({ invalidate: true });
-      if (payload.assistantMessageId) invalidateReplies([payload.assistantMessageId]);
+      if (observedRepliesRef.current.get(assistantMessageId)?.attempt !== revisedAttempt) {
+        invalidateReplies([assistantMessageId]);
+        observeReply(reply);
+      }
       const session = await revision.refresh();
-      if (!session) return "applied";
-      if (payload.status === "blocked" || !payload.streamUrl) {
-        if (payload.status === "blocked") setStatus("That message was blocked by our safety policy.");
-      } else if (!payload.assistantMessageId) {
-        setStatus("Couldn't edit the message. Please try again.");
-      } else if (payload.status === "generating") {
-        streamAssistant(payload.streamUrl, payload.assistantMessageId, "");
+      if (isActive() && status === "blocked" && session?.messages.some(message =>
+        message.id === assistantMessageId && message.attempt === revisedAttempt)) {
+        setStatus("That message was blocked by our safety policy.");
       }
       return "applied";
     } catch {

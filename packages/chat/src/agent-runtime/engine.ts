@@ -5,6 +5,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 import type { CompanionReadiness } from "@idream/shared/chat/companion-runtime";
+import { EDIT_LAST_IMAGE_TOOL, GENERATE_IMAGE_ASYNC_TOOL } from "@idream/shared/chat/image-action";
 import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL } from "@idream/shared/chat/media-library";
 import { companionEventSchema, companionToolCallSchema, companionToolReservationSchema, companionToolResultSchema,
   type CompanionCommitAck, type CompanionEvent, type CompanionInvocation, type CompanionModelRequestEvidence,
@@ -20,7 +21,7 @@ import { observeIgrepWake, igrepFailureCategory, recallIgrepMemory, reprojectIgr
 import type { CompanionWorkspaceRebuildPromotion, CompanionWorkspaceRebuildSource } from "./rebuild-source";
 import { assertNotFenced, withDrainFence, type FenceScope } from "../fence.js";
 import { stableJson } from "../stable-json";
-import { describeRequestedReplyConstraints } from "../prompt.js";
+import { describeRequestedReplyConstraints, PAID_IMAGE_REQUEST_GUIDANCE } from "../prompt.js";
 import { ProviderError, type OpenAiCompatibleAdapter, type OpenAiCompatibleAdapterOptions, type TokenUsage } from "./openai-adapter";
 import { aggregateModelRequestUsage } from "./model-request-evidence";
 import { buildReplaySeed, finishReason, messageText } from "./pi-context";
@@ -236,7 +237,7 @@ function invocationFailure(input: {
 }
 
 class ToolBridge {
-  private libraryOnly = false;
+  private readonly rejectedResends = new Set<string>();
   private readonly entries = new Map<string, {
     call: CompanionToolCall;
     name: CompanionToolCall["name"];
@@ -248,7 +249,16 @@ class ToolBridge {
   constructor(
     private readonly executeTool: CompanionRuntimePort["executeTool"],
     private readonly event: (event: EventPayload) => void,
+    private imageActionMode: NonNullable<CompanionInvocation["preparedTurn"]["imageActionMode"]> = "chat",
   ) {}
+
+  usePreparedMediaOnly(): void {
+    this.imageActionMode = "library";
+  }
+
+  wasRejectedResend(callId: string): boolean {
+    return this.rejectedResends.has(callId);
+  }
 
   get callCount(): number {
     return this.entries.size;
@@ -271,15 +281,21 @@ class ToolBridge {
     const key = `${call.attemptId}\0${call.callId}`;
     let entry = this.entries.get(key);
     if (!entry) {
-      if ((call.name === "generate_image_async" || call.name === "edit_last_image") && this.libraryOnly) {
-        return {
-          attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "failed",
-          error: { code: "media_library_only", message: "This reply uses prepared media only. New generation or editing requires a new user request", retryable: false },
-        };
+      if (call.name === SEND_CHARACTER_MEDIA_TOOL && "previousMediaAssetId" in call.arguments) {
+        this.rejectedResends.add(call.callId);
+        return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "failed",
+          error: { code: "media_library_candidate_required", message: "First look up this previousMediaAssetId with every current condition, then send its latest matching candidateToken. A media ID alone cannot grant a new delivery.", retryable: false } };
       }
-      // Entering stock lookup fixes this attempt's media workflow. Neither a
-      // match, a miss, nor a retry grants authority for a paid replacement.
-      if (call.name === SEARCH_CHARACTER_MEDIA_TOOL) this.libraryOnly = true;
+      if (call.name === GENERATE_IMAGE_ASYNC_TOOL || call.name === EDIT_LAST_IMAGE_TOOL) {
+        const needsPaidAuthorization = call.name === GENERATE_IMAGE_ASYNC_TOOL || call.arguments.editScope?.mode !== "local";
+        const error = this.imageActionMode === "library"
+          ? { code: "media_library_only", message: "This reply uses prepared media. A new image request must be sent separately." }
+          : needsPaidAuthorization && this.imageActionMode !== "paid"
+            ? { code: "image_paid_authorization_required", message: PAID_IMAGE_REQUEST_GUIDANCE }
+            : undefined;
+        if (error) return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "failed",
+          error: { ...error, retryable: false } };
+      }
       const startedAt = Date.now();
       entry = {
         call,
@@ -549,7 +565,7 @@ export class CompanionEngine {
 
       const modelRequests: CompanionModelRequestEvidence[] = [];
       let currentText = "";
-      const bridge = new ToolBridge(port.executeTool, payload => { void event(payload); });
+      const bridge = new ToolBridge(port.executeTool, payload => { void event(payload); }, invocation.preparedTurn.imageActionMode);
       // A model may introduce its action with an unsupported completion claim.
       // Buffer capability-bearing steps before tool choice; never expose and
       // retract that claim after the external action has already started.
@@ -606,6 +622,9 @@ export class CompanionEngine {
           available: () => retrievalCompleted,
         },
         signal: active.cancellation.signal, assertContinuation,
+        // Selecting a lookup fixes this attempt's workflow before Pi starts
+        // any tool in the response, including one listed before the lookup.
+        onPreparedMediaLookup: () => bridge.usePreparedMediaOnly(),
         text: delta => { if (!bufferText || stage.purpose === "media_body") { currentText += delta; void event({ type: "text_delta", delta }); } },
         reset: () => { if (currentText) { currentText = ""; void event({ type: "text_reset" }); } },
         compaction: (outcome, durationMs) => { void event({ type: "igrep_observation", operation: "compaction", outcome, durationMs, ...(outcome === "hit" ? { resultCount: 1 } : {}) }); },
@@ -672,7 +691,10 @@ export class CompanionEngine {
       let steps = completed?.steps ?? 0;
       let mediaResponse: CompanionTerminalCandidate["mediaResponse"];
       let bodyText: string | undefined;
-      if (recovered || bridge.actionCount > 0 || completed?.selectedMediaCalls.length) {
+      // A rejected resend never crossed Main and can end with a no-match reply.
+      const selectedAction = completed?.selectedMediaCalls.some(call => call.name !== SEND_CHARACTER_MEDIA_TOOL
+        || (!bridge.wasRejectedResend(call.callId) && !(call.arguments && typeof call.arguments === "object" && "previousMediaAssetId" in call.arguments)));
+      if (recovered || bridge.actionCount > 0 || selectedAction) {
         terminalValidationCode = "media_response_incomplete";
         let evidence: Parameters<typeof mediaExtractionMessages>[1];
         let attachmentId: string;

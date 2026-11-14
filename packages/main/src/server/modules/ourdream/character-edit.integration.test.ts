@@ -1,3 +1,4 @@
+import { CHAT_SEND_PROTOCOL_VERSION } from "@idream/shared/contracts";
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
@@ -80,7 +81,7 @@ describe("Character edit (CR-06 / CR-08)", () => {
 
     const session = await createChatSession(userId, { characterId });
     expect(session.title).toBe("Avery");
-    const first = await beginChatTurn({ userId, sessionId: session.id, content: "Hi.", idempotencyKey: randomUUID() });
+    const first = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId, sessionId: session.id, content: "Hi.", idempotencyKey: randomUUID() });
     await commitChatTerminal({
       version: 1, turnId: first.snapshot!.turnId, sessionId: first.snapshot!.sessionId, assistantMessageId: first.snapshot!.assistantMessageId,
       attempt: first.snapshot!.attempt, status: "sent", content: "Hello.", model: "fixture", promptTokens: 1, completionTokens: 1,
@@ -140,7 +141,7 @@ describe("Character edit (CR-06 / CR-08)", () => {
 
     const firstTurn = await prisma.chatTurn.findUniqueOrThrow({ where: { id: first.snapshot!.turnId } });
     expect(firstTurn.characterContentVersionId).toBe(originalContent.id);
-    const second = await beginChatTurn({ userId, sessionId: session.id, content: "Still there?", idempotencyKey: randomUUID() });
+    const second = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId, sessionId: session.id, content: "Still there?", idempotencyKey: randomUUID() });
     const secondTurn = await prisma.chatTurn.findUniqueOrThrow({ where: { id: second.snapshot!.turnId } });
     expect(secondTurn.characterContentVersionId).toBe(newContent.id);
     expect(secondTurn.characterVisualProfileId).toBe(visual.id);

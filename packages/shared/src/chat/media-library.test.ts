@@ -29,6 +29,18 @@ describe("Character media lookup and delivery contracts", () => {
     ]) expect(searchCharacterMediaArgsSchema.safeParse(invalid).success).toBe(false);
   });
 
+  it("checks a delivered result through lookup before a new resend", () => {
+    const args = { kind: "video", query: "Resend the previous clip only if it is silent and at most five seconds", previousMediaAssetId: "delivered-video", maxDurationSeconds: 5, hasAudio: false };
+    expect(searchCharacterMediaArgsSchema.parse(args)).toEqual(args);
+    const lookup = CHARACTER_MEDIA_TOOL_DEFINITIONS.find(tool => tool.name === SEARCH_CHARACTER_MEDIA_TOOL)!;
+    const send = CHARACTER_MEDIA_TOOL_DEFINITIONS.find(tool => tool.name === "send_character_media")!;
+    expect(lookup.parameters.properties).toHaveProperty("previousMediaAssetId");
+    expect(send.parameters.properties).not.toHaveProperty("previousMediaAssetId");
+    expect(send.parameters.required).toEqual(["candidateToken"]);
+    // The parser retains the old wire only to read an already accepted receipt.
+    expect(sendCharacterMediaArgsSchema.parse({ previousMediaAssetId: "delivered-video" })).toEqual({ previousMediaAssetId: "delivered-video" });
+  });
+
   it("keeps negation in the complete query without model-authored exact fact filters", () => {
     const args = { kind: "image", query: "Blue cardigan and green mug, without a hat", requestedNudity: "none" };
     expect(searchCharacterMediaArgsSchema.parse(args)).toEqual(args);
@@ -69,6 +81,19 @@ describe("Character media lookup and delivery contracts", () => {
     ]) expect(searchCharacterMediaResultSchema.safeParse(invalid).success).toBe(false);
     const fullFacts = Array.from({ length: 48 }, (_, index) => `${index}:${"a".repeat(156)}`);
     expect(searchCharacterMediaResultSchema.safeParse({ accepted: true, status: "matches", matches: [{ ...candidate, facts: fullFacts }] }).success).toBe(true);
+  });
+
+  it("accepts video filter observations without authorizing a candidate", () => {
+    const { candidateToken, ...facts } = candidate;
+    const result = { accepted: true, status: "review_video_filters", matches: [], observedVideos: [facts] };
+    expect(searchCharacterMediaResultSchema.parse(result)).toEqual(result);
+    for (const invalid of [
+      { ...result, observedVideos: [{ ...facts, candidateToken }] },
+      { ...result, observedVideos: [{ ...facts, kind: "image" }] },
+      { ...result, observedVideos: [] },
+      { ...result, matches: [candidate] },
+      { ...result, status: "no_match" },
+    ]) expect(searchCharacterMediaResultSchema.safeParse(invalid).success).toBe(false);
   });
 
   it("accepts only completed free deliveries with no Generation job", () => {

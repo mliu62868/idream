@@ -311,15 +311,38 @@ The first version scans all eligible vectors for the selected Character identity
 combines exact vector similarity with keyword ranks, and optionally reranks the
 candidates. It has no approximate vector index or demonstrated large-catalog
 capacity. The Agent checks each candidate against every current requirement and
-exclusion before sending; rank alone is not eligibility. Ordinary media requests
-search first. Explicit new generation/edit requests keep their original meaning;
-a video miss uses the existing quote flow, never an automatic paid generation.
-An attempt that looks up prepared media can only search and send existing
-results. A miss or a failed lookup requires a new explicit generation request
-in a later Turn before a paid image action can start.
+exclusion before sending. Qualitative lengths stay in the search query.
+When duration or audio-track filters exclude all candidates, the lookup can
+return video facts for the Agent to review before trying again. A new lookup
+must match every explicit requirement before it can grant a delivery token.
+Ordinary media requests search first. Use **Paid image** in the chat composer to authorize a new image
+or a whole-image edit for that message. Local edits retain their area and quote
+confirmation. Video generation uses the existing quote flow.
+Every new existing-media delivery needs a candidate token from the latest Main
+lookup. Explicit resends pass the previous media ID to the lookup so Main can
+check the owned copy against duration, audio and wardrobe requirements, even
+when it has been withdrawn from the shared library. Recent media includes known
+observed facts; missing facts stay unknown. Beginning a new lookup revokes older
+candidates before any model or file I/O; misses, failures and late results cannot
+restore them. A miss or a failed lookup requires a new user-authorized request
+before paid generation can start. Accepted historical delivery receipts remain readable.
 Main and Chat deploy from the same source revision with the
-`companion-product-22` readiness contract and strict media candidate fields.
+`companion-product-25` readiness contract and strict media candidate fields.
 Admin coverage checks use bounded batches and stop at the first verified entry.
+
+New browser sends use `sendProtocolVersion: "chat-send-2"`, stored with the
+original send intent and included in its idempotency hash. Missing or old
+protocols may only read an exact existing receipt; they cannot create a Turn,
+even if a pre-cutover deletion left no tombstone. An old client keeps the draft
+and must reload before a fresh explicit Send. Do not silently upgrade and
+replay an old intent. Internal proactive and bound voice-call inputs retain
+their existing authority.
+
+Deploy this cutover after stopping/draining the old Main and Chat writers with
+the PM2 wrapper, applying the Chat migrations (including media lookup state),
+and starting Main, Chat and the browser bundle from the same revision. Do not
+mix old writers with the new send protocol. Already accepted Jobs and exact
+historical receipts retain recovery authority; new writes require the new wire.
 
 Library delivery and explicit resend cost **0 Dreamcoins** and create no
 `GenerationJob`; normal chat usage remains separate. **Withdraw from chat** stops

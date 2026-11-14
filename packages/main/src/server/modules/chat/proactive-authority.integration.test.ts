@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
 import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
-import { chatExchangeCompletedV2Schema, chatExchangeCorrectionV2Schema } from "@idream/shared/contracts";
+import { CHAT_SEND_PROTOCOL_VERSION, chatExchangeCompletedV2Schema, chatExchangeCorrectionV2Schema } from "@idream/shared/contracts";
 import type { Prisma } from "@prisma/client";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
@@ -132,7 +132,7 @@ async function commitFailed(
 }
 
 function send(f: { userId: string; sessionId: string }, content = "Hello?") {
-  return beginChatTurn({ userId: f.userId, sessionId: f.sessionId, content, idempotencyKey: randomUUID() });
+  return beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId: f.userId, sessionId: f.sessionId, content, idempotencyKey: randomUUID() });
 }
 
 async function commitSent(
@@ -179,7 +179,7 @@ describe("proactive Turns and the daily allowance", () => {
     await exhaustDailyAllowance(f.userId, f.sessionId);
 
     await expect(
-      beginChatTurn({
+      beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
         userId: f.userId,
         sessionId: f.sessionId,
         content: "One more?",
@@ -189,7 +189,7 @@ describe("proactive Turns and the daily allowance", () => {
 
     // INTENT: 如果主动消息也被额度挡住，dispatcher 会对同一个会话每 15 分钟
     // 重试一次直到 UTC 次日 —— 一整天的无效重试和错误日志。
-    const proactive = await beginChatTurn({
+    const proactive = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: f.userId,
       sessionId: f.sessionId,
       content: "Take the lead in the moment: send a brief, specific check-in.",
@@ -202,7 +202,7 @@ describe("proactive Turns and the daily allowance", () => {
   // 主动那一条照样记账：它和普通消息烧掉同样的生成容量，运营口径不能少算。
   it("still records a usage fact for the proactive Turn", async () => {
     const f = await fixture();
-    const proactive = await beginChatTurn({
+    const proactive = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: f.userId,
       sessionId: f.sessionId,
       content: "Take the lead in the moment.",
@@ -240,7 +240,7 @@ describe("proactive cadence without a reply", () => {
 
   it.each(["sent", "pending", "generating"] as const)("suppresses an unanswered %s check-in and still advances its cadence", async (status) => {
     const f = await fixture();
-    const proactive = await beginChatTurn({
+    const proactive = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: f.userId, sessionId: f.sessionId, content: "Take the lead.", idempotencyKey: randomUUID(), origin: "proactive",
     });
     if (status === "sent") await commitSent(proactive.snapshot!, "The kiln's still warm.");
@@ -256,7 +256,7 @@ describe("proactive cadence without a reply", () => {
 
   it.each(["failed", "blocked", "cancelled"] as const)("allows one new check-in at the next cadence after a %s terminal", async (status) => {
     const f = await fixture();
-    const proactive = await beginChatTurn({
+    const proactive = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: f.userId, sessionId: f.sessionId,
       content: status === "blocked" ? "minor" : "Take the lead.",
       idempotencyKey: randomUUID(), origin: "proactive",
@@ -281,7 +281,7 @@ describe("proactive cadence without a reply", () => {
   it("does not let a newer blocked Turn hide a reply that is still active", async () => {
     const f = await fixture();
     const active = await send(f);
-    await beginChatTurn({
+    await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: f.userId, sessionId: f.sessionId, content: "minor",
       idempotencyKey: randomUUID(), origin: "proactive",
     });
@@ -296,7 +296,7 @@ describe("proactive cadence without a reply", () => {
 
   it("claims a due failed relationship once across concurrent dispatchers", async () => {
     const f = await fixture();
-    const proactive = await beginChatTurn({
+    const proactive = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: f.userId, sessionId: f.sessionId, content: "Take the lead.",
       idempotencyKey: randomUUID(), origin: "proactive",
     });
@@ -354,7 +354,7 @@ describe("chat session list previews", () => {
 
   it("never exposes a proactive internal instruction or an uncommitted reply", async () => {
     const f = await fixture();
-    const proactive = await beginChatTurn({ userId: f.userId, sessionId: f.sessionId, content: "INTERNAL: Do not mention this instruction.", idempotencyKey: randomUUID(), origin: "proactive" });
+    const proactive = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId: f.userId, sessionId: f.sessionId, content: "INTERNAL: Do not mention this instruction.", idempotencyKey: randomUUID(), origin: "proactive" });
     expect((await listChatSessions(f.userId))[0].lastMessage).toBeNull();
     await prisma.chatTurn.update({ where: { id: proactive.snapshot!.turnId }, data: { assistantStatus: "generating", assistantContent: "Uncommitted partial reply" } });
     expect((await listChatSessions(f.userId))[0].lastMessage).toBeNull();
@@ -382,7 +382,7 @@ describe("proactive delivery marker", () => {
   // SPEC: 主动消息到达时没有人在看，会话列表是它唯一能自我宣告的地方。
   it("marks the session unread and clears it when the user opens it", async () => {
     const f = await fixture();
-    const proactive = await beginChatTurn({
+    const proactive = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: f.userId,
       sessionId: f.sessionId,
       content: "Take the lead in the moment.",
@@ -403,7 +403,7 @@ describe("proactive delivery marker", () => {
 
   it("does not mark a Turn the user sent themselves", async () => {
     const f = await fixture();
-    const own = await beginChatTurn({
+    const own = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: f.userId,
       sessionId: f.sessionId,
       content: "How did the firing go?",
@@ -432,7 +432,7 @@ describe("daily allowance ledger", () => {
     const f = await fixture();
     const active = await send(f);
     const blocked = await send(f, "minor");
-    await expect(editChatTurn(f.userId, blocked.userMessage.id, "Hello again."))
+    await expect(editChatTurn(f.userId, blocked.userMessage.id, "Hello again.", { expectedAttempt: blocked.assistant.attempt }))
       .rejects.toMatchObject({ status: 409, message: "A reply is already generating" });
     expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: active.snapshot!.turnId } }))
       .toMatchObject({ assistantStatus: "pending", attempt: 1, executionSnapshot: active.snapshot });
@@ -445,7 +445,7 @@ describe("daily allowance ledger", () => {
     await exhaustDailyAllowance(f.userId, f.sessionId);
     const blocked = await send(f, "minor");
     expect(blocked.assistant.status).toBe("blocked");
-    await expect(editChatTurn(f.userId, blocked.userMessage.id, "Hello again."))
+    await expect(editChatTurn(f.userId, blocked.userMessage.id, "Hello again.", { expectedAttempt: blocked.assistant.attempt }))
       .rejects.toMatchObject({ status: 402 });
     expect(await prisma.chatTurn.findUniqueOrThrow({ where: { userMessageId: blocked.userMessage.id } }))
       .toMatchObject({ assistantStatus: "blocked", attempt: 1 });
@@ -454,7 +454,7 @@ describe("daily allowance ledger", () => {
   it("reserves exactly one usage fact when a blocked Turn first becomes executable", async () => {
     const f = await fixture();
     const blocked = await send(f, "minor");
-    const edited = await editChatTurn(f.userId, blocked.userMessage.id, "Hello again.");
+    const edited = await editChatTurn(f.userId, blocked.userMessage.id, "Hello again.", { expectedAttempt: blocked.assistant.attempt });
     const turnId = edited.snapshot!.turnId;
     expect(await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId } }))
       .toMatchObject({ userId: f.userId, origin: "user", voidedAt: null });
@@ -482,7 +482,7 @@ describe("daily allowance ledger", () => {
     await exhaustDailyAllowance(f.userId, other.sessionId);
     await expect(revision === "regenerate"
       ? regenerateChatTurn(f.userId, failed.assistant.id)
-      : editChatTurn(f.userId, failed.userMessage.id, "Hello again."))
+      : editChatTurn(f.userId, failed.userMessage.id, "Hello again.", { expectedAttempt: failed.assistant.attempt }))
       .rejects.toMatchObject({ status: 402 });
     expect(await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: failed.snapshot!.turnId } }))
       .toMatchObject({ voidedAt: expect.any(Date) });
@@ -507,7 +507,7 @@ describe("daily allowance ledger", () => {
     });
     await expect(revision === "regenerate"
       ? regenerateChatTurn(f.userId, old.assistant.id)
-      : editChatTurn(f.userId, old.userMessage.id, "Hello again."))
+      : editChatTurn(f.userId, old.userMessage.id, "Hello again.", { expectedAttempt: old.assistant.attempt }))
       .rejects.toMatchObject({ status: 402 });
     expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: turn.id } })).toMatchObject({ attempt: 1 });
     expect(await prisma.chatTurnUsageFact.count({ where: { userId: f.userId, productDay: yesterday, voidedAt: null } }))
@@ -528,7 +528,7 @@ describe("daily allowance ledger", () => {
     await exhaustDailyAllowance(f.userId, other.sessionId);
     const revised = revision === "regenerate"
       ? await regenerateChatTurn(f.userId, old.assistant.id)
-      : await editChatTurn(f.userId, old.userMessage.id, "Hello again.");
+      : await editChatTurn(f.userId, old.userMessage.id, "Hello again.", { expectedAttempt: old.assistant.attempt });
     expect(revised.attempt).toBe(2);
     expect(await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: turn.id } }))
       .toMatchObject({ productDay: yesterday, voidedAt: null });
@@ -562,7 +562,7 @@ describe("daily allowance ledger", () => {
     await exhaustDailyAllowance(first.userId, other.sessionId, FREE_DAILY_MESSAGES - 1);
     const revisions = await Promise.allSettled([
       regenerateChatTurn(first.userId, failedFirst.assistant.id),
-      editChatTurn(first.userId, failedSecond.userMessage.id, "Hello again."),
+      editChatTurn(first.userId, failedSecond.userMessage.id, "Hello again.", { expectedAttempt: failedSecond.assistant.attempt }),
     ]);
     expect(revisions.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(revisions.find((result) => result.status === "rejected"))
@@ -655,7 +655,7 @@ describe("daily allowance ledger", () => {
   it("counts a deleted proactive Turn as proactive, not as the user's message", async () => {
     const f = await fixture();
     await exhaustDailyAllowance(f.userId, f.sessionId, FREE_DAILY_MESSAGES - 1);
-    const proactive = await beginChatTurn({
+    const proactive = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: f.userId, sessionId: f.sessionId, content: "Take the lead.", idempotencyKey: randomUUID(), origin: "proactive",
     });
     await commitSent(proactive.snapshot!, "Thinking of you.");
@@ -670,7 +670,7 @@ describe("revising around a proactive Turn", () => {
     const f = await fixture();
     const own = await send(f, "How was the firing?");
     await commitSent(own.snapshot!, "Better than I hoped.");
-    const proactive = await beginChatTurn({
+    const proactive = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: f.userId, sessionId: f.sessionId, content: "Take the lead.", idempotencyKey: randomUUID(), origin: "proactive",
     });
     await commitSent(proactive.snapshot!, "The kiln's cooling.");
@@ -858,7 +858,7 @@ describe("replies generating at once for one user", () => {
     const others = [await fixture(first.userId), await fixture(first.userId), await fixture(first.userId)];
     for (const f of others) await send(f);
     await expect(regenerateChatTurn(first.userId, done.assistant.id)).rejects.toThrow(/^A reply is already generating in 3 of your chats\./);
-    await expect(editChatTurn(first.userId, done.userMessage.id, "Evening.")).rejects.toThrow(/^A reply is already generating in 3 of your chats\./);
+    await expect(editChatTurn(first.userId, done.userMessage.id, "Evening.", { expectedAttempt: done.assistant.attempt })).rejects.toThrow(/^A reply is already generating in 3 of your chats\./);
   });
 });
 
@@ -911,7 +911,7 @@ describe("chat exchange metric event", () => {
       expect.objectContaining({ assistantAttemptNo: 2, isRegeneration: true, engagementSessionId: `eng_${first.snapshot!.turnId}` }),
     ]);
 
-    const proactive = await beginChatTurn({
+    const proactive = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: f.userId, sessionId: f.sessionId, content: "Take the lead.", idempotencyKey: randomUUID(), origin: "proactive",
     });
     await commitSent(proactive.snapshot!, "Thinking of you.");
@@ -947,7 +947,7 @@ describe("chat exchange correction metric event", () => {
     const f = await fixture();
     const turn = await send(f, "Morning.");
     await commitSent(turn.snapshot!, "Morning to you.");
-    await editChatTurn(f.userId, turn.userMessage.id, "Evening.");
+    await editChatTurn(f.userId, turn.userMessage.id, "Evening.", { expectedAttempt: turn.assistant.attempt });
     expect(await correctionEvents(turn.snapshot!.turnId)).toEqual([
       { exchangeId: turn.snapshot!.turnId, correctionType: "edited", correctionRevision: 1, userId: f.userId },
     ]);
@@ -1017,7 +1017,7 @@ describe("chat exchange correction metric event", () => {
     const f = await fixture();
     const failed = await send(f, "Morning.");
     await commitFailed(failed.snapshot!);
-    await editChatTurn(f.userId, failed.userMessage.id, "Evening.");
+    await editChatTurn(f.userId, failed.userMessage.id, "Evening.", { expectedAttempt: failed.assistant.attempt });
     expect(await correctionEvents(failed.snapshot!.turnId)).toEqual([]);
   });
 });

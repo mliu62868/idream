@@ -75,15 +75,12 @@ import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency"
 // 唤醒它的投递，而不是再建一行 —— 前置快查与 P2002 兜底走同一个 findExistingGenerationJob。
 
 /**
- * SPEC: a chat photo request uses what the pinned chat route can deliver.
- * INTENT: the companion picks count and orientation from a tool schema that
- *   cannot know the route (chat-image-edit: one output, 4:5 or 16:9). Rejecting
- *   "send a few" or "a square one" failed the whole Turn; the Generator keeps
- *   its strict quote-bound validation because the user chose those knobs there.
+ * A Chat photo uses an aspect ratio the pinned route supports. Source-preserving
+ * edits require the original dimensions. The Generator validates its own quote.
  */
 export function fitChatImageRequestToRoute(
   body: GenerationCreateBody,
-  profile: { maxCount: number; allowedOrientations: unknown },
+  profile: { allowedOrientations: unknown },
 ): GenerationCreateBody {
   const allowed = jsonStringArray(profile.allowedOrientations);
   const requested = body.orientation ?? body.controls.orientation;
@@ -95,7 +92,6 @@ export function fitChatImageRequestToRoute(
     : requested;
   return {
     ...body,
-    outputCount: Math.min(body.outputCount, Math.max(1, profile.maxCount)),
     ...(orientation ? { orientation, controls: { ...body.controls, orientation } } : {}),
   };
 }

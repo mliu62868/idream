@@ -1,3 +1,4 @@
+import { CHAT_SEND_PROTOCOL_VERSION } from "@idream/shared/contracts";
 import { randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
 import { afterAll, describe, expect, it } from "vitest";
@@ -36,7 +37,7 @@ async function fixture() {
     }), segments);
     return { status: response.status, json: await response.json() };
   };
-  const begin = (key = randomUUID()) => beginChatTurn({ userId, sessionId: session.id, content: "Keep me company.", idempotencyKey: key });
+  const begin = (key = randomUUID()) => beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId, sessionId: session.id, content: "Keep me company.", idempotencyKey: key });
   return { userId, characterId: character.id, sessionId: session.id, call, begin };
 }
 
@@ -195,7 +196,7 @@ describe("versioned conversation preferences", () => {
     expect(regenerated.snapshot.sceneVersion).toBe(first.snapshot?.sceneVersion);
     await prisma.mainOutboxEvent.updateMany({ where: { aggregateId: `${f.userId}:${f.characterId}` }, data: { status: "delivered", deliveredAt: new Date() } });
     await finish(regenerated.snapshot);
-    const edited = await editChatTurn(f.userId, first.snapshot!.userMessageId, "Tell me a little more.");
+    const edited = await editChatTurn(f.userId, first.snapshot!.userMessageId, "Tell me a little more.", { expectedAttempt: regenerated.attempt });
     expect(edited.snapshot?.experience).toEqual(original);
     expect(edited.snapshot?.sceneVersion).toBe(first.snapshot?.sceneVersion);
     await finish(edited.snapshot!);
@@ -240,7 +241,7 @@ describe("versioned conversation preferences", () => {
     expect(regenerated.snapshot.experience).toEqual({ responseLength: "short", interactionIntensity: "gentle", version: 1 });
     await finish(regenerated.snapshot);
     await prisma.mainOutboxEvent.updateMany({ where: { aggregateId: `${f.userId}:${f.characterId}` }, data: { status: "delivered", deliveredAt: new Date() } });
-    const edited = await editChatTurn(f.userId, first.snapshot!.userMessageId, "Stay in this scene.");
+    const edited = await editChatTurn(f.userId, first.snapshot!.userMessageId, "Stay in this scene.", { expectedAttempt: regenerated.attempt });
     expect(edited.snapshot?.experience).toEqual(historical.experience);
   });
 });

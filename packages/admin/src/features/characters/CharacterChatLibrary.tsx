@@ -99,13 +99,20 @@ export function CharacterChatLibrary({ characterId, mediaType, canWrite, canPubl
       });
       if (request.isCurrent()) {
         const live = result.serving?.visualIdentity ?? null;
+        const current = result.visualIdentity ?? live;
         const preferred = preferredIdentity ?? null;
         const preferredIsCurrent = sameVisualIdentity(preferred, result.visualIdentity) || sameVisualIdentity(preferred, live);
-        const entry = result.items.find(item => sameVisualIdentity(item, preferred))
-          ?? (preferredIsCurrent ? undefined : result.items.find(item => sameVisualIdentity(item, result.visualIdentity))
-            ?? result.items.find(item => sameVisualIdentity(item, live)) ?? result.items[0]);
+        let entry: CharacterMediaLibraryEntry | undefined;
+        if (preferredIsCurrent || (!current && preferred !== null)) {
+          entry = result.items.find(item => sameVisualIdentity(item, preferred));
+        } else {
+          entry = result.items.find(item => sameVisualIdentity(item, result.visualIdentity))
+            ?? result.items.find(item => sameVisualIdentity(item, live));
+          // Only opening a source may default to a historical entry while a current identity exists.
+          if (!entry && preferredIdentity === undefined) entry = result.items[0];
+        }
         setSelection({ source: selectedSource, entry: entry ?? null, sourceEntries: result.items,
-          visualIdentity: entry ? entryVisualIdentity(entry) : preferredIsCurrent ? preferred : result.visualIdentity ?? live });
+          visualIdentity: entry ? entryVisualIdentity(entry) : preferredIsCurrent ? preferred : current });
       }
     } catch (cause) {
       if (request.isCurrent()) setError({ cause, message: t("Chat media could not be loaded") });

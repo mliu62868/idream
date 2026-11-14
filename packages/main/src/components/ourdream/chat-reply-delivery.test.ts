@@ -486,7 +486,7 @@ describe("reply delivery through its public hook boundary", () => {
     let mutation!: Promise<unknown>;
     await act(async () => {
       mutation = operation === "edit"
-        ? delivery.edit(userTurn.id, "Revised message")
+        ? delivery.edit({ messageId: userTurn.id, content: "Revised message", attempt: 1, idempotencyKey: "edit-1", allowPaidImage: false })
         : delivery.regenerate(streamingReply.id);
     });
     expect(response.json).toHaveBeenCalledTimes(1);
@@ -508,6 +508,33 @@ describe("reply delivery through its public hook boundary", () => {
     expect(readSession).not.toHaveBeenCalled();
     expect(onRepliesInvalidated).not.toHaveBeenCalled();
     expect(onStatus).not.toHaveBeenCalled();
+  });
+
+  it("keeps the latest reply streaming when an earlier edit receipt arrives late", async () => {
+    readSession.mockResolvedValue(session([opening, userTurn, { ...streamingReply, content: "Original reply", status: "sent" }]));
+    await act(async () => { await delivery.refresh(); });
+    const response = Promise.withResolvers<Response>();
+    request.mockReturnValueOnce(response.promise);
+    let edit!: ReturnType<typeof delivery.edit>;
+    await act(async () => {
+      edit = delivery.edit({ messageId: userTurn.id, content: "Earlier edit", attempt: 1, idempotencyKey: "edit-1", allowPaidImage: false });
+    });
+
+    const currentUser = { ...userTurn, content: "Current edit" };
+    readSession.mockResolvedValue(session([opening, currentUser, { ...streamingReply, attempt: 3 }]));
+    await act(async () => { await delivery.refresh(); });
+    const current = FakeEventSource.instances[0]!;
+    expect(current.url).toContain("attempt=3");
+    await act(async () => {
+      response.resolve(Response.json({ assistantMessageId: streamingReply.id, attempt: 2, status: "generating", streamUrl: "/api/v1/messages/assistant-1/stream?attempt=2" }, { status: 202 }));
+      await edit;
+    });
+
+    expect(current.closed).toBe(false);
+    expect(FakeEventSource.instances).toEqual([current]);
+    await act(async () => current.emit("delta", { attempt: 3, delta: "Current reply" }));
+    expect(messages).toContainEqual(currentUser);
+    expect(messages.at(-1)).toMatchObject({ attempt: 3, content: "Current reply" });
   });
 
   it("accepts a send receipt across focus read invalidation but rejects its captured capability after reset", async () => {

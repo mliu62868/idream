@@ -1,3 +1,4 @@
+import { CHAT_SEND_PROTOCOL_VERSION } from "@idream/shared/contracts";
 import { createHash, randomUUID } from "node:crypto";
 import sharp from "sharp";
 import { compileCharacterSoul } from "@idream/shared";
@@ -43,7 +44,7 @@ async function fixture(subject: "companion" | "scene", width: number, height: nu
   }
   const session = await createChatSession(userId, { characterId: character.id });
   await prisma.recentChat.update({ where: { sessionId: session.id }, data: { memoryEnabled: false } });
-  const begin = (text: string) => beginChatTurn({ userId, sessionId: session.id, content: text, idempotencyKey: randomUUID() });
+  const begin = (text: string) => beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId, sessionId: session.id, content: text, idempotencyKey: randomUUID() });
   const first = (await begin("Send me the existing green mug photo.")).snapshot;
   if (!first) throw new Error("Missing source Turn");
   await prisma.chatTurnAttachment.create({ data: { id: `${userId}-attachment`, turnId: first.turnId, kind: "generated_image", status: "completed", mediaAssetId: source.id, metadata: { attempt: first.attempt } } });
@@ -150,7 +151,7 @@ describe("Chat confirmed source image editing", () => {
   it("admits the frozen frame after the original Blob changes and keeps old historical drafts usable", async () => {
     const f = await draftFor();
     await finish(f);
-    await beginChatTurn({ userId: f.userId, sessionId: f.sessionId, content: "A later unrelated question.", idempotencyKey: randomUUID() });
+    await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId: f.userId, sessionId: f.sessionId, content: "A later unrelated question.", idempotencyKey: randomUUID() });
     const replacement = await sharp({ create: { width: 32, height: 32, channels: 3, background: "red" } }).png().toBuffer();
     await providers.blob.putPrivate({ key: f.key, body: replacement, contentType: "image/png" });
     expect(hash(await readChatImageEditSource(f.userId, f.attachmentId))).toBe(f.review.source.sha256);
@@ -254,7 +255,7 @@ describe("Chat confirmed source image editing", () => {
     await expect(confirmChatImageEdit(f.userId, f.attachmentId, randomUUID(), f.body)).rejects.toMatchObject({ code: "conflict" });
     const changed = await draftFor();
     await finish(changed);
-    await editChatTurn(changed.userId, changed.snapshot.userMessageId, "Change the background instead.");
+    await editChatTurn(changed.userId, changed.snapshot.userMessageId, "Change the background instead.", { expectedAttempt: changed.snapshot.attempt });
     await expect(readChatImageEditSource(changed.userId, changed.attachmentId)).rejects.toMatchObject({ code: "conflict" });
     expect(await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: changed.attachmentId } })).toMatchObject({ status: "cancelled", promptHint: null });
   });

@@ -11,7 +11,7 @@ import {
   searchCharacterMediaResultSchema, sendCharacterMediaResultSchema,
 } from "@idream/shared/chat/media-library";
 import { companionMemoryModeSchema } from "@idream/shared/chat/companion-runtime";
-import { groupChatMemberSchema, recoveredMediaActionSchema } from "@idream/shared/contracts";
+import { groupChatMemberSchema, imageActionModeSchema, recoveredMediaActionSchema } from "@idream/shared/contracts";
 
 const nonEmptyString = z.string().trim().min(1);
 const isoDateTime = z.string().datetime({ offset: true });
@@ -109,6 +109,7 @@ export const preparedTurnSchema = z.object({
   messages: z.array(preparedTurnMessageSchema).min(1),
   omittedMessages: z.array(preparedTurnMessageSchema).optional(),
   tools: z.array(preparedToolDefinition),
+  imageActionMode: imageActionModeSchema.optional(),
   recoveredMediaAction: recoveredMediaActionSchema.optional(),
   profile: preparedTurnProfileSchema,
   budget: preparedBudget,
@@ -159,7 +160,8 @@ const imageEffectAuthority = {
 };
 const toolIdentity = { attemptId: nonEmptyString, callId: nonEmptyString };
 export const companionToolCallSchema = z.discriminatedUnion("name", [
-  z.object({ ...toolIdentity, ...imageEffectAuthority, name: z.literal(GENERATE_IMAGE_ASYNC_TOOL), arguments: generateImageAsyncArgsSchema }).strict(),
+  z.object({ ...toolIdentity, ...imageEffectAuthority, name: z.literal(GENERATE_IMAGE_ASYNC_TOOL),
+    arguments: generateImageAsyncArgsSchema.extend({ outputCount: z.literal(1).optional() }) }).strict(),
   z.object({ ...toolIdentity, ...imageEffectAuthority, name: z.literal(EDIT_LAST_IMAGE_TOOL), arguments: editLastImageArgsSchema }).strict(),
   z.object({ ...toolIdentity, ...imageEffectAuthority, effectScope: z.literal("attempt"), name: z.literal(SEARCH_CHARACTER_MEDIA_TOOL), arguments: searchCharacterMediaArgsSchema }).strict(),
   z.object({ ...toolIdentity, ...imageEffectAuthority, effectScope: z.literal("turn_action"), name: z.literal(SEND_CHARACTER_MEDIA_TOOL), arguments: sendCharacterMediaArgsSchema }).strict(),

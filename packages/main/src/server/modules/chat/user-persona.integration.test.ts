@@ -1,3 +1,4 @@
+import { CHAT_SEND_PROTOCOL_VERSION } from "@idream/shared/contracts";
 import { randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
 import { Prisma } from "@prisma/client";
@@ -34,7 +35,7 @@ async function fixture(existingUserId?: string) {
   await prisma.character.update({ where: { id: character.id }, data: { currentContentVersionId: content.id } });
   const session = await createChatSession(userId, { characterId: character.id });
   await setChatMemory(userId, session.id, false);
-  const begin = (key = randomUUID()) => beginChatTurn({ userId, sessionId: session.id, content: "Keep me company.", idempotencyKey: key });
+  const begin = (key = randomUUID()) => beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId, sessionId: session.id, content: "Keep me company.", idempotencyKey: key });
   return { userId, characterId: character.id, sessionId: session.id, begin };
 }
 
@@ -139,7 +140,7 @@ describe("global user chat persona", () => {
     const regenerated = await regenerateChatTurn(f.userId, first.snapshot!.assistantMessageId);
     expect(regenerated.snapshot.userPersona).toEqual(first.snapshot?.userPersona);
     await finish(regenerated.snapshot);
-    const edited = await editChatTurn(f.userId, first.snapshot!.userMessageId, "Tell me a little more.");
+    const edited = await editChatTurn(f.userId, first.snapshot!.userMessageId, "Tell me a little more.", { expectedAttempt: regenerated.attempt });
     expect(edited.snapshot?.userPersona).toEqual(first.snapshot?.userPersona);
     await finish(edited.snapshot!);
     const next = await f.begin();
@@ -169,7 +170,7 @@ describe("global user chat persona", () => {
     const regenerated = await regenerateChatTurn(f.userId, first.snapshot!.assistantMessageId);
     expect(regenerated.snapshot.userPersona).toBeNull();
     await finish(regenerated.snapshot);
-    const edited = await editChatTurn(f.userId, first.snapshot!.userMessageId, "Keep the original context.");
+    const edited = await editChatTurn(f.userId, first.snapshot!.userMessageId, "Keep the original context.", { expectedAttempt: regenerated.attempt });
     expect(edited.snapshot?.userPersona).toBeNull();
   });
 

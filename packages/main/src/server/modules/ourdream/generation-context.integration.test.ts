@@ -151,7 +151,7 @@ describe("Chat generation handoff admission", () => {
     const headers = { "Idempotency-Key": `${f.id}-accepted` };
     const accepted = await api("POST", "generation/jobs", { userId: f.userId, ageGate: true, headers, body, autoGenerationQuote: false });
     expectOk(accepted, 202);
-    await editChatTurn(f.userId, f.userMessageId, "We have moved to the garden.");
+    await editChatTurn(f.userId, f.userMessageId, "We have moved to the garden.", { expectedAttempt: 1 });
     const stale = await api("POST", "generation/jobs", { userId: f.userId, ageGate: true, headers: { "Idempotency-Key": `${f.id}-new` }, body, autoGenerationQuote: false });
     expectError(stale, 409);
     const replay = await api("POST", "generation/jobs", { userId: f.userId, ageGate: true, headers, body, autoGenerationQuote: false });

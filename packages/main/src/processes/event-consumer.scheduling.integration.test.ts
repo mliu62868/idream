@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { compileCharacterSoul } from "@idream/shared";
-import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import { CHAT_SEND_PROTOCOL_VERSION, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
@@ -110,7 +110,7 @@ describe("durable event consumer time isolation", () => {
 
   it("reclaims an expired generating Turn while a pending admission is still blocked", async () => {
     const expiredFixture = await fixture();
-    const expired = await beginChatTurn({
+    const expired = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: expiredFixture.userId, sessionId: expiredFixture.sessionId,
       content: "A reply whose execution deadline already passed.", idempotencyKey: randomUUID(),
     });
@@ -124,7 +124,7 @@ describe("durable event consumer time isolation", () => {
       },
     });
     const pendingFixture = await fixture();
-    const pending = await beginChatTurn({
+    const pending = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
       userId: pendingFixture.userId, sessionId: pendingFixture.sessionId,
       content: "A new reply waiting for a slow admission receiver.", idempotencyKey: randomUUID(),
     });
@@ -224,7 +224,7 @@ describe("durable event consumer time isolation", () => {
     const worker = startEventConsumer();
     try {
       await expect.poll(() => memoryPreparing).toBe(true);
-      const begun = await beginChatTurn({
+      const begun = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
         userId: f.userId, sessionId: f.sessionId,
         content: "Keep talking while memory catches up.", idempotencyKey: randomUUID(),
       });

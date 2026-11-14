@@ -1,3 +1,25 @@
+import { CHAT_SEND_PROTOCOL_VERSION } from "@idream/shared/contracts";
+
+type ChatSendDraft = {
+  sessionId: string;
+  content: string;
+  characterId: string | null;
+  allowPaidImage: boolean;
+};
+export type ChatSendIntent = ChatSendDraft & { idempotencyKey: string; sendProtocolVersion?: string };
+
+/** A retained request is immutable; a protocol cutover needs a new Send. */
+export function prepareChatSendIntent(previous: ChatSendIntent | null, draft: ChatSendDraft, outcomeUnknown: boolean):
+  | { kind: "ready"; intent: ChatSendIntent & { sendProtocolVersion: typeof CHAT_SEND_PROTOCOL_VERSION } }
+  | { kind: "protocol_expired" | "option_mismatch" } {
+  const sameDraft = previous?.sessionId === draft.sessionId && previous.content === draft.content && previous.characterId === draft.characterId;
+  if (sameDraft && previous.sendProtocolVersion !== CHAT_SEND_PROTOCOL_VERSION) return { kind: "protocol_expired" };
+  if (sameDraft && outcomeUnknown && previous.allowPaidImage !== draft.allowPaidImage) return { kind: "option_mismatch" };
+  const intent = sameDraft && previous.allowPaidImage === draft.allowPaidImage ? previous
+    : { ...draft, idempotencyKey: crypto.randomUUID(), sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION };
+  return { kind: "ready", intent: { ...intent, sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION } };
+}
+
 export type ChatMessageActionAuthority = {
   role: string;
   replyToMessageId?: string | null;

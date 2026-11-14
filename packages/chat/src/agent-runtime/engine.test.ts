@@ -27,8 +27,8 @@ import { describeRequestedReplyConstraints } from "../prompt";
 import { resolvePolicy } from "../policy";
 import type { BuiltContext } from "../context";
 import { CHARACTER_MEDIA_TOOL_DEFINITIONS } from "@idream/shared/chat/media-library";
-import { IMAGE_AGENT_TOOL_DEFINITIONS } from "@idream/shared/chat/image-action";
-import { companionInvocationSchema } from "./contracts";
+import { IMAGE_AGENT_TOOL_DEFINITIONS, LOCAL_IMAGE_EDIT_TOOL_DEFINITION } from "@idream/shared/chat/image-action";
+import { companionInvocationSchema, companionToolResultSchema } from "./contracts";
 
 const IGREP_LLM = { url: "https://maintenance.example/v1", model: "maintenance-model" };
 const temporary: string[] = [];
@@ -105,6 +105,7 @@ function invocation(withTool = false): CompanionInvocation {
       version: 6,
       model: "deepseek/test",
       characterName: "Mira",
+      ...(withTool ? { imageActionMode: "paid" as const } : {}),
       messages: [
         {
           id: "system:soul",
@@ -1577,10 +1578,152 @@ describe("Chat embedded companion runtime", () => {
     expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
   });
 
+  it("shows a filtered video observation to the model and delivers after it removes only the guessed bound", async () => {
+    const value = mediaInvocation();
+    value.preparedTurn.messages.at(-1)!.content = "Send a short prepared seaside video with no audio track.";
+    const explicit = { kind: "video", query: "A short prepared seaside video with no audio track", hasAudio: false };
+    const guessed = { ...explicit, maxDurationSeconds: 5 };
+    const facts = { kind: "video", description: "Mira by the seaside.", facts: ["seaside"], absentFacts: [],
+      nudity: "none", durationSeconds: 5.167, hasAudio: false, alreadySent: false, score: 0.8 };
+    const observation = { accepted: true, status: "review_video_filters", matches: [], observedVideos: [facts] };
+    const match = { ...facts, candidateToken: "prepared-seaside-video" };
+    const receipt = { accepted: true, duplicate: false, status: "completed", attachmentId: "attachment-video",
+      mediaAssetId: "media-video", generationJobId: null, costDreamcoins: 0, source: "library", description: facts.description };
+    const requests: WireRequest[] = [];
+    const calls: CompanionToolCall[] = [];
+    const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: async (_url, init) => {
+      const request: WireRequest = JSON.parse(String(init?.body));
+      requests.push(request);
+      const call = (name: string, args: unknown) => response({ tool_calls: [{ index: 0, id: `video-${requests.length}`,
+        function: { name, arguments: JSON.stringify(args) } }] }, "tool_calls");
+      if (requests.length === 1) return call("search_character_media", guessed);
+      const observed = JSON.parse(request.messages.filter(message => message.role === "tool").at(-1)!.content);
+      if (requests.length === 2) {
+        expect(observed.output).toEqual(observation);
+        expect(observed.output.observedVideos[0]).not.toHaveProperty("candidateToken");
+        return call("search_character_media", explicit);
+      }
+      if (requests.length === 3) {
+        expect(observed.output).toEqual({ accepted: true, status: "matches", matches: [match] });
+        return call("send_character_media", { candidateToken: observed.output.matches[0].candidateToken });
+      }
+      expect(observed.output).toEqual(receipt);
+      return response({ content: facts.description });
+    } });
+    const runtime = await engine(adapter);
+    const connection = port({ executeTool: async call => {
+      calls.push(call);
+      const output = call.name === "search_character_media"
+        ? call.arguments.maxDurationSeconds === undefined ? { accepted: true, status: "matches", matches: [match] } : observation
+        : receipt;
+      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded", output };
+    } });
+    try {
+      await runtime.run(value, connection.runtimePort);
+      expect(calls).toEqual([
+        expect.objectContaining({ name: "search_character_media", effectScope: "attempt", arguments: guessed }),
+        expect.objectContaining({ name: "search_character_media", effectScope: "attempt", arguments: explicit }),
+        expect.objectContaining({ name: "send_character_media", effectScope: "turn_action", arguments: { candidateToken: match.candidateToken } }),
+      ]);
+      expect(connection.candidates[0]?.mediaResponse).toEqual({ version: 1, attachmentId: "attachment-video" });
+    } finally { await runtime.shutdown(); }
+  });
+
+  it.each(["decline", "resend"] as const)("requires lookup before a new previous-media send and allows %s recovery", async recovery => {
+    const value = mediaInvocation();
+    value.preparedTurn.imageActionMode = "chat";
+    value.preparedTurn.messages.at(-1)!.content = recovery === "decline"
+      ? "Resend the previous video only if it is at most five seconds and has no audio track."
+      : "Resend the exact previous video unchanged.";
+    const facts = { kind: "video", description: "Mira by the seaside.", facts: ["seaside"], absentFacts: [],
+      nudity: "none", durationSeconds: 5.167, hasAudio: true, alreadySent: true, score: 1 };
+    const searchArgs = { kind: "video", query: value.preparedTurn.messages.at(-1)!.content, previousMediaAssetId: "past-video",
+      ...(recovery === "decline" ? { maxDurationSeconds: 5, hasAudio: false } : {}) };
+    const receipt = { accepted: true, duplicate: false, status: "completed", attachmentId: "resent-video", mediaAssetId: "past-video",
+      generationJobId: null, costDreamcoins: 0, source: "previous_media", description: facts.description };
+    const calls: CompanionToolCall[] = [];
+    let requests = 0;
+    const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: async (_url, init) => {
+      const request: WireRequest = JSON.parse(String(init?.body));
+      const call = (name: string, args: unknown) => response({ tool_calls: [{ index: 0, id: `resend-${requests}`,
+        function: { name, arguments: JSON.stringify(args) } }] }, "tool_calls");
+      if (++requests === 1) return call("send_character_media", { previousMediaAssetId: "past-video" });
+      if (requests === 2) {
+        expect(request.messages.filter(message => message.role === "tool").at(-1)!.content).toContain("previousMediaAssetId");
+        return call("search_character_media", searchArgs);
+      }
+      if (requests === 3 && recovery === "resend") return call("send_character_media", { candidateToken: "latest-verified-video" });
+      return response({ content: recovery === "decline" ? "That video does not meet your conditions." : "Here is the same clip." });
+    } });
+    const runtime = await engine(adapter);
+    const connection = port({ executeTool: async call => {
+      calls.push(call);
+      const output = call.name === "search_character_media" ? recovery === "decline"
+        ? { accepted: true, status: "review_video_filters", matches: [], observedVideos: [facts] }
+        : { accepted: true, status: "matches", matches: [{ ...facts, candidateToken: "latest-verified-video" }] }
+        : receipt;
+      return companionToolResultSchema.parse({ attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded", output });
+    } });
+    try {
+      await runtime.run(value, connection.runtimePort);
+      expect(calls.map(call => call.name)).toEqual(recovery === "decline" ? ["search_character_media"] : ["search_character_media", "send_character_media"]);
+      expect(calls[0]?.arguments).toEqual(searchArgs);
+      expect(connection.candidates).toHaveLength(1);
+      expect(connection.candidates[0]?.mediaResponse).toEqual(recovery === "decline" ? undefined : { version: 1, attachmentId: receipt.attachmentId });
+      expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
+    } finally { await runtime.shutdown(); }
+  });
+
+  it.each(["decline", "candidate"] as const)("rejects a previous-media send after a filtered lookup and allows %s recovery", async recovery => {
+    const value = mediaInvocation();
+    value.preparedTurn.messages.at(-1)!.content = "Send an existing clip at most five seconds long. A previous clip is fine only if it fits.";
+    const facts = { kind: "video", description: "Mira by the seaside.", facts: ["seaside"], absentFacts: [],
+      nudity: "none", durationSeconds: 5.167, hasAudio: true, alreadySent: true, score: 0.8 };
+    const observation = { accepted: true, status: "review_video_filters", matches: [], observedVideos: [facts] };
+    const shorter = { ...facts, durationSeconds: 4, candidateToken: "matching-shorter-clip" };
+    const receipt = { accepted: true, duplicate: false, status: "completed", attachmentId: "eligible-video",
+      mediaAssetId: "shorter-video", generationJobId: null, costDreamcoins: 0, source: "library" };
+    const calls: CompanionToolCall[] = [];
+    let requests = 0;
+    const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: async (_url, init) => {
+      const request: WireRequest = JSON.parse(String(init?.body));
+      requests++;
+      const call = (name: string, args: unknown) => response({ tool_calls: [{ index: 0, id: `filtered-${requests}`,
+        function: { name, arguments: JSON.stringify(args) } }] }, "tool_calls");
+      if (requests === 1) return call("search_character_media", { kind: "video", query: "An existing clip at most five seconds long", maxDurationSeconds: 5, unseenOnly: false });
+      if (requests === 2) return call("send_character_media", { previousMediaAssetId: "longer-previous-video" });
+      if (requests === 3) {
+        const rejected = request.messages.filter(message => message.role === "tool").at(-1)!.content;
+        expect(rejected).toContain("previousMediaAssetId");
+        if (recovery === "decline") return response({ content: "I don't have a prepared clip that fits five seconds." });
+        return call("search_character_media", { kind: "video", query: "An existing clip at most five seconds long", maxDurationSeconds: 5, unseenOnly: false });
+      }
+      if (requests === 4) return call("send_character_media", { candidateToken: shorter.candidateToken });
+      return response({ content: "Here is the shorter clip." });
+    } });
+    const runtime = await engine(adapter);
+    const connection = port({ executeTool: async call => {
+      calls.push(call);
+      const output = call.name === "search_character_media"
+        ? calls.length === 1 ? observation : { accepted: true, status: "matches", matches: [shorter] }
+        : receipt;
+      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded", output };
+    } });
+    try {
+      await runtime.run(value, connection.runtimePort);
+      expect(calls.map(call => call.name)).toEqual(recovery === "decline" ? ["search_character_media"]
+        : ["search_character_media", "search_character_media", "send_character_media"]);
+      expect(connection.candidates).toHaveLength(1);
+      expect(connection.candidates[0]?.mediaResponse).toEqual(recovery === "decline" ? undefined : { version: 1, attachmentId: receipt.attachmentId });
+      expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
+    } finally { await runtime.shutdown(); }
+  });
+
   it.each([
     { name: "generate_image_async", user: "Generate a new seaside photo of yourself.", arguments: { prompt: "A clothed seaside portrait", subject: "companion" } },
     { name: "edit_last_image", user: "Edit the last photo to put the mug on the table.", arguments: { instruction: "Put the mug on the table", editScope: { mode: "local", target: "mug", selection: "one" } } },
-  ] as const)("keeps explicit $name available without a mandatory library lookup", async action => {
+    { name: "edit_last_image", user: "Redo the whole image with a seaside backdrop.", arguments: { instruction: "Redo the whole image with a seaside backdrop", editScope: { mode: "whole_image" } } },
+  ] as const)("keeps authorized $name available without a mandatory library lookup", async action => {
     let requests = 0;
     const calls: CompanionToolCall[] = [];
     const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
@@ -1602,6 +1745,120 @@ describe("Chat embedded companion runtime", () => {
     await runtime.run(value, connection.runtimePort);
     expect(calls).toEqual([expect.objectContaining({ name: action.name, effectScope: "turn_action", arguments: action.arguments })]);
     expect(connection.candidates[0]?.execution).toEqual({ steps: 3, toolCalls: 1 });
+  });
+
+  it("keeps a provider's extra image count out of the paid effect bridge", async () => {
+    const source = mediaInvocation();
+    const value = companionInvocationSchema.parse({ ...source, preparedTurn: { ...source.preparedTurn, tools: IMAGE_AGENT_TOOL_DEFINITIONS } });
+    value.preparedTurn.messages.at(-1)!.content = "Generate one seaside photo of yourself.";
+    const executeTool = vi.fn<CompanionRuntimePort["executeTool"]>();
+    const fetch = vi.fn<NonNullable<OpenAiCompatibleAdapterOptions["fetch"]>>()
+      .mockResolvedValueOnce(response({ tool_calls: [{ index: 0, id: "four-photos", function: {
+        name: "generate_image_async", arguments: JSON.stringify({ prompt: "A clothed seaside portrait", subject: "companion", outputCount: 4 }),
+      } }] }, "tool_calls"))
+      .mockImplementation(async () => response({ content: "I couldn't generate that photo." }));
+    const runtime = await engine(new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch }));
+    try {
+      await runtime.run(value, port({ executeTool }).runtimePort);
+      expect(executeTool).not.toHaveBeenCalled();
+      const request = JSON.parse(String(fetch.mock.calls[0]?.[1]?.body));
+      expect(request.tools.find((tool: { function: { name: string } }) => tool.function.name === "generate_image_async").function.parameters)
+        .toMatchObject({ additionalProperties: false, properties: { outputCount: { enum: [1] } } });
+    } finally { await runtime.shutdown(); }
+  });
+
+  it.each([
+    { hasStock: true, name: "generate_image_async", args: { prompt: "A replacement seaside photo", subject: "companion" } },
+    { hasStock: false, name: "generate_image_async", args: { prompt: "A replacement seaside photo", subject: "companion" } },
+    { hasStock: true, name: "edit_last_image", args: { instruction: "Redo the last image at the seaside", editScope: { mode: "whole_image" } } },
+    { hasStock: false, name: "edit_last_image", args: { instruction: "Redo the last image at the seaside", editScope: { mode: "whole_image" } } },
+  ] as const)("rejects an unapproved $name before lookup when inventory is available=$hasStock", async ({ hasStock, name, args }) => {
+    const source = mediaInvocation();
+    const value = companionInvocationSchema.parse({ ...source, preparedTurn: { ...source.preparedTurn,
+      imageActionMode: hasStock ? "chat" : undefined,
+      tools: [...IMAGE_AGENT_TOOL_DEFINITIONS, ...(hasStock ? CHARACTER_MEDIA_TOOL_DEFINITIONS : [])] } });
+    value.preparedTurn.messages.at(-1)!.content = "Only send an existing photo. Do not generate a replacement.";
+    const requests: WireRequest[] = [];
+    const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: async (_url, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return requests.length === 1 ? response({ tool_calls: [{ index: 0, id: "unauthorized-image", function: {
+        name, arguments: JSON.stringify(args),
+      } }] }, "tool_calls") : response({ content: "I have not sent anything." });
+    } });
+    const runtime = await engine(adapter);
+    const executeTool = vi.fn(port().runtimePort.executeTool);
+    const connection = port({ executeTool });
+    try {
+      await runtime.run(value, connection.runtimePort);
+      const denied = requests[1]?.messages.find(message => message.tool_call_id === "unauthorized-image");
+      expect(denied?.content).toContain("image_paid_authorization_required");
+      expect(denied?.content).toContain("Send as paid image request");
+      expect(executeTool).not.toHaveBeenCalled();
+      expect(connection.events.filter(event => event.type === "tool_started")).toEqual([]);
+      expect(connection.candidates).toEqual([]);
+    } finally { await runtime.shutdown(); }
+  });
+
+  it("keeps an ordinary local edit at the free confirmation step", async () => {
+    const source = mediaInvocation();
+    const value = companionInvocationSchema.parse({ ...source, preparedTurn: { ...source.preparedTurn,
+      imageActionMode: "chat", tools: [LOCAL_IMAGE_EDIT_TOOL_DEFINITION] } });
+    value.preparedTurn.messages.at(-1)!.content = "Change the green mug in your last photo to red.";
+    let requests = 0;
+    const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: async () => {
+      requests++;
+      return requests === 1 ? response({ tool_calls: [{ index: 0, id: "free-edit-draft", function: {
+        name: "edit_last_image", arguments: JSON.stringify({ instruction: "Change the green mug to red", editScope: { mode: "local", target: "green mug", selection: "one" } }),
+      } }] }, "tool_calls") : response({ content: "Choose the area to edit." });
+    } });
+    const runtime = await engine(adapter);
+    const executeTool = vi.fn(async (call: CompanionToolCall): Promise<CompanionToolResult> => ({
+      attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
+      output: { accepted: true, status: "awaiting_confirmation", attachmentId: "free-edit-card", generationJobId: null, costDreamcoins: 0 },
+    }));
+    const connection = port({ executeTool });
+    try {
+      await runtime.run(value, connection.runtimePort);
+      expect(executeTool).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ name: "edit_last_image",
+        arguments: expect.objectContaining({ editScope: { mode: "local", target: "green mug", selection: "one" } }) }));
+      expect(connection.candidates[0]?.mediaResponse).toEqual({ version: 1, attachmentId: "free-edit-card" });
+    } finally { await runtime.shutdown(); }
+  });
+
+  it.each(["failed", "no_match"] as const)("keeps the same Turn on the inventory path when retried after %s", async outcome => {
+    const source = mediaInvocation();
+    const value = companionInvocationSchema.parse({ ...source, preparedTurn: { ...source.preparedTurn,
+      imageActionMode: "chat", tools: [...IMAGE_AGENT_TOOL_DEFINITIONS, ...CHARACTER_MEDIA_TOOL_DEFINITIONS] } });
+    let requests = 0;
+    const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: async () => {
+      requests++;
+      if (requests % 2 === 0) return response({ content: "I couldn't send a prepared photo this time." });
+      return response({ tool_calls: [{ index: 0, id: `retry-media-${requests}`, function: {
+        name: requests === 1 ? "search_character_media" : "edit_last_image",
+        arguments: JSON.stringify(requests === 1 ? { kind: "image", query: "A photo by the seaside" }
+          : { instruction: "Remove the hat", editScope: { mode: "local", target: "hat", selection: "one" } }),
+      } }] }, "tool_calls");
+    } });
+    const runtime = await engine(adapter);
+    const executeTool = vi.fn(async (call: CompanionToolCall): Promise<CompanionToolResult> => {
+      const identity = { attemptId: call.attemptId, callId: call.callId, name: call.name };
+      if (call.name !== "search_character_media") return { ...identity, outcome: "succeeded", output: {
+        accepted: true, status: "awaiting_confirmation", attachmentId: "unexpected-edit-card", generationJobId: null, costDreamcoins: 0,
+      } };
+      return outcome === "failed" ? { ...identity, outcome: "failed", error: { code: "media_search_unavailable", message: "Search unavailable", retryable: true } }
+        : { ...identity, outcome: "succeeded", output: { accepted: true, status: "no_match", matches: [] } };
+    });
+    const connection = port({ executeTool });
+    const retry = { ...value, invocationId: "retry-stock-invocation", attemptId: "retry-stock-attempt",
+      preparedTurn: { ...value.preparedTurn, imageActionMode: "library" as const } };
+    try {
+      await runtime.run(value, connection.runtimePort);
+      expect(connection.candidates).toHaveLength(1);
+      await runtime.run(retry, connection.runtimePort);
+      expect(executeTool).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ attemptId: value.attemptId, name: "search_character_media" }));
+      expect(connection.candidates).toHaveLength(1);
+      expect(connection.events.filter(event => event.type === "tool_started").map(event => event.name)).toEqual(["search_character_media"]);
+    } finally { await runtime.shutdown(); }
   });
 
   it.each(["failed", "unknown"] as const)("does not turn a %s lookup into a delivery or an unconfirmed purchase", async outcome => {
@@ -1805,6 +2062,47 @@ describe("Chat embedded companion runtime", () => {
     } finally { await runtime.shutdown(); }
   });
 
+  it.each([
+    ["generate_image_async", true], ["generate_image_async", false],
+    ["edit_last_image", true], ["edit_last_image", false],
+  ] as const)("sends prepared media from a mixed batch with %s first=%s", async (name, paidFirst) => {
+    let requests = 0;
+    const lookup = { id: "batch-lookup", function: { name: "search_character_media",
+      arguments: JSON.stringify({ kind: "image", query: "Mira by the seaside" }) } };
+    const paid = { id: "batch-paid", function: { name, arguments: JSON.stringify(name === "generate_image_async"
+      ? { prompt: "Mira posing by the seaside", subject: "companion" }
+      : { instruction: "Move the scene to the seaside", editScope: { mode: "whole_image" } }) } };
+    const send = { id: "batch-send", function: { name: "send_character_media",
+      arguments: JSON.stringify({ candidateToken: preparedImageCandidate.candidateToken }) } };
+    const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
+      requests++;
+      if (requests > 2) return response({ content: "Here is the seaside photo." });
+      const calls = requests === 2 ? [send] : paidFirst ? [paid, lookup] : [lookup, paid];
+      return response({ tool_calls: calls.map((call, index) => ({ ...call, index })) }, "tool_calls");
+    } });
+    const runtime = await engine(adapter);
+    const calls: CompanionToolCall[] = [];
+    const connection = port({ executeTool: async (call): Promise<CompanionToolResult> => {
+      calls.push(call);
+      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
+        output: call.name === "search_character_media" ? { accepted: true, status: "matches", matches: [preparedImageCandidate] }
+          : call.name === "send_character_media" ? { accepted: true, duplicate: false, status: "completed", attachmentId: "batch-library-attachment",
+            generationJobId: null, mediaAssetId: "batch-library-asset", costDreamcoins: 0, source: "library" }
+            : { accepted: true, status: "accepted", attachmentId: "unexpected-paid-attachment", generationJobId: "unexpected-paid-job" } };
+    } });
+    try {
+      const source = mediaInvocation();
+      const value = companionInvocationSchema.parse({ ...source, preparedTurn: { ...source.preparedTurn,
+        tools: [...IMAGE_AGENT_TOOL_DEFINITIONS, ...CHARACTER_MEDIA_TOOL_DEFINITIONS] } });
+      await runtime.run(value, connection.runtimePort);
+      expect(calls.map(call => call.callId)).toEqual(["batch-lookup", "batch-send"]);
+      expect(connection.events.filter(event => event.type === "tool_started").map(event => event.callId)).toEqual(["batch-lookup", "batch-send"]);
+      expect(connection.candidates).toHaveLength(1);
+      expect(connection.candidates[0]?.mediaResponse).toEqual({ version: 1, attachmentId: "batch-library-attachment" });
+      expect(connection.candidates[0]?.tools.map(tool => tool.callId)).toEqual(["batch-lookup", "batch-send"]);
+    } finally { await runtime.shutdown(); }
+  });
+
   it("blocks paid fallback when the selected lookup has invalid arguments", async () => {
     let requests = 0;
     const calls: CompanionToolCall[] = [];
@@ -1837,7 +2135,7 @@ describe("Chat embedded companion runtime", () => {
       requests++;
       return response({ tool_calls: [{ index: 0, id: `action-${requests}`, function: {
         name: requests === 1 ? "send_character_media" : "generate_image_async",
-        arguments: JSON.stringify(requests === 1 ? { previousMediaAssetId: "past-media" }
+        arguments: JSON.stringify(requests === 1 ? { candidateToken: "latest-verified-previous-media" }
           : { prompt: "A new portrait to replace the lost one", subject: "companion" }),
       } }] }, "tool_calls");
     } });
@@ -1863,7 +2161,7 @@ describe("Chat embedded companion runtime", () => {
       if (requests === 3) return response({ content: "Here's that seaside photo again." });
       return response({ tool_calls: [{ index: 0, id: `action-${requests}`, function: {
         name: requests === 1 ? "send_character_media" : "generate_image_async",
-        arguments: JSON.stringify(requests === 1 ? { previousMediaAssetId: "past-media" }
+        arguments: JSON.stringify(requests === 1 ? { candidateToken: "latest-verified-previous-media" }
           : { prompt: "Another seaside portrait", subject: "companion" }),
       } }] }, "tool_calls");
     } });

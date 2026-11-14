@@ -5,6 +5,7 @@ import {
   signBffContext,
 } from "@idream/shared/bff";
 import {
+  CHAT_SEND_PROTOCOL_VERSION,
   chatAgentRunAdmissionAckSchema,
   chatExecutionSnapshotSchema,
   type ChatExecutionSnapshot,
@@ -21,6 +22,7 @@ import {
   executionSnapshot,
   failStalledChatTurn,
   regenerateChatTurn,
+  type ChatTurnEditOptions,
 } from "./turn-ledger";
 import { loadChatAuthoritySnapshot } from "./chat-authority-snapshot";
 
@@ -47,10 +49,14 @@ export async function beginAdmittedChatTurn(input: {
   sessionId: string;
   content: string;
   idempotencyKey: string;
+  sendProtocolVersion?: string;
+  allowPaidImage?: boolean;
   origin?: "user" | "proactive";
   voiceCall?: { id: string; leaseToken: string; utteranceId: string };
 }) {
-  assertAgentRuntimeConfigured();
+  // A legacy external POST can only read its existing receipt. It must remain
+  // readable without making the execution service a prerequisite for the read.
+  if (input.origin === "proactive" || input.voiceCall || input.sendProtocolVersion === CHAT_SEND_PROTOCOL_VERSION) assertAgentRuntimeConfigured();
   const begun = await beginChatTurn(input);
   const admission = begun.snapshot
     ? await attemptChatAgentRunAdmission(begun.snapshot)
@@ -71,9 +77,10 @@ export async function editAndAdmitChatTurn(
   userId: string,
   messageId: string,
   content: string,
+  options?: ChatTurnEditOptions,
 ) {
   assertAgentRuntimeConfigured();
-  const result = await editChatTurn(userId, messageId, content);
+  const result = await editChatTurn(userId, messageId, content, options);
   const admission = result.snapshot
     ? await attemptChatAgentRunAdmission(result.snapshot)
     : null;
@@ -393,7 +400,7 @@ function assertAgentRuntimeConfigured(): void {
 function publicRetry(result: {
   assistantMessageId: string;
   attempt: number;
-  status: "pending" | "blocked";
+  status: string;
   streamUrl: string | null;
   safety?: { layer: "input"; policyCode?: string };
 }, admitted: boolean) {

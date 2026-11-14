@@ -1,3 +1,4 @@
+import { CHAT_SEND_PROTOCOL_VERSION } from "@idream/shared/contracts";
 import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -93,7 +94,7 @@ describe("voice clip replay settlement", () => {
     } });
     await prisma.character.update({ where: { id: characterId }, data: { currentContentVersionId: content.id } });
     const session = await createChatSession(userId, { characterId });
-    const turn = await beginChatTurn({ userId, sessionId: session.id, content: "Hello.", idempotencyKey: `${P}late-${change}` });
+    const turn = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId, sessionId: session.id, content: "Hello.", idempotencyKey: `${P}late-${change}` });
     if (!turn.snapshot) throw new Error("Missing Turn snapshot");
     await commitChatTerminal({ version: 1, turnId: turn.snapshot.turnId, sessionId: session.id,
       assistantMessageId: turn.assistant.id, attempt: 1, status: "sent", content: "The original reply.", model: "fixture",
@@ -116,7 +117,7 @@ describe("voice clip replay settlement", () => {
     try {
       await Promise.race([providerStarted, operation.then(() => { throw new Error("TTS was not started"); })]);
       if (change === "regenerate") await regenerateChatTurn(userId, turn.assistant.id);
-      else if (change === "edit") await editChatTurn(userId, turn.userMessage.id, "A corrected message.");
+      else if (change === "edit") await editChatTurn(userId, turn.userMessage.id, "A corrected message.", { expectedAttempt: turn.assistant.attempt });
       else if (change === "delete") await deleteChatMessage(userId, turn.assistant.id);
       else if (change === "delete-session") await deleteChatSession(userId, session.id);
       else await archiveChatSession(userId, session.id);
@@ -215,7 +216,7 @@ describe("voice clip replay settlement", () => {
     } });
     await prisma.character.update({ where: { id: characterId }, data: { currentContentVersionId: content.id } });
     const session = await createChatSession(userId, { characterId });
-    const firstTurn = await beginChatTurn({ userId, sessionId: session.id, content: "Hello.", idempotencyKey: `${P}${revision}` });
+    const firstTurn = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId, sessionId: session.id, content: "Hello.", idempotencyKey: `${P}${revision}` });
     const commitReply = async (snapshot: NonNullable<typeof firstTurn.snapshot>, text: string) => {
       await commitChatTerminal({
         version: 1, turnId: snapshot.turnId, sessionId: snapshot.sessionId,
@@ -244,7 +245,7 @@ describe("voice clip replay settlement", () => {
       expect(quoteBeforeRevision.data.quote).toMatchObject({ alreadyDelivered: true, maxCostDreamcoins: 0 });
       const revised = revision === "regenerate"
         ? await regenerateChatTurn(userId, body.messageId)
-        : await editChatTurn(userId, firstTurn.userMessage.id, "Hello again.");
+        : await editChatTurn(userId, firstTurn.userMessage.id, "Hello again.", { expectedAttempt: firstTurn.assistant.attempt });
       if (!revised.snapshot) throw new Error("Missing revised Turn snapshot");
       expect(revised.assistantMessageId).toBe(body.messageId);
       expect(revised.attempt).toBe(2);

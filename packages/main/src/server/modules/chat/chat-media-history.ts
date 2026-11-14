@@ -1,5 +1,5 @@
 import type { MediaAsset, Prisma } from "@prisma/client";
-import { aiFinalizePayloadSchema, chatMediaEditProvenanceSchema } from "@idream/shared/contracts";
+import { aiFinalizePayloadSchema, chatMediaEditProvenanceSchema, type ChatExecutionSnapshot } from "@idream/shared/contracts";
 import { confirmedImageEditSchema, CONFIRMED_IMAGE_EDIT_VERSION } from "@idream/shared/chat/image-action";
 import { checkExactGenerationDispatchAuthority } from "@/server/ai/generation-dispatch-evidence-authority";
 import { MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES } from "@/server/events/main-outbox-transport";
@@ -10,6 +10,21 @@ export function chatMediaDescription(metadata: Prisma.JsonValue): string | null 
   const delivery = record(record(metadata).libraryDelivery);
   return delivery.schemaVersion === 1 && typeof delivery.description === "string"
     && delivery.description.trim() ? delivery.description.trim() : null;
+}
+
+/** Only persisted observations describe pixels or tracks; prompts never do. */
+export function chatMediaFacts(asset: Pick<MediaAsset, "type" | "metadata">) {
+  const delivery = record(record(asset.metadata).libraryDelivery);
+  const observed = delivery.schemaVersion === 1 ? delivery : {};
+  const facts = (value: unknown) => Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && Boolean(item.trim()) && item.length <= 160).slice(0, 48) : [];
+  return {
+    facts: facts(observed.facts), absentFacts: facts(observed.absentFacts),
+    nudity: observed.nudity === "none" || observed.nudity === "partial" || observed.nudity === "full" ? observed.nudity : "unknown" as const,
+    durationSeconds: asset.type === "video" && typeof observed.durationSeconds === "number" && Number.isFinite(observed.durationSeconds)
+      && observed.durationSeconds >= 0 ? observed.durationSeconds : null,
+    hasAudio: asset.type === "video" && typeof observed.hasAudio === "boolean" ? observed.hasAudio : null,
+  };
 }
 
 function chatMediaEditProvenance(proof: Record<string, unknown>, controls: Record<string, unknown>) {
@@ -103,14 +118,21 @@ export function isReadableChatMedia(asset: { metadata: Prisma.JsonValue; storage
     && !isSyntheticMediaAsset(asset.metadata) && hasHydratableMediaBlobAuthority(asset);
 }
 
+export function frozenChatImageEditSource(snapshot: Pick<ChatExecutionSnapshot, "imageEditSourceAssetId" | "recentMedia">): string | null {
+  if (snapshot.imageEditSourceAssetId !== undefined) return snapshot.imageEditSourceAssetId;
+  // Legacy snapshots can recover the first image from their own frozen history.
+  return snapshot.recentMedia?.find(media => media.kind === "image")?.mediaAssetId ?? null;
+}
+
 /** Only the selected, delivered attempt can grant a resend or enter Agent context. */
 export async function deliveredChatMedia(
   db: Prisma.TransactionClient,
-  input: { userId: string; characterId: string; sessionId: string; before: Date; mediaAssetId?: string; limit?: number },
+  input: { userId: string; characterId: string; sessionId: string; before: Date; mediaAssetId?: string; kind?: "image"; limit?: number },
 ) {
   const attachments = await db.chatTurnAttachment.findMany({
     where: {
-      status: "completed", kind: { in: ["generated_image", "generated_video"] },
+      status: "completed",
+      kind: input.kind === "image" ? "generated_image" : { in: ["generated_image", "generated_video"] },
       mediaAssetId: input.mediaAssetId ?? { not: null },
       turn: { sessionId: input.sessionId, createdAt: { lt: input.before },
         session: { userId: input.userId, characterId: input.characterId } },
@@ -131,7 +153,7 @@ export async function deliveredChatMedia(
     const asset = byId.get(attachment.mediaAssetId!);
     if (!asset || seen.has(asset.id) || (attachment.kind === "generated_image") !== (asset.type === "image")) return [];
     seen.add(asset.id);
-    return [{ attachment, asset, description: chatMediaDescription(asset.metadata) }];
+    return [{ attachment, asset, description: chatMediaDescription(asset.metadata), ...chatMediaFacts(asset) }];
   }).slice(0, input.limit ?? (input.mediaAssetId ? 1 : 100));
   const provenance = await deliveredEditProvenance(db, delivered.map(item => item.asset));
   return delivered.map(item => ({ ...item, editProvenance: provenance.get(item.asset.id) }));

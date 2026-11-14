@@ -2,7 +2,7 @@
 import { expect } from "vitest";
 import type { Prisma } from "@prisma/client";
 import sharp from "sharp";
-import { idempotencyKeys, MAIN_QUEUES } from "@idream/shared/contracts";
+import { CHAT_SEND_PROTOCOL_VERSION, idempotencyKeys, MAIN_QUEUES } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { providers } from "@/server/providers";
@@ -28,6 +28,8 @@ export const AGE_GATE_COOKIE_HEADER = `${AGE_GATE_COOKIE}=true`;
 
 export interface ApiOptions {
   body?: unknown;
+  /** Ordinary clients send the current protocol; opt out to exercise old bodies. */
+  autoChatSendProtocol?: boolean;
   /**
    * Public generation writes require a durable idempotency key. Integration
    * clients add one by default; set false only to exercise the missing-key
@@ -92,6 +94,10 @@ export async function api(
   const testAnonymousId = await materializeAgeGateAuthority(options);
   let requestBody = options.body;
   const requestBodyObject = isJsonObject(requestBody) ? requestBody : {};
+  if (method === "POST" && /^chat\/(sessions|groups)\/[^/]+\/messages$/.test(path)
+    && options.autoChatSendProtocol !== false && isJsonObject(requestBody) && !("sendProtocolVersion" in requestBody)) {
+    requestBody = { ...requestBody, sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION };
+  }
   if (method === "POST" && path === "generation/voice" &&
     options.autoGenerationQuote !== false && isJsonObject(requestBody) &&
     requestBody.intent !== "prewarm" && !requestBody.quoteToken) {
