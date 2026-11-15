@@ -102,6 +102,39 @@ describe("mounted Call microphone and playback ownership", () => {
     expect(getUserMedia).not.toHaveBeenCalled();
   });
 
+  it("reacquires microphone capture when explicitly retrying a failed microphone recording", async () => {
+    const standard = fetcher.getMockImplementation()!; let rejectedId: string | undefined;
+    fetcher.mockImplementation(async (url, init) => {
+      if (/\/utterances\/[^/]+$/.test(url)) {
+        const id = url.split("/").at(-1)!;
+        if (!rejectedId && init?.method === "POST") rejectedId = id;
+        if (id === rejectedId) return Response.json({ utteranceId: id, status: "failed", errorCode: "queue_full", assistantMessageId: null, assistantStatus: null });
+      }
+      return standard(url, init);
+    });
+    await render(); await connect();
+    await act(async () => voice.submitRecording(new Blob(["Original native recording"]))); await flush();
+    expect(voice.phase).toBe("error"); expect(voice.microphoneActive).toBe(false);
+    await act(async () => voice.retry()); await flush();
+    expect(getUserMedia).toHaveBeenCalledTimes(2); expect(voice.microphoneActive).toBe(true);
+    expect(utterancePosts()).toHaveLength(2); expect(voice.phase).toBe("speaking");
+    await act(async () => Player.instances[0].onended?.());
+    expect(voice.phase).toBe("listening"); expect(voice.notice).toContain("Listening");
+  });
+  it.each(["end", "account"])("releases late retry microphone permission after %s without resubmitting the recording", async change => {
+    const standard = fetcher.getMockImplementation()!;
+    fetcher.mockImplementation(async (url, init) => /\/utterances\/[^/]+$/.test(url)
+      ? Response.json({ utteranceId: url.split("/").at(-1), status: "failed", errorCode: "queue_full", assistantMessageId: null, assistantStatus: null }) : standard(url, init));
+    await render(); await connect();
+    await act(async () => voice.submitRecording(new Blob(["Original native recording"]))); await flush();
+    const permission = deferred<MediaStream>(); getUserMedia.mockReturnValueOnce(permission.promise);
+    await act(async () => voice.retry()); await flush();
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+    if (change === "end") await act(async () => voice.end()); else await render({ owner: "user:other" });
+    await act(async () => permission.resolve({ getTracks: () => [track] } as unknown as MediaStream)); await flush();
+    expect(track.stop).toHaveBeenCalledTimes(2); expect(voice.microphoneActive).toBe(false);
+    expect(utterancePosts()).toHaveLength(1);
+  });
   it("expires the retained failed recording instead of keeping microphone audio after its retry window", async () => {
     const standard = fetcher.getMockImplementation()!;
     fetcher.mockImplementation(async (url, init) => /\/utterances\/[^/]+$/.test(url)

@@ -148,6 +148,13 @@ export function useVoiceCall(options: Options) {
     retainRecording({ id, expiresAt: retained?.expiresAt ?? Date.now() + 120_000, blob: blob ?? retained?.blob });
     setView("thinking"); setNotice("Recognizing your words, then preparing a reply…");
     try {
+      // A failed recognition releases hardware. An explicit retry restores the
+      // original microphone mode instead of silently switching to file uploads.
+      if (existingId && !recordingMode.current && !stream.current) {
+        const captured = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: { ideal: 1 }, echoCancellation: true, noiseSuppression: true } });
+        if (!alive() || signal.aborted || !isListening()) { captured.getTracks().forEach(track => track.stop()); return; }
+        startCapture(captured);
+      }
       let state;
       if (!existingId && blob) {
         const form = new FormData(); form.set("audio", blob, "utterance.webm");
