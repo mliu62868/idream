@@ -9,6 +9,21 @@ const messages = [
 const imageTools = [{ name: "generate_image_async", description: "Generate", parameters: { type: "object" } }];
 
 describe("model request source boundary", () => {
+  it.each(["", " \n"])("closes an answered card-only request before the unchanged current message (reply=%j)", content => {
+    const previous = "Please generate a photo by the kitchen window. No extra message needed.";
+    const current = "Hello, it's good to meet you.";
+    const request = formatModelRequestInput({ respondingCharacterId: "self", messages: [
+      { id: "old-user", sourceKind: "replay", role: "user", content: previous },
+      { id: "card-only", sourceKind: "replay", role: "assistant", content },
+      { id: "current", sourceKind: "current_user", role: "user", content: current },
+    ] });
+    expect(request.messages).toEqual([
+      { role: "user", content: `Earlier user message, already answered:\n${previous}` },
+      { role: "assistant", content: content || null },
+      { role: "user", content: current },
+    ]);
+  });
+
   it("distinguishes the responding character by identity even when group members share a name", () => {
     const request = formatModelRequestInput({ respondingCharacterId: "self", messages: [
       { id: "other", sourceKind: "replay", role: "assistant", content: "My earlier words.", speaker: { characterId: "other", sessionId: "other-session", name: "Sam" } },

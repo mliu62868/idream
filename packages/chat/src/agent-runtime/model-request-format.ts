@@ -83,15 +83,15 @@ function openAiMessages(messages: readonly ModelInputMessage[], respondingCharac
     const replay = messages.slice(0, currentIndex)
       .filter((message) => message.role !== "system" && !contextIds.has(message.id));
     const lastOwnAnswer = replay.findLastIndex(message => message.role === "assistant" && !message.tool_calls?.length
-      && (!message.speaker || message.speaker.characterId === respondingCharacterId));
+      && Boolean(message.content.trim()) && (!message.speaker || message.speaker.characterId === respondingCharacterId));
     const history = replay.map((message, index) => {
       const answer = replay[index + 1];
-      // Our native assistant reply already closes preceding incoming turns.
-      // Only the remaining tail needs an explicit answered marker when another
-      // Character's answer also projects to an incoming user role.
+      // A native text reply closes incoming turns. Card-only replies have no
+      // text boundary, and another Character's reply projects to an input role;
+      // mark both answered tails without inventing assistant dialogue.
       if (index > lastOwnAnswer && message.role === "user" && message.sourceKind === "replay"
         && answer?.role === "assistant" && !answer.tool_calls?.length
-        && answer.speaker && answer.speaker.characterId !== respondingCharacterId) {
+        && (!answer.content.trim() || (answer.speaker && answer.speaker.characterId !== respondingCharacterId))) {
         return { role: "user", content: `Earlier user message, already answered:\n${message.content}` };
       }
       return wire(message);
