@@ -12,7 +12,7 @@ const FORMATS = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/mp4"]
 const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 // Mirrors the server Call lease. Every successful control command renews it.
 const LEASE_MS = 15_000;
-const RETRYABLE_RECOGNITION_ERRORS = new Set(["queue_full", "queue_timeout", "user_busy", "rate_limited", "state_capacity", "transcription_timeout", "transcription_failed", "asr_result_expired"]);
+const RETRYABLE_RECOGNITION_ERRORS = new Set(["queue_full", "queue_timeout", "user_busy", "rate_limited", "state_capacity", "asr_unavailable", "transcription_timeout", "transcription_failed", "asr_result_expired"]);
 // A network failure, an unreadable body or a 5xx/429 says nothing about the
 // Call itself; any other HTTP status is the server's definite answer.
 const transient = (error: unknown) => {

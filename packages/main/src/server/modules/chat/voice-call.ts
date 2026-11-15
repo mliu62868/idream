@@ -233,14 +233,19 @@ async function submitUtterance(call: VoiceCall, token: string | null, id: string
   try {
     result = await requestAsr(audio ? "POST" : "GET", { userId: call.userId, conversationId: `call:${call.id}`, requestId: id }, audio);
   } catch (error) {
-    // INVARIANT: a definitive rejection/expiry releases this recording's gate;
-    // unknown transport outcomes keep the same key available for GET recovery.
-    if (error instanceof AppError && (error.code === "bad_request" || error.code === "gone")) {
+    // INVARIANT: only a definitive rejection/expiry releases this recording's
+    // gate. Unknown transport outcomes still recover under the original key.
+    if (error instanceof AppError) {
       const details = error.details as { errorCode?: unknown } | undefined;
-      await prisma.voiceCallUtterance.updateMany({
-        where: { id, callId: call.id, status: "transcribing", turnId: null },
-        data: { status: "failed", errorCode: typeof details?.errorCode === "string" ? details.errorCode : error.code === "gone" ? "asr_result_expired" : "invalid_audio" },
-      });
+      const code = typeof details?.errorCode === "string" ? details.errorCode : null;
+      const rejectedBeforeAdmission = Boolean(audio) && ["unavailable", "rate_limited"].includes(error.code)
+        && code !== null && ["queue_full", "state_capacity", "asr_unavailable", "user_busy", "rate_limited"].includes(code);
+      if (error.code === "bad_request" || error.code === "gone" || rejectedBeforeAdmission) {
+        await prisma.voiceCallUtterance.updateMany({
+          where: { id, callId: call.id, status: "transcribing", turnId: null },
+          data: { status: "failed", errorCode: error.code === "gone" ? "asr_result_expired" : code ?? "invalid_audio" },
+        });
+      }
     }
     throw error;
   }

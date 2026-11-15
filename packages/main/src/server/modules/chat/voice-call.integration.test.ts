@@ -275,21 +275,46 @@ describe("canonical Call recording, recovery and settlement", () => {
     await run(f, "POST", `/${call.id}/end`, { token: call.leaseToken });
   });
   it.each([
-    { gatewayStatus: 422, detail: "invalid_audio", expectedStatus: 400 },
-    { gatewayStatus: 410, detail: "unknown_request", expectedStatus: 410 },
-  ])("settles a definitive ASR $gatewayStatus failure and admits the next recording", async ({ gatewayStatus, detail, expectedStatus }) => {
+    { gatewayStatus: 422, detail: "invalid_audio", expectedStatus: 400, expectedCode: "invalid_audio" },
+    { gatewayStatus: 410, detail: "unknown_request", expectedStatus: 410, expectedCode: "asr_result_expired" },
+  ])("settles a definitive ASR $gatewayStatus failure and admits the next recording", async ({ gatewayStatus, detail, expectedStatus, expectedCode }) => {
     const f = await fixture(), call = await start(f), id = randomUUID(), audio = await recording();
     asr.mockResolvedValueOnce(Response.json({ requestId: id, status: "pending", retryAfterMs: 100 }));
     expect((await run(f, "POST", `/${call.id}/utterances/${id}`, { token: call.leaseToken, audio })).response.status).toBe(200);
     asr.mockResolvedValueOnce(Response.json({ detail }, { status: gatewayStatus }));
     const rejected = await run(f, "GET", `/${call.id}/utterances/${id}`, { token: call.leaseToken });
     expect(rejected.response.status).toBe(expectedStatus);
-    expect.soft(await prisma.voiceCallUtterance.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: "failed", errorCode: detail, turnId: null });
+    expect.soft(await prisma.voiceCallUtterance.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: "failed", errorCode: expectedCode, turnId: null });
     const replay = await run(f, "POST", `/${call.id}/utterances/${id}`, { token: call.leaseToken, audio });
-    expect.soft(replay.response.status).toBe(200); expect.soft(replay.value).toMatchObject({ status: "failed", errorCode: detail });
+    expect.soft(replay.response.status).toBe(200); expect.soft(replay.value).toMatchObject({ status: "failed", errorCode: expectedCode });
     expect.soft(asr).toHaveBeenCalledTimes(2);
     expect.soft((await run(f, "POST", `/${call.id}/utterances/${randomUUID()}`, { token: call.leaseToken, audio })).response.status).toBe(200);
     expect(synthesize).not.toHaveBeenCalled(); expect(await dreamcoinBalance(f.userId)).toBe(20);
+    await run(f, "POST", `/${call.id}/end`, { token: call.leaseToken });
+  });
+  it.each([
+    { gatewayStatus: 503, errorCode: "queue_full" },
+    { gatewayStatus: 503, errorCode: "state_capacity" },
+    { gatewayStatus: 503, errorCode: "asr_unavailable" },
+    { gatewayStatus: 429, errorCode: "user_busy" },
+    { gatewayStatus: 429, errorCode: "rate_limited" },
+  ])("retains a definitive pre-admission $errorCode receipt without repeating ASR or charging", async ({ gatewayStatus, errorCode }) => {
+    const f = await fixture(), call = await start(f), id = randomUUID(), audio = await recording();
+    asr.mockResolvedValueOnce(Response.json({ detail: errorCode }, { status: gatewayStatus }));
+    expect((await run(f, "POST", `/${call.id}/utterances/${id}`, { token: call.leaseToken, audio })).response.status).toBe(gatewayStatus);
+    expect.soft(await prisma.voiceCallUtterance.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: "failed", errorCode, turnId: null, assistantMessageId: null, voiceRequestId: null, costDreamcoins: 0 });
+    for (const method of ["GET", "POST"]) {
+      const replay = await run(f, method, `/${call.id}/utterances/${id}`, { token: call.leaseToken, ...(method === "POST" ? { audio } : {}) });
+      expect.soft(replay.response.status).toBe(200);
+      expect.soft(replay.value).toMatchObject({ utteranceId: id, status: "failed", errorCode, assistantMessageId: null, assistantStatus: null });
+    }
+    expect.soft(asr).toHaveBeenCalledOnce();
+    expect.soft(await prisma.chatTurn.count({ where: { sessionId: f.sessionId } })).toBe(0);
+    expect.soft(await prisma.voiceUsageFact.count({ where: { userId: f.userId } })).toBe(0);
+    expect.soft(await dreamcoinBalance(f.userId)).toBe(20);
+    expect((await run(f, "POST", `/${call.id}/utterances/${randomUUID()}`, { token: call.leaseToken, audio })).response.status).toBe(200);
+    expect(await prisma.chatTurn.count({ where: { sessionId: f.sessionId } })).toBe(1);
+    expect(synthesize).not.toHaveBeenCalled();
     await run(f, "POST", `/${call.id}/end`, { token: call.leaseToken });
   });
   it.each([429, 503])("preserves the same recording after transient ASR %s and recovers without resubmitting audio", async gatewayStatus => {
@@ -399,7 +424,8 @@ describe("canonical Call recording, recovery and settlement", () => {
       expect(resumed.response.status).toBe(200); cleanupToken = resumed.value.call.leaseToken;
       synthesize.mockResolvedValueOnce({ ok: false, error: { code: "controlled_call_failure", message: "Call synthesis failed", retryable: true } });
       const failed = await run(f, "POST", `/${call.id}/utterances/${id}/voice`, { token: cleanupToken });
-      expect(failed.response.status, JSON.stringify(failed.value)).toBe(500);
+      expect(failed.response.status, JSON.stringify(failed.value)).toBe(503);
+      expect(failed.value.error).toBe("unavailable");
       const original = await prisma.voiceClipRequest.findFirstOrThrow({ where: { userId: f.userId } });
       expect(original).toMatchObject({ status: "failed", attemptNo: 1, voiceCallUtteranceId: id,
         executionAuthority: { version: 1, kind: "call", callUtteranceId: id, replyAttempt: 1, leaseToken: cleanupToken } });
@@ -510,7 +536,8 @@ describe("canonical Call recording, recovery and settlement", () => {
     synthesize.mockResolvedValueOnce({ ok: false, error: { code: "controlled_voice_retry", message: "Retry this ordinary Play", retryable: true } });
     const failed = await api("POST", "generation/voice", { userId: f.userId, autoGenerationQuote: false,
       body: { ...body, quoteToken: quote.data.quote.quoteToken } });
-    expect(failed.status, JSON.stringify(failed.json)).toBe(500);
+    expect(failed.status, JSON.stringify(failed.json)).toBe(503);
+    expect(failed.json).toMatchObject({ error: { code: "unavailable" } });
     const original = await prisma.voiceClipRequest.findFirstOrThrow({ where: { userId: f.userId } });
     expect(original).toMatchObject({ status: "failed", voiceCallUtteranceId: null, mediaAssetId: null });
     const resumed = await run(f, "POST", `/${call.id}/resume`);
@@ -597,7 +624,7 @@ describe("canonical Call recording, recovery and settlement", () => {
     await run(f, "POST", `/${call.id}/disconnect`, { token: call.leaseToken });
     const body = { characterId: f.characterId, sessionId: f.sessionId, messageId: linked.assistantMessageId!, intent: "play" };
     synthesize.mockResolvedValueOnce({ ok: false, error: { code: "controlled_voice_retry", message: "Retry ordinary Play", retryable: true } });
-    expect((await api("POST", "generation/voice", { userId: f.userId, body })).status).toBe(500);
+    expect((await api("POST", "generation/voice", { userId: f.userId, body })).status).toBe(503);
     const original = await prisma.voiceClipRequest.findFirstOrThrow({ where: { userId: f.userId } });
     expect(original).toMatchObject({ voiceCallUtteranceId: null, executionAuthority: { version: 1, kind: "standalone" } });
     const resumed = await run(f, "POST", `/${call.id}/resume`), token = resumed.value.call.leaseToken;
@@ -689,7 +716,7 @@ describe("canonical Call recording, recovery and settlement", () => {
     await run(f, "POST", `/${call.id}/disconnect`, { token: call.leaseToken });
     const body = { characterId: f.characterId, sessionId: f.sessionId, messageId: linked.assistantMessageId!, intent: "play" };
     synthesize.mockResolvedValueOnce({ ok: false, error: { code: "controlled_voice_retry", message: "Retry ordinary Play", retryable: true } });
-    expect((await api("POST", "generation/voice", { userId: f.userId, body })).status).toBe(500);
+    expect((await api("POST", "generation/voice", { userId: f.userId, body })).status).toBe(503);
     const original = await prisma.voiceClipRequest.findFirstOrThrow({ where: { userId: f.userId } });
     const token = (await run(f, "POST", `/${call.id}/resume`)).value.call.leaseToken;
     synthesize.mockRejectedValueOnce(new Error("Controlled interrupted Call takeover"));

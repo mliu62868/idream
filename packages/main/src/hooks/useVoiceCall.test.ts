@@ -78,14 +78,14 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 describe("mounted Call microphone and playback ownership", () => {
-  it("retries a saved recording under a new ID only after a definitive pre-Turn ASR failure", async () => {
+  it.each(["queue_timeout", "queue_full", "asr_unavailable", "asr_result_expired"])("retries a saved recording under a new ID only after a definitive pre-Turn ASR %s", async errorCode => {
     const standard = fetcher.getMockImplementation()!;
     let rejectedId: string | undefined;
     fetcher.mockImplementation(async (url, init) => {
       if (/\/utterances\/[^/]+$/.test(url)) {
         const id = url.split("/").at(-1)!;
         if (!rejectedId && init?.method === "POST") rejectedId = id;
-        if (id === rejectedId) return Response.json({ utteranceId: id, status: "failed", errorCode: "queue_timeout", assistantMessageId: null, assistantStatus: null });
+        if (id === rejectedId) return Response.json({ utteranceId: id, status: "failed", errorCode, assistantMessageId: null, assistantStatus: null });
       }
       return standard(url, init);
     });
