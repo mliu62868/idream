@@ -952,6 +952,9 @@ async function renderOwnedVoiceClaim(input: OwnedVoiceClaimInput): Promise<Voice
   if (!result.ok) {
     if (signal?.aborted) throw new VoiceExecutionStopped();
     await failOwnedVoiceRequest(claim, result.error.code, result.error);
+    if (result.error.retryable) {
+      throw Errors.unavailable("Voice synthesis is busy or temporarily unavailable. Retry the original request shortly.", result.error);
+    }
     throw Errors.internal("Voice synthesis failed", result.error);
   }
 

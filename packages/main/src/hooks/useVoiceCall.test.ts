@@ -78,6 +78,60 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 describe("mounted Call microphone and playback ownership", () => {
+  it("retries a saved recording under a new ID only after a definitive pre-Turn ASR failure", async () => {
+    const standard = fetcher.getMockImplementation()!;
+    let rejectedId: string | undefined;
+    fetcher.mockImplementation(async (url, init) => {
+      if (/\/utterances\/[^/]+$/.test(url)) {
+        const id = url.split("/").at(-1)!;
+        if (!rejectedId && init?.method === "POST") rejectedId = id;
+        if (id === rejectedId) return Response.json({ utteranceId: id, status: "failed", errorCode: "queue_timeout", assistantMessageId: null, assistantStatus: null });
+      }
+      return standard(url, init);
+    });
+    await render({ controls: true }); await connect(false);
+    const original = new Blob(["Quiet original English speech"], { type: "audio/webm" });
+    await act(async () => voice.submitRecording(original)); await flush();
+    expect(voice.phase).toBe("error"); expect(voice.canRetryOriginal).toBe(true);
+    await act(async () => voice.retry()); await flush();
+    expect(utterancePosts()).toHaveLength(2);
+    expect(utterancePosts()[1][0]).not.toBe(utterancePosts()[0][0]);
+    const uploaded = (utterancePosts()[1][1]!.body as FormData).get("audio") as File;
+    expect(await uploaded.text()).toBe(await original.text());
+    expect(onTurn).toHaveBeenCalledOnce(); expect(voice.phase).toBe("speaking");
+    expect(getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it("expires the retained failed recording instead of keeping microphone audio after its retry window", async () => {
+    const standard = fetcher.getMockImplementation()!;
+    fetcher.mockImplementation(async (url, init) => /\/utterances\/[^/]+$/.test(url)
+      ? Response.json({ utteranceId: url.split("/").at(-1), status: "failed", errorCode: "transcription_timeout", assistantMessageId: null, assistantStatus: null })
+      : standard(url, init));
+    await render({ controls: true }); await connect(false);
+    await act(async () => voice.submitRecording(new Blob(["Original speech"]))); await flush();
+    expect(voice.canRetryOriginal).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(120001); });
+    expect(voice.canRetryOriginal).toBe(false);
+    await act(async () => voice.retry()); await flush();
+    expect(utterancePosts()).toHaveLength(1);
+  });
+
+  it("does not replay recognition after a linked Chat Turn has definitively failed", async () => {
+    const standard = fetcher.getMockImplementation()!;
+    fetcher.mockImplementation(async (url, init) => {
+      const response = await standard(url, init);
+      if (!/\/utterances\/[^/]+$/.test(url)) return response;
+      const state = await response.json();
+      return Response.json({ ...state, status: "failed", assistantStatus: "failed", assistantMessageId: "reply", assistant: { ...state.assistant, status: "failed" }, errorCode: "chat_failed" });
+    });
+    await render({ controls: true }); await connect(false);
+    await act(async () => voice.submitRecording(new Blob(["Recognized speech"]))); await flush();
+    expect(voice.phase).toBe("error"); expect(voice.canRetryOriginal).toBe(false);
+    expect(voice.notice).toContain("Regenerate its reply in chat");
+    await act(async () => voice.retry()); await flush();
+    expect(utterancePosts()).toHaveLength(1); expect(Player.instances).toHaveLength(0);
+  });
+
   it("keeps nonzero low-level microphone speech past five seconds and sends the visible current sentence once", async () => {
     await render({ controls: true }); await connect(); level = .01;
     await act(async () => { await vi.advanceTimersByTimeAsync(6100); });

@@ -21,7 +21,7 @@ function voiceInput(overrides: Partial<VoiceInputController> = {}): VoiceInputCo
 
 function voiceCall(overrides: Partial<VoiceCallController> = {}): VoiceCallController {
   return {
-    phase: "listening", available: true, active: true, canRetryOriginal: false, balance: 10, quote: null, otherCallSessionId: null, notice: null, microphoneActive: false, microphonePaused: false,
+    phase: "listening", available: true, active: true, canRetryOriginal: false, canRetryRecognition: false, balance: 10, quote: null, otherCallSessionId: null, notice: null, microphoneActive: false, microphonePaused: false,
     call: { id: "11111111-1111-4111-8111-111111111111", sessionId: "session", characterId: "character", status: "active", language: "en", leaseToken: "owned-lease", leaseExpiresAt: "2026-10-02T12:00:15.000Z", deadlineAt: "2026-10-02T12:03:00.000Z", startedAt: "2026-10-02T12:00:00.000Z", endedAt: null, connectedMs: 0, maxCostDreamcoins: 2, costDreamcoins: 0, voiceDurationMs: 0, endReason: null },
     prepare: vi.fn(async () => undefined), connect: vi.fn(async () => undefined), end: vi.fn(async () => undefined), interrupt: vi.fn(async () => undefined),
     toggleMute: vi.fn(async () => undefined), refresh: vi.fn(async () => undefined), cancelQuote: vi.fn(), resume: vi.fn(async () => undefined), submitRecording: vi.fn(), retry: vi.fn(),

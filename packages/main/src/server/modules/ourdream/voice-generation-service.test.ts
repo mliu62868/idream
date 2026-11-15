@@ -86,6 +86,31 @@ afterAll(async () => {
 });
 
 describe("voice generation service contract", () => {
+  it.each([true, false])("reports retryable provider rejection as unavailable without charging (retryable=%s)", async (retryable) => {
+    const userId = `${P}provider-rejection-${retryable}-user`;
+    const messageId = `${P}provider-rejection-${retryable}-message`;
+    await createUser({ id: userId }); await grantCoins(userId, 10, "seed"); await grantVoice(userId);
+    const body = await voiceReplyBody(userId, { characterId: CHAR, messageId, text: "A saved reply for voice retry." });
+    const providerCall = vi.spyOn(providers.voice.clip, "synthesize").mockResolvedValueOnce({
+      ok: false, error: { code: "voice_provider_rejected", message: "Voice synthesis queue is full", retryable },
+    });
+    try {
+      const response = await api("POST", "generation/voice", { userId, ageGate: true, body });
+      expectError(response, retryable ? 503 : 500, retryable ? "unavailable" : "internal");
+      expect(await dreamcoinBalance(userId)).toBe(10);
+      expect(await prisma.voiceUsageFact.count({ where: { userId } })).toBe(0);
+      expect(await prisma.mediaAsset.count({ where: { ownerId: userId, type: "voice" } })).toBe(0);
+      const request = await prisma.voiceClipRequest.findUniqueOrThrow({ where: { userId_messageId_replyAttempt: { userId, messageId, replyAttempt: 1 } } });
+      expect(request.status).toBe("failed");
+    } finally { providerCall.mockRestore(); }
+    if (retryable) {
+      expectOk(await api("POST", "generation/voice", { userId, ageGate: true, body }), 201);
+      expect(await dreamcoinBalance(userId)).toBe(8);
+      expect(await prisma.voiceUsageFact.count({ where: { userId } })).toBe(1);
+      expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(1);
+    }
+  });
+
   it.each(["activate", "reset"] as const)("freezes one coherent voice identity when %s races the permission read", async (transition) => {
     const userId = `${P}snapshot-${transition}-user`;
     const messageId = `${P}snapshot-${transition}-message`;
@@ -361,7 +386,7 @@ describe("voice generation service contract", () => {
         body,
       });
 
-      expect(failed.status).toBe(500);
+      expectError(failed, 503, "unavailable");
       expectOk(succeeded, 201);
       expect(providerCalls.map((call) => call.attemptNo)).toEqual([1, 2]);
       expect(new Set(providerCalls.map((call) => call.idempotencyKey)).size).toBe(1);
@@ -584,7 +609,7 @@ describe("voice generation service contract", () => {
         ageGate: true,
         body,
       });
-      expect(failed.status).toBe(500);
+      expectError(failed, 503, "unavailable");
       firstProviderCall.mockRestore();
 
       providers.voice = {

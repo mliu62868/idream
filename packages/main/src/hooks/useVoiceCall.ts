@@ -12,6 +12,7 @@ const FORMATS = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/mp4"]
 const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 // Mirrors the server Call lease. Every successful control command renews it.
 const LEASE_MS = 15_000;
+const RETRYABLE_RECOGNITION_ERRORS = new Set(["queue_full", "queue_timeout", "user_busy", "rate_limited", "state_capacity", "transcription_timeout", "transcription_failed", "asr_result_expired"]);
 // A network failure, an unreadable body or a 5xx/429 says nothing about the
 // Call itself; any other HTTP status is the server's definite answer.
 const transient = (error: unknown) => {
@@ -44,12 +45,23 @@ export function useVoiceCall(options: Options) {
   const interruptPending = useRef<Promise<void> | null>(null);
   const vad = useRef<ReturnType<typeof setInterval> | null>(null);
   const controller = useRef<AbortController | null>(null);
-  const retryRecording = useRef<{ id: string; expiresAt: number } | null>(null);
+  const retryRecording = useRef<{ id: string; expiresAt: number; blob?: Blob; recognitionFailed?: boolean } | null>(null);
+  const retryExpiry = useRef<ReturnType<typeof setTimeout> | null>(null);
   const leaseRenewedAt = useRef(0);
   const recordingMode = useRef(false);
   const microphoneClip = useRef<{ send: () => void; discard?: () => void } | null>(null);
   const isListening = () => liveCall.current?.status === "active";
   const setView = (next: Phase) => { phaseRef.current = next; setPhase(next); };
+  function retainRecording(value: typeof retryRecording.current) {
+    if (retryExpiry.current) clearTimeout(retryExpiry.current);
+    retryExpiry.current = null;
+    retryRecording.current = value;
+    if (value) retryExpiry.current = setTimeout(() => {
+      if (retryRecording.current !== value) return;
+      retryRecording.current = null; retryExpiry.current = null;
+      if (phaseRef.current === "error") setNotice("This recording expired. Speak again or end the call.");
+    }, Math.max(0, value.expiresAt - Date.now()));
+  }
   const applyCall = (value: unknown) => {
     const parsed = voiceCallSchema.parse(value);
     if (!parsed.leaseToken && liveCall.current?.id === parsed.id) parsed.leaseToken = liveCall.current.leaseToken;
@@ -121,7 +133,7 @@ export function useVoiceCall(options: Options) {
     } catch (error) { if (epoch === scopeEpoch.current) { setNotice(error instanceof Error ? error.message : "Call quote unavailable"); setView("error"); } }
   }
   // existingId re-attaches to an already submitted recording (retry, resume).
-  async function processRecording(blob: Blob | null, existingId?: string) {
+  async function processRecording(blob: Blob | null, existingId?: string, retryRecognition = false): Promise<void> {
     const current = liveCall.current;
     const epoch = scopeEpoch.current;
     if (!current || current.status !== "active") return;
@@ -132,7 +144,8 @@ export function useVoiceCall(options: Options) {
     const id = existingId ?? crypto.randomUUID();
     controller.current?.abort(); controller.current = new AbortController();
     const signal = controller.current.signal;
-    retryRecording.current = { id, expiresAt: Date.now() + 120_000 };
+    const retained = retryRecording.current?.id === id ? retryRecording.current : null;
+    retainRecording({ id, expiresAt: retained?.expiresAt ?? Date.now() + 120_000, blob: blob ?? retained?.blob });
     setView("thinking"); setNotice("Recognizing your words, then preparing a reply…");
     try {
       let state;
@@ -141,16 +154,33 @@ export function useVoiceCall(options: Options) {
         try { state = await request(`/${current.id}/utterances/${id}`, { method: "POST", body: form, signal }); }
         catch (error) {
           if (!alive() || signal.aborted) throw error;
-          if (!transient(error)) { retryRecording.current = null; throw error; }
+          if (!transient(error)) { retainRecording(null); throw error; }
           state = await request(`/${current.id}/utterances/${id}`, { signal });
         }
       } else state = await request(`/${current.id}/utterances/${id}`, { signal });
       while (alive() && Date.now() < Date.parse(current.deadlineAt)) {
+        if (state.status === "failed" && state.errorCode === "no_speech") throw new Error("no_speech");
+        // Only Main's definitive failed receipt, with no linked Turn, permits
+        // explicit re-recognition. Ambiguous uploads always keep their old ID.
+        if (state.status === "failed" && state.utteranceId === id && state.assistantMessageId === null
+          && state.assistantStatus === null && !state.userMessage && !state.assistant) {
+          const saved = retryRecording.current;
+          if (saved?.blob && saved.expiresAt > Date.now() && RETRYABLE_RECOGNITION_ERRORS.has(state.errorCode)) {
+            if (retryRecognition) return await processRecording(saved.blob);
+            saved.recognitionFailed = true;
+            throw new Error("Speech recognition is busy. Retry this saved recording in a moment.");
+          }
+          retainRecording(null);
+          throw new Error(state.errorCode === "no_speech" ? "no_speech" : "This recording could not be recognized. Speak again or send a new recording.");
+        }
         if (state.userMessage && state.assistant) {
           latest.current.onTurn(parseChatSendResponse({ ok: true, data: state }));
           setNotice("Heard you. Your Character is writing a reply…");
         }
-        if (["failed", "cancelled"].includes(state.status) || ["failed", "blocked", "cancelled"].includes(state.assistantStatus)) throw new Error(state.errorCode ?? "This spoken turn stopped. Try another sentence.");
+        if (["failed", "cancelled"].includes(state.status) || ["failed", "blocked", "cancelled"].includes(state.assistantStatus)) {
+          retainRecording(null);
+          throw new Error("This spoken turn stopped. Regenerate its reply in chat or speak again.");
+        }
         if (state.assistantStatus === "sent") break;
         await pause(600);
         if (!alive()) return;
@@ -181,13 +211,13 @@ export function useVoiceCall(options: Options) {
       await player.play();
       await finished;
       if (!alive()) return;
-      retryRecording.current = null;
+      retainRecording(null);
       stopPlayback(); setView("listening"); setNotice(readyNotice());
     } catch (error) {
       if (!alive() || signal.aborted) return;
       stopPlayback();
       if (error instanceof Error && error.message === "no_speech") {
-        retryRecording.current = null; setView("listening");
+        retainRecording(null); setView("listening");
         setNotice("No speech was recognized. Speak again or send another recording.");
       } else {
         releaseCapture(); setView("error"); setNotice(error instanceof Error ? error.message : "Call interrupted. Check the original turn.");
@@ -197,7 +227,7 @@ export function useVoiceCall(options: Options) {
   function interrupt(): Promise<void> {
     if (interruptPending.current) return interruptPending.current;
     const epoch = scopeEpoch.current;
-    ++operationEpoch.current; controller.current?.abort(); retryRecording.current = null; stopPlayback();
+    ++operationEpoch.current; controller.current?.abort(); retainRecording(null); stopPlayback();
     interruptPending.current = command("interrupt").then(result => {
       if (result) { setView("listening"); setNotice(readyNotice()); }
     }).catch(error => {
@@ -333,7 +363,7 @@ export function useVoiceCall(options: Options) {
   }
   async function end() {
     const epoch = scopeEpoch.current;
-    ++operationEpoch.current; controller.current?.abort(); retryRecording.current = null; releaseCapture(); stopPlayback();
+    ++operationEpoch.current; controller.current?.abort(); retainRecording(null); releaseCapture(); stopPlayback();
     try { const result = await command("end"); if (epoch === scopeEpoch.current) { setView(result?.status === "ended" ? "ended" : liveCall.current ? "disconnected" : "idle"); setNotice(null); } }
     catch (error) { if (epoch === scopeEpoch.current) { setView("disconnected"); setNotice(error instanceof Error ? error.message : "End could not be confirmed. Check the original call."); } }
   }
@@ -360,7 +390,7 @@ export function useVoiceCall(options: Options) {
   }
   useEffect(() => {
     const epoch = ++scopeEpoch.current;
-    liveCall.current = null; intent.current = null; retryRecording.current = null; phaseRef.current = "idle";
+    liveCall.current = null; intent.current = null; retainRecording(null); phaseRef.current = "idle";
     // Resource ownership changes immediately; publish its view after cleanup
     // and before the new server capability response can be applied.
     queueMicrotask(() => {
@@ -368,7 +398,7 @@ export function useVoiceCall(options: Options) {
       setQuote(null); setCall(null); setOtherCallSessionId(null); setView("idle"); void refresh();
     });
     return () => {
-      scopeEpoch.current += 1; operationEpoch.current += 1; controller.current?.abort(); releaseCapture(); stopPlayback();
+      scopeEpoch.current += 1; operationEpoch.current += 1; controller.current?.abort(); retainRecording(null); releaseCapture(); stopPlayback();
     };
     // The call's resources belong to one authenticated conversation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -406,13 +436,14 @@ export function useVoiceCall(options: Options) {
   }, []);
   return { phase, call, quote, available, balance, otherCallSessionId, notice, microphoneActive, microphonePaused,
     canRetryOriginal: Boolean(retryRecording.current && retryRecording.current.expiresAt > Date.now()),
+    canRetryRecognition: Boolean(retryRecording.current?.recognitionFailed && retryRecording.current.blob && retryRecording.current.expiresAt > Date.now()),
     prepare, connect, end, interrupt, toggleMute, refresh,
     finishSentence: () => { if (latest.current.ownerScope === options.ownerScope && latest.current.sessionPath === options.sessionPath && liveCall.current?.id === call?.id) microphoneClip.current?.send(); },
     discardSentence: () => { if (latest.current.ownerScope === options.ownerScope && latest.current.sessionPath === options.sessionPath && liveCall.current?.id === call?.id) microphoneClip.current?.discard?.(); },
     cancelQuote: () => { ++operationEpoch.current; setQuote(null); intent.current = null; setView("idle"); },
     resume: (useMicrophone = true) => connect(useMicrophone, true),
     submitRecording: (blob: Blob) => { if (blob.size <= 8 * 1024 * 1024) void processRecording(blob); else setNotice("Keep recordings below 8 MiB and one minute."); },
-    retry: () => { const pending = retryRecording.current; if (pending && pending.expiresAt > Date.now()) void processRecording(null, pending.id); else setNotice("This recording expired. Speak again or end the call."); },
+    retry: () => { const pending = retryRecording.current; if (pending && pending.expiresAt > Date.now()) void processRecording(null, pending.id, true); else setNotice("This recording expired. Speak again or end the call."); },
     active: Boolean(call && call.status !== "ended"),
   };
 }
