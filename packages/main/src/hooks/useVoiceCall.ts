@@ -248,11 +248,12 @@ export function useVoiceCall(options: Options) {
     setMicrophoneActive(true);
     const samples = new Float32Array(analyser.fftSize);
     let chunks: Blob[] = [], speechAt = 0, lastSpeechAt = 0, startedAt = Date.now(), bytes = 0;
+    let confirmedSpeech = false;
     let submit = false, pauseAtLimit = false;
     const begin = () => {
       if (!ownsCapture()) return;
       microphoneClip.current = null; setMicrophonePaused(false);
-      chunks = []; bytes = 0; speechAt = 0; lastSpeechAt = 0; startedAt = Date.now(); submit = false; pauseAtLimit = false;
+      chunks = []; bytes = 0; speechAt = 0; lastSpeechAt = 0; confirmedSpeech = false; startedAt = Date.now(); submit = false; pauseAtLimit = false;
       const current = new MediaRecorder(captured, { mimeType }); recorder.current = current;
       current.ondataavailable = event => { if (event.data.size) { chunks.push(event.data); bytes += event.data.size; } };
       current.onerror = () => { if (recorder.current !== current || !ownsCapture()) return; releaseCapture(); setView("error"); setNotice("Microphone recording was interrupted. Resume or use a recording."); };
@@ -292,10 +293,16 @@ export function useVoiceCall(options: Options) {
       const level = Math.sqrt(samples.reduce((sum, sample) => sum + sample * sample, 0) / samples.length);
       const now = Date.now();
       if (level > 0.018) {
-        if (!speechAt) { speechAt = now; if (["speaking", "thinking"].includes(phaseRef.current)) void interrupt(); }
+        if (!speechAt) speechAt = now;
         lastSpeechAt = now;
-      }
-      if (speechAt && now - speechAt >= 200 && now - lastSpeechAt > 900) {
+        // A single loud sample can be a click. Confirm sustained speech before
+        // cancelling a reply or sending a recording; silence is not voice time.
+        if (!confirmedSpeech && now - speechAt >= 200) {
+          confirmedSpeech = true;
+          if (["speaking", "thinking"].includes(phaseRef.current)) void interrupt();
+        }
+      } else if (!confirmedSpeech) speechAt = 0;
+      if (confirmedSpeech && now - lastSpeechAt > 900) {
         submit = true; current.stop();
       } else if (now - startedAt > 25_000) { pauseAtLimit = true; current.stop(); }
     }, 80);

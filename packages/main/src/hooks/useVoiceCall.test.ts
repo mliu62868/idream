@@ -214,6 +214,26 @@ describe("mounted Call microphone and playback ownership", () => {
     expect(track.stop).toHaveBeenCalledOnce(); expect(Recorder.instances).toHaveLength(0);
     expect(fetcher.mock.calls.filter(([url, init]) => url.endsWith("/voice-call") && init?.method === "POST")).toHaveLength(0);
   });
+  it("does not submit a brief volume spike as speech", async () => {
+    await render(); await connect();
+    level = .04; await act(async () => { await vi.advanceTimersByTimeAsync(80); });
+    level = 0; await act(async () => { await vi.advanceTimersByTimeAsync(1200); }); await flush();
+    expect(utterancePosts()).toHaveLength(0);
+    expect(voice.phase).toBe("listening");
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/interrupt"))).toHaveLength(0);
+  });
+  it("requires sustained microphone speech before interrupting an active reply", async () => {
+    await render(); await connect();
+    await act(async () => voice.submitRecording(new Blob(["English recording"]))); await flush();
+    expect(voice.phase).toBe("speaking");
+    level = .04; await act(async () => { await vi.advanceTimersByTimeAsync(80); });
+    level = 0; await act(async () => { await vi.advanceTimersByTimeAsync(1200); }); await flush();
+    expect(voice.phase).toBe("speaking"); expect(Player.instances[0].pause).not.toHaveBeenCalled();
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/interrupt"))).toHaveLength(0);
+    level = .04; await act(async () => { await vi.advanceTimersByTimeAsync(320); }); await flush();
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/interrupt"))).toHaveLength(1);
+    expect(Player.instances[0].pause).toHaveBeenCalledOnce();
+  });
   it("records a sentence through Recorder events, then automatically speaks the canonical reply", async () => {
     await render(); await connect(); expect(beforeConnect).toHaveBeenCalledOnce();
     level = .04; await act(async () => { await vi.advanceTimersByTimeAsync(320); });
