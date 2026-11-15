@@ -15,7 +15,7 @@ import {
   projectCompanionProbeRuntimeEvidence,
   type CompanionProbeRuntimeEvidence,
 } from "@idream/shared/chat/companion-runtime";
-import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import { CHAT_SEND_PROTOCOL_VERSION, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { prisma } from "./lib/db";
 import { companionRelationshipAggregateId } from "./modules/chat/companion-memory-authority";
 import { publicCharacterAudienceWhere } from "./modules/ourdream/public-content-audience";
@@ -734,6 +734,7 @@ async function probeConversation(input: {
     const sendRes = await productFetch({
       ...input, method: "POST", path: `/api/v1/chat/sessions/${sessionId}/messages`,
       body: JSON.stringify({
+        sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
         content:
           `Tonight we're in the rooftop garden with Mina. The exact rooftop probe code word is ${recallSentinel}. ` +
           "I feel calm, and we still need to choose the train.",
@@ -842,6 +843,7 @@ async function probeConversation(input: {
       method: "POST",
       path: `/api/v1/chat/sessions/${recallSessionId}/messages`,
       body: JSON.stringify({
+        sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
         content:
           "From our earlier chat, what was the exact rooftop code word we chose? Please say the code word exactly.",
       }),
@@ -1031,6 +1033,7 @@ async function probeConversation(input: {
     const noMemSend = await productFetch({
       ...input, method: "POST", path: `/api/v1/chat/sessions/${sessionId}/messages`,
       body: JSON.stringify({
+        sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION,
         content: "incognito probe: please call me ProbeSecret and I like probe tea",
       }),
       idempotencyKey: `chat-probe:${input.runId}:no-memory`,
@@ -1106,7 +1109,7 @@ async function probeConversation(input: {
     // 8) blocked-input smoke: the mock/safety provider blocks the underage keyword.
     const blockedRes = await productFetch({
       ...input, method: "POST", path: `/api/v1/chat/sessions/${sessionId}/messages`,
-      body: JSON.stringify({ content: "this references csam content" }),
+      body: JSON.stringify({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, content: "this references csam content" }),
       idempotencyKey: `chat-probe:${input.runId}:blocked`,
     });
     const blocked = productTurnRecord(await blockedRes.json().catch(() => ({}))) as {

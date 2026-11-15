@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { compileCharacterSoul, COMPANION_PRODUCT_PROMPT_VERSION } from "@idream/shared";
 import { BFF_HEADER } from "@idream/shared/bff";
+import { CHAT_SEND_PROTOCOL_VERSION } from "@idream/shared/contracts";
 
 const db = vi.hoisted(() => ({
   findUser: vi.fn(),
@@ -162,6 +163,7 @@ function installFailFastProbeFetch(
       return json({ id: "session-probe", status: "archived" });
     }
     if (/^\/api\/v1\/chat\/sessions\/(session-probe|session-recall)\/messages$/u.test(url.pathname) && method === "POST") {
+      expect(JSON.parse(String(init?.body)).sendProtocolVersion).toBe(CHAT_SEND_PROTOCOL_VERSION);
       messagePosts += 1;
       const normal = messagePosts === 1;
       if (normal) {

@@ -533,7 +533,9 @@ async function executeMainTool(
         callId: call.callId,
         name: call.name,
         outcome: "failed",
-        ...(response.ok && !lookup && value.status === "failed" && typeof value.attachmentId === "string" && value.attachmentId.trim()
+        // Main returns its durable rejected-effect ACK as HTTP 409 without a
+        // status field. A generic conflict or lookup proves no attachment.
+        ...((response.ok || response.status === 409) && !lookup && value.accepted === false && typeof value.attachmentId === "string" && value.attachmentId.trim()
           ? { attachmentId: value.attachmentId } : {}),
         error: {
           code: typeof error?.code === "string"

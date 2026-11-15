@@ -916,6 +916,11 @@ describe("AgentRun account-erasure drain", () => {
 
   it.each([
     { name: "generate_image_async", status: 200, body: { accepted: false, status: "failed", attachmentId: "real-failed", error: "rejected" }, outcome: "failed", requests: 1, attachmentId: "real-failed" },
+    { name: "generate_image_async", status: 200, body: { accepted: false, duplicate: false, attachmentId: "main-failed", error: { code: "conflict", message: "Character identity is not qualified", retryable: false } }, outcome: "failed", requests: 1, attachmentId: "main-failed" },
+    { name: "generate_image_async", status: 409, body: { accepted: false, duplicate: false, attachmentId: "rejected-attachment", error: { code: "conflict", message: "Character identity is not qualified", retryable: false } }, outcome: "failed", requests: 1, attachmentId: "rejected-attachment" },
+    { name: "generate_image_async", status: 409, body: { error: "conflict", message: "Wrong attempt", attachmentId: "untrusted-conflict-id" }, outcome: "failed", requests: 1 },
+    { name: "generate_image_async", status: 200, body: { accepted: false, duplicate: true, attachmentId: "replayed-failure", error: { code: "conflict", message: "The image request failed", retryable: true } }, outcome: "failed", requests: 1, attachmentId: "replayed-failure" },
+    { name: "generate_image_async", status: 200, body: { status: "failed", attachmentId: "unconfirmed-id", error: "rejected" }, outcome: "failed", requests: 1 },
     { name: "generate_image_async", status: 400, body: { accepted: false, status: "failed", attachmentId: "untrusted-http-id", error: "rejected" }, outcome: "failed", requests: 1 },
     { name: "search_character_media", status: 200, body: { accepted: true, status: "no_match", matches: [] }, outcome: "succeeded", requests: 1 },
     { name: "search_character_media", status: 200, body: { accepted: true, status: "no_match", matches: [], attachmentId: "fake" }, outcome: "failed", requests: 2 },
