@@ -68,13 +68,17 @@ provider 的工具名分片先累计为完整当前名称，再交给 Pi；参�
 
 非成功 HTTP 响应的正文取消只负责释放资源，不能使原 HTTP 错误等待一个永不收敛的 cleanup promise。执行截止时间校验留在执行与接纳边界；账号擦除读取所有者时不以历史执行证据完整为前提。
 
-陪伴记忆只从 Main 已提交产品 Turn 异步投影。Main outbox 使用至少一次投递；Chat 在独立候选 workspace 中幂等 prepare，再以单调 authority version 原子 promote。附件已回答的空正文 Turn 保留原用户文字，并由 Main 核验后标记 `answeredByAttachment`；不伪造 assistant 台词，也不删除用户消息。该标记只允许用于 user 记录，其他记录继续遵循既有顺序与完整性校验。prepare/promote 不持有 relationship-wide Agent 执行锁，也不取消已经运行的 Turn。普通投影延迟不阻塞新 Turn；破坏性修订期间，由 Main 把受影响的新 Agent attempt 固定为 private execution，直到重建切换完成。基于旧 Main 权威快照返回的终态候选必须被 Main CAS 拒绝。
+陪伴记忆只从 Main 已提交产品 Turn 异步投影。首次接纳终态与记忆投影意图在同一事务写入，精确重放只返回原提交回执，原 outbox 继续负责投影投递和重试。Main outbox 使用至少一次投递；Chat 在独立候选 workspace 中幂等 prepare，再以单调 authority version 原子 promote。附件已回答的空正文 Turn 保留原用户文字，并由 Main 核验后标记 `answeredByAttachment`；不伪造 assistant 台词，也不删除用户消息。该标记只允许用于 user 记录，其他记录继续遵循既有顺序与完整性校验。prepare/promote 不持有 relationship-wide Agent 执行锁，也不取消已经运行的 Turn。普通投影延迟不阻塞新 Turn；破坏性修订期间，由 Main 把受影响的新 Agent attempt 固定为 private execution，直到重建切换完成。基于旧 Main 权威快照返回的终态候选必须被 Main CAS 拒绝。
 
 2026-10-17 执行内核决策：`@earendil-works/pi-ai`、`pi-durable`、`chord` 固定 `1.3.0`，igrep CLI 固定 `0.1.161`。Pi 只负责单次 Agent 运行的 model/tool loop、公共事件和上下文压缩，igrep 通过 provider-neutral CLI 承接记忆与检索；删除 DSH/Cordis 服务注册、插件 bundle、peer 与 profile bootstrap。setup/check 核验精确包版本、公共 MemoryStorage API 与 CLI surface，不能替代 full readiness 或真实产品旅程资格。
 
 2026-11-01 更新：上述三个 Pi 包精确升级为 `1.4.0`，igrep CLI 固定 `0.1.164`。现行执行内核继续是 Pi；`deepseek-harness` 只保留为既有记忆 intake/session 与备份格式标识。文本快照使用 `IGREP_INDEX_LEVEL=none`，移除新版拒绝的 `IGREP_IMAGE_AUGMENTATION_MODE`，并显式关闭未配置的 image embedding 路由。setup/check 增加无模型的真实 CLI 搜索、JSONL ID、UTF-8 分页及版本变化拒绝核验，full readiness 仍另验真实 provider 和记忆生命周期。
 
 2026-11-14 更新：三个 Pi 包精确升级为 `1.5.2`，igrep 仍固定 `0.1.164`。宿主适配带标签的 `onReport`，保留原始异常分类；准入健康和完整认证共用已安装包的版本核验。工具调用 ID 在同一原生响应、后续响应和压缩后均不可复用，移交到独立正文的工具证据也占用原身份，冲突在派发前拒绝。执行 composition 升至 71（合并同时更新的既有媒体重发解释规则）：Main 确认附件后，媒体工具结果通过 Pi 原生 `control.terminate` 结束该工具轮；混合工具轮仍遵循 Pi 的全部结果终止条件。独立请求提取与正文继续使用剩余总预算，不再先生成随后丢弃的媒体台词。只读库存查询不触发图片回执语言和流程词校验。首 token 计时从请求意图落盘后、物理派发前开始，本地写入继续由 AgentRun 总 deadline 约束。Main 主动消息的无时区时间字段按 UTC 比较和推进，不继承数据库会话时区，避免开启后提前领取或推迟下一周期。
+
+2026-11-17 更新至 igrep `0.1.169`，Pi 稳定版为 `1.5.2`，执行 composition 升至 73。Chat 验证检索命中属于当前阶段的语料，向模型交付预览及可供原文回读的相对路径和行范围。请求预算和召回投影使用同一个 Pi 截止点，仅省略原始对白时提示使用会话召回。两个媒体阶段共享工具调用身份，产品工具等待启动事件成功写入再请求 Main。发布事件失败时，已派发的模型请求仍可提交无正文用量回执。
+
+同日复盘更新至 composition 74。可进入媒体独立正文的 attempt，其首阶段检索文件只包含保留的历史。当前原文和实时上下文通过首阶段的固定输入交付，旧文件续页仍可回读精确历史。模型请求意图、产品工具启动和终态候选遇到写入栅栏时，生产端口把拒绝传回执行层。
 
 本地与会话内检索使用公开 `search --strict`，不完整或模型阶段降级均按失败记录。新版 `search-api` 的证据包没有等价的机器可读 complete/degraded 状态，超时可能返回 exit 0 与文本 guidance，因此本宿主保留严格 CLI，不解析英文提示判定完整性。normal/private 都增加只读 `igrep_read_source`，仅接受本 attempt 授权 knowledge 目录内的相对路径，拒绝越界与符号链接；每页至多 6000 字节，续页要求原 fingerprint，保留原始 UTF-8 与源范围语义。该工具同样参与 Pi 的大结果来源 cursor 预算，不能读取跨关系记忆或替代 session_recall 的原文身份绑定。媒体正文使用自己的 `media-body.jsonl` 搜索快照，首阶段 `conversation.jsonl` 保持不变，已返回的版本续页在同一 attempt 的两个 loop 间仍可读取；attempt 结束统一清理。readiness 的本地检索用保留对话中的事实核验，不能要求 system-only 事实出现在检索语料中。
 
@@ -94,7 +98,7 @@ Main 投影独占长期记忆 ingest/maintain，普通 attempt 首轮前只执�
 
 普通投影只合并尚未尝试的 pending 事件，并在同一接纳事务通过 event 行 CAS 与领取互斥。尝试过的事件可能已经发布指针但丢失 ACK，后来的产品事实必须取得新 authority。记忆导出明文 spool 归入 Chat 用户擦除目录；每段短文件写入重查用户 tombstone，网络等待不持用户锁。启动在开放 HTTP 前清理崩溃遗留的新目录和已退役 OS 临时目录，账号擦除清理当前用户 spool，迟到 staging 不得重新创建它。
 
-固定 igrep `0.1.164` 的可检索 dialogue 是 `[时间, 正文]` 元组，角色与来源身份位于独立 `session/1` 文件。发布前同时核验两类文件的目录、逐行顺序、时间及 session 的角色、会话身份和原文与 Main 完整来源一致。Dialogue 的 v3 控制符传输严格解码，仅允许插入形状受限的绝对日期注释，全部原文字符须保持顺序；这不认证相对日期解释的语义正确性。维护前后来源及检索视图字节均不能变化。运行认证执行空来源及带换行、Unicode、控制符图形和相对日期的非空来源重建，空工作区或单行 ASCII 成功不能证明 ingest 格式兼容。
+igrep 的可检索 dialogue 是 `[时间, 正文]` 元组，角色与来源身份位于独立 `session/1` 文件。发布前同时核验两类文件的目录、逐行顺序、时间及 session 的角色、会话身份和原文与 Main 完整来源一致。Dialogue 的 v3 控制符传输严格解码，仅允许插入形状受限的绝对日期注释，全部原文字符须保持顺序；这不认证相对日期解释的语义正确性。维护前后来源及检索视图字节均不能变化。运行认证执行空来源及带换行、Unicode、控制符图形和相对日期的非空来源重建，空工作区或单行 ASCII 成功不能证明 ingest 格式兼容。
 
 新版 igrep 的检索视图绑定来源文件的物理 witness；复制出的 normal attempt 在 wake / recall 前执行官方零模型 `mem reproject`，仅在自己拥有的副本中恢复绑定，不维护 profile、不写 Main 历史。Private 不执行此步骤。预召回若返回检索不完整警告，必须失败，不能将缺失来源解释为记忆为空。完整运行认证同时验证复制后的自身原文召回及双向跨关系隔离。
 

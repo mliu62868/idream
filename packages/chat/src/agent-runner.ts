@@ -224,6 +224,8 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
     let sequence = 0;
     const port: CompanionRuntimePort = {
       emit: async (event) => {
+        const requiresWritableRun = event.type === "model_request_started"
+          || event.type === "tool_started" || event.type === "terminal_candidate";
         if (event.type === "model_request") modelRequests.push(event.request);
         try {
           if (event.type === "model_request") {
@@ -237,11 +239,12 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
           ]);
           const trace = agentRunTraceEvent(event);
           if (trace) await appendAgentRunEvent(turnId, attempt, trace.kind, trace.payload);
-          // Do not poison the ordered event queue when a stopped text/tool
-          // event arrives before its physical request's final usage receipt.
+          // Stopped projections can be skipped while already-started
+          // requests still report usage. New dispatch and commit need a
+          // successful write of the corresponding journal event.
           sequence = await projectStreamEvent(publish, snapshot.attempt, sequence, event);
         } catch (error) {
-          if (error instanceof ChatFenceError && event.type !== "model_request_started") return;
+          if (error instanceof ChatFenceError && !requiresWritableRun) return;
           throw error;
         }
         if (event.type === "started") runtimeInstance = event.instance;

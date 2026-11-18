@@ -1,4 +1,4 @@
-import { CHAT_SEND_PROTOCOL_VERSION } from "@idream/shared/contracts";
+import { CHAT_SEND_PROTOCOL_VERSION, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
 import type { ChatExecutionSnapshot, ChatTerminalCommit } from "@idream/shared/contracts";
@@ -99,6 +99,26 @@ describe("Main Scene terminal authority", () => {
     const first = await commitChatTerminal(selected);
     await prisma.chatTurn.update({ where: { id: snapshot.turnId }, data: { assistantContent: "" } });
     await expect(commitChatTerminal({ ...selected, content: "" })).resolves.toEqual({ ...first, duplicate: true });
+  });
+
+  it.each(["pending", "delivered"] as const)("replays an exact terminal ACK without scheduling another %s memory projection", async status => {
+    const f = await fixture();
+    const snapshot = await f.begin();
+    expect(snapshot.memoryEnabled).toBe(true);
+    const selected = terminal(snapshot);
+    const first = await commitChatTerminal(selected);
+    const aggregateId = `${f.userId}:${f.characterId}`;
+    const where = { aggregateId, eventType: MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1 };
+    const event = await prisma.mainOutboxEvent.findFirstOrThrow({ where });
+    const projection = await prisma.mainOutboxEvent.update({
+      where: { id: event.id },
+      data: { attempts: 1, status, ...(status === "delivered" ? { deliveredAt: new Date() } : {}) },
+    });
+
+    await expect(commitChatTerminal(selected)).resolves.toEqual({ ...first, duplicate: true });
+    await expect(prisma.mainOutboxEvent.findMany({ where })).resolves.toEqual([projection]);
+    await expect(prisma.companionMemoryAuthority.findUniqueOrThrow({ where: { aggregateId } }))
+      .resolves.toMatchObject({ version: BigInt(1) });
   });
 
   it.each([

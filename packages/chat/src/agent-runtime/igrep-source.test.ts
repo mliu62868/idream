@@ -25,6 +25,32 @@ function tool(run: (command: JsonCommandOptions) => Promise<unknown>, observe?: 
   }).find(item => item.name === "igrep_read_source")!;
 }
 
+function searchTool(run: (command: JsonCommandOptions) => Promise<unknown>) {
+  return createIgrepTools({ cli, workspace: "/relationship", knowledgePath: root, searchPath: join(root, path), mode: "private", run,
+    recall: async () => { throw new Error("local search must not access session recall"); },
+  }).find(item => item.name === "igrep_search")!;
+}
+
+it("returns a scoped source location and preview without host metadata", async () => {
+  const location = { path, start_line: 2, end_line: 3 };
+  const content = "L2: 海豚🙂";
+  const search = searchTool(async () => ({
+    results: [{ location: { ...location, root }, content, ref: join(root, path), score: 0.9, trace: "internal evidence" }],
+  }));
+  await expect(search.execute({ query: "What did we see?" }, new AbortController().signal))
+    .resolves.toEqual([{ location, content }]);
+});
+
+it("rejects hits from another stage even when the source is in the same attempt", async () => {
+  const otherPath = "media-body.jsonl";
+  await writeFile(join(root, otherPath), "Different stage's source.\n");
+  const search = searchTool(async () => ({
+    results: [{ location: { path: otherPath, root, start_line: 1, end_line: 1 }, content: "Different stage's source." }],
+  }));
+  await expect(search.execute({ query: "What did we see?" }, new AbortController().signal))
+    .rejects.toMatchObject({ reason: "source_unverifiable" });
+});
+
 it("reads only the authorized source and preserves versioned UTF-8 continuation arguments", async () => {
   const calls: JsonCommandOptions[] = [];
   const observations: unknown[] = [];

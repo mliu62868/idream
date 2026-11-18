@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type {
   CompanionEvent,
   CompanionInvocation,
@@ -319,6 +319,7 @@ it.each(["igrep_search", "session_recall"])("keeps one reply context after priva
       expect(request.messages.at(-1)).toMatchObject({ role: "user", content: expect.stringContaining(cue) });
       expect(request.messages.filter(message => message.content?.includes(cue))).toHaveLength(1);
       expect(request.messages.filter(message => message.role === "tool").every(message => !message.content.includes(cue))).toBe(true);
+      expect(JSON.stringify(request.messages)).not.toContain("Earlier dialogue is incomplete here");
     }
     expect(target.candidates).toHaveLength(1);
   } finally { await runtime.shutdown(); }
@@ -391,6 +392,93 @@ async function waitFor(check: () => boolean): Promise<void> {
 describe("Chat embedded companion runtime", () => {
   it("qualifies the synthetic paid bridge without requiring a product action", async () => {
     await expect(probeCompanionBridges(imageInvocation())).resolves.toBeUndefined();
+  });
+
+  it("retains the physical model receipt when streaming text publication fails", async () => {
+    const value = invocation();
+    const attempted = Promise.withResolvers<void>();
+    const encoder = new TextEncoder();
+    const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture",
+      fetch: async () => new Response(new ReadableStream<Uint8Array>({
+        start(stream) {
+          stream.enqueue(encoder.encode("data: " + JSON.stringify({ id: "provider-request-1", provider: "DeepSeek",
+            choices: [{ delta: { content: "This reply cannot be published." }, finish_reason: null }],
+          }) + "\n\n"));
+        },
+        async pull(stream) {
+          await attempted.promise;
+          const terminal = await response({}, "stop", { inputTokens: 4, outputTokens: 2 }).text();
+          stream.enqueue(encoder.encode(terminal));
+          stream.close();
+        },
+      })),
+    });
+    const runtime = await engine(adapter);
+    const connection = port();
+    const emit = connection.runtimePort.emit;
+    const publishError = new Error("stream temporarily unavailable");
+    connection.runtimePort.emit = async event => {
+      if (event.type === "text_delta") {
+        attempted.resolve();
+        throw publishError;
+      }
+      await emit(event);
+    };
+    try {
+      await expect(runtime.run(value, connection.runtimePort)).rejects.toBe(publishError);
+      expect(connection.candidates).toHaveLength(0);
+      expect(connection.events).toContainEqual(expect.objectContaining({
+        type: "model_request", request: expect.objectContaining({ usage: { inputTokens: 4, outputTokens: 2, reasoningTokens: 0 } }),
+      }));
+    } finally { await runtime.shutdown(); }
+  });
+
+  it("blocks a new product tool effect when the event journal rejects its start", async () => {
+    const value = imageInvocation();
+    const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture",
+      fetch: async () => response({ tool_calls: [{ index: 0, id: "no-dispatch", function: {
+        name: "generate_image_async", arguments: JSON.stringify({ prompt: "Mira at the observatory", subject: "companion" }),
+      } }] }, "tool_calls"),
+    });
+    const runtime = await engine(adapter);
+    const connection = port();
+    const signalEffect = vi.spyOn(connection.runtimePort, "executeTool");
+    const emit = connection.runtimePort.emit;
+    const journalError = new Error("journal could not store tool start");
+    connection.runtimePort.emit = async event => {
+      if (event.type === "tool_started") throw journalError;
+      await emit(event);
+    };
+    try {
+      await expect(runtime.run(value, connection.runtimePort)).rejects.toBe(journalError);
+      expect(signalEffect).not.toHaveBeenCalled();
+      expect(connection.candidates).toHaveLength(0);
+    } finally { await runtime.shutdown(); }
+  });
+
+  it("rejects a body tool call that reuses the media selection's identity", async () => {
+    const value = imageInvocation();
+    const independent = "Also tell me what we saw last time.";
+    value.preparedTurn.messages.at(-1)!.content = `Generate a new photo. ${independent}`;
+    const call = (name: string, args: object) => response({ tool_calls: [{ index: 0, id: "same-call", function: {
+      name, arguments: JSON.stringify(args),
+    } }] }, "tool_calls");
+    let requests = 0;
+    const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: async () => {
+      if (++requests === 1) return call("generate_image_async", { prompt: "Mira at the observatory", subject: "companion" });
+      if (requests === 2) return call("igrep_search", { query: "What did we see last time?" });
+      return response({ content: "We saw the moon." });
+    } }, async () => response({ content: JSON.stringify({ requests: [independent] }) }));
+    const search = vi.fn(async () => ({ results: [] }));
+    const runtime = await engine(adapter, undefined, { runIgrep: search });
+    const connection = port();
+    try {
+      await runtime.run(value, connection.runtimePort);
+      expect(search).not.toHaveBeenCalled();
+      expect(requests).toBe(2);
+      expect(connection.candidates).toHaveLength(0);
+      expect(connection.events.at(-1)).toMatchObject({ type: "failed", error: { code: "media_response_incomplete" } });
+    } finally { await runtime.shutdown(); }
   });
 
   it("ends native media selection once Main confirms the attachment instead of generating a discarded reply", async () => {
@@ -751,8 +839,9 @@ describe("Chat embedded companion runtime", () => {
 
   it("continues an original source cursor across the media body boundary while searching only body context", async () => {
     const value = imageInvocation();
+    const mediaCommand = "Generate a new photo of yourself.";
     const independent = "Also read the rest of my earlier note and tell me its final words.";
-    value.preparedTurn.messages.at(-1)!.content = `Generate a new photo of yourself. ${independent}`;
+    value.preparedTurn.messages.at(-1)!.content = `${mediaCommand} ${independent}`;
     value.preparedTurn.messages.splice(1, 0,
       { id: "history-note", sourceKind: "replay", role: "user", content: `Original long note. ${"x".repeat(6_400)} Final words: cedar lantern.` },
       { id: "history-ack", sourceKind: "replay", role: "assistant", content: "I have heard your note." });
@@ -800,7 +889,7 @@ describe("Chat embedded companion runtime", () => {
         searched.push(path);
         expect(path.endsWith("/media-body.jsonl")).toBe(true);
         expect(JSON.parse((await readFile(path, "utf8")).trim().split("\n").at(-1)!).content).toBe(independent);
-        return { results: [{ content: "Final words: cedar lantern.", location: { path: "media-body.jsonl" } }] };
+        return { results: [{ content: "Final words: cedar lantern.", location: { root: dirname(path), path: "media-body.jsonl", start_line: 1, end_line: 1 } }] };
       }
       expect(args[0]).toBe("read-source");
       const path = args.at(-1)!;
@@ -834,6 +923,8 @@ describe("Chat embedded companion runtime", () => {
         { path: "conversation.jsonl", offset: 6_000, expected: readCalls[0]!.fingerprint, fingerprint: readCalls[0]!.fingerprint },
       ]);
       expect(resumedContent).toBe(originalSource);
+      expect(resumedContent.includes(mediaCommand), "the history continuation reintroduced the current media command").toBe(false);
+      expect(requests.slice(2).some(request => JSON.stringify(request.messages).includes(mediaCommand))).toBe(false);
       expect(searched).toHaveLength(1);
     } finally { await runtime.shutdown(); }
   });

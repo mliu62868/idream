@@ -21,7 +21,7 @@ const igrepVerification = {
 };
 const successfulRuntimeEvidence = {
   instance: runtimeInstance,
-  resolveIgrepVersion: async () => "0.1.164",
+  resolveIgrepVersion: async () => "0.1.169",
   providerWarmup: async () => {}, memoryLifecycleProbe: async () => igrepVerification,
   bridgeProbe: async () => {}, retrievalProbe: async () => {}, workspaceRebuildProbe: async () => {},
 };
@@ -34,10 +34,10 @@ describe("fail-closed Pi companion readiness", () => {
     const readiness = await createReadinessProbe({
       config, ...successfulRuntimeEvidence,
       bridgeProbe: async invocation => { bridgeProfileDigest = invocation.expectedProfileDigest; },
-      resolveIgrepVersion: async cli => { observedEnvironment = cli.env; return "0.1.164"; },
+      resolveIgrepVersion: async cli => { observedEnvironment = cli.env; return "0.1.169"; },
     })();
     expect(readiness).toMatchObject({
-      ready: true, productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION, piVersion: "1.5.2", igrepVersion: "0.1.164",
+      ready: true, productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION, piVersion: "1.5.2", igrepVersion: "0.1.169",
       kernel: { storage: "memory", publicApi: true }, instance: runtimeInstance,
       provider: { name: "openai", baseUrl: "https://openrouter.ai/api/v1", model: "deepseek/test", resolved: true },
       bridges: { toolReachable: true, commitReachable: true, workspaceRebuildReachable: true }, verification: igrepVerification,

@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const PI_VERSION = "1.5.2";
-export const IGREP_VERSION = "0.1.164";
+export const IGREP_VERSION = "0.1.169";
 export const PI_PACKAGES = Object.freeze([
   "@earendil-works/pi-ai", "@earendil-works/pi-durable", "@earendil-works/chord",
 ]);

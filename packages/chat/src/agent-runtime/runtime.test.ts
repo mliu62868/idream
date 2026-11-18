@@ -6,7 +6,7 @@ import type { AgentRuntimeConfig } from "./config";
 
 const state = vi.hoisted(() => ({ config: undefined as AgentRuntimeConfig | undefined, verifyPiPackages: vi.fn() }));
 vi.mock("./config", async importOriginal => ({ ...await importOriginal<typeof import("./config")>(), loadAgentRuntimeConfig: () => state.config! }));
-vi.mock("./igrep", async importOriginal => ({ ...await importOriginal<typeof import("./igrep")>(), igrepVersion: async () => "0.1.164" }));
+vi.mock("./igrep", async importOriginal => ({ ...await importOriginal<typeof import("./igrep")>(), igrepVersion: async () => "0.1.169" }));
 vi.mock("./readiness", async importOriginal => ({ ...await importOriginal<typeof import("./readiness")>(), verifyPiPackages: state.verifyPiPackages }));
 
 let root: string;

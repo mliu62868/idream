@@ -1,6 +1,6 @@
 import type { Context } from '@earendil-works/chord/context';
 import type { Message } from '@earendil-works/pi-ai';
-import { AssistantEntry, ToolResultEntry, type Conversation, type Cursor, type EntryRecord } from '@earendil-works/pi-durable';
+import { AssistantEntry, ToolResultEntry, type ContextView, type Conversation, type Cursor, type EntryId, type EntryRecord } from '@earendil-works/pi-durable';
 
 import { igrepSearchResults, runJsonCommand, type IgrepCommand, type RunJsonCommand } from "./igrep";
 
@@ -53,7 +53,10 @@ function chunks(text: string, maxBytes: number) {
 }
 
 /** Sample at a committed request boundary; this attempt owns one fresh conversation. */
-export async function projectRecall(conversation: Conversation, context: Context, input: Authority, maxBytes = 2000) {
+export async function projectRecall(conversation: Conversation, context: Context, input: Authority, {
+  maxBytes = 2000,
+  request,
+}: { maxBytes?: number; request?: { view: ContextView; cutoff: EntryId } } = {}) {
   validIdentity(input.attemptId);
   if (conversation.id !== input.conversationId) throw new Error('conversation authority mismatch');
   if (!Number.isInteger(maxBytes) || maxBytes < 4 || maxBytes > 8000) throw new Error('invalid chunk size');
@@ -76,13 +79,14 @@ export async function projectRecall(conversation: Conversation, context: Context
   }
   const executionWitnesses = new Map<string, EntryRecord['id']>();
   const visibleExecutionIds = new Set<string>();
-  const view = await conversation.context(context);
+  const view = request?.view ?? await conversation.context(context);
   if (view.entries.length !== view.contributions.length) throw new Error('invalid contribution alignment');
   const visible = new Map(view.entries.map((entry, index) => [entry.id, view.contributions[index]!]));
   const entries: EntryRecord[] = [];
   let cursor: Cursor | undefined;
+  const query = { order: 'ascending', maxEntryId: request?.cutoff } as const;
   do {
-    const page = await conversation.entries({ order: 'ascending' }, 100, cursor, context);
+    const page = await conversation.entries(query, 100, cursor, context);
     entries.push(...page.items); cursor = page.next;
   } while (cursor);
   const records: Chunk[] = [];

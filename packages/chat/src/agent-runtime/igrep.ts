@@ -948,6 +948,11 @@ function objectRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function isSourcePath(path: unknown): path is string {
+  return typeof path === "string" && path.length > 0 && path.length <= 512 && !isAbsolute(path)
+    && !/[\\\x00-\x1f\x7f]/u.test(path) && path.split("/").every(part => part && part !== "." && part !== "..");
+}
+
 export async function igrepVersion(
   cli: IgrepCommand,
   options: { timeoutMs?: number; signal?: AbortSignal } = {},
@@ -1175,14 +1180,44 @@ export function createIgrepTools(options: {
     }
   };
   const queryParameters = { type: "object", properties: { query: { type: "string", minLength: 1, maxLength: 2000 } }, required: ["query"], additionalProperties: false };
+  const searchLimit = 8;
   const tools: IgrepTool[] = [{
     name: "igrep_search",
     description: "Search retained conversation and turn context. Read a hit's location.path and line range with igrep_read_source for exact original text or more context. For omitted dialogue, use session_recall. Query text only; paths and search policy are fixed by the host.",
     parameters: queryParameters,
     execute: (args, signal) => observed("search", async () => {
-      return igrepSearchResults(await run({ ...options.cli,
-        args: ["search", "--mode", "fast", "--json", "--strict", "--no-cache", "-m", "8", "--", query(args), options.searchPath ?? options.knowledgePath],
+      const hits = igrepSearchResults(await run({ ...options.cli,
+        args: ["search", "--mode", "fast", "--json", "--strict", "--no-cache", "-m", String(searchLimit), "--", query(args), options.searchPath ?? options.knowledgePath],
         acceptedExitCodes: [0, 1], timeoutMs: 30_000, signal }));
+      if (!hits.length) return [];
+      if (hits.length > searchLimit) throw new IgrepEvidenceError("invalid_envelope");
+      const root = await realpath(options.knowledgePath);
+      const expectedSource = options.searchPath && await realpath(options.searchPath);
+      const verifiedFiles = new Set<string>();
+      const results = [];
+      for (const raw of hits) {
+        signal.throwIfAborted();
+        const hit = objectRecord(raw);
+        const location = objectRecord(hit?.location);
+        const path = location?.path;
+        const start = location?.start_line;
+        const end = location?.end_line;
+        if (!location || (location.root !== root && location.root !== options.knowledgePath) || !isSourcePath(path)
+          || typeof start !== "number" || !Number.isSafeInteger(start) || start < 1
+          || typeof end !== "number" || !Number.isSafeInteger(end) || end < start
+          || typeof hit?.content !== "string" || !hit.content.trim() || !hit.content.isWellFormed()) {
+          throw new IgrepEvidenceError("source_unverifiable");
+        }
+        const source = join(root, path);
+        if (expectedSource && source !== expectedSource) throw new IgrepEvidenceError("source_unverifiable");
+        if (!verifiedFiles.has(source)) {
+          if (await realpath(source) !== source || !(await lstat(source)).isFile()) throw new IgrepEvidenceError("source_unverifiable");
+          verifiedFiles.add(source);
+        }
+        // Cite only locations the model can pass directly to igrep_read_source.
+        results.push({ location: { path, start_line: start, end_line: end }, content: hit.content });
+      }
+      return results;
     }),
   }, {
     name: "igrep_read_source",
@@ -1195,10 +1230,7 @@ export function createIgrepTools(options: {
     execute: (args, signal) => observed("search", async () => {
       signal.throwIfAborted();
       const path = args.path;
-      if (typeof path !== "string" || !path || path.length > 512 || isAbsolute(path)
-        || /[\\\x00-\x1f\x7f]/u.test(path) || path.split("/").some(part => !part || part === "." || part === "..")) {
-        throw new Error("invalid source path");
-      }
+      if (!isSourcePath(path)) throw new Error("invalid source path");
       const start = args.start_line ?? 1;
       const end = args.end_line;
       const offset = args.offset ?? 0;

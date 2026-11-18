@@ -158,7 +158,7 @@ leaves the Generation queues paused for the next controlled start.
 ## Chat Runtime
 
 Chat embeds Pi `1.5.2` (`pi-ai`, `pi-durable`, and `chord`) and calls the
-provider-neutral igrep `0.1.164` CLI. Install workspace dependencies, then verify
+provider-neutral igrep `0.1.169` CLI. Install workspace dependencies, then verify
 the pinned packages, public Pi API, and CLI behavior with no model calls:
 
 ```bash
@@ -168,7 +168,7 @@ bun run test:pi-gate
 ```
 
 The CLI must be installed at the exact release (`uv tool install --python 3.14
---upgrade igrep2==0.1.164`). Setup/check also run isolated file and JSONL searches,
+--upgrade igrep2==0.1.169`). Setup/check also run isolated file and JSONL searches,
 versioned UTF-8 source paging, and empty/stale-source exit checks. They do not
 replace full readiness with the configured providers.
 
@@ -180,7 +180,11 @@ session database or persistent inbox. Tools execute sequentially; model retries
 and background compaction are disabled.
 
 Admission health rechecks all three installed Pi package versions. Native tool
-call IDs stay unique throughout an attempt, including after compaction. Once
+call IDs stay unique throughout an attempt, including after compaction and in
+the independent media body. Product tools wait for the ordered start event
+before the first Main call. A write fence blocks new tool dispatch and terminal
+submission. If event publication fails, the runner still
+receives the content-free usage receipts of already dispatched requests. Once
 Main confirms a media attachment, its tool result can end the native round;
 the request extractor and any independent text loop still share the same step
 budget. This avoids generating a media acknowledgement that would be discarded.
@@ -208,10 +212,9 @@ IDs, preserving speaker identity and UTF-8 bytes. Exact ID reads return stored
 originals; query recall uses public igrep JSONL search in `ultra` mode. Summaries,
 system instructions, reasoning, and recall's own output cannot become original
 user evidence. Current Scene, preferences and the user request are reprojected
-from the immutable Turn at each provider request. When the same recall projection
-contains omitted originals, a context notice makes that gap explicit without
-exposing their text or forcing a retrieval. This includes Main history that Pi
-never received and therefore could not include in its summary.
+from the immutable Turn at each provider request. Context budgeting and archive
+projection use the same Pi request cutoff. A context notice flags omitted
+original dialogue, including Main history that was outside the Pi seed.
 
 Local and session searches use the public CLI's `--strict` contract: incomplete
 or degraded retrieval is a failure, not an empty or qualified hit. The newer
@@ -219,9 +222,12 @@ or degraded retrieval is a failure, not an empty or qualified hit. The newer
 completion flags, so this host retains the strict CLI. Source reads accept only
 relative paths inside the attempt's knowledge directory, return at most 6,000
 bytes, and bind continuation pages to the original fingerprint. Large read
-results also participate in Pi's source-cursor budgeting. The media reply stage
-gets its own immutable search file; earlier source continuations keep their
-original version until the attempt ends. Subprocesses use
+results also participate in Pi's source-cursor budgeting. Search exposes a
+preview and the relative source range after verifying the stage's corpus.
+For attempts that can split a media response, the first search file contains
+only retained history. The independent body gets its own search file, and
+earlier history continuations keep their original version until the attempt
+ends. Subprocesses use
 `IGREP_INDEX_LEVEL=none` for this text-only corpus and explicitly disable
 unconfigured image embedding routes.
 

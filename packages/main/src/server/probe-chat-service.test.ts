@@ -72,7 +72,7 @@ function completedRuntimeTrace() {
       id: "5dd87053-012f-4ca3-a4d7-5aeb89466d5b",
       startedAt: "2026-08-19T12:00:00.000Z",
     },
-    igrepVersion: "0.1.164",
+    igrepVersion: "0.1.169",
     piVersion: "1.5.2",
     contentDigest: "b".repeat(64),
     igrepObservations: {
@@ -349,7 +349,7 @@ describe("chat service Pi evidence", () => {
       model: "fixture-model",
       profileDigest: "a".repeat(64),
       runtimeInstanceId: "5dd87053-012f-4ca3-a4d7-5aeb89466d5b",
-      igrepVersion: "0.1.164",
+      igrepVersion: "0.1.169",
       piVersion: "1.5.2",
       requestId: "chatcmpl-probe",
       actualProvider: "local-openai",

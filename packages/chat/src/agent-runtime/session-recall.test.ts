@@ -69,7 +69,7 @@ try {
     return { nativeEntries: page.items.filter(item => AssistantEntry.is(item) || ToolResultEntry.is(item)).length, archivedChunks: projected.chunks.length };
   });
   await check('request-window-tool-cursors-read-intact-visible-results-without-exposing-current-dialogue', async () => {
-    const projected = await projectRecall(conversation, context, { ...authority, includeVisibleToolResults: true }, 16);
+    const projected = await projectRecall(conversation, context, { ...authority, includeVisibleToolResults: true }, { maxBytes: 16 });
     const chunks = projected.chunks.filter(item => item.toolName === 'inventory');
     assert(chunks.length > 1);
     assert(!projected.chunks.some(item => item.content.includes('Current visible answer')));
@@ -93,7 +93,7 @@ try {
     await conversation.waitForIdle(context);
     lastEntries = (await conversation.entries({ order: 'ascending' }, 100, undefined, context)).items;
     assert(lastEntries.some(item => item.kind === 'pi.compaction'));
-    finalProjection = await projectRecall(conversation, context, authority, 127);
+    finalProjection = await projectRecall(conversation, context, authority, { maxBytes: 127 });
     const body = finalProjection.chunks.map(item => item.content).join('');
     for (const forbidden of ['SYSTEM_MUST_NOT_APPEAR', 'PLUGIN_MUST_NOT_APPEAR', 'REASONING_MUST_NOT_APPEAR', 'SUMMARY_MUST_NOT_APPEAR', 'RECALL_RESULT_MUST_NOT_APPEAR', 'Current visible answer', 'ABORTED_OR_ERROR_MUST_NOT_APPEAR', 'Please inspect the synthetic inventory.']) assert(!body.includes(forbidden), forbidden);
     assert(body.includes('Attempt-local original before tool.\r\n'));
@@ -125,7 +125,7 @@ try {
     await conversation.commit(async tx => {
       for (let index = 0; index < 105; index++) await tx.appendEntry(conversation.id, { kind: 'qualification.bookkeeping', data: { index } });
     }, context);
-    const rebuilt = await projectRecall(conversation, context, authority, 127);
+    const rebuilt = await projectRecall(conversation, context, authority, { maxBytes: 127 });
     assert.deepEqual(rebuilt.chunks, finalProjection!.chunks);
     const chosen = rebuilt.chunks.slice(0, 8);
     assert.deepEqual(rebuilt.read(attemptId, chosen.map(item => item.id)), chosen);
@@ -135,7 +135,7 @@ try {
     assert.equal(rebuilt.read(attemptId, [chosen[0]!.id])[0]!.content, chosen[0]!.content);
   });
   await check('source-pages-retain-all-eight-large-search-hits-and-reconstruct-every-original-byte', async () => {
-    const projected = await projectRecall(conversation,context,authority,1024);
+    const projected = await projectRecall(conversation, context, authority, { maxBytes: 1024 });
     const chunks = projected.chunks.filter(item=>item.sourceId==='main:long-user');
     assert(chunks.length > 8);
     const found = await projected.query(attemptId,'long original',cli,async()=>({results:chunks.slice(0,8).map(item=>({ref:item.id}))}));

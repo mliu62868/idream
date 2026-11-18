@@ -7,7 +7,7 @@ import type { CompanionInvocation, PreparedTurnMessage } from "./contracts";
 import { COMPANION_COMPACTION_CONFIG } from "./composition";
 import { fitCompanionMessages, messageText, projectPiMessage, toPiMessage } from "./pi-context";
 import { ProviderError, type OpenAiCompatibleAdapter } from "./openai-adapter";
-import { projectRecall } from "./session-recall";
+import { projectRecall, type Chunk } from "./session-recall";
 import { estimateModelRequestInputTokens } from "./model-request-format";
 import { SEARCH_CHARACTER_MEDIA_TOOL, searchCharacterMediaArgsSchema } from "@idream/shared/chat/media-library";
 
@@ -22,6 +22,8 @@ export interface PiExecutionOptions {
   maxSteps: number;
   purpose?: "media_body";
   executionEvidence?: readonly PreparedTurnMessage[];
+  /** One identity space for both the media selection and independent body. */
+  toolCallIds?: Set<string>;
   tools(conversation: () => Conversation): readonly ToolRegistration[];
   assertContinuation(): void;
   onPreparedMediaLookup?(): void;
@@ -58,8 +60,10 @@ export async function executePiConversation(options: PiExecutionOptions): Promis
   let latest: AssistantMessage | undefined;
   let latestContext: readonly Message[] = [];
   const selectedMediaCalls = new Map<string, { callId: string; name: string; arguments: unknown }>();
-  const toolCallIds = new Set([...options.seed, ...(options.executionEvidence ?? [])].flatMap(message =>
-    message.role === "assistant" ? (message.tool_calls ?? []).map(call => call.id) : []));
+  const toolCallIds = options.toolCallIds ?? new Set<string>();
+  for (const message of [...options.seed, ...(options.executionEvidence ?? [])]) {
+    if (message.role === "assistant") for (const call of message.tool_calls ?? []) toolCallIds.add(call.id);
+  }
   let steps = 0;
   let streamed = false;
   const providerModels = createModels();
@@ -134,34 +138,46 @@ export async function executePiConversation(options: PiExecutionOptions): Promis
           const checkpoint = task?.state.status === "running" ? task.state.checkpoint as GenerationCheckpoint : undefined;
           if (!checkpoint || checkpoint.phase !== "request") throw new Error("generation request boundary is missing");
           const view = await conversation.context(context, { at: checkpoint.cutoff });
-          const sourceIds = new Map<string, string>();
+          const toolMessages = new Map<string, string>();
           const projected = view.entries.flatMap((entry, index) => view.contributions[index]!
-            .filter(message => message.role !== "system")
-            .map((message, messageIndex) => {
+            .flatMap((message, messageIndex) => {
+              if (message.role === "system") return [];
               const projected = projectPiMessage(entry, message, messageIndex, invocation);
-              if (projected.role === "tool") sourceIds.set(projected.id, entry.kind === "idream.execution"
-                ? `execution:${encodeURIComponent(projected.id)}` : entry.kind === "idream.replay"
-                  ? `main:${encodeURIComponent(projected.id)}` : `pi:${encodeURIComponent(entry.id)}/message:${messageIndex}`);
-              return projected;
+              if (projected.role === "tool") {
+                const sourceId = entry.kind === "idream.execution"
+                  ? `execution:${encodeURIComponent(projected.id)}` : entry.kind === "idream.replay"
+                  ? `main:${encodeURIComponent(projected.id)}` : `pi:${encodeURIComponent(entry.id)}/message:${messageIndex}`;
+                toolMessages.set(sourceId, projected.id);
+              }
+              return [projected];
             }));
           const archive = await projectRecall(conversation, context, {
             attemptId: invocation.attemptId, conversationId: conversation.id,
             assistant: { name: invocation.preparedTurn.characterName, characterId: invocation.characterId, sessionId: invocation.sessionId },
             seed: invocation.preparedTurn.messages, omitted: invocation.preparedTurn.omittedMessages ?? [], execution: options.executionEvidence,
             includeVisibleToolResults: true,
-          });
+          }, { request: { view, cutoff: checkpoint.cutoff } });
           // Main may omit originals before Pi can summarize them. Advertise that
           // gap from the same authority as the tool, without leaking a preview or
           // selecting a retrieval on the model's behalf.
-          const pinned: readonly PreparedTurnMessage[] = archive.chunks.length ? [...options.pinned, {
+          const omittedDialogue = archive.chunks.some(chunk => chunk.kind === "text" && chunk.role !== "toolResult");
+          const pinned: readonly PreparedTurnMessage[] = omittedDialogue ? [...options.pinned, {
             id: `archive-status:${invocation.attemptId}`, sourceKind: "plugin", role: "user",
             content: "Earlier dialogue is incomplete here: use session_recall to retrieve the omitted original messages. Summaries and repeated recent lines cannot establish the wording of an omitted passage. For an exact quotation, retrieve the original passage before quoting it.",
           }] : options.pinned;
+          const toolSources = new Map<string, Chunk[]>();
+          for (const chunk of archive.chunks) {
+            const messageId = toolMessages.get(chunk.sourceId);
+            if (!messageId) continue;
+            const parts = toolSources.get(messageId);
+            if (parts) parts.push(chunk);
+            else toolSources.set(messageId, [chunk]);
+          }
           const messages = fitCompanionMessages({ messages: projected, pinned, systemPrompt: options.systemPrompt,
             tools: getCurrentTools(request.messages), respondingCharacterId: invocation.characterId,
             maxInputTokens: invocation.preparedTurn.budget.maxInputTokens,
             afterRetrievalContext: options.afterRetrievalContext?.available() ? options.afterRetrievalContext.content : undefined,
-            toolSources: new Map([...sourceIds].map(([id, sourceId]) => [id, archive.chunks.filter(chunk => chunk.sourceId === sourceId)])),
+            toolSources,
           });
           latestContext = messages;
           return { messages };

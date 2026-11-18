@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentRunInput, AgentRunProposal, AgentRunRecoveryScan } from "./agent-run-store.js";
 import type { CompanionTerminalCandidate, CompanionToolResult } from "./agent-runtime/contracts.js";
-import { CompanionCapacityError } from "./agent-runtime/engine.js";
+import { CompanionCapacityError, type CompanionRuntimePort } from "./agent-runtime/engine.js";
 import { ChatFenceError } from "./fence.js";
 
 const store = vi.hoisted(() => ({
@@ -349,6 +349,32 @@ describe("AgentRun account-erasure drain", () => {
     expect(store.completeAgentRun).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
     expect(logs.error).not.toHaveBeenCalled();
+  });
+
+  it.each(["tool_started", "terminal_candidate"] as const)("rejects a fenced %s event at the runtime port", async type => {
+    const denial = new ChatFenceError({ scope: "relationship", userId: "user-1", characterId: "character-1" });
+    const received = Promise.withResolvers<unknown>();
+    runtime.runCompanion.mockImplementationOnce(async (invocation, port: CompanionRuntimePort) => {
+      const identity = { invocationId: invocation.invocationId, attemptId: invocation.attemptId,
+        sequence: 1, occurredAt: "2026-08-28T12:00:00.000Z" };
+      fence.assertNotFenced.mockRejectedValueOnce(denial);
+      try {
+        await port.emit(type === "tool_started"
+          ? { ...identity, type, callId: "call-1", name: "generate_image_async" }
+          : { ...identity, type, candidate: terminalCandidate(invocation.attemptId) });
+        received.resolve(null);
+      } catch (error) {
+        received.resolve(error);
+      }
+      throw denial;
+    });
+
+    await acceptAgentRun(agentRunInput());
+    const observed = await received.promise;
+    await cancelAgentRunsForUser("user-1");
+    expect(observed).toBe(denial);
+    expect(store.writeAgentRunProposal).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("treats a fence arriving during failure persistence as a completed cancellation", async () => {

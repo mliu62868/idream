@@ -878,15 +878,8 @@ export async function commitChatTerminal(input: ChatTerminalCommit) {
       && jsonEqual(current.scene, input.scene)
       && jsonEqual(current.terminalEvidence, input.terminalEvidence);
     if (!sameTerminal) throw Errors.conflict("Terminal commit lost the active attempt CAS");
-    if (input.status === "sent" && current.memoryEnabled) {
-      const session = await tx.recentChat.findUniqueOrThrow({
-        where: { sessionId: input.sessionId },
-        select: { userId: true, characterId: true },
-      });
-      // A duplicate ACK may follow a Chat crash after Main committed. The
-      // idempotent projection closes that window without rerunning the model.
-      await scheduleCompanionMemoryProjection(tx, session);
-    }
+    // The original commit atomically scheduled projection. Its outbox owns
+    // delivery and retry even if the terminal ACK was lost after commit.
     return { turn: current, duplicate: true };
   });
   return {
