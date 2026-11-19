@@ -120,10 +120,12 @@ export async function assertLibraryEntryAvailable(db: Db, entry: CharacterMediaL
   await assertMediaAssetCustomerPublishable(db, source);
 }
 
-export async function searchCharacterMediaLibrary(input: LibrarySearchInput): Promise<LibrarySearchCandidate[]> {
+export async function searchCharacterMediaLibrary(input: LibrarySearchInput, signal?: AbortSignal): Promise<LibrarySearchCandidate[]> {
+  signal?.throwIfAborted();
   const config = mediaLibraryModels();
   if (!config.embedding) throw Errors.unavailable("Character media search is not configured");
   const visual = await prisma.characterVisualProfile.findUnique({ where: { id: input.visualProfileId } });
+  signal?.throwIfAborted();
   if (!visual || visual.characterId !== input.characterId || visual.version !== input.visualProfileVersion ||
       !visual.immutableHash || visual.immutableHash !== characterVisualProfileSnapshotHash(visual)) return [];
   const requiredFacts = normalizedLibraryFacts(input.requiredFacts ?? []);
@@ -141,22 +143,25 @@ export async function searchCharacterMediaLibrary(input: LibrarySearchInput): Pr
         durationSeconds: { ...(input.minDurationSeconds === undefined ? {} : { gte: input.minDurationSeconds }), ...(input.maxDurationSeconds === undefined ? {} : { lte: input.maxDurationSeconds }) },
       }),
       sourceAsset: { is: { type: input.kind, deletedAt: null, safetyStatus: "passed", characterId: input.characterId } },
-  }, visual.immutableHash);
+  }, visual.immutableHash, signal);
+  signal?.throwIfAborted();
   const delivered = await deliveredLibraryMedia(prisma, { userId: input.userId, characterId: input.characterId, entries: verified });
+  signal?.throwIfAborted();
   const eligible = verified.map(entry => ({ entry, alreadySent: delivered.has(entry.id) }))
     .filter(candidate => input.unseenOnly === false || !candidate.alreadySent);
   if (!eligible.length) return [];
-  const query = await embedMediaText(input.query, config.embedding);
+  const query = await embedMediaText(input.query, config.embedding, undefined, signal);
+  signal?.throwIfAborted();
   const tokens = words(input.query);
   const scored = eligible.map(candidate => ({ ...candidate,
     dense: dot(query.vector, candidate.entry.embedding),
     lexical: words(libraryDescriptorText(candidate.entry)).filter(word => tokens.includes(word)).length,
   }));
   const dense = [...scored].sort((a, b) => b.dense - a.dense);
-  const lexical = [...scored].filter(candidate => candidate.lexical > 0).sort((a, b) => b.lexical - a.lexical);
+  const lexical = scored.filter(candidate => candidate.lexical > 0).sort((a, b) => b.lexical - a.lexical || b.dense - a.dense);
   const ranks = new Map<string, number>();
-  // Equal keyword overlap is not evidence that an earlier row is more relevant.
-  // Share tied ranks so a late semantic match can still reach the reranker.
+  // Equal scores share a rank. Similarity only breaks lexical ties when
+  // choosing the leading lexical candidate.
   for (const [ranking, key] of [[dense, "dense"], [lexical, "lexical"]] as const) {
     let rank = 0;
     ranking.forEach((candidate, index) => {
@@ -164,18 +169,29 @@ export async function searchCharacterMediaLibrary(input: LibrarySearchInput): Pr
       ranks.set(candidate.entry.id, (ranks.get(candidate.entry.id) ?? 0) + 1 / (60 + rank + 1));
     });
   }
-  const candidates = scored.sort((a, b) => (ranks.get(b.entry.id) ?? 0) - (ranks.get(a.entry.id) ?? 0)).slice(0, 20);
-  const reranked = await rerankMediaText(input.query, candidates.map(candidate => libraryDescriptorText(candidate.entry)), config.rerank);
+  const fused = scored.sort((a, b) => (ranks.get(b.entry.id) ?? 0) - (ranks.get(a.entry.id) ?? 0));
+  const leaders = [...dense.slice(0, 1), ...lexical.slice(0, 1)];
+  // Keep the fused window intact and append any missing route leader in
+  // dense then lexical order. Map updates preserve the original positions.
+  const shortlist = (limit: number) => {
+    const selected = new Map(fused.slice(0, limit).map(candidate => [candidate.entry.id, candidate]));
+    for (const candidate of leaders) selected.set(candidate.entry.id, candidate);
+    return [...selected.values()];
+  };
+  const candidates = shortlist(20);
+  const reranked = await rerankMediaText(input.query, candidates.map(candidate => libraryDescriptorText(candidate.entry)), config.rerank, undefined, signal);
+  signal?.throwIfAborted();
   // These scores order evidence for the Agent; they are never confidence or a
   // grant to send. The Agent must check every explicit request against facts.
   return (reranked ? reranked.map(row => ({ ...candidates[row.index]!, score: row.score }))
-    .sort((a, b) => b.score - a.score || a.entry.id.localeCompare(b.entry.id))
-    : candidates.map(candidate => ({ ...candidate, score: candidate.dense })))
-    .slice(0, 6).map(({ entry, score, alreadySent }) => ({ entry, score, alreadySent }));
+    .sort((a, b) => b.score - a.score || a.entry.id.localeCompare(b.entry.id)).slice(0, 6)
+    : shortlist(6).map(candidate => ({ ...candidate, score: candidate.dense })))
+    .map(({ entry, score, alreadySent }) => ({ entry, score, alreadySent }));
 }
 
-async function verifiedLibraryEntries(where: Prisma.CharacterMediaLibraryEntryWhereInput, visualHash: string) {
+async function verifiedLibraryEntries(where: Prisma.CharacterMediaLibraryEntryWhereInput, visualHash: string, signal?: AbortSignal) {
   const entries = await prisma.characterMediaLibraryEntry.findMany({ where, include: { sourceAsset: true }, orderBy: { id: "asc" } });
+  signal?.throwIfAborted();
   return filterVerifiedLibraryEntries(entries, visualHash);
 }
 

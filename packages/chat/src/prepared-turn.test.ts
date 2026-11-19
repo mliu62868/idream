@@ -141,7 +141,11 @@ describe("PreparedTurn budget", () => {
     const state = prepared.messages.find(message => message.id === "state:current")?.content;
     if (!mode || mode === "chat") {
       expect(prepared.tools[0]?.parameters.properties).toHaveProperty("editScope.properties.mode.enum", ["local"]);
-      expect(state).toContain('choose "Send as paid image request" in the composer');
+      expect(state).toContain("search_character_media first");
+      expect(state).toContain("does not authorize a paid new image or whole-image edit");
+      expect(state).not.toContain("Send as paid image request");
+      expect(prepared.messages[0]?.content).toContain('explicitly ask to create a new photo or redo the whole image');
+      expect(prepared.messages[0]?.content).toContain('choose "Send as paid image request" in the composer');
     } else if (mode === "paid") {
       expect(state).toContain("authorized a paid image action with this message");
     } else {

@@ -27,9 +27,9 @@ import { availableCharacterMediaLibraryKinds, hasEligibleCharacterMediaLibraryEn
 
 const identity = { characterId: "character", visualProfileId: "visual", visualProfileVersion: 1 };
 
-function entry(index: number) {
+function entry(index: number, observation?: { description: string; facts: string[] }) {
   const descriptor = { kind: "image", description: `A seaside photo ${index}`, facts: ["seaside"], absentFacts: ["hat"],
-    nudity: "none", durationSeconds: null, hasAudio: null };
+    nudity: "none", durationSeconds: null, hasAudio: null, ...observation };
   return { id: `entry-${index}`, ...descriptor, status: "published", characterId: "character", visualProfileId: "visual",
     visualProfileVersion: 1, sourceAssetId: `source-${index}`, contentHash: `hash-${index}`,
     embeddingModel: "fixture", embeddingDimensions: 2, embedding: [1, 0], embeddingHash: libraryDescriptorHash(descriptor),
@@ -134,6 +134,41 @@ describe("Character media candidate ordering", () => {
       visualProfileVersion: 1, kind: "image", query: "seaside" });
     expect(matches[0]?.entry.id).toBe("entry-1024");
     expect(matches[0]?.score).toBe(1);
-    expect(dependencies.rerank.mock.calls[0]?.[1]).toEqual(expect.arrayContaining([expect.stringContaining("A seaside photo 1024")]));
+    expect(new Set(matches.map(match => match.entry.id)).size).toBe(6);
+    const documents = dependencies.rerank.mock.calls[0]?.[1] ?? [];
+    expect(documents).toEqual(expect.arrayContaining([expect.stringContaining("A seaside photo 1024")]));
+    expect(documents).toHaveLength(20);
+    expect(new Set(documents).size).toBe(20);
+  });
+
+  it.each([true, false])("keeps both routes' strongest candidates and every fused window candidate (rerank=%s)", async rerank => {
+    const blended = Array.from({ length: 20 }, (_, index) => {
+      const subject = index === 5 || index === 19 ? "red frock" : "red bench";
+      return { ...entry(index, { description: `A ${subject} ${index}`, facts: [subject] }), embedding: [0.8, 0.6] };
+    });
+    const gown = entry(20, { description: "A vermilion gown", facts: ["vermilion gown"] });
+    const dress = { ...entry(21, { description: "A red dress", facts: ["red dress"] }), embedding: [0, 1] };
+    dependencies.entries.mockResolvedValue([...blended, gown, dress]);
+    if (rerank) {
+      const knownScores = [{ phrase: "red frock 19", score: 1 }, { phrase: "vermilion gown", score: 0.9 }, { phrase: "red dress", score: 0.8 }];
+      dependencies.rerank.mockImplementationOnce(async (_query: string, documents: string[]) => documents.map((document, index) => ({
+        index, score: knownScores.find(({ phrase }) => document.includes(phrase))?.score ?? 0.1,
+      })));
+    }
+
+    const matches = await searchCharacterMediaLibrary({ ...identity, userId: "viewer", kind: "image", query: "red dress" });
+    const ids = matches.map(match => match.entry.id);
+    const lastInWindow = blended[rerank ? 19 : 5]!;
+    expect(ids).toEqual(expect.arrayContaining([lastInWindow.id, gown.id, dress.id]));
+    if (rerank) {
+      expect(ids).toHaveLength(6);
+      expect(ids.slice(0, 3)).toEqual([lastInWindow.id, gown.id, dress.id]);
+      expect(dependencies.rerank.mock.calls[0]?.[1]).toEqual(
+        [...blended, gown, dress].map(candidate => expect.stringContaining(`${candidate.description}\n`)),
+      );
+    } else {
+      expect(ids).toEqual([...blended.slice(0, 6).map(candidate => candidate.id), gown.id, dress.id]);
+      expect(matches.find(match => match.entry.id === gown.id)?.score).toBe(1);
+    }
   });
 });

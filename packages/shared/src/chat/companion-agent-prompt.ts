@@ -54,8 +54,10 @@ import { COMPANION_MEDIA_LIBRARY_GUIDANCE, COMPANION_MEDIA_RESEND_GUIDANCE } fro
  * user-authorized message for a direct paid image action.
  * v24: show video facts when a duration or audio-track filter excludes all
  * candidates, then let the Agent correct any assumed filters.
+ * v26: distinguish an ordinary request to see media from an explicit request
+ * for new creation, including when the user supplies detailed conditions.
  */
-export const COMPANION_PRODUCT_PROMPT_VERSION = "companion-product-25" as const;
+export const COMPANION_PRODUCT_PROMPT_VERSION = "companion-product-26" as const;
 
 export function companionProductAgentPrompt(characterName: string): string {
   const name = characterName.trim() || "the Character";

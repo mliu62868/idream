@@ -10,7 +10,7 @@ import { IMAGE_AGENT_TOOL_DEFINITIONS } from "./image-action";
 describe("Companion product contract", () => {
   it("states the adult-companion outcome in affirmative, second-person lines", () => {
     const contract = companionProductAgentPrompt("Lena");
-    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-25");
+    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-26");
     expect(contract).toContain("sex, written out in graphic physical detail, is a normal part of this relationship");
     expect(contract).toContain("Fulfill their latest message as the whole reply");
     expect(contract).toContain("Their request, invitation or continued participation is their yes");
@@ -77,8 +77,7 @@ describe("Companion product contract", () => {
     expect(prompt.indexOf("This turn:")).toBeGreaterThan(prompt.indexOf("iDream companion contract"));
     expect(prompt.indexOf("Image direction skill")).toBeGreaterThan(prompt.indexOf("This turn:"));
     // Pure media is answered by the real attachment; no separate spoken receipt.
-    expect(prompt).toContain("Decide whether their current message requests a photo");
-    expect(prompt).toContain("fulfill it through the available media capabilities");
+    expect(prompt).toContain("Use photo tools only for a current photo request");
     expect(prompt).toContain("a spoken promise alone cannot create a photo");
     expect(prompt).toContain("do not add a separate media acknowledgement");
     expect(prompt).toContain("Continue only independently requested text");

@@ -11,7 +11,7 @@ import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL } from "@idream/
 import type { ChatAuthoritySnapshot } from "@idream/shared/bff";
 import type { ChatExecutionSnapshot } from "@idream/shared/contracts";
 import { buildContext, type BuiltContext } from "./context.js";
-import { buildCompanionSystemPrompt, buildTurnPreferencesBlock, buildTurnStateBlock, describeImageActionAuthorization, describeRequestedReplyConstraints, describeUserLanguage } from "./prompt.js";
+import { buildCompanionSystemPrompt, buildTurnPreferencesBlock, buildTurnStateBlock, describeImageActionAuthorization, describeRequestedReplyConstraints, describeUserLanguage, PREPARED_MEDIA_TURN_GUIDANCE } from "./prompt.js";
 import { registryChatTools } from "./agent-tools.js";
 import { dropOldestReplayExchange, estimateModelRequestInputTokens, formatModelRequestInput } from "./agent-runtime/model-request-format.js";
 import {
@@ -209,6 +209,7 @@ export function fitPreparedTurnBudget(
   const turnState = () => [
     buildTurnStateBlock(fitted, now),
     ...(fitted.policy.imageToolEnabled && fitted.policy.modelProfile.supportsTools ? [`- ${describeImageActionAuthorization(imageActionMode)}`] : []),
+    ...(mediaKinds.length && fitted.policy.modelProfile.supportsTools ? [`- ${PREPARED_MEDIA_TURN_GUIDANCE}`] : []),
     ...(language ? [`- ${language}`] : []),
     ...(replyConstraints ? [`- ${replyConstraints}`] : []),
     ...recentOpeningsLines(fitted, currentUserMessageId),

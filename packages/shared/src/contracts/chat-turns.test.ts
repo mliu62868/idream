@@ -212,9 +212,11 @@ describe("Chat execution snapshot", () => {
   it("keeps lookup per attempt and delivery in the shared Turn action slot", () => {
     const base = { version: 2, turnId: "turn-1", attempt: 1, callId: "provider-call-1",
       intent: { requestedNudity: "unspecified" }, arguments: {} };
-    expect(chatToolEffectSchema.safeParse({ ...base, name: "search_character_media", effectScope: "attempt" }).success).toBe(true);
-    expect(chatToolEffectSchema.safeParse({ ...base, name: "send_character_media", effectScope: "turn_action" }).success).toBe(true);
-    expect(chatToolEffectSchema.safeParse({ ...base, name: "search_character_media", effectScope: "turn_action" }).success).toBe(false);
+    const ordered = { ...base, name: "search_character_media", lookupOrder: 2, lookupDeadlineAt: "2026-11-18T12:00:00.000Z" };
+    expect(chatToolEffectSchema.safeParse({ ...ordered, effectScope: "attempt" }).success).toBe(true);
+    expect(chatToolEffectSchema.safeParse({ ...base, name: "search_character_media", effectScope: "attempt" }).success).toBe(false);
+    expect(chatToolEffectSchema.safeParse({ ...base, name: "send_character_media", effectScope: "turn_action", lookupOrder: 2 }).success).toBe(true);
+    expect(chatToolEffectSchema.safeParse({ ...ordered, effectScope: "turn_action" }).success).toBe(false);
     expect(chatToolEffectSchema.safeParse({ ...base, name: "send_character_media", effectScope: "attempt" }).success).toBe(false);
   });
 });

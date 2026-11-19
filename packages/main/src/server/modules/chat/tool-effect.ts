@@ -57,10 +57,10 @@ export type ChatToolEffectResult =
  * Main-owned product effect. Reserving generation and debiting its wallet are
  * one existing Generation Request operation; Chat only receives the durable ACK.
  */
-export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectResult> {
+export async function applyChatToolEffect(raw: unknown, requestSignal?: AbortSignal): Promise<ChatToolEffectResult> {
   const effect = chatToolEffectSchema.parse(raw);
+  if (effect.name === SEARCH_CHARACTER_MEDIA_TOOL) return searchChatCharacterMedia(effect, requestSignal);
   const turn = await chatTurnForEffect(effect.turnId);
-  if (effect.name === SEARCH_CHARACTER_MEDIA_TOOL) return searchChatCharacterMedia(effect, turn);
   const requestDigest = sha256(JSON.stringify(canonical({
     name: effect.name,
     arguments: effect.arguments,

@@ -357,10 +357,17 @@ describe("Main group conversation authority", () => {
     expect(a.snapshot!.memoryEnabled).toBe(false); await finish(a.snapshot!);
     const b = await f.begin(1);
     expect(b.snapshot!.memoryEnabled).toBe(true);
+    await prisma.chatTurn.update({ where: { id: b.snapshot!.turnId }, data: {
+      mediaLookup: { version: 1, attempt: b.snapshot!.attempt, lookupId: randomUUID(), status: "ready",
+        args: { kind: "video", query: "A clip" } },
+    } });
     const transport = vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ ok: true }));
     try { await clearCompanionMemory(f.userId, f.characters[0].id); } finally { transport.mockRestore(); }
     expect(await prisma.groupConversation.findUnique({ where: { id: f.group.id } })).toMatchObject({ status: "archived" });
-    expect(await prisma.chatTurn.findUnique({ where: { id: b.snapshot!.turnId } })).toMatchObject({ assistantStatus: "cancelled", memoryEnabled: true });
+    expect(await prisma.chatTurn.findUnique({ where: { id: b.snapshot!.turnId } })).toMatchObject({
+      assistantStatus: "cancelled", memoryEnabled: true, mediaLookup: null,
+      terminalEvidence: { authority: "main_memory_clear" },
+    });
     const members = await prisma.recentChat.findMany({ where: { groupId: f.group.id }, orderBy: { groupPosition: "asc" } });
     expect(members.map(member => ({ status: member.status, memoryEnabled: member.memoryEnabled }))).toEqual([{ status: "archived", memoryEnabled: false }, { status: "archived", memoryEnabled: true }]);
     await expect(f.begin(1)).rejects.toMatchObject({ status: 410 });

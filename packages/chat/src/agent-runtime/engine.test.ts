@@ -61,7 +61,12 @@ class FixtureAdapter extends OpenAiCompatibleAdapter {
     return new OpenAiCompatibleAdapter({...this.fixture, profile, ...policy,
       observeRequest: evidence => { purpose = evidence.purpose; return policy.observeRequest?.(evidence); },
       fetch: (url, init) => purpose === "media_extraction"
-        ? (this.extraction ?? (async () => response({ content: '{"requests":[]}' }, "stop", { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 })))(url, init)
+        ? (this.extraction ?? (async (_url, requestInit) => {
+          const request: WireRequest = JSON.parse(String(requestInit?.body));
+          const evidence = JSON.parse(request.messages.at(-1)!.content);
+          const extracted = evidence.searchedExistingMedia ? { requests: [], language: "en", availabilityOnly: false } : { requests: [] };
+          return response({ content: JSON.stringify(extracted) }, "stop", { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 });
+        }))(url, init)
         : this.fixture.fetch!(url, init),
     });
   }
@@ -499,23 +504,111 @@ describe("Chat embedded companion runtime", () => {
 
   it("keeps ordinary requested text after a read-only media search finds no match", async () => {
     let requests = 0;
+    const independent = "Also explain what translation means.";
     const reply = "Translation means expressing meaning in another language.";
     const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
       if (++requests === 1) return response({ tool_calls: [{ index: 0, id: "stock-search", function: {
         name: "search_character_media", arguments: JSON.stringify({ kind: "image", query: "Mira at the seaside" }),
       } }] }, "tool_calls");
       return response({ content: reply });
-    } });
+    } }, async () => response({ content: JSON.stringify({ requests: [independent], language: "en", availabilityOnly: true }) }));
     const runtime = await engine(adapter);
     const connection = port({ executeTool: async call => ({ attemptId: call.attemptId, callId: call.callId, name: call.name,
       outcome: "succeeded", output: { accepted: true, status: "no_match", matches: [] } }) });
     const value = mediaInvocation();
-    value.preparedTurn.messages.at(-1)!.content = "Check for a seaside photo. Also explain what translation means.";
+    value.preparedTurn.messages.at(-1)!.content = `Check for a seaside photo. ${independent}`;
     try {
       await runtime.run(value, connection.runtimePort);
       expect(connection.candidates).toHaveLength(1);
-      expect(connection.candidates[0]?.content).toBe(reply);
-      expect(requests).toBe(2);
+      expect(connection.candidates[0]?.content).toBe(`I didn’t find anything already available that fits what you asked for.\n\n${reply}`);
+      expect(requests).toBe(3);
+    } finally { await runtime.shutdown(); }
+  });
+
+  it.each(["no_match", "review_video_filters", "matches", "failed"] as const)("answers a pure stock %s without the model's unrequested generation or edit", async status => {
+    const value = mediaInvocation();
+    value.preparedTurn.messages.at(-1)!.content = "把刚才那段再发一次，但必须最多五秒、完全不带音轨；不要放宽条件，不符合就不要发。";
+    const native = vi.fn(async () => response({ content: "我可以重新生成五秒以内的版本，或者编辑原片去音。" }));
+    native.mockImplementationOnce(async () => response({ tool_calls: [{ index: 0, id: "lookup", function: {
+      name: "search_character_media", arguments: JSON.stringify({ kind: "video", query: "previous clip at most five seconds, with no audio track", minDurationSeconds: 0, maxDurationSeconds: 5, hasAudio: false }),
+    } }] }, "tool_calls"));
+    const extraction = vi.fn(async () => response({ content: '{"requests":[],"language":"zh","availabilityOnly":false}' }));
+    const runtime = await engine(new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: native }, extraction));
+    const connection = port({ executeTool: async (call): Promise<CompanionToolResult> => {
+      const identity = { attemptId: call.attemptId, callId: call.callId, name: call.name };
+      if (status === "failed") return { ...identity, outcome: "failed", error: { code: "media_search_unavailable", message: "unavailable", retryable: true } };
+      const { candidateToken, ...observation } = { ...preparedImageCandidate, kind: "video", durationSeconds: 5.167, hasAudio: true };
+      if (status === "review_video_filters") return { ...identity, outcome: "succeeded", output: { accepted: true, status, matches: [], observedVideos: [observation] } };
+      return { ...identity, outcome: "succeeded", output: { accepted: true, status, matches: status === "matches" ? [{ ...observation, candidateToken }] : [] } };
+    } });
+    try {
+      await runtime.run(value, connection.runtimePort);
+      const expected = {
+        no_match: "我没找到符合你要求的现成内容。",
+        review_video_filters: "我没找到符合你要求的现成内容。",
+        matches: "我没找到符合你要求的现成内容。",
+        failed: "我现在没法确认有没有符合你要求的现成内容。",
+      }[status];
+      expect(connection.candidates[0]?.content).toBe(expected);
+      expect(connection.candidates[0]?.mediaResponse).toBeUndefined();
+      expect(connection.events.flatMap(event => event.type === "text_delta" ? [event.delta] : [])).toEqual([expected]);
+      expect(extraction).toHaveBeenCalledOnce();
+    } finally { await runtime.shutdown(); }
+  });
+
+  it.each([false, true])("reports stock availability without sending and uses the latest lookup (failed=%s)", async latestFailed => {
+    const value = mediaInvocation();
+    value.preparedTurn.messages.at(-1)!.content = "你有海边的现成照片吗？只告诉我有没有，先别发。";
+    const search = (id: string) => response({ tool_calls: [{ index: 0, id, function: {
+      name: "search_character_media", arguments: JSON.stringify({ kind: "image", query: "an existing photo at the seaside; check availability only" }),
+    } }] }, "tool_calls");
+    const native = vi.fn(async () => response({ content: "我可以给你新做一张。" }));
+    native.mockImplementationOnce(async () => search("found"));
+    if (latestFailed) native.mockImplementationOnce(async () => search("recheck"));
+    const runtime = await engine(new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: native },
+      async () => response({ content: '{"requests":[],"language":"zh","availabilityOnly":true}' })));
+    const executeTool = vi.fn(async (call: CompanionToolCall): Promise<CompanionToolResult> => {
+      const identity = { attemptId: call.attemptId, callId: call.callId, name: call.name };
+      if (call.callId === "recheck") return { ...identity, outcome: "failed", error: { code: "media_search_unavailable", message: "unavailable", retryable: true } };
+      return { ...identity, outcome: "succeeded", output: { accepted: true, status: "matches", matches: [preparedImageCandidate] } };
+    });
+    const connection = port({ executeTool });
+    try {
+      await runtime.run(value, connection.runtimePort);
+      const expected = latestFailed ? "我现在没法确认有没有符合你要求的现成内容。" : "我找到了可能相关的现成内容，暂时没有发送。";
+      expect(connection.candidates).toHaveLength(1);
+      expect(connection.candidates[0]?.content).toBe(expected);
+      expect(connection.candidates[0]?.mediaResponse).toBeUndefined();
+      expect(executeTool.mock.calls.map(([call]) => call.name)).toEqual(latestFailed ? ["search_character_media", "search_character_media"] : ["search_character_media"]);
+    } finally { await runtime.shutdown(); }
+  });
+
+  it("keeps explicitly requested fiction after a stock miss and discards the unsolicited native offer", async () => {
+    const otherRequest = '另外写个故事，里面的摄影师说：“我可以重新生成一张新图。”';
+    const story = '摄影师关上了旧相机，说：“我可以重新生成一张新图。”';
+    const value = mediaInvocation();
+    value.preparedTurn.messages.at(-1)!.content = `给我一张海边的已有照片，找不到就说没有。${otherRequest}`;
+    const native = vi.fn(async (_url, init) => {
+      const request: WireRequest = JSON.parse(String(init?.body));
+      expect(request.messages.at(-1)?.content).toBe(otherRequest);
+      expect(request.tools?.map(tool => tool.function.name)).not.toContain("search_character_media");
+      return response({ content: story });
+    });
+    native.mockImplementationOnce(async () => response({ tool_calls: [{ index: 0, id: "lookup", function: {
+      name: "search_character_media", arguments: JSON.stringify({ kind: "image", query: "existing photo at the seaside" }),
+    } }] }, "tool_calls"));
+    native.mockImplementationOnce(async () => response({ content: "没有。要不要我直接给你重新生成一张？" }));
+    const extraction = vi.fn(async () => response({ content: JSON.stringify({ requests: [otherRequest], language: "zh", availabilityOnly: false }) }));
+    const runtime = await engine(new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: native }, extraction));
+    const connection = port({ executeTool: async call => ({ attemptId: call.attemptId, callId: call.callId, name: call.name,
+      outcome: "succeeded", output: { accepted: true, status: "no_match", matches: [] } }) });
+    try {
+      await runtime.run(value, connection.runtimePort);
+      const expected = `我没找到符合你要求的现成内容。\n\n${story}`;
+      expect(connection.candidates[0]?.content).toBe(expected);
+      expect(connection.events.flatMap(event => event.type === "text_delta" ? [event.delta] : [])).toEqual([expected]);
+      expect(extraction).toHaveBeenCalledOnce();
+      expect(native).toHaveBeenCalledTimes(3);
     } finally { await runtime.shutdown(); }
   });
 
@@ -775,6 +868,22 @@ describe("Chat embedded companion runtime", () => {
     expect(connection.candidates[0]?.mediaResponse).toBeUndefined();
     expect(connection.events.filter(event => event.type === "text_delta").map(event => event.delta)).toEqual(["Tonight, every blue-lit window remembers us."]);
     await runtime.shutdown();
+  });
+
+  it("does not apply the stock disposition to requested fiction with no tool call", async () => {
+    const value = mediaInvocation();
+    value.preparedTurn.messages.at(-1)!.content = '写一句虚构台词，摄影师说：“我可以重新生成一张新图。”';
+    const reply = '摄影师说：“我可以重新生成一张新图。”';
+    const extraction = vi.fn(async () => response({ content: '{"requests":[],"language":"zh"}' }));
+    const runtime = await engine(new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture",
+      fetch: async () => response({ content: reply }) }, extraction));
+    const connection = port();
+    try {
+      await runtime.run(value, connection.runtimePort);
+      expect(connection.candidates[0]?.content).toBe(reply);
+      expect(connection.candidates[0]?.modelRequests).toHaveLength(1);
+      expect(extraction).not.toHaveBeenCalled();
+    } finally { await runtime.shutdown(); }
   });
 
   it("fails a selected invalid action before inventing an attachment", async () => {
@@ -1949,7 +2058,7 @@ describe("Chat embedded companion runtime", () => {
     try {
       await runtime.run(value, connection.runtimePort);
       expect(executeTool).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ name: "edit_last_image",
-        arguments: expect.objectContaining({ editScope: { mode: "local", target: "green mug", selection: "one" } }) }));
+        arguments: expect.objectContaining({ editScope: { mode: "local", target: "green mug", selection: "one" } }) }), expect.any(AbortSignal));
       expect(connection.candidates[0]?.mediaResponse).toEqual({ version: 1, attachmentId: "free-edit-card" });
     } finally { await runtime.shutdown(); }
   });
@@ -1984,7 +2093,7 @@ describe("Chat embedded companion runtime", () => {
       await runtime.run(value, connection.runtimePort);
       expect(connection.candidates).toHaveLength(1);
       await runtime.run(retry, connection.runtimePort);
-      expect(executeTool).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ attemptId: value.attemptId, name: "search_character_media" }));
+      expect(executeTool).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ attemptId: value.attemptId, name: "search_character_media" }), expect.any(AbortSignal));
       expect(connection.candidates).toHaveLength(1);
       expect(connection.events.filter(event => event.type === "tool_started").map(event => event.name)).toEqual(["search_character_media"]);
     } finally { await runtime.shutdown(); }

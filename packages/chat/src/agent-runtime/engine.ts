@@ -6,7 +6,8 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 import type { CompanionReadiness } from "@idream/shared/chat/companion-runtime";
 import { EDIT_LAST_IMAGE_TOOL, GENERATE_IMAGE_ASYNC_TOOL } from "@idream/shared/chat/image-action";
-import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL } from "@idream/shared/chat/media-library";
+import { PAID_IMAGE_REQUEST_GUIDANCE } from "@idream/shared";
+import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL, searchCharacterMediaResultSchema } from "@idream/shared/chat/media-library";
 import { companionEventSchema, companionToolCallSchema, companionToolReservationSchema, companionToolResultSchema,
   type CompanionCommitAck, type CompanionEvent, type CompanionInvocation, type CompanionModelRequestEvidence,
   type CompanionTerminalCandidate, type CompanionToolCall, type CompanionToolResult, type PreparedTurnProfile, type PreparedTurnMessage } from "./contracts";
@@ -21,13 +22,13 @@ import { observeIgrepWake, igrepFailureCategory, recallIgrepMemory, reprojectIgr
 import type { CompanionWorkspaceRebuildPromotion, CompanionWorkspaceRebuildSource } from "./rebuild-source";
 import { assertNotFenced, withDrainFence, type FenceScope } from "../fence.js";
 import { stableJson } from "../stable-json";
-import { describeRequestedReplyConstraints, PAID_IMAGE_REQUEST_GUIDANCE } from "../prompt.js";
+import { describeRequestedReplyConstraints } from "../prompt.js";
 import { ProviderError, type OpenAiCompatibleAdapter, type OpenAiCompatibleAdapterOptions, type TokenUsage } from "./openai-adapter";
 import { aggregateModelRequestUsage } from "./model-request-evidence";
 import { buildReplaySeed, finishReason, messageText } from "./pi-context";
 import { executePiConversation, toolSignal, withToolCancellation } from "./pi-runtime";
 import { projectRecall } from "./session-recall";
-import { MEDIA_EXTRACTION_MAX_TOKENS, mediaAttachmentId, mediaBodySystemPrompt, mediaExtractionMessages, parseMediaTextRequests, prepareMediaBody } from "./media-response";
+import { MEDIA_EXTRACTION_MAX_TOKENS, mediaAttachmentId, mediaBodySystemPrompt, mediaExtractionMessages, parseMediaSearchReply, parseMediaTextRequests, prepareMediaBody, type MediaSearchObservation } from "./media-response";
 export { buildReplaySeed } from "./pi-context";
 type EventPayload = CompanionEvent extends infer Event ? Event extends CompanionEvent
   ? Omit<Event, "invocationId" | "attemptId" | "sequence" | "occurredAt"> : never : never;
@@ -52,7 +53,7 @@ export interface CompanionEngineOptions {
 }
 export interface CompanionRuntimePort {
   emit(event: CompanionEvent): Promise<void> | void;
-  executeTool(call: CompanionToolCall): Promise<CompanionToolResult>;
+  executeTool(call: CompanionToolCall, signal?: AbortSignal): Promise<CompanionToolResult>;
   commit(candidate: CompanionTerminalCandidate, signal?: AbortSignal): Promise<CompanionCommitAck>;
 }
 
@@ -315,7 +316,7 @@ class ToolBridge {
         pending: Promise.resolve().then(async () => {
           await this.event({ type: "tool_started", callId: call.callId, name: call.name });
           signal.throwIfAborted();
-          return this.executeTool(call);
+          return this.executeTool(call, signal);
         }).then((result) => {
           const parsed = companionToolResultSchema.parse(result);
           if (
@@ -490,7 +491,7 @@ export class CompanionEngine {
       const knowledgeSource = join(knowledgePath, "conversation.jsonl");
       const recovered = invocation.preparedTurn.recoveredMediaAction;
       // Buffer speech until a capability-bearing step has chosen its action.
-      const bufferText = invocation.preparedTurn.tools.some(tool => ["generate_image_async", "edit_last_image", SEND_CHARACTER_MEDIA_TOOL].includes(tool.name));
+      const bufferText = invocation.preparedTurn.tools.some(tool => [GENERATE_IMAGE_ASYNC_TOOL, EDIT_LAST_IMAGE_TOOL, SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL].some(name => name === tool.name));
       const historyOnly = bufferText || Boolean(recovered);
       // The complete Soul and product contract remain pinned in system context.
       // Search results must not turn runtime instructions into remembered facts,
@@ -631,10 +632,12 @@ export class CompanionEngine {
       };
       const retrievalEvidence: PreparedTurnMessage[] = [];
       const toolCallIds = new Set<string>();
+      let searchedExistingMedia: MediaSearchObservation | undefined;
       const runConversation = (stage: {
         invocation: CompanionInvocation; seed: readonly PreparedTurnMessage[]; pinned: readonly PreparedTurnMessage[];
         systemPrompt: string; adapter: OpenAiCompatibleAdapter; maxSteps: number; searchPath: string; purpose?: "media_body";
         executionEvidence?: readonly PreparedTurnMessage[];
+        streamText?: boolean;
       }) => executePiConversation({ ...stage, toolCallIds,
         afterRetrievalContext: {
           content: COMPANION_RETRIEVAL_REPLY_CONTEXT + (mode === "private" ? PRIVATE_RETRIEVAL_UNCERTAINTY : ""),
@@ -644,7 +647,7 @@ export class CompanionEngine {
         // Selecting a lookup fixes this attempt's workflow before Pi starts
         // any tool in the response, including one listed before the lookup.
         onPreparedMediaLookup: () => bridge.usePreparedMediaOnly(),
-        text: delta => { if (!bufferText || stage.purpose === "media_body") { currentText += delta; void event({ type: "text_delta", delta }); } },
+        text: delta => { if (stage.streamText ?? !bufferText) { currentText += delta; void event({ type: "text_delta", delta }); } },
         reset: () => { if (currentText) { currentText = ""; void event({ type: "text_reset" }); } },
         compaction: (outcome, durationMs) => { void event({ type: "igrep_observation", operation: "compaction", outcome, durationMs, ...(outcome === "hit" ? { resultCount: 1 } : {}) }); },
         tools: conversation => {
@@ -686,12 +689,17 @@ export class CompanionEngine {
                 if (!lookup && bridge.actionCount > 0) throw new Error("only one media action may execute per Turn");
                 const call = companionToolCallSchema.parse({ attemptId: invocation.attemptId, callId: api.callId, name: tool.name, effectScope: lookup ? "attempt" : "turn_action",
                   intent: { requestedNudity: (args as { requestedNudity?: "unspecified" | "none" | "full" }).requestedNudity ?? "unspecified" }, arguments: args });
+                if (call.name === SEARCH_CHARACTER_MEDIA_TOOL) searchedExistingMedia = { kind: call.arguments.kind, outcome: "unavailable" };
                 let result: CompanionToolResult;
                 try { result = await bridge.execute(call, toolSignal(active.cancellation.signal, context)); }
                 catch (error) { if (!lookup) unconfirmedImageEffect = true; throw error; }
                 if (!lookup) unconfirmedImageEffect = result.outcome === "unknown";
                 if (lookup && result.outcome !== "succeeded") return { isError: true, output: [{ type: "text" as const,
                   text: "Prepared media search is unavailable. No media was sent or generated. This is not evidence that the library is empty; do not claim a match or delivery." }] };
+                if (call.name === SEARCH_CHARACTER_MEDIA_TOOL && result.outcome === "succeeded") {
+                  const { status } = searchCharacterMediaResultSchema.parse(result.output);
+                  searchedExistingMedia = { kind: call.arguments.kind, outcome: status === "matches" ? "candidates_only" : "no_match" };
+                }
                 return { ...(result.outcome !== "succeeded" ? { isError: true } : {}),
                   // The attachment card already owns the media outcome. End
                   // this native round; extraction/body handles remaining text.
@@ -712,16 +720,18 @@ export class CompanionEngine {
       let steps = completed?.steps ?? 0;
       let mediaResponse: CompanionTerminalCandidate["mediaResponse"];
       let bodyText: string | undefined;
-      // A rejected resend never crossed Main and can end with a no-match reply.
+      // A rejected resend never crossed Main and can end with a lookup-only reply.
       const selectedAction = completed?.selectedMediaCalls.some(call => call.name !== SEND_CHARACTER_MEDIA_TOOL
         || (!bridge.wasRejectedResend(call.callId) && !(call.arguments && typeof call.arguments === "object" && "previousMediaAssetId" in call.arguments)));
-      if (recovered || bridge.actionCount > 0 || selectedAction) {
+      const stockReply = !recovered && bridge.actionCount === 0 && !selectedAction ? searchedExistingMedia : undefined;
+      if (recovered || bridge.actionCount > 0 || selectedAction || stockReply) {
         terminalValidationCode = "media_response_incomplete";
         let evidence: Parameters<typeof mediaExtractionMessages>[1];
-        let attachmentId: string;
         if (recovered) {
           evidence = { recoveredMediaAction: recovered };
-          attachmentId = recovered.attachmentId;
+          mediaResponse = { version: 1, attachmentId: recovered.attachmentId };
+        } else if (stockReply) {
+          evidence = { searchedExistingMedia: stockReply };
         } else {
           const actions = await bridge.mediaActions(active.cancellation.signal);
           const action = actions[0];
@@ -729,9 +739,8 @@ export class CompanionEngine {
           // A rejected native selection or HTTP failure has no attachment proof.
           if (actions.length !== 1 || !action || !confirmedId) throw new Error("media action has no confirmed Main attachment");
           evidence = action;
-          attachmentId = confirmedId;
+          mediaResponse = { version: 1, attachmentId: confirmedId };
         }
-        mediaResponse = { version: 1, attachmentId };
         if (++steps > maxSteps) throw new Error("media extraction exceeds the invocation step budget");
         const outputLimit = Math.min(invocation.preparedTurn.profile.maxOutputTokens, MEDIA_EXTRACTION_MAX_TOKENS);
         const extractor = this.options.adapter({ ...invocation.preparedTurn.profile, maxOutputTokens: outputLimit, answerMaxOutputTokens: outputLimit }, {
@@ -743,8 +752,11 @@ export class CompanionEngine {
         }).result();
         active.cancellation.signal.throwIfAborted();
         if (extracted.stopReason !== "stop") throw extractor.getError(extracted) ?? new Error("media text extraction was incomplete");
-        const requests = parseMediaTextRequests(messageText(extracted), current.content);
-        if (requests.length === 0) bodyText = "";
+        const extractedText = messageText(extracted);
+        const { requests, feedback } = stockReply
+          ? parseMediaSearchReply(extractedText, current.content, stockReply.outcome)
+          : { requests: parseMediaTextRequests(extractedText, current.content), feedback: undefined };
+        if (requests.length === 0) bodyText = feedback ?? "";
         else {
           if (steps >= maxSteps) throw new Error("media body exceeds the invocation step budget");
           const body = prepareMediaBody({ invocation, seed, requests });
@@ -759,17 +771,19 @@ export class CompanionEngine {
           replyAdapter = this.options.adapter(invocation.preparedTurn.profile, { ...requestPolicy, samplingTemperature: 0 });
           const replied = await runConversation({ ...body, executionEvidence,
             systemPrompt: mediaBodySystemPrompt(systemPrompt, mode === "normal"), adapter: replyAdapter,
-            purpose: "media_body", maxSteps: maxSteps - steps, searchPath: bodySource });
+            purpose: "media_body", maxSteps: maxSteps - steps, searchPath: bodySource, streamText: feedback === undefined });
           steps += replied.steps;
           latestAssistant = replied.message;
           // A truncated or empty independent answer cannot become card-only success.
-          if (replied.selectedMediaCalls.length > 0 || latestAssistant.stopReason !== "stop" || !messageText(latestAssistant).trim()) throw new Error("independent media body was incomplete");
+          const reply = messageText(latestAssistant);
+          if (replied.selectedMediaCalls.length > 0 || latestAssistant.stopReason !== "stop" || !reply.trim()) throw new Error("independent media body was incomplete");
+          if (feedback !== undefined) bodyText = `${feedback}\n\n${reply}`;
         }
         terminalValidationCode = undefined;
       }
       const decision = evaluateTerminalCandidate({ attemptId: invocation.attemptId,
         assistantContent: bodyText ?? (latestAssistant ? messageText(latestAssistant) : undefined),
-        finishReasonKind: bodyText === "" ? "stop" : latestAssistant ? finishReason(latestAssistant) : undefined,
+        finishReasonKind: bodyText !== undefined ? "stop" : latestAssistant ? finishReason(latestAssistant) : undefined,
         currentUserText: current.content, tools: invocation.preparedTurn.tools, toolCalls: bridge.callCount, reservations: bridge.reservations,
         profile: invocation.preparedTurn.profile, usage: aggregateModelRequestUsage(modelRequests),
         steps, completedAt: new Date().toISOString(), modelRequests, ...(mediaResponse ? { mediaResponse } : {}),

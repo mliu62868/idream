@@ -256,6 +256,7 @@ export async function getChatSession(userId: string, sessionId: string) {
       character: { select: { name: true, creatorId: true, imageAsset: { select: { url: true, thumbnailUrl: true } } } },
       turns: {
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        omit: { mediaLookup: true },
         include: { attachments: { orderBy: { createdAt: "asc" } } },
       },
     },
@@ -514,6 +515,7 @@ async function regenerateLockedChatTurn(tx: Prisma.TransactionClient, userId: st
       terminalEvidence: Prisma.JsonNull,
       terminalAt: null,
       executionSnapshot: Prisma.JsonNull,
+      mediaLookup: Prisma.JsonNull,
       sceneVersion: sceneAnchor?.sceneVersion ?? 0,
       scene: sceneAnchor?.scene == null ? Prisma.JsonNull : toJson(sceneAnchor.scene),
       admissionAttempts: 0,
@@ -783,7 +785,7 @@ export async function commitChatTerminal(input: ChatTerminalCommit) {
     // the Turn first deadlocks with a user-first mutation during memory commit.
     await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${owner.userId} FOR UPDATE`;
     await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${input.sessionId} FOR UPDATE`;
-    const accepted = await tx.chatTurn.findUnique({ where: { id: input.turnId } });
+    const accepted = await tx.chatTurn.findUnique({ where: { id: input.turnId }, omit: { mediaLookup: true } });
     if (!accepted) throw Errors.notFound("Chat turn not found");
     if (
       accepted.sessionId === input.sessionId && accepted.assistantMessageId === input.assistantMessageId &&
@@ -828,9 +830,12 @@ export async function commitChatTerminal(input: ChatTerminalCommit) {
         scene: input.scene === null ? Prisma.JsonNull : toJson(input.scene),
         terminalEvidence: toJson(input.terminalEvidence),
         terminalAt: now,
+        // A terminal attempt has no lookup consumer. The attachment and the
+        // immutable terminal proposal each have their own durable receipt.
+        mediaLookup: Prisma.JsonNull,
       },
     });
-    const current = await tx.chatTurn.findUnique({ where: { id: input.turnId } });
+    const current = await tx.chatTurn.findUnique({ where: { id: input.turnId }, omit: { mediaLookup: true } });
     if (!current) throw Errors.notFound("Chat turn not found");
     if (changed.count === 1) {
       const session = await tx.recentChat.update({
@@ -941,6 +946,7 @@ export async function cancelChatTurn(userId: string, messageId: string, expected
         assistantStatus: "cancelled",
         terminalAt: now,
         terminalEvidence: toJson({ authority: "main_user_cancel" }),
+        mediaLookup: Prisma.JsonNull,
       },
     });
     await settleChatTurnUsage(tx, current, "cancelled", now);
@@ -1009,6 +1015,7 @@ export async function failStalledChatTurn(turnId: string, cutoff: {
         assistantStatus: "failed",
         terminalAt: now,
         terminalEvidence: toJson({ authority: "main_stalled_attempt_reclaim" }),
+        mediaLookup: Prisma.JsonNull,
       },
     });
     await settleChatTurnUsage(tx, turn, "failed", now);
@@ -1240,7 +1247,9 @@ async function frozenExecutionSnapshot(
   preservedUserPersona?: UserChatPersona | null,
   media?: { recoveredMediaAction?: RecoveredMediaAction; userMessageRevision?: number; preservedImageEditSourceAssetId?: string | null },
 ): Promise<ChatExecutionSnapshot> {
-  const turn = await tx.chatTurn.findUnique({ where: { id: turnId }, include: { session: true, groupTurn: true } });
+  const turn = await tx.chatTurn.findUnique({
+    where: { id: turnId }, omit: { mediaLookup: true }, include: { session: true, groupTurn: true },
+  });
   if (!turn) throw Errors.notFound("Chat turn not found");
   const persisted = turn.executionSnapshot;
   if (persisted) {
@@ -1257,7 +1266,9 @@ async function frozenExecutionSnapshot(
     },
     orderBy: turn.groupTurn ? { groupTurn: { ordinal: "desc" } } : [{ createdAt: "desc" }, { id: "desc" }],
     take: 24,
-    include: {
+    select: {
+      id: true, userMessageId: true, assistantMessageId: true, userContent: true,
+      assistantContent: true, origin: true, createdAt: true,
       session: { select: { sessionId: true, characterId: true, title: true } },
     },
   });

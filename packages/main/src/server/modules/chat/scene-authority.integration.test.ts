@@ -6,7 +6,7 @@ import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
-import { beginChatTurn, chatVoiceAuthority, commitChatTerminal, createChatSession, editChatTurn, regenerateChatTurn } from "./turn-ledger";
+import { beginChatTurn, cancelChatTurn, chatVoiceAuthority, commitChatTerminal, createChatSession, editChatTurn, regenerateChatTurn } from "./turn-ledger";
 
 const prefix = `zt-scene-authority-${randomUUID()}-`;
 afterAll(async () => {
@@ -92,13 +92,44 @@ describe("Main Scene terminal authority", () => {
     await expect(prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: snapshot.turnId } })).resolves.toEqual(fact);
   });
 
-  it("preserves exact historical empty terminal replay without accepting a new empty proposal", async () => {
+  it("discards a lookup when selecting the terminal and preserves exact historical empty replay", async () => {
     const f = await fixture();
     const snapshot = await f.begin();
     const selected = terminal(snapshot);
+    const mediaLookup = { version: 2, attempt: snapshot.attempt, lookupId: randomUUID(), order: 1,
+      callId: "stock-lookup", requestDigest: "d".repeat(64), deadlineMs: Date.now() + 25_000,
+      status: "ready", args: { kind: "image", query: "A photo in the cafe" },
+      result: { accepted: true, status: "no_match", matches: [] } };
+    await prisma.chatTurn.update({ where: { id: snapshot.turnId }, data: { mediaLookup, imageActionMode: "library" } });
+    await expect(commitChatTerminal({ ...selected, attempt: snapshot.attempt + 1 })).rejects.toThrow("CAS");
+    await expect(prisma.chatTurn.findUniqueOrThrow({ where: { id: snapshot.turnId } })).resolves.toMatchObject({ mediaLookup });
     const first = await commitChatTerminal(selected);
+    await expect(prisma.chatTurn.findUniqueOrThrow({ where: { id: snapshot.turnId } }))
+      .resolves.toMatchObject({ mediaLookup: null, imageActionMode: "library", terminalEvidence: selected.terminalEvidence });
     await prisma.chatTurn.update({ where: { id: snapshot.turnId }, data: { assistantContent: "" } });
     await expect(commitChatTerminal({ ...selected, content: "" })).resolves.toEqual({ ...first, duplicate: true });
+  });
+
+  it("drops lookup evidence on Stop and when restarting a legacy terminal attempt", async () => {
+    const f = await fixture();
+    const snapshot = await f.begin();
+    const where = { id: snapshot.turnId };
+    const mediaLookup = { version: 1, attempt: snapshot.attempt, lookupId: randomUUID(), status: "ready",
+      args: { kind: "video", query: "A clip in the cafe" } };
+    await prisma.chatTurn.update({ where, data: { mediaLookup, imageActionMode: "library" } });
+    await expect(cancelChatTurn(f.userId, snapshot.assistantMessageId, snapshot.attempt + 1)).rejects.toThrow("superseded");
+    await expect(prisma.chatTurn.findUniqueOrThrow({ where })).resolves.toMatchObject({ mediaLookup });
+    await expect(cancelChatTurn(f.userId, snapshot.assistantMessageId, snapshot.attempt)).resolves.toMatchObject({ cancelled: true });
+    await expect(prisma.chatTurn.findUniqueOrThrow({ where })).resolves.toMatchObject({
+      mediaLookup: null, imageActionMode: "library", terminalEvidence: { authority: "main_user_cancel" },
+    });
+
+    // Older terminal rows may still have their lookup until a new attempt uses the row.
+    await prisma.chatTurn.update({ where, data: { mediaLookup } });
+    await expect(regenerateChatTurn(f.userId, snapshot.assistantMessageId)).resolves.toMatchObject({
+      snapshot: { attempt: snapshot.attempt + 1, imageActionMode: "library" },
+    });
+    await expect(prisma.chatTurn.findUniqueOrThrow({ where })).resolves.toMatchObject({ mediaLookup: null });
   });
 
   it.each(["pending", "delivered"] as const)("replays an exact terminal ACK without scheduling another %s memory projection", async status => {

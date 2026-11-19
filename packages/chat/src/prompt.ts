@@ -92,12 +92,12 @@ export function buildTurnStateBlock(context: BuiltContext, now: Date): string {
   return ["Right now:", ...lines.map((line) => `- ${line}`)].join("\n");
 }
 
-export const PAID_IMAGE_REQUEST_GUIDANCE = 'If the user asks to create a photo or redo the whole image, tell them to choose "Send as paid image request" in the composer.';
+export const PREPARED_MEDIA_TURN_GUIDANCE = "For ordinary photo or video requests of an available kind, use search_character_media first.";
 
 export function describeImageActionAuthorization(mode: BuiltContext["imageActionMode"]): string {
   if (mode === "paid") return "The user authorized a paid image action with this message. Use it only if requested.";
   if (mode === "library") return "This reply can search prepared media and send matching candidate tokens. Explain an existing-only miss within the request's scope.";
-  return `New photos and whole-image edits require user authorization. ${PAID_IMAGE_REQUEST_GUIDANCE}`;
+  return "This message does not authorize a paid new image or whole-image edit.";
 }
 
 /** Saved expression choices are the user's own instructions for how to be talked to. */

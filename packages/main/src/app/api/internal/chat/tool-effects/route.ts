@@ -8,7 +8,7 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
   try {
-    const result = await applyChatToolEffect(await request.json());
+    const result = await applyChatToolEffect(await request.json(), request.signal);
     return Response.json(result, { status: result.accepted ? 200 : 409 });
   } catch (error) {
     if (error instanceof ZodError) {

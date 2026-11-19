@@ -81,10 +81,13 @@ describe("reclaiming an abandoned Chat attempt", () => {
     const begun = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId: f.userId, sessionId: f.sessionId, content: "A short run.", idempotencyKey: randomUUID() });
     await prisma.chatTurn.update({ where: { id: begun.snapshot!.turnId }, data: {
       assistantStatus: "generating", admittedAt: new Date(), executionDeadlineAt: new Date(Date.now() - 61_000),
+      mediaLookup: { version: 1, attempt: begun.snapshot!.attempt, lookupId: randomUUID(), status: "pending",
+        args: { kind: "image", query: "A photo" } },
     } });
     expect(await reclaimStalledChatAgentRuns()).toEqual({ reclaimed: 1 });
     expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: begun.snapshot!.turnId } }))
-      .toMatchObject({ assistantStatus: "failed", terminalAt: expect.any(Date) });
+      .toMatchObject({ assistantStatus: "failed", terminalAt: expect.any(Date), mediaLookup: null,
+        terminalEvidence: { authority: "main_stalled_attempt_reclaim" } });
   });
 
   it("allows the terminal-commit grace after a configured deadline expires", async () => {

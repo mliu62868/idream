@@ -956,7 +956,7 @@ describe("AgentRun account-erasure drain", () => {
   ])("classifies $name HTTP $status receipt as $outcome without fabricating delivery", async test => {
     const completed = Promise.withResolvers<void>();
     store.completeAgentRun.mockImplementationOnce(async () => { completed.resolve(); });
-    const input = agentRunInput("Send me a photo.");
+    const input = { ...agentRunInput("Send me a photo."), deadlineAt: new Date(Date.now() + 60_000).toISOString() };
     store.readAgentRunInput.mockResolvedValue(input);
     let observed: CompanionToolResult | undefined;
     runtime.runCompanion.mockImplementation(async (invocation, port) => {
@@ -978,10 +978,76 @@ describe("AgentRun account-erasure drain", () => {
     else expect(observed).not.toHaveProperty("attachmentId");
     if (test.outcome === "succeeded") expect(observed).toHaveProperty("output", test.body);
     else expect(observed).not.toHaveProperty("output");
-    const bodies = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/api/internal/chat/tool-effects"))
-      .map(([, init]) => JSON.parse(String(init?.body)));
+    const toolRequests = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/api/internal/chat/tool-effects"));
+    const bodies = toolRequests.map(([, init]) => JSON.parse(String(init?.body)));
     expect(bodies).toHaveLength(test.requests);
     for (const body of bodies) expect(body).toEqual(bodies[0]);
+    if (test.name === "search_character_media") {
+      expect(bodies[0]).toMatchObject({ lookupOrder: 1, lookupDeadlineAt: expect.any(String) });
+      for (const [, init] of toolRequests) expect(init?.signal).toBe(toolRequests[0]?.[1]?.signal);
+    }
     expect(store.appendAgentRunEvent.mock.calls.filter(([, , kind]) => kind === "tool.requested")).toHaveLength(1);
+  });
+
+  it("carries the later lookup order into a send even when that lookup could not reach Main", async () => {
+    const completed = Promise.withResolvers<void>();
+    store.completeAgentRun.mockImplementationOnce(async () => { completed.resolve(); });
+    const input = { ...agentRunInput("Send me a photo beside the sea."), deadlineAt: new Date(Date.now() + 60_000).toISOString() };
+    store.readAgentRunInput.mockResolvedValue(input);
+    runtime.runCompanion.mockImplementation(async (invocation, port) => {
+      const common = { attemptId: invocation.attemptId, intent: { requestedNudity: "unspecified" as const } };
+      await port.executeTool({ ...common, callId: "first", name: "search_character_media", effectScope: "attempt",
+        arguments: { kind: "image", query: "a photo" } });
+      const later = await port.executeTool({ ...common, callId: "later", name: "search_character_media", effectScope: "attempt",
+        arguments: { kind: "image", query: "beside the sea" } });
+      expect(later.outcome).toBe("failed");
+      await port.executeTool({ ...common, callId: "send", name: "send_character_media", effectScope: "turn_action",
+        arguments: { candidateToken: "earlier-candidate" } });
+    });
+    const requests: Array<{ body: { callId: string; lookupOrder?: number; lookupDeadlineAt?: string }; signal?: AbortSignal | null }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (!String(url).endsWith("/api/internal/chat/tool-effects")) {
+        return Response.json({ accepted: true, duplicate: false, terminalMessageId: "assistant-1", committedAt: "2026-08-28T12:00:00.000Z" });
+      }
+      const body = JSON.parse(String(init?.body));
+      requests.push({ body, signal: init?.signal });
+      if (body.callId === "later") throw new Error("connection lost before Main");
+      if (body.callId === "send") return Response.json({ error: "conflict" }, { status: 409 });
+      return Response.json({ accepted: true, status: "no_match", matches: [] });
+    }));
+    await acceptAgentRun(input);
+    await completed.promise;
+    expect(requests.map(({ body }) => [body.callId, body.lookupOrder])).toEqual([
+      ["first", 1], ["later", 2], ["later", 2], ["send", 2],
+    ]);
+    expect(requests[1]?.body.lookupDeadlineAt).toBe(requests[2]?.body.lookupDeadlineAt);
+    expect(requests[1]?.signal).toBe(requests[2]?.signal);
+  });
+
+  it("does not accept or retransmit a lookup whose HTTP receipt is past the shared deadline", async () => {
+    const completed = Promise.withResolvers<void>();
+    store.completeAgentRun.mockImplementationOnce(async () => { completed.resolve(); });
+    const input = { ...agentRunInput("Send me a photo."), deadlineAt: new Date(Date.now() + 60_000).toISOString() };
+    store.readAgentRunInput.mockResolvedValue(input);
+    let observed: CompanionToolResult | undefined;
+    runtime.runCompanion.mockImplementation(async (invocation, port) => {
+      invocation.deadlineAt = new Date(Date.now() + 125).toISOString();
+      observed = await port.executeTool({ attemptId: invocation.attemptId, callId: "late-lookup", name: "search_character_media",
+        effectScope: "attempt", intent: { requestedNudity: "unspecified" }, arguments: { kind: "image", query: "a photo" } });
+    });
+    let attempts = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (!String(url).endsWith("/api/internal/chat/tool-effects")) {
+        return Response.json({ accepted: true, duplicate: false, terminalMessageId: "assistant-1", committedAt: "2026-08-28T12:00:00.000Z" });
+      }
+      attempts += 1;
+      const deadline = Date.parse(JSON.parse(String(init?.body)).lookupDeadlineAt);
+      await new Promise(resolve => setTimeout(resolve, Math.max(0, deadline - Date.now()) + 20));
+      return Response.json({ accepted: true, status: "no_match", matches: [] });
+    }));
+    await acceptAgentRun(input);
+    await completed.promise;
+    expect(attempts).toBe(1);
+    expect(observed).toMatchObject({ outcome: "failed", error: { code: "media_search_unavailable" } });
   });
 });

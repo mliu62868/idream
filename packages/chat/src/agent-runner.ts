@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { chatTerminalAckSchema, type ChatStreamEvent, type ChatTerminalCommit, type ChatToolEffect } from "@idream/shared/contracts";
 import { COMPANION_PRODUCT_PROMPT_VERSION } from "@idream/shared";
 import {
+  CHAT_MEDIA_LOOKUP_BUDGET_MS,
   SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL,
   searchCharacterMediaResultSchema, sendCharacterMediaResultSchema,
 } from "@idream/shared/chat/media-library";
@@ -222,6 +223,7 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
       deadlineAt: agentRunDeadlineAt(input),
     };
     let sequence = 0;
+    let lookupOrder = 0;
     const port: CompanionRuntimePort = {
       emit: async (event) => {
         const requiresWritableRun = event.type === "model_request_started"
@@ -258,7 +260,15 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
           metric.evidenceMatches += event.evidenceMatches ?? 0;
         }
       },
-      executeTool: (call) => executeMainTool(call, snapshot.turnId, snapshot.attempt),
+      executeTool: (call, toolSignal) => {
+        // This position belongs to the native call, not its HTTP transmission.
+        if (call.name === SEARCH_CHARACTER_MEDIA_TOOL) lookupOrder += 1;
+        return executeMainTool(call, snapshot.turnId, snapshot.attempt, {
+          lookupOrder,
+          deadlineAt: invocation.deadlineAt,
+          signal: toolSignal ?? signal,
+        });
+      },
       commit: async (candidate, commitSignal) => {
         completedReply = { provider: candidate.provider, model: candidate.model, usage: candidate.usage, modelRequests: candidate.modelRequests };
         // SPEC: the Scene is carried forward unchanged, one version up, as
@@ -472,8 +482,12 @@ async function executeMainTool(
   call: CompanionToolCall,
   turnId: string,
   attempt: number,
+  context: { lookupOrder: number; deadlineAt: string; signal: AbortSignal },
 ): Promise<CompanionToolResult> {
   const lookup = call.name === SEARCH_CHARACTER_MEDIA_TOOL;
+  const lookupDeadlineMs = lookup ? Math.min(Date.parse(context.deadlineAt), Date.now() + CHAT_MEDIA_LOOKUP_BUDGET_MS) : undefined;
+  const transportSignal = lookupDeadlineMs === undefined ? undefined
+    : AbortSignal.any([context.signal, AbortSignal.timeout(Math.max(0, lookupDeadlineMs - Date.now()))]);
   const effect: ChatToolEffect = {
     version: 2,
     turnId,
@@ -483,6 +497,9 @@ async function executeMainTool(
     effectScope: call.effectScope,
     intent: call.intent,
     arguments: call.arguments,
+    ...((lookup || call.name === SEND_CHARACTER_MEDIA_TOOL) && context.lookupOrder > 0
+      ? { lookupOrder: context.lookupOrder } : {}),
+    ...(lookupDeadlineMs === undefined ? {} : { lookupDeadlineAt: new Date(lookupDeadlineMs).toISOString() }),
   };
   await appendAgentRunEvent(turnId, attempt, "tool.requested", {
     attemptId: call.attemptId,
@@ -492,8 +509,12 @@ async function executeMainTool(
   });
   for (let ackAttempt = 1; ackAttempt <= 2; ackAttempt += 1) {
     try {
-      const response = await postMain("/api/internal/chat/tool-effects", effect);
+      transportSignal?.throwIfAborted();
+      if (lookupDeadlineMs !== undefined && Date.now() >= lookupDeadlineMs) throw new Error("Prepared media lookup exceeded its time budget");
+      const response = await postMain("/api/internal/chat/tool-effects", effect, transportSignal);
       const value = await response.json() as Record<string, unknown>;
+      transportSignal?.throwIfAborted();
+      if (lookupDeadlineMs !== undefined && Date.now() >= lookupDeadlineMs) throw new Error("Prepared media lookup exceeded its time budget");
       if (response.ok && value.accepted === true) {
         // A lookup ACK proves neither a delivery nor a paid reservation. A
         // malformed send receipt is ambiguous and must replay the same action.
@@ -515,7 +536,7 @@ async function executeMainTool(
           ackAttempt,
           status: response.status,
         });
-        if (ackAttempt < 2) continue;
+        if (ackAttempt < 2 && !transportSignal?.aborted) continue;
         return {
           attemptId: call.attemptId,
           callId: call.callId,
@@ -558,7 +579,7 @@ async function executeMainTool(
         ackAttempt,
         errorDigest: sha256(error instanceof Error ? error.message : String(error)),
       });
-      if (ackAttempt < 2) continue;
+      if (ackAttempt < 2 && !transportSignal?.aborted) continue;
       return {
         attemptId: call.attemptId,
         callId: call.callId,
@@ -774,7 +795,9 @@ function rejectedCommit(attemptId: string, message: string): CompanionCommitAck 
   };
 }
 
-async function postMain(path: string, body: unknown): Promise<Response> {
+const MAIN_ACK_TIMEOUT_MS = 30_000;
+
+async function postMain(path: string, body: unknown, signal = AbortSignal.timeout(MAIN_ACK_TIMEOUT_MS)): Promise<Response> {
   return fetch(`${env.MAIN_INTERNAL_BASE_URL}${path}`, {
     method: "POST",
     headers: {
@@ -782,7 +805,7 @@ async function postMain(path: string, body: unknown): Promise<Response> {
       "x-internal-token": env.INTERNAL_TOKEN,
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(30_000),
+    signal,
   });
 }
 

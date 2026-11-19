@@ -37,11 +37,11 @@ const embeddingResponseSchema = z.object({
   data: z.array(z.object({ index: z.number().int().nonnegative(), embedding: z.array(z.number().finite()) })),
 });
 
-export async function embedMediaText(text: string, config = mediaLibraryModels().embedding, fetchImpl: typeof fetch = fetch) {
+export async function embedMediaText(text: string, config = mediaLibraryModels().embedding, fetchImpl: typeof fetch = fetch, signal?: AbortSignal) {
   if (!config) throw Errors.unavailable("Character media search is not configured");
   const response = embeddingResponseSchema.safeParse(await modelJson(config, "/embeddings", {
     model: config.model, input: [text], encoding_format: "float",
-  }, 30_000, fetchImpl));
+  }, 30_000, fetchImpl, signal));
   if (!response.success || response.data.model !== config.model || response.data.data.length !== 1 ||
       response.data.data[0]?.index !== 0 || response.data.data[0].embedding.length !== config.dimensions) {
     throw Errors.unavailable("Media embedding returned an incompatible model or vector");
@@ -50,14 +50,14 @@ export async function embedMediaText(text: string, config = mediaLibraryModels()
 }
 
 /** Only the deployed OpenAI-compatible /rerank contract is supported. */
-export async function rerankMediaText(query: string, documents: readonly string[], config = mediaLibraryModels().rerank, fetchImpl: typeof fetch = fetch) {
+export async function rerankMediaText(query: string, documents: readonly string[], config = mediaLibraryModels().rerank, fetchImpl: typeof fetch = fetch, signal?: AbortSignal) {
   if (!config || documents.length === 0) return null;
   const schema = z.object({
     model: z.string(), results: z.array(z.object({ index: z.number().int().nonnegative(), relevance_score: z.number().finite() })),
   });
   const response = schema.safeParse(await modelJson(config, "/rerank", {
     model: config.model, query, documents, top_n: documents.length,
-  }, 30_000, fetchImpl));
+  }, 30_000, fetchImpl, signal));
   if (!response.success || response.data.model !== config.model || response.data.results.length !== documents.length ||
       new Set(response.data.results.map(row => row.index)).size !== documents.length ||
       response.data.results.some(row => row.index >= documents.length)) {
@@ -125,11 +125,13 @@ export function normalizeVector(vector: readonly number[]) {
   return vector.map(n => n / magnitude);
 }
 
-async function modelJson(config: MediaModelEndpoint, path: string, payload: unknown, timeoutMs: number, fetchImpl: typeof fetch): Promise<unknown> {
+async function modelJson(config: MediaModelEndpoint, path: string, payload: unknown, timeoutMs: number, fetchImpl: typeof fetch,
+  signal = AbortSignal.timeout(timeoutMs)): Promise<unknown> {
   try {
+    signal.throwIfAborted();
     const response = await fetchImpl(`${config.url}${path}`, {
       method: "POST", headers: { "Content-Type": "application/json", ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}) },
-      body: JSON.stringify(payload), signal: AbortSignal.timeout(timeoutMs), redirect: "error",
+      body: JSON.stringify(payload), signal, redirect: "error",
     });
     if (!response.ok) {
       void response.body?.cancel().catch(() => undefined);
@@ -148,6 +150,7 @@ async function modelJson(config: MediaModelEndpoint, path: string, payload: unkn
         chunks.push(chunk.value);
       }
     } finally { void reader.cancel().catch(() => undefined); }
+    signal.throwIfAborted();
     return JSON.parse(Buffer.concat(chunks).toString("utf8"));
   } catch (cause) {
     if (cause instanceof Error && "code" in cause && cause.code === "unavailable") throw cause;

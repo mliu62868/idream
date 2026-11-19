@@ -325,6 +325,8 @@ export const chatToolEffectSchema = z.object({
   callId: z.string().min(1),
   name: z.enum(["generate_image_async", "edit_last_image", SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL]),
   effectScope: z.enum(["attempt", "turn_action"]),
+  lookupOrder: z.number().int().positive().optional(),
+  lookupDeadlineAt: z.iso.datetime().optional(),
   intent: z.object({
     requestedNudity: z.enum(["unspecified", "none", "full"]),
   }).strict(),
@@ -332,6 +334,15 @@ export const chatToolEffectSchema = z.object({
 }).strict().superRefine((effect, context) => {
   if (effect.name === SEARCH_CHARACTER_MEDIA_TOOL && effect.effectScope !== "attempt") {
     context.addIssue({ code: "custom", path: ["effectScope"], message: "Media lookup belongs to the current attempt" });
+  }
+  if (effect.name === SEARCH_CHARACTER_MEDIA_TOOL && (effect.lookupOrder === undefined || effect.lookupDeadlineAt === undefined)) {
+    context.addIssue({ code: "custom", path: ["lookupOrder"], message: "Media lookup requires an attempt-local order and deadline" });
+  }
+  if (effect.name !== SEARCH_CHARACTER_MEDIA_TOOL && effect.lookupDeadlineAt !== undefined) {
+    context.addIssue({ code: "custom", path: ["lookupDeadlineAt"], message: "Only a media lookup starts a lookup deadline" });
+  }
+  if (effect.name !== SEARCH_CHARACTER_MEDIA_TOOL && effect.name !== SEND_CHARACTER_MEDIA_TOOL && effect.lookupOrder !== undefined) {
+    context.addIssue({ code: "custom", path: ["lookupOrder"], message: "Only prepared media uses lookup order" });
   }
   if (effect.name === SEND_CHARACTER_MEDIA_TOOL && effect.effectScope !== "turn_action") {
     context.addIssue({ code: "custom", path: ["effectScope"], message: "Media delivery belongs to the Turn action" });

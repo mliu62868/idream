@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { setImmediate as nextTick, setTimeout as delay } from "node:timers/promises";
+import type { Prisma } from "@prisma/client";
 import sharp from "sharp";
 import { compileCharacterSoul } from "@idream/shared";
 import { searchCharacterMediaResultSchema, sendCharacterMediaResultSchema, type SearchCharacterMediaArgs } from "@idream/shared/chat/media-library";
@@ -30,7 +32,9 @@ import { beginChatTurn, commitChatTerminal, createChatSession, editChatTurn, get
 
 const prefix = `zt-chat-library-${randomUUID()}-`;
 const keys: string[] = [];
+const lookupOrders = new Map<string, number>();
 beforeEach(() => {
+  lookupOrders.clear();
   vi.stubEnv("MEDIA_LIBRARY_EMBEDDING_URL", "http://media-embedding.test.invalid/v1");
   vi.stubEnv("MEDIA_LIBRARY_EMBEDDING_MODEL", "fixture-embedding");
   vi.stubEnv("MEDIA_LIBRARY_EMBEDDING_DIMENSIONS", "2");
@@ -186,8 +190,16 @@ async function deliveredEdit(confirmed = true) {
 }
 
 function effect(snapshot: ChatExecutionSnapshot, name: ChatToolEffect["name"], args: Record<string, unknown>): ChatToolEffect {
-  return { version: 2, turnId: snapshot.turnId, attempt: snapshot.attempt, callId: randomUUID(), name,
+  const key = `${snapshot.turnId}:${snapshot.attempt}`;
+  const previous = lookupOrders.get(key) ?? 0;
+  const call: ChatToolEffect = { version: 2, turnId: snapshot.turnId, attempt: snapshot.attempt, callId: randomUUID(), name,
     effectScope: name === "search_character_media" ? "attempt" : "turn_action", intent: { requestedNudity: "unspecified" }, arguments: args };
+  if (name === "search_character_media") {
+    call.lookupOrder = previous + 1;
+    call.lookupDeadlineAt = new Date(Date.now() + 25_000).toISOString();
+    lookupOrders.set(key, call.lookupOrder);
+  } else if (name === "send_character_media" && previous > 0) call.lookupOrder = previous;
+  return call;
 }
 async function search(snapshot: ChatExecutionSnapshot, kind: "image" | "video" = "image", extras: Partial<SearchCharacterMediaArgs> = {}) {
   const args = { kind, query: "red dress rainy window without a hat", ...extras };
@@ -380,12 +392,241 @@ describe("Main Character media delivery authority", () => {
     expect(await prisma.generationJob.count({ where: { userId: f.id } })).toBe(0);
   });
 
+  it("replays the exact lookup response after a lost acknowledgement without calling the model again", async () => {
+    const f = await fixture();
+    const snapshot = await f.begin();
+    const call = effect(snapshot, "search_character_media", { kind: "image", query: "red dress" });
+    const original = searchCharacterMediaResultSchema.parse(await applyChatToolEffect(call));
+    await expect(applyChatToolEffect({ ...call, arguments: { query: "red dress", kind: "image" } })).resolves.toEqual(original);
+    await expect(applyChatToolEffect({ ...call, arguments: { kind: "image", query: "different" } })).rejects.toMatchObject({ code: "conflict" });
+    expect(mediaModels.embedMediaText).toHaveBeenCalledTimes(1);
+    await expect(send(snapshot, original.matches[0]!.candidateToken)).resolves.toMatchObject({ status: "completed" });
+  });
+
+  it("joins an overlapping retry of a claimed lookup without starting another embedding", async () => {
+    const f = await fixture();
+    const snapshot = await f.begin();
+    const call = effect(snapshot, "search_character_media", { kind: "image", query: "red dress" });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    vi.mocked(mediaModels.embedMediaText).mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+      return { model: "fixture-embedding", dimensions: 2, vector: [1, 0] };
+    });
+    const original = applyChatToolEffect(call);
+    await entered.promise;
+    const lookupRead = prisma.chatTurn.findUnique;
+    const replayWaiting = Promise.withResolvers<void>();
+    vi.spyOn(prisma.chatTurn, "findUnique").mockImplementation((options) => {
+      if (options.select?.mediaLookup) replayWaiting.resolve();
+      return lookupRead(options);
+    });
+    const duplicate = applyChatToolEffect(call);
+    const both = Promise.all([original, duplicate]);
+    try {
+      await Promise.race([
+        replayWaiting.promise,
+        duplicate.then(() => { throw new Error("Retry returned before the lookup completed"); }),
+      ]);
+      expect(mediaModels.embedMediaText).toHaveBeenCalledTimes(1);
+    } finally { release.resolve(); }
+    const [first, second] = await both;
+    expect(first).toEqual(second);
+  });
+
+  it("does not let a repeated broad lookup displace a newer restrictive lookup", async () => {
+    const f = await fixture("video");
+    const snapshot = await f.begin("Only send a prepared clip at most 2.9 seconds long.");
+    const broad = effect(snapshot, "search_character_media", { kind: "video", query: "a clip" });
+    const original = searchCharacterMediaResultSchema.parse(await applyChatToolEffect(broad));
+    const restricted = await search(snapshot, "video", { maxDurationSeconds: 2.9 });
+    expect(restricted.status).toBe("review_video_filters");
+    await expect(applyChatToolEffect(broad)).rejects.toMatchObject({ code: "conflict" });
+    await expect(send(snapshot, original.matches[0]!.candidateToken)).rejects.toMatchObject({ code: "conflict" });
+    expect(mediaModels.embedMediaText).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a delayed earlier call even when its first request has never reached Main", async () => {
+    const f = await fixture("video");
+    const snapshot = await f.begin("Only send a prepared clip at most 2.9 seconds long.");
+    const delayed = effect(snapshot, "search_character_media", { kind: "video", query: "a clip" });
+    await expect(search(snapshot, "video", { maxDurationSeconds: 2.9 })).resolves.toMatchObject({ status: "review_video_filters" });
+    await expect(applyChatToolEffect(delayed)).rejects.toMatchObject({ code: "conflict" });
+    expect(mediaModels.embedMediaText).toHaveBeenCalledTimes(1);
+    expect((await prisma.chatTurn.findUniqueOrThrow({ where: { id: snapshot.turnId } })).mediaLookup)
+      .toMatchObject({ order: 2, status: "resolved", args: { maxDurationSeconds: 2.9 } });
+  });
+
+  it("rejects delivery from an older lookup if a subsequent lookup did not reach Main", async () => {
+    const f = await fixture();
+    const snapshot = await f.begin();
+    const { matches } = await search(snapshot);
+    effect(snapshot, "search_character_media", { kind: "image", query: "a new lookup" });
+    await expect(send(snapshot, matches[0]!.candidateToken)).rejects.toMatchObject({ code: "conflict" });
+    expect(await prisma.chatTurnAttachment.count({ where: { turnId: snapshot.turnId } })).toBe(0);
+  });
+
+  it("shares the same deadline signal across embedding and reranking", async () => {
+    const f = await fixture();
+    const snapshot = await f.begin();
+    const rerank = vi.spyOn(mediaModels, "rerankMediaText");
+    await expect(search(snapshot)).resolves.toMatchObject({ status: "matches" });
+    const signal = vi.mocked(mediaModels.embedMediaText).mock.calls[0]?.[3];
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(rerank.mock.calls[0]?.[4]).toBe(signal);
+  });
+
+  it("returns on budget while the lookup claim is waiting on a real database row lock", async () => {
+    const f = await fixture();
+    const snapshot = await f.begin();
+    const locked = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const holding = prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${snapshot.turnId} FOR UPDATE`;
+      locked.resolve();
+      await release.promise;
+    });
+    await locked.promise;
+    const call = effect(snapshot, "search_character_media", { kind: "image", query: "red dress" });
+    call.lookupDeadlineAt = new Date(Date.now() + 400).toISOString();
+    const requested = applyChatToolEffect(call).then(value => ({ value }), error => ({ error }));
+    let outcome;
+    try { outcome = await Promise.race([requested, delay(550, "waiting")]); }
+    finally { release.resolve(); }
+    await holding;
+    await requested;
+    expect(outcome).toMatchObject({ error: { code: "unavailable", message: expect.stringContaining("time budget") } });
+    expect(mediaModels.embedMediaText).not.toHaveBeenCalled();
+    expect((await prisma.chatTurn.findUniqueOrThrow({ where: { id: snapshot.turnId } })).mediaLookup).toBeNull();
+  });
+
+  it.each(["commit", "acknowledgement"] as const)("does not issue a candidate when the transaction %s is late", async delayed => {
+    const f = await fixture();
+    const snapshot = await f.begin();
+    const staged = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const transact = prisma.$transaction.bind(prisma);
+    vi.spyOn(prisma, "$transaction").mockImplementationOnce(transact).mockImplementationOnce(async (work, options) => {
+      const run = work as (db: Prisma.TransactionClient) => Promise<unknown>;
+      if (delayed === "commit") return transact(async tx => {
+        const result = await run(tx);
+        staged.resolve();
+        await release.promise;
+        return result;
+      }, options);
+      const committed = await transact(run, options);
+      staged.resolve();
+      await release.promise;
+      return committed;
+    });
+    const call = effect(snapshot, "search_character_media", { kind: "image", query: "red dress" });
+    call.lookupDeadlineAt = new Date(Date.now() + 500).toISOString();
+    const requested = applyChatToolEffect(call).then(value => ({ value }), error => ({ error }));
+    let outcome;
+    try {
+      await Promise.race([staged.promise, requested.then(() => { throw new Error("Settlement was not staged"); })]);
+      if (delayed === "acknowledgement") {
+        const { mediaLookup } = await prisma.chatTurn.findUniqueOrThrow({ where: { id: snapshot.turnId } });
+        expect(mediaLookup).toMatchObject({ status: "resolved", result: { status: "matches" } });
+        expect(JSON.stringify(mediaLookup)).not.toContain("candidateToken");
+      }
+      outcome = await Promise.race([requested, delay(625, "waiting")]);
+    } finally { release.resolve(); }
+    await requested;
+    expect(outcome).toMatchObject({ error: { code: "unavailable", message: expect.stringContaining("time budget") } });
+    await expect(applyChatToolEffect(call)).rejects.toMatchObject({ code: "unavailable" });
+    expect(mediaModels.embedMediaText).toHaveBeenCalledTimes(1);
+    const { mediaLookup } = await prisma.chatTurn.findUniqueOrThrow({ where: { id: snapshot.turnId } });
+    expect(JSON.stringify(mediaLookup)).not.toContain("candidateToken");
+  });
+
+  it("also bounds a same-call retry waiting for a database receipt", async () => {
+    const f = await fixture();
+    const snapshot = await f.begin();
+    const call = effect(snapshot, "search_character_media", { kind: "image", query: "red dress" });
+    call.lookupDeadlineAt = new Date(Date.now() + 650).toISOString();
+    const embeddingEntered = Promise.withResolvers<void>();
+    const receiptReadEntered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    vi.mocked(mediaModels.embedMediaText).mockImplementationOnce(async () => {
+      embeddingEntered.resolve();
+      await release.promise;
+      return { model: "fixture-embedding", dimensions: 2, vector: [1, 0] };
+    });
+    const lookupRead = prisma.chatTurn.findUnique;
+    vi.spyOn(prisma.chatTurn, "findUnique").mockImplementation((options) => {
+      if (!options.select?.mediaLookup) return lookupRead(options);
+      receiptReadEntered.resolve();
+      return release.promise.then(() => lookupRead(options)) as ReturnType<typeof lookupRead>;
+    });
+    const first = applyChatToolEffect(call).then(value => ({ value }), error => ({ error }));
+    let outcome;
+    try {
+      await Promise.race([embeddingEntered.promise, first.then(() => { throw new Error("Lookup did not enter embedding"); })]);
+      const replayed = applyChatToolEffect(call).then(value => ({ value }), error => ({ error }));
+      await Promise.race([receiptReadEntered.promise, replayed.then(() => { throw new Error("Retry did not enter receipt read"); })]);
+      outcome = await Promise.race([replayed, delay(800, "waiting")]);
+    } finally { release.resolve(); }
+    await first;
+    expect(outcome).toMatchObject({ error: { code: "unavailable", message: expect.stringContaining("time budget") } });
+    expect(mediaModels.embedMediaText).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows a timely issued candidate to be sent after the lookup budget elapses", async () => {
+    const f = await fixture();
+    const snapshot = await f.begin();
+    const call = effect(snapshot, "search_character_media", { kind: "image", query: "red dress" });
+    const deadline = Date.now() + 600;
+    call.lookupDeadlineAt = new Date(deadline).toISOString();
+    const result = searchCharacterMediaResultSchema.parse(await applyChatToolEffect(call));
+    const { mediaLookup } = await prisma.chatTurn.findUniqueOrThrow({ where: { id: snapshot.turnId } });
+    expect(mediaLookup).toMatchObject({ status: "resolved", result: { status: "matches" } });
+    expect(JSON.stringify(mediaLookup)).not.toContain("candidateToken");
+    await delay(Math.max(0, deadline - Date.now()) + 10);
+    await expect(applyChatToolEffect(call)).rejects.toMatchObject({ code: "unavailable" });
+    await expect(send(snapshot, result.matches[0]!.candidateToken)).resolves.toMatchObject({ status: "completed" });
+  });
+
+  it("bounds the entire lookup even if a provider ignores cancellation, and replays its failure", async () => {
+    const f = await fixture();
+    const snapshot = await f.begin();
+    const call = effect(snapshot, "search_character_media", { kind: "image", query: "red dress" });
+    call.lookupDeadlineAt = new Date(Date.now() + 500).toISOString();
+    const entered = Promise.withResolvers<AbortSignal | undefined>();
+    const release = Promise.withResolvers<void>();
+    const embedding = vi.mocked(mediaModels.embedMediaText).mockImplementationOnce(async (_query, _config, _fetch, signal) => {
+      entered.resolve(signal);
+      await release.promise;
+      return { model: "fixture-embedding", dimensions: 2, vector: [1, 0] };
+    });
+    const rerank = vi.spyOn(mediaModels, "rerankMediaText");
+    const result = applyChatToolEffect(call);
+    const missed = expect(result).rejects.toMatchObject({ code: "unavailable", message: expect.stringContaining("time budget") });
+    try {
+      const signal = await Promise.race([
+        entered.promise,
+        missed.then(() => { throw new Error("Lookup expired before reaching the test provider"); }),
+      ]);
+      await missed;
+      expect(signal?.aborted).toBe(true);
+      await expect(applyChatToolEffect(call)).rejects.toMatchObject({ code: "unavailable", message: expect.stringContaining("time budget") });
+    } finally { release.resolve(); }
+    await nextTick();
+    expect(embedding).toHaveBeenCalledTimes(1);
+    expect(rerank).not.toHaveBeenCalled();
+    expect((await prisma.chatTurn.findUniqueOrThrow({ where: { id: snapshot.turnId } })).mediaLookup)
+      .toMatchObject({ order: 1, status: "pending", deadlineMs: Date.parse(call.lookupDeadlineAt!) });
+    expect(await prisma.chatTurnAttachment.count({ where: { turnId: snapshot.turnId } })).toBe(0);
+  });
+
   it("revokes earlier evidence when a current attempt submits an invalid stricter lookup", async () => {
     const f = await fixture("video");
     const snapshot = await f.begin("Only send a prepared clip at most 2.9 seconds long.");
     const token = (await search(snapshot, "video")).matches[0]!.candidateToken;
     await expect(search(snapshot, "video", { minDurationSeconds: 4, maxDurationSeconds: 2.9 })).rejects.toThrow();
-    expect((await prisma.chatTurn.findUniqueOrThrow({ where: { id: snapshot.turnId } })).mediaLookup).toBeNull();
+    expect((await prisma.chatTurn.findUniqueOrThrow({ where: { id: snapshot.turnId } })).mediaLookup)
+      .toMatchObject({ order: 2, status: "failed", args: null });
     await expect(send(snapshot, token)).rejects.toMatchObject({ code: "conflict" });
     expect(await prisma.chatTurnAttachment.count({ where: { turnId: snapshot.turnId } })).toBe(0);
     expect(await prisma.generationJob.count({ where: { userId: f.id } })).toBe(0);
@@ -424,7 +665,7 @@ describe("Main Character media delivery authority", () => {
     } finally { resume.resolve(); }
     expect(await older).toHaveProperty("error");
     expect((await prisma.chatTurn.findUniqueOrThrow({ where: { id: snapshot.turnId } })).mediaLookup).toMatchObject({
-      status: "ready", args: { maxDurationSeconds: 2.9 },
+      status: "resolved", args: { maxDurationSeconds: 2.9 },
     });
     await expect(send(snapshot, oldToken)).rejects.toMatchObject({ code: "conflict" });
     expect(await prisma.chatTurnAttachment.count({ where: { turnId: snapshot.turnId } })).toBe(0);
@@ -834,7 +1075,7 @@ describe("Main Character media delivery authority", () => {
     const snapshot = await f.begin();
     const token = (await search(snapshot, "image", { requestedNudity })).matches[0]!.candidateToken;
     expect((await prisma.chatTurn.findUniqueOrThrow({ where: { id: snapshot.turnId } })).mediaLookup).toMatchObject({
-      status: "ready", args: { requestedNudity },
+      status: "resolved", args: { requestedNudity },
     });
     const delivered = await send(snapshot, token);
     expect(delivered).toMatchObject({ accepted: true, costDreamcoins: 0, source: "library" });

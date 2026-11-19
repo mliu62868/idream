@@ -92,7 +92,10 @@ export async function getGroupConversation(userId: string, groupId: string, sele
     where: { id: groupId, userId },
     include: {
       members: { orderBy: { groupPosition: "asc" }, include: { character: { select: { creatorId: true, imageAsset: { select: { url: true, thumbnailUrl: true } } } } } },
-      turns: { orderBy: { ordinal: "asc" }, include: { turn: { include: { attachments: { orderBy: { createdAt: "asc" } } } } } },
+      turns: {
+        orderBy: { ordinal: "asc" },
+        include: { turn: { omit: { mediaLookup: true }, include: { attachments: { orderBy: { createdAt: "asc" } } } } },
+      },
     },
   });
   if (!group) throw Errors.notFound("Group conversation not found");

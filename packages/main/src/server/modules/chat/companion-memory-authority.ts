@@ -345,6 +345,7 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
         assistantStatus: "cancelled",
         terminalAt: now,
         terminalEvidence: { authority: "main_memory_clear" },
+        mediaLookup: Prisma.JsonNull,
         admissionLeaseToken: null,
         admissionLeaseUntil: null,
       },
