@@ -1,11 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { CharacterMediaLibraryEntry, CharacterVisualProfile, MediaAsset, Prisma, PrismaClient } from "@prisma/client";
 import {
+  characterMediaLibraryBatchReviewRequestSchema, characterMediaLibraryBatchReviewResponseSchema,
   characterMediaLibraryCreateRequestSchema, characterMediaLibraryUpdateRequestSchema,
   characterMediaLibraryDescribeRequestSchema, characterMediaLibraryDescribeResponseSchema,
   characterMediaLibraryEntrySchema, characterMediaLibraryListResponseSchema,
   characterMediaLibraryMutationResponseSchema, characterMediaLibraryQuerySchema,
   characterMediaLibrarySearchRequestSchema, characterMediaLibrarySearchResponseSchema,
+  type CharacterMediaLibraryBatchReviewRequest,
   type CharacterMediaLibraryCreateRequest, type CharacterMediaLibraryUpdateRequest,
   type CharacterMediaLibraryDescribeRequest, type CharacterMediaLibraryQuery,
   type CharacterMediaLibrarySearchRequest, type CharacterMediaLibraryVisualIdentity,
@@ -109,7 +111,9 @@ export async function createCharacterMediaLibraryEntry(input: Mutation & { body:
           { key: thumbnailKey, body: media.thumbnail, contentType: "image/jpeg" },
         ]) {
           writtenKeys.push(item.key);
-          const stored = await providers.blob.putPrivate({ ...item, signal: AbortSignal.timeout(30_000) });
+          const stored = providers.blob.putPrivateIfAbsent
+            ? await providers.blob.putPrivateIfAbsent({ ...item, signal: AbortSignal.timeout(30_000) })
+            : await providers.blob.putPrivate({ ...item, signal: AbortSignal.timeout(30_000) });
           if (!stored.ok) throw Errors.unavailable("The chat library could not preserve its own media file");
         }
         return { source, media, index };
@@ -125,6 +129,7 @@ export async function createCharacterMediaLibraryEntry(input: Mutation & { body:
           id, characterId: input.characterId, sourceAssetId: asset.id,
           visualProfileId: visual.id, visualProfileVersion: visual.version,
           kind: prepared.media.kind, status: body.status, ...descriptor,
+          nudityVerifiedById: body.nudity !== "unknown" ? input.actor.id : null,
           contentHash: prepared.media.contentHash, contentType: prepared.media.contentType,
           width: prepared.media.width, height: prepared.media.height,
           durationSeconds: prepared.media.durationSeconds, hasAudio: prepared.media.hasAudio,
@@ -211,6 +216,7 @@ export async function updateCharacterMediaLibraryEntry(input: Mutation & { entry
       }
       const updated = await tx.characterMediaLibraryEntry.update({ where: { id: entry.id }, data: {
         ...prepared.descriptor, ...(prepared.index ?? {}), status: prepared.status,
+        ...(body.nudity !== undefined ? { nudityVerifiedById: body.nudity !== "unknown" ? input.actor.id : null } : {}),
         revision: { increment: 1 }, descriptionSource: "operator", descriptorModel: null,
         updatedById: input.actor.id,
         ...(prepared.status === "published" && entry.status !== "published" ? { publishedAt: new Date() } : {}),
@@ -220,6 +226,98 @@ export async function updateCharacterMediaLibraryEntry(input: Mutation & { entry
     },
     decorateResult: (result, replayed) => ({ ...record(result), replayed }),
     validateResult: value => characterMediaLibraryMutationResponseSchema.parse(value),
+  });
+}
+
+export async function batchReviewCharacterMediaLibrary(input: Mutation & { body: CharacterMediaLibraryBatchReviewRequest }) {
+  const body = characterMediaLibraryBatchReviewRequestSchema.parse(input.body);
+  const seenIds = new Set<string>();
+  for (const item of body.items) {
+    if (seenIds.has(item.entryId)) {
+      throw Errors.badRequest("Batch review items must reference unique library entries");
+    }
+    seenIds.add(item.entryId);
+  }
+  return executeAtomicIdempotentMutation({
+    ...mutationIdentity(input, "character.media_library.batch_review", input.characterId),
+    payload: body,
+    transactionTimeoutMs: 20_000,
+    prepare: async () => {
+      await requirePublishPermission(input.actor, input.characterId);
+      const preparedItems = [];
+      for (const item of body.items) {
+        const entry = await requireEntry(prisma, input.characterId, item.entryId);
+        if (entry.revision !== item.expectedRevision) {
+          throw Errors.conflict("A chat library item changed; reload before batch review", { entryId: item.entryId });
+        }
+        const nextNudity = item.nudity ?? entry.nudity;
+        if (item.status === "published" && nextNudity === "unknown") {
+          throw Errors.badRequest("Explicit nudity classification is required before publishing chat library items", { entryId: item.entryId });
+        }
+        const descriptor = normalizeDescriptor({ ...entry, nudity: nextNudity });
+        const descriptionChanged = libraryDescriptorHash({ ...entry, ...descriptor }) !== libraryDescriptorHash(entry);
+        let legacySourceAssetId: string | null = null;
+        if (item.status === "published") {
+          const visual = await requireLibraryVisual(prisma, input.characterId, entry);
+          if (!entry.sourceAssetId) throw Errors.conflict("This chat library source was deleted", { entryId: item.entryId });
+          ({ legacySourceAssetId } = await requireLibrarySource(prisma, entry.sourceAssetId, visual));
+        }
+        const index = descriptionChanged || item.status === "published"
+          ? await prepareIndex({ ...entry, ...descriptor }, item.status === "published")
+          : null;
+        preparedItems.push({ item, entry, descriptor, index, legacySourceAssetId });
+      }
+      return preparedItems;
+    },
+    mutate: async (tx, preparedItems) => {
+      const authorityAssetIds = preparedItems.flatMap(p => sourceAuthorityAssetIds(p.entry.sourceAssetId, p.legacySourceAssetId));
+      await lockCharacterGenerationAndMediaAssetAuthorities(tx, input.characterId, authorityAssetIds);
+      await requirePublishPermission(input.actor, input.characterId, tx);
+      const ordered = [...preparedItems].sort((a, b) => a.item.entryId.localeCompare(b.item.entryId));
+      const updatedById = new Map<string, CharacterMediaLibraryEntry>();
+      for (const prepared of ordered) {
+        const { item } = prepared;
+        await tx.$queryRaw`SELECT id FROM "character_media_library_entries" WHERE id = ${item.entryId} FOR UPDATE`;
+        const entry = await requireEntry(tx, input.characterId, item.entryId);
+        if (entry.revision !== item.expectedRevision) {
+          throw Errors.conflict("A chat library item changed; reload before batch review", { entryId: item.entryId });
+        }
+        if (item.status === "published") {
+          const visual = await requireLibraryVisual(tx, input.characterId, entry);
+          if (record(entry.sourceSnapshot).visualProfileHash !== visual.immutableHash) {
+            throw Errors.conflict("The stored visual identity no longer matches this chat library item", { entryId: item.entryId });
+          }
+          if (!entry.sourceAssetId) throw Errors.conflict("This chat library source was deleted", { entryId: item.entryId });
+          const { asset } = await requireLibrarySource(tx, entry.sourceAssetId, visual, prepared.legacySourceAssetId);
+          if (resolveMediaAssetBlobLocator(asset)?.key !== record(entry.sourceSnapshot).sourceStorageKey) {
+            throw Errors.conflict("This source file was replaced; add the replacement as a new library item", { entryId: item.entryId });
+          }
+        }
+        const updated = await tx.characterMediaLibraryEntry.update({
+          where: { id: entry.id },
+          data: {
+            ...prepared.descriptor,
+            ...(prepared.index ?? {}),
+            status: item.status,
+            ...(item.status === "published" || item.nudity !== undefined
+              ? { nudityVerifiedById: prepared.descriptor.nudity !== "unknown" ? input.actor.id : null }
+              : {}),
+            ...(item.attireLevel !== undefined ? { attireLevel: item.attireLevel } : {}),
+            ...(item.distributionScope !== undefined ? { distributionScope: item.distributionScope } : {}),
+            revision: { increment: 1 },
+            updatedById: input.actor.id,
+            ...(item.status === "published" && entry.status !== "published" ? { publishedAt: new Date() } : {}),
+          },
+        });
+        await audit(tx, input, "batch_reviewed", updated);
+        updatedById.set(entry.id, updated);
+      }
+      return {
+        entries: body.items.map(item => entryDto(updatedById.get(item.entryId)!)),
+      };
+    },
+    decorateResult: (result, replayed) => ({ ...record(result), replayed }),
+    validateResult: value => characterMediaLibraryBatchReviewResponseSchema.parse(value),
   });
 }
 
@@ -286,6 +384,9 @@ function entryDto(entry: CharacterMediaLibraryEntry) {
     descriptionSource: entry.descriptionSource, sourceSha256: entry.contentHash, url,
     thumbnailUrl: entry.thumbnailKey ? `${url}?thumbnail=1` : null,
     width: entry.width, height: entry.height, durationSeconds: entry.durationSeconds, hasAudio: entry.hasAudio,
+    attireLevel: entry.attireLevel ?? null,
+    distributionScope: entry.distributionScope === "teaser" || entry.distributionScope === "both" ? entry.distributionScope : "chat_library",
+    paidDeliveryCount: entry.paidDeliveryCount ?? 0,
     createdAt: entry.createdAt.toISOString(), updatedAt: entry.updatedAt.toISOString(),
   });
 }

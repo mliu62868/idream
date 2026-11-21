@@ -291,6 +291,8 @@ const zhValues: Record<string, string> = {
   // 枚举，缺这两条时中文界面里就混着两行 character_video / identity_calibration。
   // seo 不补——它在下拉里印成 "SEO"，那本来就是中文运营在用的写法。
   character_video: "角色视频",
+  character_library_image_pack: "预生成图片包",
+  character_library_video_pack: "预生成视频包",
   identity_calibration: "形象校准",
   // CreativeRun 重试命令的结果三态：命令回执丢了就印 "outcome unknown"。它走 StatusBadge，
   // 而 StatusBadge 是 t(value.replaceAll("_"," "))，所以键带空格。

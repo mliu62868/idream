@@ -143,7 +143,9 @@ export async function createCreativeRun(
   actor: AdminActor,
   body: CreativeRunCreateInput,
 ): Promise<{ batch: { id: string }; replayed: boolean }> {
-  const characterVideoRun = body.purpose === "character_video";
+  const characterLibraryImagePackRun = body.purpose === "character_library_image_pack";
+  const characterLibraryVideoPackRun = body.purpose === "character_library_video_pack";
+  const characterVideoRun = body.purpose === "character_video" || characterLibraryVideoPackRun;
   const productionMode = characterVideoRun ? "video" as const : "image" as const;
   const idempotencyKey = request.headers.get("idempotency-key")?.trim() || null;
   const commandScope = `${env.APP_ENV}:${actor.id}:creative.run.create`;
@@ -234,7 +236,9 @@ export async function createCreativeRun(
     characterTargetRun && body.purpose === "model_eval";
   const identityExperimentRun =
     characterTargetRun && body.purpose === "identity_calibration";
-  if (characterTargetRun && !routeEvaluationRun && body.count !== 1) {
+  const batchCharacterLibraryRun =
+    characterTargetRun && (characterLibraryImagePackRun || characterLibraryVideoPackRun);
+  if (characterTargetRun && !routeEvaluationRun && !batchCharacterLibraryRun && body.count !== 1) {
     throw Errors.badRequest(
       "Character asset production creates exactly one output per Run",
       {
@@ -623,6 +627,7 @@ export async function createCreativeRun(
   const referenceAssetIds = referenceManifest.map((reference) => reference.mediaAssetId);
   if (
     workflow &&
+    !characterLibraryVideoPackRun &&
     referenceAssetIds.length > workflow.identity.maxReferences
   ) {
     throw Errors.conflict("The selected identity route cannot accept the required reference set", {
@@ -736,7 +741,8 @@ export async function createCreativeRun(
     }
     let verifiedBootstrapAuthority = bootstrapAuthority;
     let verifiedIdentityBootstrapAuthority = identityBootstrapAuthority;
-    let videoSource = null;
+    let videoSources: Awaited<ReturnType<typeof tx.mediaAsset.findMany>> = [];
+    let videoSource: Awaited<ReturnType<typeof tx.mediaAsset.findFirst>> = null;
     if (body.bootstrapIdentity && body.targetId) {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`character-identity-bootstrap:${body.targetId}`}))`;
       if (bootstrapAuthority) {
@@ -856,15 +862,22 @@ export async function createCreativeRun(
           status: true,
         },
       });
-      const currentSource = await tx.mediaAsset.findFirst({
+      const requestedSourceIds = characterLibraryVideoPackRun
+        ? additionalReferenceAssets.map((asset) => asset.id)
+        : [additionalReferenceAssets[0]?.id].filter((id): id is string => Boolean(id));
+      const currentSources = await tx.mediaAsset.findMany({
         where: operationalMediaAssetWhere({
-          id: additionalReferenceAssets[0]?.id,
+          id: { in: requestedSourceIds },
           type: "image",
           safetyStatus: "passed",
           deletedAt: null,
           characterId: body.targetId,
         }),
       });
+      const currentSourceById = new Map(currentSources.map((asset) => [asset.id, asset]));
+      const orderedSources = requestedSourceIds
+        .map((id) => currentSourceById.get(id))
+        .filter((asset): asset is NonNullable<typeof asset> => Boolean(asset));
       if (
         !currentProfile ||
         !isDefaultProductionVideoProfile(currentProfile) ||
@@ -875,18 +888,19 @@ export async function createCreativeRun(
         currentRecipe.mode !== "video" ||
         currentRecipe.useCase !== "character" ||
         currentRecipe.status !== "active" ||
-        !currentSource ||
-        !isMediaAssetOperationalForAuthority(currentSource.metadata)
+        orderedSources.length !== requestedSourceIds.length ||
+        orderedSources.some((source) => !isMediaAssetOperationalForAuthority(source.metadata))
       ) {
         throw Errors.conflict(
           "Character video authority changed before the Run was committed",
           {
             characterId: body.targetId,
-            sourceAssetId: additionalReferenceAssets[0]?.id ?? null,
+            sourceAssetId: requestedSourceIds[0] ?? null,
           },
         );
       }
-      videoSource = currentSource;
+      videoSources = orderedSources;
+      videoSource = videoSources[0] ?? null;
     } else if (body.targetType === "character" && body.targetId) {
       if (!visualProfile || !activeReferenceSet) {
         throw Errors.conflict("Character generation authority disappeared before the Run was committed", {
@@ -1089,11 +1103,25 @@ export async function createCreativeRun(
       referenceAssetIds,
       referenceManifest,
     });
-    const frozenVideoSource = videoSource && referenceSnapshots.find(reference =>
-      reference.role === "source_image" && reference.assetId === videoSource.id);
-    // I2V takes a single image. Keep its publication provenance separate from image-generation conditioning.
-    const videoSourceIdentity = videoSource && frozenVideoSource
-      ? await pinCharacterVideoSourceIdentity(tx, videoSource, frozenVideoSource) : null;
+    const videoSourceIdentityByAssetId = new Map<string, Awaited<ReturnType<typeof pinCharacterVideoSourceIdentity>>>();
+    for (const source of videoSources) {
+      const frozenSource = referenceSnapshots.find(
+        (reference) => reference.role === "source_image" && reference.assetId === source.id,
+      );
+      const pinned = frozenSource ? await pinCharacterVideoSourceIdentity(tx, source, frozenSource) : null;
+      // Fail-fast on batch chat-library video packs so operators never burn
+      // video GPU credits on a source image that cannot enter the chat library.
+      if (characterLibraryVideoPackRun && !pinned) {
+        throw Errors.badRequest(
+          "Every source image in a Character library video pack must have a verified Character visual identity",
+          { characterId: body.targetId ?? null, sourceAssetId: source.id },
+        );
+      }
+      videoSourceIdentityByAssetId.set(source.id, pinned);
+    }
+    const videoSourceIdentity = videoSource
+      ? videoSourceIdentityByAssetId.get(videoSource.id) ?? null
+      : null;
     const createdBatch = await tx.contentProductionBatch.create({
       data: {
         title,
@@ -1157,6 +1185,24 @@ export async function createCreativeRun(
           tags: [],
         },
       });
+      const itemVideoSource = characterLibraryVideoPackRun
+        ? videoSources[itemIndex] ?? null
+        : videoSource;
+      const itemVideoSourceIdentity = itemVideoSource
+        ? videoSourceIdentityByAssetId.get(itemVideoSource.id) ?? null
+        : videoSourceIdentity;
+      const itemReferenceAssetIds = characterLibraryVideoPackRun && itemVideoSource
+        ? [itemVideoSource.id]
+        : referenceAssetIds;
+      const itemReferenceManifest = characterLibraryVideoPackRun && itemVideoSource
+        ? referenceManifest.filter((reference) => reference.mediaAssetId === itemVideoSource.id)
+        : referenceManifest;
+      const itemReferenceSnapshots = characterLibraryVideoPackRun && itemVideoSource
+        ? referenceSnapshots.filter((reference) => reference.assetId === itemVideoSource.id)
+        : referenceSnapshots;
+      const itemControls = characterLibraryVideoPackRun && itemVideoSource
+        ? { ...controls, sourceImageAssetId: itemVideoSource.id, referenceSnapshots: itemReferenceSnapshots }
+        : { ...controls, referenceSnapshots: itemReferenceSnapshots };
       const job = await tx.generationJob.create({
         data: {
           userId: actor.id,
@@ -1178,13 +1224,13 @@ export async function createCreativeRun(
                 directionId: direction?.id ?? null,
                 variantIndex,
               }),
-          referenceAssetIds: referenceAssetIds.length > 0 ? toInputJson(referenceAssetIds) : undefined,
+          referenceAssetIds: itemReferenceAssetIds.length > 0 ? toInputJson(itemReferenceAssetIds) : undefined,
           referenceSetRevisionId: activeReferenceSet?.id,
-          referenceManifest: referenceManifest.length > 0 ? toInputJson(referenceManifest) : undefined,
+          referenceManifest: itemReferenceManifest.length > 0 ? toInputJson(itemReferenceManifest) : undefined,
           mode: productionMode,
           prompt,
           negativePrompt: effectiveNegativePrompt,
-          controls: toInputJson({ ...controls, referenceSnapshots }),
+          controls: toInputJson(itemControls),
           presetIds: toInputJson(body.presetIds),
           model: workflowKey,
           profileId: profile.profileKey,
@@ -1224,9 +1270,9 @@ export async function createCreativeRun(
             generationRouteFingerprint: generationRouteAuthority?.routeFingerprint ?? null,
             videoSourceAssetId:
               characterVideoRun
-                ? additionalReferenceAssets[0]?.id ?? null
+                ? itemVideoSource?.id ?? additionalReferenceAssets[0]?.id ?? null
                 : null,
-            ...(videoSourceIdentity ? { videoSourceIdentity } : {}),
+            ...(itemVideoSourceIdentity ? { videoSourceIdentity: itemVideoSourceIdentity } : {}),
             videoDurationSeconds:
               characterVideoRun
                 ? characterVideoProductionRecipe.durationSeconds

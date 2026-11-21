@@ -523,6 +523,15 @@ export const ADMIN_V2_API_OPERATIONS = [
   ),
   operation(
     "POST",
+    "/api/v2/admin/characters/:id/media-library/batch-review",
+    allOf("creative.run.write", "character.release.publish"),
+    "characterMediaLibraryBatchReviewRequestSchema+idempotency-key",
+    "characterMediaLibraryBatchReviewResponseSchema",
+    undefined,
+    { commandType: "character.media_library.batch_review" },
+  ),
+  operation(
+    "POST",
     "/api/v2/admin/characters/:id/media-library/search-preview",
     allOf("character.project.read", "creative.run.read"),
     "characterMediaLibrarySearchRequestSchema",

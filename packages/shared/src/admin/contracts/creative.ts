@@ -311,7 +311,9 @@ function characterVideoRunValidationIssues(input: {
   readonly directions?: readonly unknown[];
   readonly outputsPerDirection?: number;
 }) {
-  if (input.purpose !== "character_video") return [];
+  const isSingleVideo = input.purpose === "character_video";
+  const isVideoPack = input.purpose === "character_library_video_pack";
+  if (!isSingleVideo && !isVideoPack) return [];
   const issues: Array<{
     readonly path: readonly string[];
     readonly message: string;
@@ -326,20 +328,50 @@ function characterVideoRunValidationIssues(input: {
     });
     return issues;
   }
-  if (
-    input.referenceAssetIds.length !==
-      recipe.sourceImageCount
-  ) {
-    issues.push({
-      path: ["referenceAssetIds"],
-      message: "Character video production requires exactly one source image",
-    });
-  }
-  if (input.count !== recipe.outputCount) {
-    issues.push({
-      path: ["count"],
-      message: "Character video production creates exactly one clip per Run",
-    });
+  if (isSingleVideo) {
+    if (input.referenceAssetIds.length !== recipe.sourceImageCount) {
+      issues.push({
+        path: ["referenceAssetIds"],
+        message: "Character video production requires exactly one source image",
+      });
+    }
+    if (input.count !== recipe.outputCount) {
+      issues.push({
+        path: ["count"],
+        message: "Character video production creates exactly one clip per Run",
+      });
+    }
+    if (input.directions || input.outputsPerDirection !== undefined) {
+      issues.push({
+        path: ["directions"],
+        message: "Character video production does not support image direction fan-out",
+      });
+    }
+  } else {
+    if (input.referenceAssetIds.length < 1 || input.referenceAssetIds.length > 10) {
+      issues.push({
+        path: ["referenceAssetIds"],
+        message: "Character library video packs require between 1 and 10 source images",
+      });
+    }
+    if (input.count !== input.referenceAssetIds.length) {
+      issues.push({
+        path: ["count"],
+        message: "Character library video pack count must equal the number of source images",
+      });
+    }
+    if (input.directions && input.directions.length !== input.referenceAssetIds.length) {
+      issues.push({
+        path: ["directions"],
+        message: "Video pack directions, when provided, must match the source image count",
+      });
+    }
+    if (input.outputsPerDirection !== undefined && input.outputsPerDirection !== 1) {
+      issues.push({
+        path: ["outputsPerDirection"],
+        message: "Video packs produce one clip per source image",
+      });
+    }
   }
   if (
     input.orientation !== undefined &&
@@ -350,12 +382,6 @@ function characterVideoRunValidationIssues(input: {
       message: `Character video production requires the ${recipe.orientation} production envelope`,
     });
   }
-  if (input.directions || input.outputsPerDirection !== undefined) {
-    issues.push({
-      path: ["directions"],
-      message: "Character video production does not support image direction fan-out",
-    });
-  }
   return issues;
 }
 
@@ -364,6 +390,8 @@ export const creativeRunPurposeSchema = z.enum([
   "character_hero",
   "character_chat",
   "character_video",
+  "character_library_image_pack",
+  "character_library_video_pack",
   "feed",
   "homepage",
   "seo",
@@ -382,7 +410,7 @@ export const creativeRunCreateRequestSchema = z
     profileId: adminIdSchema,
     recipeId: adminIdSchema.optional(),
     presetIds: z.array(adminIdSchema).max(12).default([]),
-    referenceAssetIds: z.array(adminIdSchema).max(4).default([]),
+    referenceAssetIds: z.array(adminIdSchema).max(10).default([]),
     bootstrapIdentity: z.boolean().default(false),
     orientation: z.string().trim().min(1).max(20).optional(),
     count: z.number().int().min(1).max(40).default(4),
@@ -420,11 +448,20 @@ export const creativeRunCreateRequestSchema = z
       "character_hero",
       "character_chat",
       "character_video",
+      "character_library_image_pack",
+      "character_library_video_pack",
       "identity_calibration",
     ]
       .includes(request.purpose);
     const genericPurpose = ["feed", "homepage", "seo", "template_cover", "campaign"]
       .includes(request.purpose);
+    if (request.purpose !== "character_library_video_pack" && request.referenceAssetIds.length > 4) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["referenceAssetIds"],
+        message: "At most 4 reference assets are allowed for this Run purpose",
+      });
+    }
     if (request.targetType !== "none" && !request.targetId) {
       ctx.addIssue({ code: "custom", path: ["targetId"], message: "Target ID is required for this target type" });
     }
@@ -448,7 +485,14 @@ export const creativeRunCreateRequestSchema = z
     if (!request.directions && request.outputsPerDirection !== undefined) {
       ctx.addIssue({ code: "custom", path: ["outputsPerDirection"], message: "Outputs per direction requires persisted directions" });
     }
-    const outputLimit = request.purpose === "model_eval" ? 40 : 24;
+    const outputLimit =
+      request.purpose === "model_eval"
+        ? 40
+        : request.purpose === "character_library_image_pack"
+          ? 30
+          : request.purpose === "character_library_video_pack"
+            ? 10
+            : 24;
     if (request.count > outputLimit) {
       ctx.addIssue({
         code: "custom",

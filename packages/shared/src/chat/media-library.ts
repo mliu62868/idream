@@ -121,13 +121,13 @@ export const COMPANION_MEDIA_TOOL_DEFINITIONS: readonly ChatToolDefinition[] = [
       type: "object",
       properties: {
         kind: { type: "string", enum: ["image", "video"] },
-        direction: { type: "string", description: "Complete visual direction in English, including scene, framing, lighting, pose, clothing and exclusions. Resolve references from the conversation. Main adds the stable Character appearance." },
+        direction: { type: "string", description: "Requested details in English. Resolve references from the conversation. New images include scene, framing, lighting, pose, clothing and exclusions. Main adds the stable Character appearance." },
         subject: { type: "string", enum: ["companion", "scene"], description: "Use 'companion' when the Character appears, or 'scene' for a scenery/object photo without the Character." },
         requestedNudity: { type: "string", enum: ["unspecified", "none", "partial", "full"], description: "Wardrobe level explicitly requested: fully clothed (none), revealing/lingerie/swimwear (partial), fully nude (full), or unspecified." },
         mustHave: { type: "array", items: { type: "string" }, description: "Concise required visible details explicitly requested by the user." },
         mustExclude: { type: "array", items: { type: "string" }, description: "Concise items or details the user explicitly asked to exclude (e.g., glasses, hat)." },
-        mode: { type: "string", enum: ["auto", "force_new", "existing_only", "availability"], description: "auto for ordinary delivery; force_new for explicitly new creation; existing_only when they rule out new generation; availability for a read-only inquiry with no delivery, quote or charge." },
-        orientation: { type: "string", enum: ["portrait", "landscape", "square"] },
+        mode: { type: "string", enum: ["auto", "force_new", "existing_only", "availability"], description: "Delivery (auto), existing delivery (existing_only), new creation (force_new), or check only (availability)." },
+        orientation: { type: "string", enum: ["portrait", "landscape", "square"], description: "Explicit frame or aspect ratio only. Omit for unspecified framing." },
         minDurationSeconds: { type: "number", description: "Explicit numeric lower bound for video only." },
         maxDurationSeconds: { type: "number", description: "Explicit numeric upper bound for video only. Keep qualitative length in direction." },
         hasAudio: { type: "boolean", description: "Explicit video audio-track requirement. A track cannot prove a specific sound or speech." },
@@ -153,9 +153,10 @@ export const COMPANION_MEDIA_TOOL_DEFINITIONS: readonly ChatToolDefinition[] = [
 
 export const COMPANION_MEDIA_REQUEST_GUIDANCE = [
   "Character photo and video requests:",
-  "- For a current request to receive one photo or video, call request_character_media once. Resolve short confirmations against a specific offer from this Character. Keep every explicit visual and technical condition in direction and the relevant structured fields. Current wardrobe, pose and location override earlier photos and Soul defaults.",
-  "- Use availability for an explicit availability check, existing_only if the user rules out new generation, and force_new if they explicitly ask for new creation. Casual discussion, memories and refusals do not request media.",
-  "- The attachment is the receipt. awaiting_confirmation means the user must approve the shown price before any charge. accepted means preparation has started. completed means delivered. Continue only independently requested text. Never invent a delivery, its visual details, or a payment.",
+  "- For a current request to receive one photo or video, call request_character_media once. Resolve confirmations against a specific offer. Keep every explicit visual and technical condition. Current details override older photos and Soul defaults.",
+  "- 'Send me your existing photo' and 'Send a clip if you have it' use existing_only. Use availability for a check without delivery. Use auto for ordinary delivery and force_new if they explicitly ask for new creation.",
+  "- Preserve explicit framing, duration and audio. Omit unspecified filters.",
+  "- For awaiting_confirmation, the user must approve the shown price before any charge. accepted means preparation has started. completed means delivered. Continue only independently requested text. Never invent a delivery, a visual fact, or a payment.",
 ].join("\n");
 
 export const COMPANION_MEDIA_RESEND_GUIDANCE = [

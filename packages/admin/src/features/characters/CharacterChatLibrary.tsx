@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
+  CharacterMediaLibraryBatchReviewItem,
   CharacterMediaLibraryEntry,
   CharacterMediaLibraryListResponse,
   CharacterMediaLibrarySearchResponse,
   CharacterMediaLibraryVisualIdentity,
 } from "@idream/shared/admin";
-import { Loader2, MessageCircle, Search, WandSparkles, X } from "lucide-react";
+import { CheckSquare, Layers, Loader2, MessageCircle, Search, WandSparkles, X } from "lucide-react";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
@@ -40,9 +41,10 @@ type Props = {
   canPublish: boolean;
   source: CharacterChatLibrarySource | null;
   onCloseSource: () => void;
+  defaultProfileId?: string;
 };
 
-export function CharacterChatLibrary({ characterId, mediaType, canWrite, canPublish, source, onCloseSource }: Props) {
+export function CharacterChatLibrary({ characterId, mediaType, canWrite, canPublish, source, onCloseSource, defaultProfileId }: Props) {
   const { t } = useAdminI18n();
   const [library, setLibrary] = useState<CharacterMediaLibraryListResponse | null>(null);
   const [status, setStatus] = useState("all");
@@ -51,6 +53,7 @@ export function CharacterChatLibrary({ characterId, mediaType, canWrite, canPubl
   const [error, setError] = useState<{ cause: unknown; message: string } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
+  const [batchReviewOpen, setBatchReviewOpen] = useState(false);
   const listGate = useRef(createLatestRequestGate());
   const selectionGate = useRef(createLatestRequestGate());
   const sectionRef = useRef<HTMLElement | null>(null);
@@ -146,6 +149,7 @@ export function CharacterChatLibrary({ characterId, mediaType, canWrite, canPubl
   const editorChoices = selection?.sourceEntries
     ? distinctVisualIdentities([...choices, ...selection.sourceEntries.map(entryVisualIdentity)]).map(pin => ({ pin, label: describeIdentity(pin) })) : [];
   const previewIdentity = library?.serving ? liveIdentity : productionIdentity;
+  const draftEntries = (library?.items ?? []).filter(item => item.status === "draft");
 
   return (
     <section ref={sectionRef} aria-label={t("Chat media library")} className="space-y-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:p-5">
@@ -154,15 +158,39 @@ export function CharacterChatLibrary({ characterId, mediaType, canWrite, canPubl
           <h3 className="flex items-center gap-2 text-lg font-semibold"><MessageCircle className="h-5 w-5" />{t("Chat media library")}</h3>
           <p className="mt-1 max-w-3xl text-sm text-[var(--ad-text-muted)]">{t("Describe what is actually visible, then enable it for chat. Chat can reuse matching media without generating it again.")}</p>
         </div>
-        <label className="text-xs">{t("Chat availability")}
-          <select aria-label={t("Chat availability")} className={`${fieldClass} mt-1`} value={status} onChange={event => setStatus(event.target.value)}>
-            <option value="all">{t("All")}</option><option value="draft">{t("Draft")}</option>
-            <option value="published">{t("Published")}</option><option value="withdrawn">{t("Withdrawn from chat")}</option>
-          </select>
-        </label>
+        <div className="flex flex-wrap items-end gap-2">
+          {canWrite && canPublish && draftEntries.length > 0 ? (
+            <WorkspaceButton
+              tone={batchReviewOpen ? "primary" : "default"}
+              onClick={() => setBatchReviewOpen(open => !open)}
+            >
+              <CheckSquare className="h-4 w-4" />
+              {batchReviewOpen ? t("Close batch review") : t("Batch review drafts ({count})", { count: draftEntries.length })}
+            </WorkspaceButton>
+          ) : null}
+          <label className="text-xs">{t("Chat availability")}
+            <select aria-label={t("Chat availability")} className={`${fieldClass} mt-1`} value={status} onChange={event => setStatus(event.target.value)}>
+              <option value="all">{t("All")}</option><option value="draft">{t("Draft")}</option>
+              <option value="published">{t("Published")}</option><option value="withdrawn">{t("Withdrawn from chat")}</option>
+            </select>
+          </label>
+        </div>
       </div>
       {error ? <AuthorityRequestError cause={error.cause} message={error.message} requestKind="read" onRetry={() => { void load(); if (source) void loadSource(source); }} /> : null}
       {message ? <p role="status" className="text-sm text-[var(--ad-green-text)]">{message}</p> : null}
+      {batchReviewOpen && canWrite && canPublish && draftEntries.length > 0 ? (
+        <BatchReviewGrid
+          characterId={characterId}
+          mediaType={mediaType}
+          entries={draftEntries}
+          onClose={() => setBatchReviewOpen(false)}
+          onReviewed={(count) => {
+            setBatchReviewOpen(false);
+            setMessage(t("Batch review saved for {count} items", { count }));
+            void load();
+          }}
+        />
+      ) : null}
       {library ? <div className="space-y-1 text-sm text-[var(--ad-text-muted)]">
         {previewChoices.map(({ pin, label }) => {
           const coverage = sameVisualIdentity(pin, liveIdentity) ? library.coverage.serving : library.coverage.production;
@@ -205,6 +233,17 @@ export function CharacterChatLibrary({ characterId, mediaType, canWrite, canPubl
         </div>
       ) : null}
       {library?.nextCursor ? <WorkspaceButton disabled={loading} onClick={() => void load(library.nextCursor ?? undefined)}>{t("Load more chat media")}</WorkspaceButton> : null}
+      {canWrite && productionIdentity ? (
+        <BatchPregenPackPanel
+          characterId={characterId}
+          mediaType={mediaType}
+          visualIdentity={productionIdentity}
+          defaultProfileId={defaultProfileId}
+          onCreated={(runId, count) => {
+            setMessage(t("Started pre-generation pack ({count} items): /admin/creative/runs/{runId}", { count, runId }));
+          }}
+        />
+      ) : null}
       <ChatLibrarySearch key={`${characterId}:${mediaType}:${library?.serving?.releaseId}:${productionIdentity?.visualProfileId}:${previewIdentity?.visualProfileId}:${library?.capabilities.search ?? false}`}
         characterId={characterId} mediaType={mediaType} enabled={library?.capabilities.search ?? false}
         defaultIdentity={previewIdentity} identityChoices={previewChoices} onSelect={openEntry} />
@@ -402,5 +441,331 @@ function editorFailure(cause: unknown, action: string): EditorFailure {
       : copy,
   };
 }
+type BatchDraftDecision = {
+  action: "skip" | "published" | "withdrawn";
+  nudity: CharacterMediaLibraryEntry["nudity"];
+  attireLevel: string;
+  distributionScope: "chat_library" | "teaser" | "both";
+};
+
+function BatchReviewGrid({ characterId, mediaType, entries, onClose, onReviewed }: {
+  characterId: string;
+  mediaType: "image" | "video";
+  entries: CharacterMediaLibraryEntry[];
+  onClose: () => void;
+  onReviewed: (count: number) => void;
+}) {
+  const { t } = useAdminI18n();
+  const [decisions, setDecisions] = useState<Record<string, BatchDraftDecision>>(() =>
+    Object.fromEntries(entries.map(entry => [entry.id, {
+      action: "skip",
+      nudity: entry.nudity,
+      attireLevel: entry.attireLevel ?? "",
+      distributionScope: entry.distributionScope ?? "chat_library",
+    }])),
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  const selectedItems = entries.flatMap(entry => {
+    const decision = decisions[entry.id];
+    if (!decision || decision.action === "skip") return [];
+    return [{ entry, decision }];
+  });
+  const missingNudityCount = selectedItems.filter(
+    ({ decision }) => decision.action === "published" && decision.nudity === "unknown",
+  ).length;
+
+  function update(entryId: string, patch: Partial<BatchDraftDecision>) {
+    setDecisions(current => ({
+      ...current,
+      [entryId]: { ...(current[entryId] ?? { action: "skip", nudity: "unknown", attireLevel: "", distributionScope: "chat_library" }), ...patch },
+    }));
+  }
+
+  function applyQuickShortcut(index: number, key: string) {
+    const entry = entries[index];
+    if (!entry || busy) return;
+    if (key === "1") {
+      update(entry.id, { action: "published", nudity: "none", attireLevel: "clothed" });
+    } else if (key === "2") {
+      update(entry.id, { action: "published", nudity: "partial", attireLevel: "lingerie" });
+    } else if (key === "3") {
+      update(entry.id, { action: "published", nudity: "full", attireLevel: "nude" });
+    } else if (key === "r" || key === "R") {
+      update(entry.id, { action: "withdrawn" });
+    } else {
+      return;
+    }
+    setActiveIndex(Math.min(entries.length - 1, index + 1));
+  }
+
+  function approveAllClothed() {
+    setDecisions(current =>
+      Object.fromEntries(entries.map(entry => {
+        const prev = current[entry.id];
+        return [entry.id, {
+          action: "published" as const,
+          nudity: prev && prev.nudity !== "unknown" ? prev.nudity : "none",
+          attireLevel: prev?.attireLevel || "clothed",
+          distributionScope: prev?.distributionScope ?? "chat_library",
+        }];
+      })),
+    );
+  }
+
+  async function submit() {
+    if (busy || selectedItems.length === 0 || missingNudityCount > 0) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const items: CharacterMediaLibraryBatchReviewItem[] = selectedItems.map(({ entry, decision }) => ({
+        entryId: entry.id,
+        expectedRevision: entry.revision,
+        status: decision.action === "withdrawn" ? "withdrawn" : "published",
+        nudity: decision.nudity,
+        ...(decision.attireLevel ? { attireLevel: decision.attireLevel } : {}),
+        distributionScope: decision.distributionScope,
+      }));
+      const result = await adminV2Operation("POST /api/v2/admin/characters/:id/media-library/batch-review", {
+        path: { id: characterId },
+        body: { items },
+      });
+      onReviewed(result.entries.length);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t("Batch review could not be saved"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      aria-label={t("Batch review drafts")}
+      tabIndex={-1}
+      onKeyDown={event => {
+        const tag = (event.target as HTMLElement | null)?.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+        if (["1", "2", "3", "r", "R"].includes(event.key)) {
+          event.preventDefault();
+          applyQuickShortcut(activeIndex, event.key);
+        }
+      }}
+      className="space-y-3 rounded-lg border border-[var(--ad-border)] bg-black/[0.02] p-4"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h4 className="font-semibold">{t("3-Field Batch Review")}</h4>
+          <p className="text-xs text-[var(--ad-text-muted)]">{t("Confirm decision, nudity rating, and attire level. Shortcuts on active card: 1 = Clothed, 2 = Partial, 3 = Full, R = Reject.")}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <WorkspaceButton disabled={busy} onClick={approveAllClothed}>{t("Mark all clothed & approve")}</WorkspaceButton>
+          <WorkspaceButton
+            tone="primary"
+            disabled={busy || selectedItems.length === 0 || missingNudityCount > 0}
+            onClick={() => void submit()}
+          >
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            {t("Submit batch review ({count})", { count: selectedItems.length })}
+          </WorkspaceButton>
+          <WorkspaceButton disabled={busy} onClick={onClose}><X className="h-4 w-4" />{t("Cancel")}</WorkspaceButton>
+        </div>
+      </div>
+      {missingNudityCount > 0 ? (
+        <p role="alert" className="text-xs text-[var(--ad-yellow-text)]">
+          {t("{count} approved items still have unverified nudity. Select No/Partial/Full nudity before submitting.", { count: missingNudityCount })}
+        </p>
+      ) : null}
+      {error ? <p role="alert" className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {entries.map((entry, index) => {
+          const decision = decisions[entry.id] ?? { action: "skip", nudity: entry.nudity, attireLevel: "", distributionScope: "chat_library" };
+          const isActive = index === activeIndex;
+          return (
+            <div
+              key={entry.id}
+              data-batch-entry-id={entry.id}
+              data-batch-active={isActive ? "true" : "false"}
+              onClick={() => setActiveIndex(index)}
+              className={`overflow-hidden rounded-lg border bg-[var(--ad-surface)] p-3 ${isActive ? "border-[var(--ad-ink)] ring-1 ring-[var(--ad-ink)]" : "border-[var(--ad-border)]"}`}
+            >
+              <div className="mb-2">
+                {mediaType === "image"
+                  ? <AssetImage asset={{ url: entry.url, thumbnailUrl: entry.thumbnailUrl ?? entry.url }} />
+                  : <video className="aspect-video w-full bg-black object-contain" src={entry.url} poster={entry.thumbnailUrl ?? undefined} preload="metadata" muted controls />}
+              </div>
+              <p className="mb-2 line-clamp-2 text-xs text-[var(--ad-text-muted)]">{entry.description}</p>
+              <div className="grid gap-2 text-xs">
+                <label className="block">{t("Decision")}
+                  <select aria-label={`${t("Decision")} ${entry.id}`} className={`${fieldClass} mt-1`} disabled={busy} value={decision.action} onChange={event => update(entry.id, { action: event.target.value as BatchDraftDecision["action"] })}>
+                    <option value="skip">{t("Skip")}</option>
+                    <option value="published">{t("Approve & publish")}</option>
+                    <option value="withdrawn">{t("Reject (withdraw)")}</option>
+                  </select>
+                </label>
+                <label className="block">{t("Nudity")}
+                  <select aria-label={`${t("Nudity")} ${entry.id}`} className={`${fieldClass} mt-1`} disabled={busy} value={decision.nudity} onChange={event => update(entry.id, { nudity: event.target.value as CharacterMediaLibraryEntry["nudity"] })}>
+                    <option value="unknown">{t("Not verified")}</option>
+                    <option value="none">{t("No nudity")}</option>
+                    <option value="partial">{t("Partial nudity")}</option>
+                    <option value="full">{t("Full nudity")}</option>
+                  </select>
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="block">{t("Attire")}
+                    <select aria-label={`${t("Attire")} ${entry.id}`} className={`${fieldClass} mt-1`} disabled={busy} value={decision.attireLevel} onChange={event => update(entry.id, { attireLevel: event.target.value })}>
+                      <option value="">{t("Unspecified")}</option>
+                      <option value="clothed">{t("Clothed")}</option>
+                      <option value="swimwear">{t("Swimwear")}</option>
+                      <option value="lingerie">{t("Lingerie")}</option>
+                      <option value="topless">{t("Topless")}</option>
+                      <option value="nude">{t("Nude")}</option>
+                    </select>
+                  </label>
+                  <label className="block">{t("Scope")}
+                    <select aria-label={`${t("Scope")} ${entry.id}`} className={`${fieldClass} mt-1`} disabled={busy} value={decision.distributionScope} onChange={event => update(entry.id, { distributionScope: event.target.value as BatchDraftDecision["distributionScope"] })}>
+                      <option value="chat_library">{t("Chat library")}</option>
+                      <option value="teaser">{t("Teaser only")}</option>
+                      <option value="both">{t("Chat + Teaser")}</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function BatchPregenPackPanel({ characterId, mediaType, visualIdentity, defaultProfileId, onCreated }: {
+  characterId: string;
+  mediaType: "image" | "video";
+  visualIdentity: CharacterMediaLibraryVisualIdentity;
+  defaultProfileId?: string;
+  onCreated: (runId: string, count: number) => void;
+}) {
+  const { t } = useAdminI18n();
+  const [profileId, setProfileId] = useState(defaultProfileId ?? "");
+  const [brief, setBrief] = useState("");
+  const [directionsText, setDirectionsText] = useState("");
+  const [outputsPerDirection, setOutputsPerDirection] = useState(2);
+  const [sourceIdsText, setSourceIdsText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [createdRunId, setCreatedRunId] = useState<string | null>(null);
+
+  const lines = (value: string) => value.split("\n").map(line => line.trim()).filter(Boolean);
+  const directionLines = lines(directionsText);
+  const sourceIds = [...new Set(lines(sourceIdsText))];
+
+  const canSubmit = !busy && Boolean(profileId.trim()) && brief.trim().length >= 3 && (
+    mediaType === "image"
+      ? directionLines.length >= 1 && directionLines.length <= 12 && directionLines.length * outputsPerDirection <= 30
+      : sourceIds.length >= 1 && sourceIds.length <= 10
+  );
+
+  async function launchPack() {
+    if (!canSubmit) return;
+    setBusy(true);
+    setError(null);
+    setCreatedRunId(null);
+    try {
+      const count = mediaType === "image" ? directionLines.length * outputsPerDirection : sourceIds.length;
+      const body = mediaType === "image"
+        ? {
+            purpose: "character_library_image_pack" as const,
+            targetType: "character" as const,
+            targetId: characterId,
+            profileId: profileId.trim(),
+            count,
+            brief: brief.trim(),
+            outputsPerDirection,
+            directions: directionLines.map((scene, index) => ({
+              id: `dir-${index + 1}`,
+              title: `Scene ${index + 1}`,
+              scenePrompt: scene.length >= 12 ? scene : `${scene} natural portrait scene`,
+              mood: "natural",
+              setting: "editorial",
+              outfit: "matching scene",
+              camera: "medium portrait",
+              lighting: "natural light",
+            })),
+            reason: `Batch pre-generate chat library image pack for visual v${visualIdentity.visualProfileVersion}`,
+          }
+        : {
+            purpose: "character_library_video_pack" as const,
+            targetType: "character" as const,
+            targetId: characterId,
+            profileId: profileId.trim(),
+            count,
+            brief: brief.trim(),
+            referenceAssetIds: sourceIds,
+            reason: `Batch pre-generate chat library video pack for visual v${visualIdentity.visualProfileVersion}`,
+          };
+      const result = await adminV2Operation("POST /api/v2/admin/creative/runs", { body });
+      const runId = result.batch.id;
+      setCreatedRunId(runId);
+      onCreated(runId, count);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t("Pre-generation pack could not be started"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <details data-testid="batch-pregen-panel" className="border-t border-[var(--ad-border)] pt-4">
+      <summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold">
+        <Layers className="h-4 w-4" />
+        {mediaType === "image" ? t("Batch pre-generate image pack (up to 30)") : t("Batch pre-generate video pack (up to 10)")}
+      </summary>
+      <div className="mt-3 space-y-3">
+        <p className="text-xs text-[var(--ad-text-muted)]">
+          {mediaType === "image"
+            ? t("Queue up to 12 scene directions (max 30 total outputs) under visual identity v{version}.", { version: visualIdentity.visualProfileVersion })
+            : t("Queue 1–10 verified source image IDs (1 video clip per source) under visual identity v{version}.", { version: visualIdentity.visualProfileVersion })}
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="block text-sm">{t("Generation profile key")}
+            <input className={`${fieldClass} mt-1`} value={profileId} onChange={event => setProfileId(event.target.value)} placeholder="profile-key" />
+          </label>
+          <label className="block text-sm">{t("Pack brief")}
+            <input className={`${fieldClass} mt-1`} value={brief} onChange={event => setBrief(event.target.value)} placeholder={mediaType === "image" ? "Everyday lifestyle chat photos" : "Subtle smile and natural motion"} />
+          </label>
+        </div>
+        {mediaType === "image" ? (
+          <>
+            <label className="block text-sm">{t("Scene directions (one per line, 1–12 lines)")}
+              <textarea className={`${fieldClass} mt-1 min-h-24`} value={directionsText} onChange={event => setDirectionsText(event.target.value)} placeholder={"Morning coffee beside a sunny kitchen window\nEvening rooftop cocktail dress with warm bokeh lights"} />
+            </label>
+            <label className="block text-sm">{t("Outputs per direction")}
+              <input type="number" min={1} max={10} className={`${fieldClass} mt-1 w-28`} value={outputsPerDirection} onChange={event => setOutputsPerDirection(Math.max(1, Math.min(10, Number(event.target.value) || 1)))} />
+            </label>
+          </>
+        ) : (
+          <label className="block text-sm">{t("Verified source image IDs (one per line, 1–10 IDs)")}
+            <textarea className={`${fieldClass} mt-1 min-h-24`} value={sourceIdsText} onChange={event => setSourceIdsText(event.target.value)} placeholder={"asset_1\nasset_2"} />
+          </label>
+        )}
+        <div className="flex flex-wrap items-center gap-3">
+          <WorkspaceButton tone="primary" disabled={!canSubmit} onClick={() => void launchPack()}>
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <WandSparkles className="h-4 w-4" />}
+            {t("Start batch pack")}
+          </WorkspaceButton>
+          {createdRunId ? (
+            <a className="text-sm font-semibold underline" href={`/admin/creative/runs/${encodeURIComponent(createdRunId)}`}>
+              {t("View Creative Run")}
+            </a>
+          ) : null}
+        </div>
+        {error ? <p role="alert" className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
+      </div>
+    </details>
+  );
+}
+
 function splitFacts(value: string) { return [...new Set(value.split("\n").map(fact => fact.trim()).filter(Boolean))]; }
 function factsValid(value: string) { const facts = splitFacts(value); return facts.length <= 48 && facts.every(fact => fact.length <= 160); }

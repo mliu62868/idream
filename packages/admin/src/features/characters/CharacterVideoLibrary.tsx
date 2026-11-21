@@ -2,7 +2,7 @@
 
 import type { ChangeEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
+import { characterVideoProductionRecipe, type CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { Loader2, Search, Trash2, Upload, Video, WandSparkles, X } from "lucide-react";
 import { apiGet } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
@@ -276,7 +276,8 @@ export function CharacterVideoLibrary({
       ) : null}
 
       {canReadProduction ? <CharacterChatLibrary characterId={data.character.id} mediaType="video"
-        canWrite={canImport} canPublish={canPublish} source={chatSource} onCloseSource={() => setChatSource(null)} /> : null}
+        canWrite={canImport} canPublish={canPublish} source={chatSource} onCloseSource={() => setChatSource(null)}
+        defaultProfileId={characterVideoProductionRecipe.profileKey} /> : null}
 
       <section aria-busy={loading} aria-label={t("Character video library")}>
         {/* SPEC: Only a successful read can establish an empty library. */}

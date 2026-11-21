@@ -10,7 +10,7 @@ import { createCharacter, createUser, dreamcoinBalance, grantCoins, purgeTestDat
 import { characterVisualProfileSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
 import { characterContentHash } from "@/server/modules/admin-v2/shared/character-content-identity";
 import { mediaAssetAuthorityDependencies } from "@/server/modules/admin-v2/shared/media-asset-authority-dependencies";
-import { updateCharacterMediaLibraryEntry } from "@/server/modules/character-media-library/admin-service";
+import { batchReviewCharacterMediaLibrary } from "@/server/modules/character-media-library/admin-service";
 import * as mediaModels from "@/server/modules/character-media-library/media-models";
 import { libraryDescriptorHash } from "@/server/modules/character-media-library/service";
 import {
@@ -478,28 +478,32 @@ describe("Paid delayed curated media fulfillment & write-path safety", () => {
     expect(refundedAtt.errorCode).toBe("library_entry_withdrawn");
   });
 
-  it("refreshes a published index and protects its source asset from archival", async () => {
-    const f = await officialFixture({ kind: "image", status: "draft" });
-    const dependencies = () => mediaAssetAuthorityDependencies(prisma, f.sourceAsset.id);
-    const libraryDependency = expect.objectContaining({ kind: "character_media_library", entryId: f.entry.id });
-    expect(await dependencies()).not.toContainEqual(libraryDependency);
-    await prisma.characterMediaLibraryEntry.update({
-      where: { id: f.entry.id },
-      data: { embeddingHash: "0".repeat(64) },
-    });
-
-    const reviewed = await updateCharacterMediaLibraryEntry({
+  it("blocks archiving source assets referenced by published library entries and supports fail-closed batch review", async () => {
+    const f = await officialFixture({ kind: "image", status: "draft", nudity: "unknown" });
+    // Draft does not block source archival yet; batch publishing without explicit nudity is rejected.
+    expect((await mediaAssetAuthorityDependencies(prisma, f.sourceAsset.id)).some(d => d.kind === "character_media_library")).toBe(false);
+    await expect(batchReviewCharacterMediaLibrary({
       characterId: f.character.id,
-      entryId: f.entry.id,
       actor: { id: f.adminId, role: "admin" },
       idempotencyKey: randomUUID(),
       requestId: randomUUID(),
-      body: { expectedRevision: 1, status: "published" },
-    });
+      body: { items: [{ entryId: f.entry.id, expectedRevision: 1, status: "published" }] },
+    })).rejects.toMatchObject({ code: "bad_request" });
 
-    expect(reviewed.entry.status).toBe("published");
+    // Batch publish with explicit nudity sets nudityVerifiedById and activates archival dependency guard.
+    const reviewed = await batchReviewCharacterMediaLibrary({
+      characterId: f.character.id,
+      actor: { id: f.adminId, role: "admin" },
+      idempotencyKey: randomUUID(),
+      requestId: randomUUID(),
+      body: { items: [{ entryId: f.entry.id, expectedRevision: 1, status: "published", nudity: "partial" }] },
+    });
+    expect(reviewed.entries).toHaveLength(1);
+    expect(reviewed.entries[0]?.status).toBe("published");
+    expect(reviewed.entries[0]?.nudity).toBe("partial");
     const row = await prisma.characterMediaLibraryEntry.findUniqueOrThrow({ where: { id: f.entry.id } });
-    expect(row.embeddingHash).toBe(libraryDescriptorHash(row));
-    expect(await dependencies()).toContainEqual(libraryDependency);
+    expect(row.nudityVerifiedById).toBe(f.adminId);
+    const deps = await mediaAssetAuthorityDependencies(prisma, f.sourceAsset.id);
+    expect(deps).toContainEqual(expect.objectContaining({ kind: "character_media_library", entryId: f.entry.id }));
   });
 });

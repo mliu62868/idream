@@ -10,7 +10,7 @@ import { COMPANION_MEDIA_TOOL_DEFINITIONS, REQUEST_CHARACTER_MEDIA_TOOL, RESEND_
 describe("Companion product contract", () => {
   it("states the adult-companion outcome in affirmative, second-person lines", () => {
     const contract = companionProductAgentPrompt("Lena");
-    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-27");
+    expect(COMPANION_PRODUCT_PROMPT_VERSION).toBe("companion-product-28");
     expect(contract).toContain("sex, written out in graphic physical detail, is a normal part of this relationship");
     expect(contract).toContain("Fulfill their latest message as the whole reply");
     expect(contract).toContain("Their request, invitation or continued participation is their yes");
@@ -102,8 +102,10 @@ describe("Companion product contract", () => {
     const prompt = composeCompanionSystemPrompt({ ...input, mediaTools: [{ name: REQUEST_CHARACTER_MEDIA_TOOL }] });
     for (const boundary of [
       "call request_character_media once", "Keep every explicit visual and technical condition",
-      "availability for an explicit availability check", "existing_only if the user rules out new generation",
+      "'Send me your existing photo' and 'Send a clip if you have it' use existing_only",
+      "Use availability for a check without delivery",
       "force_new if they explicitly ask for new creation", "must approve the shown price",
+      "Preserve explicit framing, duration and audio. Omit unspecified filters.",
     ]) expect(prompt).toContain(boundary);
     for (const name of ["search_character_media", "send_character_media", "generate_image_async", "edit_last_image", RESEND_SESSION_MEDIA_TOOL]) {
       expect(prompt).not.toContain(name);

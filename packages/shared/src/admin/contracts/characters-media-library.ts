@@ -41,6 +41,9 @@ export const characterMediaLibraryEntrySchema = z.object({
   height: z.number().int().positive().nullable(),
   durationSeconds: z.number().positive().nullable(),
   hasAudio: z.boolean().nullable(),
+  attireLevel: z.string().trim().min(1).max(32).nullable().optional(),
+  distributionScope: z.enum(["chat_library", "teaser", "both"]).optional(),
+  paidDeliveryCount: z.number().int().nonnegative().optional(),
   createdAt: adminIsoDateTimeSchema,
   updatedAt: adminIsoDateTimeSchema,
 }).strict();
@@ -126,7 +129,25 @@ export const characterMediaLibrarySearchRequestSchema = z.object({
   query: z.string().trim().min(1).max(2_000),
   requiredFacts: factsSchema.default([]),
   excludedFacts: factsSchema.default([]),
-  nudity: z.enum(["unspecified", "none", "full"]).default("unspecified"),
+  nudity: z.enum(["unspecified", "none", "partial", "full"]).default("unspecified"),
+}).strict();
+
+export const characterMediaLibraryBatchReviewItemSchema = z.object({
+  entryId: adminIdSchema,
+  expectedRevision: z.number().int().positive(),
+  status: z.enum(["published", "withdrawn"]),
+  nudity: characterMediaLibraryNuditySchema.optional(),
+  attireLevel: z.string().trim().min(1).max(32).nullable().optional(),
+  distributionScope: z.enum(["chat_library", "teaser", "both"]).optional(),
+}).strict();
+
+export const characterMediaLibraryBatchReviewRequestSchema = z.object({
+  items: z.array(characterMediaLibraryBatchReviewItemSchema).min(1).max(50),
+}).strict();
+
+export const characterMediaLibraryBatchReviewResponseSchema = z.object({
+  entries: z.array(characterMediaLibraryEntrySchema),
+  replayed: z.boolean(),
 }).strict();
 
 export const characterMediaLibrarySearchResponseSchema = z.object({
@@ -149,3 +170,6 @@ export type CharacterMediaLibraryDescribeRequest = z.infer<typeof characterMedia
 export type CharacterMediaLibraryDescribeResponse = z.infer<typeof characterMediaLibraryDescribeResponseSchema>;
 export type CharacterMediaLibrarySearchRequest = z.infer<typeof characterMediaLibrarySearchRequestSchema>;
 export type CharacterMediaLibrarySearchResponse = z.infer<typeof characterMediaLibrarySearchResponseSchema>;
+export type CharacterMediaLibraryBatchReviewItem = z.infer<typeof characterMediaLibraryBatchReviewItemSchema>;
+export type CharacterMediaLibraryBatchReviewRequest = z.infer<typeof characterMediaLibraryBatchReviewRequestSchema>;
+export type CharacterMediaLibraryBatchReviewResponse = z.infer<typeof characterMediaLibraryBatchReviewResponseSchema>;

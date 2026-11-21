@@ -639,6 +639,86 @@ export async function createCharacterVisualProfile(input: {
     });
   }
   const invalidatedDraftAssets = await invalidateCharacterDraftAssetPack(tx, characterId);
+  const identityChangeClass = !active
+    ? "bootstrap"
+    : (candidate
+      || active.style !== style
+      || JSON.stringify(active.faceTraits) !== JSON.stringify(faceTraits)
+      || JSON.stringify(active.hairTraits) !== JSON.stringify(hairTraits)
+      || JSON.stringify(active.bodyTraits) !== JSON.stringify(bodyTraits))
+      ? "major"
+      : "minor_prompt_tweak";
+
+  let migratedLibraryEntryCount = 0;
+  if (identityChangeClass === "minor_prompt_tweak" && active) {
+    const publishedEntries = await tx.characterMediaLibraryEntry.findMany({
+      where: {
+        characterId,
+        visualProfileId: active.id,
+        status: "published",
+      },
+    });
+    if (publishedEntries.length > 0) {
+      const migrated = await tx.characterMediaLibraryEntry.createMany({
+        skipDuplicates: true,
+        data: publishedEntries.map((entry) => {
+          const prevSnapshot = jsonRecord(entry.sourceSnapshot);
+          return {
+            characterId: entry.characterId,
+            sourceAssetId: entry.sourceAssetId,
+            visualProfileId: created.id,
+            visualProfileVersion: created.version,
+            status: "published",
+            kind: entry.kind,
+            description: entry.description,
+            facts: entry.facts,
+            absentFacts: entry.absentFacts,
+            nudity: entry.nudity,
+            attireLevel: entry.attireLevel,
+            nudityVerifiedById: entry.nudityVerifiedById,
+            distributionScope: entry.distributionScope,
+            nearDuplicateClusterId: entry.nearDuplicateClusterId,
+            photoSetId: entry.photoSetId,
+            audioType: entry.audioType,
+            paidDeliveryCount: entry.paidDeliveryCount,
+            descriptionSource: entry.descriptionSource,
+            width: entry.width,
+            height: entry.height,
+            durationSeconds: entry.durationSeconds,
+            hasAudio: entry.hasAudio,
+            contentType: entry.contentType,
+            storageKey: entry.storageKey,
+            thumbnailKey: entry.thumbnailKey,
+            contentHash: entry.contentHash,
+            embedding: entry.embedding,
+            embeddingModel: entry.embeddingModel,
+            embeddingDimensions: entry.embeddingDimensions,
+            embeddingHash: entry.embeddingHash,
+            sourceSnapshot: toInputJson({
+              ...prevSnapshot,
+              visualProfileHash: characterVisualProfileSnapshotHash({
+                version,
+                style,
+                identityPrompt,
+                negativeIdentityPrompt,
+                faceTraits: toInputJson(faceTraits),
+                hairTraits: toInputJson(hairTraits),
+                bodyTraits: toInputJson(bodyTraits),
+                signatureTraits: toInputJson(signatureTraits),
+                styleTraits: toInputJson(styleTraits),
+              }),
+              migratedFromVisualProfileId: active.id,
+              migratedFromVisualProfileVersion: active.version,
+            }),
+            createdById: entry.createdById,
+            updatedById: actor.id,
+          };
+        }),
+      });
+      migratedLibraryEntryCount = migrated.count;
+    }
+  }
+
   await tx.adminAuditLog.create({
     data: contentAuditData(request, actor, {
       action: "content.visual_profile.create",
@@ -655,6 +735,8 @@ export async function createCharacterVisualProfile(input: {
         visualProfileId: created.id,
         version: created.version,
         status: created.status,
+        identityChangeClass,
+        migratedLibraryEntryCount,
         candidateAuthority: body.candidateAuthority ?? null,
         draftAssetPackVersion: invalidatedDraftAssets?.nextVersion ?? null,
       },

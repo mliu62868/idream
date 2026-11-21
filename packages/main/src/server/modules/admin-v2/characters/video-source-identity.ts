@@ -131,7 +131,7 @@ export async function matchCharacterVideoSourceIdentity(
   const meta = jsonRecord(job.sourceMeta);
   const controls = jsonRecord(job.controls);
   const assetId = meta.videoSourceAssetId;
-  if (job.mode !== "video" || meta.purpose !== "character_video" || !visual.immutableHash ||
+  if (job.mode !== "video" || !["character_video", "character_library_video_pack"].includes(String(meta.purpose)) || !visual.immutableHash ||
     typeof assetId !== "string" || !assetId || controls.sourceImageAssetId !== assetId ||
     !Array.isArray(controls.referenceSnapshots) || controls.referenceSnapshots.length !== 1) return null;
   const snapshot = jsonRecord(controls.referenceSnapshots[0]);

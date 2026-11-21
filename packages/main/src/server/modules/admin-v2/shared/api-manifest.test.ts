@@ -352,8 +352,8 @@ describe("Admin v2 API permission and contract manifest", () => {
 
     expect(new Set(declared).size).toBe(declared.length);
     expect(declared).toEqual(implemented);
-    // Six Character chat-library operations: list/create/update/describe/search/content.
-    expect(declared).toHaveLength(268);
+    // Seven Character chat-library operations: list/create/update/describe/batch-review/search/content.
+    expect(declared).toHaveLength(269);
   });
 
   it("fails closed unless each operation has typed authority and request/response contracts", () => {

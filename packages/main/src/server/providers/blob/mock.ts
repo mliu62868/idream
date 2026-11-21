@@ -66,6 +66,42 @@ export class MockBlobStore implements BlobStore {
     };
   }
 
+  async putPrivateIfAbsent(input: Parameters<NonNullable<BlobStore["putPrivateIfAbsent"]>>[0]) {
+    const target = path.join(blobRoot(), input.key);
+    await mkdir(path.dirname(target), { recursive: true });
+    try {
+      await writeFile(target, input.body, { flag: "wx", signal: input.signal });
+      return {
+        ok: true as const,
+        data: {
+          key: input.key,
+          size: input.body.byteLength,
+          created: true,
+        },
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "EEXIST") {
+        const existing = await stat(target);
+        return {
+          ok: true as const,
+          data: {
+            key: input.key,
+            size: existing.size,
+            created: false,
+          },
+        };
+      }
+      return {
+        ok: false as const,
+        error: {
+          code: "put_if_absent_failed",
+          message: error instanceof Error ? error.message : String(error),
+          retryable: false,
+        },
+      };
+    }
+  }
+
   async signGetUrl(input: Parameters<BlobStore["signGetUrl"]>[0]) {
     const query = new URLSearchParams({
       ttl: String(input.expiresInSeconds),

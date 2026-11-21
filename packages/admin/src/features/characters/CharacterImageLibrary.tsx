@@ -364,7 +364,8 @@ export function CharacterImageLibrary({
 
 
       {canReadProduction ? <CharacterChatLibrary characterId={data.character.id} mediaType="image"
-        canWrite={canCreate} canPublish={canPublish} source={chatSource} onCloseSource={() => setChatSource(null)} /> : null}
+        canWrite={canCreate} canPublish={canPublish} source={chatSource} onCloseSource={() => setChatSource(null)}
+        defaultProfileId={data.visual.routeQualifications.find(route => route.result === "qualified" && !route.stale)?.generationProfileKey ?? undefined} /> : null}
 
       <section aria-busy={loading} aria-label={t("Character image library")}>
         {/* SPEC: Only a successful read can establish an empty library. */}

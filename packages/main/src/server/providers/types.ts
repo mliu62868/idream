@@ -349,6 +349,13 @@ export interface BlobStore {
     contentType: string;
     signal?: AbortSignal;
   }): Promise<ProviderResult<{ key: string; size: number }>>;
+  /** Atomically writes a private object only if the key does not yet exist. */
+  putPrivateIfAbsent?(input: {
+    key: string;
+    body: Uint8Array;
+    contentType: string;
+    signal?: AbortSignal;
+  }): Promise<ProviderResult<{ key: string; size: number; created: boolean }>>;
   /** Creates a fresh, non-sensitive marker on a never-reused key. */
   prepareFencedPut?(input: {
     key: string;

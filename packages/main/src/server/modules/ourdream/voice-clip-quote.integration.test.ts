@@ -187,7 +187,7 @@ describe("Voice Clip accepted price", () => {
     const synthesize = vi.spyOn(providers.voice.clip, "synthesize").mockResolvedValueOnce({ ok: false, error: { code: "voice_rate_limited", message: "Retry safely", retryable: true } });
     const before = await dreamcoinBalance(userId);
     try {
-      expectError(await api("POST", "generation/voice", { userId, ageGate: true, autoGenerationQuote: false, body: { ...body, quoteToken: quoted.data.quote.quoteToken } }), 500);
+      expectError(await api("POST", "generation/voice", { userId, ageGate: true, autoGenerationQuote: false, body: { ...body, quoteToken: quoted.data.quote.quoteToken } }), 503, "unavailable");
       const original = await prisma.voiceClipRequest.findUniqueOrThrow({ where: { userId_messageId_replyAttempt: { userId, messageId: body.messageId, replyAttempt: 1 } } });
       await prisma.pricingRule.update({ where: { id: price.id }, data: { baseCost: price.baseCost + 41 } });
       const skipped = await api("POST", "generation/voice", { userId, ageGate: true, body: { ...body, intent: "prewarm" } });

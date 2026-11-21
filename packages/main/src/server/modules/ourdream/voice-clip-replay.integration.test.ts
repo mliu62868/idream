@@ -410,7 +410,8 @@ describe("voice clip replay settlement", () => {
     const provider = vi.spyOn(providers.voice.clip, "synthesize");
     try {
       provider.mockResolvedValueOnce({ ok: false, error: { code: "controlled_failure", message: "Controlled", retryable: true } });
-      expect((await api("POST", "generation/voice", { userId, ageGate: true, body })).status).toBe(500);
+      // A retryable provider failure is reported as temporary pressure (503), not a server fault.
+      expect((await api("POST", "generation/voice", { userId, ageGate: true, body })).status).toBe(503);
       // Rewrite the row to what the previous code stored for this reply.
       const row = await prisma.voiceClipRequest.findFirstOrThrow({ where: { userId } });
       const payload = row.synthesisPayload as Record<string, unknown>;

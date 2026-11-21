@@ -14,12 +14,14 @@ import { entitlementMap } from "@/server/modules/ourdream/subscription-lifecycle
 import { readableCharacter } from "@/server/modules/ourdream/generation-character-authority";
 import { expireVoiceCalls } from "@/server/modules/chat/voice-call";
 import { revealDueDelayedChatMedia } from "@/server/modules/chat/delayed-media-reveal";
+import { autoIngestCompletedLibraryPackItems } from "@/server/modules/character-media-library/auto-ingest";
 import { advanceVideoSequences, type VideoSequenceAdvanceCursor } from "@/server/modules/ourdream/video-sequence";
 import { createVideoCompositionLane } from "@/server/modules/ourdream/video-composition-lane";
 import { isProcessEntrypoint } from "./process-entrypoint";
 
 const BUSY_DELAY_MS = 50;
 const IDLE_DELAY_MS = 1_000;
+const PACK_AUTO_INGEST_INTERVAL_MS = 5_000;
 const RECONCILE_INTERVAL_MS = 60_000;
 const FINALIZER_QUEUES = [
   MAIN_QUEUES.generationTerminalIngest,
@@ -40,6 +42,8 @@ let callExpiry: Promise<void> | null = null;
 let lastCallExpiryAt = 0;
 let delayedMediaReveal: Promise<void> | null = null;
 let lastDelayedMediaRevealAt = 0;
+let libraryPackAutoIngest: Promise<void> | null = null;
+let lastLibraryPackAutoIngestAt = 0;
 let videoSequenceAdvance: Promise<void> | null = null;
 let videoSequenceCursor: VideoSequenceAdvanceCursor | null = null;
 let lastVideoSequenceAdvanceAt = 0;
@@ -73,6 +77,18 @@ function maybeRevealDelayedChatMedia(now = Date.now()) {
   }).catch((error) => {
     logger.error({ error }, "delayed curated chat media reveal sweep failed");
   }).finally(() => { delayedMediaReveal = null; });
+}
+
+function maybeAutoIngestCompletedLibraryPacks(now = Date.now()) {
+  if (libraryPackAutoIngest || now - lastLibraryPackAutoIngestAt < PACK_AUTO_INGEST_INTERVAL_MS) return;
+  lastLibraryPackAutoIngestAt = now;
+  libraryPackAutoIngest = autoIngestCompletedLibraryPackItems(4).then((summary) => {
+    if (summary.ingested > 0 || summary.failed > 0) {
+      logger.info(summary, "character library pack auto-ingest sweep completed");
+    }
+  }).catch((error) => {
+    logger.error({ error }, "character library pack auto-ingest sweep failed");
+  }).finally(() => { libraryPackAutoIngest = null; });
 }
 
 function maybeRecoverVoiceClips(now = Date.now()) {
@@ -111,6 +127,7 @@ export async function runFinalizerLoop(): Promise<void> {
     maybeRecoverVoiceClips();
     maybeExpireVoiceCalls();
     maybeRevealDelayedChatMedia();
+    maybeAutoIngestCompletedLibraryPacks();
     maybeAdvanceVideoSequences();
     maybeReconcileStaleJobs();
     await dispatchPendingGenerationTerminalRecords().catch((err) => logger.error({ err }, "generation terminal record dispatch failed"));
@@ -119,6 +136,7 @@ export async function runFinalizerLoop(): Promise<void> {
   await voiceRecovery;
   await callExpiry;
   await delayedMediaReveal;
+  await libraryPackAutoIngest;
   await videoSequenceAdvance;
   await videoCompositionLane.drain();
   await staleReconcile;

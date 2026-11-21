@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { characterMediaLibraryQuerySchema, type CharacterMediaLibraryCreateRequest } from "@idream/shared/admin";
@@ -14,6 +15,7 @@ import {
   previewCharacterMediaLibrarySearch, readCharacterMediaLibraryContent, updateCharacterMediaLibraryEntry,
 } from "./admin-service";
 import { libraryDescriptorHash } from "./service";
+import { autoIngestCompletedLibraryPackItems } from "./auto-ingest";
 import * as models from "./media-models";
 
 const prefix = `zt-library-admin-${randomUUID()}`;
@@ -21,6 +23,7 @@ const actor = { id: `${prefix}-publisher`, role: "admin" as const };
 const editor = { id: `${prefix}-editor`, role: "user" as const };
 const keys = new Set<string>();
 const realPut = providers.blob.putPrivate.bind(providers.blob);
+const realPutIfAbsent = providers.blob.putPrivateIfAbsent!.bind(providers.blob);
 
 beforeAll(async () => {
   await prisma.user.createMany({ data: [actor, editor].map(user => ({ ...user, email: `${user.id}@example.test`, dataClass: "fixture" })) });
@@ -40,6 +43,7 @@ beforeEach(() => {
   vi.spyOn(models, "embedMediaText").mockResolvedValue({ model: "fixture-embedding", dimensions: 2, vector: [1, 0] });
   vi.spyOn(models, "describeMediaFrames").mockResolvedValue({ description: "A blue image without text", facts: ["Blue"], absentFacts: ["text"], nudity: "none", model: "fixture-vision" });
   vi.spyOn(providers.blob, "putPrivate").mockImplementation(async input => { keys.add(input.key); return realPut(input); });
+  vi.spyOn(providers.blob, "putPrivateIfAbsent").mockImplementation(async input => { keys.add(input.key); return realPutIfAbsent(input); });
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 afterAll(async () => {
@@ -83,10 +87,84 @@ async function stored(entryId: string) { return prisma.characterMediaLibraryEntr
 function previewRequest(range?: string) { return new Request("http://admin.test/content", { headers: range ? { range } : undefined }); }
 
 describe("Admin Character chat library persistence", () => {
+  it("auto-ingests earlier pack items after newer items fill the sweep window", async () => {
+    const f = await fixture();
+    const batch = await prisma.contentProductionBatch.create({ data: {
+      title: "Completed image pack", purpose: "character_library_image_pack", targetType: "character",
+      targetId: f.characterId, createdById: actor.id, presetIds: [], count: 4, totalItems: 4,
+    } });
+    const assetIds: string[] = [];
+    for (let index = 0; index < 4; index += 1) {
+      const storageKey = `${f.characterId}/pack-${index}.png`;
+      const storedAsset = await providers.blob.putPrivate({ key: storageKey, body: f.bytes, contentType: "image/png" });
+      expect(storedAsset.ok).toBe(true);
+      const asset = await prisma.mediaAsset.create({ data: {
+        ownerId: actor.id, characterId: f.characterId, type: "image", visibility: "private",
+        url: "/fixture/image.png", storageKey, contentType: "image/png", safetyStatus: "passed", metadata: {},
+      } });
+      const job = await prisma.generationJob.create({ data: {
+        userId: actor.id, characterId: f.characterId, visualProfileId: f.visual.id, visualProfileVersion: f.visual.version,
+        mode: "image", status: "completed", sourceType: "content_production_item", presetIds: [], controls: {},
+      } });
+      await prisma.contentProductionItem.create({ data: {
+        batchId: batch.id, mediaAssetId: asset.id, jobId: job.id, status: "generated", itemIndex: index, tags: [],
+        createdAt: new Date(2026, 10, 20, 0, index),
+      } });
+      assetIds.push(asset.id);
+    }
+    for (const _ of assetIds) {
+      expect(await autoIngestCompletedLibraryPackItems(1)).toMatchObject({ ingested: 1, failed: 0 });
+    }
+    expect(await prisma.characterMediaLibraryEntry.findMany({
+      where: { characterId: f.characterId }, select: { sourceAssetId: true, status: true, nudity: true },
+    })).toEqual(expect.arrayContaining(assetIds.map(sourceAssetId => ({ sourceAssetId, status: "draft", nudity: "unknown" }))));
+  });
+
+  it("auto-ingests a completed video pack under its frozen source image identity", async () => {
+    const f = await fixture();
+    const source = await prisma.generationSourceSnapshot.create({ data: {
+      userId: actor.id, sha256: f.digest, contentType: "image/png", sizeBytes: f.bytes.byteLength,
+    } });
+    const purpose = "character_library_video_pack";
+    const batch = await prisma.contentProductionBatch.create({ data: {
+      title: "Completed video pack", purpose, targetType: "character", targetId: f.characterId, createdById: actor.id, presetIds: [],
+    } });
+    const item = await prisma.contentProductionItem.create({ data: { batchId: batch.id, tags: [] } });
+    const job = await prisma.generationJob.create({ data: {
+      userId: actor.id, characterId: f.characterId, mode: "video", status: "completed",
+      sourceType: "content_production_item", sourceId: item.id, presetIds: [],
+      controls: {
+        sourceImageAssetId: f.sourceAssetId,
+        referenceSnapshots: [{ role: "source_image", assetId: f.sourceAssetId, snapshotId: source.id,
+          sha256: source.sha256, contentType: source.contentType, sizeBytes: source.sizeBytes }],
+      },
+      sourceMeta: {
+        purpose, videoSourceAssetId: f.sourceAssetId,
+        videoSourceIdentity: { visualProfileId: f.visual.id, visualProfileVersion: f.visual.version,
+          visualProfileHash: f.visual.immutableHash, snapshotId: source.id, sourceSha256: source.sha256 },
+      },
+    } });
+    const storageKey = `${f.characterId}/pack.mp4`;
+    const video = await readFile(new URL("../../../e2e/fixtures/collection-playback.mp4", import.meta.url));
+    expect((await providers.blob.putPrivate({ key: storageKey, body: video, contentType: "video/mp4" })).ok).toBe(true);
+    const asset = await prisma.mediaAsset.create({ data: {
+      ownerId: actor.id, characterId: f.characterId, sourceJobId: job.id, type: "video", visibility: "private",
+      url: "/fixture/video.mp4", storageKey, contentType: "video/mp4", safetyStatus: "passed", metadata: {},
+    } });
+    await prisma.contentProductionItem.update({ where: { id: item.id }, data: {
+      jobId: job.id, mediaAssetId: asset.id, status: "generated",
+    } });
+
+    expect(await autoIngestCompletedLibraryPackItems(1)).toMatchObject({ ingested: 1, failed: 0 });
+    expect(await prisma.characterMediaLibraryEntry.findFirst({ where: { sourceAssetId: asset.id } })).toMatchObject({
+      kind: "video", visualProfileId: f.visual.id, visualProfileVersion: f.visual.version, status: "draft", nudity: "unknown",
+    });
+  });
+
   it("creates and replays one owned copy, then revisions and reindexes published descriptions", async () => {
     const f = await fixture();
     const input = { ...mutation(f.characterId, editor), body: f.body };
-    const put = vi.mocked(providers.blob.putPrivate); put.mockClear();
+    const put = vi.mocked(providers.blob.putPrivateIfAbsent!); put.mockClear();
     const first = await createCharacterMediaLibraryEntry(input);
     const replay = await createCharacterMediaLibraryEntry({ ...input, requestId: randomUUID() });
     expect(replay).toEqual({ ...first, replayed: true });
@@ -146,7 +224,7 @@ describe("Admin Character chat library persistence", () => {
   it("rejects private user media even when it belongs to the same Character", async () => {
     const f = await fixture();
     await prisma.mediaAsset.update({ where: { id: f.sourceAssetId }, data: { ownerId: editor.id, metadata: { synthetic: false, sha256: f.digest } } });
-    const put = vi.mocked(providers.blob.putPrivate); put.mockClear();
+    const put = vi.mocked(providers.blob.putPrivateIfAbsent!); put.mockClear();
     await expect(createCharacterMediaLibraryEntry({ ...mutation(f.characterId), body: f.body })).rejects.toMatchObject({ status: 403 });
     await expect(describeCharacterMediaLibraryAsset({ ...mutation(f.characterId), body: { sourceAssetId: f.sourceAssetId } })).rejects.toMatchObject({ status: 403 });
     expect(put).not.toHaveBeenCalled();
@@ -250,10 +328,10 @@ describe("Admin Character chat library persistence", () => {
   it("keeps the original mutation failure when cleanup ownership is uncertain", async () => {
     const f = await fixture();
     const warning = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
-    vi.mocked(providers.blob.putPrivate).mockImplementation(async input => {
+    vi.mocked(providers.blob.putPrivateIfAbsent!).mockImplementation(async input => {
       keys.add(input.key);
       if (input.key.endsWith("thumbnail.jpg")) return { ok: false, error: { code: "fixture_failure", message: "Write failed", retryable: true } };
-      return realPut(input);
+      return realPutIfAbsent(input);
     });
     vi.spyOn(prisma.characterMediaLibraryEntry, "findUnique").mockRejectedValueOnce(new Error("Cleanup database unavailable"));
     const remove = vi.spyOn(providers.blob, "delete");

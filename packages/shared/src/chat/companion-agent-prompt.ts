@@ -55,8 +55,9 @@ import { COMPANION_MEDIA_REQUEST_GUIDANCE, COMPANION_MEDIA_RESEND_GUIDANCE, REQU
  * v26: distinguish an ordinary request to see media from an explicit request
  * for new creation, including when the user supplies detailed conditions.
  * v27: Main owns paid fulfillment and exact resends through the same tools for every Character.
+ * v28: conditional requests to receive existing media select delivery. Framing follows explicit requirements.
  */
-export const COMPANION_PRODUCT_PROMPT_VERSION = "companion-product-27" as const;
+export const COMPANION_PRODUCT_PROMPT_VERSION = "companion-product-28" as const;
 
 export function companionProductAgentPrompt(characterName: string): string {
   const name = characterName.trim() || "the Character";

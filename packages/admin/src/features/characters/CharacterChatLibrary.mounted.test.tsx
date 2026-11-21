@@ -356,4 +356,97 @@ describe("Character chat library", () => {
     expect(alert.textContent).toContain("The authority did not answer.");
     expect(alert.querySelector("span")?.textContent).not.toContain("pg: connection refused");
   });
+
+  it("supports 3-field batch review of drafts with fail-closed nudity validation", async () => {
+    const draft1: CharacterMediaLibraryEntry = { ...entry("draft"), id: "draft-1", nudity: "unknown", revision: 1 };
+    const draft2: CharacterMediaLibraryEntry = { ...entry("draft"), id: "draft-2", nudity: "none", revision: 4 };
+    operation.mockImplementation(async (id, options) => {
+      if (id.startsWith("GET ")) return library([draft1, draft2]);
+      if (id.endsWith("/batch-review")) return { entries: options.body.items.map((item: { entryId: string }) => ({ ...draft1, id: item.entryId, status: "published" })), replayed: false };
+      return { entry: draft1, replayed: false };
+    });
+    await act(async () => root.render(<CharacterChatLibrary characterId="character-1" mediaType="image" canWrite canPublish source={null} onCloseSource={() => undefined} />));
+    await waitUntil(() => Boolean(button("Batch review drafts (2)")));
+    await click("Batch review drafts (2)");
+    await waitUntil(() => Boolean(container.querySelector('[aria-label="Batch review drafts"]')));
+
+    // Select Approve on draft-1 while nudity is still unknown -> submit stays disabled (fail-closed)
+    const decision1 = container.querySelector<HTMLSelectElement>('select[aria-label="Decision draft-1"]')!;
+    await act(async () => { decision1.value = "published"; decision1.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(button("Submit batch review (1)").disabled).toBe(true);
+    expect(container.textContent).toContain("1 approved items still have unverified nudity");
+
+    // Set nudity + attire on draft-1, withdraw draft-2 -> submit sends exact batch payload
+    const nudity1 = container.querySelector<HTMLSelectElement>('select[aria-label="Nudity draft-1"]')!;
+    const attire1 = container.querySelector<HTMLSelectElement>('select[aria-label="Attire draft-1"]')!;
+    const decision2 = container.querySelector<HTMLSelectElement>('select[aria-label="Decision draft-2"]')!;
+    await act(async () => {
+      nudity1.value = "none"; nudity1.dispatchEvent(new Event("change", { bubbles: true }));
+      attire1.value = "clothed"; attire1.dispatchEvent(new Event("change", { bubbles: true }));
+      decision2.value = "withdrawn"; decision2.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(button("Submit batch review (2)").disabled).toBe(false);
+    await click("Submit batch review (2)");
+
+    const call = operation.mock.calls.find(([id]) => id === "POST /api/v2/admin/characters/:id/media-library/batch-review");
+    expect(call?.[1].body).toEqual({
+      items: [
+        { entryId: "draft-1", expectedRevision: 1, status: "published", nudity: "none", attireLevel: "clothed", distributionScope: "chat_library" },
+        { entryId: "draft-2", expectedRevision: 4, status: "withdrawn", nudity: "none", distributionScope: "chat_library" },
+      ],
+    });
+  });
+
+  it("launches a character_library_image_pack batch pre-generation creative run", async () => {
+    operation.mockImplementation(async (id) => {
+      if (id.startsWith("GET ")) return library([]);
+      if (id === "POST /api/v2/admin/creative/runs") return { batch: { id: "run-pack-1" }, replayed: false };
+      return { entry: entry(), replayed: false };
+    });
+    await act(async () => root.render(
+      <CharacterChatLibrary characterId="character-1" mediaType="image" canWrite canPublish source={null} onCloseSource={() => undefined} defaultProfileId="profile-official-1" />,
+    ));
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="batch-pregen-panel"]')));
+    const briefInput = [...container.querySelectorAll("label")].find(l => l.textContent?.startsWith("Pack brief"))!.querySelector("input")!;
+    const directionsArea = [...container.querySelectorAll("label")].find(l => l.textContent?.startsWith("Scene directions"))!.querySelector("textarea")!;
+    await edit(briefInput, "Everyday companion lifestyle pack");
+    await edit(directionsArea, "Morning coffee beside a sunlit window\nEvening rooftop cocktail dress with warm bokeh");
+    await click("Start batch pack");
+
+    const call = operation.mock.calls.find(([id]) => id === "POST /api/v2/admin/creative/runs");
+    expect(call?.[1].body).toMatchObject({
+      purpose: "character_library_image_pack",
+      targetType: "character",
+      targetId: "character-1",
+      profileId: "profile-official-1",
+      count: 4,
+      outputsPerDirection: 2,
+    });
+    expect(call?.[1].body.directions).toHaveLength(2);
+    expect(container.textContent).toContain("run-pack-1");
+  });
+
+  it("applies 1/2/3/R keyboard shortcuts across cards in BatchReviewGrid", async () => {
+    const draft1: CharacterMediaLibraryEntry = { ...entry("draft"), id: "draft-1", nudity: "unknown", revision: 1 };
+    const draft2: CharacterMediaLibraryEntry = { ...entry("draft"), id: "draft-2", nudity: "unknown", revision: 2 };
+    operation.mockImplementation(async (id, options) => {
+      if (id.startsWith("GET ")) return library([draft1, draft2]);
+      if (id.endsWith("/batch-review")) return { entries: options.body.items.map((item: { entryId: string }) => ({ ...draft1, id: item.entryId })), replayed: false };
+      return { entry: draft1, replayed: false };
+    });
+    await act(async () => root.render(<CharacterChatLibrary characterId="character-1" mediaType="image" canWrite canPublish source={null} onCloseSource={() => undefined} />));
+    await waitUntil(() => Boolean(button("Batch review drafts (2)")));
+    await click("Batch review drafts (2)");
+    const grid = container.querySelector<HTMLDivElement>('[aria-label="Batch review drafts"]')!;
+    await act(async () => { grid.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true })); });
+    await act(async () => { grid.dispatchEvent(new KeyboardEvent("keydown", { key: "r", bubbles: true })); });
+    await click("Submit batch review (2)");
+    const call = operation.mock.calls.find(([id]) => id === "POST /api/v2/admin/characters/:id/media-library/batch-review");
+    expect(call?.[1].body).toEqual({
+      items: [
+        { entryId: "draft-1", expectedRevision: 1, status: "published", nudity: "none", attireLevel: "clothed", distributionScope: "chat_library" },
+        { entryId: "draft-2", expectedRevision: 2, status: "withdrawn", nudity: "unknown", distributionScope: "chat_library" },
+      ],
+    });
+  });
 });
