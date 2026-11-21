@@ -54,6 +54,7 @@ import {
   assertGenerationSourceImageAuthority,
   findExistingGenerationJob,
   wakeQueuedGenerationDispatch,
+  type GenerationChatAttachment,
 } from "./generation-job-authority";
 import type {
   GenerationCreateBody,
@@ -100,7 +101,7 @@ export type GenerationJobOptions = {
     idempotencyKey?: string | null;
     requestFingerprint?: string;
     source?: GenerationSource;
-    chatAttachment?: { sessionId: string; turnId: string; attempt: number; confirmedEdit?: true };
+    chatAttachment?: GenerationChatAttachment;
     localizedEdit?: Extract<ImageEditScope, { mode: "local" }>;
     /** Only the owner-confirmation authority constructs these trusted pins. */
     confirmedEdit?: ConfirmedImageEdit;

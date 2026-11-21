@@ -295,6 +295,37 @@ describe("AgentRun account-erasure drain", () => {
     await expect(cancelAgentRunsForUser("user-1")).resolves.toBe(0);
   });
 
+  it("journals the next model dispatch while the media notification is waiting for Redis", async () => {
+    const pendingPublication = Promise.withResolvers<void>();
+    stream.appendStreamEvent.mockImplementation(async (_key, event) => {
+      if ((event as { type: string }).type === "attachments_changed") await pendingPublication.promise;
+    });
+    runtime.runCompanion.mockImplementationOnce(async (invocation, port: CompanionRuntimePort) => {
+      const identity = {
+        invocationId: invocation.invocationId, attemptId: invocation.attemptId,
+        occurredAt: "2026-08-28T12:00:00.000Z",
+      };
+      await port.emit({ ...identity, sequence: 1, type: "tool_finished", callId: "tool-1",
+        name: "request_character_media", outcome: "succeeded", durationMs: 1, attachmentId: "attachment-1" });
+      await port.emit({ ...identity, sequence: 2, type: "model_request_started", request: {
+        bodyDigest: "a".repeat(64), systemPromptDigest: "b".repeat(64), estimatedInputTokens: 20,
+        provider: "openai", model: "test-model", usage: null, purpose: "media_extraction",
+      } });
+      await port.commit(terminalCandidate(invocation.attemptId));
+    });
+
+    await acceptAgentRun(agentRunInput());
+    try {
+      await vi.waitFor(() => expect(store.appendAgentRunEvent).toHaveBeenCalledWith(
+        "turn-1", 1, "pi.model_request_started", expect.objectContaining({ request: expect.objectContaining({ purpose: "media_extraction" }) }),
+      ));
+      expect(stream.appendStreamEvent).toHaveBeenCalledWith("stream:assistant-1", { type: "attachments_changed", attempt: 1 });
+    } finally {
+      pendingPublication.resolve();
+      await vi.waitFor(() => expect(store.completeAgentRun).toHaveBeenCalled());
+    }
+  });
+
   it("retries the same admitted attempt after capacity returns without persisting a failure", async () => {
     runtime.runCompanion.mockRejectedValueOnce(new CompanionCapacityError("normal"));
     await acceptAgentRun(agentRunInput());
@@ -360,7 +391,7 @@ describe("AgentRun account-erasure drain", () => {
       fence.assertNotFenced.mockRejectedValueOnce(denial);
       try {
         await port.emit(type === "tool_started"
-          ? { ...identity, type, callId: "call-1", name: "generate_image_async" }
+          ? { ...identity, type, callId: "call-1", name: "request_character_media" }
           : { ...identity, type, candidate: terminalCandidate(invocation.attemptId) });
         received.resolve(null);
       } catch (error) {
@@ -585,19 +616,19 @@ describe("AgentRun account-erasure drain", () => {
     });
     store.readAgentRunInput.mockResolvedValue(agentRunInput("给我一个你的裸照"));
     vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request) => Response.json(String(url).endsWith("/api/internal/chat/tool-effects")
-      ? { accepted: true, duplicate: false, status: "accepted", attachmentId: "attachment-real", generationJobId: "job-real" }
+      ? { accepted: true, duplicate: false, status: "accepted", attachmentId: "attachment-real", kind: "image", generationJobId: "job-real", mediaAssetId: null, costDreamcoins: 5 }
       : { accepted: true, duplicate: false, terminalMessageId: "assistant-1", committedAt: "2026-08-28T12:00:00.000Z" })));
     runtime.runCompanion.mockImplementation(async (invocation, port) => {
       await port.executeTool({
         attemptId: invocation.attemptId,
         callId: "model-tool-call-1",
-        name: "generate_image_async",
+        name: "request_character_media",
         effectScope: "turn_action",
         intent: { requestedNudity: "full" },
         arguments: {
-          prompt: "Candid fully nude portrait by a rain-lit bedroom window, relaxed pose, intimate eye contact, warm practical light",
-          orientation: "4:5",
-          outputCount: 1,
+          kind: "image", subject: "companion", requestedNudity: "full", mode: "auto", mustHave: [], mustExclude: [],
+          direction: "Candid fully nude portrait by a rain-lit bedroom window, relaxed pose, intimate eye contact, warm practical light",
+          orientation: "portrait",
         },
       });
       const content = "";
@@ -612,7 +643,7 @@ describe("AgentRun account-erasure drain", () => {
         tools: [{
           attemptId: invocation.attemptId,
           callId: "model-tool-call-1",
-          name: "generate_image_async",
+          name: "request_character_media",
           effectScope: "turn_action",
           intent: { requestedNudity: "full" },
           argumentsDigest: "c".repeat(64),
@@ -656,7 +687,7 @@ describe("AgentRun account-erasure drain", () => {
             mediaResponse: { version: 1, attachmentId: "attachment-real" },
             tools: [expect.objectContaining({
               callId: "model-tool-call-1",
-              name: "generate_image_async",
+              name: "request_character_media",
             })],
           }),
         }),
@@ -672,7 +703,8 @@ describe("AgentRun account-erasure drain", () => {
       effectScope: "turn_action",
       intent: { requestedNudity: "full" },
       arguments: {
-        prompt: expect.stringContaining("fully nude"),
+        kind: "image",
+        direction: expect.stringContaining("fully nude"),
       },
     });
   });
@@ -807,13 +839,13 @@ describe("AgentRun account-erasure drain", () => {
       await port.executeTool({
         attemptId: invocation.attemptId,
         callId: "model-tool-call-1",
-        name: "generate_image_async",
+        name: "request_character_media",
         effectScope: "turn_action",
         intent: { requestedNudity: "unspecified" },
         arguments: {
-          prompt: "Companion taking a candid selfie beside a bright window",
-          orientation: "4:5",
-          outputCount: 1,
+          kind: "image", subject: "companion", requestedNudity: "unspecified", mode: "auto", mustHave: [], mustExclude: [],
+          direction: "Companion taking a candid selfie beside a bright window",
+          orientation: "portrait",
         },
       });
       await port.commit({
@@ -827,7 +859,7 @@ describe("AgentRun account-erasure drain", () => {
         tools: [{
           attemptId: invocation.attemptId,
           callId: "model-tool-call-1",
-          name: "generate_image_async",
+          name: "request_character_media",
           effectScope: "turn_action",
           intent: { requestedNudity: "unspecified" },
           argumentsDigest: "d".repeat(64),
@@ -845,6 +877,7 @@ describe("AgentRun account-erasure drain", () => {
           duplicate: true,
           attachmentId: "attachment-1",
           status: "accepted",
+          kind: "image",
           generationJobId: "job-1",
           mediaAssetId: null,
           costDreamcoins: 5,
@@ -880,12 +913,12 @@ describe("AgentRun account-erasure drain", () => {
     let observed: CompanionToolResult | undefined;
     runtime.runCompanion.mockImplementation(async (invocation, port) => {
       observed = await port.executeTool({ attemptId: invocation.attemptId, callId: "send-existing-1",
-        name: "send_character_media", effectScope: "turn_action", intent: { requestedNudity: "unspecified" },
+        name: "resend_session_media", effectScope: "turn_action", intent: { requestedNudity: "unspecified" },
         arguments: { previousMediaAssetId: "earlier-video" } });
       await port.commit(terminalCandidate(invocation.attemptId));
     });
     let requests = 0;
-    const receipt = { accepted: true, duplicate: true, status: "completed", attachmentId: "existing-attachment",
+    const receipt = { accepted: true, duplicate: true, status: "completed", attachmentId: "existing-attachment", kind: "video",
       mediaAssetId: "earlier-video", generationJobId: null, costDreamcoins: 0, source: "previous_media", description: null };
     vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request) => {
       if (String(url).endsWith("/api/internal/chat/tool-effects")) {
@@ -896,7 +929,7 @@ describe("AgentRun account-erasure drain", () => {
     }));
     await acceptAgentRun(input);
     await completed.promise;
-    expect(observed).toMatchObject({ name: "send_character_media", outcome: "succeeded", output: receipt });
+    expect(observed).toMatchObject({ name: "resend_session_media", outcome: "succeeded", output: receipt });
     const bodies = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/api/internal/chat/tool-effects"))
       .map(([, init]) => JSON.parse(String(init?.body)));
     expect(bodies).toHaveLength(2);
@@ -941,18 +974,15 @@ describe("AgentRun account-erasure drain", () => {
   });
 
   it.each([
-    { name: "generate_image_async", status: 200, body: { accepted: false, status: "failed", attachmentId: "real-failed", error: "rejected" }, outcome: "failed", requests: 1, attachmentId: "real-failed" },
-    { name: "generate_image_async", status: 200, body: { accepted: false, duplicate: false, attachmentId: "main-failed", error: { code: "conflict", message: "Character identity is not qualified", retryable: false } }, outcome: "failed", requests: 1, attachmentId: "main-failed" },
-    { name: "generate_image_async", status: 409, body: { accepted: false, duplicate: false, attachmentId: "rejected-attachment", error: { code: "conflict", message: "Character identity is not qualified", retryable: false } }, outcome: "failed", requests: 1, attachmentId: "rejected-attachment" },
-    { name: "generate_image_async", status: 409, body: { error: "conflict", message: "Wrong attempt", attachmentId: "untrusted-conflict-id" }, outcome: "failed", requests: 1 },
-    { name: "generate_image_async", status: 200, body: { accepted: false, duplicate: true, attachmentId: "replayed-failure", error: { code: "conflict", message: "The image request failed", retryable: true } }, outcome: "failed", requests: 1, attachmentId: "replayed-failure" },
-    { name: "generate_image_async", status: 200, body: { status: "failed", attachmentId: "unconfirmed-id", error: "rejected" }, outcome: "failed", requests: 1 },
-    { name: "generate_image_async", status: 400, body: { accepted: false, status: "failed", attachmentId: "untrusted-http-id", error: "rejected" }, outcome: "failed", requests: 1 },
-    { name: "search_character_media", status: 200, body: { accepted: true, status: "no_match", matches: [] }, outcome: "succeeded", requests: 1 },
-    { name: "search_character_media", status: 200, body: { accepted: true, status: "no_match", matches: [], attachmentId: "fake" }, outcome: "failed", requests: 2 },
-    { name: "search_character_media", status: 503, body: { error: "unavailable" }, outcome: "failed", requests: 2 },
-    { name: "send_character_media", status: 200, body: { accepted: true, status: "accepted" }, outcome: "unknown", requests: 2 },
-    { name: "send_character_media", status: 503, body: { error: "unavailable" }, outcome: "unknown", requests: 2 },
+    { name: "request_character_media", status: 200, body: { accepted: false, status: "failed", attachmentId: "real-failed", error: "rejected" }, outcome: "failed", requests: 1, attachmentId: "real-failed" },
+    { name: "request_character_media", status: 200, body: { accepted: false, duplicate: false, attachmentId: "main-failed", error: { code: "conflict", message: "Character identity is not qualified", retryable: false } }, outcome: "failed", requests: 1, attachmentId: "main-failed" },
+    { name: "request_character_media", status: 409, body: { accepted: false, duplicate: false, attachmentId: "rejected-attachment", error: { code: "conflict", message: "Character identity is not qualified", retryable: false } }, outcome: "failed", requests: 1, attachmentId: "rejected-attachment" },
+    { name: "request_character_media", status: 409, body: { error: "conflict", message: "Wrong attempt", attachmentId: "untrusted-conflict-id" }, outcome: "failed", requests: 1 },
+    { name: "request_character_media", status: 200, body: { accepted: false, duplicate: true, attachmentId: "replayed-failure", error: { code: "conflict", message: "The image request failed", retryable: true } }, outcome: "failed", requests: 1, attachmentId: "replayed-failure" },
+    { name: "request_character_media", status: 200, body: { status: "failed", attachmentId: "unconfirmed-id", error: "rejected" }, outcome: "failed", requests: 1 },
+    { name: "request_character_media", status: 400, body: { accepted: false, status: "failed", attachmentId: "untrusted-http-id", error: "rejected" }, outcome: "failed", requests: 1 },
+    { name: "resend_session_media", status: 200, body: { accepted: true, status: "accepted" }, outcome: "unknown", requests: 2 },
+    { name: "resend_session_media", status: 503, body: { error: "unavailable" }, outcome: "unknown", requests: 2 },
   ])("classifies $name HTTP $status receipt as $outcome without fabricating delivery", async test => {
     const completed = Promise.withResolvers<void>();
     store.completeAgentRun.mockImplementationOnce(async () => { completed.resolve(); });
@@ -961,10 +991,9 @@ describe("AgentRun account-erasure drain", () => {
     let observed: CompanionToolResult | undefined;
     runtime.runCompanion.mockImplementation(async (invocation, port) => {
       observed = await port.executeTool({ attemptId: invocation.attemptId, callId: "media-1", name: test.name,
-        effectScope: test.name === "search_character_media" ? "attempt" : "turn_action",
+        effectScope: "turn_action",
         intent: { requestedNudity: "unspecified" },
-        arguments: test.name === "search_character_media" ? { kind: "image", query: "A seaside photo" }
-          : test.name === "generate_image_async" ? { prompt: "Mina at the seaside", subject: "companion" } : { candidateToken: "signed" },
+        arguments: test.name === "request_character_media" ? { kind: "image", direction: "Mina at the seaside", subject: "companion" } : { previousMediaAssetId: "asset-1" },
       });
     });
     vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request) => {
@@ -982,72 +1011,9 @@ describe("AgentRun account-erasure drain", () => {
     const bodies = toolRequests.map(([, init]) => JSON.parse(String(init?.body)));
     expect(bodies).toHaveLength(test.requests);
     for (const body of bodies) expect(body).toEqual(bodies[0]);
-    if (test.name === "search_character_media") {
-      expect(bodies[0]).toMatchObject({ lookupOrder: 1, lookupDeadlineAt: expect.any(String) });
-      for (const [, init] of toolRequests) expect(init?.signal).toBe(toolRequests[0]?.[1]?.signal);
-    }
+
     expect(store.appendAgentRunEvent.mock.calls.filter(([, , kind]) => kind === "tool.requested")).toHaveLength(1);
   });
 
-  it("carries the later lookup order into a send even when that lookup could not reach Main", async () => {
-    const completed = Promise.withResolvers<void>();
-    store.completeAgentRun.mockImplementationOnce(async () => { completed.resolve(); });
-    const input = { ...agentRunInput("Send me a photo beside the sea."), deadlineAt: new Date(Date.now() + 60_000).toISOString() };
-    store.readAgentRunInput.mockResolvedValue(input);
-    runtime.runCompanion.mockImplementation(async (invocation, port) => {
-      const common = { attemptId: invocation.attemptId, intent: { requestedNudity: "unspecified" as const } };
-      await port.executeTool({ ...common, callId: "first", name: "search_character_media", effectScope: "attempt",
-        arguments: { kind: "image", query: "a photo" } });
-      const later = await port.executeTool({ ...common, callId: "later", name: "search_character_media", effectScope: "attempt",
-        arguments: { kind: "image", query: "beside the sea" } });
-      expect(later.outcome).toBe("failed");
-      await port.executeTool({ ...common, callId: "send", name: "send_character_media", effectScope: "turn_action",
-        arguments: { candidateToken: "earlier-candidate" } });
-    });
-    const requests: Array<{ body: { callId: string; lookupOrder?: number; lookupDeadlineAt?: string }; signal?: AbortSignal | null }> = [];
-    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      if (!String(url).endsWith("/api/internal/chat/tool-effects")) {
-        return Response.json({ accepted: true, duplicate: false, terminalMessageId: "assistant-1", committedAt: "2026-08-28T12:00:00.000Z" });
-      }
-      const body = JSON.parse(String(init?.body));
-      requests.push({ body, signal: init?.signal });
-      if (body.callId === "later") throw new Error("connection lost before Main");
-      if (body.callId === "send") return Response.json({ error: "conflict" }, { status: 409 });
-      return Response.json({ accepted: true, status: "no_match", matches: [] });
-    }));
-    await acceptAgentRun(input);
-    await completed.promise;
-    expect(requests.map(({ body }) => [body.callId, body.lookupOrder])).toEqual([
-      ["first", 1], ["later", 2], ["later", 2], ["send", 2],
-    ]);
-    expect(requests[1]?.body.lookupDeadlineAt).toBe(requests[2]?.body.lookupDeadlineAt);
-    expect(requests[1]?.signal).toBe(requests[2]?.signal);
-  });
 
-  it("does not accept or retransmit a lookup whose HTTP receipt is past the shared deadline", async () => {
-    const completed = Promise.withResolvers<void>();
-    store.completeAgentRun.mockImplementationOnce(async () => { completed.resolve(); });
-    const input = { ...agentRunInput("Send me a photo."), deadlineAt: new Date(Date.now() + 60_000).toISOString() };
-    store.readAgentRunInput.mockResolvedValue(input);
-    let observed: CompanionToolResult | undefined;
-    runtime.runCompanion.mockImplementation(async (invocation, port) => {
-      invocation.deadlineAt = new Date(Date.now() + 125).toISOString();
-      observed = await port.executeTool({ attemptId: invocation.attemptId, callId: "late-lookup", name: "search_character_media",
-        effectScope: "attempt", intent: { requestedNudity: "unspecified" }, arguments: { kind: "image", query: "a photo" } });
-    });
-    let attempts = 0;
-    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      if (!String(url).endsWith("/api/internal/chat/tool-effects")) {
-        return Response.json({ accepted: true, duplicate: false, terminalMessageId: "assistant-1", committedAt: "2026-08-28T12:00:00.000Z" });
-      }
-      attempts += 1;
-      const deadline = Date.parse(JSON.parse(String(init?.body)).lookupDeadlineAt);
-      await new Promise(resolve => setTimeout(resolve, Math.max(0, deadline - Date.now()) + 20));
-      return Response.json({ accepted: true, status: "no_match", matches: [] });
-    }));
-    await acceptAgentRun(input);
-    await completed.promise;
-    expect(attempts).toBe(1);
-    expect(observed).toMatchObject({ outcome: "failed", error: { code: "media_search_unavailable" } });
-  });
 });

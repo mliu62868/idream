@@ -3,9 +3,8 @@ import { createHash } from "node:crypto";
 import { compileCharacterSoul, COMPANION_PRODUCT_PROMPT_VERSION } from "@idream/shared";
 import {
   EDIT_LAST_IMAGE_TOOL,
-  GENERATE_IMAGE_ASYNC_TOOL,
 } from "@idream/shared/chat/image-action";
-import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL } from "@idream/shared/chat/media-library";
+import { REQUEST_CHARACTER_MEDIA_TOOL, RESEND_SESSION_MEDIA_TOOL } from "@idream/shared/chat/media-library";
 import { buildContext, type BuiltContext } from "./context.js";
 import {
   compilePreparedTurn,
@@ -96,7 +95,7 @@ describe("PreparedTurn budget", () => {
     source.recentMessages = [{ id: "current", role: "user", content: "不要发照片，只聊聊天。" }];
     source.persona.mediaLibraryKinds = ["video"];
     let prepared = compilePreparedTurn(source, "current");
-    expect(prepared.tools.map(tool => tool.name)).toEqual([SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL]);
+    expect(prepared.tools.map(tool => tool.name)).toEqual([REQUEST_CHARACTER_MEDIA_TOOL]);
     expect(prepared.tools[0]?.parameters.properties).toHaveProperty("kind.enum", ["video"]);
     expect(prepared.messages.at(-1)?.content).toBe("不要发照片，只聊聊天。");
     expect(prepared.messages[0]?.content).not.toContain("Image direction skill");
@@ -105,23 +104,22 @@ describe("PreparedTurn budget", () => {
     expect(compilePreparedTurn(source, "current").tools).toEqual([]);
     source.recentMedia = [{ mediaAssetId: "delivered-1", kind: "image", turnId: "earlier", description: null }];
     prepared = compilePreparedTurn(source, "current");
-    expect(prepared.tools.map(tool => tool.name)).toEqual([SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL]);
-    expect(prepared.tools[0]?.parameters.properties).toHaveProperty("kind.enum", ["image"]);
+    expect(prepared.tools.map(tool => tool.name)).toEqual([RESEND_SESSION_MEDIA_TOOL]);
     expect(prepared.messages[0]?.content).toContain("previousMediaAssetId");
     source.policy.modelProfile.supportsTools = false;
     prepared = compilePreparedTurn(source, "current");
     expect(prepared.tools).toEqual([]);
-    expect(prepared.messages[0]?.content).not.toContain("send_character_media");
+    expect(prepared.messages[0]?.content).not.toContain("resend_session_media");
 
     source.policy.imageToolEnabled = true;
     source.policy.modelProfile.supportsTools = true;
     source.persona.mediaLibraryKinds = ["image", "video"];
     expect(compilePreparedTurn(source, "current").tools.map(tool => tool.name)).toEqual([
-      GENERATE_IMAGE_ASYNC_TOOL, SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL,
+      REQUEST_CHARACTER_MEDIA_TOOL, RESEND_SESSION_MEDIA_TOOL,
     ]);
     source.hasRecentImageContext = true;
     expect(compilePreparedTurn(source, "current").tools.map(tool => tool.name)).toEqual([
-      GENERATE_IMAGE_ASYNC_TOOL, EDIT_LAST_IMAGE_TOOL, SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL,
+      REQUEST_CHARACTER_MEDIA_TOOL, RESEND_SESSION_MEDIA_TOOL, EDIT_LAST_IMAGE_TOOL,
     ]);
   });
 
@@ -134,22 +132,14 @@ describe("PreparedTurn budget", () => {
     const user = "Generate a new photo or redo the whole last image.";
     source.recentMessages = [{ id: "current", role: "user", content: user }];
     const prepared = compilePreparedTurn(source, "current");
-    const expectedImageTools = mode === "paid" ? [GENERATE_IMAGE_ASYNC_TOOL, EDIT_LAST_IMAGE_TOOL]
-      : mode === "library" ? [] : [EDIT_LAST_IMAGE_TOOL];
     expect(prepared.imageActionMode).toBe(mode);
-    expect(prepared.tools.map(tool => tool.name)).toEqual([...expectedImageTools, SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL]);
+    expect(prepared.tools.map(tool => tool.name)).toEqual(mode === "library" ? [] : [REQUEST_CHARACTER_MEDIA_TOOL, EDIT_LAST_IMAGE_TOOL]);
     const state = prepared.messages.find(message => message.id === "state:current")?.content;
     if (!mode || mode === "chat") {
-      expect(prepared.tools[0]?.parameters.properties).toHaveProperty("editScope.properties.mode.enum", ["local"]);
-      expect(state).toContain("search_character_media first");
-      expect(state).toContain("does not authorize a paid new image or whole-image edit");
-      expect(state).not.toContain("Send as paid image request");
-      expect(prepared.messages[0]?.content).toContain('explicitly ask to create a new photo or redo the whole image');
-      expect(prepared.messages[0]?.content).toContain('choose "Send as paid image request" in the composer');
+      expect(prepared.tools[1]?.parameters.properties).toHaveProperty("editScope.properties.mode.enum", ["local"]);
+      expect(state).toContain("must wait for the user's price confirmation");
     } else if (mode === "paid") {
-      expect(state).toContain("authorized a paid image action with this message");
-    } else {
-      expect(state).toContain("can search prepared media and send matching candidate tokens");
+      expect(state).toContain("authorized one paid photo or whole-image edit");
     }
     expect(prepared.messages.at(-1)?.content).toBe(user);
   });
@@ -341,7 +331,7 @@ describe("PreparedTurn budget", () => {
     ]) {
       const prepared = withImages(text);
       expect(prepared).not.toHaveProperty("imageRequest");
-      expect(prepared.tools.map(tool => tool.name)).toEqual([GENERATE_IMAGE_ASYNC_TOOL]);
+      expect(prepared.tools.map(tool => tool.name)).toEqual([REQUEST_CHARACTER_MEDIA_TOOL]);
       expect(prepared.messages.find(message => message.id === "state:current")?.content).not.toContain("asks you for a photo now");
       expect(prepared.messages.at(-1)?.content).toBe(text);
     }
@@ -349,7 +339,7 @@ describe("PreparedTurn budget", () => {
   });
 
   it.each([
-    { text: "Send me a selfie.", name: GENERATE_IMAGE_ASYNC_TOOL, hasRecentImageContext: false },
+    { text: "Send me a selfie.", name: REQUEST_CHARACTER_MEDIA_TOOL, hasRecentImageContext: false },
     { text: "Change the last photo to show a red coat.", name: EDIT_LAST_IMAGE_TOOL, hasRecentImageContext: true },
   ])("keeps $name acceptance distinct from delivery in the prepared request", ({ text, name, hasRecentImageContext }) => {
     const source = context();
@@ -364,11 +354,15 @@ describe("PreparedTurn budget", () => {
     expect(state).not.toContain(`call ${name}`);
     expect(state).not.toContain("is sent with this reply");
     expect(state).not.toContain("answer as you send it");
-    expect(instructions).toContain("awaiting_confirmation means no image was generated or charged");
-    expect(instructions).toContain("accepted/queued means processing, completed means delivered");
-    expect(instructions).toContain("do not add a separate media acknowledgement");
-    expect(instructions).not.toContain("Briefly acknowledge output.status");
-    expect(instructions).toContain("Never claim visual correctness or unchanged pixels from a status receipt");
+    if (name === EDIT_LAST_IMAGE_TOOL) {
+      expect(instructions).toContain("awaiting_confirmation means no image was generated or charged");
+      expect(instructions).toContain("Never claim visual correctness or unchanged pixels from a status receipt");
+    } else {
+      expect(instructions).toContain("approve the shown price before any charge");
+      expect(instructions).toContain("accepted means preparation has started");
+    }
+    expect(instructions).toContain("completed means delivered");
+    expect(instructions).toContain("Continue only independently requested text");
     expect(prepared.messages.at(-1)?.content).toBe(text);
   });
 
@@ -417,10 +411,10 @@ describe("PreparedTurn budget", () => {
         apiKey: "fixture-key", maxInputTokens: prepared.budget.maxInputTokens,
         fetch: async (_url, init) => {
           bodies.push(JSON.parse(String(init?.body)));
-          const args = JSON.stringify({ prompt: "A portrait beside the library window", subject: "companion" });
+          const args = JSON.stringify({ kind: "image", direction: "A portrait beside the library window", subject: "companion" });
           const native = mode === "native";
           return new Response(`data: ${JSON.stringify({ choices: [{
-            delta: native ? { tool_calls: [{ index: 0, id: "image-1", function: { name: GENERATE_IMAGE_ASYNC_TOOL, arguments: args } }] }
+            delta: native ? { tool_calls: [{ index: 0, id: "image-1", function: { name: REQUEST_CHARACTER_MEDIA_TOOL, arguments: args } }] }
               : { content: "Hello, Robin." },
             finish_reason: native ? "tool_calls" : "stop",
           }] })}\n\ndata: [DONE]\n\n`);
@@ -576,7 +570,7 @@ describe("PreparedTurn budget", () => {
     expect(prepared.context.scene).toEqual(source.scene);
     expect(prepared.profile.model).toBe(source.policy.modelProfile.model);
     expect(prepared).not.toHaveProperty("requiredAction");
-    expect(prepared.tools.map(tool => tool.name)).toEqual([GENERATE_IMAGE_ASYNC_TOOL]);
+    expect(prepared.tools.map(tool => tool.name)).toEqual([REQUEST_CHARACTER_MEDIA_TOOL]);
 
     source.userPersona = { ...source.userPersona, enabled: false };
     source.experience = { ...source.experience, sceneGeneration: "follow" };
@@ -614,7 +608,7 @@ describe("PreparedTurn budget", () => {
     expect(prepared.profile).toMatchObject({ model: source.policy.modelProfile.model, maxOutputTokens: 8_000, answerMaxOutputTokens: 256 });
     expect(prepared.characterName).toBe("Mara");
     expect(prepared.trace.soulFingerprint).toBe(source.persona.soulFingerprint);
-    expect(prepared.tools.map(tool => tool.name)).toEqual([GENERATE_IMAGE_ASYNC_TOOL]);
+    expect(prepared.tools.map(tool => tool.name)).toEqual([REQUEST_CHARACTER_MEDIA_TOOL]);
     expect(prepared.messages.find(message => message.id === "preferences:current")?.content).toContain("Keep answers direct and compact");
     source.policy.modelProfile = { ...source.policy.modelProfile, maxOutputTokens: 128 };
     expect(compilePreparedTurn(source, "current").profile.answerMaxOutputTokens).toBe(128);
@@ -686,7 +680,7 @@ describe("PreparedTurn budget", () => {
     source.recentMessages = [{ id: "user-current", role: "user", content: "For this quiet cafe visit, let us enjoy the rain without saving new memories. What reflection would you photograph from our window?" }];
     const prepared = compilePreparedTurn(source, "user-current");
     expect(prepared).not.toHaveProperty("requiredAction");
-    expect(prepared.tools.map(tool => tool.name)).toEqual([GENERATE_IMAGE_ASYNC_TOOL]);
+    expect(prepared.tools.map(tool => tool.name)).toEqual([REQUEST_CHARACTER_MEDIA_TOOL]);
     expect(prepared.messages[0]?.content).toContain("Respect a refusal, a hypothetical");
   });
 
@@ -699,7 +693,7 @@ describe("PreparedTurn budget", () => {
     const prepared = compilePreparedTurn(source, "current");
     expect(prepared.tools).toEqual([]);
     expect(prepared.messages[0].content).not.toContain("Image direction skill");
-    expect(prepared.messages[0].content).not.toContain(GENERATE_IMAGE_ASYNC_TOOL);
+    expect(prepared.messages[0].content).not.toContain(REQUEST_CHARACTER_MEDIA_TOOL);
     expect(prepared.messages[0].content).not.toContain(EDIT_LAST_IMAGE_TOOL);
   });
 
@@ -715,7 +709,7 @@ describe("PreparedTurn budget", () => {
     ];
     const prepared = compilePreparedTurn(source, "user-current");
     expect(prepared).not.toHaveProperty("requiredAction");
-    expect(prepared.tools.map(tool => tool.name)).toEqual([GENERATE_IMAGE_ASYNC_TOOL]);
+    expect(prepared.tools.map(tool => tool.name)).toEqual([REQUEST_CHARACTER_MEDIA_TOOL]);
     const wire = formatModelRequestInput({ respondingCharacterId: "character-1", messages: prepared.messages, tools: prepared.tools });
     const current = wire.messages.at(-1) as { role: string; content: string };
     expect(current.role).toBe("user");
@@ -777,7 +771,7 @@ describe("PreparedTurn budget", () => {
     // tools, recall notes) leaves room for some prior exchanges, depending on their
     // size; the provider must receive the bounded suffix.
     // Leave room for the per-turn image authorization alongside the tool schema.
-    { priorChars: 3_010, retainedStart: 6 },
+    { priorChars: 3_010, retainedStart: 4 },
     { priorChars: 2_650, retainedStart: 4 },
     { priorChars: 800, retainedStart: 0 },
   ])("fits a full free-tier image conversation through the native adapter ($priorChars history chars)", async ({ priorChars, retainedStart }) => {
@@ -802,8 +796,8 @@ describe("PreparedTurn budget", () => {
       maxInputTokens: prepared.budget.maxInputTokens,
       fetch: async (_url, init) => {
         requests.push(JSON.parse(String(init?.body)));
-        const args = JSON.stringify({ prompt: "A clothed portrait in the rainy library", subject: "companion" });
-        const delta = { tool_calls: [{ index: 0, id: "image-call", function: { name: GENERATE_IMAGE_ASYNC_TOOL, arguments: args } }] };
+        const args = JSON.stringify({ kind: "image", direction: "A clothed portrait in the rainy library", subject: "companion" });
+        const delta = { tool_calls: [{ index: 0, id: "image-call", function: { name: REQUEST_CHARACTER_MEDIA_TOOL, arguments: args } }] };
         return new Response(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`);
       },
     });
@@ -949,7 +943,7 @@ describe("PreparedTurn budget", () => {
 
     expect(prepared).not.toHaveProperty("requiredAction");
     expect(prepared.tools).toEqual([
-      expect.objectContaining({ name: GENERATE_IMAGE_ASYNC_TOOL }),
+      expect.objectContaining({ name: REQUEST_CHARACTER_MEDIA_TOOL }),
     ]);
     expect(prepared.trace.systemPromptDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(prepared.messages[0]?.id).toContain(prepared.trace.systemPromptDigest);
@@ -968,6 +962,41 @@ describe("PreparedTurn budget", () => {
     source.recentMessages = [{ id: "user-current", role: "user", content: "换个姿势" }];
 
     expect(compilePreparedTurn(source, "user-current").tools.map(tool => tool.name))
-      .toEqual([GENERATE_IMAGE_ASYNC_TOOL, EDIT_LAST_IMAGE_TOOL]);
+      .toEqual([REQUEST_CHARACTER_MEDIA_TOOL, EDIT_LAST_IMAGE_TOOL]);
+  });
+
+  it("uses the same request, resend and edit contract regardless of Character origin", () => {
+    const source = context();
+    source.imageActionMode = "chat";
+    source.policy = {
+      ...source.policy,
+      maxContextChars: 24_000,
+      imageToolEnabled: true,
+      modelProfile: { ...source.policy.modelProfile, supportsTools: true },
+    };
+    source.persona = {
+      ...source.persona,
+      imageToolEnabled: true,
+      mediaLibraryKinds: ["image", "video"],
+    };
+    source.recentMessages = [{ id: "user-current", role: "user", content: "Send me a video by the window." }];
+
+    const withoutRecent = compilePreparedTurn(source, "user-current");
+    expect(withoutRecent.tools.map(tool => tool.name)).toEqual([REQUEST_CHARACTER_MEDIA_TOOL]);
+    expect(withoutRecent.tools[0]?.parameters.properties).toHaveProperty("kind.enum", ["image", "video"]);
+    expect(withoutRecent.messages[0]?.content).toContain("request_character_media");
+    expect(withoutRecent.messages[0]?.content).not.toContain("search_character_media");
+    expect(withoutRecent.messages[0]?.content).toContain("call request_character_media once");
+
+    // Adding prior delivered media + image context exposes resend_session_media and local edit_last_image
+    source.recentMedia = [{ mediaAssetId: "media-1", kind: "image", turnId: "t1", description: "Rainy window" }];
+    source.hasRecentImageContext = true;
+    const withRecent = compilePreparedTurn(source, "user-current");
+    expect(withRecent.tools.map(tool => tool.name)).toEqual([
+      REQUEST_CHARACTER_MEDIA_TOOL,
+      RESEND_SESSION_MEDIA_TOOL,
+      EDIT_LAST_IMAGE_TOOL,
+    ]);
+    expect(withRecent.tools[2]?.parameters.properties).toHaveProperty("editScope.properties.mode.enum", ["local"]);
   });
 });

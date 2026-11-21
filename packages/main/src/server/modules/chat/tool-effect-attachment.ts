@@ -1,13 +1,33 @@
 import { createHash } from "node:crypto";
-import type { ChatToolEffect } from "@idream/shared/contracts";
 import type { ChatTurnAttachment, Prisma } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
 import { attachmentAttempt, attachmentLockedByInsert, type LockedChatTurn, type LockedChatTurnAttachment } from "./turn-scope";
 
 /** Identities of persisted actions from before the shared revision-scoped action. */
-export function legacyTurnActionAttachmentId(turnId: string, name: ChatToolEffect["name"], contentDigest?: string): string {
+export function legacyTurnActionAttachmentId(turnId: string, name: "generate_image_async" | "edit_last_image", contentDigest?: string): string {
   const identity = contentDigest ? `${turnId}:${name}:${contentDigest}` : `${turnId}:${name}`;
   return `chatfx_${createHash("sha256").update(identity).digest("hex").slice(0, 48)}`;
+}
+
+export function assertToolEffectRequest(attachment: Pick<ChatTurnAttachment, "metadata">, name: string, digest: string) {
+  const metadata = record(attachment.metadata);
+  const effect = record(metadata?.effect);
+  if (metadata?.turnActionInvalidatedByEdit === true || effect?.name !== name || effect?.effectScope !== "turn_action"
+    || effect.requestDigest !== digest) {
+    throw Errors.conflict("This Turn already has a different media action");
+  }
+}
+
+export function failedToolEffectReceipt(attachment: ChatTurnAttachment, duplicate: boolean) {
+  if (!["failed", "blocked", "refunded", "cancelled"].includes(attachment.status)) return;
+  return {
+    accepted: false as const, duplicate, attachmentId: attachment.id,
+    error: {
+      code: attachment.errorCode ?? `tool_effect_${attachment.status}`,
+      message: attachment.status === "failed" ? "The image request failed" : `The image request was ${attachment.status}`,
+      retryable: attachment.status === "failed" || attachment.status === "refunded",
+    },
+  };
 }
 
 // SPEC: 工具效果附件（聊天里的生成图片与生成视频）的唯一创建与迁移入口。
@@ -140,6 +160,7 @@ export type ToolEffectAttachmentTransition = {
   readonly width?: number | null;
   readonly height?: number | null;
   readonly errorCode?: string | null;
+  readonly deliverAt?: Date | null;
   readonly metadata?: Record<string, unknown>;
 };
 
@@ -173,6 +194,7 @@ export async function transitionToolEffectAttachment(
       ...(next.width !== undefined ? { width: next.width } : {}),
       ...(next.height !== undefined ? { height: next.height } : {}),
       ...(next.errorCode !== undefined ? { errorCode: next.errorCode } : {}),
+      ...(next.deliverAt !== undefined ? { deliverAt: next.deliverAt } : {}),
       ...(next.metadata ? { metadata: toJson(next.metadata) } : {}),
     },
   });

@@ -51,6 +51,7 @@ export interface ChatAuthoritySnapshot {
     imageToolEnabled: boolean;
     /** Published stock compatible with this Turn's fixed visual identity. */
     mediaLibraryKinds?: Array<"image" | "video">;
+    /** Official characters route photo/video requests through Main's unified paid fulfillment router. */
     deletedAt: string | null;
     contentVersion: {
       contentVersionId: string;

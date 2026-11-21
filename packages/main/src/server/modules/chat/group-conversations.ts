@@ -94,7 +94,7 @@ export async function getGroupConversation(userId: string, groupId: string, sele
       members: { orderBy: { groupPosition: "asc" }, include: { character: { select: { creatorId: true, imageAsset: { select: { url: true, thumbnailUrl: true } } } } } },
       turns: {
         orderBy: { ordinal: "asc" },
-        include: { turn: { omit: { mediaLookup: true }, include: { attachments: { orderBy: { createdAt: "asc" } } } } },
+        include: { turn: { include: { attachments: { orderBy: { createdAt: "asc" } } } } },
       },
     },
   });

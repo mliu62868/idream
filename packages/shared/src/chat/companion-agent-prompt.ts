@@ -1,9 +1,7 @@
-import {
-  IMAGE_AGENT_TOOL_DEFINITIONS,
-} from "./image-action";
+import { EDIT_LAST_IMAGE_TOOL } from "./image-action";
 import { COMPANION_IMAGE_SKILL_PROMPT } from "./image-skill";
 import { buildCompanionRuntimeAuthority } from "./runtime-policy";
-import { COMPANION_MEDIA_LIBRARY_GUIDANCE, COMPANION_MEDIA_RESEND_GUIDANCE } from "./media-library";
+import { COMPANION_MEDIA_REQUEST_GUIDANCE, COMPANION_MEDIA_RESEND_GUIDANCE, REQUEST_CHARACTER_MEDIA_TOOL, RESEND_SESSION_MEDIA_TOOL, COMPANION_MEDIA_TOOL_DEFINITIONS } from "./media-library";
 
 /**
  * SPEC: This is the shared product behaviour contract for every iDream
@@ -56,8 +54,9 @@ import { COMPANION_MEDIA_LIBRARY_GUIDANCE, COMPANION_MEDIA_RESEND_GUIDANCE } fro
  * candidates, then let the Agent correct any assumed filters.
  * v26: distinguish an ordinary request to see media from an explicit request
  * for new creation, including when the user supplies detailed conditions.
+ * v27: Main owns paid fulfillment and exact resends through the same tools for every Character.
  */
-export const COMPANION_PRODUCT_PROMPT_VERSION = "companion-product-26" as const;
+export const COMPANION_PRODUCT_PROMPT_VERSION = "companion-product-27" as const;
 
 export function companionProductAgentPrompt(characterName: string): string {
   const name = characterName.trim() || "the Character";
@@ -77,22 +76,22 @@ export function companionProductAgentPrompt(characterName: string): string {
 
 export function composeCompanionSystemPrompt(input: {
   memoryEnabled: boolean;
-  imageToolEnabled: boolean;
-  mediaLibraryKinds?: readonly ("image" | "video")[];
-  hasDeliveredMedia?: boolean;
+  mediaTools?: readonly { name: string }[];
   soulPrompt: string;
   identityPromptLine?: string;
   characterName?: string;
 }): string {
+  const names = new Set(input.mediaTools?.map(tool => tool.name));
   return [
     [soulModelView(input.soulPrompt), input.identityPromptLine].filter(Boolean).join("\n"),
     companionProductAgentPrompt(input.characterName ?? ""),
     buildCompanionRuntimeAuthority({
       memoryEnabled: input.memoryEnabled,
-      imageToolEnabled: input.imageToolEnabled,
+      imageToolEnabled: names.size > 0,
     }),
-    input.imageToolEnabled ? COMPANION_IMAGE_SKILL_PROMPT : "",
-    input.mediaLibraryKinds?.length ? COMPANION_MEDIA_LIBRARY_GUIDANCE : input.hasDeliveredMedia ? COMPANION_MEDIA_RESEND_GUIDANCE : "",
+    names.has(REQUEST_CHARACTER_MEDIA_TOOL) ? COMPANION_MEDIA_REQUEST_GUIDANCE : "",
+    names.has(RESEND_SESSION_MEDIA_TOOL) ? COMPANION_MEDIA_RESEND_GUIDANCE : "",
+    names.has(EDIT_LAST_IMAGE_TOOL) ? COMPANION_IMAGE_SKILL_PROMPT : "",
   ].filter(Boolean).join("\n\n");
 }
 
@@ -110,7 +109,7 @@ export function companionProductContractCanary(input: {
 }) {
   const systemPrompt = composeCompanionSystemPrompt({
     memoryEnabled: true,
-    imageToolEnabled: true,
+    mediaTools: COMPANION_MEDIA_TOOL_DEFINITIONS,
     soulPrompt: input.soulPrompt,
   });
   const soulAt = systemPrompt.indexOf(soulModelView(input.soulPrompt));
@@ -123,7 +122,7 @@ export function companionProductContractCanary(input: {
       imageSkillAt > contractAt,
     productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION,
     systemPrompt,
-    availableTools: IMAGE_AGENT_TOOL_DEFINITIONS.map(tool => tool.name),
+    availableTools: COMPANION_MEDIA_TOOL_DEFINITIONS.map(tool => tool.name),
     imagePromptAuthority: "companion_agent" as const,
     executionMode: "agent_tool_choice" as const,
   };

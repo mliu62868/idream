@@ -26,6 +26,10 @@ export const chatStreamEventSchema = z.discriminatedUnion("type", [
     content: z.string(),
   }),
   z.object({
+    type: z.literal("attachments_changed"),
+    attempt: z.number().int().min(1),
+  }),
+  z.object({
     type: z.literal("done"),
     attempt: z.number().int().min(1),
     usage: z.object({
@@ -122,7 +126,7 @@ export const chatImageRequestedPayloadSchema = z
         orientation: z.string().default("4:5"),
         outputCount: z.number().int().min(1).max(4).default(1),
         // P5 Task 2: img2img source for edit_last_image — the media asset of the
-        // last completed photo in the session. Absent for generate_image_async
+        // last completed photo in the session. Absent for a new photo request
         // (and for edit_last_image's no-source-photo fallback).
         sourceImageAssetId: z.string().optional(),
         editScope: imageEditScopeSchema.optional(),

@@ -2,9 +2,10 @@ import { createHash } from "node:crypto";
 import { chatTerminalAckSchema, type ChatStreamEvent, type ChatTerminalCommit, type ChatToolEffect } from "@idream/shared/contracts";
 import { COMPANION_PRODUCT_PROMPT_VERSION } from "@idream/shared";
 import {
-  CHAT_MEDIA_LOOKUP_BUDGET_MS,
-  SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL,
-  searchCharacterMediaResultSchema, sendCharacterMediaResultSchema,
+  REQUEST_CHARACTER_MEDIA_TOOL,
+  RESEND_SESSION_MEDIA_TOOL,
+  requestCharacterMediaResultSchema,
+  resendSessionMediaResultSchema,
 } from "@idream/shared/chat/media-library";
 import { ZodError } from "zod";
 import type {
@@ -223,7 +224,6 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
       deadlineAt: agentRunDeadlineAt(input),
     };
     let sequence = 0;
-    let lookupOrder = 0;
     const port: CompanionRuntimePort = {
       emit: async (event) => {
         const requiresWritableRun = event.type === "model_request_started"
@@ -260,15 +260,7 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
           metric.evidenceMatches += event.evidenceMatches ?? 0;
         }
       },
-      executeTool: (call, toolSignal) => {
-        // This position belongs to the native call, not its HTTP transmission.
-        if (call.name === SEARCH_CHARACTER_MEDIA_TOOL) lookupOrder += 1;
-        return executeMainTool(call, snapshot.turnId, snapshot.attempt, {
-          lookupOrder,
-          deadlineAt: invocation.deadlineAt,
-          signal: toolSignal ?? signal,
-        });
-      },
+      executeTool: call => executeMainTool(call, snapshot.turnId, snapshot.attempt),
       commit: async (candidate, commitSignal) => {
         completedReply = { provider: candidate.provider, model: candidate.model, usage: candidate.usage, modelRequests: candidate.modelRequests };
         // SPEC: the Scene is carried forward unchanged, one version up, as
@@ -482,12 +474,7 @@ async function executeMainTool(
   call: CompanionToolCall,
   turnId: string,
   attempt: number,
-  context: { lookupOrder: number; deadlineAt: string; signal: AbortSignal },
 ): Promise<CompanionToolResult> {
-  const lookup = call.name === SEARCH_CHARACTER_MEDIA_TOOL;
-  const lookupDeadlineMs = lookup ? Math.min(Date.parse(context.deadlineAt), Date.now() + CHAT_MEDIA_LOOKUP_BUDGET_MS) : undefined;
-  const transportSignal = lookupDeadlineMs === undefined ? undefined
-    : AbortSignal.any([context.signal, AbortSignal.timeout(Math.max(0, lookupDeadlineMs - Date.now()))]);
   const effect: ChatToolEffect = {
     version: 2,
     turnId,
@@ -497,9 +484,6 @@ async function executeMainTool(
     effectScope: call.effectScope,
     intent: call.intent,
     arguments: call.arguments,
-    ...((lookup || call.name === SEND_CHARACTER_MEDIA_TOOL) && context.lookupOrder > 0
-      ? { lookupOrder: context.lookupOrder } : {}),
-    ...(lookupDeadlineMs === undefined ? {} : { lookupDeadlineAt: new Date(lookupDeadlineMs).toISOString() }),
   };
   await appendAgentRunEvent(turnId, attempt, "tool.requested", {
     attemptId: call.attemptId,
@@ -509,17 +493,13 @@ async function executeMainTool(
   });
   for (let ackAttempt = 1; ackAttempt <= 2; ackAttempt += 1) {
     try {
-      transportSignal?.throwIfAborted();
-      if (lookupDeadlineMs !== undefined && Date.now() >= lookupDeadlineMs) throw new Error("Prepared media lookup exceeded its time budget");
-      const response = await postMain("/api/internal/chat/tool-effects", effect, transportSignal);
+      const response = await postMain("/api/internal/chat/tool-effects", effect);
       const value = await response.json() as Record<string, unknown>;
-      transportSignal?.throwIfAborted();
-      if (lookupDeadlineMs !== undefined && Date.now() >= lookupDeadlineMs) throw new Error("Prepared media lookup exceeded its time budget");
       if (response.ok && value.accepted === true) {
-        // A lookup ACK proves neither a delivery nor a paid reservation. A
-        // malformed send receipt is ambiguous and must replay the same action.
-        const output = lookup ? searchCharacterMediaResultSchema.parse(value)
-          : call.name === SEND_CHARACTER_MEDIA_TOOL ? sendCharacterMediaResultSchema.parse(value) : value;
+        // A malformed Main receipt is ambiguous. Retry the same action identity.
+        const output = call.name === RESEND_SESSION_MEDIA_TOOL ? resendSessionMediaResultSchema.parse(value)
+          : call.name === REQUEST_CHARACTER_MEDIA_TOOL ? requestCharacterMediaResultSchema.parse(value)
+          : value;
         return {
           attemptId: call.attemptId,
           callId: call.callId,
@@ -536,15 +516,15 @@ async function executeMainTool(
           ackAttempt,
           status: response.status,
         });
-        if (ackAttempt < 2 && !transportSignal?.aborted) continue;
+        if (ackAttempt < 2) continue;
         return {
           attemptId: call.attemptId,
           callId: call.callId,
           name: call.name,
-          outcome: lookup ? "failed" : "unknown",
+          outcome: "unknown",
           error: {
-            code: lookup ? "media_search_unavailable" : "main_tool_ack_unknown",
-            message: lookup ? "Prepared media search is unavailable" : "Main tool effect outcome is unknown",
+            code: "main_tool_ack_unknown",
+            message: "Main tool effect outcome is unknown",
             retryable: true,
           },
         };
@@ -558,8 +538,8 @@ async function executeMainTool(
         name: call.name,
         outcome: "failed",
         // Main returns its durable rejected-effect ACK as HTTP 409 without a
-        // status field. A generic conflict or lookup proves no attachment.
-        ...((response.ok || response.status === 409) && !lookup && value.accepted === false && typeof value.attachmentId === "string" && value.attachmentId.trim()
+        // status field. A generic conflict proves no attachment.
+        ...((response.ok || response.status === 409) && value.accepted === false && typeof value.attachmentId === "string" && value.attachmentId.trim()
           ? { attachmentId: value.attachmentId } : {}),
         error: {
           code: typeof error?.code === "string"
@@ -579,15 +559,15 @@ async function executeMainTool(
         ackAttempt,
         errorDigest: sha256(error instanceof Error ? error.message : String(error)),
       });
-      if (ackAttempt < 2 && !transportSignal?.aborted) continue;
+      if (ackAttempt < 2) continue;
       return {
         attemptId: call.attemptId,
         callId: call.callId,
         name: call.name,
-        outcome: lookup ? "failed" : "unknown",
+        outcome: "unknown",
         error: {
-          code: lookup ? "media_search_unavailable" : "main_tool_ack_unknown",
-          message: lookup ? "Prepared media search is unavailable" : "Main tool effect outcome is unknown",
+          code: "main_tool_ack_unknown",
+          message: "Main tool effect outcome is unknown",
           retryable: true,
         },
       };
@@ -629,6 +609,12 @@ async function projectStreamEvent(
     const next = sequence + 1;
     await publish({ type: "replace", attempt, seq: next, content: "" });
     return next;
+  }
+  if (event.type === "tool_finished" && event.outcome !== "unknown" && event.attachmentId) {
+    // A delayed UI notification must not delay the next model dispatch.
+    void publish({ type: "attachments_changed", attempt }).catch(error => {
+      logger.error({ err: error, attempt }, "Failed to publish Chat attachment notification");
+    });
   }
   return sequence;
 }

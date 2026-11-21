@@ -4,7 +4,9 @@ import {
   companionEventSchema,
   companionInvocationSchema,
   companionTerminalCandidateSchema,
+  companionToolCallSchema,
   companionToolReservationSchema,
+  companionToolResultSchema,
   preparedTurnSchema,
 } from "./contracts";
 
@@ -94,7 +96,7 @@ describe("embedded companion runtime contracts", () => {
     expect(companionToolReservationSchema.safeParse({
       attemptId: "attempt-1",
       callId: "call-1",
-      name: "generate_image_async",
+      name: "request_character_media",
       effectScope: "turn_action",
       intent: { requestedNudity: "full" },
       argumentsDigest: "c".repeat(64),
@@ -102,7 +104,7 @@ describe("embedded companion runtime contracts", () => {
     expect(companionToolReservationSchema.safeParse({
       attemptId: "attempt-1",
       callId: "call-1",
-      name: "generate_image_async",
+      name: "request_character_media",
       effectScope: "turn_action",
       intent: { requestedNudity: "full" },
       argumentsDigest: "c".repeat(64),
@@ -148,5 +150,66 @@ describe("embedded companion runtime contracts", () => {
       terminalMessageId: "assistant-1",
       committedAt: "2026-08-28T12:00:01.000Z",
     }).success).toBe(true);
+  });
+
+  it("validates unified request_character_media and resend_session_media tool calls and receipts", () => {
+    expect(companionToolCallSchema.safeParse({
+      attemptId: "attempt-1",
+      callId: "call-1",
+      name: "request_character_media",
+      effectScope: "turn_action",
+      intent: { requestedNudity: "partial" },
+      arguments: { kind: "video", subject: "companion", direction: "smiling by the neon balcony", requestedNudity: "partial", hasAudio: true },
+    }).success).toBe(true);
+
+    expect(companionToolCallSchema.safeParse({
+      attemptId: "attempt-1",
+      callId: "call-2",
+      name: "resend_session_media",
+      effectScope: "turn_action",
+      intent: { requestedNudity: "unspecified" },
+      arguments: { previousMediaAssetId: "media-asset-1" },
+    }).success).toBe(true);
+
+    expect(companionToolResultSchema.safeParse({
+      attemptId: "attempt-1",
+      callId: "call-1",
+      name: "request_character_media",
+      outcome: "succeeded",
+      output: {
+        accepted: true,
+        duplicate: false,
+        status: "awaiting_confirmation",
+        confirmationKind: "paid_media_quote",
+        kind: "video",
+        attachmentId: "att-1",
+        generationJobId: null,
+        mediaAssetId: null,
+        costDreamcoins: 30,
+      },
+    }).success).toBe(true);
+
+    expect(companionToolResultSchema.safeParse({
+      attemptId: "attempt-1",
+      callId: "call-1",
+      name: "request_character_media",
+      outcome: "succeeded",
+      output: {
+        accepted: true,
+        duplicate: false,
+        status: "no_match",
+        kind: "video",
+        costDreamcoins: 0,
+        suggestedAction: "photo_instead",
+      },
+    }).success).toBe(true);
+
+    expect(companionToolResultSchema.safeParse({
+      attemptId: "attempt-1",
+      callId: "call-1",
+      name: "request_character_media",
+      outcome: "succeeded",
+      output: { accepted: true, status: "completed", kind: "video" },
+    }).success).toBe(false);
   });
 });

@@ -8,7 +8,7 @@ import {
 
 type Reservation = CompanionTerminalCandidate["tools"][number];
 
-const IMAGE_TOOL = "generate_image_async" as const;
+const IMAGE_TOOL = "request_character_media" as const;
 const COMPLETED_AT = "2026-09-12T00:00:00.000Z";
 
 function reservation(name: Reservation["name"]): Reservation {
@@ -52,7 +52,7 @@ function imageActionFacts(overrides: Partial<TerminalCandidateFacts> = {}): Term
 }
 
 describe("evaluateTerminalCandidate", () => {
-  it.each(["search_character_media", "send_character_media"])("rejects %s JSON printed instead of a native tool call", name => {
+  it.each(["request_character_media", "resend_session_media"])("rejects %s JSON printed instead of a native tool call", name => {
     expect(evaluateTerminalCandidate(facts({ tools: [{ name }], assistantContent: JSON.stringify({ name, arguments: { candidateToken: "invented" } }) })))
       .toMatchObject({ accepted: false, code: "unexecuted_tool_payload" });
   });

@@ -90,6 +90,13 @@ describe("postDreamcoinEntry", () => {
 
   it("does not link paid voice delivery or its replay to a GenerationJob", async () => {
     const ledger = inMemoryLedger();
+    await postDreamcoinEntry(ledger.tx, {
+      kind: "signup_bonus",
+      userId: "user-1",
+      amount: 100,
+      sourceId: "signup:user-1",
+      idempotencyKey: "signup_bonus:user-1",
+    });
     const intent = {
       kind: "generation_spend" as const,
       userId: "user-1",
@@ -101,8 +108,20 @@ describe("postDreamcoinEntry", () => {
     const replay = await postDreamcoinEntry(ledger.tx, intent);
     expect(replay.id).toBe(first.id);
     expect(first.delta).toBe(-12);
-    expect(ledger.creates()).toBe(1);
+    expect(ledger.creates()).toBe(2);
     expect(ledger.settlementLinks).toEqual([]);
+  });
+
+  it("refuses a generation spend that would overdraw the balance without writing an entry", async () => {
+    const ledger = inMemoryLedger();
+    await expect(postDreamcoinEntry(ledger.tx, {
+      kind: "generation_spend",
+      userId: "user-1",
+      amount: 5,
+      sourceId: "chat-media:attachment-1",
+      idempotencyKey: "chat_media_spend:attachment-1",
+    })).rejects.toMatchObject({ code: "payment_required" });
+    expect(ledger.creates()).toBe(0);
   });
 
   it("returns the same entry for an identical idempotency key and intent", async () => {

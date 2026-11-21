@@ -1,3 +1,4 @@
+import { COMPANION_MEDIA_TOOL_DEFINITIONS } from "@idream/shared/chat/media-library";
 import { describe, expect, it } from "vitest";
 import { buildCompanionSystemPrompt, buildTurnPreferencesBlock, buildTurnStateBlock, describeRequestedReplyConstraints, describeUserLanguage } from "./prompt.js";
 
@@ -27,10 +28,10 @@ describe("companion prompt instruction hierarchy", () => {
       scene: { ...emptyScene, version: 2, location: "home" },
       sceneVersion: 2,
       lastExchangeAt: null,
-    } as never);
+    } as never, []);
 
     expect(prompt.startsWith("Speak softly.")).toBe(true);
-    expect(prompt).toContain("iDream companion contract (companion-product-26)");
+    expect(prompt).toContain("iDream companion contract (companion-product-27)");
     expect(prompt).toContain("Write in first person as Mira");
     // An ordinary memory-on turn adds no capability section: nothing about
     // photos or memory mode seeds the reply, and the bytes stay cacheable.
@@ -51,7 +52,7 @@ describe("companion prompt instruction hierarchy", () => {
       scene: emptyScene,
       sceneVersion: 0,
       lastExchangeAt: null,
-    } as never);
+    } as never, []);
 
     expect(prompt).toContain("never say it is saved or will be remembered");
   });
@@ -64,10 +65,10 @@ describe("companion prompt instruction hierarchy", () => {
       scene: emptyScene,
       sceneVersion: 0,
       lastExchangeAt: null,
-    } as never);
-    expect(enabled).toContain("Direct generation and whole-image edits require this message's paid image authorization");
-    expect(enabled).toContain("Choose generate_image_async for authorized new generation");
-    expect(enabled).toContain("edit_last_image for a change to the delivered photo");
+    } as never, COMPANION_MEDIA_TOOL_DEFINITIONS);
+    expect(enabled).toContain("requires paid authorization for this message");
+    expect(enabled).toContain("call request_character_media once");
+    expect(enabled).toContain("Use edit_last_image when the user requests a change");
 
     const disabled = buildCompanionSystemPrompt({
       persona,
@@ -76,7 +77,7 @@ describe("companion prompt instruction hierarchy", () => {
       scene: emptyScene,
       sceneVersion: 0,
       lastExchangeAt: null,
-    } as never);
+    } as never, []);
     expect(disabled).not.toContain("generate_image_async");
     // Offers are not solicited; a non-photo turn must not read as a prompt to sell one.
     expect(disabled).not.toContain("you may offer");
@@ -91,7 +92,7 @@ describe("companion prompt instruction hierarchy", () => {
       scene: emptyScene,
       sceneVersion: 0,
       lastExchangeAt: null,
-    } as never);
+    } as never, []);
     expect(prompt).toContain("You are only Mira");
     expect(prompt).toContain("never write their next reply");
   });

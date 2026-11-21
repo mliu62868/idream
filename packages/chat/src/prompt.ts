@@ -18,13 +18,11 @@ import type { SceneState } from "./scene.js";
  * cache on every message; next to the current message it is also where a
  * roleplay model weighs it most.
  */
-export function buildCompanionSystemPrompt(context: BuiltContext): string {
+export function buildCompanionSystemPrompt(context: BuiltContext, mediaTools: readonly { name: string }[]): string {
   const persona = context.persona;
   const prompt = composeCompanionSystemPrompt({
     memoryEnabled: context.policy.memoryEnabled,
-    imageToolEnabled: context.policy.imageToolEnabled && context.policy.modelProfile.supportsTools,
-    mediaLibraryKinds: persona.mediaLibraryKinds?.length && context.policy.modelProfile.supportsTools ? persona.mediaLibraryKinds : [],
-    hasDeliveredMedia: Boolean(context.recentMedia?.length) && context.policy.modelProfile.supportsTools,
+    mediaTools,
     soulPrompt: persona.systemPrompt ?? persona.description,
     identityPromptLine: identityPromptLine(persona),
     characterName: persona.name,
@@ -92,12 +90,9 @@ export function buildTurnStateBlock(context: BuiltContext, now: Date): string {
   return ["Right now:", ...lines.map((line) => `- ${line}`)].join("\n");
 }
 
-export const PREPARED_MEDIA_TURN_GUIDANCE = "For ordinary photo or video requests of an available kind, use search_character_media first.";
-
 export function describeImageActionAuthorization(mode: BuiltContext["imageActionMode"]): string {
-  if (mode === "paid") return "The user authorized a paid image action with this message. Use it only if requested.";
-  if (mode === "library") return "This reply can search prepared media and send matching candidate tokens. Explain an existing-only miss within the request's scope.";
-  return "This message does not authorize a paid new image or whole-image edit.";
+  if (mode === "paid") return "The user authorized one paid photo or whole-image edit with this message. A video still needs its own price confirmation.";
+  return "A paid photo or video must wait for the user's price confirmation. Local edits use their own area confirmation.";
 }
 
 /** Saved expression choices are the user's own instructions for how to be talked to. */

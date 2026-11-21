@@ -40,6 +40,7 @@ import { userChatPersonaForTurn } from "./user-persona";
 import { DEFAULT_PROFILE_EXPERIENCE } from "./conversation-profiles";
 import { deliveredChatMedia, frozenChatImageEditSource, isReadableChatMedia, readableDeliveredChatMediaWhere } from "./chat-media-history";
 import { lockCharacterGenerationAuthority, lockMediaAssetAuthority } from "@/server/modules/admin-v2/characters/generation-authority-lock";
+import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 
 const BLOCKED_NOTICE = "I can’t help with that request.";
 const ACTIVE_ASSISTANT_STATES = ["pending", "generating"];
@@ -256,7 +257,6 @@ export async function getChatSession(userId: string, sessionId: string) {
       character: { select: { name: true, creatorId: true, imageAsset: { select: { url: true, thumbnailUrl: true } } } },
       turns: {
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-        omit: { mediaLookup: true },
         include: { attachments: { orderBy: { createdAt: "asc" } } },
       },
     },
@@ -515,7 +515,6 @@ async function regenerateLockedChatTurn(tx: Prisma.TransactionClient, userId: st
       terminalEvidence: Prisma.JsonNull,
       terminalAt: null,
       executionSnapshot: Prisma.JsonNull,
-      mediaLookup: Prisma.JsonNull,
       sceneVersion: sceneAnchor?.sceneVersion ?? 0,
       scene: sceneAnchor?.scene == null ? Prisma.JsonNull : toJson(sceneAnchor.scene),
       admissionAttempts: 0,
@@ -555,7 +554,7 @@ async function rebindDurableTurnMedia(
     const metadata = jsonRecord(attachment.metadata);
     const effect = jsonRecord(metadata.effect ?? null);
     if (metadata.turnActionInvalidatedByEdit === true || effect.effectScope !== "turn_action") continue;
-    if (["library", "previous_media"].includes(String(metadata.source))) {
+    if (attachment.status === "completed" && ["library", "previous_media"].includes(String(metadata.source))) {
       await lockCharacterGenerationAuthority(tx, scope.session.characterId);
       if (attachment.mediaAssetId) await lockMediaAssetAuthority(tx, attachment.mediaAssetId);
       const media = attachment.mediaAssetId ? await tx.mediaAsset.findFirst({ where: {
@@ -600,6 +599,7 @@ async function rebindDurableTurnMedia(
       ...(draftSource ? { sourceMediaAssetId: draftSource } : {}),
       ...(attachment.promptHint ? { instruction: attachment.promptHint.slice(0, 1200) } : {}),
       ...(typeof metadata.description === "string" ? { description: metadata.description } : {}),
+      ...(metadata.confirmationKind === "paid_media_quote" ? { confirmationKind: "paid_media_quote" } : {}),
     });
     if (!parsed.success) continue;
     await tx.chatTurnAttachment.update({ where: { id: attachment.id }, data: {
@@ -736,7 +736,6 @@ async function replaceLockedChatTurn(tx: Prisma.TransactionClient, input: {
       assistantContent: blocked ? BLOCKED_NOTICE : "",
       assistantStatus: blocked ? "blocked" : "pending",
       imageActionMode: allowPaidImage ? "paid" : "chat",
-      mediaLookup: Prisma.JsonNull,
       model: null,
       promptTokens: null,
       completionTokens: null,
@@ -785,7 +784,7 @@ export async function commitChatTerminal(input: ChatTerminalCommit) {
     // the Turn first deadlocks with a user-first mutation during memory commit.
     await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${owner.userId} FOR UPDATE`;
     await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${input.sessionId} FOR UPDATE`;
-    const accepted = await tx.chatTurn.findUnique({ where: { id: input.turnId }, omit: { mediaLookup: true } });
+    const accepted = await tx.chatTurn.findUnique({ where: { id: input.turnId } });
     if (!accepted) throw Errors.notFound("Chat turn not found");
     if (
       accepted.sessionId === input.sessionId && accepted.assistantMessageId === input.assistantMessageId &&
@@ -832,10 +831,9 @@ export async function commitChatTerminal(input: ChatTerminalCommit) {
         terminalAt: now,
         // A terminal attempt has no lookup consumer. The attachment and the
         // immutable terminal proposal each have their own durable receipt.
-        mediaLookup: Prisma.JsonNull,
       },
     });
-    const current = await tx.chatTurn.findUnique({ where: { id: input.turnId }, omit: { mediaLookup: true } });
+    const current = await tx.chatTurn.findUnique({ where: { id: input.turnId } });
     if (!current) throw Errors.notFound("Chat turn not found");
     if (changed.count === 1) {
       const session = await tx.recentChat.update({
@@ -946,7 +944,6 @@ export async function cancelChatTurn(userId: string, messageId: string, expected
         assistantStatus: "cancelled",
         terminalAt: now,
         terminalEvidence: toJson({ authority: "main_user_cancel" }),
-        mediaLookup: Prisma.JsonNull,
       },
     });
     await settleChatTurnUsage(tx, current, "cancelled", now);
@@ -1015,7 +1012,6 @@ export async function failStalledChatTurn(turnId: string, cutoff: {
         assistantStatus: "failed",
         terminalAt: now,
         terminalEvidence: toJson({ authority: "main_stalled_attempt_reclaim" }),
-        mediaLookup: Prisma.JsonNull,
       },
     });
     await settleChatTurnUsage(tx, turn, "failed", now);
@@ -1060,6 +1056,7 @@ export async function deleteChatMessage(userId: string, messageId: string) {
       data: [deletedChatTurnSendKey(userId, { sessionId: current.sessionId, groupId: groupTurn?.groupId ?? null }, current.idempotencyKey)],
       skipDuplicates: true,
     });
+    await refundPendingDelayedAttachments(tx, userId, [turn.id]);
     await tx.chatTurn.delete({ where: { id: turn.id } });
     await scheduleCompanionMemoryRebuild(tx, {
       userId,
@@ -1072,6 +1069,63 @@ export async function deleteChatMessage(userId: string, messageId: string) {
 function deletedChatTurnSendKey(userId: string, scope: Pick<RecentChat, "sessionId" | "groupId">, idempotencyKey: string) {
   const conversationKey = scope.groupId ? `group:${scope.groupId}` : `session:${scope.sessionId}`;
   return { userId, conversationKey, keyHash: sha256(idempotencyKey) };
+}
+
+/**
+ * Atomically cancels and refunds any paid delayed curated-media attachment that
+ * has not yet been revealed (`mediaAssetId IS NULL`) before its parent Turn or
+ * Session is cascade-deleted. Callers must already hold `users FOR UPDATE`.
+ */
+async function refundPendingDelayedAttachments(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  turnIds: readonly string[],
+) {
+  if (turnIds.length === 0) return;
+  const candidates = await tx.chatTurnAttachment.findMany({
+    where: {
+      turnId: { in: [...turnIds] },
+      status: "accepted",
+      mediaAssetId: null,
+      generationJobId: null,
+      deliverAt: { not: null },
+    },
+    select: { id: true },
+    orderBy: { id: "asc" },
+  });
+  for (const { id } of candidates) {
+    const scope = await lockChatScope(tx, {
+      userId,
+      at: { attachment: id },
+      allowDeletedSession: true,
+    });
+    const current = scope.attachment!;
+    if (current.status !== "accepted" || current.mediaAssetId !== null || current.generationJobId !== null) {
+      continue;
+    }
+    const meta = current.metadata && typeof current.metadata === "object" && !Array.isArray(current.metadata)
+      ? current.metadata as Record<string, unknown>
+      : {};
+    const costDreamcoins = typeof meta.costDreamcoins === "number" && Number.isSafeInteger(meta.costDreamcoins) && meta.costDreamcoins > 0
+      ? meta.costDreamcoins
+      : 0;
+    await transitionToolEffectAttachment(tx, current, {
+      to: "cancelled",
+      errorCode: "deleted_before_delivery",
+    });
+    await tx.userCharacterLibraryReceipt.deleteMany({
+      where: { userId, firstAttachmentId: current.id },
+    });
+    if (costDreamcoins > 0) {
+      await postDreamcoinEntry(tx, {
+        kind: "refund",
+        userId,
+        amount: costDreamcoins,
+        sourceId: current.id,
+        idempotencyKey: `chat_media_refund:${current.id}`,
+      });
+    }
+  }
 }
 
 export async function deleteChatSession(userId: string, sessionId: string) {
@@ -1127,6 +1181,9 @@ async function deleteSessionTranscript(tx: Prisma.TransactionClient, userId: str
       redactedAt: new Date(),
       sessionId,
     });
+    if (turnIds.length > 0) {
+      await refundPendingDelayedAttachments(tx, userId, turnIds.map((turn) => turn.id));
+    }
     await tx.recentChat.delete({ where: { sessionId } });
     await scheduleCompanionMemoryRebuild(tx, {
       userId,
@@ -1248,7 +1305,7 @@ async function frozenExecutionSnapshot(
   media?: { recoveredMediaAction?: RecoveredMediaAction; userMessageRevision?: number; preservedImageEditSourceAssetId?: string | null },
 ): Promise<ChatExecutionSnapshot> {
   const turn = await tx.chatTurn.findUnique({
-    where: { id: turnId }, omit: { mediaLookup: true }, include: { session: true, groupTurn: true },
+    where: { id: turnId }, include: { session: true, groupTurn: true },
   });
   if (!turn) throw Errors.notFound("Chat turn not found");
   const persisted = turn.executionSnapshot;
@@ -2070,7 +2127,22 @@ function publicAssistantMessage(turn: {
         //   只有这层投影把它丢掉——用户于是只能事后去 Profile 对账。语音有报价确认卡，
         //   图片至少要有账目。
         costDreamcoins: attachmentCost(attachment.metadata),
-        ...(["library", "previous_media"].includes(String(jsonRecord(attachment.metadata).source))
+        ...(attachment.status === "awaiting_confirmation"
+          ? {
+              confirmationKind:
+                jsonRecord(attachment.metadata).confirmationKind === "paid_media_quote"
+                  ? "paid_media_quote"
+                  : "local_image_edit",
+            }
+          : {}),
+        ...(attachment.status === "accepted"
+          && attachment.mediaAssetId === null
+          && attachment.generationJobId === null
+          && jsonRecord(attachment.metadata).paidCuratedDelivery === true
+          ? { deliveryStage: "sending" as const }
+          : {}),
+        // Do not leak internal library fulfillment source before reveal (`mediaAssetId` set).
+        ...(attachment.mediaAssetId !== null && ["library", "previous_media"].includes(String(jsonRecord(attachment.metadata).source))
           ? { source: jsonRecord(attachment.metadata).source } : {}),
       })),
   };

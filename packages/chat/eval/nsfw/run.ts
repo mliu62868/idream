@@ -135,7 +135,7 @@ const rows: Row[] = [];
 const startedAtIso = new Date().toISOString();
 const sampling = { temperature, top_p: 0.95, repetition_penalty: 1.05, max_tokens: 1024, chat_template_kwargs: { enable_thinking: false } };
 const systemFor = (persona: string, name: string) =>
-  [composeCompanionSystemPrompt({ memoryEnabled: true, imageToolEnabled: false, soulPrompt: persona, characterName: name }), systemAppend].filter(Boolean).join("\n\n");
+  [composeCompanionSystemPrompt({ memoryEnabled: true, soulPrompt: persona, characterName: name }), systemAppend].filter(Boolean).join("\n\n");
 const systemDigests = Object.fromEntries(Object.entries(data.personas).map(([id, persona]) =>
   [id, createHash("sha256").update(systemFor(persona, id)).digest("hex").slice(0, 16)]));
 console.error(`chat=${chat.model} judge=${judge.model} prompt=${COMPANION_PRODUCT_PROMPT_VERSION} cases=${cases.length} samples=${samples} temperature=${temperature}`);

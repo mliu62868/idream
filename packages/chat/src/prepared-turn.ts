@@ -6,13 +6,12 @@ import {
   COMPANION_PRODUCT_PROMPT_VERSION,
   type ChatToolDefinition,
 } from "@idream/shared";
-import { EDIT_LAST_IMAGE_TOOL, GENERATE_IMAGE_ASYNC_TOOL, LOCAL_IMAGE_EDIT_TOOL_DEFINITION } from "@idream/shared/chat/image-action";
-import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL } from "@idream/shared/chat/media-library";
+import { EDIT_LAST_IMAGE_TOOL, EDIT_LAST_IMAGE_TOOL_DEFINITION, LOCAL_IMAGE_EDIT_TOOL_DEFINITION } from "@idream/shared/chat/image-action";
+import { REQUEST_CHARACTER_MEDIA_TOOL, RESEND_SESSION_MEDIA_TOOL, COMPANION_MEDIA_TOOL_DEFINITIONS } from "@idream/shared/chat/media-library";
 import type { ChatAuthoritySnapshot } from "@idream/shared/bff";
 import type { ChatExecutionSnapshot } from "@idream/shared/contracts";
 import { buildContext, type BuiltContext } from "./context.js";
-import { buildCompanionSystemPrompt, buildTurnPreferencesBlock, buildTurnStateBlock, describeImageActionAuthorization, describeRequestedReplyConstraints, describeUserLanguage, PREPARED_MEDIA_TURN_GUIDANCE } from "./prompt.js";
-import { registryChatTools } from "./agent-tools.js";
+import { buildCompanionSystemPrompt, buildTurnPreferencesBlock, buildTurnStateBlock, describeImageActionAuthorization, describeRequestedReplyConstraints, describeUserLanguage } from "./prompt.js";
 import { dropOldestReplayExchange, estimateModelRequestInputTokens, formatModelRequestInput } from "./agent-runtime/model-request-format.js";
 import {
   preparedTurnSchema,
@@ -105,10 +104,10 @@ export function compilePreparedTurn(
 function buildPreparedMessages(
   context: BuiltContext,
   currentUserMessageId: string,
+  systemContent: string,
   turnState: string,
   turnPreferences: string,
 ): PreparedTurnInput["messages"] {
-  const systemContent = buildCompanionSystemPrompt(context);
   const messages: PreparedTurnInput["messages"] = [{
     id: `system:${sha256(systemContent)}`,
     sourceKind: "plugin",
@@ -177,29 +176,34 @@ export function fitPreparedTurnBudget(
   // Main's publication capability is independent of paid generation. Existing
   // delivered media remains resendable even after a library item is withdrawn.
   // The Agent still interprets the request; no wording classifier selects tools.
-  const mediaKinds = [...new Set(fitted.persona.mediaLibraryKinds ?? [])];
-  const lookupKinds = [...new Set([...mediaKinds, ...(fitted.recentMedia ?? []).map(media => media.kind)])];
+  const mediaKinds = fitted.persona.mediaLibraryKinds ?? [];
   const imageActionMode = fitted.imageActionMode ?? "chat";
-  const tools = fitted.policy.modelProfile.supportsTools ? registryChatTools().filter(tool => {
-    if (tool.name === SEARCH_CHARACTER_MEDIA_TOOL) return lookupKinds.length > 0;
-    if (tool.name === SEND_CHARACTER_MEDIA_TOOL) return mediaKinds.length > 0 || Boolean(fitted.recentMedia?.length);
-    if (!fitted.policy.imageToolEnabled) return false;
-    if (tool.name === GENERATE_IMAGE_ASYNC_TOOL) return imageActionMode === "paid";
-    return tool.name === EDIT_LAST_IMAGE_TOOL && imageActionMode !== "library" && fitted.hasRecentImageContext;
-  }).map(tool => {
-    if (tool.name === EDIT_LAST_IMAGE_TOOL && imageActionMode === "chat") return LOCAL_IMAGE_EDIT_TOOL_DEFINITION;
-    if (tool.name !== SEARCH_CHARACTER_MEDIA_TOOL) return tool;
-    return {
-      ...tool,
-      parameters: {
-        ...tool.parameters,
-        properties: {
-          ...(tool.parameters.properties as Record<string, unknown>),
-          kind: { type: "string", enum: lookupKinds },
-        },
-      },
-    };
-  }) : [];
+  const requestKinds = [
+    ...(fitted.policy.imageToolEnabled || mediaKinds.includes("image") ? ["image" as const] : []),
+    ...(mediaKinds.includes("video") ? ["video" as const] : []),
+  ];
+  const tools = fitted.policy.modelProfile.supportsTools && !fitted.recoveredMediaAction
+    ? COMPANION_MEDIA_TOOL_DEFINITIONS.flatMap(tool => {
+        if (tool.name === RESEND_SESSION_MEDIA_TOOL) return fitted.recentMedia?.length ? [tool] : [];
+        if (tool.name === EDIT_LAST_IMAGE_TOOL) {
+          return fitted.policy.imageToolEnabled && fitted.hasRecentImageContext && imageActionMode !== "library"
+            ? [imageActionMode === "paid" ? EDIT_LAST_IMAGE_TOOL_DEFINITION : LOCAL_IMAGE_EDIT_TOOL_DEFINITION]
+            : [];
+        }
+        if (tool.name !== REQUEST_CHARACTER_MEDIA_TOOL || requestKinds.length === 0 || imageActionMode === "library") return [];
+        return [{
+          ...tool,
+          parameters: {
+            ...tool.parameters,
+            properties: {
+              ...(tool.parameters.properties as Record<string, unknown>),
+              kind: { type: "string", enum: requestKinds },
+            },
+          },
+        }];
+      })
+    : [];
+  const systemContent = buildCompanionSystemPrompt(fitted, tools);
   const maxInputTokens = Math.max(1, Math.ceil(fitted.policy.maxContextChars / 4));
   const dropped = new Set(fitted.dropped);
   const replayMessageIds = new Set(fitted.recentMessages.filter(message => message.id !== currentUserMessageId).map(message => message.id));
@@ -208,15 +212,15 @@ export function fitPreparedTurnBudget(
   // Rebuilt on every budget pass so it only quotes dialogue that is still retained.
   const turnState = () => [
     buildTurnStateBlock(fitted, now),
-    ...(fitted.policy.imageToolEnabled && fitted.policy.modelProfile.supportsTools ? [`- ${describeImageActionAuthorization(imageActionMode)}`] : []),
-    ...(mediaKinds.length && fitted.policy.modelProfile.supportsTools ? [`- ${PREPARED_MEDIA_TURN_GUIDANCE}`] : []),
+    ...(tools.some(tool => tool.name === REQUEST_CHARACTER_MEDIA_TOOL || tool.name === EDIT_LAST_IMAGE_TOOL)
+      ? [`- ${describeImageActionAuthorization(imageActionMode)}`] : []),
     ...(language ? [`- ${language}`] : []),
     ...(replyConstraints ? [`- ${replyConstraints}`] : []),
     ...recentOpeningsLines(fitted, currentUserMessageId),
   ].join("\n");
   const turnPreferences = buildTurnPreferencesBlock(fitted);
   const calculate = () => {
-    const messages = buildPreparedMessages(fitted, currentUserMessageId, turnState(), turnPreferences);
+    const messages = buildPreparedMessages(fitted, currentUserMessageId, systemContent, turnState(), turnPreferences);
     const usedInputTokens = estimateModelRequestInputTokens(formatModelRequestInput({ messages, tools, respondingCharacterId: fitted.persona.characterId }));
     return { messages, usedInputTokens };
   };

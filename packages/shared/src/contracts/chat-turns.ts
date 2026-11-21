@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL } from "../chat/media-library";
+import {
+  REQUEST_CHARACTER_MEDIA_TOOL,
+  RESEND_SESSION_MEDIA_TOOL,
+  companionMediaToolNameSchema,
+} from "../chat/media-library";
 import { imageEditOperationSchema } from "../chat/image-action";
 
 export const CHAT_PIN_LIMIT = 8;
@@ -164,7 +168,7 @@ function refineSceneAuthority(
 // A recovered card is an existing Main product fact, never a classification of
 // the user's intent. Main has already rebound it to this selected attempt.
 export const recoveredMediaActionSchema = z.object({
-  name: z.enum(["generate_image_async", "edit_last_image", "send_character_media"]),
+  name: z.enum(["generate_image_async", "edit_last_image", "send_character_media", REQUEST_CHARACTER_MEDIA_TOOL, RESEND_SESSION_MEDIA_TOOL]),
   attachmentId: z.string().min(1).max(160),
   status: z.enum(["awaiting_confirmation", "accepted", "completed", "failed", "refunded", "blocked", "cancelled"]),
   costDreamcoins: z.number().int().nonnegative(),
@@ -173,12 +177,16 @@ export const recoveredMediaActionSchema = z.object({
   sourceMediaAssetId: z.string().min(1).max(160).optional(),
   instruction: z.string().max(1_200).optional(),
   description: z.string().max(4_000).nullable().optional(),
+  confirmationKind: z.enum(["local_image_edit", "paid_media_quote"]).optional(),
 }).strict().superRefine((value, ctx) => {
   const unpaidEditDraft = value.name === "edit_last_image" && Boolean(value.sourceMediaAssetId) &&
     !value.generationJobId && !value.mediaAssetId && value.costDreamcoins === 0;
-  if ((value.status === "awaiting_confirmation" && !unpaidEditDraft) ||
-    (["accepted", "failed", "refunded", "blocked"].includes(value.status) && !value.generationJobId) ||
-    (value.status === "cancelled" && !value.generationJobId && !unpaidEditDraft) ||
+  const paidQuoteDraft = value.name === REQUEST_CHARACTER_MEDIA_TOOL && value.confirmationKind === "paid_media_quote" &&
+    !value.generationJobId && !value.mediaAssetId;
+  const delayedCuratedDelivery = value.name === REQUEST_CHARACTER_MEDIA_TOOL && !value.generationJobId && value.costDreamcoins > 0;
+  if ((value.status === "awaiting_confirmation" && !unpaidEditDraft && !paidQuoteDraft) ||
+    (["accepted", "failed", "refunded", "blocked"].includes(value.status) && !value.generationJobId && !delayedCuratedDelivery) ||
+    (value.status === "cancelled" && !value.generationJobId && !unpaidEditDraft && !paidQuoteDraft && !delayedCuratedDelivery) ||
     (value.status === "completed" && !value.mediaAssetId)) {
     ctx.addIssue({ code: "custom", message: "Recovered media action must represent a persisted draft, generation or delivered asset", path: ["status"] });
   }
@@ -323,31 +331,13 @@ export const chatToolEffectSchema = z.object({
   turnId: z.string().min(1),
   attempt: z.number().int().positive(),
   callId: z.string().min(1),
-  name: z.enum(["generate_image_async", "edit_last_image", SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL]),
-  effectScope: z.enum(["attempt", "turn_action"]),
-  lookupOrder: z.number().int().positive().optional(),
-  lookupDeadlineAt: z.iso.datetime().optional(),
+  name: companionMediaToolNameSchema,
+  effectScope: z.literal("turn_action"),
   intent: z.object({
-    requestedNudity: z.enum(["unspecified", "none", "full"]),
+    requestedNudity: z.enum(["unspecified", "none", "partial", "full"]),
   }).strict(),
   arguments: z.record(z.string(), z.unknown()),
-}).strict().superRefine((effect, context) => {
-  if (effect.name === SEARCH_CHARACTER_MEDIA_TOOL && effect.effectScope !== "attempt") {
-    context.addIssue({ code: "custom", path: ["effectScope"], message: "Media lookup belongs to the current attempt" });
-  }
-  if (effect.name === SEARCH_CHARACTER_MEDIA_TOOL && (effect.lookupOrder === undefined || effect.lookupDeadlineAt === undefined)) {
-    context.addIssue({ code: "custom", path: ["lookupOrder"], message: "Media lookup requires an attempt-local order and deadline" });
-  }
-  if (effect.name !== SEARCH_CHARACTER_MEDIA_TOOL && effect.lookupDeadlineAt !== undefined) {
-    context.addIssue({ code: "custom", path: ["lookupDeadlineAt"], message: "Only a media lookup starts a lookup deadline" });
-  }
-  if (effect.name !== SEARCH_CHARACTER_MEDIA_TOOL && effect.name !== SEND_CHARACTER_MEDIA_TOOL && effect.lookupOrder !== undefined) {
-    context.addIssue({ code: "custom", path: ["lookupOrder"], message: "Only prepared media uses lookup order" });
-  }
-  if (effect.name === SEND_CHARACTER_MEDIA_TOOL && effect.effectScope !== "turn_action") {
-    context.addIssue({ code: "custom", path: ["effectScope"], message: "Media delivery belongs to the Turn action" });
-  }
-});
+}).strict();
 
 // A successful HTTP response alone is not a durable terminal acknowledgement.
 export const chatTerminalAckSchema = z.object({

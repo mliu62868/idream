@@ -1718,7 +1718,7 @@ describe("Main-owned Chat façade", () => {
     }
   });
 
-  it("replays an accepted ToolEffect after the Turn is terminal without charging again", async () => {
+  it("reuses a requested image quote after the BFF Turn is terminal and after regenerate", async () => {
     const { proxyChatRequest } = await import("./chat-proxy");
     const sessionId = await ensureSession(proxyChatRequest);
     const key = `effect-${randomUUID()}`;
@@ -1730,159 +1730,21 @@ describe("Main-owned Chat façade", () => {
     const turn = await prisma.chatTurn.findUniqueOrThrow({
       where: { sessionId_idempotencyKey: { sessionId, idempotencyKey: key } },
     });
+    const effect = { version: 2, turnId: turn.id, attempt: 1, callId: "model-call",
+      name: "request_character_media", effectScope: "turn_action", intent: { requestedNudity: "unspecified" },
+      arguments: { direction: "A portrait in a quiet garden", kind: "image", subject: "companion", mode: "force_new" } };
+    const quote = await applyChatToolEffect(effect);
+    expect(quote).toMatchObject({ status: "awaiting_confirmation", confirmationKind: "paid_media_quote" });
     await commitChatTerminal({
-      version: 1,
-      turnId: turn.id,
-      sessionId,
-      assistantMessageId: turn.assistantMessageId,
-      attempt: 1,
-      status: "sent",
-      content: "I picked the quiet corner for this one.",
-      model: "test-model",
-      promptTokens: 4,
-      completionTokens: 8,
-      ...nextSceneFixture(turn),
-      terminalEvidence: TEST_TERMINAL_EVIDENCE,
+      version: 1, turnId: turn.id, sessionId, assistantMessageId: turn.assistantMessageId,
+      attempt: 1, status: "sent", content: "", model: "test-model", promptTokens: 4, completionTokens: 8,
+      ...nextSceneFixture(turn), terminalEvidence: { ...TEST_TERMINAL_EVIDENCE, mediaResponse: { version: 1, attachmentId: quote.attachmentId } },
     });
-    const callId = "tool-call-1";
-    const args = {
-      prompt: "A detailed portrait in a quiet garden",
-      orientation: "4:5" as const,
-      outputCount: 1,
-    };
-    const attachmentId = `chatfx_${createHash("sha256")
-      .update(`${turn.id}:1:${callId}`)
-      .digest("hex")
-      .slice(0, 48)}`;
-    const requestDigest = createHash("sha256")
-      .update(JSON.stringify({
-        arguments: { orientation: "4:5", outputCount: 1, prompt: args.prompt },
-        name: "generate_image_async",
-      }))
-      .digest("hex");
-    await prisma.chatTurnAttachment.create({
-      data: {
-        id: attachmentId,
-        turnId: turn.id,
-        kind: "generated_image",
-        status: "accepted",
-        metadata: {
-          effect: { turnId: turn.id, attempt: 1, callId, name: "generate_image_async", requestDigest },
-          costDreamcoins: 5,
-        },
-      },
-    });
-
-    await expect(applyChatToolEffect({
-      version: 2,
-      turnId: turn.id,
-      attempt: 1,
-      callId,
-      name: "generate_image_async",
-      effectScope: "attempt",
-      intent: { requestedNudity: "unspecified" },
-      arguments: args,
-    })).resolves.toMatchObject({
-      accepted: true,
-      duplicate: true,
-      attachmentId,
-      costDreamcoins: 5,
-    });
-  });
-
-  it("reuses one required image effect across assistant regenerate attempts", async () => {
-    const { proxyChatRequest } = await import("./chat-proxy");
-    const sessionId = await ensureSession(proxyChatRequest);
-    const key = `required-effect-${randomUUID()}`;
-    await proxyChatRequest(authRequest(`/api/v1/chat/sessions/${sessionId}/messages`, {
-      method: "POST",
-      headers: { "idempotency-key": key },
-      body: JSON.stringify({ content: "Send a portrait from the garden." }),
-    }), ["chat", "sessions", sessionId, "messages"]);
-    const turn = await prisma.chatTurn.findUniqueOrThrow({
-      where: { sessionId_idempotencyKey: { sessionId, idempotencyKey: key } },
-    });
-    const callId = "model-tool-call-1";
-    const args = {
-      prompt: "A detailed portrait in a quiet garden",
-      orientation: "4:5" as const,
-      outputCount: 1,
-    };
-    const attachmentId = `chatfx_${createHash("sha256")
-      .update(`${turn.id}:generate_image_async`)
-      .digest("hex")
-      .slice(0, 48)}`;
-    const requestDigest = createHash("sha256")
-      .update(JSON.stringify({
-        arguments: { orientation: "4:5", outputCount: 1, prompt: args.prompt },
-        name: "generate_image_async",
-      }))
-      .digest("hex");
-    await prisma.chatTurnAttachment.create({
-      data: {
-        id: attachmentId,
-        turnId: turn.id,
-        kind: "generated_image",
-        status: "accepted",
-        generationJobId: "existing-job",
-        metadata: {
-          attempt: 1,
-          effect: {
-            turnId: turn.id,
-            attempt: 1,
-            callId,
-            name: "generate_image_async",
-            effectScope: "turn_action",
-            intent: { requestedNudity: "unspecified" },
-            requestDigest,
-          },
-          costDreamcoins: 5,
-        },
-      },
-    });
-    await commitChatTerminal({
-      version: 1,
-      turnId: turn.id,
-      sessionId,
-      assistantMessageId: turn.assistantMessageId,
-      attempt: 1,
-      status: "sent",
-      content: "For you.",
-      model: null,
-      promptTokens: null,
-      completionTokens: null,
-      ...nextSceneFixture(turn),
-      terminalEvidence: TEST_TERMINAL_EVIDENCE,
-    });
-    await regenerateChatTurn(USER_ID, turn.assistantMessageId);
-
-    await expect(applyChatToolEffect({
-      version: 2,
-      turnId: turn.id,
-      attempt: 2,
-      callId,
-      name: "generate_image_async",
-      effectScope: "turn_action",
-      intent: { requestedNudity: "unspecified" },
-      arguments: {
-        ...args,
-        prompt: "A differently worded detailed portrait in the same quiet garden",
-      },
-    })).resolves.toMatchObject({
-      accepted: true,
-      duplicate: true,
-      attachmentId,
-      generationJobId: "existing-job",
-      costDreamcoins: 5,
-    });
-    await expect(prisma.chatTurnAttachment.findUniqueOrThrow({
-      where: { id: attachmentId },
-    })).resolves.toMatchObject({
-      metadata: expect.objectContaining({
-        attempt: 2,
-        effect: expect.objectContaining({ attempt: 2 }),
-      }),
-    });
+    await expect(applyChatToolEffect(effect)).resolves.toMatchObject({ ...quote, duplicate: true });
+    const regenerated = await regenerateChatTurn(USER_ID, turn.assistantMessageId);
+    expect(regenerated.snapshot.recoveredMediaAction).toMatchObject({ name: "request_character_media", attachmentId: quote.attachmentId,
+      status: "awaiting_confirmation", confirmationKind: "paid_media_quote", costDreamcoins: quote.accepted && quote.costDreamcoins });
+    expect(await prisma.chatTurnAttachment.count({ where: { turnId: turn.id } })).toBe(1);
   });
 
   it("rechecks image capability at the Main ToolEffect authority", async () => {
@@ -1907,14 +1769,12 @@ describe("Main-owned Chat façade", () => {
         turnId: turn.id,
         attempt: 1,
         callId: "model-tool-call-1",
-        name: "generate_image_async",
+        name: "request_character_media",
         effectScope: "turn_action",
         intent: { requestedNudity: "unspecified" },
         arguments: {
           subject: "companion",
-          prompt: "A detailed portrait beside a sunlit window",
-          orientation: "4:5",
-          outputCount: 1,
+          kind: "image", direction: "A detailed portrait beside a sunlit window", mode: "force_new",
         },
       })).rejects.toThrow("Image generation is unavailable for this Chat");
       await expect(prisma.chatTurnAttachment.count({ where: { turnId: turn.id } }))

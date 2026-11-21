@@ -1,109 +1,62 @@
 import { describe, expect, it } from "vitest";
 import {
-  parseCharacterMediaToolCall, searchCharacterMediaArgsSchema, searchCharacterMediaResultSchema,
-  sendCharacterMediaArgsSchema, sendCharacterMediaResultSchema,
-  CHARACTER_MEDIA_TOOL_DEFINITIONS, SEARCH_CHARACTER_MEDIA_TOOL,
+  COMPANION_MEDIA_TOOL_DEFINITIONS,
+  requestCharacterMediaArgsSchema,
+  requestCharacterMediaResultSchema,
+  resendSessionMediaArgsSchema,
+  resendSessionMediaResultSchema,
 } from "./media-library";
 
-const candidate = {
-  candidateToken: "signed-candidate", kind: "video", description: "Mira walks beside the sea in a blue dress.",
-  facts: ["blue dress", "seaside"], absentFacts: ["hat"], nudity: "none", durationSeconds: 8.5,
-  hasAudio: false, alreadySent: false, score: 0.78,
-};
-const receipt = {
-  accepted: true, duplicate: false, status: "completed", attachmentId: "attachment-1",
-  mediaAssetId: "asset-1", generationJobId: null, costDreamcoins: 0, source: "library",
-  description: candidate.description,
-};
-
-describe("Character media lookup and delivery contracts", () => {
-  it("preserves every explicit search condition without turning it into generation", () => {
-    const args = { kind: "video", query: "Mira at the sea, blue dress, no hat, silent, 6-10 seconds",
-      requestedNudity: "none",
-      unseenOnly: true, minDurationSeconds: 6, maxDurationSeconds: 10, hasAudio: false };
-    expect(parseCharacterMediaToolCall("search_character_media", args)?.arguments).toEqual(args);
+describe("Character media tool contracts", () => {
+  it("preserves visual and technical video requirements without silent defaults for the subject", () => {
+    const args = { kind: "video", subject: "companion", direction: "Blue dress at the sea, no hat, silent, 6-10 seconds",
+      requestedNudity: "none", mustHave: ["blue dress", "sea"], mustExclude: ["hat"],
+      mode: "existing_only", minDurationSeconds: 6, maxDurationSeconds: 10, hasAudio: false };
+    expect(requestCharacterMediaArgsSchema.parse(args)).toEqual(args);
     for (const invalid of [
-      { ...args, minDurationSeconds: 11 }, { ...args, hasAudio: "false" },
-      { ...args, kind: "image" },
-      { ...args, query: " " }, { ...args, generateOnMiss: true },
-    ]) expect(searchCharacterMediaArgsSchema.safeParse(invalid).success).toBe(false);
+      { ...args, subject: undefined }, { ...args, minDurationSeconds: 11 },
+      { ...args, hasAudio: "false" }, { ...args, kind: "image" }, { ...args, direction: " " },
+      { ...args, generateOnMiss: true }, { ...args, outputCount: 4 },
+    ]) expect(requestCharacterMediaArgsSchema.safeParse(invalid).success).toBe(false);
   });
 
-  it("checks a delivered result through lookup before a new resend", () => {
-    const args = { kind: "video", query: "Resend the previous clip only if it is silent and at most five seconds", previousMediaAssetId: "delivered-video", maxDurationSeconds: 5, hasAudio: false };
-    expect(searchCharacterMediaArgsSchema.parse(args)).toEqual(args);
-    const lookup = CHARACTER_MEDIA_TOOL_DEFINITIONS.find(tool => tool.name === SEARCH_CHARACTER_MEDIA_TOOL)!;
-    const send = CHARACTER_MEDIA_TOOL_DEFINITIONS.find(tool => tool.name === "send_character_media")!;
-    expect(lookup.parameters.properties).toHaveProperty("previousMediaAssetId");
-    expect(send.parameters.properties).not.toHaveProperty("previousMediaAssetId");
-    expect(send.parameters.required).toEqual(["candidateToken"]);
-    // The parser retains the old wire only to read an already accepted receipt.
-    expect(sendCharacterMediaArgsSchema.parse({ previousMediaAssetId: "delivered-video" })).toEqual({ previousMediaAssetId: "delivered-video" });
-  });
-
-  it("keeps negation in the complete query without model-authored exact fact filters", () => {
-    const args = { kind: "image", query: "Blue cardigan and green mug, without a hat", requestedNudity: "none" };
-    expect(searchCharacterMediaArgsSchema.parse(args)).toEqual(args);
-    for (const fields of [
-      { requiredFacts: ["blue cardigan", "green mug", "no hat"] },
-      { excludedFacts: ["hat"] },
-    ]) expect(searchCharacterMediaArgsSchema.safeParse({ ...args, ...fields }).success).toBe(false);
-    const search = CHARACTER_MEDIA_TOOL_DEFINITIONS.find(tool => tool.name === SEARCH_CHARACTER_MEDIA_TOOL)!;
-    expect(search.parameters.properties).not.toHaveProperty("requiredFacts");
-    expect(search.parameters.properties).not.toHaveProperty("excludedFacts");
-    expect(search.parameters.additionalProperties).toBe(false);
-    expect((search.parameters.properties as Record<string, { description?: string }>).query?.description).toContain("negation");
-  });
-
-  it("requires exactly one opaque send source and never accepts a new prompt", () => {
-    expect(sendCharacterMediaArgsSchema.parse({ candidateToken: "signed-candidate" })).toEqual({ candidateToken: "signed-candidate" });
-    expect(sendCharacterMediaArgsSchema.parse({ previousMediaAssetId: "asset-1" })).toEqual({ previousMediaAssetId: "asset-1" });
-    for (const invalid of [{}, { candidateToken: "" }, { previousMediaAssetId: " " },
-      { candidateToken: "candidate", previousMediaAssetId: "asset" },
-      { candidateToken: "candidate", prompt: "change the outfit" }, { mediaAssetId: "asset" },
-    ]) expect(sendCharacterMediaArgsSchema.safeParse(invalid).success).toBe(false);
-  });
-
-  it("keeps lookup observations separate from attachment and payment receipts", () => {
-    expect(searchCharacterMediaResultSchema.parse({ accepted: true, status: "matches", matches: [candidate] }).matches).toEqual([candidate]);
-    expect(searchCharacterMediaResultSchema.parse({ accepted: true, status: "matches", matches: [
-      { ...candidate, nudity: "unknown", hasAudio: null },
-    ] }).matches[0]).toMatchObject({ nudity: "unknown", hasAudio: null });
-    expect(searchCharacterMediaResultSchema.parse({ accepted: true, status: "no_match", matches: [] })).not.toHaveProperty("attachmentId");
+  it("exposes the request, exact session resend and edit tools", () => {
+    expect(COMPANION_MEDIA_TOOL_DEFINITIONS.map(tool => tool.name)).toEqual([
+      "request_character_media", "resend_session_media", "edit_last_image",
+    ]);
+    expect(resendSessionMediaArgsSchema.parse({ previousMediaAssetId: "asset-1" })).toEqual({ previousMediaAssetId: "asset-1" });
     for (const invalid of [
-      { accepted: true, status: "completed", matches: [candidate] },
-      { accepted: true, status: "no_match", matches: [candidate] },
-      { accepted: true, status: "matches", matches: [] },
-      { accepted: true, status: "matches", matches: [{ ...candidate, score: Infinity }] },
-      { accepted: true, status: "matches", matches: [{ ...candidate, nudity: "unspecified" }] },
-      { accepted: true, status: "matches", matches: [{ ...candidate, nudity: undefined }] },
-      { accepted: true, status: "no_match", matches: [], attachmentId: "invented" },
-    ]) expect(searchCharacterMediaResultSchema.safeParse(invalid).success).toBe(false);
-    const fullFacts = Array.from({ length: 48 }, (_, index) => `${index}:${"a".repeat(156)}`);
-    expect(searchCharacterMediaResultSchema.safeParse({ accepted: true, status: "matches", matches: [{ ...candidate, facts: fullFacts }] }).success).toBe(true);
+      {}, { previousMediaAssetId: "" }, { candidateToken: "old-candidate" },
+      { previousMediaAssetId: "asset-1", direction: "Change the outfit" },
+    ]) expect(resendSessionMediaArgsSchema.safeParse(invalid).success).toBe(false);
   });
 
-  it("accepts video filter observations without authorizing a candidate", () => {
-    const { candidateToken, ...facts } = candidate;
-    const result = { accepted: true, status: "review_video_filters", matches: [], observedVideos: [facts] };
-    expect(searchCharacterMediaResultSchema.parse(result)).toEqual(result);
-    for (const invalid of [
-      { ...result, observedVideos: [{ ...facts, candidateToken }] },
-      { ...result, observedVideos: [{ ...facts, kind: "image" }] },
-      { ...result, observedVideos: [] },
-      { ...result, matches: [candidate] },
-      { ...result, status: "no_match" },
-    ]) expect(searchCharacterMediaResultSchema.safeParse(invalid).success).toBe(false);
+  it.each(["available", "no_match", "unavailable"])("accepts %s results only without an attachment, job or charge", status => {
+    const result = { accepted: true, duplicate: false, status, kind: "video", costDreamcoins: 0 };
+    expect(requestCharacterMediaResultSchema.parse(result)).toEqual(result);
+    for (const extra of [{ attachmentId: "invented" }, { generationJobId: "job" }, { costDreamcoins: 5 }]) {
+      expect(requestCharacterMediaResultSchema.safeParse({ ...result, ...extra }).success).toBe(false);
+    }
   });
 
-  it("accepts only completed free deliveries with no Generation job", () => {
-    expect(sendCharacterMediaResultSchema.parse(receipt)).toEqual(receipt);
-    expect(sendCharacterMediaResultSchema.parse({ ...receipt, duplicate: true, source: "previous_media", description: null }).duplicate).toBe(true);
-    for (const invalid of [
-      { ...receipt, accepted: false }, { ...receipt, status: "accepted" },
-      { ...receipt, costDreamcoins: 5 }, { ...receipt, generationJobId: "job-1" },
-      { ...receipt, attachmentId: null }, { ...receipt, mediaAssetId: null },
-      { ...receipt, source: "generated" }, { ...receipt, duplicate: undefined },
-    ]) expect(sendCharacterMediaResultSchema.safeParse(invalid).success).toBe(false);
+  it("keeps the accepted attachment opaque until the media is actually delivered", () => {
+    const result = { accepted: true, duplicate: false, status: "accepted", attachmentId: "attachment-1",
+      kind: "image", generationJobId: null, mediaAssetId: null, costDreamcoins: 5 };
+    expect(requestCharacterMediaResultSchema.parse(result)).toEqual(result);
+    expect(requestCharacterMediaResultSchema.safeParse({ ...result, mediaAssetId: "early" }).success).toBe(false);
+    expect(requestCharacterMediaResultSchema.safeParse({ ...result, status: "completed" }).success).toBe(false);
+    expect(requestCharacterMediaResultSchema.parse({ ...result, status: "completed", mediaAssetId: "delivered" })).toMatchObject({
+      status: "completed", mediaAssetId: "delivered",
+    });
+  });
+
+  it("accepts only completed free resends with no Generation job", () => {
+    const result = { accepted: true, duplicate: true, status: "completed", attachmentId: "attachment-1",
+      kind: "image", mediaAssetId: "asset-1", generationJobId: null, costDreamcoins: 0, source: "previous_media" };
+    expect(resendSessionMediaResultSchema.parse(result)).toEqual(result);
+    for (const extra of [
+      { status: "accepted" }, { costDreamcoins: 5 }, { generationJobId: "job" },
+      { attachmentId: null }, { mediaAssetId: null }, { source: "library" },
+    ]) expect(resendSessionMediaResultSchema.safeParse({ ...result, ...extra }).success).toBe(false);
   });
 });

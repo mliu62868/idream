@@ -52,6 +52,7 @@ import { ChatVideoComposer, type ChatVideoSubmission } from "./chat/ChatVideoCom
 import { ChatVideoAttachmentCard } from "./chat/ChatVideoAttachmentCard";
 import { generationQueueCopy } from "@/lib/generation-queue-copy";
 import { ChatImageEditReviewCard } from "./chat/ChatImageEditReviewCard";
+import { ChatMediaQuoteCard } from "./chat/ChatMediaQuoteCard";
 import {
   chatStreamLatestReplyFailed,
   chatStreamMessageIsInProgress,
@@ -305,6 +306,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     readSession: fetchSession,
     request: fetchForSession,
     onSession: applySessionMetadata,
+    onSessionReadError: revokeUnavailableSession,
     onRepliesInvalidated: invalidateReplyVoices,
     onStatus: setStatus,
   });
@@ -501,40 +503,10 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
       void read.refresh(signal).then((session) => {
         if (!session) return;
         setLoadState("ready");
-      }).catch((error: unknown) => {
-        if (signal.aborted || !read.isCurrent()) return;
-        // Only a failed owner check (signed out, or this chat is not readable
-        // any more) replaces the page; a network blip keeps the conversation.
-        const status = (error as { status?: unknown }).status;
-        if (!isChatAuthError(error) && status !== 403 && status !== 404) {
-          if (scopeBefore) {
-            resumeGenerationReceipts(scopeBefore);
-            setReceiptOwnerScope(scopeBefore);
-          }
-          return;
-        }
-        stopVoice();
-        // A failed owner check revokes cached content as well as new writes.
-        // Header/Scene and open drawers render outside the ready-state branch.
-        delivery.reset();
-        voiceClipRequestsRef.current.clear();
-        voiceClipUrlsRef.current.clear();
-        receiptOwnerScopeRef.current = null;
-        sendIntentRef.current = null;
-        setMessages([]);
-        setContent("");
-        setCharacterId(null);
-        setCharacterImage(null);
-        setMemberImages({});
-        setGroup(undefined);
-        selectedSpeakerRef.current = null;
-        setProactiveEnabled(false);
-        setVoicePreparingIds(new Set());
-        setSessionsOpen(false);
-        setMemoryOpen(false);
-        setVideoForm(null);
-        setTitle("Chat");
-        setLoadState(isChatAuthError(error) ? "signed-out" : "error");
+      }).catch(() => {
+        if (signal.aborted || !read.isCurrent() || !scopeBefore) return;
+        resumeGenerationReceipts(scopeBefore);
+        setReceiptOwnerScope(scopeBefore);
       });
     };
     window.addEventListener("focus", focus);
@@ -969,6 +941,36 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     if (viewer.scope && session.ownerScope !== viewer.scope) throw chatSessionFetchError(403);
     if (viewer.identity?.kind === "anonymous" && session.ownerScope.startsWith("user:")) throw chatSessionFetchError(403);
     return session;
+  }
+
+  function revokeUnavailableSession(error: unknown) {
+    const signedOut = isChatAuthError(error);
+    const status = (error as { status?: unknown } | null)?.status;
+    if (!signedOut && status !== 403 && status !== 404) return;
+    stopVoice();
+    delivery.reset();
+    suspendGenerationReceipts(true);
+    setReceiptOwnerScope(null);
+    // Header, Scene, and drawers can outlive the ready-state branch.
+    voiceClipRequestsRef.current.clear();
+    voiceClipUrlsRef.current.clear();
+    receiptOwnerScopeRef.current = null;
+    sendIntentRef.current = null;
+    setMessages([]);
+    setContent("");
+    setCharacterId(null);
+    setCharacterImage(null);
+    setMemberImages({});
+    setGroup(undefined);
+    selectedSpeakerRef.current = null;
+    setProactiveEnabled(false);
+    setVoicePreparingIds(new Set());
+    setSessionsOpen(false);
+    setMemoryOpen(false);
+    setVideoForm(null);
+    setTitle("Chat");
+    setStatus(null);
+    setLoadState(signedOut ? "signed-out" : "error");
   }
 
   function applySessionMetadata(session: ChatSession) {
@@ -1458,12 +1460,27 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
                       ) : null}
                       {(message.attachments ?? []).length > 0 ? (
                         <div className="mt-3 space-y-2">
-                          {message.attachments?.map((attachment) => attachment.kind === "generated_video" ? <ChatVideoAttachmentCard
+                          {message.attachments?.map((attachment) => attachment.status === "awaiting_confirmation" ? (
+                            attachment.confirmationKind === "paid_media_quote" ? (
+                              <ChatMediaQuoteCard
+                                key={attachment.id}
+                                attachmentId={attachment.id}
+                                kind={attachment.kind === "generated_video" ? "generated_video" : "generated_image"}
+                                costDreamcoins={typeof attachment.costDreamcoins === "number" && attachment.costDreamcoins > 0 ? attachment.costDreamcoins : attachment.kind === "generated_video" ? 30 : 5}
+                                ownerScope={receiptOwnerScope}
+                                paymentHref={upgradeHrefForChatSession(id, groupMode)}
+                                fetchForViewer={fetchForSession}
+                                onChanged={refreshAfterAttachmentChange}
+                              />
+                            ) : (
+                              <ChatImageEditReviewCard
+                                key={attachment.id} attachmentId={attachment.id} ownerScope={receiptOwnerScope}
+                                fetchForViewer={fetchForSession} onChanged={refreshAfterAttachmentChange}
+                              />
+                            )
+                          ) : attachment.kind === "generated_video" ? <ChatVideoAttachmentCard
                               attachment={attachment} key={attachment.id} ownerScope={receiptOwnerScope}
                               retryPending={retryingImageIds.has(attachment.id)} onRetry={authority => retryImageAttachment(attachment, authority)} onCancelled={refreshAfterAttachmentChange}
-                            /> : attachment.status === "awaiting_confirmation" ? <ChatImageEditReviewCard
-                              key={attachment.id} attachmentId={attachment.id} ownerScope={receiptOwnerScope}
-                              fetchForViewer={fetchForSession} onChanged={refreshAfterAttachmentChange}
                             /> : (
                             <ChatImageAttachmentCard
                               attachment={attachment}
@@ -1929,7 +1946,8 @@ function ChatImageAttachmentCard({
   const completedUnavailable = attachment.status === "completed" && Boolean(attachment.mediaAssetId);
   // Only a request that reached a job was charged; a failed one is refunded in
   // full and an unconfirmed one is held, so the card says which.
-  const chargedCost = attachment.generationJobId && typeof attachment.costDreamcoins === "number" && attachment.costDreamcoins > 0
+  const chargedCost = (attachment.generationJobId || attachment.status === "accepted" || attachment.status === "refunded")
+    && typeof attachment.costDreamcoins === "number" && attachment.costDreamcoins > 0
     ? attachment.costDreamcoins : 0;
   const refundableCost = chargedCost ? `${chargedCost} ${chargedCost === 1 ? "coin" : "coins"}` : null;
   const queueCopy = generationQueueCopy({ mode: "image", queueAhead: attachment.queueAhead, queueEtaSeconds: attachment.queueEtaSeconds });
@@ -1954,6 +1972,8 @@ function ChatImageAttachmentCard({
                 ? "Too many images in progress"
               : failed || attachment.status === "proposed" || completedUnavailable
                 ? "Image unavailable"
+              : attachment.deliveryStage === "sending"
+                ? "Sending photo…"
                 : "Generating image"}
           </p>
           {completedUnavailable ? (

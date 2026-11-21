@@ -256,8 +256,8 @@ describe("Main group conversation authority", () => {
     expect(snapshot.characterId).toBe(f.characters[selectedSpeaker].id);
     const call: ChatToolEffect = {
       version: 2, turnId: snapshot.turnId, attempt: snapshot.attempt, callId: randomUUID(),
-      name: "generate_image_async", effectScope: "turn_action", intent: { requestedNudity: "unspecified" },
-      arguments: { subject: "companion", prompt: "One person seated by a rain-streaked cafe window.", outputCount: 1, orientation: "4:5" },
+      name: "request_character_media", effectScope: "turn_action", intent: { requestedNudity: "unspecified" },
+      arguments: { subject: "companion", kind: "image", direction: "One person seated by a rain-streaked cafe window.", orientation: "portrait" },
     };
     // The Agent interprets the cross-speaker confirmation; Main binds its
     // concrete decision to this Turn's Character. The delivery suite covers
@@ -357,15 +357,11 @@ describe("Main group conversation authority", () => {
     expect(a.snapshot!.memoryEnabled).toBe(false); await finish(a.snapshot!);
     const b = await f.begin(1);
     expect(b.snapshot!.memoryEnabled).toBe(true);
-    await prisma.chatTurn.update({ where: { id: b.snapshot!.turnId }, data: {
-      mediaLookup: { version: 1, attempt: b.snapshot!.attempt, lookupId: randomUUID(), status: "ready",
-        args: { kind: "video", query: "A clip" } },
-    } });
     const transport = vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ ok: true }));
     try { await clearCompanionMemory(f.userId, f.characters[0].id); } finally { transport.mockRestore(); }
     expect(await prisma.groupConversation.findUnique({ where: { id: f.group.id } })).toMatchObject({ status: "archived" });
     expect(await prisma.chatTurn.findUnique({ where: { id: b.snapshot!.turnId } })).toMatchObject({
-      assistantStatus: "cancelled", memoryEnabled: true, mediaLookup: null,
+      assistantStatus: "cancelled", memoryEnabled: true,
       terminalEvidence: { authority: "main_memory_clear" },
     });
     const members = await prisma.recentChat.findMany({ where: { groupId: f.group.id }, orderBy: { groupPosition: "asc" } });

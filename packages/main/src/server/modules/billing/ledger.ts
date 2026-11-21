@@ -85,6 +85,13 @@ export async function postDreamcoinEntry(
       delta: canonical.delta,
     });
   }
+  // 付费媒体/生成消费在 users 行锁后兜底禁止透支，防止新消费入口遗漏余额检查导致负余额资损。
+  if (canonical.reason === "generation_spend" && canonical.delta < 0 && balance + canonical.delta < 0) {
+    throw Errors.paymentRequired("Insufficient DreamCoins balance", {
+      balance,
+      required: -canonical.delta,
+    });
+  }
   try {
     const created = await tx.dreamcoinLedger.create({
       data: { ...canonical, balanceAfter: balance + canonical.delta },

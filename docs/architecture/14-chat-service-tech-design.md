@@ -117,7 +117,7 @@ Pi native tool_call
 
 当前执行边界以 [ADR-21](21-companion-chat-deep-runtime.md) 为准。Agent 使用原生 `tool_choice=auto` 选择工具、具体方向与 `requestedNudity`；Main 冻结的 `imageActionMode` 和产品权限约束执行，不再使用 `PreparedTurn.requiredAction` 或宿主关键词分类强制调用。
 
-`search_character_media` 使用 `effectScope=attempt`，查询不占媒体动作；Main 为当前匹配结果签发绑定完整查询的候选 token。生成、编辑与库存发送使用 `effectScope=turn_action`，同一 Turn 的用户消息修订共用一个媒体动作身份。回复重试只重绑 Main 已接纳的附件，不再次购买；编辑原文产生新的修订身份。Pi 在派发前拒绝重复调用 ID，Main 继续校验参数、来源和幂等收据。
+`request_character_media` 把库存查找、报价与生成路由交给 Main。`resend_session_media` 使用本会话已交付的准确资产 ID。`edit_last_image` 使用冻结源图。三者共用 `effectScope=turn_action` 和同一用户消息修订的动作身份。回复重试复用已接纳的附件，编辑原文创建新的修订身份。Pi 在派发前拒绝重复调用 ID，Main 继续校验参数、来源和幂等收据。
 
 Main 附件拥有 `requesting/awaiting_confirmation/accepted/queued/running/completed/failed` 等真实状态。Chat 不合成角色口吻的媒体回执，不把已接纳请求写成已交付或像素已验证。Main 确认附件后通过 Pi 原生工具结束控制省去无用台词；独立问题或故事仍由提取与正文阶段完成。只有只读查询时，普通文字不受图片回执语言或流程词限制。
 

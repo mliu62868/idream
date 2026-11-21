@@ -1,31 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { IMAGE_AGENT_TOOL_DEFINITIONS, imageReplyMatchesUserScript, parseImageAgentToolCall } from "./image-action";
+import { EDIT_LAST_IMAGE_TOOL_DEFINITION, editLastImageArgsSchema, imageReplyMatchesUserScript } from "./image-action";
 
-describe("Agent-authored image arguments", () => {
-  it.each(IMAGE_AGENT_TOOL_DEFINITIONS)("leaves the spoken reply out of $name model arguments", tool => {
-    expect(tool.parameters.properties).not.toHaveProperty("caption");
-  });
-
-  it.each([
-    { name: "generate_image_async", arguments: { prompt: "A portrait beside the rainy bedroom window", subject: "companion" } },
-    { name: "edit_last_image", arguments: { instruction: "Change the coat to red" } },
-  ])("preserves a historical $name caption for call replay", call => {
-    const caption = "Here is the historical photo caption.";
-    expect(parseImageAgentToolCall(call.name, { ...call.arguments, caption })?.arguments).toHaveProperty("caption", caption);
-  });
-
-  it.each(["none", "full", "unspecified"] as const)("preserves %s wardrobe intent without interpreting user text", requestedNudity => {
-    expect(parseImageAgentToolCall("generate_image_async", {
-      prompt: "A portrait beside the rainy bedroom window", subject: "companion", requestedNudity,
-    })).toMatchObject({ arguments: { requestedNudity, orientation: "4:5", outputCount: 1 } });
-    expect(parseImageAgentToolCall("edit_last_image", {
-      instruction: "Change the coat to red", requestedNudity,
-    })).toMatchObject({ arguments: { requestedNudity } });
-  });
-
-  it("refuses invalid wardrobe values and new images without a subject", () => {
-    expect(parseImageAgentToolCall("generate_image_async", { prompt: "A rainy window portrait" })).toBeNull();
-    expect(parseImageAgentToolCall("edit_last_image", { instruction: "Change the coat to red", requestedNudity: "unknown" })).toBeNull();
+describe("image action contract", () => {
+  it("keeps the spoken reply outside the edit definition", () => {
+    expect(EDIT_LAST_IMAGE_TOOL_DEFINITION.parameters.properties).not.toHaveProperty("caption");
+    expect(editLastImageArgsSchema.parse({ instruction: "Change the coat to red", caption: "While it develops." })).toHaveProperty("caption");
+    expect(editLastImageArgsSchema.safeParse({ instruction: "Change the coat to red", requestedNudity: "unknown" }).success).toBe(false);
   });
 
   it("rejects an unrelated writing system in an image reply", () => {

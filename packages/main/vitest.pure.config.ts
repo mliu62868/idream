@@ -99,6 +99,7 @@ export default defineConfig({
       "src/server/providers/**/*.test.ts",
       "src/server/seed-nondestructive.test.ts",
       "src/server/modules/chat/turn-scope.test.ts",
+      "src/server/modules/chat/media-fulfillment-router.test.ts",
       "src/server/modules/character-media-library/media-models.test.ts",
       "src/server/modules/character-media-library/media-bytes.test.ts",
       "src/server/modules/character-media-library/service.test.ts",

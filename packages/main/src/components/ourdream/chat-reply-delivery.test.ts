@@ -165,7 +165,7 @@ describe("reply delivery through its public hook boundary", () => {
     replaceMessages = setMessages;
     delivery = useChatReplyDelivery({
       conversationId: "session-1", messages: rows, setMessages, readSession, request,
-      onSession, onRepliesInvalidated, onStatus,
+      onSession, onSessionReadError: () => undefined, onRepliesInvalidated, onStatus,
     });
     return null;
   }
@@ -235,6 +235,23 @@ describe("reply delivery through its public hook boundary", () => {
 
     expect(messages.find(({ id }) => id === streamingReply.id)).toMatchObject({ content: "Once upon", status: "generating" });
     expect(FakeEventSource.instances).toHaveLength(1);
+    expect(stream.closed).toBe(false);
+  });
+
+  it("keeps a cancelled quote when an older same-attempt attachment refresh arrives late", async () => {
+    const stream = await startReply();
+    const stale = Promise.withResolvers<ChatSession>();
+    const quote = { id: "quote-1", kind: "generated_image", status: "awaiting_confirmation" };
+    const cancelled = { ...streamingReply, attachments: [{ ...quote, status: "cancelled" }] };
+    readSession.mockImplementationOnce(() => stale.promise)
+      .mockResolvedValueOnce(session([opening, userTurn, cancelled]));
+
+    await act(async () => stream.emit("attachments_changed", { attempt: 1 }));
+    await act(async () => { await delivery.refresh(); });
+    expect(messages.at(-1)).toEqual(cancelled);
+    await act(async () => stale.resolve(session([opening, userTurn, { ...streamingReply, attachments: [quote] }])));
+
+    expect(messages.at(-1)).toEqual(cancelled);
     expect(stream.closed).toBe(false);
   });
 

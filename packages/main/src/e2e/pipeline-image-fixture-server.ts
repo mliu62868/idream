@@ -44,7 +44,7 @@ const imageModel = createMockGenProviders().image;
 
 function fixtureMediaToolName(text: unknown) {
   return typeof text === "string" && (text === "Send a portrait." || /^please make an image from this chat \d+$/.test(text))
-    ? "generate_image_async" : text === "Edit the last portrait." ? "edit_last_image" : null;
+    ? "request_character_media" : text === "Edit the last portrait." ? "edit_last_image" : null;
 }
 
 function fixtureChatMessage(body: Record<string, unknown>) {
@@ -106,9 +106,9 @@ function fixtureChatMessage(body: Record<string, unknown>) {
       role: "assistant", content: null,
       tool_calls: [{ id: `call_${randomUUID()}`, type: "function", function: {
         name,
-        arguments: JSON.stringify(name === "generate_image_async"
-          ? { subject: "companion", prompt: "An adult companion smiling beside a rain-streaked cafe window.", outputCount: 1, orientation: "4:5" }
-          : { instruction: "Keep the companion's identity and move the portrait beside a rainy cafe window.", outputCount: 1, orientation: "4:5" }),
+        arguments: JSON.stringify(name === "request_character_media"
+          ? { subject: "companion", kind: "image", direction: "An adult companion smiling beside a rain-streaked cafe window.", mode: "force_new", orientation: "portrait" }
+          : { instruction: "Keep the companion's identity and move the portrait beside a rainy cafe window.", editScope: { mode: "whole_image" } }),
       } }],
     };
   }

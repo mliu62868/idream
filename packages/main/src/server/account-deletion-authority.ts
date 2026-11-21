@@ -1183,6 +1183,10 @@ async function hardDeleteMainAccountAuthority(
     }
   }
   if (characterIds.length > 0) {
+    await tx.characterMediaLibraryEntry.updateMany({
+      where: { characterId: { in: characterIds }, status: { not: "withdrawn" } },
+      data: { status: "withdrawn", revision: { increment: 1 } },
+    });
     await tx.character.deleteMany({ where: { id: { in: characterIds } } });
     await tx.characterContentVersion.deleteMany({
       where: { characterId: { in: characterIds } },
@@ -1192,6 +1196,10 @@ async function hardDeleteMainAccountAuthority(
   // Remove cross-character pointers to user-owned bytes before User->Media
   // cascade. An owned object cannot remain authoritative through another row.
   if (mediaIds.length > 0) {
+    await tx.characterMediaLibraryEntry.updateMany({
+      where: { sourceAssetId: { in: mediaIds }, status: { not: "withdrawn" } },
+      data: { status: "withdrawn", revision: { increment: 1 } },
+    });
     await tx.character.updateMany({
       where: { imageAssetId: { in: mediaIds } },
       data: { imageAssetId: null },

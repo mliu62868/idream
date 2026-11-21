@@ -38,6 +38,26 @@ Explore 搜索/筛选、详情、Following、公开/链接可见边界与 CMS �
 
 Scene 后续仍按有界筛选与独立 holdout 取得资格，不改 gold 或用新版本标签覆盖旧失败。Prompt、缓存与执行策略的实时值由实际源码和运行身份证明，本页不重复维护。
 
+### 2026-11-21 统一媒体工具本地验证
+
+UTC 06:24 在隔离数据库和测试账号中运行，源码为 `idream-worktree-c171ebc3106d097ebab664bfd1bf2e6df23f32a957e21510dac90ddc918da28a`，行为契约为 `companion-product-27`。Chat 使用 `Ornith-1.5-35B-A3B-Abliterated-MLX-8bit`。Gen 使用真实 ComfyUI/MPS，工作流 `redcraft-qw21t@3`，配置 `profile_image_default_v1@8`，权重 `fineview_qw21_turbo_fixed_int8.safetensors`。冷生成一张 1472×832 场景图，6 步，seed `1807046981`。
+
+| 阶段 | 实测耗时 |
+| --- | ---: |
+| 点击确认报价 → Main 接纳 | 60.4 ms |
+| 点击确认报价 → ComfyUI 接纳请求 | 165.1 ms |
+| ComfyUI 原生执行 | 62.971 s |
+| 点击确认报价 → Main 附件完成 | 64.158 s |
+| 点击确认报价 → 浏览器显示成品卡 | 64.975 s |
+| 点击确认报价 → 缩略图解码完成 | 65.010 s |
+| Main 附件完成 → 浏览器显示成品卡 | 816.3 ms |
+
+浏览器在 `accepted` 时显示生成中状态，Main 回执中尚无成品资产 ID。浏览器读到 Main 的 `completed` 快照后 2.3 ms 显示该资产。Gen、Main 存储及浏览器读取的交付 PNG 校验一致。确认前余额 250 DreamCoins。重复确认返回同一个生成 Job，ComfyUI 只执行一次，账本只有一笔 5 币生成扣费。`resend_session_media` 复用相同资产，未新增生成 Job 或扣费，余额仍为 245 币。重发从 Main 完成回执到浏览器出卡为 12.2 ms。
+
+生成 Job `cmwq0we08000cz9l7l43gjybj`，attempt `cmwq0we0l000iz9l76tchfwk8`，ComfyUI 请求 `e42f40a7-61cb-5019-93e9-77466d6120d0`，Main artifact `cmwq0xrf60002nql79504mw1a`，资产 `media_kscnaylan79mwq0xrh8`，重发 Turn `6194c966-7395-4366-96f7-1802102ec7fc`。交付 PNG SHA-256 为 `9314bd49b54ad0f0a6d97759ef5cc78e64d55ae69fb8db91c462400a8ea6bfa3`。
+
+同一源码的独立流式检查使用真实 Ornith 和图片 fixture。加载媒体工具后的普通文本首字为 2.510 s，Main 回执到报价卡为 12.1 ms。媒体成品可在独立正文继续流式生成时交付。一次预检因独立队列误指向 fixture 在生图后端启动前失败，原扣 5 币已全额退回。这次失败未纳入延迟统计。实测覆盖本机单样本交付链路，公开生产和延迟分布仍未验证。[Chat 交付契约](../architecture/21-companion-chat-deep-runtime.md)
+
 ## 图片
 
 Character/Freeplay、Image Edit、Enhance、Presets/Look、参考来源、冻结上下文、请求核对、交付、下载及扣退已有实现与受控样本。技术交付和像素任务分别判断：

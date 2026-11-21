@@ -50,7 +50,7 @@ type GenerationAdmission = {
   identity: GenerationJobIdentity;
   transactionTimeoutMs?: number;
   retryOf?: Pick<GenerationJobRow, "id" | "version">;
-  chatAttachment?: { sessionId: string; turnId: string; attempt: number; confirmedEdit?: true };
+  chatAttachment?: GenerationChatAttachment;
   sequenceId?: string;
   // This is the only varying step: lock and revalidate the entry's Character,
   // references or source image, then return its exact immutable request pins.
@@ -58,6 +58,14 @@ type GenerationAdmission = {
     data: GenerationAdmissionData;
     entitlements: Record<string, Prisma.JsonValue>;
   }>;
+};
+
+export type GenerationChatAttachment = {
+  sessionId: string;
+  turnId: string;
+  attempt: number;
+  confirmedEdit?: true;
+  confirmedMediaQuoteCost?: number;
 };
 
 export function generationWriteRequestFingerprint(
@@ -344,13 +352,14 @@ async function lockGenerationChatAttachment(
     throw Errors.badRequest("Chat attachment binding requires its image action source");
   }
   const imageConflict = "The Chat image changed before its request could be reserved";
+  const confirmed = binding.confirmedEdit || binding.confirmedMediaQuoteCost !== undefined;
   const scope = await lockChatScope(tx, {
     userId: input.userId,
     at: { attachment: attachmentId },
     expect: {
       characterId: generationChatCharacterId(data),
       attempt: binding.attempt,
-      assistantStatus: binding.confirmedEdit ? ["pending", "generating", "sent", "failed", "cancelled", "partial"] : ["pending", "generating"],
+      assistantStatus: confirmed ? ["pending", "generating", "sent", "failed", "cancelled", "partial"] : ["pending", "generating"],
       attachmentAttemptMatchesTurn: true,
       conflictMessage: imageConflict,
     },
@@ -359,14 +368,22 @@ async function lockGenerationChatAttachment(
   if (
     !current ||
     current.kind !== "generated_image" ||
-    current.status !== (binding.confirmedEdit ? "awaiting_confirmation" : "requesting") ||
+    current.status !== (confirmed ? "awaiting_confirmation" : "requesting") ||
     current.generationJobId !== null ||
     current.turnId !== binding.turnId ||
     scope.session.sessionId !== binding.sessionId
   ) {
     throw Errors.conflict(imageConflict);
   }
-  if (!binding.confirmedEdit) assertChatImageActionAllowed(scope.turn!, false);
+  if (!confirmed) assertChatImageActionAllowed(scope.turn!, false);
+  if (binding.confirmedMediaQuoteCost !== undefined) {
+    const metadata = jsonRecord(current.metadata);
+    if (scope.session.status !== "active" || metadata.confirmationKind !== "paid_media_quote"
+      || jsonRecord(metadata.paidMediaQuote).costDreamcoins !== binding.confirmedMediaQuoteCost
+      || data.costDreamcoins !== binding.confirmedMediaQuoteCost) {
+      throw Errors.conflict("The image price changed. Request a new quote before confirming.");
+    }
+  }
   return current;
 }
 

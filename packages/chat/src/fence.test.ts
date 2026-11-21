@@ -210,7 +210,7 @@ describe("Chat fence consistency", () => {
             await port.emit({ invocationId: value.invocationId, attemptId: value.attemptId,
               sequence: 99, occurredAt: new Date().toISOString(), type: "text_delta", delta: "must not escape Stop" });
             await port.emit({ invocationId: value.invocationId, attemptId: value.attemptId,
-              sequence: 100, occurredAt: new Date().toISOString(), type: "tool_started", callId: "late-tool", name: "generate_image_async" });
+              sequence: 100, occurredAt: new Date().toISOString(), type: "tool_started", callId: "late-tool", name: "request_character_media" });
             await expect(port.emit({ invocationId: value.invocationId, attemptId: value.attemptId,
               sequence: 101, occurredAt: new Date().toISOString(), type: "model_request_started",
               request: { bodyDigest: "a".repeat(64), systemPromptDigest: "b".repeat(64), estimatedInputTokens: 1,

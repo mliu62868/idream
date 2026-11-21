@@ -15,10 +15,26 @@ export type LibraryIdentity = { characterId: string; visualProfileId: string; vi
 export type LibrarySearchInput = LibraryIdentity & {
   userId: string; kind: "image" | "video"; query: string;
   requiredFacts?: string[]; excludedFacts?: string[];
-  requestedNudity?: "unspecified" | "none" | "full";
+  requestedNudity?: "unspecified" | "none" | "partial" | "full";
+  attireLevels?: string[];
+  distributionScope?: "chat_library" | "pack_exclusive";
+  minRerankScore?: number;
   unseenOnly?: boolean; minDurationSeconds?: number; maxDurationSeconds?: number; hasAudio?: boolean;
 };
-export type LibrarySearchCandidate = { entry: CharacterMediaLibraryEntry; score: number; alreadySent: boolean };
+export type LibrarySearchCandidate = {
+  entry: CharacterMediaLibraryEntry;
+  score: number;
+  scoreSource: "rerank" | "dense";
+  alreadySent: boolean;
+};
+
+const LEXICAL_STOPWORDS = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "have",
+  "her", "hers", "him", "his", "i", "in", "is", "it", "its", "me", "my", "of",
+  "on", "or", "our", "photo", "picture", "please", "send", "she", "show", "some",
+  "that", "the", "their", "them", "there", "this", "to", "us", "video", "want",
+  "with", "you", "your",
+]);
 
 export async function availableCharacterMediaLibraryKinds(input: LibraryIdentity): Promise<Array<"image" | "video">> {
   let embedding: ReturnType<typeof mediaLibraryModels>["embedding"];
@@ -37,7 +53,8 @@ export async function availableCharacterMediaLibraryKinds(input: LibraryIdentity
   // materialize the catalog or authorize a delivery for every text Turn.
   const present = await Promise.all(kinds.map(kind => prisma.characterMediaLibraryEntry.findFirst({
     where: {
-      ...input, kind, status: "published", embeddingModel: embedding.model, embeddingDimensions: embedding.dimensions,
+      ...input, kind, status: "published", distributionScope: "chat_library",
+      embeddingModel: embedding.model, embeddingDimensions: embedding.dimensions,
       embeddingHash: { not: null }, sourceSnapshot: { path: ["visualProfileHash"], equals: visualHash },
       sourceAsset: { is: { type: kind, deletedAt: null, safetyStatus: "passed", characterId: input.characterId } },
     }, select: { id: true },
@@ -83,18 +100,30 @@ export function libraryEntryDescriptor(entry: Pick<CharacterMediaLibraryEntry, "
 export function normalizeLibraryFact(value: string) { return value.normalize("NFKC").trim().toLocaleLowerCase("en").replace(/\s+/gu, " "); }
 export function normalizedLibraryFacts(values: readonly string[]) { return [...new Set(values.map(normalizeLibraryFact))].sort(); }
 
+/**
+ * Positive-only visual text for dense embedding, lexical BM25, and reranking.
+ * Deliberately excludes `absentFacts` and template label noise ("Confirmed absent:",
+ * "Observed:", "Wardrobe:") so negated facts never poison positive retrieval.
+ */
 export function libraryDescriptorText(entry: Parameters<typeof libraryEntryDescriptor>[0]) {
   const descriptor = libraryEntryDescriptor(entry);
+  const positiveFacts = normalizedLibraryFacts(descriptor.facts).join("; ");
   return [
-    `${descriptor.kind}: ${descriptor.description}`,
-    `Observed: ${normalizedLibraryFacts(descriptor.facts).join("; ")}`,
-    `Confirmed absent: ${normalizedLibraryFacts(descriptor.absentFacts).join("; ")}`,
-    `Wardrobe: ${descriptor.nudity}`,
-    ...(descriptor.kind === "video" ? [`Duration: ${descriptor.durationSeconds} seconds. Audio: ${descriptor.hasAudio === null ? "unknown" : descriptor.hasAudio ? "present" : "absent"}.`] : []),
+    descriptor.description.trim(),
+    ...(positiveFacts ? [positiveFacts] : []),
   ].join("\n");
 }
 export function libraryDescriptorHash(entry: Parameters<typeof libraryEntryDescriptor>[0]) {
-  return createHash("sha256").update(libraryDescriptorText(entry)).digest("hex");
+  const descriptor = libraryEntryDescriptor(entry);
+  return createHash("sha256").update(JSON.stringify({
+    v: 2,
+    text: libraryDescriptorText(descriptor),
+    kind: descriptor.kind,
+    absentFacts: normalizedLibraryFacts(descriptor.absentFacts),
+    nudity: descriptor.nudity,
+    durationSeconds: descriptor.durationSeconds,
+    hasAudio: descriptor.hasAudio,
+  })).digest("hex");
 }
 
 /** The caller holds Character -> source asset -> library row locks at commit. */
@@ -138,6 +167,8 @@ export async function searchCharacterMediaLibrary(input: LibrarySearchInput, sig
       // Absence must be observed, not inferred from a missing tag.
       ...(excludedFacts.length ? { absentFacts: { hasEvery: excludedFacts } } : {}),
       ...(input.requestedNudity && input.requestedNudity !== "unspecified" ? { nudity: input.requestedNudity } : {}),
+      ...(input.attireLevels?.length ? { attireLevel: { in: input.attireLevels } } : {}),
+      ...(input.distributionScope ? { distributionScope: input.distributionScope } : {}),
       ...(input.hasAudio === undefined ? {} : { hasAudio: input.hasAudio }),
       ...(input.minDurationSeconds === undefined && input.maxDurationSeconds === undefined ? {} : {
         durationSeconds: { ...(input.minDurationSeconds === undefined ? {} : { gte: input.minDurationSeconds }), ...(input.maxDurationSeconds === undefined ? {} : { lte: input.maxDurationSeconds }) },
@@ -152,10 +183,12 @@ export async function searchCharacterMediaLibrary(input: LibrarySearchInput, sig
   if (!eligible.length) return [];
   const query = await embedMediaText(input.query, config.embedding, undefined, signal);
   signal?.throwIfAborted();
-  const tokens = words(input.query);
-  const scored = eligible.map(candidate => ({ ...candidate,
+  const queryTerms = lexicalTerms(input.query);
+  const docTermLists = eligible.map(candidate => lexicalTerms(libraryDescriptorText(candidate.entry)));
+  const lexicalScores = bm25Scores(queryTerms, docTermLists);
+  const scored = eligible.map((candidate, index) => ({ ...candidate,
     dense: dot(query.vector, candidate.entry.embedding),
-    lexical: words(libraryDescriptorText(candidate.entry)).filter(word => tokens.includes(word)).length,
+    lexical: lexicalScores[index] ?? 0,
   }));
   const dense = [...scored].sort((a, b) => b.dense - a.dense);
   const lexical = scored.filter(candidate => candidate.lexical > 0).sort((a, b) => b.lexical - a.lexical || b.dense - a.dense);
@@ -181,12 +214,12 @@ export async function searchCharacterMediaLibrary(input: LibrarySearchInput, sig
   const candidates = shortlist(20);
   const reranked = await rerankMediaText(input.query, candidates.map(candidate => libraryDescriptorText(candidate.entry)), config.rerank, undefined, signal);
   signal?.throwIfAborted();
-  // These scores order evidence for the Agent; they are never confidence or a
-  // grant to send. The Agent must check every explicit request against facts.
-  return (reranked ? reranked.map(row => ({ ...candidates[row.index]!, score: row.score }))
-    .sort((a, b) => b.score - a.score || a.entry.id.localeCompare(b.entry.id)).slice(0, 6)
-    : shortlist(6).map(candidate => ({ ...candidate, score: candidate.dense })))
-    .map(({ entry, score, alreadySent }) => ({ entry, score, alreadySent }));
+  const ranked = reranked
+    ? reranked.map(row => ({ ...candidates[row.index]!, score: row.score }))
+      .filter(candidate => input.minRerankScore === undefined || candidate.score >= input.minRerankScore)
+      .sort((a, b) => b.score - a.score || a.entry.id.localeCompare(b.entry.id)).slice(0, 6)
+    : shortlist(6).map(candidate => ({ ...candidate, score: candidate.dense }));
+  return ranked.map(({ entry, score, alreadySent }) => ({ entry, score, scoreSource: reranked ? "rerank" : "dense", alreadySent }));
 }
 
 async function verifiedLibraryEntries(where: Prisma.CharacterMediaLibraryEntryWhereInput, visualHash: string, signal?: AbortSignal) {
@@ -206,13 +239,42 @@ async function filterVerifiedLibraryEntries(entries: LibraryEntryWithSource[], v
 
 /** Search and the locked delivery use the same viewer/Character history and byte identity. */
 export async function deliveredLibraryMedia(db: Db, input: {
-  userId: string; characterId: string; entries: ReadonlyArray<Pick<CharacterMediaLibraryEntry, "id" | "contentHash">>;
+  userId: string; characterId: string;
+  entries: ReadonlyArray<Pick<CharacterMediaLibraryEntry, "id" | "contentHash"> & { nearDuplicateClusterId?: string | null }>;
 }): Promise<Set<string>> {
   // Admin previews have no viewer history. Limit the joined result to
   // deliveries that can suppress a current candidate.
   if (!input.userId || !input.entries.length) return new Set();
   const ids = input.entries.map(entry => entry.id);
   const hashes = [...new Set(input.entries.map(entry => entry.contentHash))];
+  const clusters = [...new Set(input.entries.map(entry => entry.nearDuplicateClusterId).filter((value): value is string => Boolean(value)))];
+  const seenIds = new Set<string>();
+  const seenHashes = new Set<string>();
+  const seenClusters = new Set<string>();
+
+  // 1) Ledger-grade lifetime receipts (survive chat message/session deletion).
+  const receiptClient = (db as { userCharacterLibraryReceipt?: PrismaClient["userCharacterLibraryReceipt"] }).userCharacterLibraryReceipt;
+  if (receiptClient) {
+    const receipts = await receiptClient.findMany({
+      where: {
+        userId: input.userId,
+        characterId: input.characterId,
+        OR: [
+          { entryId: { in: ids } },
+          { contentHash: { in: hashes } },
+          ...(clusters.length > 0 ? [{ nearDuplicateClusterId: { in: clusters } }] : []),
+        ],
+      },
+      select: { entryId: true, contentHash: true, nearDuplicateClusterId: true },
+    });
+    for (const receipt of receipts) {
+      seenIds.add(receipt.entryId);
+      seenHashes.add(receipt.contentHash);
+      if (receipt.nearDuplicateClusterId) seenClusters.add(receipt.nearDuplicateClusterId);
+    }
+  }
+
+  // 2) Legacy chat_turn_attachments fallback for deliveries recorded prior to receipts table.
   const rows = await db.$queryRaw<Array<{ delivery: Prisma.JsonValue; attachmentMetadata: Prisma.JsonValue; attempt: number }>>`
     SELECT DISTINCT asset.metadata -> 'libraryDelivery' AS delivery,
       attachment.metadata AS "attachmentMetadata", turn.attempt
@@ -226,15 +288,21 @@ export async function deliveredLibraryMedia(db: Db, input: {
       AND (asset.metadata #>> '{libraryDelivery,entryId}' = ANY(${ids}::text[])
         OR asset.metadata #>> '{libraryDelivery,contentHash}' = ANY(${hashes}::text[]))
   `;
-  const seenIds = new Set<string>();
-  const seenHashes = new Set<string>();
   for (const row of rows) {
     if (attachmentAttempt(row.attachmentMetadata) !== row.attempt) continue;
     const { entryId, contentHash } = record(row.delivery);
     if (typeof entryId === "string") seenIds.add(entryId);
     if (typeof contentHash === "string") seenHashes.add(contentHash);
   }
-  return new Set(input.entries.filter(entry => seenIds.has(entry.id) || seenHashes.has(entry.contentHash)).map(entry => entry.id));
+  return new Set(
+    input.entries
+      .filter(entry =>
+        seenIds.has(entry.id)
+        || seenHashes.has(entry.contentHash)
+        || (entry.nearDuplicateClusterId ? seenClusters.has(entry.nearDuplicateClusterId) : false),
+      )
+      .map(entry => entry.id),
+  );
 }
 
 function indexMatchesDescriptor(entry: CharacterMediaLibraryEntry) {
@@ -242,5 +310,34 @@ function indexMatchesDescriptor(entry: CharacterMediaLibraryEntry) {
     entry.embedding.length === entry.embeddingDimensions && entry.embedding.every(Number.isFinite) && entry.embedding.some(value => value !== 0);
 }
 function dot(a: readonly number[], b: readonly number[]) { return a.length === b.length ? a.reduce((sum, value, index) => sum + value * b[index]!, 0) : -Infinity; }
-function words(value: string) { return [...new Set(normalizeLibraryFact(value).match(/[\p{L}\p{N}]+/gu) ?? [])]; }
+export function lexicalTerms(value: string): string[] {
+  const raw = normalizeLibraryFact(value).match(/[\p{L}\p{N}]+/gu) ?? [];
+  const filtered = raw.filter(token => !LEXICAL_STOPWORDS.has(token));
+  return filtered.length > 0 ? filtered : raw;
+}
+export function bm25Scores(queryTerms: readonly string[], docs: readonly (readonly string[])[], k1 = 1.2, b = 0.75): number[] {
+  const docCount = docs.length;
+  if (docCount === 0 || queryTerms.length === 0) return docs.map(() => 0);
+  const uniqueQuery = [...new Set(queryTerms)];
+  const avgDocLength = docs.reduce((sum, doc) => sum + doc.length, 0) / docCount || 1;
+  const docFreq = new Map<string, number>();
+  const termFreqs = docs.map(doc => {
+    const counts = new Map<string, number>();
+    for (const term of doc) counts.set(term, (counts.get(term) ?? 0) + 1);
+    for (const term of counts.keys()) docFreq.set(term, (docFreq.get(term) ?? 0) + 1);
+    return counts;
+  });
+  return docs.map((doc, index) => {
+    const counts = termFreqs[index]!;
+    let score = 0;
+    for (const term of uniqueQuery) {
+      const tf = counts.get(term) ?? 0;
+      if (tf === 0) continue;
+      const df = docFreq.get(term) ?? 0;
+      const idf = Math.log(1 + (docCount - df + 0.5) / (df + 0.5));
+      score += idf * ((tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (doc.length / avgDocLength))));
+    }
+    return score;
+  });
+}
 function record(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }

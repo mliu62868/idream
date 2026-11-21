@@ -5,9 +5,12 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 import type { CompanionReadiness } from "@idream/shared/chat/companion-runtime";
-import { EDIT_LAST_IMAGE_TOOL, GENERATE_IMAGE_ASYNC_TOOL } from "@idream/shared/chat/image-action";
+import { EDIT_LAST_IMAGE_TOOL } from "@idream/shared/chat/image-action";
 import { PAID_IMAGE_REQUEST_GUIDANCE } from "@idream/shared";
-import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL, searchCharacterMediaResultSchema } from "@idream/shared/chat/media-library";
+import {
+  REQUEST_CHARACTER_MEDIA_TOOL,
+  requestCharacterMediaResultSchema,
+} from "@idream/shared/chat/media-library";
 import { companionEventSchema, companionToolCallSchema, companionToolReservationSchema, companionToolResultSchema,
   type CompanionCommitAck, type CompanionEvent, type CompanionInvocation, type CompanionModelRequestEvidence,
   type CompanionTerminalCandidate, type CompanionToolCall, type CompanionToolResult, type PreparedTurnProfile, type PreparedTurnMessage } from "./contracts";
@@ -238,7 +241,6 @@ function invocationFailure(input: {
 }
 
 class ToolBridge {
-  private readonly rejectedResends = new Set<string>();
   private readonly entries = new Map<string, {
     call: CompanionToolCall;
     name: CompanionToolCall["name"];
@@ -250,23 +252,11 @@ class ToolBridge {
   constructor(
     private readonly executeTool: CompanionRuntimePort["executeTool"],
     private readonly event: (event: EventPayload) => Promise<void>,
-    private imageActionMode: NonNullable<CompanionInvocation["preparedTurn"]["imageActionMode"]> = "chat",
+    private readonly imageActionMode: NonNullable<CompanionInvocation["preparedTurn"]["imageActionMode"]> = "chat",
   ) {}
-
-  usePreparedMediaOnly(): void {
-    this.imageActionMode = "library";
-  }
-
-  wasRejectedResend(callId: string): boolean {
-    return this.rejectedResends.has(callId);
-  }
 
   get callCount(): number {
     return this.entries.size;
-  }
-
-  get actionCount(): number {
-    return [...this.entries.values()].filter(entry => entry.name !== SEARCH_CHARACTER_MEDIA_TOOL).length;
   }
 
   get reservations() {
@@ -274,8 +264,7 @@ class ToolBridge {
   }
 
   async mediaActions(signal: AbortSignal) {
-    return Promise.all([...this.entries.values()].filter(entry => entry.name !== SEARCH_CHARACTER_MEDIA_TOOL)
-      .map(async entry => ({ call: entry.call, result: await withToolCancellation(entry.pending, signal) })));
+    return Promise.all([...this.entries.values()].map(async entry => ({ call: entry.call, result: await withToolCancellation(entry.pending, signal) })));
   }
 
   async execute(call: CompanionToolCall, signal: AbortSignal): Promise<CompanionToolResult> {
@@ -283,13 +272,8 @@ class ToolBridge {
     const key = `${call.attemptId}\0${call.callId}`;
     let entry = this.entries.get(key);
     if (!entry) {
-      if (call.name === SEND_CHARACTER_MEDIA_TOOL && "previousMediaAssetId" in call.arguments) {
-        this.rejectedResends.add(call.callId);
-        return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "failed",
-          error: { code: "media_library_candidate_required", message: "First look up this previousMediaAssetId with every current condition, then send its latest matching candidateToken. A media ID alone cannot grant a new delivery.", retryable: false } };
-      }
-      if (call.name === GENERATE_IMAGE_ASYNC_TOOL || call.name === EDIT_LAST_IMAGE_TOOL) {
-        const needsPaidAuthorization = call.name === GENERATE_IMAGE_ASYNC_TOOL || call.arguments.editScope?.mode !== "local";
+      if (call.name === EDIT_LAST_IMAGE_TOOL) {
+        const needsPaidAuthorization = call.arguments.editScope?.mode !== "local";
         const error = this.imageActionMode === "library"
           ? { code: "media_library_only", message: "This reply uses prepared media. A new image request must be sent separately." }
           : needsPaidAuthorization && this.imageActionMode !== "paid"
@@ -359,12 +343,14 @@ class ToolBridge {
       });
       throw error;
     }
+    const attachmentId = mediaAttachmentId(result);
     void this.event({
       type: "tool_finished",
       callId: call.callId,
       name: call.name,
       outcome: result.outcome,
       durationMs: Math.max(0, Date.now() - entry.startedAt),
+      ...(attachmentId ? { attachmentId } : {}),
     });
     return result;
   }
@@ -394,16 +380,18 @@ export async function probeCompanionBridges(invocation: CompanionInvocation): Pr
     callId: call.callId,
     name: call.name,
     outcome: "succeeded",
-    output: { status: "readiness" },
+    output: { accepted: true, duplicate: false, status: "accepted", attachmentId: "readiness-card",
+      kind: "image", generationJobId: null, mediaAssetId: null, costDreamcoins: 5 },
   }), async (event) => { events.push(event); }, "paid");
   const controller = new AbortController();
   const call: CompanionToolCall = {
     attemptId: invocation.attemptId,
     callId: "readiness-tool-call",
-    name: "generate_image_async",
+    name: REQUEST_CHARACTER_MEDIA_TOOL,
     effectScope: "turn_action",
     intent: { requestedNudity: "unspecified" },
-    arguments: { prompt: "readiness", subject: "companion" },
+    arguments: { kind: "image", direction: "A readiness test portrait", subject: "companion",
+      mode: "auto", requestedNudity: "unspecified", mustHave: [], mustExclude: [] },
   };
   if ((await bridge.execute(call, controller.signal)).outcome !== "succeeded") {
     throw new Error("tool bridge readiness probe did not round-trip");
@@ -490,8 +478,9 @@ export class CompanionEngine {
       await mkdir(knowledgePath, { mode: 0o700 });
       const knowledgeSource = join(knowledgePath, "conversation.jsonl");
       const recovered = invocation.preparedTurn.recoveredMediaAction;
-      // Buffer speech until a capability-bearing step has chosen its action.
-      const bufferText = invocation.preparedTurn.tools.some(tool => [GENERATE_IMAGE_ASYNC_TOOL, EDIT_LAST_IMAGE_TOOL, SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL].some(name => name === tool.name));
+      // A tool-capable response can still emit a paid action after arbitrary text.
+      // Publish its text only once Pi has classified the complete response.
+      const bufferText = invocation.preparedTurn.tools.length > 0;
       const historyOnly = bufferText || Boolean(recovered);
       // The complete Soul and product contract remain pinned in system context.
       // Search results must not turn runtime instructions into remembered facts,
@@ -632,7 +621,7 @@ export class CompanionEngine {
       };
       const retrievalEvidence: PreparedTurnMessage[] = [];
       const toolCallIds = new Set<string>();
-      let searchedExistingMedia: MediaSearchObservation | undefined;
+      let searchReply: MediaSearchObservation | undefined;
       const runConversation = (stage: {
         invocation: CompanionInvocation; seed: readonly PreparedTurnMessage[]; pinned: readonly PreparedTurnMessage[];
         systemPrompt: string; adapter: OpenAiCompatibleAdapter; maxSteps: number; searchPath: string; purpose?: "media_body";
@@ -644,10 +633,9 @@ export class CompanionEngine {
           available: () => retrievalCompleted,
         },
         signal: active.cancellation.signal, assertContinuation,
-        // Selecting a lookup fixes this attempt's workflow before Pi starts
-        // any tool in the response, including one listed before the lookup.
-        onPreparedMediaLookup: () => bridge.usePreparedMediaOnly(),
-        text: delta => { if (stage.streamText ?? !bufferText) { currentText += delta; void event({ type: "text_delta", delta }); } },
+        text: delta => {
+          if (stage.streamText ?? !bufferText) { currentText += delta; void event({ type: "text_delta", delta }); }
+        },
         reset: () => { if (currentText) { currentText = ""; void event({ type: "text_reset" }); } },
         compaction: (outcome, durationMs) => { void event({ type: "igrep_observation", operation: "compaction", outcome, durationMs, ...(outcome === "hit" ? { resultCount: 1 } : {}) }); },
         tools: conversation => {
@@ -683,27 +671,25 @@ export class CompanionEngine {
                 }
               },
             } satisfies ToolRegistration)),
-            ...stage.invocation.preparedTurn.tools.map(tool => ({ ...tool, parameters: tool.parameters as ToolRegistration["parameters"], replay: tool.name === SEARCH_CHARACTER_MEDIA_TOOL ? "safe" as const : "unsafe" as const, executionMode: "sequential" as const,
+            ...stage.invocation.preparedTurn.tools.map(tool => ({ ...tool, parameters: tool.parameters as ToolRegistration["parameters"], replay: "unsafe" as const, executionMode: "sequential" as const,
               async execute(args, api, context) {
-                const lookup = tool.name === SEARCH_CHARACTER_MEDIA_TOOL;
-                if (!lookup && bridge.actionCount > 0) throw new Error("only one media action may execute per Turn");
-                const call = companionToolCallSchema.parse({ attemptId: invocation.attemptId, callId: api.callId, name: tool.name, effectScope: lookup ? "attempt" : "turn_action",
-                  intent: { requestedNudity: (args as { requestedNudity?: "unspecified" | "none" | "full" }).requestedNudity ?? "unspecified" }, arguments: args });
-                if (call.name === SEARCH_CHARACTER_MEDIA_TOOL) searchedExistingMedia = { kind: call.arguments.kind, outcome: "unavailable" };
+                if (bridge.callCount > 0) throw new Error("only one media action may execute per Turn");
+                const call = companionToolCallSchema.parse({ attemptId: invocation.attemptId, callId: api.callId, name: tool.name, effectScope: "turn_action",
+                  intent: { requestedNudity: (args as Record<string, unknown>).requestedNudity ?? "unspecified" }, arguments: args });
                 let result: CompanionToolResult;
                 try { result = await bridge.execute(call, toolSignal(active.cancellation.signal, context)); }
-                catch (error) { if (!lookup) unconfirmedImageEffect = true; throw error; }
-                if (!lookup) unconfirmedImageEffect = result.outcome === "unknown";
-                if (lookup && result.outcome !== "succeeded") return { isError: true, output: [{ type: "text" as const,
-                  text: "Prepared media search is unavailable. No media was sent or generated. This is not evidence that the library is empty; do not claim a match or delivery." }] };
-                if (call.name === SEARCH_CHARACTER_MEDIA_TOOL && result.outcome === "succeeded") {
-                  const { status } = searchCharacterMediaResultSchema.parse(result.output);
-                  searchedExistingMedia = { kind: call.arguments.kind, outcome: status === "matches" ? "candidates_only" : "no_match" };
+                catch (error) { unconfirmedImageEffect = true; throw error; }
+                unconfirmedImageEffect = result.outcome === "unknown";
+                if (call.name === REQUEST_CHARACTER_MEDIA_TOOL && result.outcome === "succeeded") {
+                  const receipt = requestCharacterMediaResultSchema.parse(result.output);
+                  if (receipt.status === "available" || receipt.status === "no_match" || receipt.status === "unavailable") {
+                    searchReply = { kind: receipt.kind, outcome: receipt.status };
+                  }
                 }
                 return { ...(result.outcome !== "succeeded" ? { isError: true } : {}),
-                  // The attachment card already owns the media outcome. End
-                  // this native round; extraction/body handles remaining text.
-                  ...(!lookup && mediaAttachmentId(result) ? { control: { terminate: true } } : {}),
+                  // The durable card or availability receipt settles the media request.
+                  // Extraction handles only the outstanding text request.
+                  ...(mediaAttachmentId(result) || searchReply ? { control: { terminate: true } } : {}),
                   output: [{ type: "text" as const, text: JSON.stringify(result) }] };
               },
             } satisfies ToolRegistration)),
@@ -720,24 +706,18 @@ export class CompanionEngine {
       let steps = completed?.steps ?? 0;
       let mediaResponse: CompanionTerminalCandidate["mediaResponse"];
       let bodyText: string | undefined;
-      // A rejected resend never crossed Main and can end with a lookup-only reply.
-      const selectedAction = completed?.selectedMediaCalls.some(call => call.name !== SEND_CHARACTER_MEDIA_TOOL
-        || (!bridge.wasRejectedResend(call.callId) && !(call.arguments && typeof call.arguments === "object" && "previousMediaAssetId" in call.arguments)));
-      const stockReply = !recovered && bridge.actionCount === 0 && !selectedAction ? searchedExistingMedia : undefined;
-      if (recovered || bridge.actionCount > 0 || selectedAction || stockReply) {
+      if (recovered || bridge.callCount > 0 || completed?.selectedMediaCalls.length) {
         terminalValidationCode = "media_response_incomplete";
         let evidence: Parameters<typeof mediaExtractionMessages>[1];
         if (recovered) {
           evidence = { recoveredMediaAction: recovered };
           mediaResponse = { version: 1, attachmentId: recovered.attachmentId };
-        } else if (stockReply) {
-          evidence = { searchedExistingMedia: stockReply };
+        } else if (searchReply) {
+          evidence = { searchedExistingMedia: searchReply };
         } else {
-          const actions = await bridge.mediaActions(active.cancellation.signal);
-          const action = actions[0];
-          const confirmedId = action ? mediaAttachmentId(action.result) : undefined;
-          // A rejected native selection or HTTP failure has no attachment proof.
-          if (actions.length !== 1 || !action || !confirmedId) throw new Error("media action has no confirmed Main attachment");
+          const [action] = await bridge.mediaActions(active.cancellation.signal);
+          const confirmedId = action && mediaAttachmentId(action.result);
+          if (!action || !confirmedId) throw new Error("media action has no confirmed Main attachment");
           evidence = action;
           mediaResponse = { version: 1, attachmentId: confirmedId };
         }
@@ -753,8 +733,8 @@ export class CompanionEngine {
         active.cancellation.signal.throwIfAborted();
         if (extracted.stopReason !== "stop") throw extractor.getError(extracted) ?? new Error("media text extraction was incomplete");
         const extractedText = messageText(extracted);
-        const { requests, feedback } = stockReply
-          ? parseMediaSearchReply(extractedText, current.content, stockReply.outcome)
+        const { requests, feedback } = searchReply
+          ? parseMediaSearchReply(extractedText, current.content, searchReply.outcome)
           : { requests: parseMediaTextRequests(extractedText, current.content), feedback: undefined };
         if (requests.length === 0) bodyText = feedback ?? "";
         else {
@@ -768,7 +748,10 @@ export class CompanionEngine {
           const bodySource = join(knowledgePath, "media-body.jsonl");
           await writeFile(bodySource, [...body.seed, ...executionEvidence, body.current]
             .map(message => JSON.stringify(message)).join("\n") + "\n", { mode: 0o600 });
-          replyAdapter = this.options.adapter(invocation.preparedTurn.profile, { ...requestPolicy, samplingTemperature: 0 });
+          replyAdapter = this.options.adapter(invocation.preparedTurn.profile, {
+            ...requestPolicy,
+            ...(needsFactualSampling(body.current.content) ? { samplingTemperature: Math.min(invocation.preparedTurn.profile.sampling.temperature, 0.2) } : {}),
+          });
           const replied = await runConversation({ ...body, executionEvidence,
             systemPrompt: mediaBodySystemPrompt(systemPrompt, mode === "normal"), adapter: replyAdapter,
             purpose: "media_body", maxSteps: maxSteps - steps, searchPath: bodySource, streamText: feedback === undefined });
@@ -787,6 +770,7 @@ export class CompanionEngine {
         currentUserText: current.content, tools: invocation.preparedTurn.tools, toolCalls: bridge.callCount, reservations: bridge.reservations,
         profile: invocation.preparedTurn.profile, usage: aggregateModelRequestUsage(modelRequests),
         steps, completedAt: new Date().toISOString(), modelRequests, ...(mediaResponse ? { mediaResponse } : {}),
+        mediaAvailabilityFeedback: Boolean(searchReply),
         ...(latestAssistant && replyAdapter.getAttribution(latestAssistant) ? { attribution: replyAdapter.getAttribution(latestAssistant) } : {}),
       });
       if (!decision.accepted) {

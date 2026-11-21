@@ -1,16 +1,22 @@
 import { createHash } from "node:crypto";
 import {
-  parseImageAgentToolCall,
+  editLastImageArgsSchema,
   imageEditScopeSchema,
-  type ImageAgentToolCall,
+  type EditLastImageArgs,
 } from "@idream/shared/chat/image-action";
-import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL, type SearchCharacterMediaResult } from "@idream/shared/chat/media-library";
+import {
+  REQUEST_CHARACTER_MEDIA_TOOL,
+  RESEND_SESSION_MEDIA_TOOL,
+  type RequestCharacterMediaResult,
+  type ResendSessionMediaResult,
+} from "@idream/shared/chat/media-library";
 import {
   chatToolEffectSchema,
   chatExecutionSnapshotSchema,
+  type ChatImageRequestedPayload,
   type ChatToolEffect,
 } from "@idream/shared/contracts";
-import { Prisma } from "@prisma/client";
+import { Prisma, type ChatTurnAttachment } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
@@ -19,13 +25,15 @@ import { createChatImageGenerationJob } from "@/server/modules/ourdream/service"
 import { loadChatAuthoritySnapshot } from "./chat-authority-snapshot";
 import {
   abandonRequestedToolEffectAttachment,
+  assertToolEffectRequest,
   createToolEffectAttachment,
+  failedToolEffectReceipt,
   legacyTurnActionAttachmentId,
   reopenUnreservedFailedToolEffectAttachment,
 } from "./tool-effect-attachment";
 import { chatTurnForEffect } from "./turn-ledger";
 import { assertChatImageActionAllowed, attachmentAttempt, lockChatScope } from "./turn-scope";
-import { characterMediaReceipt, deliverChatCharacterMedia, searchChatCharacterMedia } from "./character-media-tool-effect";
+import { fulfillCharacterMediaRequest, requestMediaReceipt, resendMediaReceipt, resendSessionMediaRequest } from "./media-fulfillment-router";
 import { frozenChatImageEditSource, isReadableChatMedia, readableDeliveredChatMediaWhere } from "./chat-media-history";
 import { lockCharacterGenerationAuthority, lockMediaAssetAuthority } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { createChatImageEditDraft } from "./image-edit-review";
@@ -48,10 +56,10 @@ export type ChatToolEffectResult =
       attachmentId: string;
       error: { code: string; message: string; retryable: boolean };
     }
-  | (SearchCharacterMediaResult & {
-      attachmentId?: never; generationJobId?: never; mediaAssetId?: never;
-      costDreamcoins?: never; duplicate?: never;
-    });
+  | (RequestCharacterMediaResult & {
+      attachmentId?: string; generationJobId?: string | null; mediaAssetId?: string | null;
+    })
+  | ResendSessionMediaResult;
 
 /**
  * Main-owned product effect. Reserving generation and debiting its wallet are
@@ -59,21 +67,20 @@ export type ChatToolEffectResult =
  */
 export async function applyChatToolEffect(raw: unknown, requestSignal?: AbortSignal): Promise<ChatToolEffectResult> {
   const effect = chatToolEffectSchema.parse(raw);
-  if (effect.name === SEARCH_CHARACTER_MEDIA_TOOL) return searchChatCharacterMedia(effect, requestSignal);
   const turn = await chatTurnForEffect(effect.turnId);
   const requestDigest = sha256(JSON.stringify(canonical({
     name: effect.name,
     arguments: effect.arguments,
   })));
   const snapshot = boundSnapshot(turn);
-  const revision = effect.effectScope === "turn_action" ? snapshot?.userMessageRevision : undefined;
+  const revision = snapshot?.userMessageRevision;
   let attachmentId = effectAttachmentId(effect, turn.userContent, revision);
   let prior = await prisma.chatTurnAttachment.findUnique({ where: { id: attachmentId } });
-  if (revision === undefined && effect.effectScope === "turn_action" && record(prior?.metadata)?.turnActionInvalidatedByEdit === true) {
+  if (revision === undefined && record(prior?.metadata)?.turnActionInvalidatedByEdit === true) {
     // A pre-revision snapshot can already have returned to its earlier words.
     attachmentId = effectAttachmentId(effect, turn.userContent, "historical-edit");
     prior = await prisma.chatTurnAttachment.findUnique({ where: { id: attachmentId } });
-  } else if (!prior && effect.effectScope === "turn_action" && revision === undefined) {
+  } else if (!prior && revision === undefined) {
     // Existing receipts used a tool-specific identity. Read both old names so
     // regenerating with another Agent choice cannot buy a second image action.
     const contentDigest = sha256(turn.userContent);
@@ -104,20 +111,18 @@ export async function applyChatToolEffect(raw: unknown, requestSignal?: AbortSig
         attempt: effect.attempt, attachmentAttemptMatchesTurn: true,
       } });
       const current = scope.attachment!;
-      if (effect.effectScope === "attempt") assertEffectRequest(current, requestDigest);
-      else assertTurnActionIntent(current, effect);
+      assertTurnActionIntent(current, effect, requestDigest);
       // A paid retry can replace this pointer after the initial unlocked read.
       // The ACK always describes the locked, current product receipt.
-      return existingEffect(current, requestDigest, effect.effectScope);
+      return existingEffect(current, effect.name);
     });
   }
   if (!snapshot) throw Errors.forbidden("Image action requires the current frozen Chat attempt");
   // INVARIANT: an accepted effect remains replayable after its Turn becomes
   // terminal. HTTP timeout must not turn a successful reservation into a 409.
   if (prior) {
-    if (effect.effectScope === "attempt") assertEffectRequest(prior, requestDigest);
-    else assertTurnActionIntent(prior, effect);
-    if (effect.effectScope === "turn_action" && record(prior.metadata)?.attempt !== effect.attempt) {
+    assertTurnActionIntent(prior, effect, requestDigest);
+    if (attachmentAttempt(prior.metadata) !== effect.attempt) {
       if (
         turn.attempt !== effect.attempt ||
         !["pending", "generating"].includes(turn.assistantStatus)
@@ -128,45 +133,36 @@ export async function applyChatToolEffect(raw: unknown, requestSignal?: AbortSig
     }
     // A rebind that reopened a never-reserved failure executes below like a new
     // reservation, with the direction frozen on its first attempt.
-    if (prior.status !== "requesting") return existingEffect(prior, requestDigest, effect.effectScope);
+    if (prior.status !== "requesting") return existingEffect(prior, effect.name);
   }
 
-  if (effect.effectScope !== "turn_action") {
-    throw Errors.forbidden("New image effects must use the Turn image action");
-  }
   if (turn.attempt !== effect.attempt || !["pending", "generating"].includes(turn.assistantStatus)) {
     throw Errors.conflict("Tool effect does not belong to the active Chat attempt");
   }
-  if (effect.name === SEND_CHARACTER_MEDIA_TOOL) {
-    return deliverChatCharacterMedia({ effect, judged: turn, attachmentId, requestDigest });
+  if (effect.name === REQUEST_CHARACTER_MEDIA_TOOL) {
+    try {
+      return await fulfillCharacterMediaRequest({ effect, judged: turn, attachmentId, requestDigest, signal: requestSignal });
+    } catch (error) {
+      // Only a reservation this action created can be marked failed.
+      return settleReservationFailure(error, effect, attachmentId, requestDigest);
+    }
   }
-  const sourceImageAssetId = effect.name === "edit_last_image" ? frozenChatImageEditSource(snapshot) : null;
-  if (effect.name === "edit_last_image" && !sourceImageAssetId) {
-    throw Errors.conflict("There is no delivered Chat image to edit");
+  if (effect.name === RESEND_SESSION_MEDIA_TOOL) {
+    return resendSessionMediaRequest({ effect, judged: turn, attachmentId, requestDigest });
   }
-  // Only a durable pre-subject action has the old companion-only meaning.
-  // New model output must make its own explicit, validated subject choice.
-  const historicalSubject = record(record(prior?.metadata)?.request)?.subject;
-  const argumentsToParse = prior && effect.name === "generate_image_async" && effect.arguments.subject === undefined
-    ? { ...effect.arguments, subject: historicalSubject ?? "companion" }
-    : effect.arguments;
-  const parsedCall = parseImageAgentToolCall(effect.name, argumentsToParse);
-  if (!parsedCall) throw Errors.badRequest("Invalid image tool arguments");
-  if (!prior && parsedCall.name === "edit_last_image" && !parsedCall.arguments.editScope) {
+  const sourceImageAssetId = frozenChatImageEditSource(snapshot);
+  if (!sourceImageAssetId) throw Errors.conflict("There is no delivered Chat image to edit");
+  const parsed = editLastImageArgsSchema.safeParse(effect.arguments);
+  if (!parsed.success) throw Errors.badRequest("Invalid image edit arguments");
+  if (!prior && !parsed.data.editScope) {
     throw Errors.badRequest("Choose the local target or explicitly request a whole-image edit before editing");
   }
-  if (parsedCall.arguments.requestedNudity !== undefined && parsedCall.arguments.requestedNudity !== effect.intent.requestedNudity) {
+  if (parsed.data.requestedNudity !== undefined && parsed.data.requestedNudity !== effect.intent.requestedNudity) {
     throw Errors.badRequest("Image arguments and effect wardrobe intent differ");
   }
-  let call = sceneOwnedCall(parsedCall);
-  if (prior) {
-    assertTurnActionIntent(prior, effect);
-    call = persistedTurnActionCall(prior, call);
-  }
-  if (call.name === "generate_image_async" && call.arguments.outputCount !== 1) {
-    throw Errors.badRequest("A paid Chat action can generate one photo");
-  }
-  const localEdit = call.name === "edit_last_image" && call.arguments.editScope?.mode === "local";
+  let edit = { ...parsed.data, instruction: sanitizeChatImageDirection(parsed.data.instruction) };
+  if (prior) edit = persistedEdit(prior, edit);
+  const localEdit = edit.editScope?.mode === "local";
   assertChatImageActionAllowed(turn, localEdit);
   if (!turn.characterContentVersionId) {
     throw Errors.gone("Chat Turn has no immutable Character content pin");
@@ -185,17 +181,13 @@ export async function applyChatToolEffect(raw: unknown, requestSignal?: AbortSig
     throw Errors.forbidden("Image generation is unavailable for this Chat");
   }
 
+  const liveIntentNudity = effect.intent.requestedNudity === "partial" ? "unspecified" as const : effect.intent.requestedNudity;
   if (!prior) {
     // A valid 1200-character argument may exceed the generation direction
     // budget after wardrobe constraints. Reject before a paid reservation
     // rather than silently dropping required scene or clothing constraints.
     try {
-      const sceneOnly = call.name === "generate_image_async" && call.arguments.subject === "scene";
-      compileChatImagePrompt(
-        promptHint(call),
-        sceneOnly ? "unspecified" : effect.intent.requestedNudity,
-        { userInstruction: sceneOnly ? undefined : turn.userContent },
-      );
+      compileChatImagePrompt(edit.instruction, liveIntentNudity, { userInstruction: turn.userContent });
     } catch (error) {
       if (error instanceof RangeError) throw Errors.badRequest(error.message);
       throw error;
@@ -211,7 +203,7 @@ export async function applyChatToolEffect(raw: unknown, requestSignal?: AbortSig
           turn: scope.turn!,
           kind: "generated_image",
           attempt: effect.attempt,
-          promptHint: promptHint(call),
+          promptHint: edit.instruction,
           metadata: {
             effect: {
               turnId: effect.turnId,
@@ -222,7 +214,7 @@ export async function applyChatToolEffect(raw: unknown, requestSignal?: AbortSig
               intent: effect.intent,
               requestDigest,
             },
-            request: effectRequestSnapshot(call),
+            request: { name: effect.name, ...(edit.editScope ? { editScope: edit.editScope } : {}) },
           },
         });
       });
@@ -231,26 +223,23 @@ export async function applyChatToolEffect(raw: unknown, requestSignal?: AbortSig
         throw error;
       }
       const raced = await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: attachmentId } });
-      assertTurnActionIntent(raced, effect);
-      call = persistedTurnActionCall(raced, call);
+      assertTurnActionIntent(raced, effect, requestDigest);
+      edit = persistedEdit(raced, edit);
       if (raced.status !== "requesting") {
-        return existingEffect(raced, requestDigest, effect.effectScope);
+        return existingEffect(raced, effect.name);
       }
       prior = raced;
     }
   }
 
   try {
-    const source = sourceImageAssetId ? await prisma.mediaAsset.findFirst({
+    const source = await prisma.mediaAsset.findFirst({
       where: { ...readableDeliveredChatMediaWhere(turn.session.userId, turn.session.characterId), id: sourceImageAssetId, type: "image" },
       select: { characterId: true, metadata: true, storageKey: true, url: true },
-    }) : null;
-    if (call.name === "edit_last_image" && (!source || !isReadableChatMedia(source))) {
-      throw Errors.gone("The delivered Chat image is no longer available to edit");
-    }
-    const subject = call.name === "generate_image_async" ? call.arguments.subject
-      : source?.characterId === null ? "scene" : "companion";
-    const payload = {
+    });
+    if (!source || !isReadableChatMedia(source)) throw Errors.gone("The delivered Chat image is no longer available to edit");
+    const subject = source.characterId === null ? "scene" : "companion";
+    const payload: ChatImageRequestedPayload = {
       version: 1 as const,
       kind: "chat.image.requested" as const,
       requestId: `chat-tool:${attachmentId}`,
@@ -262,14 +251,14 @@ export async function applyChatToolEffect(raw: unknown, requestSignal?: AbortSig
       characterId: turn.session.characterId,
       subject,
       ...(turn.characterReleaseId ? { characterReleaseId: turn.characterReleaseId } : {}),
-      promptHint: promptHint(call),
+      promptHint: edit.instruction,
       conversationContext: turn.userContent,
-      intent: effect.intent,
+      intent: { requestedNudity: liveIntentNudity },
       controls: {
-        orientation: call.name === "generate_image_async" ? call.arguments.orientation : "original",
-        outputCount: call.name === "generate_image_async" ? call.arguments.outputCount : 1,
-        ...(sourceImageAssetId ? { sourceImageAssetId } : {}),
-        ...(call.name === "edit_last_image" && call.arguments.editScope ? { editScope: call.arguments.editScope } : {}),
+        orientation: "original",
+        outputCount: 1,
+        sourceImageAssetId,
+        ...(edit.editScope ? { editScope: edit.editScope } : {}),
       },
       ...(turn.characterVisualProfileId && turn.characterVisualProfileVersion
         ? {
@@ -290,7 +279,7 @@ export async function applyChatToolEffect(raw: unknown, requestSignal?: AbortSig
     // curated asset matches its scene or wardrobe; only the prior ACK above is reusable.
     // Existing generation authority performs pricing, balance check, wallet
     // reservation, Request/Attempt creation and dispatch under attachment idempotency.
-    if (call.name === "edit_last_image" && call.arguments.editScope?.mode === "local") {
+    if (edit.editScope?.mode === "local") {
       await createChatImageEditDraft(payload, effect.attempt);
     } else {
       await createChatImageGenerationJob(payload, effect.attempt);
@@ -302,34 +291,33 @@ export async function applyChatToolEffect(raw: unknown, requestSignal?: AbortSig
     if (!current) throw Errors.gone("The image action is no longer available");
     // A fast terminal can also be a failure. Initial and replay receipts must
     // describe the same durable attachment instead of promising a pending image.
-    return { ...existingEffect(current, requestDigest, effect.effectScope), duplicate: false };
+    return existingEffect(current, effect.name, false);
   } catch (error) {
-    const failure = publicFailure(error);
-    // The attachment keeps only the code; operators need the reason too.
-    logger.warn({ event: "chat_tool_effect_rejected", attachmentId, code: failure.code, reason: failure.message }, "chat tool effect rejected");
-    const abandoned = await abandonRequestedToolEffectAttachment(prisma, {
-      id: attachmentId,
-      attempt: effect.attempt,
-      errorCode: failure.code,
-    });
-    if (!abandoned) {
-      const current = await prisma.chatTurnAttachment.findUnique({ where: { id: attachmentId } });
-      if (current) return existingEffect(current, requestDigest, effect.effectScope);
-    }
-    return {
-      accepted: false,
-      duplicate: false,
-      attachmentId,
-      error: failure,
-    };
+    return settleReservationFailure(error, effect, attachmentId, requestDigest);
   }
 }
 
+async function settleReservationFailure(error: unknown, effect: ChatToolEffect, attachmentId: string, requestDigest: string): Promise<ChatToolEffectResult> {
+  const attachment = await prisma.chatTurnAttachment.findUnique({ where: { id: attachmentId } });
+  if (!attachment || attachmentAttempt(attachment.metadata) !== effect.attempt) throw error;
+  assertTurnActionIntent(attachment, effect, requestDigest);
+  const failure = publicFailure(error);
+  logger.warn({ event: "chat_tool_effect_rejected", attachmentId, code: failure.code, reason: failure.message }, "chat tool effect rejected");
+  const abandoned = await abandonRequestedToolEffectAttachment(prisma, {
+    id: attachmentId, attempt: effect.attempt, errorCode: failure.code,
+  });
+  if (!abandoned) {
+    const current = await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: attachmentId } });
+    if (attachmentAttempt(current.metadata) !== effect.attempt) throw error;
+    assertTurnActionIntent(current, effect, requestDigest);
+    return existingEffect(current, effect.name);
+  }
+  return { accepted: false, duplicate: false, attachmentId, error: failure };
+}
+
 function effectAttachmentId(effect: ChatToolEffect, userContent: string, revision?: number | "historical-edit"): string {
-  // The revision changes only when the user edits. Returning to the same words cannot revive an invalidated action.
-  const identity = effect.effectScope === "turn_action"
-    ? `${effect.turnId}:image:${sha256(userContent)}${revision === undefined ? "" : `:${revision}`}`
-    : `${effect.turnId}:${effect.attempt}:${effect.callId}`;
+  // Only editing the user message creates a new action identity.
+  const identity = `${effect.turnId}:image:${sha256(userContent)}${revision === undefined ? "" : `:${revision}`}`;
   return `chatfx_${sha256(identity).slice(0, 48)}`;
 }
 
@@ -344,77 +332,17 @@ function boundSnapshot(
     : null;
 }
 
-function promptHint(call: ImageAgentToolCall): string {
-  return call.name === "generate_image_async" ? call.arguments.prompt : call.arguments.instruction;
-}
-
-function sceneOwnedCall(call: ImageAgentToolCall): ImageAgentToolCall {
-  return call.name === "generate_image_async"
-    ? {
-        ...call,
-        arguments: {
-          ...call.arguments,
-          prompt: sanitizeChatImageDirection(call.arguments.prompt),
-        },
-      }
-    : {
-        ...call,
-        arguments: {
-          ...call.arguments,
-          instruction: sanitizeChatImageDirection(call.arguments.instruction),
-        },
-      };
-}
-
-function effectRequestSnapshot(call: ImageAgentToolCall) {
-  return call.name === "generate_image_async"
-    ? {
-        name: call.name,
-        subject: call.arguments.subject,
-        orientation: call.arguments.orientation,
-        outputCount: call.arguments.outputCount,
-      }
-    : { name: call.name, ...(call.arguments.editScope ? { editScope: call.arguments.editScope } : {}) };
-}
-
-function persistedTurnActionCall(
+function persistedEdit(
   attachment: { promptHint: string | null; metadata: Prisma.JsonValue },
-  fallback: ImageAgentToolCall,
-): ImageAgentToolCall {
+  fallback: EditLastImageArgs,
+): EditLastImageArgs {
   const hint = attachment.promptHint?.trim();
   if (!hint) return fallback;
   const request = record(record(attachment.metadata)?.request);
-  if (fallback.name === "edit_last_image") {
-    return {
-      name: "edit_last_image",
-      arguments: {
-        ...fallback.arguments,
-        instruction: hint,
-        // Recovery uses the original accepted scope, including an absent legacy
-        // scope; a new model choice cannot widen the already admitted edit.
-        editScope: imageEditScopeSchema.parse(request?.editScope ?? { mode: "whole_image" }),
-      },
-    };
-  }
-  const orientation = request?.orientation;
-  const outputCount = request?.outputCount;
   return {
-    name: "generate_image_async",
-    arguments: {
-      ...fallback.arguments,
-      prompt: hint,
-      // Old requesting receipts were accepted under the companion-only contract.
-      subject: request?.subject === "scene" ? "scene" : "companion",
-      orientation:
-        orientation === "4:5" || orientation === "1:1" || orientation === "16:9"
-          ? orientation
-          : fallback.arguments.orientation,
-      outputCount:
-        typeof outputCount === "number" && Number.isInteger(outputCount) &&
-          outputCount >= 1 && outputCount <= 4
-          ? outputCount
-          : fallback.arguments.outputCount,
-    },
+    ...fallback,
+    instruction: hint,
+    editScope: imageEditScopeSchema.parse(request?.editScope ?? { mode: "whole_image" }),
   };
 }
 
@@ -449,8 +377,8 @@ async function rebindTurnActionAttempt(
     if (current.attempt !== attempt || !["pending", "generating"].includes(current.assistantStatus)) {
       throw Errors.conflict("Required effect replay does not belong to the active Chat attempt");
     }
-    assertTurnActionIntent(lockedAttachment, effect);
-    if (["library", "previous_media"].includes(String(record(lockedAttachment.metadata)?.source))) {
+    assertTurnActionIntent(lockedAttachment, effect, replayRequestDigest);
+    if (lockedAttachment.status === "completed" && lockedAttachment.mediaAssetId) {
       await lockCharacterGenerationAuthority(tx, scope.session.characterId);
       if (lockedAttachment.mediaAssetId) await lockMediaAssetAuthority(tx, lockedAttachment.mediaAssetId);
       const asset = lockedAttachment.mediaAssetId ? await tx.mediaAsset.findFirst({ where: {
@@ -484,43 +412,15 @@ async function rebindTurnActionAttempt(
   });
 }
 
-function existingEffect(
-  attachment: {
-    id: string;
-    status: string;
-    generationJobId: string | null;
-    mediaAssetId: string | null;
-    errorCode: string | null;
-    metadata: Prisma.JsonValue;
-  },
-  expectedRequestDigest: string,
-  effectScope: ChatToolEffect["effectScope"],
-): Exclude<ChatToolEffectResult, SearchCharacterMediaResult> {
-  if (effectScope === "attempt") assertEffectRequest(attachment, expectedRequestDigest);
-  if (attachment.status === "requesting") {
-    // No Generation reservation has committed, so there is no durable success
-    // ACK to replay. The caller must retry the same action identity.
-    throw Errors.unavailable("The image action has not been reserved yet");
-  }
-  if (["library", "previous_media"].includes(String(record(attachment.metadata)?.source))) {
-    return characterMediaReceipt(attachment, true);
-  }
-  // A prior reservation is not a pending photo after its attachment has settled.
-  if (["failed", "blocked", "refunded", "cancelled"].includes(attachment.status)) {
-    return {
-      accepted: false,
-      duplicate: true,
-      attachmentId: attachment.id,
-      error: {
-        code: attachment.errorCode ?? `tool_effect_${attachment.status}`,
-        message: attachment.status === "failed" ? "The image request failed" : `The image request was ${attachment.status}`,
-        retryable: attachment.status === "failed" || attachment.status === "refunded",
-      },
-    };
-  }
+function existingEffect(attachment: ChatTurnAttachment, name: ChatToolEffect["name"], duplicate = true): ChatToolEffectResult {
+  if (attachment.status === "requesting") throw Errors.unavailable("The media action has not been reserved yet");
+  const failure = failedToolEffectReceipt(attachment, duplicate);
+  if (failure) return failure;
+  if (name === REQUEST_CHARACTER_MEDIA_TOOL) return requestMediaReceipt(attachment, duplicate);
+  if (name === RESEND_SESSION_MEDIA_TOOL) return resendMediaReceipt(attachment, duplicate);
   return {
     accepted: true,
-    duplicate: true,
+    duplicate,
     attachmentId: attachment.id,
     status: attachment.status === "awaiting_confirmation" ? "awaiting_confirmation" : attachment.status === "completed" ? "completed" : "accepted",
     generationJobId: attachment.generationJobId,
@@ -529,33 +429,17 @@ function existingEffect(
   };
 }
 
-function assertEffectRequest(
-  attachment: { metadata: Prisma.JsonValue },
-  expectedRequestDigest: string,
-) {
-  const effect = record(record(attachment.metadata)?.effect);
-  if (effect?.requestDigest !== expectedRequestDigest) {
-    throw Errors.conflict("Tool call identity was reused with different arguments");
+function assertTurnActionIntent(attachment: ChatTurnAttachment, expected: ChatToolEffect, requestDigest: string) {
+  if (expected.name !== "edit_last_image") {
+    assertToolEffectRequest(attachment, expected.name, requestDigest);
+    return;
   }
-}
-
-function assertTurnActionIntent(
-  attachment: { metadata: Prisma.JsonValue },
-  expected: ChatToolEffect,
-) {
   const metadata = record(attachment.metadata);
   const effect = record(metadata?.effect);
   const intent = record(effect?.intent);
-  // Existing-media sends retain the first signed candidate or prior delivery;
-  // their tool has no wardrobe argument to reinterpret during receipt replay.
-  if (
-    metadata?.turnActionInvalidatedByEdit === true || effect?.effectScope !== "turn_action" ||
-    (effect.name !== undefined && effect.name !== expected.name) ||
-    (expected.name === SEND_CHARACTER_MEDIA_TOOL
-      ? effect.name !== SEND_CHARACTER_MEDIA_TOOL
-      : intent?.requestedNudity !== expected.intent.requestedNudity)
-  ) {
-    throw Errors.conflict("Turn image action was replayed with a different tool or wardrobe intent");
+  if (metadata?.turnActionInvalidatedByEdit === true || effect?.effectScope !== "turn_action" ||
+    (effect.name !== undefined && effect.name !== expected.name) || intent?.requestedNudity !== expected.intent.requestedNudity) {
+    throw Errors.conflict("Turn image edit was replayed with a different tool or wardrobe intent");
   }
 }
 

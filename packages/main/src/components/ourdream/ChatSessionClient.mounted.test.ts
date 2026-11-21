@@ -1353,6 +1353,67 @@ describe("ChatSessionClient streaming composer", () => {
     expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/regenerate"))).toHaveLength(0);
   });
 
+  it("refreshes a confirmed attachment during streaming and discards a pre-receipt read", async () => {
+    await startStreamingReply();
+    const stream = FakeEventSource.instances[0]!;
+    const sessionUrl = "/api/v1/chat/sessions/session-1";
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    sessionMessages = [opening, userTurn, streamingReply];
+    const preReceipt = await originalFetch(sessionUrl);
+    const olderRead = Promise.withResolvers<Response>();
+    let readStarted = false;
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      if (String(input) === sessionUrl && !readStarted) {
+        readStarted = true;
+        return olderRead.promise;
+      }
+      return originalFetch(input, init);
+    });
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await waitUntil(() => readStarted);
+
+    const quote = () => replyBubble()?.querySelector('[data-testid="chat-media-quote-card"]');
+    sessionMessages = [opening, userTurn, { ...streamingReply, attachments: [{
+      id: "saved-quote", kind: "generated_image", status: "awaiting_confirmation",
+      confirmationKind: "paid_media_quote", costDreamcoins: 5,
+    }] }];
+    await act(async () => stream.emit("attachments_changed", { attempt: 2 }));
+    expect(quote()).toBeNull();
+    await act(async () => stream.emit("attachments_changed", { attempt: 1 }));
+    expect(quote()?.textContent).toContain("5 DreamCoins");
+    expect(replyBubble()?.querySelector('[data-testid="chat-image-attachment"]')).toBeNull();
+    await act(async () => olderRead.resolve(preReceipt));
+    await act(async () => stream.emit("delta", { attempt: 1, delta: " more text" }));
+
+    expect(stream.closed).toBe(false);
+    expect(quote()?.textContent).toContain("5 DreamCoins");
+    expect(replyBubble()?.textContent).toContain("Once upon more text");
+  });
+
+  it.each([404, 503])("clears revoked chat access when the attachment refresh returns %s during a focus check", async status => {
+    await startStreamingReply();
+    const stream = FakeEventSource.instances[0]!;
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    const focusRead = Promise.withResolvers<Response>();
+    let reads = 0;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) !== "/api/v1/chat/sessions/session-1") return originalFetch(input, init);
+      if (++reads === 1) return focusRead.promise;
+      return Response.json({ ok: false }, { status });
+    });
+
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await waitUntil(() => reads === 1);
+    await act(async () => stream.emit("attachments_changed", { attempt: 1 }));
+    expect(reads).toBe(2);
+    if (status === 404) expect(replyBubble()).toBeNull();
+    else expect(replyBubble()?.textContent).toContain("Once upon");
+    await act(async () => focusRead.resolve(Response.json({ ok: false }, { status: 404 })));
+    expect(replyBubble()).toBeNull();
+    expect(messageInput()).toBeNull();
+    expect(stream.closed).toBe(true);
+  });
+
   it("retracts provisional tool-step prose before rendering the final step", async () => {
     await startStreamingReply();
     expect(replyBubble()?.textContent).toContain("Once upon");
@@ -2456,6 +2517,78 @@ describe("ChatSessionClient streaming composer", () => {
     const empty = container.querySelector('[data-testid="group-chat-empty"]')?.textContent ?? "";
     expect(empty).toContain("Send a message to Avery");
     expect(empty).toContain("@mention Avery, Briar");
+  });
+
+  it("renders a paid media quote card for awaiting_confirmation photo/video quotes and confirms or cancels cleanly", async () => {
+    const quoteCalls: string[] = [];
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    sessionMessages = [{
+      ...opening,
+      attachments: [{
+        id: "attachment-quote-video",
+        kind: "generated_video",
+        status: "awaiting_confirmation",
+        confirmationKind: "paid_media_quote",
+        costDreamcoins: 30,
+        errorCode: null,
+      }],
+    }];
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === "/api/v1/chat/attachments/attachment-quote-video/media-quote/confirm" && init?.method === "POST") {
+        quoteCalls.push("confirm");
+        sessionMessages = [{
+          ...opening,
+          attachments: [{
+            id: "attachment-quote-video",
+            kind: "generated_video",
+            status: "accepted",
+            deliveryStage: "sending",
+            costDreamcoins: 30,
+            errorCode: null,
+          }],
+        }];
+        return Response.json({
+          ok: true,
+          data: { accepted: true, status: "accepted", kind: "video", attachmentId: "attachment-quote-video", costDreamcoins: 30 },
+        });
+      }
+      return originalFetch(input, init);
+    });
+
+    await mountSession();
+
+    const quoteCard = container.querySelector('[data-testid="chat-media-quote-card"]');
+    expect(quoteCard).not.toBeNull();
+    expect(quoteCard?.textContent).toContain("Video · 30 DreamCoins");
+    expect(quoteCard?.textContent).toContain("Send · 30 coins");
+    expect(container.querySelector('[data-testid="chat-image-edit-review-card"]')).toBeNull();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="chat-media-quote-confirm"]')?.click();
+    });
+
+    await waitUntil(() => quoteCalls.includes("confirm"));
+    expect(container.textContent).toContain("Sending video…");
+    expect(container.querySelector('[data-testid="chat-media-quote-card"]')).toBeNull();
+  });
+
+  it("shows Sending photo copy for delayed paid curated photo delivery without leaking library metadata", async () => {
+    sessionMessages = [{
+      ...opening,
+      attachments: [{
+        id: "attachment-sending-photo",
+        kind: "generated_image",
+        status: "accepted",
+        deliveryStage: "sending",
+        costDreamcoins: 5,
+        errorCode: null,
+      }],
+    }];
+    await mountSession();
+    const card = container.querySelector('[data-testid="chat-image-attachment-card"]');
+    expect(card?.textContent).toContain("Sending photo…");
+    expect(card?.textContent).not.toContain("Generating image");
   });
 
   it("shows every group member's avatar in the header", async () => {

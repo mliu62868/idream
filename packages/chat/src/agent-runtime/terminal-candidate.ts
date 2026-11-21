@@ -1,7 +1,7 @@
 // SPEC: validate the Agent terminal text and execution receipts; tool choice belongs to the Agent.
 import { hasUnexecutedMemorySearchPayload } from "@idream/shared/chat/companion-runtime";
 import { imageReplyMatchesUserScript } from "@idream/shared/chat/image-action";
-import { SEARCH_CHARACTER_MEDIA_TOOL, SEND_CHARACTER_MEDIA_TOOL } from "@idream/shared/chat/media-library";
+import { companionMediaToolNameSchema } from "@idream/shared/chat/media-library";
 import type {
   CompanionModelRequestEvidence,
   CompanionTerminalCandidate,
@@ -33,6 +33,7 @@ export interface TerminalCandidateFacts {
   completedAt: string;
   modelRequests?: readonly CompanionModelRequestEvidence[];
   mediaResponse?: CompanionTerminalCandidate["mediaResponse"];
+  mediaAvailabilityFeedback?: boolean;
   attribution?: CompanionTerminalCandidate["attribution"];
 }
 
@@ -68,7 +69,7 @@ export function evaluateTerminalCandidate(
   }
   // Independent text after a media action is ordinary requested content, not
   // a media acknowledgement. Its words and language may differ from the action.
-  if (facts.reservations.some(tool => tool.name !== SEARCH_CHARACTER_MEDIA_TOOL) && !facts.mediaResponse && content.trim()) {
+  if (facts.reservations.length > 0 && !facts.mediaResponse && !facts.mediaAvailabilityFeedback && content.trim()) {
     if (!imageReplyMatchesUserScript(facts.currentUserText, content)) {
       return {
         accepted: false,
@@ -113,10 +114,7 @@ export function isUnexecutedImageToolPayload(
   content: string,
   tools: readonly { name: string }[],
 ): boolean {
-  if (!tools.some((tool) =>
-    tool.name === "generate_image_async" || tool.name === "edit_last_image"
-      || tool.name === SEARCH_CHARACTER_MEDIA_TOOL || tool.name === SEND_CHARACTER_MEDIA_TOOL
-  )) return false;
+  if (!tools.some(tool => companionMediaToolNameSchema.safeParse(tool.name).success)) return false;
   let candidate = content.trim();
   if (/(?:^|\n)\s*(?:\[image\s*:[^\]\n]+\]|【图片\s*[：:][^】\n]+】)\s*(?:$|\n)/iu.test(candidate)) {
     return true;
@@ -140,8 +138,7 @@ export function isUnexecutedImageToolPayload(
         : typeof nested?.name === "string"
           ? nested.name
           : "";
-    return name === "generate_image_async" || name === "edit_last_image"
-      || name === SEARCH_CHARACTER_MEDIA_TOOL || name === SEND_CHARACTER_MEDIA_TOOL;
+    return companionMediaToolNameSchema.safeParse(name).success;
   } catch {
     return false;
   }

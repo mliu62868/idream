@@ -51,7 +51,7 @@ export async function loadChatAuthoritySnapshot(
     throw Errors.gone("Pinned Character visual identity is unavailable");
   }
   const advanced = record(character.advancedDetails);
-  const mediaLibraryKinds = visual ? await availableCharacterMediaLibraryKinds({
+  const mediaLibraryKinds = character.source === "official" && visual ? await availableCharacterMediaLibraryKinds({
     characterId: character.id, visualProfileId: visual.id, visualProfileVersion: visual.version,
   }) : [];
   return {

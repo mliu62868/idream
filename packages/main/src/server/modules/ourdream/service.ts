@@ -152,6 +152,7 @@ import { dispatchAccountAccess, newRecoveryCode, storeRecoveryCode } from "./acc
 import { passwordAccountForUser } from "@/server/lib/auth/password-account";
 import { dispatchChatVideo } from "@/server/modules/chat/video-action";
 import { dispatchChatImageEditReview } from "@/server/modules/chat/image-edit-review";
+import { dispatchChatMediaQuote } from "@/server/modules/chat/media-fulfillment-router";
 import type { GenerationJobOptions } from "./generation-job-create";
 import { dispatchComics } from "./comics";
 import { dispatchPacks, packLibrary } from "./packs";
@@ -578,6 +579,8 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   if (accountAccessResponse) return accountAccessResponse;
   const editReviewResponse = await dispatchChatImageEditReview(request, segments);
   if (editReviewResponse) return editReviewResponse;
+  const mediaQuoteResponse = await dispatchChatMediaQuote(request, segments);
+  if (mediaQuoteResponse) return mediaQuoteResponse;
   const videoResponse = await dispatchChatVideo(request, segments, generationJobResponse);
   if (videoResponse) return videoResponse;
   const comicResponse = await dispatchComics(request, segments);
@@ -2783,8 +2786,11 @@ export async function chatImageGenerationRequest(
   };
 }
 
-export async function createChatImageGenerationJob(payload: ChatImageRequestedPayload, turnAttempt?: number) {
+export async function createChatImageGenerationJob(payload: ChatImageRequestedPayload, turnAttempt?: number, confirmedMediaQuoteCost?: number) {
   const { body, options } = await chatImageGenerationRequest(payload, turnAttempt);
+  if (options.chatAttachment && confirmedMediaQuoteCost !== undefined) {
+    options.chatAttachment.confirmedMediaQuoteCost = confirmedMediaQuoteCost;
+  }
   return createGenerationJobForUser(payload.userId, body, options);
 }
 

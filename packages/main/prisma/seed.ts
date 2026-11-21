@@ -786,7 +786,7 @@ async function ensureDefaultPricingRule(input: {
   id: string;
   ruleKey: string;
   label: string;
-  mode: "image" | "video" | "voice";
+  mode: "image" | "video" | "voice" | "chat_curated_video";
   baseCost: number;
   publishedAt: Date;
 }) {
@@ -1489,6 +1489,17 @@ async function seedAdminControlPlane() {
     mode: "voice",
     baseCost: 2,
     publishedAt: new Date("2026-06-28T00:00:00.000Z"),
+  });
+
+  // Official character pre-generated chat video delivery price (open to all
+  // customers with Dreamcoin balance; never silently upgrades to live video).
+  await ensureDefaultPricingRule({
+    id: "seed-pricing-chat-curated-video-default-v1",
+    ruleKey: "chat_curated_video_default",
+    label: "Curated character video delivery",
+    mode: "chat_curated_video",
+    baseCost: 30,
+    publishedAt: new Date("2026-11-21T00:00:00.000Z"),
   });
 }
 

@@ -8,24 +8,24 @@ import { buildReplaySeed } from "./pi-context";
 import { executePiConversation } from "./pi-runtime";
 import { OpenAiCompatibleAdapter, ProviderError, type TokenUsage } from "./openai-adapter";
 import { estimateModelRequestInputTokens } from "./model-request-format";
-import { IMAGE_AGENT_TOOL_DEFINITIONS } from "@idream/shared/chat/image-action";
-import { CHARACTER_MEDIA_TOOL_DEFINITIONS } from "@idream/shared/chat/media-library";
+import { COMPANION_MEDIA_TOOL_DEFINITIONS } from "@idream/shared/chat/media-library";
 
 const speaker = { name: "Briar", characterId: "briar", sessionId: "briar-session" };
 
 it("preserves the original error from Pi's tagged hook-failure report", async () => {
   const value = invocation(8_000, 0, 0);
   const failure = new ProviderError("controlled continuation failure", "INPUT_BUDGET_EXCEEDED");
+  let providerReached = false;
   const adapter = new OpenAiCompatibleAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", maxInputTokens: 8_000,
     fetch: async () => {
-      return response({ tool_calls: [{ index: 0, id: "reported-call", function: { name: "search_character_media", arguments: JSON.stringify({ kind: "image", query: "Audit scene" }) } }] }, "tool_calls");
+      providerReached = true;
+      return response({ content: "Controlled first response." });
     },
   });
   await expect(executePiConversation({ invocation: value, seed: buildReplaySeed(value), pinned: pinned(value), systemPrompt: "You are Mara.", adapter,
     signal: AbortSignal.timeout(3_000), maxSteps: 3,
-    assertContinuation() {}, onPreparedMediaLookup() { throw failure; }, text() {}, reset() {}, compaction() {},
-    tools: () => [{ name: "search_character_media", description: "Read a media candidate", parameters: { type: "object", properties: { kind: { type: "string" }, query: { type: "string" } } }, replay: "safe",
-      execute: async () => { throw new Error("The failed continuation must not execute a tool"); } }],
+    assertContinuation() { if (providerReached) throw failure; }, text() {}, reset() {}, compaction() {},
+    tools: () => [],
   })).rejects.toBe(failure);
 });
 
@@ -251,7 +251,7 @@ describe("Pi execution boundaries", () => {
       },
     });
     const output = await executePiConversation({ invocation: value, seed: buildReplaySeed(value), pinned: pinned(value),
-      systemPrompt: `You are Mara. ${"s".repeat(9_450)}`, adapter, signal: AbortSignal.timeout(2_000), maxSteps: 8,
+      systemPrompt: `You are Mara. ${"s".repeat(11_100)}`, adapter, signal: AbortSignal.timeout(2_000), maxSteps: 8,
       afterRetrievalContext: { content: `Reply scope: ${"r".repeat(660)}`, available: () => recalled },
       assertContinuation() {}, text() {}, reset() {}, compaction() {},
       tools: conversation => {
@@ -269,7 +269,7 @@ describe("Pi execution boundaries", () => {
             recalled = true;
             return { output: [{ type: "text" as const, text: JSON.stringify(found) }] };
           },
-        })), ...[...IMAGE_AGENT_TOOL_DEFINITIONS, ...CHARACTER_MEDIA_TOOL_DEFINITIONS].map(tool => ({ ...tool,
+        })), ...COMPANION_MEDIA_TOOL_DEFINITIONS.map(tool => ({ ...tool,
           parameters: tool.parameters as ToolRegistration["parameters"], replay: "safe" as const,
           execute: async () => { throw new Error("The budget regression must not execute media actions"); },
         }))];

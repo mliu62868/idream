@@ -73,6 +73,7 @@ model User {
   generationFeedback GenerationFeedback[]
   affiliateApplication AffiliateApplication?
   affiliateClicks     AffiliateClick[]
+  characterLibraryReceipts UserCharacterLibraryReceipt[]
 
   @@index([dataClass, status, deletedAt])
   @@map("users")
@@ -857,7 +858,6 @@ model ChatTurn {
   assistantMessageId            String               @unique
   userContent                   String
   imageActionMode               String               @default("chat") // chat | paid | library
-  mediaLookup                   Json? // Latest attempt-bound lookup; a new observation invalidates older candidates.
   userStatus                    String               @default("sent")
   assistantContent              String               @default("")
   assistantStatus               String               @default("pending") // pending | generating | sent | blocked | failed | cancelled
@@ -979,6 +979,7 @@ model ChatTurnAttachment {
   width           Int?
   height          Int?
   errorCode       String?
+  deliverAt       DateTime?
   metadata        Json     @default("{}")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -986,6 +987,7 @@ model ChatTurnAttachment {
 
   @@index([turnId])
   @@index([generationJobId])
+  @@index([status, deliverAt])
   @@map("chat_turn_attachments")
 }
 
@@ -1210,8 +1212,15 @@ model CharacterMediaLibraryEntry {
   facts                 String[]  @default([])
   absentFacts           String[]  @default([])
   nudity                String    @default("unknown")
+  attireLevel           String?
+  nudityVerifiedById    String?
+  distributionScope     String    @default("chat_library") // chat_library | pack_exclusive
+  nearDuplicateClusterId String?
+  photoSetId            String?
   durationSeconds       Float?
   hasAudio              Boolean?
+  audioType             String?
+  paidDeliveryCount     Int       @default(0)
   width                 Int?
   height                Int?
   contentType           String
@@ -1240,6 +1249,30 @@ model CharacterMediaLibraryEntry {
   @@index([characterId, visualProfileId, visualProfileVersion, status, kind])
   @@index([sourceAssetId, status])
   @@map("character_media_library_entries")
+}
+
+// Ledger-grade lifetime deduplication for paid curated media deliveries.
+// Deliberately NOT cascaded from ChatTurn/RecentChat so deleting a chat
+// session never causes a customer to be charged twice for the same asset.
+model UserCharacterLibraryReceipt {
+  id                     String   @id @default(cuid())
+  userId                 String
+  characterId            String
+  entryId                String
+  contentHash            String
+  nearDuplicateClusterId String?
+  photoSetId             String?
+  kind                   String   // image | video
+  firstAttachmentId      String
+  costDreamcoins         Int      @default(0)
+  createdAt              DateTime @default(now())
+  user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, characterId, entryId])
+  @@unique([userId, characterId, contentHash])
+  @@index([userId, characterId, kind, createdAt])
+  @@index([userId, characterId, nearDuplicateClusterId])
+  @@map("user_character_library_receipts")
 }
 
 model VideoSequenceCancellation {

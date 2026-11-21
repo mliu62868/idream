@@ -132,6 +132,7 @@ type DeliveryOptions = {
   readSession: (signal?: AbortSignal) => Promise<ChatSession>;
   request: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   onSession: (session: ChatSession) => void;
+  onSessionReadError: (error: unknown) => void;
   onRepliesInvalidated: (messageIds: readonly string[]) => void;
   onStatus: (status: string | null) => void;
 };
@@ -145,6 +146,7 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
   const mountedRef = useRef(true);
   const lifecycleRef = useRef(0);
   const sessionMutationEpochRef = useRef(0);
+  const sessionReads = useRef({ started: 0, applied: 0 });
   const localStreamStateRef = useRef(new Map<string, LocalStreamState>());
   const observedRepliesRef = useRef(new Map<string, { attempt: number; terminal: boolean }>());
   const streamSources = useRef(new Map<string, EventSource>());
@@ -201,16 +203,32 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
         if (isActive()) receiveTurn(...args);
       },
       async refresh(signal?: AbortSignal): Promise<ChatSession | null> {
-        if (!isCurrent() || signal?.aborted) return null;
-        const session = await latest.current.readSession(signal);
-        if (!isCurrent() || signal?.aborted || !applySession(session)) return null;
-        resumePendingStreams(session.messages);
+        const session = await readAndApplySession(isCurrent, signal);
+        if (session && isActive()) resumePendingStreams(session.messages);
         return session;
       },
     };
   }
 
   function refresh(signal?: AbortSignal) { return context().refresh(signal); }
+
+  async function readAndApplySession(isCurrent: () => boolean, signal?: AbortSignal): Promise<ChatSession | null> {
+    if (!isCurrent() || signal?.aborted) return null;
+    const order = ++sessionReads.current.started;
+    let session: ChatSession;
+    try {
+      session = await latest.current.readSession(signal);
+    } catch (error) {
+      if (!isCurrent() || signal?.aborted) return null;
+      latest.current.onSessionReadError(error);
+      throw error;
+    }
+    // A reply can keep the same attempt and status while its quote is cancelled
+    // or a job is accepted. Older snapshots must not restore the prior card.
+    if (!isCurrent() || signal?.aborted || order <= sessionReads.current.applied || !applySession(session)) return null;
+    sessionReads.current.applied = order;
+    return session;
+  }
 
   function reset() {
     lifecycleRef.current += 1;
@@ -511,6 +529,14 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
       );
     });
 
+    source.addEventListener("attachments_changed", (event) => {
+      const isCurrent = () => !finished && streamSources.current.get(assistantId) === source;
+      if (!isCurrent() || parseStreamEvent(event).attempt !== attempt) return;
+      // This read can overlap the focus check. Access errors reach the session
+      // owner and ordinary transport failures defer to the poller.
+      void context({ isCurrent }).refresh().catch(() => undefined);
+    });
+
     source.addEventListener("done", () => {
       if (finished || streamSources.current.get(assistantId) !== source) return;
       setStatus(null);
@@ -631,8 +657,8 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
       if (!recovery.isCurrent()) return "in_progress";
       try {
         // Terminal recovery must not reopen the stream it is about to close.
-        const session = await latest.current.readSession();
-        if (!recovery.isCurrent() || !applySession(session)) return "in_progress";
+        const session = await readAndApplySession(recovery.isCurrent);
+        if (!session) return "in_progress";
         const assistant = session.messages.find(message => message.id === assistantId);
         if (!assistant || !chatStreamMessageIsTerminal(assistant)) continue;
         return assistant.content.trim() || assistant.attachments?.length ? "terminal_content" : "terminal_empty";

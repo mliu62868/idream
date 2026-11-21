@@ -27,8 +27,8 @@ import { compilePreparedTurn } from "../prepared-turn";
 import { describeRequestedReplyConstraints } from "../prompt";
 import { resolvePolicy } from "../policy";
 import type { BuiltContext } from "../context";
-import { CHARACTER_MEDIA_TOOL_DEFINITIONS } from "@idream/shared/chat/media-library";
-import { IMAGE_AGENT_TOOL_DEFINITIONS, LOCAL_IMAGE_EDIT_TOOL_DEFINITION } from "@idream/shared/chat/image-action";
+import { COMPANION_MEDIA_TOOL_DEFINITIONS } from "@idream/shared/chat/media-library";
+import { LOCAL_IMAGE_EDIT_TOOL_DEFINITION } from "@idream/shared/chat/image-action";
 import { companionInvocationSchema, companionToolResultSchema } from "./contracts";
 
 const IGREP_LLM = { url: "https://maintenance.example/v1", model: "maintenance-model" };
@@ -64,7 +64,7 @@ class FixtureAdapter extends OpenAiCompatibleAdapter {
         ? (this.extraction ?? (async (_url, requestInit) => {
           const request: WireRequest = JSON.parse(String(requestInit?.body));
           const evidence = JSON.parse(request.messages.at(-1)!.content);
-          const extracted = evidence.searchedExistingMedia ? { requests: [], language: "en", availabilityOnly: false } : { requests: [] };
+          const extracted = evidence.searchedExistingMedia ? { requests: [], language: "en" } : { requests: [] };
           return response({ content: JSON.stringify(extracted) }, "stop", { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 });
         }))(url, init)
         : this.fixture.fetch!(url, init),
@@ -79,7 +79,7 @@ class ToolThenTextAdapter extends FixtureAdapter {
   constructor(prompt="Mira fully nude at the blue-lit observatory tonight",reply="Give me a moment, love.",requestedNudity:"unspecified"|"none"|"full"="full",leadIn="") {
     super({profile:invocation().preparedTurn.profile,apiKey:"fixture",fetch:async()=>{
       this.calls++;
-      return this.calls===1 ? response({... (leadIn?{content:leadIn}:{}),tool_calls:[{index:0,id:"call-image-1",function:{name:"generate_image_async",arguments:JSON.stringify({prompt,subject:"companion",requestedNudity})}}]},"tool_calls") : response({content:reply});
+      return this.calls===1 ? response({... (leadIn?{content:leadIn}:{}),tool_calls:[{index:0,id:"call-image-1",function:{name:"request_character_media",arguments:JSON.stringify({direction:prompt,kind:"image",subject:"companion",requestedNudity})}}]},"tool_calls") : response({content:reply});
     }});
   }
 }
@@ -128,12 +128,13 @@ function invocation(withTool = false): CompanionInvocation {
       ],
       tools: withTool
         ? [{
-            name: "generate_image_async",
+            name: "request_character_media",
             description: "Generate an image.",
             parameters: {
               type: "object",
-              properties: { prompt: { type: "string" } },
-              required: ["prompt"],
+              additionalProperties: false,
+              properties: { direction: { type: "string" }, kind: { type: "string", enum: ["image"] }, subject: { type: "string" }, requestedNudity: { type: "string" } },
+              required: ["direction", "kind"],
             },
           }]
         : [],
@@ -173,11 +174,8 @@ function mediaInvocation(): CompanionInvocation {
   const value = imageInvocation();
   value.preparedTurn.messages.at(-1)!.content = "Send me a fully clothed photo at the seaside, with no hat.";
   return companionInvocationSchema.parse({ ...value, preparedTurn: { ...value.preparedTurn,
-    tools: [...value.preparedTurn.tools, ...CHARACTER_MEDIA_TOOL_DEFINITIONS] } });
+    tools: COMPANION_MEDIA_TOOL_DEFINITIONS } });
 }
-
-const preparedImageCandidate = { candidateToken: "prepared-seaside-photo", kind: "image", description: "Mira by the seaside.",
-  facts: ["seaside"], absentFacts: [], nudity: "none", durationSeconds: null, hasAudio: null, alreadySent: false, score: 0.8 };
 
 async function engine(
   adapter: FixtureAdapter,
@@ -369,7 +367,7 @@ function port(input?: {
       callId: call.callId,
       name: call.name,
       outcome: "succeeded",
-      output: { accepted: true, status: "accepted", attachmentId: "attachment-1" },
+      output: acceptedImage("attachment-1"),
     })),
     commit: input?.commit ?? (async (candidate) => {
       candidates.push(candidate);
@@ -392,6 +390,10 @@ async function waitFor(check: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error("condition was not reached");
+}
+
+function acceptedImage(attachmentId: string, generationJobId: string | null = null, duplicate = false) {
+  return { accepted: true, duplicate, status: "accepted", kind: "image", attachmentId, generationJobId, mediaAssetId: null, costDreamcoins: 5 };
 }
 
 describe("Chat embedded companion runtime", () => {
@@ -442,7 +444,7 @@ describe("Chat embedded companion runtime", () => {
     const value = imageInvocation();
     const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture",
       fetch: async () => response({ tool_calls: [{ index: 0, id: "no-dispatch", function: {
-        name: "generate_image_async", arguments: JSON.stringify({ prompt: "Mira at the observatory", subject: "companion" }),
+        name: "request_character_media", arguments: JSON.stringify({ kind: "image", direction: "Mira at the observatory", subject: "companion" }),
       } }] }, "tool_calls"),
     });
     const runtime = await engine(adapter);
@@ -470,7 +472,7 @@ describe("Chat embedded companion runtime", () => {
     } }] }, "tool_calls");
     let requests = 0;
     const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: async () => {
-      if (++requests === 1) return call("generate_image_async", { prompt: "Mira at the observatory", subject: "companion" });
+      if (++requests === 1) return call("request_character_media", { kind: "image", direction: "Mira at the observatory", subject: "companion" });
       if (requests === 2) return call("igrep_search", { query: "What did we see last time?" });
       return response({ content: "We saw the moon." });
     } }, async () => response({ content: JSON.stringify({ requests: [independent] }) }));
@@ -488,7 +490,7 @@ describe("Chat embedded companion runtime", () => {
 
   it("ends native media selection once Main confirms the attachment instead of generating a discarded reply", async () => {
     const native = vi.fn(async () => response({ tool_calls: [{ index: 0, id: "only-media", function: {
-      name: "generate_image_async", arguments: JSON.stringify({ prompt: "Mira at the seaside", subject: "companion" }),
+      name: "request_character_media", arguments: JSON.stringify({ kind: "image", direction: "Mira at the seaside", subject: "companion" }),
     } }] }, "tool_calls"));
     const extraction = vi.fn(async () => response({ content: '{"requests":[]}' }));
     const runtime = await engine(new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: native }, extraction));
@@ -508,78 +510,20 @@ describe("Chat embedded companion runtime", () => {
     const reply = "Translation means expressing meaning in another language.";
     const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
       if (++requests === 1) return response({ tool_calls: [{ index: 0, id: "stock-search", function: {
-        name: "search_character_media", arguments: JSON.stringify({ kind: "image", query: "Mira at the seaside" }),
+        name: "request_character_media", arguments: JSON.stringify({ kind: "image", subject: "companion", mode: "existing_only", direction: "Mira at the seaside" }),
       } }] }, "tool_calls");
       return response({ content: reply });
-    } }, async () => response({ content: JSON.stringify({ requests: [independent], language: "en", availabilityOnly: true }) }));
+    } }, async () => response({ content: JSON.stringify({ requests: [independent], language: "en" }) }));
     const runtime = await engine(adapter);
     const connection = port({ executeTool: async call => ({ attemptId: call.attemptId, callId: call.callId, name: call.name,
-      outcome: "succeeded", output: { accepted: true, status: "no_match", matches: [] } }) });
+      outcome: "succeeded", output: { accepted: true, duplicate: false, status: "no_match", kind: "image", costDreamcoins: 0 } }) });
     const value = mediaInvocation();
     value.preparedTurn.messages.at(-1)!.content = `Check for a seaside photo. ${independent}`;
     try {
       await runtime.run(value, connection.runtimePort);
       expect(connection.candidates).toHaveLength(1);
       expect(connection.candidates[0]?.content).toBe(`I didn’t find anything already available that fits what you asked for.\n\n${reply}`);
-      expect(requests).toBe(3);
-    } finally { await runtime.shutdown(); }
-  });
-
-  it.each(["no_match", "review_video_filters", "matches", "failed"] as const)("answers a pure stock %s without the model's unrequested generation or edit", async status => {
-    const value = mediaInvocation();
-    value.preparedTurn.messages.at(-1)!.content = "把刚才那段再发一次，但必须最多五秒、完全不带音轨；不要放宽条件，不符合就不要发。";
-    const native = vi.fn(async () => response({ content: "我可以重新生成五秒以内的版本，或者编辑原片去音。" }));
-    native.mockImplementationOnce(async () => response({ tool_calls: [{ index: 0, id: "lookup", function: {
-      name: "search_character_media", arguments: JSON.stringify({ kind: "video", query: "previous clip at most five seconds, with no audio track", minDurationSeconds: 0, maxDurationSeconds: 5, hasAudio: false }),
-    } }] }, "tool_calls"));
-    const extraction = vi.fn(async () => response({ content: '{"requests":[],"language":"zh","availabilityOnly":false}' }));
-    const runtime = await engine(new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: native }, extraction));
-    const connection = port({ executeTool: async (call): Promise<CompanionToolResult> => {
-      const identity = { attemptId: call.attemptId, callId: call.callId, name: call.name };
-      if (status === "failed") return { ...identity, outcome: "failed", error: { code: "media_search_unavailable", message: "unavailable", retryable: true } };
-      const { candidateToken, ...observation } = { ...preparedImageCandidate, kind: "video", durationSeconds: 5.167, hasAudio: true };
-      if (status === "review_video_filters") return { ...identity, outcome: "succeeded", output: { accepted: true, status, matches: [], observedVideos: [observation] } };
-      return { ...identity, outcome: "succeeded", output: { accepted: true, status, matches: status === "matches" ? [{ ...observation, candidateToken }] : [] } };
-    } });
-    try {
-      await runtime.run(value, connection.runtimePort);
-      const expected = {
-        no_match: "我没找到符合你要求的现成内容。",
-        review_video_filters: "我没找到符合你要求的现成内容。",
-        matches: "我没找到符合你要求的现成内容。",
-        failed: "我现在没法确认有没有符合你要求的现成内容。",
-      }[status];
-      expect(connection.candidates[0]?.content).toBe(expected);
-      expect(connection.candidates[0]?.mediaResponse).toBeUndefined();
-      expect(connection.events.flatMap(event => event.type === "text_delta" ? [event.delta] : [])).toEqual([expected]);
-      expect(extraction).toHaveBeenCalledOnce();
-    } finally { await runtime.shutdown(); }
-  });
-
-  it.each([false, true])("reports stock availability without sending and uses the latest lookup (failed=%s)", async latestFailed => {
-    const value = mediaInvocation();
-    value.preparedTurn.messages.at(-1)!.content = "你有海边的现成照片吗？只告诉我有没有，先别发。";
-    const search = (id: string) => response({ tool_calls: [{ index: 0, id, function: {
-      name: "search_character_media", arguments: JSON.stringify({ kind: "image", query: "an existing photo at the seaside; check availability only" }),
-    } }] }, "tool_calls");
-    const native = vi.fn(async () => response({ content: "我可以给你新做一张。" }));
-    native.mockImplementationOnce(async () => search("found"));
-    if (latestFailed) native.mockImplementationOnce(async () => search("recheck"));
-    const runtime = await engine(new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: native },
-      async () => response({ content: '{"requests":[],"language":"zh","availabilityOnly":true}' })));
-    const executeTool = vi.fn(async (call: CompanionToolCall): Promise<CompanionToolResult> => {
-      const identity = { attemptId: call.attemptId, callId: call.callId, name: call.name };
-      if (call.callId === "recheck") return { ...identity, outcome: "failed", error: { code: "media_search_unavailable", message: "unavailable", retryable: true } };
-      return { ...identity, outcome: "succeeded", output: { accepted: true, status: "matches", matches: [preparedImageCandidate] } };
-    });
-    const connection = port({ executeTool });
-    try {
-      await runtime.run(value, connection.runtimePort);
-      const expected = latestFailed ? "我现在没法确认有没有符合你要求的现成内容。" : "我找到了可能相关的现成内容，暂时没有发送。";
-      expect(connection.candidates).toHaveLength(1);
-      expect(connection.candidates[0]?.content).toBe(expected);
-      expect(connection.candidates[0]?.mediaResponse).toBeUndefined();
-      expect(executeTool.mock.calls.map(([call]) => call.name)).toEqual(latestFailed ? ["search_character_media", "search_character_media"] : ["search_character_media"]);
+      expect(requests).toBe(2);
     } finally { await runtime.shutdown(); }
   });
 
@@ -591,33 +535,32 @@ describe("Chat embedded companion runtime", () => {
     const native = vi.fn(async (_url, init) => {
       const request: WireRequest = JSON.parse(String(init?.body));
       expect(request.messages.at(-1)?.content).toBe(otherRequest);
-      expect(request.tools?.map(tool => tool.function.name)).not.toContain("search_character_media");
+      expect(request.tools?.map(tool => tool.function.name)).not.toContain("request_character_media");
       return response({ content: story });
     });
     native.mockImplementationOnce(async () => response({ tool_calls: [{ index: 0, id: "lookup", function: {
-      name: "search_character_media", arguments: JSON.stringify({ kind: "image", query: "existing photo at the seaside" }),
+      name: "request_character_media", arguments: JSON.stringify({ kind: "image", subject: "companion", mode: "existing_only", direction: "existing photo at the seaside" }),
     } }] }, "tool_calls"));
-    native.mockImplementationOnce(async () => response({ content: "没有。要不要我直接给你重新生成一张？" }));
-    const extraction = vi.fn(async () => response({ content: JSON.stringify({ requests: [otherRequest], language: "zh", availabilityOnly: false }) }));
+    const extraction = vi.fn(async () => response({ content: JSON.stringify({ requests: [otherRequest], language: "zh" }) }));
     const runtime = await engine(new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: native }, extraction));
     const connection = port({ executeTool: async call => ({ attemptId: call.attemptId, callId: call.callId, name: call.name,
-      outcome: "succeeded", output: { accepted: true, status: "no_match", matches: [] } }) });
+      outcome: "succeeded", output: { accepted: true, duplicate: false, status: "no_match", kind: "image", costDreamcoins: 0 } }) });
     try {
       await runtime.run(value, connection.runtimePort);
       const expected = `我没找到符合你要求的现成内容。\n\n${story}`;
       expect(connection.candidates[0]?.content).toBe(expected);
       expect(connection.events.flatMap(event => event.type === "text_delta" ? [event.delta] : [])).toEqual([expected]);
       expect(extraction).toHaveBeenCalledOnce();
-      expect(native).toHaveBeenCalledTimes(3);
+      expect(native).toHaveBeenCalledTimes(2);
     } finally { await runtime.shutdown(); }
   });
 
   it.each([
     { name: "edit_last_image", status: "awaiting_confirmation", generationJobId: null, mediaAssetId: null, costDreamcoins: 0 },
     { name: "edit_last_image", status: "cancelled", generationJobId: null, mediaAssetId: null, costDreamcoins: 0 },
-    { name: "generate_image_async", status: "accepted", generationJobId: "prior-job", mediaAssetId: null, costDreamcoins: 8 },
+    { name: "request_character_media", status: "accepted", generationJobId: "prior-job", mediaAssetId: null, costDreamcoins: 8 },
     { name: "edit_last_image", status: "completed", generationJobId: "prior-job", mediaAssetId: "prior-image", costDreamcoins: 8 },
-    { name: "send_character_media", status: "completed", generationJobId: null, mediaAssetId: "prior-video", costDreamcoins: 0 },
+    { name: "resend_session_media", status: "completed", generationJobId: null, mediaAssetId: "prior-video", costDreamcoins: 0 },
     ...(["failed", "refunded", "blocked", "cancelled"] as const).map(status => ({ name: "edit_last_image" as const, status,
       generationJobId: "prior-job", mediaAssetId: null, costDreamcoins: 8 })),
   ] as const)("recovers Main's $name $status card without selecting or executing another action", async facts => {
@@ -670,7 +613,7 @@ describe("Chat embedded companion runtime", () => {
       expect(names).toContain("igrep_search");
       expect(names).toContain("session_recall");
       expect(names.includes("memory_search")).toBe(mode === "normal");
-      expect(names.some(name => ["generate_image_async", "edit_last_image", "search_character_media", "send_character_media"].includes(name))).toBe(false);
+      expect(names.some(name => ["request_character_media", "edit_last_image", "resend_session_media"].includes(name))).toBe(false);
       expect(request.messages).toContainEqual(expect.objectContaining({ role: "user", content: independent }));
       expect(JSON.stringify(request.messages)).not.toContain("Change the green mug to red.");
       expect(JSON.stringify(request.messages)).not.toContain("rebound-draft");
@@ -719,7 +662,7 @@ describe("Chat embedded companion runtime", () => {
 
   it.each([false, true].flatMap(duplicate => [false, true].map(mixed => ({ duplicate, mixed }))))("preserves the pending confirmation card (duplicate=$duplicate, mixed=$mixed)", async ({ duplicate, mixed }) => {
     const original = invocation();
-    const value = companionInvocationSchema.parse({ ...original, preparedTurn: { ...original.preparedTurn, tools: IMAGE_AGENT_TOOL_DEFINITIONS } });
+    const value = companionInvocationSchema.parse({ ...original, preparedTurn: { ...original.preparedTurn, tools: COMPANION_MEDIA_TOOL_DEFINITIONS } });
     const independent = "Also tell me what 17 + 25 is, in one friendly sentence.";
     const editRequest = "Edit the last photo: change only the green mug to red.";
     value.preparedTurn.messages.at(-1)!.content = mixed ? `${editRequest} ${independent}` : editRequest;
@@ -736,7 +679,7 @@ describe("Chat embedded companion runtime", () => {
         name: "edit_last_image", arguments: JSON.stringify({ instruction: "Change only the green mug to red.", editScope: { mode: "local", target: "the green mug", selection: "one" } }),
       } }] }, "tool_calls", { inputTokens: 10, outputTokens: 2 });
       expect(request.tools?.map(tool => tool.function.name)).toEqual(expect.arrayContaining(["igrep_search", "session_recall"]));
-      expect(request.tools?.some(tool => ["generate_image_async", "edit_last_image", "search_character_media", "send_character_media"].includes(tool.function.name))).toBe(false);
+      expect(request.tools?.some(tool => ["request_character_media", "edit_last_image", "resend_session_media"].includes(tool.function.name))).toBe(false);
       expect(request.messages).toContainEqual(expect.objectContaining({ role: "user", content: independent }));
       expect(JSON.stringify(request.messages)).not.toContain(editRequest);
       expect(JSON.stringify(request.messages)).not.toContain("pending-edit");
@@ -762,7 +705,7 @@ describe("Chat embedded companion runtime", () => {
     await runtime.shutdown();
   });
 
-  it.each(["accepted", "queued", "completed", "failed"] as const)("uses only a real %s attachment for a pure-media reply", async status => {
+  it.each(["accepted", "awaiting_confirmation", "failed"] as const)("uses only a real %s attachment for a pure-media reply", async status => {
     for (const duplicate of [false, true]) {
       const value = imageInvocation();
       const requests: WireRequest[] = [];
@@ -771,13 +714,14 @@ describe("Chat embedded companion runtime", () => {
         actions++;
         const identity = { attemptId: call.attemptId, callId: call.callId, name: call.name };
         return status === "failed" ? { ...identity, outcome: "failed", attachmentId: "real-attachment", error: { code: "failed", message: "Failed", retryable: false } }
-          : { ...identity, outcome: "succeeded", output: { status, duplicate, attachmentId: "real-attachment" } };
+          : { ...identity, outcome: "succeeded", output: status === "accepted" ? acceptedImage("real-attachment", "image-job", duplicate)
+            : { ...acceptedImage("real-attachment", null, duplicate), status, confirmationKind: "paid_media_quote" } };
       } });
       const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: async (_url, init) => {
         requests.push(JSON.parse(String(init?.body)));
         expect(connection.events.some(event => event.type === "text_delta")).toBe(false);
         return requests.length === 1 ? response({ content: "Done, every pixel is unchanged.", tool_calls: [{ index: 0, id: "one-action", function: {
-          name: "generate_image_async", arguments: JSON.stringify({ prompt: "Mira holding a red mug", subject: "companion" }),
+          name: "request_character_media", arguments: JSON.stringify({ kind: "image", direction: "Mira holding a red mug", subject: "companion" }),
         } }] }, "tool_calls", { inputTokens: 10, outputTokens: 2 }) : response({ content: "It will arrive soon, exactly as requested." }, "stop", { inputTokens: 10, outputTokens: 2 });
       } }, async (_url, init) => {
         const request = JSON.parse(String(init?.body));
@@ -793,6 +737,10 @@ describe("Chat embedded companion runtime", () => {
       expect(actions).toBe(1);
       expect(requests).toHaveLength(1);
       expect(connection.events.some(event => event.type === "text_delta" || event.type === "failed")).toBe(false);
+      const finished = connection.events.find(event => event.type === "tool_finished");
+      expect(finished).toMatchObject({ callId: "one-action", attachmentId: "real-attachment" });
+      expect(finished!.sequence).toBeLessThan(connection.events.find(event =>
+        event.type === "model_request_started" && event.request.purpose === "media_extraction")!.sequence);
       expect(connection.candidates[0]).toMatchObject({ content: "", mediaResponse: { version: 1, attachmentId: "real-attachment" },
         execution: { steps: 2, toolCalls: 1 }, usage: { promptTokens: 15, completionTokens: 3, reasoningTokens: 0 } });
       expect(connection.candidates[0]?.modelRequests?.map(request => request.purpose)).toEqual([undefined, "media_extraction"]);
@@ -805,7 +753,7 @@ describe("Chat embedded companion runtime", () => {
     let extractionStarted = false;
     const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
       if (++nativeRequests === 1) return response({ tool_calls: [{ index: 0, id: "one-effect", function: {
-        name: "generate_image_async", arguments: JSON.stringify({ prompt: "Mira at the observatory", subject: "companion" }),
+        name: "request_character_media", arguments: JSON.stringify({ kind: "image", direction: "Mira at the observatory", subject: "companion" }),
       } }] }, "tool_calls");
       return response({ content: "Provisional" });
     } }, async () => {
@@ -835,9 +783,9 @@ describe("Chat embedded companion runtime", () => {
     const independent = "Also tell me a fact.";
     const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async (url, init) => {
       const request: WireRequest = JSON.parse(String(init?.body));
-      if (!request.tools?.some(tool => tool.function.name === "generate_image_async")) return blocked(url, init);
+      if (!request.tools?.some(tool => tool.function.name === "request_character_media")) return blocked(url, init);
       if (request.messages.some(message => message.role === "tool")) return response({ content: "Provisional" });
-      return response({ tool_calls: [{ index: 0, id: "cancel-media", function: { name: "generate_image_async", arguments: JSON.stringify({ prompt: "Mira at the observatory", subject: "companion" }) } }] }, "tool_calls");
+      return response({ tool_calls: [{ index: 0, id: "cancel-media", function: { name: "request_character_media", arguments: JSON.stringify({ kind: "image", direction: "Mira at the observatory", subject: "companion" }) } }] }, "tool_calls");
     } }, stage === "media_extraction" ? blocked : async () => response({ content: JSON.stringify({ requests: [independent] }) }));
     const runtime = await engine(adapter);
     const value = imageInvocation();
@@ -891,7 +839,7 @@ describe("Chat embedded companion runtime", () => {
     const executeTool = vi.fn<CompanionRuntimePort["executeTool"]>();
     const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
       if (++requests === 1) return response({ tool_calls: [{ index: 0, id: "invalid-media-call", function: {
-        name: "generate_image_async", arguments: JSON.stringify({ prompt: "short", subject: "companion" }),
+        name: "request_character_media", arguments: JSON.stringify({ kind: "image", direction: "", subject: "companion" }),
       } }] }, "tool_calls");
       return response({ content: "Done, every detail is exact." });
     } });
@@ -920,12 +868,12 @@ describe("Chat embedded companion runtime", () => {
       const request: WireRequest = JSON.parse(String(init?.body));
       requests.push(request);
       if (requests.length === 1) return call(firstLookup, "prior-lookup", { query: "earlier choice" });
-      if (requests.length === 2) return call("generate_image_async", "single-media", { prompt: "Mira walking outdoors", subject: "companion" });
+      if (requests.length === 2) return call("request_character_media", "single-media", { kind: "image", direction: "Mira walking outdoors", subject: "companion" });
       const names = request.tools!.map(tool => tool.function.name);
       expect(names).toContain("session_recall");
       expect(names).toContain("igrep_search");
       expect(names.includes("memory_search")).toBe(mode === "normal");
-      expect(names.some(name => ["generate_image_async", "edit_last_image", "search_character_media", "send_character_media"].includes(name))).toBe(false);
+      expect(names.some(name => ["request_character_media", "edit_last_image", "resend_session_media"].includes(name))).toBe(false);
       expect(JSON.stringify(request.messages)).not.toContain("Generate a new photo of yourself.");
       expect(JSON.stringify(request.messages)).not.toContain("single-media");
       expect(request.messages).toContainEqual(expect.objectContaining({ role: "tool", tool_call_id: "prior-lookup" }));
@@ -969,9 +917,9 @@ describe("Chat embedded companion runtime", () => {
       if (requests.length === 2) {
         firstPage = result(request, "source-first");
         expect(firstPage.next).toMatchObject({ path: "conversation.jsonl", offset: 6_000, fingerprint: firstPage.results[0]!.fingerprint });
-        return call("generate_image_async", "single-media", { prompt: "Mira walking outdoors", subject: "companion" });
+        return call("request_character_media", "single-media", { kind: "image", direction: "Mira walking outdoors", subject: "companion" });
       }
-      expect(request.tools!.some(tool => tool.function.name === "generate_image_async")).toBe(false);
+      expect(request.tools!.some(tool => tool.function.name === "request_character_media")).toBe(false);
       expect(request.messages).toContainEqual(expect.objectContaining({ role: "user", content: independent }));
       if (requests.length === 3) {
         // The independent loop must continue the cursor actually supplied to
@@ -1047,7 +995,7 @@ describe("Chat embedded companion runtime", () => {
     let calls = 0;
     const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: async () => {
       calls++;
-      if (calls === 1) return response({ tool_calls: [{ index: 0, id: "effect", function: { name: "generate_image_async", arguments: JSON.stringify({ prompt: "Mira at the cafe", subject: "companion" }) } }] }, "tool_calls");
+      if (calls === 1) return response({ tool_calls: [{ index: 0, id: "effect", function: { name: "request_character_media", arguments: JSON.stringify({ kind: "image", direction: "Mira at the cafe", subject: "companion" }) } }] }, "tool_calls");
       return response({ content: kind === "empty" ? " " : "42" }, kind === "length" ? "length" : "stop");
     } }, async () => response({ content: JSON.stringify({ requests: [independent] }) }));
     const runtime = await engine(adapter, undefined, { maxSteps });
@@ -1071,7 +1019,7 @@ describe("Chat embedded companion runtime", () => {
       requests++;
       return new Response(`data: ${JSON.stringify({
         choices: [{ delta: requests === 1
-          ? { tool_calls: [{ index: 0, id: "image-1", function: { name: "generate_image_async", arguments: JSON.stringify({ prompt: "Mira at the observatory", subject: "companion" }) } }] }
+          ? { tool_calls: [{ index: 0, id: "image-1", function: { name: "request_character_media", arguments: JSON.stringify({ kind: "image", direction: "Mira at the observatory", subject: "companion" }) } }] }
           : { content: '{"requests":[]}' }, finish_reason: requests === 1 ? "tool_calls" : "stop" }],
         ...(requests === missingAttempt ? {} : { usage: { input_tokens: zero ? 0 : 40, output_tokens: zero ? 0 : 10 } }),
       })}\n\ndata: [DONE]\n\n`);
@@ -1367,7 +1315,7 @@ describe("Chat embedded companion runtime", () => {
         requests.push(JSON.parse(String(init?.body)) as { messages: unknown[] });
         return new Response(`data: ${JSON.stringify({ choices: [{
           delta: image && requests.length === 1 ? { tool_calls: [{ index: 0, id: "image-1", function: {
-            name: "generate_image_async", arguments: JSON.stringify({ prompt: "A rainy observatory portrait", subject: "companion" }),
+            name: "request_character_media", arguments: JSON.stringify({ kind: "image", direction: "A rainy observatory portrait", subject: "companion" }),
           } }] } : { content: "Briar brought the cup; Cedar moved the book." },
           finish_reason: image && requests.length === 1 ? "tool_calls" : "stop",
         }] })}\n\ndata: [DONE]\n\n`);
@@ -1644,7 +1592,7 @@ describe("Chat embedded companion runtime", () => {
       requests.push(JSON.parse(String(init?.body)));
       return requests.length === 1
         ? response({ reasoning_content: "PRIVATE_SELECTION", tool_calls: [{ index: 0, id: "image-reasoned", function: {
-          name: "generate_image_async", arguments: JSON.stringify({ prompt: "Mira beside the observatory window", subject: "companion" }),
+          name: "request_character_media", arguments: JSON.stringify({ kind: "image", direction: "Mira beside the observatory window", subject: "companion" }),
         } }] }, "tool_calls", { inputTokens: 20, outputTokens: 12, reasoningTokens: 5 })
         : response({ reasoning_content: "PRIVATE_REVIEW", content: "A little glimpse of my evening for you." }, "stop", { inputTokens: 30, outputTokens: 14, reasoningTokens: 6 });
     } }, async (_url, init) => {
@@ -1669,7 +1617,7 @@ describe("Chat embedded companion runtime", () => {
     const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
       if (++requests === 1) return new Response(`data: ${JSON.stringify({ choices: [{ delta: {
         reasoning_content: "Private selection", tool_calls: [{ index: 0, id: "image-unknown-subtotal", function: {
-          name: "generate_image_async", arguments: JSON.stringify({ prompt: "Mira beside the observatory window", subject: "companion" }),
+          name: "request_character_media", arguments: JSON.stringify({ kind: "image", direction: "Mira beside the observatory window", subject: "companion" }),
         } }],
       }, finish_reason: "tool_calls" }], usage: { prompt_tokens: 20, completion_tokens: 12 } })}\n\ndata: [DONE]\n\n`);
       throw new Error("A confirmed attachment must not request a provisional answer");
@@ -1702,7 +1650,7 @@ describe("Chat embedded companion runtime", () => {
           callId: call.callId,
           name: call.name,
           outcome: "succeeded",
-          output: { status: "accepted", attachmentId: "real-attachment", generationJobId: "job-required" },
+          output: acceptedImage("real-attachment", "job-required"),
         };
       },
     });
@@ -1711,11 +1659,11 @@ describe("Chat embedded companion runtime", () => {
 
     expect(calls).toEqual([
       expect.objectContaining({
-        name: "generate_image_async",
+        name: "request_character_media",
         effectScope: "turn_action",
         intent: { requestedNudity: "full" },
         arguments: expect.objectContaining({
-          prompt: "Mira fully nude at the blue-lit observatory tonight",
+          direction: "Mira fully nude at the blue-lit observatory tonight",
         }),
       }),
     ]);
@@ -1729,12 +1677,12 @@ describe("Chat embedded companion runtime", () => {
   });
 
   it.each([
-    ["generate_image_async", "accepted"], ["generate_image_async", "queued"], ["generate_image_async", "completed"],
+    ["request_character_media", "accepted"],
     ["edit_last_image", "accepted"], ["edit_last_image", "queued"], ["edit_last_image", "completed"],
   ] as const)("retains the exact %s %s receipt without spoken acknowledgement guidance", async (name, status) => {
     const original = imageInvocation();
     const value = companionInvocationSchema.parse({ ...original, preparedTurn: {
-      ...original.preparedTurn, tools: IMAGE_AGENT_TOOL_DEFINITIONS,
+      ...original.preparedTurn, tools: COMPANION_MEDIA_TOOL_DEFINITIONS,
     } });
     const requests: WireRequest[] = [];
     const receipts: CompanionToolResult[] = [];
@@ -1744,7 +1692,7 @@ describe("Chat embedded companion runtime", () => {
       return requests.length === 1
         ? response({ tool_calls: [{ index: 0, id: "image-status", function: { name, arguments: JSON.stringify(name === "edit_last_image"
           ? { instruction: "Change the mug to red.", requestedNudity: "none", editScope: { mode: "local", target: "mug", selection: "one" } }
-          : { prompt: "Mira holding a red mug.", subject: "companion", requestedNudity: "none" }) } }] }, "tool_calls")
+          : { kind: "image", direction: "Mira holding a red mug.", subject: "companion", requestedNudity: "none" }) } }] }, "tool_calls")
         : response({ content: "A provisional answer must not be requested." });
     } }, async (_url, init) => {
       extractedReceipt = JSON.parse(JSON.parse(String(init?.body)).messages.at(-1).content).mainReceipt;
@@ -1753,7 +1701,7 @@ describe("Chat embedded companion runtime", () => {
     const runtime = await engine(adapter);
     const connection = port({ executeTool: async call => {
       const receipt: CompanionToolResult = { attemptId: call.attemptId, callId: call.callId, name: call.name,
-        outcome: "succeeded", output: { accepted: true, duplicate: false, status, attachmentId: "attachment-status",
+        outcome: "succeeded", output: { ...(name === "request_character_media" ? { kind: "image" } : {}), accepted: true, duplicate: false, status, attachmentId: "attachment-status",
           generationJobId: "job-status", mediaAssetId: status === "completed" ? "media-status" : null, costDreamcoins: 8 } };
       receipts.push(structuredClone(receipt));
       return receipt;
@@ -1768,197 +1716,8 @@ describe("Chat embedded companion runtime", () => {
     } finally { await runtime.shutdown(); }
   });
 
-  it("runs a native search and selected free delivery without spending the action on search", async () => {
-    const requests: WireRequest[] = [];
-    const calls: CompanionToolCall[] = [];
-    const description = "Mira wears a blue dress by the seaside without a hat.";
-    const searchArgs = { kind: "image", query: "Mira in a blue dress by the seaside, without a hat", requestedNudity: "none", unseenOnly: true };
-    const matches = [
-      { candidateToken: "high-ranked-other", kind: "image", description: "Mira in a blue dress indoors.",
-        facts: ["blue dress", "indoors"], absentFacts: ["hat"], nudity: "none", durationSeconds: null, hasAudio: null, alreadySent: false, score: 0.94 },
-      { candidateToken: "exact-seaside-result", kind: "image", description,
-        facts: ["blue dress", "seaside"], absentFacts: ["hat"], nudity: "none", durationSeconds: null, hasAudio: null, alreadySent: false, score: 0.81 },
-    ];
-    const receipt = { accepted: true, duplicate: false, status: "completed", attachmentId: "attachment-free",
-      mediaAssetId: "media-free", generationJobId: null, costDreamcoins: 0, source: "library", description };
-    const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async (_url, init) => {
-      const request: WireRequest = JSON.parse(String(init?.body));
-      requests.push(request);
-      const call = (name: string, args: unknown) => response({ tool_calls: [{ index: 0, id: `media-${requests.length}`,
-        function: { name, arguments: JSON.stringify(args) } }] }, "tool_calls", { inputTokens: 20, outputTokens: 3 });
-      if (requests.length === 1) return call("search_character_media", searchArgs);
-      const observed = JSON.parse(request.messages.filter(message => message.role === "tool").at(-1)!.content);
-      if (requests.length === 2) {
-        expect(observed.output).toEqual({ accepted: true, status: "matches", matches });
-        expect(observed.output).not.toHaveProperty("attachmentId");
-        return call("send_character_media", { candidateToken: observed.output.matches[1].candidateToken });
-      }
-      expect(observed.output).toEqual(receipt);
-      return response({ content: observed.output.description }, "stop", { inputTokens: 20, outputTokens: 3 });
-    } });
-    const runtime = await engine(adapter);
-    const connection = port({ executeTool: async call => {
-      calls.push(call);
-      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
-        output: call.name === "search_character_media" ? { accepted: true, status: "matches", matches } : receipt };
-    } });
-    await runtime.run(mediaInvocation(), connection.runtimePort);
-    expect(calls).toEqual([
-      expect.objectContaining({ name: "search_character_media", effectScope: "attempt", intent: { requestedNudity: "none" }, arguments: searchArgs }),
-      expect.objectContaining({ name: "send_character_media", effectScope: "turn_action", arguments: { candidateToken: "exact-seaside-result" } }),
-    ]);
-    expect(requests).toHaveLength(2);
-    expect(connection.candidates[0]).toMatchObject({ content: "", mediaResponse: { attachmentId: "attachment-free" }, execution: { steps: 3, toolCalls: 2 },
-      usage: { promptTokens: 40, completionTokens: 6, reasoningTokens: 0 },
-      tools: [expect.objectContaining({ name: "search_character_media", effectScope: "attempt" }), expect.objectContaining({ name: "send_character_media", effectScope: "turn_action" })] });
-    expect(JSON.stringify(connection.events)).not.toContain("exact-seaside-result");
-    expect(JSON.stringify(connection.candidates[0]?.tools)).not.toContain("Mira wears");
-    expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
-  });
-
-  it("shows a filtered video observation to the model and delivers after it removes only the guessed bound", async () => {
-    const value = mediaInvocation();
-    value.preparedTurn.messages.at(-1)!.content = "Send a short prepared seaside video with no audio track.";
-    const explicit = { kind: "video", query: "A short prepared seaside video with no audio track", hasAudio: false };
-    const guessed = { ...explicit, maxDurationSeconds: 5 };
-    const facts = { kind: "video", description: "Mira by the seaside.", facts: ["seaside"], absentFacts: [],
-      nudity: "none", durationSeconds: 5.167, hasAudio: false, alreadySent: false, score: 0.8 };
-    const observation = { accepted: true, status: "review_video_filters", matches: [], observedVideos: [facts] };
-    const match = { ...facts, candidateToken: "prepared-seaside-video" };
-    const receipt = { accepted: true, duplicate: false, status: "completed", attachmentId: "attachment-video",
-      mediaAssetId: "media-video", generationJobId: null, costDreamcoins: 0, source: "library", description: facts.description };
-    const requests: WireRequest[] = [];
-    const calls: CompanionToolCall[] = [];
-    const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: async (_url, init) => {
-      const request: WireRequest = JSON.parse(String(init?.body));
-      requests.push(request);
-      const call = (name: string, args: unknown) => response({ tool_calls: [{ index: 0, id: `video-${requests.length}`,
-        function: { name, arguments: JSON.stringify(args) } }] }, "tool_calls");
-      if (requests.length === 1) return call("search_character_media", guessed);
-      const observed = JSON.parse(request.messages.filter(message => message.role === "tool").at(-1)!.content);
-      if (requests.length === 2) {
-        expect(observed.output).toEqual(observation);
-        expect(observed.output.observedVideos[0]).not.toHaveProperty("candidateToken");
-        return call("search_character_media", explicit);
-      }
-      if (requests.length === 3) {
-        expect(observed.output).toEqual({ accepted: true, status: "matches", matches: [match] });
-        return call("send_character_media", { candidateToken: observed.output.matches[0].candidateToken });
-      }
-      expect(observed.output).toEqual(receipt);
-      return response({ content: facts.description });
-    } });
-    const runtime = await engine(adapter);
-    const connection = port({ executeTool: async call => {
-      calls.push(call);
-      const output = call.name === "search_character_media"
-        ? call.arguments.maxDurationSeconds === undefined ? { accepted: true, status: "matches", matches: [match] } : observation
-        : receipt;
-      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded", output };
-    } });
-    try {
-      await runtime.run(value, connection.runtimePort);
-      expect(calls).toEqual([
-        expect.objectContaining({ name: "search_character_media", effectScope: "attempt", arguments: guessed }),
-        expect.objectContaining({ name: "search_character_media", effectScope: "attempt", arguments: explicit }),
-        expect.objectContaining({ name: "send_character_media", effectScope: "turn_action", arguments: { candidateToken: match.candidateToken } }),
-      ]);
-      expect(connection.candidates[0]?.mediaResponse).toEqual({ version: 1, attachmentId: "attachment-video" });
-    } finally { await runtime.shutdown(); }
-  });
-
-  it.each(["decline", "resend"] as const)("requires lookup before a new previous-media send and allows %s recovery", async recovery => {
-    const value = mediaInvocation();
-    value.preparedTurn.imageActionMode = "chat";
-    value.preparedTurn.messages.at(-1)!.content = recovery === "decline"
-      ? "Resend the previous video only if it is at most five seconds and has no audio track."
-      : "Resend the exact previous video unchanged.";
-    const facts = { kind: "video", description: "Mira by the seaside.", facts: ["seaside"], absentFacts: [],
-      nudity: "none", durationSeconds: 5.167, hasAudio: true, alreadySent: true, score: 1 };
-    const searchArgs = { kind: "video", query: value.preparedTurn.messages.at(-1)!.content, previousMediaAssetId: "past-video",
-      ...(recovery === "decline" ? { maxDurationSeconds: 5, hasAudio: false } : {}) };
-    const receipt = { accepted: true, duplicate: false, status: "completed", attachmentId: "resent-video", mediaAssetId: "past-video",
-      generationJobId: null, costDreamcoins: 0, source: "previous_media", description: facts.description };
-    const calls: CompanionToolCall[] = [];
-    let requests = 0;
-    const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: async (_url, init) => {
-      const request: WireRequest = JSON.parse(String(init?.body));
-      const call = (name: string, args: unknown) => response({ tool_calls: [{ index: 0, id: `resend-${requests}`,
-        function: { name, arguments: JSON.stringify(args) } }] }, "tool_calls");
-      if (++requests === 1) return call("send_character_media", { previousMediaAssetId: "past-video" });
-      if (requests === 2) {
-        expect(request.messages.filter(message => message.role === "tool").at(-1)!.content).toContain("previousMediaAssetId");
-        return call("search_character_media", searchArgs);
-      }
-      if (requests === 3 && recovery === "resend") return call("send_character_media", { candidateToken: "latest-verified-video" });
-      return response({ content: recovery === "decline" ? "That video does not meet your conditions." : "Here is the same clip." });
-    } });
-    const runtime = await engine(adapter);
-    const connection = port({ executeTool: async call => {
-      calls.push(call);
-      const output = call.name === "search_character_media" ? recovery === "decline"
-        ? { accepted: true, status: "review_video_filters", matches: [], observedVideos: [facts] }
-        : { accepted: true, status: "matches", matches: [{ ...facts, candidateToken: "latest-verified-video" }] }
-        : receipt;
-      return companionToolResultSchema.parse({ attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded", output });
-    } });
-    try {
-      await runtime.run(value, connection.runtimePort);
-      expect(calls.map(call => call.name)).toEqual(recovery === "decline" ? ["search_character_media"] : ["search_character_media", "send_character_media"]);
-      expect(calls[0]?.arguments).toEqual(searchArgs);
-      expect(connection.candidates).toHaveLength(1);
-      expect(connection.candidates[0]?.mediaResponse).toEqual(recovery === "decline" ? undefined : { version: 1, attachmentId: receipt.attachmentId });
-      expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
-    } finally { await runtime.shutdown(); }
-  });
-
-  it.each(["decline", "candidate"] as const)("rejects a previous-media send after a filtered lookup and allows %s recovery", async recovery => {
-    const value = mediaInvocation();
-    value.preparedTurn.messages.at(-1)!.content = "Send an existing clip at most five seconds long. A previous clip is fine only if it fits.";
-    const facts = { kind: "video", description: "Mira by the seaside.", facts: ["seaside"], absentFacts: [],
-      nudity: "none", durationSeconds: 5.167, hasAudio: true, alreadySent: true, score: 0.8 };
-    const observation = { accepted: true, status: "review_video_filters", matches: [], observedVideos: [facts] };
-    const shorter = { ...facts, durationSeconds: 4, candidateToken: "matching-shorter-clip" };
-    const receipt = { accepted: true, duplicate: false, status: "completed", attachmentId: "eligible-video",
-      mediaAssetId: "shorter-video", generationJobId: null, costDreamcoins: 0, source: "library" };
-    const calls: CompanionToolCall[] = [];
-    let requests = 0;
-    const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: async (_url, init) => {
-      const request: WireRequest = JSON.parse(String(init?.body));
-      requests++;
-      const call = (name: string, args: unknown) => response({ tool_calls: [{ index: 0, id: `filtered-${requests}`,
-        function: { name, arguments: JSON.stringify(args) } }] }, "tool_calls");
-      if (requests === 1) return call("search_character_media", { kind: "video", query: "An existing clip at most five seconds long", maxDurationSeconds: 5, unseenOnly: false });
-      if (requests === 2) return call("send_character_media", { previousMediaAssetId: "longer-previous-video" });
-      if (requests === 3) {
-        const rejected = request.messages.filter(message => message.role === "tool").at(-1)!.content;
-        expect(rejected).toContain("previousMediaAssetId");
-        if (recovery === "decline") return response({ content: "I don't have a prepared clip that fits five seconds." });
-        return call("search_character_media", { kind: "video", query: "An existing clip at most five seconds long", maxDurationSeconds: 5, unseenOnly: false });
-      }
-      if (requests === 4) return call("send_character_media", { candidateToken: shorter.candidateToken });
-      return response({ content: "Here is the shorter clip." });
-    } });
-    const runtime = await engine(adapter);
-    const connection = port({ executeTool: async call => {
-      calls.push(call);
-      const output = call.name === "search_character_media"
-        ? calls.length === 1 ? observation : { accepted: true, status: "matches", matches: [shorter] }
-        : receipt;
-      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded", output };
-    } });
-    try {
-      await runtime.run(value, connection.runtimePort);
-      expect(calls.map(call => call.name)).toEqual(recovery === "decline" ? ["search_character_media"]
-        : ["search_character_media", "search_character_media", "send_character_media"]);
-      expect(connection.candidates).toHaveLength(1);
-      expect(connection.candidates[0]?.mediaResponse).toEqual(recovery === "decline" ? undefined : { version: 1, attachmentId: receipt.attachmentId });
-      expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
-    } finally { await runtime.shutdown(); }
-  });
-
   it.each([
-    { name: "generate_image_async", user: "Generate a new seaside photo of yourself.", arguments: { prompt: "A clothed seaside portrait", subject: "companion" } },
+    { name: "request_character_media", user: "Generate a new seaside photo of yourself.", arguments: { kind: "image", direction: "A clothed seaside portrait", subject: "companion" } },
     { name: "edit_last_image", user: "Edit the last photo to put the mug on the table.", arguments: { instruction: "Put the mug on the table", editScope: { mode: "local", target: "mug", selection: "one" } } },
     { name: "edit_last_image", user: "Redo the whole image with a seaside backdrop.", arguments: { instruction: "Redo the whole image with a seaside backdrop", editScope: { mode: "whole_image" } } },
   ] as const)("keeps authorized $name available without a mandatory library lookup", async action => {
@@ -1973,26 +1732,26 @@ describe("Chat embedded companion runtime", () => {
     const runtime = await engine(adapter);
     const source = mediaInvocation();
     const value = companionInvocationSchema.parse({ ...source, preparedTurn: { ...source.preparedTurn,
-      tools: [...IMAGE_AGENT_TOOL_DEFINITIONS, ...CHARACTER_MEDIA_TOOL_DEFINITIONS] } });
+      tools: COMPANION_MEDIA_TOOL_DEFINITIONS } });
     value.preparedTurn.messages.at(-1)!.content = action.user;
     const connection = port({ executeTool: async call => {
       calls.push(call);
       return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
-        output: { accepted: true, status: "accepted", attachmentId: "real-attachment", generationJobId: "explicit-image-job" } };
+        output: acceptedImage("real-attachment", "explicit-image-job") };
     } });
     await runtime.run(value, connection.runtimePort);
-    expect(calls).toEqual([expect.objectContaining({ name: action.name, effectScope: "turn_action", arguments: action.arguments })]);
+    expect(calls).toEqual([expect.objectContaining({ name: action.name, effectScope: "turn_action", arguments: expect.objectContaining(action.arguments) })]);
     expect(connection.candidates[0]?.execution).toEqual({ steps: 2, toolCalls: 1 });
   });
 
   it("keeps a provider's extra image count out of the paid effect bridge", async () => {
     const source = mediaInvocation();
-    const value = companionInvocationSchema.parse({ ...source, preparedTurn: { ...source.preparedTurn, tools: IMAGE_AGENT_TOOL_DEFINITIONS } });
+    const value = companionInvocationSchema.parse({ ...source, preparedTurn: { ...source.preparedTurn, tools: COMPANION_MEDIA_TOOL_DEFINITIONS } });
     value.preparedTurn.messages.at(-1)!.content = "Generate one seaside photo of yourself.";
     const executeTool = vi.fn<CompanionRuntimePort["executeTool"]>();
     const fetch = vi.fn<NonNullable<OpenAiCompatibleAdapterOptions["fetch"]>>()
       .mockResolvedValueOnce(response({ tool_calls: [{ index: 0, id: "four-photos", function: {
-        name: "generate_image_async", arguments: JSON.stringify({ prompt: "A clothed seaside portrait", subject: "companion", outputCount: 4 }),
+        name: "request_character_media", arguments: JSON.stringify({ kind: "image", direction: "A clothed seaside portrait", subject: "companion", outputCount: 4 }),
       } }] }, "tool_calls"))
       .mockImplementation(async () => response({ content: "I couldn't generate that photo." }));
     const runtime = await engine(new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch }));
@@ -2000,21 +1759,20 @@ describe("Chat embedded companion runtime", () => {
       await runtime.run(value, port({ executeTool }).runtimePort);
       expect(executeTool).not.toHaveBeenCalled();
       const request = JSON.parse(String(fetch.mock.calls[0]?.[1]?.body));
-      expect(request.tools.find((tool: { function: { name: string } }) => tool.function.name === "generate_image_async").function.parameters)
-        .toMatchObject({ additionalProperties: false, properties: { outputCount: { enum: [1] } } });
+      expect(request.tools.find((tool: { function: { name: string } }) => tool.function.name === "request_character_media").function.parameters)
+        .toMatchObject({ additionalProperties: false });
+      expect(request.tools.find((tool: { function: { name: string } }) => tool.function.name === "request_character_media").function.parameters.properties).not.toHaveProperty("outputCount");
     } finally { await runtime.shutdown(); }
   });
 
   it.each([
-    { hasStock: true, name: "generate_image_async", args: { prompt: "A replacement seaside photo", subject: "companion" } },
-    { hasStock: false, name: "generate_image_async", args: { prompt: "A replacement seaside photo", subject: "companion" } },
     { hasStock: true, name: "edit_last_image", args: { instruction: "Redo the last image at the seaside", editScope: { mode: "whole_image" } } },
     { hasStock: false, name: "edit_last_image", args: { instruction: "Redo the last image at the seaside", editScope: { mode: "whole_image" } } },
   ] as const)("rejects an unapproved $name before lookup when inventory is available=$hasStock", async ({ hasStock, name, args }) => {
     const source = mediaInvocation();
     const value = companionInvocationSchema.parse({ ...source, preparedTurn: { ...source.preparedTurn,
       imageActionMode: hasStock ? "chat" : undefined,
-      tools: [...IMAGE_AGENT_TOOL_DEFINITIONS, ...(hasStock ? CHARACTER_MEDIA_TOOL_DEFINITIONS : [])] } });
+      tools: COMPANION_MEDIA_TOOL_DEFINITIONS } });
     value.preparedTurn.messages.at(-1)!.content = "Only send an existing photo. Do not generate a replacement.";
     const requests: WireRequest[] = [];
     const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: async (_url, init) => {
@@ -2063,318 +1821,15 @@ describe("Chat embedded companion runtime", () => {
     } finally { await runtime.shutdown(); }
   });
 
-  it.each(["failed", "no_match"] as const)("keeps the same Turn on the inventory path when retried after %s", async outcome => {
-    const source = mediaInvocation();
-    const value = companionInvocationSchema.parse({ ...source, preparedTurn: { ...source.preparedTurn,
-      imageActionMode: "chat", tools: [...IMAGE_AGENT_TOOL_DEFINITIONS, ...CHARACTER_MEDIA_TOOL_DEFINITIONS] } });
-    let requests = 0;
-    const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: async () => {
-      requests++;
-      if (requests % 2 === 0) return response({ content: "I couldn't send a prepared photo this time." });
-      return response({ tool_calls: [{ index: 0, id: `retry-media-${requests}`, function: {
-        name: requests === 1 ? "search_character_media" : "edit_last_image",
-        arguments: JSON.stringify(requests === 1 ? { kind: "image", query: "A photo by the seaside" }
-          : { instruction: "Remove the hat", editScope: { mode: "local", target: "hat", selection: "one" } }),
-      } }] }, "tool_calls");
-    } });
-    const runtime = await engine(adapter);
-    const executeTool = vi.fn(async (call: CompanionToolCall): Promise<CompanionToolResult> => {
-      const identity = { attemptId: call.attemptId, callId: call.callId, name: call.name };
-      if (call.name !== "search_character_media") return { ...identity, outcome: "succeeded", output: {
-        accepted: true, status: "awaiting_confirmation", attachmentId: "unexpected-edit-card", generationJobId: null, costDreamcoins: 0,
-      } };
-      return outcome === "failed" ? { ...identity, outcome: "failed", error: { code: "media_search_unavailable", message: "Search unavailable", retryable: true } }
-        : { ...identity, outcome: "succeeded", output: { accepted: true, status: "no_match", matches: [] } };
-    });
-    const connection = port({ executeTool });
-    const retry = { ...value, invocationId: "retry-stock-invocation", attemptId: "retry-stock-attempt",
-      preparedTurn: { ...value.preparedTurn, imageActionMode: "library" as const } };
-    try {
-      await runtime.run(value, connection.runtimePort);
-      expect(connection.candidates).toHaveLength(1);
-      await runtime.run(retry, connection.runtimePort);
-      expect(executeTool).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ attemptId: value.attemptId, name: "search_character_media" }), expect.any(AbortSignal));
-      expect(connection.candidates).toHaveLength(1);
-      expect(connection.events.filter(event => event.type === "tool_started").map(event => event.name)).toEqual(["search_character_media"]);
-    } finally { await runtime.shutdown(); }
-  });
-
-  it.each(["failed", "unknown"] as const)("does not turn a %s lookup into a delivery or an unconfirmed purchase", async outcome => {
-    const requests: WireRequest[] = [];
-    const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async (_url, init) => {
-      requests.push(JSON.parse(String(init?.body)));
-      return requests.length === 1 ? response({ tool_calls: [{ index: 0, id: "lookup", function: {
-        name: "search_character_media", arguments: JSON.stringify({ kind: "video", query: "A seaside clip" }),
-      } }] }, "tool_calls") : response({ content: "I don't have that clip ready for you." });
-    } });
-    const runtime = await engine(adapter);
-    const calls: CompanionToolCall[] = [];
-    const connection = port({ executeTool: async call => {
-      calls.push(call);
-      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome,
-        error: { code: "media_search_unavailable", message: "Search unavailable", retryable: true } };
-    } });
-    await runtime.run(mediaInvocation(), connection.runtimePort);
-    expect(calls.map(call => call.name)).toEqual(["search_character_media"]);
-    expect(requests[1]?.messages.find(message => message.role === "tool")?.content).toContain("No media was sent or generated");
-    expect(requests[1]?.messages.find(message => message.role === "tool")?.content).toContain("not evidence that the library is empty");
-    expect(connection.candidates).toHaveLength(1);
-    expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
-  });
-
-  describe.each(["matches", "no_match", "failed", "unknown", "exception", "malformed_success"] as const)("after a %s media lookup", outcome => {
-    it.each(["generate_image_async", "edit_last_image"] as const)("blocks an adversarial %s before Main receives it", async name => {
-      let requests = 0;
-      const calls: CompanionToolCall[] = [];
-      const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
-        requests++;
-        if (requests > 2) return response({ content: "I can't confirm that photo right now." });
-        return response({ tool_calls: [{ index: 0, id: `unavailable-${requests}`, function: {
-          name: requests === 1 ? "search_character_media" : name,
-          arguments: JSON.stringify(requests === 1 ? { kind: "image", query: "Mira fully clothed by the seaside without a hat" }
-            : name === "generate_image_async" ? { prompt: "A replacement seaside portrait", subject: "companion" }
-              : { instruction: "Replace the background with the seaside", editScope: { mode: "whole_image" } }),
-        } }] }, "tool_calls");
-      } });
-      const source = mediaInvocation();
-      const value = companionInvocationSchema.parse({ ...source, preparedTurn: { ...source.preparedTurn,
-        tools: [...IMAGE_AGENT_TOOL_DEFINITIONS, ...CHARACTER_MEDIA_TOOL_DEFINITIONS] } });
-      value.preparedTurn.messages.at(-1)!.content = "Send an existing photo only. Do not generate or edit anything.";
-      const runtime = await engine(adapter);
-      const connection = port({ executeTool: async (call): Promise<CompanionToolResult> => {
-        calls.push(call);
-        if (call.name !== "search_character_media") {
-          return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
-            output: { accepted: true, status: "accepted", attachmentId: "charged-attachment", generationJobId: "charged-job" } };
-        }
-        if (outcome === "exception") throw new Error("Search transport failed");
-        if (outcome === "malformed_success") {
-          return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded", output: { accepted: true } };
-        }
-        if (outcome === "matches" || outcome === "no_match") {
-          return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
-            output: { accepted: true, status: outcome, matches: outcome === "matches" ? [preparedImageCandidate] : [] } };
-        }
-        return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome,
-          error: { code: "media_search_unavailable", message: "Search unavailable", retryable: true } };
-      } });
-      try {
-        await runtime.run(value, connection.runtimePort);
-        expect(calls.map(call => call.name)).toEqual(["search_character_media"]);
-        expect(connection.events.filter(event => event.type === "tool_started").map(event => event.name)).toEqual(["search_character_media"]);
-        expect(connection.candidates).toEqual([]);
-      } finally { await runtime.shutdown(); }
-    });
-  });
-
-  it.each(["failed", "unknown"] as const)("allows another stock search and free send after a %s lookup", async outcome => {
-    let requests = 0;
-    const calls: CompanionToolCall[] = [];
-    const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
-      requests++;
-      if (requests > 3) return response({ content: "I can't confirm that photo right now." });
-      return response({ tool_calls: [{ index: 0, id: `retry-${requests}`, function: {
-        name: requests < 3 ? "search_character_media" : "send_character_media",
-        arguments: JSON.stringify(requests < 3 ? { kind: "image", query: "Mira by the seaside" }
-          : { candidateToken: preparedImageCandidate.candidateToken }),
-      } }] }, "tool_calls");
-    } });
-    const runtime = await engine(adapter);
-    const connection = port({ executeTool: async (call): Promise<CompanionToolResult> => {
-      calls.push(call);
-      if (calls.length === 1) return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome,
-        error: { code: "media_search_unavailable", message: "Search unavailable", retryable: true } };
-      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
-        output: call.name === "search_character_media" ? { accepted: true, status: "matches", matches: [preparedImageCandidate] }
-          : { accepted: true, duplicate: false, status: "completed", attachmentId: "after-retry", generationJobId: null,
-            mediaAssetId: "after-retry-media", costDreamcoins: 0, source: "library" } };
-    } });
-    try {
-      await runtime.run(mediaInvocation(), connection.runtimePort);
-      expect(calls.map(call => call.name)).toEqual(["search_character_media", "search_character_media", "send_character_media"]);
-      expect(connection.candidates).toHaveLength(1);
-      expect(connection.candidates[0]?.tools.map(tool => tool.name)).toEqual(calls.map(call => call.name));
-    } finally { await runtime.shutdown(); }
-  });
-
-  it.each(["failed", "succeeded"] as const)("keeps stock-only execution after a cached %s lookup and a fresh result", async first => {
-    let requests = 0;
-    const calls: CompanionToolCall[] = [];
-    const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
-      requests++;
-      if (requests > 4) return response({ content: "I can't confirm that photo right now." });
-      return response({ tool_calls: [{ index: 0, id: requests === 3 ? "lookup-1" : `lookup-${requests}`, function: {
-        name: requests < 4 ? "search_character_media" : "generate_image_async",
-        arguments: JSON.stringify(requests < 4 ? { kind: "image", query: "Mira by the seaside" }
-          : { prompt: "Mira posing by the seaside", subject: "companion" }),
-      } }] }, "tool_calls");
-    } });
-    const runtime = await engine(adapter);
-    const connection = port({ executeTool: async (call): Promise<CompanionToolResult> => {
-      calls.push(call);
-      if (call.name === "search_character_media") {
-        const succeeds = calls.length === 1 ? first === "succeeded" : first === "failed";
-        return succeeds ? { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
-          output: { accepted: true, status: "no_match", matches: [] } }
-          : { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "failed",
-            error: { code: "media_search_unavailable", message: "Search unavailable", retryable: true } };
-      }
-      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
-        output: { accepted: true, status: "accepted", attachmentId: "after-replay", generationJobId: "after-replay-job" } };
-    } });
-    try {
-      await runtime.run(mediaInvocation(), connection.runtimePort);
-      expect(calls.map(call => call.name)).toEqual(["search_character_media", "search_character_media"]);
-      expect(connection.candidates).toEqual([]);
-    } finally { await runtime.shutdown(); }
-  });
-
-  it("does not reserve a blocked paid call or prevent a later stock send", async () => {
-    let requests = 0;
-    const calls: CompanionToolCall[] = [];
-    const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
-      requests++;
-      if (requests > 4) return response({ content: "Give me a moment, love." });
-      const lookup = requests === 1 || requests === 3;
-      return response({ tool_calls: [{ index: 0, id: lookup ? `retry-lookup-${requests}` : `action-${requests}`, function: {
-        name: lookup ? "search_character_media" : requests === 2 ? "generate_image_async" : "send_character_media",
-        arguments: JSON.stringify(lookup ? { kind: "image", query: "Mira by the seaside" }
-          : requests === 2 ? { prompt: "Mira posing by the seaside", subject: "companion" }
-            : { candidateToken: preparedImageCandidate.candidateToken }),
-      } }] }, "tool_calls");
-    } });
-    const runtime = await engine(adapter);
-    const connection = port({ executeTool: async (call): Promise<CompanionToolResult> => {
-      calls.push(call);
-      if (calls.length === 1) return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "failed",
-        error: { code: "media_search_unavailable", message: "Search unavailable", retryable: true } };
-      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
-        output: call.name === "search_character_media" ? { accepted: true, status: "matches", matches: [preparedImageCandidate] }
-          : { accepted: true, duplicate: false, status: "completed", attachmentId: "retried-stock-attachment", generationJobId: null,
-            mediaAssetId: "retried-stock-media", costDreamcoins: 0, source: "library" } };
-    } });
-    try {
-      await runtime.run(mediaInvocation(), connection.runtimePort);
-      expect(calls.map(call => call.callId)).toEqual(["retry-lookup-1", "retry-lookup-3", "action-4"]);
-      expect(connection.events.filter(event => event.type === "tool_started").map(event => event.callId)).toEqual(calls.map(call => call.callId));
-      expect(connection.candidates[0]?.execution.toolCalls).toBe(3);
-      expect(connection.candidates[0]?.tools.map(tool => tool.callId)).toEqual(calls.map(call => call.callId));
-    } finally { await runtime.shutdown(); }
-  });
-
-  it("allows explicit generation in the next Turn after a stock-only attempt", async () => {
-    let requests = 0;
-    const calls: CompanionToolCall[] = [];
-    const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
-      requests++;
-      if (requests === 3 || requests === 5) return response({ content: "No matching prepared photo is ready." });
-      return response({ tool_calls: [{ index: 0, id: `next-turn-${requests}`, function: {
-        name: requests === 1 ? "search_character_media" : "generate_image_async",
-        arguments: JSON.stringify(requests === 1 ? { kind: "image", query: "Mira by the seaside" }
-          : { prompt: "Mira posing by the seaside", subject: "companion" }),
-      } }] }, "tool_calls");
-    } });
-    const runtime = await engine(adapter);
-    const connection = port({ executeTool: async (call): Promise<CompanionToolResult> => {
-      calls.push(call);
-      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
-        output: call.name === "search_character_media" ? { accepted: true, status: "no_match", matches: [] }
-          : { accepted: true, status: "accepted", attachmentId: "next-turn-image", generationJobId: "next-turn-job" } };
-    } });
-    try {
-      const stock = mediaInvocation();
-      await runtime.run(stock, connection.runtimePort);
-      expect(calls.map(call => call.name)).toEqual(["search_character_media"]);
-      expect(connection.candidates).toEqual([]);
-
-      const next = mediaInvocation();
-      next.invocationId = "invocation-next-turn";
-      next.attemptId = "attempt-next-turn";
-      next.preparedTurn.messages.at(-1)!.content = "Generate a new seaside portrait of yourself.";
-      await runtime.run(next, connection.runtimePort);
-      expect(calls.map(call => [call.attemptId, call.name])).toEqual([
-        [stock.attemptId, "search_character_media"], [next.attemptId, "generate_image_async"],
-      ]);
-      expect(connection.candidates).toHaveLength(1);
-      expect(connection.candidates[0]?.mediaResponse).toEqual({ version: 1, attachmentId: "next-turn-image" });
-    } finally { await runtime.shutdown(); }
-  });
-
-  it.each([
-    ["generate_image_async", true], ["generate_image_async", false],
-    ["edit_last_image", true], ["edit_last_image", false],
-  ] as const)("sends prepared media from a mixed batch with %s first=%s", async (name, paidFirst) => {
-    let requests = 0;
-    const lookup = { id: "batch-lookup", function: { name: "search_character_media",
-      arguments: JSON.stringify({ kind: "image", query: "Mira by the seaside" }) } };
-    const paid = { id: "batch-paid", function: { name, arguments: JSON.stringify(name === "generate_image_async"
-      ? { prompt: "Mira posing by the seaside", subject: "companion" }
-      : { instruction: "Move the scene to the seaside", editScope: { mode: "whole_image" } }) } };
-    const send = { id: "batch-send", function: { name: "send_character_media",
-      arguments: JSON.stringify({ candidateToken: preparedImageCandidate.candidateToken }) } };
-    const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
-      requests++;
-      if (requests > 2) return response({ content: "Here is the seaside photo." });
-      const calls = requests === 2 ? [send] : paidFirst ? [paid, lookup] : [lookup, paid];
-      return response({ tool_calls: calls.map((call, index) => ({ ...call, index })) }, "tool_calls");
-    } });
-    const runtime = await engine(adapter);
-    const calls: CompanionToolCall[] = [];
-    const connection = port({ executeTool: async (call): Promise<CompanionToolResult> => {
-      calls.push(call);
-      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
-        output: call.name === "search_character_media" ? { accepted: true, status: "matches", matches: [preparedImageCandidate] }
-          : call.name === "send_character_media" ? { accepted: true, duplicate: false, status: "completed", attachmentId: "batch-library-attachment",
-            generationJobId: null, mediaAssetId: "batch-library-asset", costDreamcoins: 0, source: "library" }
-            : { accepted: true, status: "accepted", attachmentId: "unexpected-paid-attachment", generationJobId: "unexpected-paid-job" } };
-    } });
-    try {
-      const source = mediaInvocation();
-      const value = companionInvocationSchema.parse({ ...source, preparedTurn: { ...source.preparedTurn,
-        tools: [...IMAGE_AGENT_TOOL_DEFINITIONS, ...CHARACTER_MEDIA_TOOL_DEFINITIONS] } });
-      await runtime.run(value, connection.runtimePort);
-      expect(calls.map(call => call.callId)).toEqual(["batch-lookup", "batch-send"]);
-      expect(connection.events.filter(event => event.type === "tool_started").map(event => event.callId)).toEqual(["batch-lookup", "batch-send"]);
-      expect(connection.candidates).toHaveLength(1);
-      expect(connection.candidates[0]?.mediaResponse).toEqual({ version: 1, attachmentId: "batch-library-attachment" });
-      expect(connection.candidates[0]?.tools.map(tool => tool.callId)).toEqual(["batch-lookup", "batch-send"]);
-    } finally { await runtime.shutdown(); }
-  });
-
-  it("blocks paid fallback when the selected lookup has invalid arguments", async () => {
-    let requests = 0;
-    const calls: CompanionToolCall[] = [];
-    const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
-      requests++;
-      if (requests > 2) return response({ content: "I can't confirm that photo right now." });
-      return response({ tool_calls: [{ index: 0, id: `invalid-lookup-${requests}`, function: {
-        name: requests === 1 ? "search_character_media" : "generate_image_async",
-        arguments: JSON.stringify(requests === 1 ? { kind: "image", query: "" }
-          : { prompt: "Mira posing by the seaside", subject: "companion" }),
-      } }] }, "tool_calls");
-    } });
-    const runtime = await engine(adapter);
-    const connection = port({ executeTool: async call => {
-      calls.push(call);
-      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
-        output: { accepted: true, status: "accepted", attachmentId: "unexpected-paid-attachment", generationJobId: "unexpected-paid-job" } };
-    } });
-    try {
-      await runtime.run(mediaInvocation(), connection.runtimePort);
-      expect(calls).toEqual([]);
-      expect(connection.candidates).toEqual([]);
-    } finally { await runtime.shutdown(); }
-  });
-
   it.each(["unknown", "malformed_success"] as const)("stops on %s media delivery and cannot continue into another purchase", async failure => {
     let requests = 0;
     const calls: CompanionToolCall[] = [];
     const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
       requests++;
       return response({ tool_calls: [{ index: 0, id: `action-${requests}`, function: {
-        name: requests === 1 ? "send_character_media" : "generate_image_async",
-        arguments: JSON.stringify(requests === 1 ? { candidateToken: "latest-verified-previous-media" }
-          : { prompt: "A new portrait to replace the lost one", subject: "companion" }),
+        name: requests === 1 ? "resend_session_media" : "request_character_media",
+        arguments: JSON.stringify(requests === 1 ? { previousMediaAssetId: "past-media" }
+          : { kind: "image", direction: "A new portrait to replace the lost one", subject: "companion" }),
       } }] }, "tool_calls");
     } });
     const runtime = await engine(adapter);
@@ -2386,7 +1841,7 @@ describe("Chat embedded companion runtime", () => {
     } });
     await runtime.run(mediaInvocation(), connection.runtimePort);
     expect(requests).toBe(1);
-    expect(calls.map(call => call.name)).toEqual(["send_character_media"]);
+    expect(calls.map(call => call.name)).toEqual(["resend_session_media"]);
     expect(connection.candidates).toEqual([]);
     expect(connection.events.at(-1)).toMatchObject({ type: "failed", error: { code: "main_effect_unconfirmed" } });
   });
@@ -2398,21 +1853,21 @@ describe("Chat embedded companion runtime", () => {
       requests++;
       if (requests === 3) return response({ content: "Here's that seaside photo again." });
       return response({ tool_calls: [{ index: 0, id: `action-${requests}`, function: {
-        name: requests === 1 ? "send_character_media" : "generate_image_async",
-        arguments: JSON.stringify(requests === 1 ? { candidateToken: "latest-verified-previous-media" }
-          : { prompt: "Another seaside portrait", subject: "companion" }),
+        name: requests === 1 ? "resend_session_media" : "request_character_media",
+        arguments: JSON.stringify(requests === 1 ? { previousMediaAssetId: "past-media" }
+          : { kind: "image", direction: "Another seaside portrait", subject: "companion" }),
       } }] }, "tool_calls");
     } });
     const runtime = await engine(adapter);
     const connection = port({ executeTool: async call => {
       calls.push(call);
       return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded", output: {
-        accepted: true, duplicate: false, status: "completed", attachmentId: "resent", mediaAssetId: "past-media",
+        accepted: true, duplicate: false, status: "completed", attachmentId: "resent", kind: "image", mediaAssetId: "past-media",
         costDreamcoins: 0, generationJobId: null, source: "previous_media", description: null,
       } };
     } });
     await runtime.run(mediaInvocation(), connection.runtimePort);
-    expect(calls.map(call => call.name)).toEqual(["send_character_media"]);
+    expect(calls.map(call => call.name)).toEqual(["resend_session_media"]);
     expect(connection.candidates[0]?.execution.toolCalls).toBe(1);
   });
 
@@ -2425,7 +1880,7 @@ describe("Chat embedded companion runtime", () => {
     const connection = port({
       executeTool: async (call) => {
         calls.push(call);
-        return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded", output: { status: "accepted", attachmentId: "real-attachment", generationJobId: "job-host" } };
+        return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded", output: acceptedImage("real-attachment", "job-host") };
       },
     });
     const value = invocation(true);
@@ -2461,7 +1916,7 @@ describe("Chat embedded companion runtime", () => {
     const connection = port({
       executeTool: async (call) => {
         calls.push(call);
-        return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded", output: { status: "accepted", attachmentId: "real-attachment", generationJobId: "job-agent" } };
+        return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded", output: acceptedImage("real-attachment", "job-agent") };
       },
     });
     const value = imageInvocation();
@@ -2488,7 +1943,9 @@ describe("Chat embedded companion runtime", () => {
     expect(calls[0]?.callId).toBe("call-image-1");
     expect(adapter.calls).toBe(1);
     expect(connection.candidates).toEqual([]);
-    expect(connection.events).toContainEqual(expect.objectContaining({ type: "tool_finished", outcome: "unknown" }));
+    const finished = connection.events.find(event => event.type === "tool_finished");
+    expect(finished).toMatchObject({ outcome: "unknown" });
+    expect(finished).not.toHaveProperty("attachmentId");
     expect(connection.events.at(-1)).toMatchObject({
       type: "failed", error: { code: "main_effect_unconfirmed", retryable: true },
     });
@@ -2504,7 +1961,7 @@ describe("Chat embedded companion runtime", () => {
     const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async (_url, init) => {
       requests.push(JSON.parse(String(init?.body)));
       return requests.length === 1 ? response({ tool_calls: [{ index: 0, id: "call-image-1", function: {
-        name: "generate_image_async", arguments: JSON.stringify({ prompt: "A cozy portrait beside the window.", subject: "companion" }),
+        name: "request_character_media", arguments: JSON.stringify({ kind: "image", direction: "A cozy portrait beside the window.", subject: "companion" }),
       } }] }, "tool_calls") : response({ content: reply });
     } });
     const runtime = await engine(adapter);
@@ -2544,11 +2001,11 @@ describe("Chat embedded companion runtime", () => {
     const connection = port({ executeTool: async (call) => {
       calls.push(call);
       return { attemptId: call.attemptId, callId: call.callId, name: call.name,
-        outcome: "succeeded", output: { status: "accepted", attachmentId: "real-attachment", generationJobId: "authorized-scene" } };
+        outcome: "succeeded", output: acceptedImage("real-attachment", "authorized-scene") };
     } });
     await runtime.run(value, connection.runtimePort);
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.arguments).toMatchObject({ prompt });
+    expect(calls[0]?.arguments).toMatchObject({ direction: prompt });
     expect(connection.candidates).toHaveLength(1);
   });
 
@@ -2565,7 +2022,7 @@ describe("Chat embedded companion runtime", () => {
           callId: call.callId,
           name: call.name,
           outcome: "succeeded",
-          output: { status: "accepted", attachmentId: "real-attachment", generationJobId: "job-structured-intent" },
+          output: acceptedImage("real-attachment", "job-structured-intent"),
         };
       },
     });
@@ -2576,7 +2033,7 @@ describe("Chat embedded companion runtime", () => {
       expect.objectContaining({
         effectScope: "turn_action",
         intent: { requestedNudity: "none" },
-        arguments: expect.objectContaining({ prompt: expect.stringContaining("silk robe") }),
+        arguments: expect.objectContaining({ direction: expect.stringContaining("silk robe") }),
       }),
     ]);
     expect(connection.candidates).toHaveLength(1);
@@ -2611,8 +2068,8 @@ describe("Chat embedded companion runtime", () => {
     expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
   });
 
-  it("withholds all provisional media text and commits the real attachment", async () => {
-    const adapter = new LeadInThenToolAdapter("Elbow-deep in clay tonight, so give me a second to wash my hands.");
+  it("withholds a long provisional media claim and commits the real attachment", async () => {
+    const adapter = new LeadInThenToolAdapter("I already sent the photo. ".repeat(8));
     const runtime = await engine(adapter);
     const connection = port();
     await runtime.run(imageInvocation(), connection.runtimePort);
@@ -2631,14 +2088,14 @@ describe("Chat embedded companion runtime", () => {
     const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture-key", fetch: async () => {
       requests++;
       return new Response(`data: ${JSON.stringify({ choices: [{
-        delta: requests <= 2 ? { tool_calls: [{ index: 0, id: `image-${requests}`, function: { name: "generate_image_async", arguments: JSON.stringify({ prompt: "A portrait beside the rainy window", subject: "companion" }) } }] } : { content: "Give me a moment, love." },
+        delta: requests <= 2 ? { tool_calls: [{ index: 0, id: `image-${requests}`, function: { name: "request_character_media", arguments: JSON.stringify({ kind: "image", direction: "A portrait beside the rainy window", subject: "companion" }) } }] } : { content: "Give me a moment, love." },
         finish_reason: requests <= 2 ? "tool_calls" : "stop",
       }] })}\n\ndata: [DONE]\n\n`);
     } });
     const runtime = await engine(adapter);
     const connection = port({ executeTool: async call => {
       calls.push(call);
-      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded", output: { accepted: true, status: "accepted", attachmentId: "real-attachment" } };
+      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded", output: acceptedImage("real-attachment") };
     } });
     await runtime.run(value, connection.runtimePort);
     expect(calls).toHaveLength(1);
@@ -2734,7 +2191,7 @@ describe("Chat embedded companion runtime", () => {
     const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture",
       fetch: async () => {
         if (++requests === 1) return response({ tool_calls: [{ index: 0, id: "image-1", function: {
-          name: "generate_image_async", arguments: JSON.stringify({ prompt: "Mira by the observatory", subject: "companion", requestedNudity: "none" }),
+          name: "request_character_media", arguments: JSON.stringify({ kind: "image", direction: "Mira by the observatory", subject: "companion", requestedNudity: "none" }),
         } }] }, "tool_calls", { inputTokens: 25, outputTokens: 6, cacheReadTokens: 4 });
         throw new Error("A confirmed attachment must not request a provisional answer");
       },
@@ -2812,5 +2269,112 @@ describe("Chat embedded companion runtime", () => {
     expect(runtime.cancel(invocation().invocationId, "user")).toBe(true);
     await active;
     expect(connection.events.at(-1)).toMatchObject({ type: "cancelled", reason: "user" });
+  });
+
+  it("handles unified request_character_media video no_match with localized feedback and zero attachment error", async () => {
+    const base = invocation();
+    const value: CompanionInvocation = {
+      ...base,
+      invocationId: "inv-unified-nomatch",
+      attemptId: "att-unified-nomatch",
+      preparedTurn: {
+        ...base.preparedTurn,
+        tools: companionInvocationSchema.shape.preparedTurn.shape.tools.parse(COMPANION_MEDIA_TOOL_DEFINITIONS),
+        messages: [
+          base.preparedTurn.messages[0]!,
+          { id: "user-vid", sourceKind: "current_user", role: "user", content: "给我发一段带声音的晚礼服视频。" },
+        ],
+      },
+    };
+    const native = vi.fn(async () => new Response(`data: ${JSON.stringify({
+      choices: [{
+        delta: {
+          tool_calls: [{
+            index: 0,
+            id: "req-vid-1",
+            function: {
+              name: "request_character_media",
+              arguments: JSON.stringify({
+                kind: "video",
+                direction: "evening gown with audio",
+                subject: "companion",
+                mode: "auto",
+                requestedNudity: "none",
+                mustHave: [],
+                mustExclude: [],
+                hasAudio: true,
+              }),
+            },
+          }],
+        },
+        finish_reason: "tool_calls",
+      }],
+    })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } }));
+    const extraction = vi.fn(async () => new Response(`data: ${JSON.stringify({
+      choices: [{ delta: { content: JSON.stringify({ requests: [], language: "zh" }) }, finish_reason: "stop" }],
+    })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } }));
+    const runtime = await engine(new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: native }, extraction));
+    const connection = port({
+      executeTool: async call => ({
+        attemptId: call.attemptId,
+        callId: call.callId,
+        name: call.name,
+        outcome: "succeeded",
+        output: {
+          accepted: true,
+          duplicate: false,
+          status: "no_match",
+          kind: "video",
+          costDreamcoins: 0,
+          suggestedAction: "photo_instead",
+        },
+      }),
+    });
+    try {
+      await runtime.run(value, connection.runtimePort);
+      expect(connection.candidates).toHaveLength(1);
+      expect(connection.candidates[0]?.content).toBe("我没找到符合你要求的现成内容。");
+      expect(connection.candidates[0]?.mediaResponse).toBeUndefined();
+      expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("publishes complete ordinary text on a media-capable turn", async () => {
+    const base = invocation();
+    const value: CompanionInvocation = {
+      ...base,
+      invocationId: "inv-dual-stream",
+      attemptId: "att-dual-stream",
+      preparedTurn: {
+        ...base.preparedTurn,
+        tools: companionInvocationSchema.shape.preparedTurn.shape.tools.parse(COMPANION_MEDIA_TOOL_DEFINITIONS),
+        messages: [
+          base.preparedTurn.messages[0]!,
+          { id: "user-chat", sourceKind: "current_user", role: "user", content: "Tell me about your evening walk." },
+        ],
+      },
+    };
+    const chunk1 = "I walked along the stone harbor wall just after sunset while the tide was pulling back across the wet cobblestones, ";
+    const chunk2 = "listening to the ferry horns echo softly through the mist. ";
+    const chunk3 = "It made me think of our conversation last night.";
+    const fullReply = chunk1 + chunk2 + chunk3;
+    const sseBody = [chunk1, chunk2, chunk3].map((content, idx) =>
+      `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: idx === 2 ? "stop" : null }] })}\n\n`,
+    ).join("") + "data: [DONE]\n\n";
+    const native = vi.fn(async () => new Response(sseBody, { headers: { "content-type": "text/event-stream" } }));
+    const runtime = await engine(new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: native }));
+    const connection = port();
+    try {
+      await runtime.run(value, connection.runtimePort);
+      const deltas = connection.events.filter(event => event.type === "text_delta").map(event => event.delta);
+      expect(deltas).toEqual([fullReply]);
+      expect(deltas.join("")).toBe(fullReply);
+      expect(connection.candidates[0]?.content).toBe(fullReply);
+      expect(connection.events.some(event => event.type === "text_reset")).toBe(false);
+    } finally {
+      await runtime.shutdown();
+    }
   });
 });

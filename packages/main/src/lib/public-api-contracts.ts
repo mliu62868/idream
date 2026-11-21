@@ -1431,6 +1431,8 @@ const chatAttachmentSchema = z
     thumbnailUrl: renderableMediaSourceSchema.nullable().optional(),
     isSynthetic: z.boolean().optional(),
     costDreamcoins: nonNegativeInteger.nullable().optional(),
+    confirmationKind: z.enum(["local_image_edit", "paid_media_quote"]).optional(),
+    deliveryStage: z.enum(["sending"]).optional(),
     promptHint: z.string().nullable().optional(),
     width: nonNegativeInteger.nullable().optional(),
     height: nonNegativeInteger.nullable().optional(),

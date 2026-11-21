@@ -12,7 +12,7 @@ import { acceptGenerationJobForUser } from "../ourdream/generation-job-authority
 import { createReferenceSetRevision } from "../ourdream/generation-reference-set";
 import { quoteAuthorityFor } from "../ourdream/generation-quote";
 import { applyChatToolEffect } from "./tool-effect";
-import { beginChatTurn, commitChatTerminal, createChatSession, executionSnapshot, getChatSession, regenerateChatTurn } from "./turn-ledger";
+import { beginChatTurn, commitChatTerminal, createChatSession, executionSnapshot, getChatSession } from "./turn-ledger";
 
 const prefix = `zt-chat-effect-delivery-${randomUUID()}-`;
 const sourceKeys: string[] = [];
@@ -54,9 +54,9 @@ describe("initial Chat image delivery", () => {
   });
 
   it.each((["companion", "scene"] as const).flatMap(subject =>
-    (["failed", "completed", "retry-completed", "requesting-recovery"] as const).map(scenario => ({ subject, scenario }))
+    (["failed", "completed", "retry-completed"] as const).map(scenario => ({ subject, scenario }))
   ))("preserves $subject $scenario image delivery and reservation identity", async ({ subject, scenario }) => {
-    const outcome = scenario === "requesting-recovery" ? "completed" : scenario;
+    const outcome = scenario;
     const userId = `${prefix}${randomUUID()}`;
     await createUser({ id: userId });
     await grantCoins(userId, 40);
@@ -74,25 +74,8 @@ describe("initial Chat image delivery", () => {
     const session = await createChatSession(userId, { characterId: character.id });
     await prisma.recentChat.update({ where: { sessionId: session.id }, data: { memoryEnabled: false } });
     const direction = subject === "scene" ? "A basil plant in a terracotta pot on a sunny balcony. No people visible." : "Avery beside the rainy window.";
-    let { snapshot } = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId, sessionId: session.id, content: subject === "scene" ? `Generate one picture of ${direction}` : "Send me a portrait beside the rainy window.", idempotencyKey: randomUUID(), allowPaidImage: true });
+    const { snapshot } = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId, sessionId: session.id, content: subject === "scene" ? `Generate one picture of ${direction}` : "Send me a portrait beside the rainy window.", idempotencyKey: randomUUID(), allowPaidImage: true });
     if (!snapshot) throw new Error("Missing accepted Turn");
-    if (scenario === "requesting-recovery") {
-      // Reproduce Main exiting after the action identity was saved but before
-      // Generation's atomic reservation. No Job or debit exists to replay.
-      const contentDigest = createHash("sha256").update(snapshot.userContent).digest("hex");
-      const attachmentId = `chatfx_${createHash("sha256").update(`${snapshot.turnId}:generate_image_async:${contentDigest}`).digest("hex").slice(0, 48)}`;
-      await prisma.chatTurnAttachment.create({ data: {
-        id: attachmentId, turnId: snapshot.turnId, kind: "generated_image", status: "requesting",
-        promptHint: direction,
-        metadata: { attempt: 1, effect: { attempt: 1, effectScope: "turn_action", intent: { requestedNudity: "unspecified" } }, request: { name: "generate_image_async", ...(subject === "scene" ? { subject } : {}), orientation: "4:5", outputCount: 1 } },
-      } });
-      await commitChatTerminal({ version: 1, turnId: snapshot.turnId, sessionId: snapshot.sessionId,
-        assistantMessageId: snapshot.assistantMessageId, attempt: 1, status: "failed", content: "", model: null,
-        promptTokens: null, completionTokens: null, sceneVersion: snapshot.sceneVersion, scene: snapshot.scene,
-        terminalEvidence: { authority: "test", prompt: { productPromptVersion: "companion-product-1", preparedTurnVersion: null, systemPromptDigest: null, soulFingerprint: null } },
-      });
-      snapshot = (await regenerateChatTurn(userId, snapshot.assistantMessageId)).snapshot;
-    }
     const gen = await generationTestProviders();
     const generate = vi.spyOn(gen.image, "generate");
     if (outcome !== "completed") generate.mockResolvedValueOnce({ ok: false, error: { code: "backend_error", message: "Controlled pre-submit connection refusal", retryable: false, outcome: "definitive" } });
@@ -134,11 +117,12 @@ describe("initial Chat image delivery", () => {
         throw error;
       }
     });
-    // Recovery must retain the old subject even if a new model proposes the opposite.
-    const effect = { version: 2 as const, turnId: snapshot.turnId, attempt: snapshot.attempt, callId: randomUUID(), name: "generate_image_async" as const, effectScope: "turn_action" as const, intent: { requestedNudity: "unspecified" as const }, arguments: { prompt: direction, ...(scenario === "requesting-recovery" && subject === "companion" ? {} : { subject: scenario === "requesting-recovery" ? "companion" : subject }), orientation: "4:5", outputCount: 1 } };
+    const effect = { version: 2 as const, turnId: snapshot.turnId, attempt: snapshot.attempt, callId: randomUUID(),
+      name: "request_character_media" as const, effectScope: "turn_action" as const, intent: { requestedNudity: "unspecified" as const },
+      arguments: { kind: "image", direction, subject, mode: "force_new", orientation: "portrait" } };
     if (subject === "scene" && scenario === "completed") {
       await expect(applyChatToolEffect({ ...effect, arguments: { ...effect.arguments, outputCount: 4 } }))
-        .rejects.toMatchObject({ code: "bad_request", message: expect.stringContaining("one photo") });
+        .rejects.toMatchObject({ code: "bad_request" });
       expect(await prisma.chatTurnAttachment.count({ where: { turnId: snapshot.turnId } })).toBe(0);
       expect(await prisma.generationJob.count({ where: { userId } })).toBe(0);
       expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(0);
@@ -176,7 +160,7 @@ describe("initial Chat image delivery", () => {
       scene: { schemaVersion: 1, location: null, time: null, participants: [], emotionalBeat: null, unresolvedThreads: [], ...snapshot.scene, version: snapshot.sceneVersion + 1 },
       terminalEvidence: { authority: "test", prompt: { productPromptVersion: "companion-product-1", preparedTurnVersion: 4, systemPromptDigest: "a".repeat(64), soulFingerprint: "b".repeat(64) } } });
     expect((await getChatSession(userId, session.id)).messages.find(message => message.id === snapshot.assistantMessageId)?.attachments).toEqual([expect.objectContaining({ ...delivery, imageSubject: subject })]);
-    await applyChatToolEffect({ ...effect, arguments: { ...effect.arguments, subject: subject === "scene" ? "companion" : "scene" } });
+    await expect(applyChatToolEffect({ ...effect, arguments: { ...effect.arguments, subject: subject === "scene" ? "companion" : "scene" } })).rejects.toMatchObject({ code: "conflict" });
     expect(createSpy).toHaveBeenCalledTimes(1);
     expect(await prisma.generationJob.count({ where: { userId } })).toBe(outcome === "retry-completed" ? 2 : 1);
     expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(outcome === "retry-completed" ? 2 : 1);
@@ -234,9 +218,9 @@ describe("initial Chat image delivery", () => {
     expect((await patch({ ...paid, attempt: snapshot.attempt }, paidKey)).status).toBe(202);
     const revised = await load();
     const generated = await applyChatToolEffect({
-      version: 2, turnId: revised.turnId, attempt: revised.attempt, callId: randomUUID(), name: "generate_image_async",
+      version: 2, turnId: revised.turnId, attempt: revised.attempt, callId: randomUUID(), name: "request_character_media",
       effectScope: "turn_action", intent: { requestedNudity: "unspecified" },
-      arguments: { subject: "scene", prompt: "An empty shore beneath a blue sky.", orientation: "4:5", outputCount: 1 },
+      arguments: { subject: "scene", kind: "image", direction: "An empty shore beneath a blue sky.", orientation: "portrait" },
     });
     if (!generated.accepted || !generated.generationJobId) throw new Error(`No paid generation: ${JSON.stringify(generated)}`);
     await runQueuedGenerationJobs();

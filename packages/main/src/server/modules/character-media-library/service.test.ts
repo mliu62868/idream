@@ -23,7 +23,7 @@ vi.mock("./media-models", () => ({
   embedMediaText: dependencies.embed,
   rerankMediaText: dependencies.rerank,
 }));
-import { availableCharacterMediaLibraryKinds, hasEligibleCharacterMediaLibraryEntries, libraryDescriptorHash, searchCharacterMediaLibrary } from "./service";
+import { availableCharacterMediaLibraryKinds, bm25Scores, hasEligibleCharacterMediaLibraryEntries, lexicalTerms, libraryDescriptorHash, libraryDescriptorText, searchCharacterMediaLibrary } from "./service";
 
 const identity = { characterId: "character", visualProfileId: "visual", visualProfileVersion: 1 };
 
@@ -170,5 +170,36 @@ describe("Character media candidate ordering", () => {
       expect(ids).toEqual([...blended.slice(0, 6).map(candidate => candidate.id), gown.id, dress.id]);
       expect(matches.find(match => match.entry.id === gown.id)?.score).toBe(1);
     }
+  });
+
+  it("never pollutes positive descriptor text or lexical BM25 scores with absentFacts", () => {
+    const withoutGlasses = entry(0, { description: "A sunny café portrait", facts: ["sunny cafe"] });
+    withoutGlasses.absentFacts = ["glasses", "hat"];
+    const withGlasses = entry(1, { description: "A sunny café portrait wearing glasses", facts: ["sunny cafe", "glasses"] });
+    withGlasses.absentFacts = [];
+
+    const textWithout = libraryDescriptorText(withoutGlasses);
+    expect(textWithout).not.toContain("Confirmed absent");
+    expect(textWithout).not.toContain("glasses");
+    expect(textWithout).not.toContain("hat");
+
+    const scores = bm25Scores(
+      lexicalTerms("wearing glasses"),
+      [lexicalTerms(textWithout), lexicalTerms(libraryDescriptorText(withGlasses))],
+    );
+    expect(scores[0]).toBe(0);
+    expect(scores[1]).toBeGreaterThan(0);
+  });
+
+  it("filters out low-confidence rerank candidates when minRerankScore is set", async () => {
+    dependencies.rerank.mockResolvedValue(Array.from({ length: 8 }, (_, index) => ({ index, score: index / 10 })));
+    const matches = await searchCharacterMediaLibrary({
+      ...identity,
+      userId: "viewer",
+      kind: "image",
+      query: "seaside",
+      minRerankScore: 0.55,
+    });
+    expect(matches.map(match => match.entry.id)).toEqual(["entry-7", "entry-6"]);
   });
 });

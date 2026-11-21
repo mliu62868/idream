@@ -54,7 +54,7 @@ function imageToolEvidence(tool: unknown) {
 }
 
 const imageReservation = {
-  name: "generate_image_async",
+  name: "request_character_media",
   callId: "call_81eebf7c",
   attemptId: "assistant-image:1",
   effectScope: "turn_action",
@@ -78,7 +78,7 @@ describe("shared companion authority contracts", () => {
     expect(projectCompanionProbeRuntimeEvidence(evidence, "private")).toMatchObject({ ok: false, error: expect.stringContaining("privateMemoryIsolation") });
   });
 
-  it.each(["generate_image_async", "edit_last_image"])("accepts current %s reservation authority without exposing its intent", (name) => {
+  it.each(["request_character_media", "edit_last_image"])("accepts current %s reservation authority without exposing its intent", (name) => {
     const projected = projectCompanionProbeRuntimeEvidence(imageToolEvidence({ ...imageReservation, name }), "normal");
     expect(projected).toMatchObject({ ok: true, error: null, memorySearchEvidenceMatches: 1 });
     expect(projected).not.toHaveProperty("tools");

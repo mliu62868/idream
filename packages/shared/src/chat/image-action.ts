@@ -1,7 +1,6 @@
 import { z } from "zod";
 import type { ChatToolDefinition } from "./openai-compatible-model";
 
-export const GENERATE_IMAGE_ASYNC_TOOL = "generate_image_async" as const;
 export const EDIT_LAST_IMAGE_TOOL = "edit_last_image" as const;
 
 export const imageEditScopeSchema = z.discriminatedUnion("mode", [
@@ -56,17 +55,7 @@ export const localizedImageEditSchema = z.discriminatedUnion("version", [
   confirmedImageEditSchema,
 ]);
 
-// Historical calls retain optional captions. The model definitions omit them:
-// only the ordinary reply after the tool receipt owns the spoken text.
-export const generateImageAsyncArgsSchema = z.object({
-  prompt: z.string().trim().min(12).max(1_200),
-  subject: z.enum(["companion", "scene"]),
-  caption: z.string().trim().min(1).max(500).optional(),
-  orientation: z.enum(["4:5", "1:1", "16:9"]).optional(),
-  outputCount: z.number().int().min(1).max(4).optional(),
-  requestedNudity: z.enum(["unspecified", "none", "full"]).optional(),
-}).strict();
-
+// Historical edit receipts can include a caption. The model schema omits it.
 export const editLastImageArgsSchema = z.object({
   instruction: z.string().trim().min(4).max(1_200),
   // Existing receipts and pre-cutover callers retain their original full-image
@@ -76,28 +65,7 @@ export const editLastImageArgsSchema = z.object({
   requestedNudity: z.enum(["unspecified", "none", "full"]).optional(),
 }).strict();
 
-export interface GenerateImageAsyncArgs {
-  prompt: string;
-  subject: "companion" | "scene";
-  caption?: string;
-  orientation: "4:5" | "1:1" | "16:9";
-  outputCount: number;
-  requestedNudity?: RequestedNudity;
-}
 export type EditLastImageArgs = z.infer<typeof editLastImageArgsSchema>;
-
-export interface GenerateImageAsyncToolCall {
-  name: typeof GENERATE_IMAGE_ASYNC_TOOL;
-  arguments: GenerateImageAsyncArgs;
-}
-
-export interface EditLastImageToolCall {
-  name: typeof EDIT_LAST_IMAGE_TOOL;
-  arguments: EditLastImageArgs;
-}
-
-export type ImageAgentToolCall = GenerateImageAsyncToolCall | EditLastImageToolCall;
-export type RequestedNudity = "unspecified" | "none" | "full";
 
 export const LOCAL_IMAGE_EDIT_TOOL_DEFINITION = {
   name: EDIT_LAST_IMAGE_TOOL,
@@ -125,77 +93,24 @@ export const LOCAL_IMAGE_EDIT_TOOL_DEFINITION = {
   },
 } satisfies ChatToolDefinition;
 
-export const IMAGE_AGENT_TOOL_DEFINITIONS: readonly ChatToolDefinition[] = [
-  {
-    name: GENERATE_IMAGE_ASYNC_TOOL,
-    // One paid Chat action authorizes one photo even when the route supports batches.
-    description:
-      "Create exactly one photo. Use directly for explicit new generation. Otherwise search available prepared photos first. Existing-only forbids generation. Acceptance only; attachment delivers.",
-    parameters: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        prompt: {
-          type: "string",
-          description:
-            "English scene, subjects, wardrobe/nudity and exclusions. Never add stable identity traits (age, hair, eyes, skin, face, body); Main pins identity/references.",
-        },
-        subject: {
-          type: "string", enum: ["companion", "scene"],
-          description: "Follow the latest user: companion for selfies/scenes with you; scene for objects/scenery without you or no-people requests. Only companion adds identity.",
-        },
-        requestedNudity: { type: "string", enum: ["unspecified", "none", "full"], description: "Current wardrobe intent: none for clothed, full for nude, unspecified when neither is requested. All wardrobe clauses in prompt must agree with this value: full depicts a fully nude adult without clothes; none preserves requested clothing. Drop conflicting outfits from earlier photos or default appearance." },
-        orientation: { type: "string", enum: ["4:5", "16:9"], description: "4:5 portrait (default) or 16:9 landscape" },
-        outputCount: { type: "integer", enum: [1] },
-      },
-      required: ["prompt", "subject"],
-    },
-  },
-  {
-    ...LOCAL_IMAGE_EDIT_TOOL_DEFINITION,
-    description:
-      "Request an edit of the LAST delivered photo. Local edits return an area-confirmation card; no generation or charge occurs until the user confirms. Whole-image edits run asynchronously. completed confirms delivery, not visual correctness.",
-    parameters: {
-      ...LOCAL_IMAGE_EDIT_TOOL_DEFINITION.parameters,
-      properties: {
-        ...LOCAL_IMAGE_EDIT_TOOL_DEFINITION.parameters.properties,
-        editScope: {
-          oneOf: [
-            LOCAL_IMAGE_EDIT_TOOL_DEFINITION.parameters.properties.editScope,
-            { type: "object", properties: { mode: { type: "string", enum: ["whole_image"] } }, required: ["mode"], additionalProperties: false },
-          ],
-          description: "local for a change to an existing object: the user chooses and confirms editable pixels before execution. whole_image only for an explicitly requested overall restyle, redo, viewpoint, pose or composition change; it does not preserve other pixels. Never use whole_image to bypass confirmation for a localized request.",
-        },
+export const EDIT_LAST_IMAGE_TOOL_DEFINITION = {
+  ...LOCAL_IMAGE_EDIT_TOOL_DEFINITION,
+  description:
+    "Request an edit of the LAST delivered photo. Local edits return an area-confirmation card; no generation or charge occurs until the user confirms. Whole-image edits run asynchronously. completed confirms delivery, not visual correctness.",
+  parameters: {
+    ...LOCAL_IMAGE_EDIT_TOOL_DEFINITION.parameters,
+    properties: {
+      ...LOCAL_IMAGE_EDIT_TOOL_DEFINITION.parameters.properties,
+      editScope: {
+        oneOf: [
+          LOCAL_IMAGE_EDIT_TOOL_DEFINITION.parameters.properties.editScope,
+          { type: "object", properties: { mode: { type: "string", enum: ["whole_image"] } }, required: ["mode"], additionalProperties: false },
+        ],
+        description: "local for a change to an existing object: the user chooses and confirms editable pixels before execution. whole_image only for an explicitly requested overall restyle, redo, viewpoint, pose or composition change; it does not preserve other pixels. Never use whole_image to bypass confirmation for a localized request.",
       },
     },
   },
-];
-
-export function parseImageAgentToolCall(
-  name: string,
-  rawArguments: unknown,
-): ImageAgentToolCall | null {
-  if (name === GENERATE_IMAGE_ASYNC_TOOL) {
-    const result = generateImageAsyncArgsSchema.safeParse(rawArguments);
-    return result.success
-      ? {
-          name: GENERATE_IMAGE_ASYNC_TOOL,
-          arguments: {
-            ...result.data,
-            orientation: result.data.orientation ?? "4:5",
-            outputCount: result.data.outputCount ?? 1,
-          },
-        }
-      : null;
-  }
-  if (name === EDIT_LAST_IMAGE_TOOL) {
-    const result = editLastImageArgsSchema.safeParse(rawArguments);
-    return result.success
-      ? { name: EDIT_LAST_IMAGE_TOOL, arguments: result.data }
-      : null;
-  }
-  return null;
-}
+} satisfies ChatToolDefinition;
 
 /** Image replies must at least preserve the user's writing system. */
 export function imageReplyMatchesUserScript(userText: string, reply: string): boolean {

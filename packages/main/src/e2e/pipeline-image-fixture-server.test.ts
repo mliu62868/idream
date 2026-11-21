@@ -33,7 +33,7 @@ it.each([
   { text: "Send a portrait.", status: "accepted", reply: "Your image request is on its way. We can keep chatting while it finishes." },
   { text: "please make an image from this chat 1720000000000", status: "completed", reply: "Your image is ready." },
 ])("serves an auto native image call and replies from its $status receipt", async ({ text, status, reply }) => {
-  const tools = [{ type: "function", function: { name: "generate_image_async" } }];
+  const tools = [{ type: "function", function: { name: "request_character_media" } }];
   const messages = [{ role: "user", content: text }];
   const first = await completion({ model: "playwright-chat", stream: true, tools,
     tool_choice: "auto", messages,
@@ -43,9 +43,9 @@ it.each([
   expect(stream).toContain("data: [DONE]");
   const event = JSON.parse(stream.split("\n")[0]!.slice(6));
   expect(event.choices[0]).toMatchObject({ finish_reason: "tool_calls", delta: {
-    tool_calls: [{ index: 0, type: "function", function: { name: "generate_image_async" } }],
+    tool_calls: [{ index: 0, type: "function", function: { name: "request_character_media" } }],
   } });
-  expect(JSON.parse(event.choices[0].delta.tool_calls[0].function.arguments)).toMatchObject({ outputCount: 1, orientation: "4:5" });
+  expect(JSON.parse(event.choices[0].delta.tool_calls[0].function.arguments)).toMatchObject({ kind: "image", mode: "force_new", orientation: "portrait" });
   const call = event.choices[0].delta.tool_calls[0];
   const followup = await completion({ stream: true, tools, tool_choice: "auto", messages: [
     ...messages, { role: "assistant", content: null, tool_calls: [call] },
@@ -59,8 +59,8 @@ it.each([
 
 it("does not invent image actions from an offered tool or an unoffered forced name", async () => {
   for (const body of [
-    { tools: [{ function: { name: "generate_image_async" } }], tool_choice: "auto" },
-    { tools: [], tool_choice: { function: { name: "generate_image_async" } } },
+    { tools: [{ function: { name: "request_character_media" } }], tool_choice: "auto" },
+    { tools: [], tool_choice: { function: { name: "request_character_media" } } },
   ]) {
     const response = await completion({ ...body, messages: [{ role: "user", content: "What would you photograph?" }] });
     expect((await response.json()).choices[0]).toMatchObject({ finish_reason: "stop" });
@@ -70,13 +70,14 @@ it("does not invent image actions from an offered tool or an unoffered forced na
 it.each([false, true].flatMap(recovered => [false, true].map(stream => ({ recovered, stream }))))(
   "handles the runtime's pure-media extraction (recovered=$recovered, stream=$stream)", async ({ recovered, stream }) => {
     const text = "please make an image from this chat 1720000000000";
-    const identity = { attemptId: "fixture-attempt", callId: "fixture-call", name: "generate_image_async" as const };
+    const identity = { attemptId: "fixture-attempt", callId: "fixture-call", name: "request_character_media" as const };
     const messages = mediaExtractionMessages(text, recovered ? { recoveredMediaAction: {
-      name: "generate_image_async", attachmentId: "fixture-attachment", status: "completed",
+      name: "request_character_media", attachmentId: "fixture-attachment", status: "completed",
       generationJobId: "fixture-image", mediaAssetId: "fixture-asset", costDreamcoins: 8,
     } } : {
       call: { ...identity, effectScope: "turn_action", intent: { requestedNudity: "unspecified" },
-        arguments: { subject: "companion", prompt: "An adult companion beside a rainy cafe window.", outputCount: 1, orientation: "4:5" } },
+        arguments: { kind: "image", subject: "companion", direction: "An adult companion beside a rainy cafe window.",
+          mode: "force_new", requestedNudity: "unspecified", mustHave: [], mustExclude: [], orientation: "portrait" } },
       result: { ...identity, outcome: "succeeded", output: { accepted: true, status: "accepted", attachmentId: "fixture-attachment", generationJobId: "fixture-image" } },
     });
     const response = await completion({ stream, messages });
@@ -92,7 +93,7 @@ it.each([false, true].flatMap(recovered => [false, true].map(stream => ({ recove
 
 it("does not silently discard independent text from an unscripted media request", async () => {
   const messages = mediaExtractionMessages("Send a portrait. Also tell me a story.", { recoveredMediaAction: {
-    name: "generate_image_async", attachmentId: "fixture-attachment", status: "completed",
+    name: "request_character_media", attachmentId: "fixture-attachment", status: "completed",
     generationJobId: "fixture-image", mediaAssetId: "fixture-asset", costDreamcoins: 8,
   } });
   const response = await completion({ messages });

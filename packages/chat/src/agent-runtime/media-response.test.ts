@@ -1,17 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { COMPANION_IMAGE_SKILL_PROMPT, buildCompanionRuntimeAuthority } from "@idream/shared";
-import { COMPANION_MEDIA_LIBRARY_GUIDANCE } from "@idream/shared/chat/media-library";
+import { COMPANION_MEDIA_REQUEST_GUIDANCE } from "@idream/shared/chat/media-library";
 import { mediaAttachmentId, mediaBodySystemPrompt, mediaExtractionMessages, parseMediaSearchReply, parseMediaTextRequests } from "./media-response";
 
 it.each([false, true])("keeps a completed media resend out of the independent text scope (recovered=%s)", recovered => {
   const source = "把刚才那段原样再发一次。另外用中文告诉我 17 + 25 的结果。";
   const receipt = { status: "completed" as const, attachmentId: "delivered-video-card", mediaAssetId: "owned-video", generationJobId: null, costDreamcoins: 0 };
   const messages = mediaExtractionMessages(source, recovered
-    ? { recoveredMediaAction: { name: "send_character_media", ...receipt, description: "A woman smiles beside a wooden door." } }
-    : { call: { attemptId: "attempt", callId: "send", name: "send_character_media", effectScope: "turn_action", intent: { requestedNudity: "unspecified" }, arguments: { candidateToken: "fresh-candidate" } },
-      result: { attemptId: "attempt", callId: "send", name: "send_character_media", outcome: "succeeded", output: receipt } });
+    ? { recoveredMediaAction: { name: "resend_session_media", ...receipt, description: "A woman smiles beside a wooden door." } }
+    : { call: { attemptId: "attempt", callId: "send", name: "resend_session_media", effectScope: "turn_action", intent: { requestedNudity: "unspecified" }, arguments: { previousMediaAssetId: receipt.mediaAssetId } },
+      result: { attemptId: "attempt", callId: "send", name: "resend_session_media", outcome: "succeeded", output: receipt } });
   const instructions = messages[0]!.content;
-  expect(instructions).toContain("send_character_media with status completed");
+  expect(instructions).toContain("A completed receipt confirms delivery");
   expect(instructions).toContain("Sending or resending existing media");
   const input = JSON.parse(messages[1]!.content as string);
   expect(input.originalUserRequest).toBe(source);
@@ -47,24 +47,24 @@ describe("stock lookup without delivery", () => {
   const source = `你有海邊拍的現成照片嗎？先別傳。${question}`;
 
   it("uses the verified outcome and the requested writing system alongside the source excerpt", () => {
-    const evidence = { searchedExistingMedia: { kind: "image", outcome: "candidates_only" } } as const;
+    const evidence = { searchedExistingMedia: { kind: "image", outcome: "available" } } as const;
     const messages = mediaExtractionMessages(source, evidence);
     expect(JSON.parse(messages[1]!.content as string)).toEqual({ originalUserRequest: source, ...evidence });
-    const extracted = JSON.stringify({ requests: [question], language: "zh-Hant", availabilityOnly: true });
-    expect(parseMediaSearchReply(extracted, source, "candidates_only")).toEqual({ requests: [question], feedback: "我找到了可能相關的現成內容，暫時沒有傳送。" });
+    const extracted = JSON.stringify({ requests: [question], language: "zh-Hant" });
+    expect(parseMediaSearchReply(extracted, source, "available")).toEqual({ requests: [question], feedback: "我找到了可能相關的現成內容，暫時沒有傳送。" });
     expect(parseMediaSearchReply(extracted, source, "unavailable").feedback).toBe("我現在沒法確認有沒有符合你要求的現成內容。");
   });
 
-  it("does not report nearby candidates as a result for conditional delivery", () => {
+  it("reports the Main no-match receipt for an existing-only request", () => {
     const source = "有木門旁不穿淺毛衣的現成照片才發，找不到就說沒有。";
-    const extracted = JSON.stringify({ requests: [], language: "zh-Hant", availabilityOnly: false });
-    expect(parseMediaSearchReply(extracted, source, "candidates_only")).toEqual({ requests: [], feedback: "我沒找到符合你要求的現成內容。" });
+    const extracted = JSON.stringify({ requests: [], language: "zh-Hant" });
+    expect(parseMediaSearchReply(extracted, source, "no_match")).toEqual({ requests: [], feedback: "我沒找到符合你要求的現成內容。" });
   });
 
   it.each([
-    { requests: [], language: "zh", availabilityOnly: false, feedback: "I will make one next." },
-    { requests: [], language: "invented", availabilityOnly: false },
-    { requests: ["Invented independent request"], language: "zh", availabilityOnly: true },
+    { requests: [], language: "zh", feedback: "I will make one next." },
+    { requests: [], language: "invented" },
+    { requests: ["Invented independent request"], language: "zh" },
   ])("rejects extractor output outside the closed schema and original user text", output => {
     expect(() => parseMediaSearchReply(JSON.stringify(output), source, "no_match")).toThrow();
   });
@@ -72,7 +72,7 @@ describe("stock lookup without delivery", () => {
 
 it("strips only known media guidance while retaining Soul and memory authority", () => {
   const soul = "My favorite photo is the blue cafe. Keep my exact voice.";
-  const full = [soul, buildCompanionRuntimeAuthority({ memoryEnabled: false, imageToolEnabled: true }), COMPANION_IMAGE_SKILL_PROMPT, COMPANION_MEDIA_LIBRARY_GUIDANCE, "ordinary guidance"].join("\n\n");
+  const full = [soul, buildCompanionRuntimeAuthority({ memoryEnabled: false, imageToolEnabled: true }), COMPANION_IMAGE_SKILL_PROMPT, COMPANION_MEDIA_REQUEST_GUIDANCE, "ordinary guidance"].join("\n\n");
   expect(mediaBodySystemPrompt(full, false)).toBe([soul, buildCompanionRuntimeAuthority({ memoryEnabled: false, imageToolEnabled: false }), "ordinary guidance"].join("\n\n"));
 });
 

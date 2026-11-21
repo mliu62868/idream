@@ -77,6 +77,12 @@ export type MediaAssetAuthorityDependency =
       runId: string | null;
       targetId: string;
       repairPath: string;
+    }
+  | {
+      kind: "character_media_library";
+      characterId: string | null;
+      entryId: string;
+      repairPath: string;
     };
 
 type MediaAssetAuthorityDatabase = Prisma.TransactionClient | typeof prisma;
@@ -527,6 +533,23 @@ export async function mediaAssetAuthorityDependenciesBatch(
     pushDependency(dependenciesByAssetId, page.mediaAssetId, {
       kind: "comic_publication", comicId: page.episode.comicId,
       repairPath: `/admin/moderation?comic=${encodeURIComponent(page.episode.comicId)}`,
+    });
+  }
+  // Published curated chat library entries must block source-asset archival so
+  // hot-path delivery can safely rely on write-path publication authority.
+  const publishedLibraryEntries = await db.characterMediaLibraryEntry.findMany({
+    where: { sourceAssetId: { in: assetIds }, status: "published" },
+    select: { id: true, characterId: true, sourceAssetId: true },
+  });
+  for (const entry of publishedLibraryEntries) {
+    if (!entry.sourceAssetId) continue;
+    pushDependency(dependenciesByAssetId, entry.sourceAssetId, {
+      kind: "character_media_library",
+      characterId: entry.characterId,
+      entryId: entry.id,
+      repairPath: entry.characterId
+        ? `/admin/characters/${entry.characterId}?tab=assets`
+        : `/admin/characters`,
     });
   }
   return dependenciesByAssetId;

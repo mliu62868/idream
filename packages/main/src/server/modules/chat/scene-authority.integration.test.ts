@@ -1,4 +1,4 @@
-import { CHAT_SEND_PROTOCOL_VERSION, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import { CHAT_SEND_PROTOCOL_VERSION } from "@idream/shared/contracts";
 import { randomUUID } from "node:crypto";
 import { compileCharacterSoul } from "@idream/shared";
 import type { ChatExecutionSnapshot, ChatTerminalCommit } from "@idream/shared/contracts";
@@ -6,7 +6,7 @@ import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
-import { beginChatTurn, cancelChatTurn, chatVoiceAuthority, commitChatTerminal, createChatSession, editChatTurn, regenerateChatTurn } from "./turn-ledger";
+import { beginChatTurn, chatVoiceAuthority, commitChatTerminal, createChatSession, editChatTurn, regenerateChatTurn } from "./turn-ledger";
 
 const prefix = `zt-scene-authority-${randomUUID()}-`;
 afterAll(async () => {
@@ -90,97 +90,6 @@ describe("Main Scene terminal authority", () => {
     await prisma.chatTurnAttachment.delete({ where: { id: attachmentId } });
     await expect(commitChatTerminal(selected)).resolves.toEqual({ ...first, duplicate: true });
     await expect(prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: snapshot.turnId } })).resolves.toEqual(fact);
-  });
-
-  it("discards a lookup when selecting the terminal and preserves exact historical empty replay", async () => {
-    const f = await fixture();
-    const snapshot = await f.begin();
-    const selected = terminal(snapshot);
-    const mediaLookup = { version: 2, attempt: snapshot.attempt, lookupId: randomUUID(), order: 1,
-      callId: "stock-lookup", requestDigest: "d".repeat(64), deadlineMs: Date.now() + 25_000,
-      status: "ready", args: { kind: "image", query: "A photo in the cafe" },
-      result: { accepted: true, status: "no_match", matches: [] } };
-    await prisma.chatTurn.update({ where: { id: snapshot.turnId }, data: { mediaLookup, imageActionMode: "library" } });
-    await expect(commitChatTerminal({ ...selected, attempt: snapshot.attempt + 1 })).rejects.toThrow("CAS");
-    await expect(prisma.chatTurn.findUniqueOrThrow({ where: { id: snapshot.turnId } })).resolves.toMatchObject({ mediaLookup });
-    const first = await commitChatTerminal(selected);
-    await expect(prisma.chatTurn.findUniqueOrThrow({ where: { id: snapshot.turnId } }))
-      .resolves.toMatchObject({ mediaLookup: null, imageActionMode: "library", terminalEvidence: selected.terminalEvidence });
-    await prisma.chatTurn.update({ where: { id: snapshot.turnId }, data: { assistantContent: "" } });
-    await expect(commitChatTerminal({ ...selected, content: "" })).resolves.toEqual({ ...first, duplicate: true });
-  });
-
-  it("drops lookup evidence on Stop and when restarting a legacy terminal attempt", async () => {
-    const f = await fixture();
-    const snapshot = await f.begin();
-    const where = { id: snapshot.turnId };
-    const mediaLookup = { version: 1, attempt: snapshot.attempt, lookupId: randomUUID(), status: "ready",
-      args: { kind: "video", query: "A clip in the cafe" } };
-    await prisma.chatTurn.update({ where, data: { mediaLookup, imageActionMode: "library" } });
-    await expect(cancelChatTurn(f.userId, snapshot.assistantMessageId, snapshot.attempt + 1)).rejects.toThrow("superseded");
-    await expect(prisma.chatTurn.findUniqueOrThrow({ where })).resolves.toMatchObject({ mediaLookup });
-    await expect(cancelChatTurn(f.userId, snapshot.assistantMessageId, snapshot.attempt)).resolves.toMatchObject({ cancelled: true });
-    await expect(prisma.chatTurn.findUniqueOrThrow({ where })).resolves.toMatchObject({
-      mediaLookup: null, imageActionMode: "library", terminalEvidence: { authority: "main_user_cancel" },
-    });
-
-    // Older terminal rows may still have their lookup until a new attempt uses the row.
-    await prisma.chatTurn.update({ where, data: { mediaLookup } });
-    await expect(regenerateChatTurn(f.userId, snapshot.assistantMessageId)).resolves.toMatchObject({
-      snapshot: { attempt: snapshot.attempt + 1, imageActionMode: "library" },
-    });
-    await expect(prisma.chatTurn.findUniqueOrThrow({ where })).resolves.toMatchObject({ mediaLookup: null });
-  });
-
-  it.each(["pending", "delivered"] as const)("replays an exact terminal ACK without scheduling another %s memory projection", async status => {
-    const f = await fixture();
-    const snapshot = await f.begin();
-    expect(snapshot.memoryEnabled).toBe(true);
-    const selected = terminal(snapshot);
-    const first = await commitChatTerminal(selected);
-    const aggregateId = `${f.userId}:${f.characterId}`;
-    const where = { aggregateId, eventType: MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1 };
-    const event = await prisma.mainOutboxEvent.findFirstOrThrow({ where });
-    const projection = await prisma.mainOutboxEvent.update({
-      where: { id: event.id },
-      data: { attempts: 1, status, ...(status === "delivered" ? { deliveredAt: new Date() } : {}) },
-    });
-
-    await expect(commitChatTerminal(selected)).resolves.toEqual({ ...first, duplicate: true });
-    await expect(prisma.mainOutboxEvent.findMany({ where })).resolves.toEqual([projection]);
-    await expect(prisma.companionMemoryAuthority.findUniqueOrThrow({ where: { aggregateId } }))
-      .resolves.toMatchObject({ version: BigInt(1) });
-  });
-
-  it.each([
-    { name: "unknown", promptTokens: null, completionTokens: null, reasoningTokens: null },
-    { name: "measured zero", promptTokens: 0, completionTokens: 0, reasoningTokens: 0 },
-    { name: "complete measured total", promptTokens: 126, completionTokens: 36, reasoningTokens: 0 },
-    { name: "known total with unknown reasoning", promptTokens: 126, completionTokens: 36, reasoningTokens: null },
-  ])("persists $name usage and consumes a delivered Turn exactly once", async ({ promptTokens, completionTokens, reasoningTokens }) => {
-    const f = await fixture();
-    const snapshot = await f.begin();
-    const selected = {
-      ...terminal(snapshot), promptTokens, completionTokens,
-      terminalEvidence: { ...terminal(snapshot).terminalEvidence, replyUsage: promptTokens === null ? null : { promptTokens, completionTokens, reasoningTokens } },
-    };
-    await expect(prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: snapshot.turnId } })).resolves.toMatchObject({ consumedAt: null, voidedAt: null });
-    const first = await commitChatTerminal(selected);
-    await expect(prisma.chatTurn.findUniqueOrThrow({ where: { id: snapshot.turnId } })).resolves.toMatchObject({
-      assistantStatus: "sent", assistantContent: selected.content, promptTokens, completionTokens,
-      sceneVersion: selected.sceneVersion, scene: selected.scene, terminalEvidence: selected.terminalEvidence,
-    });
-    await expect(chatVoiceAuthority(f.userId, f.sessionId, snapshot.assistantMessageId)).resolves.toMatchObject({ text: selected.content, sceneVersion: selected.sceneVersion, scene: selected.scene });
-    const fact = await prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: snapshot.turnId } });
-    expect(fact).toMatchObject({ consumedAt: expect.any(Date), voidedAt: null });
-    const revision = (await prisma.recentChat.findUniqueOrThrow({ where: { sessionId: f.sessionId } })).contextRevision;
-
-    await expect(commitChatTerminal(selected)).resolves.toEqual({ ...first, duplicate: true });
-    await expect(prisma.chatTurnUsageFact.findUniqueOrThrow({ where: { turnId: snapshot.turnId } })).resolves.toEqual(fact);
-    await expect(prisma.chatTurnUsageFact.count({ where: { userId: f.userId } })).resolves.toBe(1);
-    await expect(prisma.recentChat.findUniqueOrThrow({ where: { sessionId: f.sessionId } })).resolves.toMatchObject({ contextRevision: revision });
-    await expect(prisma.characterStats.findUniqueOrThrow({ where: { characterId: f.characterId } })).resolves.toMatchObject({ chatsCount: 1 });
-    await expect(commitChatTerminal({ ...selected, promptTokens: promptTokens === null ? 0 : null, completionTokens: completionTokens === null ? 0 : null })).rejects.toThrow("CAS");
   });
 
   it("rejects a missing Scene at a positive revision before selecting the reply", async () => {

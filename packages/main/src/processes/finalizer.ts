@@ -13,6 +13,7 @@ import { recoverExpiredVoiceClips } from "@/server/modules/ourdream/voice-clip-r
 import { entitlementMap } from "@/server/modules/ourdream/subscription-lifecycle";
 import { readableCharacter } from "@/server/modules/ourdream/generation-character-authority";
 import { expireVoiceCalls } from "@/server/modules/chat/voice-call";
+import { revealDueDelayedChatMedia } from "@/server/modules/chat/delayed-media-reveal";
 import { advanceVideoSequences, type VideoSequenceAdvanceCursor } from "@/server/modules/ourdream/video-sequence";
 import { createVideoCompositionLane } from "@/server/modules/ourdream/video-composition-lane";
 import { isProcessEntrypoint } from "./process-entrypoint";
@@ -37,6 +38,8 @@ let voiceRecoveryCursor: string | null = null;
 let lastVoiceRecoveryAt = 0;
 let callExpiry: Promise<void> | null = null;
 let lastCallExpiryAt = 0;
+let delayedMediaReveal: Promise<void> | null = null;
+let lastDelayedMediaRevealAt = 0;
 let videoSequenceAdvance: Promise<void> | null = null;
 let videoSequenceCursor: VideoSequenceAdvanceCursor | null = null;
 let lastVideoSequenceAdvanceAt = 0;
@@ -58,6 +61,18 @@ function maybeExpireVoiceCalls(now = Date.now()) {
   callExpiry = expireVoiceCalls().catch(error => {
     logger.error({ error }, "voice call lease expiry failed");
   }).finally(() => { callExpiry = null; });
+}
+
+function maybeRevealDelayedChatMedia(now = Date.now()) {
+  if (delayedMediaReveal || now - lastDelayedMediaRevealAt < IDLE_DELAY_MS) return;
+  lastDelayedMediaRevealAt = now;
+  delayedMediaReveal = revealDueDelayedChatMedia(10, new Date(now)).then((summary) => {
+    if (summary.revealed > 0 || summary.refunded > 0) {
+      logger.info(summary, "delayed curated chat media reveal sweep completed");
+    }
+  }).catch((error) => {
+    logger.error({ error }, "delayed curated chat media reveal sweep failed");
+  }).finally(() => { delayedMediaReveal = null; });
 }
 
 function maybeRecoverVoiceClips(now = Date.now()) {
@@ -95,6 +110,7 @@ export async function runFinalizerLoop(): Promise<void> {
     }
     maybeRecoverVoiceClips();
     maybeExpireVoiceCalls();
+    maybeRevealDelayedChatMedia();
     maybeAdvanceVideoSequences();
     maybeReconcileStaleJobs();
     await dispatchPendingGenerationTerminalRecords().catch((err) => logger.error({ err }, "generation terminal record dispatch failed"));
@@ -102,6 +118,7 @@ export async function runFinalizerLoop(): Promise<void> {
   }
   await voiceRecovery;
   await callExpiry;
+  await delayedMediaReveal;
   await videoSequenceAdvance;
   await videoCompositionLane.drain();
   await staleReconcile;

@@ -210,6 +210,12 @@ export async function applyModerationAction(
     if (updated.count !== 1) {
       throw Errors.conflict("Moderation media target changed before action");
     }
+    // Cascade moderation takedown to any curated chat library entry referencing
+    // this source asset while holding lockMediaAssetAuthority.
+    await db.characterMediaLibraryEntry.updateMany({
+      where: { sourceAssetId: targetId, status: { not: "withdrawn" } },
+      data: { status: "withdrawn", revision: { increment: 1 } },
+    });
     await setModerationEffectOwner(db, {
       targetType: "media",
       targetId,
@@ -346,6 +352,12 @@ async function applyCharacterModerationAction(
   if (removed.count !== 1) {
     throw Errors.conflict("Moderation Character target changed before action");
   }
+  // Cascade character removal to its curated chat library entries while
+  // holding lockCharacterGenerationAuthority.
+  await db.characterMediaLibraryEntry.updateMany({
+    where: { characterId, status: { not: "withdrawn" } },
+    data: { status: "withdrawn", revision: { increment: 1 } },
+  });
   await setModerationEffectOwner(db, {
     targetType: "character",
     targetId: characterId,

@@ -10,7 +10,7 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import type { Prisma } from "@prisma/client";
 
-export type BillableGenerationMode = "image" | "video" | "voice";
+export type BillableGenerationMode = "image" | "video" | "voice" | "chat_curated_video";
 
 export type GenerationPricingAuthority = {
   readonly id: string;

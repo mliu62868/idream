@@ -9,7 +9,7 @@ import { fitCompanionMessages, messageText, projectPiMessage, toPiMessage } from
 import { ProviderError, type OpenAiCompatibleAdapter } from "./openai-adapter";
 import { projectRecall, type Chunk } from "./session-recall";
 import { estimateModelRequestInputTokens } from "./model-request-format";
-import { SEARCH_CHARACTER_MEDIA_TOOL, searchCharacterMediaArgsSchema } from "@idream/shared/chat/media-library";
+import { companionMediaToolNameSchema } from "@idream/shared/chat/media-library";
 
 export interface PiExecutionOptions {
   invocation: CompanionInvocation;
@@ -26,7 +26,6 @@ export interface PiExecutionOptions {
   toolCallIds?: Set<string>;
   tools(conversation: () => Conversation): readonly ToolRegistration[];
   assertContinuation(): void;
-  onPreparedMediaLookup?(): void;
   text(delta: string): void;
   reset(): void;
   compaction(outcome: "hit" | "failure", durationMs: number): void;
@@ -85,7 +84,7 @@ export async function executePiConversation(options: PiExecutionOptions): Promis
           if (event.type === "done" || event.type === "error") {
             latest = event.type === "done" ? event.message : event.error;
             for (const block of latest.content) {
-              if (block.type === "toolCall" && ["generate_image_async", "edit_last_image", "send_character_media"].includes(block.name)) {
+              if (block.type === "toolCall" && companionMediaToolNameSchema.safeParse(block.name).success) {
                 selectedMediaCalls.set(block.id, { callId: block.id, name: block.name, arguments: block.arguments });
               }
             }
@@ -118,15 +117,6 @@ export async function executePiConversation(options: PiExecutionOptions): Promis
           if (part.type !== "toolCall") continue;
           if (toolCallIds.has(part.id)) fail(new Error("tool call identity was reused"));
           toolCallIds.add(part.id);
-        }
-        // Pi rejects invalid tool arguments before the host tool executes. A
-        // malformed lookup must therefore fail here, before a paid fallback.
-        for (const part of message.content) {
-          if (part.type !== "toolCall" || part.name !== SEARCH_CHARACTER_MEDIA_TOOL) continue;
-          if (!searchCharacterMediaArgsSchema.safeParse(part.arguments).success) {
-            fail(new Error("prepared-media lookup arguments are invalid"));
-          }
-          options.onPreparedMediaLookup?.();
         }
       },
       async beforeRequest(request, api) {

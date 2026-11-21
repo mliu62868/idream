@@ -13,6 +13,18 @@ export async function lockCharacterGenerationAuthority(
 }
 
 /**
+ * Shared read-side lock paired with `lockCharacterGenerationAuthority`. Allows
+ * concurrent paid curated media deliveries for popular official Characters
+ * while remaining strictly mutually exclusive with admin withdrawal/removal.
+ */
+export async function lockCharacterGenerationAuthorityShared(
+  tx: Pick<Prisma.TransactionClient, "$executeRaw">,
+  characterId: string,
+) {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock_shared(hashtext(${`character-generation-authority:${characterId}`}))`;
+}
+
+/**
  * Locks the same authority keys used by Media Library mutations. Character
  * callers must acquire `character-generation-authority` first, then call this
  * helper once with the complete asset set so every caller uses the same sorted
@@ -38,6 +50,18 @@ export async function lockMediaAssetAuthority(
   assetId: string,
 ) {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${assetId}`}))`;
+}
+
+/**
+ * Shared read-side lock paired with `lockMediaAssetAuthority`. Concurrent
+ * deliveries share the asset safely; archival/moderation/deletion still block
+ * on the exclusive lock.
+ */
+export async function lockMediaAssetAuthorityShared(
+  tx: Pick<Prisma.TransactionClient, "$executeRaw">,
+  assetId: string,
+) {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock_shared(hashtext(${`media-asset-authority:${assetId}`}))`;
 }
 
 /**
