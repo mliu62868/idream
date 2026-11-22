@@ -32,9 +32,9 @@ describe("Character create wizard", () => {
     expect(html).toContain('data-testid="character-create-wizard"');
     expect(html).toContain("Persona");
     expect(html).toContain("Visual direction");
-    expect(html).toContain("Review");
+    expect(characterCreateSteps).toEqual(["Persona", "Visual direction"]);
     expect(html).toContain("Private draft setup");
-    expect(html).toContain("No Character has been created yet.");
+    expect(html).toContain("This draft stays on this browser until you save the character.");
     expect(html).toContain("Continue to visual direction");
     expect(html).toContain('aria-current="step"');
     expect(html).toContain(

@@ -1,6 +1,6 @@
 "use client";
 
-import type { ChangeEvent } from "react";
+import type { ChangeEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, ImageIcon, Loader2, Search, Trash2, Upload, WandSparkles, X } from "lucide-react";
 import {
@@ -22,7 +22,7 @@ import { CharacterAssetStudio } from "./CharacterAssetStudio";
 import type { CharacterAssetProjectMutation } from "./character-asset-studio-authority";
 import { CharacterChatLibrary, type CharacterChatLibrarySource } from "./CharacterChatLibrary";
 import { operatorReasonOrDefault, CHARACTER_LIBRARY_ARCHIVE_DEFAULT_REASON } from "./character-library-archive";
-import { characterAssetPurposes, type CharacterAssetPurpose } from "./character-asset-studio-authority";
+import { characterAssetPurposeLabel, characterAssetPurposes, type CharacterAssetPurpose } from "./character-asset-studio-authority";
 import { draftImageSelectionFrozen, useCharacterDraftImageSelection } from "./useCharacterDraftImageSelection";
 
 const SEARCH_DEBOUNCE_MS = 300;
@@ -48,7 +48,8 @@ type CharacterImageLibraryProps = {
   canCreate: boolean;
   canArchive: boolean;
   canPublish?: boolean;
-  onContinue: (tab: "visual" | "preview") => void;
+  placements?: ReactNode;
+  onContinue: (tab: "visual" | "release") => void;
   onProjectReload: () => Promise<void>;
   commitProjectMutation: CharacterAssetProjectMutation;
 };
@@ -65,6 +66,7 @@ export function CharacterImageLibrary({
   canCreate,
   canArchive,
   canPublish = false,
+  placements,
   onContinue,
   onProjectReload,
   commitProjectMutation,
@@ -84,8 +86,10 @@ export function CharacterImageLibrary({
     operation.modality === "image" && operation.requestId &&
     ["pending", "queued", "running", "moderating_input", "moderating_output", "finalizing", "unknown"].includes(operation.status ?? "")
   );
+  const { completed, total, missingPurposes } = data.journey.assetPack.draft;
+  const incomplete = completed < total && !draftImageSelectionFrozen(data);
   const [generatorOpen, setGeneratorOpen] = useState(() =>
-    data.visual.identityBootstrap.allowed || Boolean(activeImage) || Boolean(
+    (canReadProduction && canCreate && incomplete) || data.visual.identityBootstrap.allowed || Boolean(activeImage) || Boolean(
       readActiveDurableMutationIntent({ scope: `character-asset:create:${actorId}:${data.character.id}` }) ??
       readActiveDurableMutationIntent({ scope: `character-asset:selection:${actorId}:${data.character.id}` }),
     ),
@@ -214,7 +218,9 @@ export function CharacterImageLibrary({
           form,
         },
       );
-      setMessage(t("Image imported. Choose where it appears above."));
+      setMessage(t(data.visual.identityBootstrap.allowed
+        ? "Image imported. Establish an identity to use it in a display placement."
+        : "Image imported. Choose a display placement."));
       await loadAssets();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("Image import failed"));
@@ -255,8 +261,8 @@ export function CharacterImageLibrary({
           const blocker = assetArchiveBlocker(cause);
           if (blocker?.kind === "dependency" && blocker.dependencies.length > 0) {
             throw new Error(t(single
-              ? "Replace this image in its placement above before removing it."
-              : "At least one of these images is in use, so none were removed. Replace it in its placement above first."));
+              ? "Replace this image in its display placement before removing it."
+              : "At least one of these images is in use, so none were removed. Replace it in its display placement first."));
           }
           throw cause;
         }
@@ -275,9 +281,56 @@ export function CharacterImageLibrary({
 
   const query = search.trim().toLowerCase();
   const visibleAssets = assets;
+  const feedback = (
+    <>
+      {error ? <p className="rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{t(error)}</p> : null}
+      {message ? <p className="rounded-lg bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" role="status">{message}</p> : null}
+    </>
+  );
+  const creator = showGenerator ? (
+    <section aria-label={t("Image creator")} className="rounded-xl border border-[var(--ad-border)] bg-black/[0.015] p-3 sm:p-4">
+      <CharacterAssetStudio
+        actorId={actorId}
+        commitProjectMutation={commitProjectMutation}
+        data={data}
+        libraryAssets={assets}
+        key={`${actorId}:${data.character.id}:production`}
+        onContinue={onContinue}
+        onProjectReload={refreshAfterProduction}
+        permissions={{
+          read: canReadProduction,
+          create: canCreate,
+          selectDraft: canCreate,
+        }}
+      />
+    </section>
+  ) : null;
 
   return (
     <div className="space-y-5">
+      {incomplete ? (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] px-4 py-2">
+            <div>
+              <h3 className="text-sm font-semibold">{t("{completed}/{total} display images ready", { completed, total })}</h3>
+              <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+                {t("Next image: {slot}", { slot: t(characterAssetPurposeLabel(missingPurposes[0])) })}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              {canCreate ? (
+                <WorkspaceButton disabled={uploading} onClick={() => inputRef.current?.click()}>
+                  {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload aria-hidden="true" className="h-4 w-4" />}
+                  {t("Import existing image")}
+                </WorkspaceButton>
+              ) : null}
+              {placements ? <a className="text-sm font-semibold underline" href="#character-placement-title">{t("Choose from library")}</a> : null}
+            </div>
+          </div>
+          {feedback}
+          {creator}
+        </>
+      ) : null}
       <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
@@ -286,7 +339,7 @@ export function CharacterImageLibrary({
             </p>
             <h3 className="mt-1 text-xl font-semibold">{t("All images for {name}", { name: data.character.name })}</h3>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
-              {t("Generate here or import images made elsewhere. The placements above choose from this library.")}
+              {t("Create or import images for this Character’s display placements.")}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -298,10 +351,12 @@ export function CharacterImageLibrary({
               ref={inputRef}
               type="file"
             />
-            <WorkspaceButton disabled={!canCreate || uploading} onClick={() => inputRef.current?.click()}>
-              {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-              {t("Import image")}
-            </WorkspaceButton>
+            {!incomplete ? (
+              <WorkspaceButton disabled={!canCreate || uploading} onClick={() => inputRef.current?.click()}>
+                {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                {t("Import image")}
+              </WorkspaceButton>
+            ) : null}
             <WorkspaceButton disabled={!canReadProduction || (!canCreate && !activeImage)} onClick={() => setGeneratorOpen((open) => !open)} tone="primary">
               {showGenerator ? <X className="h-4 w-4" /> : <WandSparkles className="h-4 w-4" />}
               {t(showGenerator ? "Close creator" : activeImage ? "View generation" : "Create images")}
@@ -329,8 +384,7 @@ export function CharacterImageLibrary({
         ) : null}
       </section>
 
-      {error ? <p className="rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{t(error)}</p> : null}
-      {message ? <p className="rounded-lg bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" role="status">{message}</p> : null}
+      {!incomplete ? feedback : null}
       {loadError ? (
         <div className="rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">
           <p className="font-semibold">{t("Character images could not be loaded")}</p>
@@ -344,24 +398,8 @@ export function CharacterImageLibrary({
       ) : null}
 
       {activeImage ? <p className="rounded-lg bg-[var(--ad-blue-bg)] p-3 text-sm" role="status">{t(activeImageLabel)}</p> : null}
-      {showGenerator ? (
-        <section aria-label={t("Image creator")} className="rounded-xl border border-[var(--ad-border)] bg-black/[0.015] p-3 sm:p-4">
-          <CharacterAssetStudio
-            actorId={actorId}
-            commitProjectMutation={commitProjectMutation}
-            data={data}
-            key={`${actorId}:${data.character.id}:production`}
-            onContinue={onContinue}
-            onProjectReload={refreshAfterProduction}
-            permissions={{
-              read: canReadProduction,
-              create: canCreate,
-              selectDraft: canCreate,
-            }}
-          />
-        </section>
-      ) : null}
-
+      {!incomplete ? creator : null}
+      {placements}
 
       {canReadProduction ? <CharacterChatLibrary characterId={data.character.id} mediaType="image"
         canWrite={canCreate} canPublish={canPublish} source={chatSource} onCloseSource={() => setChatSource(null)}

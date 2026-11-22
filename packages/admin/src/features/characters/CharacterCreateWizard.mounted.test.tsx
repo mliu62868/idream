@@ -88,11 +88,11 @@ function createMemoryStorage(): Storage {
   };
 }
 
-async function openReviewSection(container: HTMLElement, sectionIndex: number) {
-  const edit = [...container.querySelectorAll("button")].filter(
-    (button) => button.textContent?.trim() === "Edit",
-  )[sectionIndex];
-  await act(async () => edit?.click());
+async function openCreationStep(container: HTMLElement, step: number) {
+  const button = container.querySelectorAll<HTMLButtonElement>("ol button")[step]!;
+  if (button.getAttribute("aria-current") !== "step") {
+    await act(async () => button.click());
+  }
 }
 
 describe("Character create wizard restore authority", () => {
@@ -226,7 +226,7 @@ describe("Character create wizard restore authority", () => {
     await act(async () => root.render(<CharacterCreateWizard actorId="operator-tags" canCreate canTag />));
     await waitUntil(() => Boolean(container.querySelector('[data-testid="character-create-tags"] button')));
     await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="character-create-tags"] button')!.click());
-    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Save character"))!.click());
+    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Save private draft"))!.click());
     await waitUntil(() => routerPush.mock.calls.length === 1);
     expect(puts).toEqual([{ tagIds: ["tag-1"], confirmation: "chr-1:tags" }]);
     expect(routerPush).toHaveBeenCalledWith("/admin/characters/chr-1?tab=assets");
@@ -275,14 +275,14 @@ describe("Character create wizard restore authority", () => {
     });
   });
 
-  it("returns a rejected placeholder from Review to the editable field", async () => {
+  it("returns a rejected placeholder from the final step to the editable field", async () => {
     window.localStorage.setItem("idream.admin.character-create-draft.v3:operator-a", JSON.stringify({
       ...restoredDraft,
       persona: { ...restoredDraft.persona, name: "Untitled companion" },
     }));
     await act(async () => root.render(<CharacterCreateWizard actorId="operator-a" canCreate />));
-    await waitUntil(() => container.textContent?.includes("Persona & conversation") === true);
-    const save = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Save character")!;
+    await waitUntil(() => container.textContent?.includes("Review draft") === true);
+    const save = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Save private draft")!;
     await act(async () => save.click());
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const name = container.querySelector<HTMLInputElement>('[name="persona.name"]');
@@ -336,7 +336,7 @@ describe("Character create wizard restore authority", () => {
   it("allows revisiting completed steps and keeps data without creating early", async () => {
     window.localStorage.setItem("idream.admin.character-create-draft.v3:operator-a", JSON.stringify(restoredDraft));
     await act(async () => root.render(<CharacterCreateWizard actorId="operator-a" canCreate />));
-    await waitUntil(() => container.textContent?.includes("Persona & conversation") === true);
+    await waitUntil(() => container.textContent?.includes("Review draft") === true);
     const persona = container.querySelector("ol button") as HTMLButtonElement;
     await act(async () => persona.click());
     expect(container.querySelector<HTMLInputElement>('[name="persona.name"]')?.value).toBe("Mira");
@@ -351,7 +351,7 @@ describe("Character create wizard restore authority", () => {
     const storageKey = "idream.admin.character-create-draft.v3:operator-a";
     window.localStorage.setItem(storageKey, JSON.stringify(restoredDraft));
     await act(async () => root.render(<CharacterCreateWizard actorId="operator-a" canCreate />));
-    await waitUntil(() => container.textContent?.includes("Persona & conversation") === true);
+    await waitUntil(() => container.textContent?.includes("Review draft") === true);
     await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Discard draft")!.click());
     expect(window.localStorage.getItem(storageKey)).not.toBeNull();
     const confirm = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find((button) => button.textContent?.trim() === "Discard draft")!;
@@ -371,10 +371,10 @@ describe("Character create wizard restore authority", () => {
       throw new Error("Unexpected write");
     });
     await act(async () => root.render(<CharacterCreateWizard actorId="scoped-operator" canCreate={false} canResumeDraft />));
-    await waitUntil(() => container.textContent?.includes("Persona & conversation") === true);
+    await waitUntil(() => container.textContent?.includes("Review draft") === true);
     expect(container.textContent).toContain("Saved to server");
     expect(container.textContent).not.toContain("Start a new Character instead");
-    const save = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Save character")!;
+    const save = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Save private draft")!;
     await act(async () => save.click());
     expect(routerPush).toHaveBeenCalledWith("/admin/characters/assigned-character");
     expect(adminV2Request.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
@@ -387,8 +387,8 @@ describe("Character create wizard restore authority", () => {
       draft: restoredDraft,
     }));
     await act(async () => root.render(<CharacterCreateWizard actorId="operator-a" canCreate />));
-    await waitUntil(() => container.textContent?.includes("Persona & conversation") === true);
-    await openReviewSection(container, 1);
+    await waitUntil(() => container.textContent?.includes("Review draft") === true);
+    await openCreationStep(container, 1);
     const anchor = container.querySelector<HTMLTextAreaElement>('[name="visualDirection.identityAnchor"]')!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(anchor, "");
@@ -402,7 +402,7 @@ describe("Character create wizard restore authority", () => {
     expect(adminV2Request.mock.calls.some(([, options]) => options?.method === "PATCH")).toBe(false);
   });
 
-  it("locks review edits during the final save and unlocks after a rejected write", async () => {
+  it("locks visual fields during the final save and unlocks after a rejected write", async () => {
     window.history.replaceState(null, "", "/admin/characters/new?draft=assigned-character");
     const pendingWrites: Array<{ resolve(value: unknown): void; reject(cause: unknown): void }> = [];
     adminV2Request.mockImplementation(async (_path, options) => {
@@ -410,20 +410,19 @@ describe("Character create wizard restore authority", () => {
       return { authority: { characterId: "assigned-character", projectId: "assigned-project", projectVersion: 3, deepLink: "/admin/characters/assigned-character" }, draft: restoredDraft };
     });
     await act(async () => root.render(<CharacterCreateWizard actorId="operator-a" canCreate />));
-    await waitUntil(() => container.textContent?.includes("Persona & conversation") === true);
-    await openReviewSection(container, 1);
+    await waitUntil(() => container.textContent?.includes("Review draft") === true);
+    await openCreationStep(container, 1);
     const reference = container.querySelector<HTMLTextAreaElement>('[name="visualDirection.referenceDirection"]')!;
     const editReference = async (value: string) => act(async () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(reference, value);
       reference.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await editReference("Warm light A");
-    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Continue")!.click());
     await waitUntil(() => pendingWrites.length === 1);
     await editReference("Warm light B");
     await act(async () => pendingWrites[0]!.resolve({ version: 4 }));
-    await waitUntil(() => container.textContent?.includes("Persona & conversation") === true);
-    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Save character")!.click());
+    await waitUntil(() => container.textContent?.includes("Review draft") === true);
+    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Save private draft")!.click());
     await waitUntil(() => pendingWrites.length === 2);
     expect(container.querySelector("fieldset")?.disabled).toBe(true);
     expect(routerPush).not.toHaveBeenCalled();
@@ -440,8 +439,8 @@ describe("Character create wizard restore authority", () => {
       draft: restoredDraft,
     }));
     await act(async () => root.render(<CharacterCreateWizard actorId="operator-a" canCreate />));
-    await waitUntil(() => container.textContent?.includes("Persona & conversation") === true);
-    await openReviewSection(container, 0);
+    await waitUntil(() => container.textContent?.includes("Review draft") === true);
+    await openCreationStep(container, 0);
     const name = container.querySelector<HTMLInputElement>('[name="persona.name"]')!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(name, "Unsaved Mira");
@@ -510,19 +509,19 @@ describe("Character create wizard restore authority", () => {
       await waitUntil(
         () =>
           hydrationContainer.textContent?.includes(
-            "Creating saves a private, inactive draft",
+            "Review draft",
           ) === true,
       );
       expect(hydrationContainer.textContent).toContain(
         "Required information complete.",
       );
-      expect(hydrationContainer.textContent).toContain("Review & create");
+      expect(hydrationContainer.textContent).toContain("Visual direction");
       expect(hydrationContainer.textContent).toContain("Saved locally");
       expect(hydrationContainer.textContent).toContain(
-        "Creating saves a private, inactive draft",
+        "Review draft",
       );
-      const personaSummary = [...hydrationContainer.querySelectorAll("h3")].find(
-        (heading) => heading.textContent?.trim() === "Persona & conversation",
+      const personaSummary = [...hydrationContainer.querySelectorAll("summary")].find(
+        (heading) => heading.textContent?.trim() === "Review draft",
       );
       const technicalDetails = hydrationContainer.querySelector<HTMLDetailsElement>(
         '[data-testid="character-create-soul-preview"]',
@@ -538,7 +537,7 @@ describe("Character create wizard restore authority", () => {
       ).toBeTruthy();
       expect(technicalDetails.open).toBe(false);
       expect(technicalDetails.querySelector("summary")?.textContent).toContain(
-        "Technical details",
+        "SOUL.md · exact Agent prompt",
       );
       expect(technicalDetails.textContent).toContain(
         "SOUL.md · exact Agent prompt",
@@ -617,7 +616,7 @@ describe("Character create wizard restore authority", () => {
     await waitUntil(
       () =>
         container.textContent?.includes(
-          "Creating saves a private, inactive draft",
+          "Review draft",
         ) === true,
     );
     const soulPreview = container.querySelector(
@@ -627,7 +626,7 @@ describe("Character create wizard restore authority", () => {
     expect(soulPreview?.textContent).not.toContain("Relationship:");
     expect(soulPreview?.textContent).toContain("## Additional details");
     expect(soulPreview?.textContent).toContain("Warm and observant.");
-    await openReviewSection(container, 0);
+    await openCreationStep(container, 0);
 
     const additionalDetails = container.querySelector("textarea");
     await act(async () => {
@@ -683,8 +682,8 @@ describe("Character create wizard restore authority", () => {
       };
     });
     await act(async () => root.render(<CharacterCreateWizard actorId="operator-a" canCreate />));
-    await waitUntil(() => container.textContent?.includes("Persona & conversation") === true);
-    await openReviewSection(container, 0);
+    await waitUntil(() => container.textContent?.includes("Review draft") === true);
+    await openCreationStep(container, 0);
     const typeName = async (value: string) => {
       const name = container.querySelector<HTMLInputElement>('[name="persona.name"]')!;
       await act(async () => {
@@ -698,7 +697,7 @@ describe("Character create wizard restore authority", () => {
     await act(async () => reload.click());
     await waitUntil(() => container.textContent?.includes("version 5") === true);
     expect(container.textContent).not.toContain("Reload draft");
-    await openReviewSection(container, 0);
+    await openCreationStep(container, 0);
     expect(container.querySelector<HTMLInputElement>('[name="persona.name"]')!.value).toBe("Server Mira");
     await typeName("Merged Mira");
     await waitUntil(() => patches.length === 2);
@@ -837,10 +836,10 @@ describe("Character create wizard restore authority", () => {
     await waitUntil(
       () =>
         container.textContent?.includes(
-          "Creating saves a private, inactive draft",
+          "Review draft",
         ) === true,
     );
-    await openReviewSection(container, 0);
+    await openCreationStep(container, 0);
     const additionalDetails = container.querySelector("textarea");
     await act(async () => {
       if (additionalDetails) {
@@ -910,11 +909,11 @@ describe("Character create wizard restore authority", () => {
     await waitUntil(
       () =>
         container.textContent?.includes(
-          "Creating saves a private, inactive draft",
+          "Review draft",
         ) === true,
     );
     const finish = [...container.querySelectorAll("button")].find((button) =>
-      button.textContent?.includes("Save character"),
+      button.textContent?.includes("Save private draft"),
     );
     // SPEC: 遗留占位名可以恢复为草稿，但最终创建必须要求替换，并返回对应编辑字段。
     expect(finish?.disabled).toBe(false);
@@ -973,10 +972,10 @@ describe("Character create wizard restore authority", () => {
     await waitUntil(
       () =>
         container.textContent?.includes(
-          "Creating saves a private, inactive draft",
+          "Review draft",
         ) === true,
     );
-    await openReviewSection(container, 0);
+    await openCreationStep(container, 0);
     expect(container.querySelector("textarea")?.disabled).toBe(false);
     expect(container.textContent).not.toContain(
       "A Character creation request is unresolved",
@@ -1021,13 +1020,13 @@ describe("Character create wizard restore authority", () => {
     await waitUntil(
       () =>
         container.textContent?.includes(
-          "Creating saves a private, inactive draft",
+          "Review draft",
         ) === true,
     );
     await waitUntil(() =>
       [...container.querySelectorAll("button")].some(
         (button) =>
-          button.textContent?.includes("Save character") && !button.disabled,
+          button.textContent?.includes("Save private draft") && !button.disabled,
       ),
     );
     expect(
@@ -1040,7 +1039,7 @@ describe("Character create wizard restore authority", () => {
       throw new Error("history unavailable");
     });
     const finish = [...container.querySelectorAll("button")].find((button) =>
-      button.textContent?.includes("Save character"),
+      button.textContent?.includes("Save private draft"),
     );
     await act(async () => {
       finish?.click();

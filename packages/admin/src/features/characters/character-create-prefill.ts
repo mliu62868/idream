@@ -136,15 +136,15 @@ export function templateSuggestion(
 
 const DEFAULT_REFERENCE_DIRECTION = "Soft natural light, head-and-shoulders portrait, clean uncluttered background";
 
-// SPEC: 必填项能默认就默认。一句话形象取短描述，画面风格给一个通用肖像；外貌特征没有合理默认。
+// SPEC: 外貌只从已有视觉信息补齐。剧情简介不能当作形象提示。
 export function withVisualDirectionDefaults(draft: CharacterProjectDraft): CharacterProjectDraft {
-  const { visualDirection, persona } = draft;
+  const { visualDirection } = draft;
   if (visualDirection.identityAnchor.trim() && visualDirection.referenceDirection.trim()) return draft;
   return {
     ...draft,
     visualDirection: {
       ...visualDirection,
-      identityAnchor: visualDirection.identityAnchor.trim() ? visualDirection.identityAnchor : persona.characterPromise.trim(),
+      identityAnchor: visualDirection.identityAnchor.trim() ? visualDirection.identityAnchor : visualDirection.stableTraits[0]?.trim() ?? "",
       referenceDirection: visualDirection.referenceDirection.trim() ? visualDirection.referenceDirection : DEFAULT_REFERENCE_DIRECTION,
     },
   };

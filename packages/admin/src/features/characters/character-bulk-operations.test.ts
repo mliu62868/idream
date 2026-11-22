@@ -193,6 +193,7 @@ describe("bulk execution", () => {
   it("creates images through the durable Run protocol, one scope per image", async () => {
     const detail = {
       character: { id: "a" },
+      preview: { draft: { appearance: { referenceDirection: "Warm light in a quiet studio" } } },
       visual: {
         identityBootstrap: { allowed: false },
         readiness: { ready: true },
@@ -212,6 +213,7 @@ describe("bulk execution", () => {
     expect(options.scope).toBe("character-bulk-run:actor:a:character_hero");
     expect(options.request).toMatchObject({
       purpose: "character_hero",
+      brief: expect.stringContaining("Warm light in a quiet studio"),
       targetId: "a",
       profileId: "profile-1",
       count: 1,
@@ -226,6 +228,7 @@ describe("bulk execution", () => {
   it("refuses a Character whose route or identity is not ready", () => {
     const base = {
       character: { id: "a" },
+      preview: { draft: { appearance: { referenceDirection: "Warm light in a quiet studio" } } },
       visual: { identityBootstrap: { allowed: false }, readiness: { ready: true }, routeQualifications: [] },
     } as unknown as CharacterWorkspaceDetail;
     expect(() => bulkGenerationRequest(base, "character_hero", "A")).toThrow("Platform operations");

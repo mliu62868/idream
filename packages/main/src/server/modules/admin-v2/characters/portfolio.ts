@@ -437,16 +437,9 @@ async function filteredCharacterIds(
   db: PrismaClient,
   query: CharacterPortfolioQuery,
   authorizedCharacterIds: readonly string[] | null = null,
-  asOf: Date = new Date(),
 ) {
   const filters: string[][] = [];
   if (authorizedCharacterIds !== null) filters.push([...authorizedCharacterIds]);
-  if (query.attention) filters.push([...(await attentionByCharacter(db, asOf)).keys()]);
-  if (query.workQueue === "live_asset_pack_incomplete") {
-    filters.push(await incompleteLiveAssetPackCharacterIds(db));
-  } else if (query.workQueue) {
-    filters.push([...(await workQueueCharacterIds(db, asOf))[query.workQueue]]);
-  }
   if (query.search) {
     const drafts = await latestDraftNames(db, authorizedCharacterIds, query.search);
     filters.push(drafts.map((row) => row.characterId));
@@ -603,39 +596,45 @@ async function characterPeerFunnelRows(
   return rows as unknown as CharacterPeerFunnelRow[];
 }
 
-// SPEC: 各视图计数跟随搜索、来源与权限范围，不受视图自身筛选影响；分页前一次算清。
+// Each facet counts choices along its own axis with the other axis applied.
 async function portfolioViewCounts(
   db: PrismaClient,
   scopeSql: Prisma.Sql,
-  asOf: Date,
+  taskScopeSql: Prisma.Sql,
+  query: CharacterPortfolioQuery,
+  attention: Iterable<string>,
+  incomplete: readonly string[],
+  queues: Awaited<ReturnType<typeof workQueueCharacterIds>>,
 ): Promise<CharacterPortfolioFacets["viewCounts"]> {
-  const [attention, incomplete, queues] = await Promise.all([
-    attentionByCharacter(db, asOf),
-    incompleteLiveAssetPackCharacterIds(db),
-    workQueueCharacterIds(db, asOf),
-  ]);
-  const within = (ids: Iterable<string>) => Prisma.sql`p."characterId" = ANY(${[...ids]}::text[])`;
   const state = Prisma.sql`COALESCE(s.state, 'inactive')`;
+  const stateScope = query.servingState
+    ? Prisma.sql`${state} = ${query.servingState}`
+    : query.excludeArchived ? Prisma.sql`${state} <> 'retired'` : Prisma.sql`TRUE`;
+  const queueCount = (ids: Iterable<string>) => Prisma.sql`COUNT(*) FILTER (WHERE ${stateScope} AND ${portfolioIdsSql(ids)})::int`;
   const [row] = await db.$queryRaw<Array<CharacterPortfolioFacets["viewCounts"]>>(Prisma.sql`
     SELECT
-      COUNT(*) FILTER (WHERE ${state} <> 'retired')::int AS "all",
-      COUNT(*) FILTER (WHERE ${state} = 'inactive')::int AS draft,
-      COUNT(*) FILTER (WHERE ${state} = 'live')::int AS live,
-      COUNT(*) FILTER (WHERE ${state} = 'paused')::int AS paused,
-      COUNT(*) FILTER (WHERE ${state} = 'retired')::int AS archived,
-      COUNT(*) FILTER (WHERE ${within(attention.keys())})::int AS attention,
-      COUNT(*) FILTER (WHERE ${within(incomplete)})::int AS live_asset_pack_incomplete,
-      COUNT(*) FILTER (WHERE ${within(queues.pending_changes)})::int AS pending_changes,
-      COUNT(*) FILTER (WHERE ${within(queues.candidate_unpublished)})::int AS candidate_unpublished,
-      COUNT(*) FILTER (WHERE ${within(queues.publish_blocked)})::int AS publish_blocked,
-      COUNT(*) FILTER (WHERE ${within(queues.recent_generation_failed)})::int AS recent_generation_failed,
-      COUNT(*) FILTER (WHERE ${within(queues.ready_to_publish)})::int AS ready_to_publish
+      COUNT(*) FILTER (WHERE ${state} <> 'retired' ${taskScopeSql})::int AS "all",
+      COUNT(*) FILTER (WHERE ${state} = 'inactive' ${taskScopeSql})::int AS draft,
+      COUNT(*) FILTER (WHERE ${state} = 'live' ${taskScopeSql})::int AS live,
+      COUNT(*) FILTER (WHERE ${state} = 'paused' ${taskScopeSql})::int AS paused,
+      COUNT(*) FILTER (WHERE ${state} = 'retired' ${taskScopeSql})::int AS archived,
+      ${queueCount(attention)} AS attention,
+      ${queueCount(incomplete)} AS live_asset_pack_incomplete,
+      ${queueCount(queues.pending_changes)} AS pending_changes,
+      ${queueCount(queues.candidate_unpublished)} AS candidate_unpublished,
+      ${queueCount(queues.publish_blocked)} AS publish_blocked,
+      ${queueCount(queues.recent_generation_failed)} AS recent_generation_failed,
+      ${queueCount(queues.ready_to_publish)} AS ready_to_publish
     FROM "character_projects" p
     JOIN "characters" c ON c.id = p."characterId"
     LEFT JOIN "character_serving" s ON s."characterId" = p."characterId"
     WHERE ${scopeSql}
   `);
   return row;
+}
+
+function portfolioIdsSql(ids: Iterable<string>) {
+  return Prisma.sql`p."characterId" = ANY(${[...ids]}::text[])`;
 }
 
 const portfolioPageColumns: Record<string, Prisma.Sql> = {
@@ -688,18 +687,28 @@ export async function listCharacterPortfolioData(
   // INTENT: release attribution costs roughly 20 queries per item and reads exposure facts
   // unbounded, so only a caller that renders it asks for it. The Admin list always states its mode.
   const includePerformance = query.includePerformance === true;
-  const characterIds = await filteredCharacterIds(
-    db,
-    query,
-    input.authorizedCharacterIds ?? null,
-    asOf,
-  );
+  const [characterIds, attentionMatches, incomplete, queues] = await Promise.all([
+    filteredCharacterIds(db, query, input.authorizedCharacterIds ?? null),
+    query.includeFacets || query.attention ? attentionByCharacter(db, asOf) : null,
+    query.includeFacets || query.workQueue === "live_asset_pack_incomplete"
+      ? incompleteLiveAssetPackCharacterIds(db) : [],
+    query.includeFacets || (query.workQueue && query.workQueue !== "live_asset_pack_incomplete")
+      ? workQueueCharacterIds(db, asOf) : null,
+  ]);
+  const attentionIds = [...(attentionMatches?.keys() ?? [])];
+  const taskScopeSql = Prisma.sql`
+    ${query.attention ? Prisma.sql`AND ${portfolioIdsSql(attentionIds)}` : Prisma.empty}
+    ${query.workQueue
+      ? Prisma.sql`AND ${portfolioIdsSql(query.workQueue === "live_asset_pack_incomplete" ? incomplete : queues![query.workQueue])}`
+      : Prisma.empty}
+  `;
   // INTENT: 没有 Serving 行的角色对外显示 inactive，筛选必须按同一口径，否则「草稿」视图漏人。
   const servingStateSql = Prisma.sql`COALESCE(s.state, 'inactive')`;
   const scopeSql = Prisma.sql`
     ${operationalPortfolioCharacterSql}
-    ${characterIds === null ? Prisma.empty : Prisma.sql`AND p."characterId" = ANY(${characterIds}::text[])`}
+    ${characterIds === null ? Prisma.empty : Prisma.sql`AND ${portfolioIdsSql(characterIds)}`}
     ${query.source ? Prisma.sql`AND c.source = ${query.source}` : Prisma.empty}
+    ${query.operating ? Prisma.sql`AND ${servingStateSql} IN ('live', 'paused')` : Prisma.empty}
   `;
   const performanceSort = PERFORMANCE_SORTS[query.sort];
   const performanceWindow = completedUtcCharacterPerformanceWindow({ asOf, window: query.performanceWindow });
@@ -724,10 +733,9 @@ export async function listCharacterPortfolioData(
     FROM "character_projects" p JOIN "characters" c ON c.id = p."characterId"
     LEFT JOIN "character_serving" s ON s."characterId" = p."characterId"
     ${sortJoin}
-    WHERE ${scopeSql}
+    WHERE ${scopeSql} ${taskScopeSql}
       ${query.servingState ? Prisma.sql`AND ${servingStateSql} = ${query.servingState}` : Prisma.empty}
       ${query.excludeArchived ? Prisma.sql`AND ${servingStateSql} <> 'retired'` : Prisma.empty}
-      ${query.operating ? Prisma.sql`AND ${servingStateSql} IN ('live', 'paused')` : Prisma.empty}
   `;
   const { items: page, pageInfo } = await paginateAdminKeyset({
     scope: "character_portfolio",
@@ -1233,7 +1241,7 @@ export async function listCharacterPortfolioData(
     ...(query.includeFacets
       ? {
           facets: {
-            viewCounts: await portfolioViewCounts(db, scopeSql, asOf),
+            viewCounts: await portfolioViewCounts(db, scopeSql, taskScopeSql, query, attentionIds, incomplete, queues!),
           },
         }
       : {}),

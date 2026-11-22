@@ -2,7 +2,8 @@
 
 import { characterCommandMessage, renderCharacterCommandMessage } from "./character-command-copy";
 
-import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
+import { useAdminI18n } from "@/components/admin/i18n";
+import { useAdminFormat } from "@/components/admin/ui/format";
 import { RequestErrorDetails } from "@/components/admin/ui/RequestErrorDetails";
 import { operatorErrorCopy } from "@/components/admin/ui/request-error-copy";
 import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
@@ -56,7 +57,6 @@ import { characterWorkspacePermissions } from "./character-workspace-permissions
 import { permissionDenied } from "./character-permission-denied";
 import { CharacterPortfolio } from "./CharacterPortfolio";
 import {
-  characterPortfolioState,
   resolveCharacterPortfolioPrimaryAction,
 } from "./CharacterPortfolioCard";
 import { CharacterOverview } from "./CharacterOverview";
@@ -66,7 +66,8 @@ import { CharacterImageLibrary } from "./CharacterImageLibrary";
 import { CharacterPlacementEditor } from "./CharacterPlacementEditor";
 import { ReleasePanel } from "./ReleasePanel";
 import { MonitorPanel } from "./MonitorPanel";
-import { characterMonitorNeedsAttention } from "./character-workspace-format";
+import { characterHasNoUnpublishedChanges, characterMonitorNeedsAttention, characterReleaseOrdinals } from "./character-workspace-format";
+import { characterPortfolioQuery, parseCharacterPortfolioUrl } from "./portfolio-query";
 import { PerformancePanel, characterNoDataDiagnosis } from "./PerformancePanel";
 import {
   CharacterMediaOperationsCard,
@@ -87,8 +88,7 @@ const characterWorkspaceTabLabels: Record<Tab, string> = {
   assets: "Images",
   video: "Videos",
   voice: "Voice",
-  preview: "Launch preview",
-  release: "Release",
+  release: "Release and preview",
   monitor: "Live monitoring",
 };
 
@@ -112,7 +112,7 @@ export const characterWorkspaceAreaTabs: Record<
 > = {
   settings: ["project", "soul", "visual", "voice"],
   assets: ["assets", "video"],
-  operations: ["preview", "release", "monitor"],
+  operations: ["release", "monitor"],
 };
 
 const characterWorkspaceAreas = Object.keys(
@@ -129,6 +129,13 @@ export function characterWorkspaceAreaForTab(tab: Tab): CharacterWorkspaceArea {
       characterWorkspaceAreaTabs[area].includes(tab),
     ) ?? "settings"
   );
+}
+
+function setCharacterWorkspaceTabUrl(tab: Tab, options: Parameters<typeof setWorkspaceUrl>[1]) {
+  const roster = new URLSearchParams(window.location.search).get("roster");
+  const params = new URLSearchParams({ tab });
+  if (roster !== null) params.set("roster", roster);
+  setWorkspaceUrl(params, options);
 }
 
 type CustomerPublicationPrepRecovery = {
@@ -303,7 +310,8 @@ function CharacterDetail({
     () => characterWorkspacePermissions(granted, false),
     [granted],
   );
-  const { locale, t } = useAdminI18n();
+  const { t } = useAdminI18n();
+  const format = useAdminFormat();
   const [data, setData] = useState<CharacterWorkspaceDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<CharacterWorkspaceError | null>(null);
@@ -337,6 +345,7 @@ function CharacterDetail({
   // INVARIANT: 初值不许读地址栏或 journal 快照 —— 服务端得出 "project"、客户端首帧
   // 得出 URL 里的 tab，两边分叉就是 hydration mismatch。真实 tab 在挂载 effect 里对齐。
   const [tab, setTab] = useState<Tab>("project");
+  const [returnQuery, setReturnQuery] = useState<string | null>(null);
   const tabRef = useRef(tab);
   const load = useCallback(async () => {
     const request = requestGate.current.begin();
@@ -400,7 +409,7 @@ function CharacterDetail({
       }
       setCustomerPublicationPrepRecovery(null);
       setTab("assets");
-      setWorkspaceUrl(new URLSearchParams({ tab: "assets" }), {
+      setCharacterWorkspaceTabUrl("assets", {
         mode: "replace",
       });
       await load().catch(() => undefined);
@@ -581,7 +590,7 @@ function CharacterDetail({
     const restore = () => {
       if (!journal.restore()) return;
       setTab("release");
-      setWorkspaceUrl(new URLSearchParams({ tab: "release" }), {
+      setCharacterWorkspaceTabUrl("release", {
         mode: "replace",
       });
     };
@@ -621,7 +630,7 @@ function CharacterDetail({
     const timer = window.setTimeout(() => {
       journal.attachAuthorityCommand(active);
       setTab("release");
-      setWorkspaceUrl(new URLSearchParams({ tab: "release" }), {
+      setCharacterWorkspaceTabUrl("release", {
         mode: "replace",
       });
     }, 0);
@@ -666,33 +675,33 @@ function CharacterDetail({
         ? "release"
         : characterWorkspaceTabFromSearch(window.location.search),
     );
+    const roster = new URLSearchParams(window.location.search).get("roster");
+    if (roster !== null) setReturnQuery(characterPortfolioQuery(parseCharacterPortfolioUrl(roster)));
     /* eslint-enable react-hooks/set-state-in-effect */
     // 只在挂载时跑一次。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
-    if (tab !== "visual") return;
     const targetId = window.location.hash.replace(/^#/, "");
-    if (
-      ![
+    const isVisualTarget = tab === "visual" && [
         "visual-production-readiness",
         "visual-identity-version",
         "visual-reference-set",
         "route-qualification-workbench",
-      ].includes(targetId)
-    )
-      return;
+      ].includes(targetId);
+    const isImagePlacement = tab === "assets" && /^character-image-placement-character_(cover|hero|chat)$/.test(targetId);
+    if (!isVisualTarget && !isImagePlacement) return;
     const frame = window.requestAnimationFrame(() => {
       const target = document.getElementById(targetId);
       target?.scrollIntoView({ block: "start" });
-      target?.querySelector("summary")?.focus({ preventScroll: true });
+      target?.querySelector<HTMLElement>(isVisualTarget ? "summary" : "button:not([disabled])")?.focus({ preventScroll: true });
     });
     return () => window.cancelAnimationFrame(frame);
   }, [tab, data?.visual.imageReadiness?.state, data?.visual.readiness.ready]);
   useEffect(() => {
     const restoreTab = () => {
       if (journal.getSnapshot().writesLocked || data?.activeCommand) {
-        setWorkspaceUrl(new URLSearchParams({ tab: tabRef.current }), {
+        setCharacterWorkspaceTabUrl(tabRef.current, {
           mode: "replace",
         });
         return;
@@ -814,7 +823,7 @@ function CharacterDetail({
     )
       return;
     setTab(next);
-    setWorkspaceUrl(new URLSearchParams({ tab: next }), {
+    setCharacterWorkspaceTabUrl(next, {
       mode: "push",
     });
   };
@@ -832,7 +841,7 @@ function CharacterDetail({
     const target = event.target;
     const anchor =
       target instanceof Element ? target.closest<HTMLAnchorElement>("a[href]") : null;
-    if (!anchor || anchor.target === "_blank") return;
+    if (!anchor || anchor.target === "_blank" || anchor.getAttribute("href")?.startsWith("#")) return;
     const destination = new URL(anchor.href, window.location.href);
     if (
       destination.origin !== window.location.origin ||
@@ -850,7 +859,7 @@ function CharacterDetail({
       return;
     }
     setTab(next);
-    setWorkspaceUrl(new URLSearchParams({ tab: next }), {
+    setCharacterWorkspaceTabUrl(next, {
       hash: destination.hash,
       mode: "push",
     });
@@ -889,8 +898,25 @@ function CharacterDetail({
   const attentionDiagnosis = attentionMetric
     ? characterNoDataDiagnosis(attentionMetric)
     : null;
-  // SPEC: the header says what the list card says — one lifecycle label, one next step.
-  const lifecycle = characterPortfolioState(data.portfolio);
+  const servingState = data.journey.release.servingState;
+  const releaseId = data.journey.release.currentReleaseId;
+  const releaseOrdinal = releaseId ? characterReleaseOrdinals(data.releases).get(releaseId) : undefined;
+  const servingLabel = servingState === "live" ? "Live"
+    : servingState === "paused" ? "Paused"
+    : servingState === "retired" ? (releaseId ? "Retired" : "Archived")
+    : "Not live";
+  const discoveryLabel = servingState === "live" && data.character.visibility === "public" ? "Listed in Explore"
+    : servingState === "live" && data.character.visibility === "unlisted" ? "Direct link only"
+    : servingState === "live" && data.character.visibility === "private" ? "Private"
+    : null;
+  const { completed, total } = data.journey.assetPack.draft;
+  const draftStatus = characterHasNoUnpublishedChanges(data) && releaseOrdinal
+    ? t("Matches release #{version}", { version: releaseOrdinal })
+    : data.journey.release.candidateReleaseId
+      ? t("Pending publish")
+      : releaseId && data.preview.changedFields.length
+        ? t("{count} unpublished changes", { count: data.preview.changedFields.length })
+        : null;
   const nextStep = resolveCharacterPortfolioPrimaryAction(data.portfolio);
   const nextStepTab = nextStep.href.includes("?tab=")
     ? characterWorkspaceTabFromSearch(nextStep.href.slice(nextStep.href.indexOf("?")))
@@ -907,6 +933,11 @@ function CharacterDetail({
       aria-labelledby="character-workspace-title"
       onClickCapture={onWorkspaceLinkClick}
     >
+      {returnQuery !== null ? (
+        <Link className="mb-3 inline-flex min-h-8 items-center text-sm font-medium underline underline-offset-4" href={`/admin/characters${returnQuery ? `?${returnQuery}` : ""}`}>
+          {t("Back to character results")}
+        </Link>
+      ) : null}
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex min-w-0 items-center gap-3">
           {workspaceImageUrl ? (
@@ -932,31 +963,23 @@ function CharacterDetail({
               >
                 {workspaceName}
               </h2>
-              <p className="inline-flex items-center gap-2 text-sm text-[var(--ad-text-muted)]">
-                <span
-                  className={cn(
-                    "rounded-full px-2 py-0.5 text-xs font-semibold",
-                    lifecycle.badge,
-                  )}
-                >
-                  {t(lifecycle.label)}
-                </span>
-                {t(data.character.visibility)}
-              </p>
             </div>
-            <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-              {data.preview.live && data.preview.changedFields.length === 0
-                ? `${t("Draft matches live")} · `
-                : data.preview.changedFields.length > 0
-                  ? `${t("{count} unpublished changes", {
-                      count: data.preview.changedFields.length,
-                    })} · `
-                  : ""}
-              {t("Updated")}{" "}
-              {new Date(data.character.updatedAt).toLocaleDateString(
-                adminDateLocale(locale),
-              )}
-            </p>
+            <dl className="mt-1 space-y-1 text-sm">
+              <div className="flex flex-wrap items-baseline gap-x-2">
+                <dt className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Customer availability")}</dt>
+                <dd data-testid="character-customer-status">
+                  <strong>{t(servingLabel)}</strong>
+                  {releaseOrdinal ? ` · ${t("Release")} #${releaseOrdinal}` : ""}
+                  {discoveryLabel ? ` · ${t(discoveryLabel)}` : ""}
+                </dd>
+              </div>
+              <div className="flex flex-wrap items-baseline gap-x-2">
+                <dt className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Draft")}</dt>
+                <dd data-testid="character-draft-status">
+                  {draftStatus ? `${draftStatus} · ` : ""}{t("{completed}/{total} display images ready", { completed, total })}
+                </dd>
+              </div>
+            </dl>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-3 lg:justify-end">
@@ -978,6 +1001,7 @@ function CharacterDetail({
           <p className="mt-1 break-all">
             {t("Workspace ID")} · {data.project.id}
           </p>
+          <p className="mt-1">{t("Updated")} {format.dateTime(data.character.updatedAt)}</p>
         </details>
         </div>
       </div>
@@ -1189,29 +1213,34 @@ function CharacterDetail({
             runCommittedMutation={runCommittedMutation}
           />
         ) : tab === "assets" ? (
-          // SPEC: 图片与它出现在哪（封面 / 头图 / 聊天图）放在同一页：先选位置，下面是图库。
-          // INTENT: 位置编辑器曾放在「运营 → 上线预览」，导入的图只能跨区去那里才能用上。
           <div id="character-image-studio">
-            <CharacterPlacementEditor
-              actorId={actorId}
-              canRead={permissions.readImages}
-              canWrite={guardedPermissions.writeProject}
-              data={data}
-              runCommittedMutation={runCommittedMutation}
-            />
             <CharacterImageLibrary
               actorId={actorId}
               canPublish={guardedPermissions.publishRelease}
               canArchive={guardedPermissions.archiveAssets}
-              canCreate={
-                guardedPermissions.createAssets &&
-                guardedPermissions.writeProject
-              }
+              canCreate={guardedPermissions.createAssets && guardedPermissions.writeProject}
               canRead={permissions.readImages}
               canReadProduction={permissions.readProduction}
               commitProjectMutation={runCommittedMutation}
               data={data}
-              onContinue={selectTab}
+              placements={
+                <CharacterPlacementEditor
+                  actorId={actorId}
+                  canRead={permissions.readImages}
+                  canWrite={guardedPermissions.writeProject}
+                  data={data}
+                  runCommittedMutation={runCommittedMutation}
+                />
+              }
+              onContinue={(next) => {
+                selectTab(next);
+                if (next === "release") {
+                  document.getElementById("character-workspace-title")?.scrollIntoView({ block: "center" });
+                  window.requestAnimationFrame(() => {
+                    document.getElementById("character-tab-release")?.focus({ preventScroll: true });
+                  });
+                }
+              }}
               onProjectReload={reloadProject}
             />
           </div>
@@ -1244,16 +1273,17 @@ function CharacterDetail({
             runCommittedMutation={runCommittedMutation}
             takeIdempotencyKey={journal.takeIdempotencyKey}
           />
-        ) : tab === "preview" ? (
-          <PreviewDiff data={data} />
         ) : tab === "release" ? (
-          <ReleasePanel
-            data={data}
-            journal={journal}
-            permissions={guardedPermissions}
-            runCommittedMutation={runCommittedMutation}
-            writesLocked={writesLocked}
-          />
+          <div className="space-y-5">
+            <ReleasePanel
+              data={data}
+              journal={journal}
+              permissions={guardedPermissions}
+              runCommittedMutation={runCommittedMutation}
+              writesLocked={writesLocked}
+            />
+            <PreviewDiff data={data} />
+          </div>
         ) : (
           // SPEC: 「线上」= 表现证据 → 组合决策 → 发布护栏，自上而下就是运营复盘的顺序。
           <div className="space-y-5">

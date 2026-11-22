@@ -34,8 +34,7 @@ async function createDraftThroughWizard(page: Page, name: string) {
   await page.getByLabel("Look in one line").fill("Composed radio host in her thirties");
   await page.getByLabel("Features that never change (one per line)").fill("Dark wavy hair\nWarm brown eyes");
   await page.getByLabel("Image mood and framing").fill("Warm low light, close-up portrait");
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
-  await page.getByRole("button", { name: "Save character", exact: true }).click();
+  await page.getByRole("button", { name: "Save private draft", exact: true }).click();
   await expect(page).toHaveURL(/\/admin\/characters\/[^/?]+\?tab=assets/);
   return new URL(page.url()).pathname.split("/").pop()!;
 }
@@ -54,7 +53,7 @@ test.describe.serial("Character operations stay one click", () => {
     await shot(page, "new-draft-assets");
 
     // The handoff needs an identity to snapshot; the core flow in admin-v2-workspaces.e2e.ts records one.
-    await expect(page.getByRole("button", { name: "Mark ready to publish" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Record creation handoff" })).toHaveCount(0);
 
     await page.getByRole("button", { name: "Copy as new draft" }).click();
     await expect.poll(() => new URL(page.url()).pathname).not.toContain(characterId);
@@ -72,6 +71,8 @@ test.describe.serial("Character operations stay one click", () => {
     await expect(page.getByRole("button", { name: "Import" })).toBeVisible();
     await shot(page, "portfolio");
 
+    const draftName = `Ops Walk ${suffix}`;
+    await page.getByRole("checkbox", { name: `Select ${draftName}`, exact: true }).first().check();
     await page.getByRole("button", { name: /^Live/ }).click();
     await page.waitForURL(/servingState=live/);
     const selects = page.getByRole("checkbox", { name: /^Select (?!this page)/ });
@@ -81,11 +82,14 @@ test.describe.serial("Character operations stay one click", () => {
     await selects.first().check();
     const bulk = page.getByRole("region", { name: "Bulk actions" });
     await expect(bulk).toBeVisible();
+    await expect(bulk.getByText("1 selected outside this page")).toBeVisible();
     await shot(page, "bulk-selected");
     const commandsBefore = await prisma.controlPlaneCommand.count({ where: { commandType: "character.serving.pause" } });
-    await bulk.getByRole("button", { name: "Pause", exact: true }).click();
+    await bulk.getByRole("button", { name: "Pause (1/2)", exact: true }).click();
     // One plain confirmation: nothing to type, nothing to tick.
-    await page.getByRole("dialog").getByRole("button").last().click();
+    const pauseConfirm = page.getByRole("dialog");
+    await expect(pauseConfirm).toContainText(`Skipped ${draftName}: Only live characters can be paused.`);
+    await pauseConfirm.getByRole("button", { name: "Pause", exact: true }).click();
     await expect(bulk.getByText("Results")).toBeVisible();
     // E2E runs no background worker, so drain the accepted command the way the core flow does.
     await expect.poll(() => prisma.controlPlaneCommand.count({ where: { commandType: "character.serving.pause" } })).toBe(commandsBefore + 1);
@@ -95,6 +99,9 @@ test.describe.serial("Character operations stay one click", () => {
     });
     await drainTargetAdminCommand(prisma, { commandId: command.id, workerId: `playwright-bulk-${suffix}`, leaseMs: 30_000 });
     await expect.poll(() => prisma.characterServing.count({ where: { state: "live" } }), { timeout: 60_000 }).toBe(live - 1);
+    await expect(bulk.getByText("Done", { exact: true })).toBeVisible();
+    await expect(bulk).toContainText(`Skipped ${draftName}: Only live characters can be paused.`);
+    await expect(bulk.getByText("1 selected", { exact: true })).toBeVisible();
     await shot(page, "bulk-result");
 
     // Resume the same way. This also hands the seeded Character back to later specs.
@@ -111,6 +118,71 @@ test.describe.serial("Character operations stay one click", () => {
     });
     await drainTargetAdminCommand(prisma, { commandId: resume.id, workerId: `playwright-bulk-resume-${suffix}`, leaseMs: 30_000 });
     await expect.poll(() => prisma.characterServing.count({ where: { state: "live" } }), { timeout: 60_000 }).toBe(live);
+  });
+
+  test("retains the roster query and refreshes valid imports without leaving the keyboard dialog", async ({ page }) => {
+    await login(page);
+    const name = `Ops Import ${suffix}`;
+    const rejectedName = `Ops Underage ${suffix}`;
+    const roster = `${adminBaseURL()}/admin/characters?search=${encodeURIComponent(name)}&servingState=inactive`;
+    await page.goto(roster);
+    const draftFilter = page.getByRole("group", { name: "Character operations filters" }).getByRole("button", { name: /^Draft/ });
+    const queue = page.getByRole("group", { name: "Work queues" }).getByRole("button", { name: /^Ready to publish/ });
+    await expect(draftFilter).toHaveAttribute("aria-pressed", "true");
+    await queue.click();
+    await expect(page).toHaveURL(/servingState=inactive.*workQueue=ready_to_publish/);
+    await expect(draftFilter).toHaveAttribute("aria-pressed", "true");
+    await expect(queue).toHaveAttribute("aria-pressed", "true");
+    await queue.click();
+    await expect(page).toHaveURL(roster.replaceAll("%20", "+"));
+
+    const importButton = page.getByRole("button", { name: "Import", exact: true });
+    const importedCard = page.getByRole("link", { name: `Open ${name}`, exact: true });
+    await expect(importedCard).toHaveCount(0);
+    await importButton.click();
+    const dialog = page.getByRole("dialog", { name: "Import characters" });
+    const json = dialog.getByLabel("Characters as JSON");
+    await expect(json).toBeFocused();
+    for (const key of ["Tab", "Tab", "Shift+Tab"]) {
+      await page.keyboard.press(key);
+      expect(await dialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
+    }
+    const valid = {
+      name, age: 31, gender: "female", characterPromise: "A late-night radio host with a quiet sense of humor.",
+      firstMessage: "You can stay until the next song.", stableTraits: ["Dark wavy hair", "Brown eyes"],
+    };
+    await json.fill(JSON.stringify([valid, { ...valid, name: rejectedName, age: 17 }]));
+    await dialog.getByRole("button", { name: "Create 1 private drafts" }).click();
+    await expect(dialog.getByText("1 of 2 rows are ready. 1 created.")).toBeVisible();
+    await expect(dialog.getByRole("link", { name: "Open draft" })).toHaveCount(1);
+    await expect(dialog.getByText("Needs fixing")).toHaveCount(1);
+    await shot(page, "import-row-results");
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(importButton).toBeFocused();
+    await expect(importedCard).toBeVisible();
+    expect(await prisma.character.count({ where: { name, visibility: "private", status: "draft" } })).toBe(1);
+    expect(await prisma.character.count({ where: { name: rejectedName } })).toBe(0);
+    await importedCard.click();
+    await expect(page.getByTestId("character-customer-status")).toHaveText("Not live");
+    await page.getByRole("link", { name: "Back to character results" }).click();
+    await expect(page.getByLabel("Search characters")).toHaveValue(name);
+    await expect(draftFilter).toHaveAttribute("aria-pressed", "true");
+    await expect(importedCard).toBeVisible();
+    await shot(page, "restored-roster");
+
+    await page.getByRole("checkbox", { name: `Select ${name}`, exact: true }).check();
+    const bulk = page.getByRole("region", { name: "Bulk actions" });
+    const tagPicker = bulk.getByLabel("Tag", { exact: true });
+    const firstTag = tagPicker.locator("option").nth(1);
+    await expect(firstTag).toHaveAttribute("value", /\S+/);
+    const tagId = (await firstTag.getAttribute("value"))!;
+    await tagPicker.selectOption(tagId);
+    await bulk.getByRole("button", { name: "Add tag", exact: true }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Add tag", exact: true }).click();
+    await expect(bulk.getByText("Done", { exact: true })).toBeVisible();
+    const imported = await prisma.character.findFirstOrThrow({ where: { name }, select: { id: true } });
+    expect(await prisma.characterTag.count({ where: { characterId: imported.id, tagId } })).toBe(1);
   });
 
   test("compares live Characters on the board and adds one to Featured", async ({ page }) => {

@@ -261,10 +261,7 @@ export async function getCharacterWorkspace(characterId: string) {
     releaseImageAssets.map((asset) => [asset.id, asset]),
   );
   const currentRelease =
-    serving?.state === "live"
-      ? (releases.find((release) => release.id === serving.currentReleaseId) ??
-        null)
-      : null;
+    releases.find((release) => release.id === serving?.currentReleaseId) ?? null;
   const candidateRelease =
     releases.find(
       (release) =>
@@ -280,7 +277,9 @@ export async function getCharacterWorkspace(characterId: string) {
     ) ??
     contents[0] ??
     null;
-  const live = currentRelease
+  // Serving can be paused while the immutable comparison version still exists.
+  const isLive = serving?.state === "live";
+  const published = currentRelease && liveContent
     ? previewSnapshot({
         character,
         content: liveContent,
@@ -292,6 +291,7 @@ export async function getCharacterWorkspace(characterId: string) {
           characterId,
         ),
         label: "Live",
+        render: isLive,
       })
     : null;
   const draft = previewSnapshot({
@@ -382,7 +382,18 @@ export async function getCharacterWorkspace(characterId: string) {
       checks,
       monitors,
     }),
-    preview: { live, draft, changedFields: previewChangedFields(live, draft) },
+    preview: {
+      live: isLive ? published : null,
+      draft,
+      changedFields: previewChangedFields(published, draft),
+      ...(!isLive && published ? {
+        comparison: {
+          name: published.name,
+          description: published.description,
+          opening: published.opening,
+        },
+      } : {}),
+    },
     performance,
     handoff,
   };

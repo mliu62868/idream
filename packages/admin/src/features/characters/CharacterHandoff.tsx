@@ -29,7 +29,7 @@ export function characterActiveHandoff(data: CharacterWorkspaceDetail): Characte
   return publishedSince ? null : handoff;
 }
 
-// INTENT: 人设和身份都没有时「可发布」无从谈起；创作者完成这两样后才提供这个按钮。
+// INVARIANT: 有人设和身份才有可交接的事实。是否可发布由发布检查独立决定。
 export function characterHandoffOffered(data: CharacterWorkspaceDetail) {
   return (
     data.soul.valid &&
@@ -61,14 +61,14 @@ export function CharacterHandoffAction({
     setError(null);
     try {
       await runCommittedMutation({
-        action: "Mark ready to publish",
+        action: "Record creation handoff",
         commit: () => adminV2Operation("POST /api/v2/admin/characters/:id/handoffs", {
           path: { id: data.character.id },
           body: {},
         }),
       });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("Could not mark ready to publish"));
+      setError(cause instanceof Error ? cause.message : t("Could not record creation handoff"));
     } finally {
       setBusy(false);
     }
@@ -79,11 +79,14 @@ export function CharacterHandoffAction({
       {error ? <p className="text-xs text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
       {upToDate ? (
         <p className="text-xs text-[var(--ad-text-muted)]" role="status">
-          {t("Marked ready to publish {time}", { time: format.relativeTime(active.createdAt, data.journey.asOf) })}
+          {t("Creation handoff recorded {time} · {count} selectable images at handoff", {
+            time: format.relativeTime(active.createdAt, data.journey.asOf),
+            count: active.selectableImageCount,
+          })}
         </p>
       ) : (
         <WorkspaceButton disabled={!canWrite || busy} onClick={() => void record()}>
-          {t("Mark ready to publish")}
+          {t("Record creation handoff")}
         </WorkspaceButton>
       )}
     </div>
@@ -98,15 +101,16 @@ export function CharacterHandoffNotice({ data }: { readonly data: CharacterWorks
   if (!handoff) return null;
   return (
     <p className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] px-4 py-3 text-sm" data-testid="character-handoff-notice">
-      {t("{name} marked this ready to publish {time}", {
+      {t("{name} recorded a creation handoff {time}", {
         name: handoff.createdByName ?? t("A creator"),
         time: format.relativeTime(handoff.createdAt, data.journey.asOf),
       })}
       {" · "}
+      {t("{count} selectable images at handoff", { count: handoff.selectableImageCount })}
+      {" · "}
       {handoff.drift.length === 0
-        ? t("No changes since")
-        : t("{count} changes since: {items}", {
-            count: handoff.drift.length,
+        ? t("Persona, visual identity, and references unchanged")
+        : t("Changed since handoff: {items}", {
             items: handoff.drift.map((item) => t(DRIFT_LABELS[item])).join(", "),
           })}
       {handoff.note ? <span className="mt-1 block text-[var(--ad-text-muted)]">{handoff.note}</span> : null}

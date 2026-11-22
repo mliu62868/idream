@@ -37,7 +37,7 @@ export function characterHasNoUnpublishedChanges(
   data: Pick<CharacterWorkspaceDetail, "journey" | "preview">,
 ) {
   return (
-    Boolean(data.preview.live) &&
+    Boolean(data.preview.live || data.journey.release.currentReleaseId) &&
     data.preview.changedFields.length === 0 &&
     data.journey.release.candidateReleaseId === null
   );

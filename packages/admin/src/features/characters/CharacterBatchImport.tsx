@@ -4,9 +4,9 @@
 // INVARIANT: 只建私有草稿，不发布；逐行调用现有创建接口，并发不超过 CHARACTER_IMPORT_CONCURRENCY。
 import { Check, Copy, Download, Loader2, Upload, X } from "lucide-react";
 import Link from "next/link";
-import { useState, type ChangeEvent } from "react";
-import { createPortal } from "react-dom";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { keepDialogTabFocus } from "@/components/admin/ui/dialog-keyboard";
 import { operatorErrorCopy } from "@/components/admin/ui/request-error-copy";
 import { WorkspaceButton, textAreaClass } from "@/features/operations/WorkspaceUi";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
@@ -34,18 +34,34 @@ const PARSE_ERRORS = {
 
 const IMPORT_REASON = { code: "character_batch_import", summary: "Create a private draft from a batch import" };
 
-export function CharacterBatchImport() {
+export function CharacterBatchImport({ onImported }: { onImported?: () => void }) {
   const { t } = useAdminI18n();
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
   const [results, setResults] = useState<Readonly<Record<number, RowResult>>>({});
   const [running, setRunning] = useState(false);
   const [copied, setCopied] = useState(false);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const textRef = useRef<HTMLTextAreaElement>(null);
+  const statusRef = useRef<HTMLParagraphElement>(null);
   const parsed = text.trim() ? parseCharacterImport(text) : null;
   const importRows = parsed?.ok ? parsed.rows : [];
   const pendingRows = importRows.filter((row) => row.draft && results[row.index]?.state !== "created");
   const createdCount = importRows.filter((row) => results[row.index]?.state === "created").length;
   const hasFailures = importRows.some((row) => results[row.index]?.state === "failed");
+
+  useEffect(() => {
+    if (!open) return;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    dialog.showModal();
+    textRef.current?.focus();
+    return () => {
+      dialog.close();
+      previousFocus?.focus();
+    };
+  }, [open]);
 
   function changeText(next: string) {
     setText(next);
@@ -66,18 +82,25 @@ export function CharacterBatchImport() {
         body: { ...row.draft!, reason: IMPORT_REASON, confirmation: "CREATE CHARACTER" },
       });
       setResults((current) => ({ ...current, [row.index]: { state: "created", deepLink: created.deepLink } }));
+      return true;
     } catch (cause) {
       const copy = operatorErrorCopy(cause);
       setResults((current) => ({ ...current, [row.index]: { state: "failed", message: t(copy.headline) } }));
+      return false;
     }
   }
 
   async function createAll() {
+    statusRef.current?.focus();
     setRunning(true);
+    let hasCreated = false;
     try {
-      await runWithConcurrency(pendingRows, CHARACTER_IMPORT_CONCURRENCY, createRow);
+      await runWithConcurrency(pendingRows, CHARACTER_IMPORT_CONCURRENCY, async (row) => {
+        if (await createRow(row)) hasCreated = true;
+      });
     } finally {
       setRunning(false);
+      if (hasCreated) onImported?.();
     }
   }
 
@@ -100,13 +123,16 @@ export function CharacterBatchImport() {
       <WorkspaceButton onClick={() => setOpen(true)}>
         <Upload aria-hidden="true" className="h-4 w-4" /> {t("Import")}
       </WorkspaceButton>
-      {open ? createPortal(
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/20 p-4">
-          <div
+      {open ? (
+          <dialog
             aria-labelledby="character-import-title"
-            aria-modal="true"
-            className="max-h-[calc(100dvh-2rem)] w-full max-w-3xl overflow-y-auto rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5"
-            role="dialog"
+            className="fixed inset-0 m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%_-_2rem)] max-w-3xl overflow-y-auto rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5 text-[var(--ad-ink)] backdrop:bg-black/25"
+            onCancel={(event) => {
+              event.preventDefault();
+              if (!running) setOpen(false);
+            }}
+            onKeyDown={keepDialogTabFocus}
+            ref={dialogRef}
           >
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -122,7 +148,7 @@ export function CharacterBatchImport() {
             <div className="mt-3 flex flex-wrap gap-2">
               <label className="inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-sm font-medium">
                 <Upload aria-hidden="true" className="h-4 w-4" /> {t("Upload JSON file")}
-                <input accept="application/json,.json" aria-label={t("Upload JSON file")} className="sr-only" onChange={(event) => void readFile(event)} type="file" />
+                <input accept="application/json,.json" aria-label={t("Upload JSON file")} className="sr-only" disabled={running} onChange={(event) => void readFile(event)} type="file" />
               </label>
               <WorkspaceButton onClick={() => void copyExample()}>
                 {copied ? <Check aria-hidden="true" className="h-4 w-4" /> : <Copy aria-hidden="true" className="h-4 w-4" />}
@@ -138,6 +164,7 @@ export function CharacterBatchImport() {
               disabled={running}
               onChange={(event) => changeText(event.target.value)}
               placeholder={CHARACTER_IMPORT_EXAMPLE}
+              ref={textRef}
               value={text}
             />
             {parsed && !parsed.ok ? (
@@ -147,7 +174,7 @@ export function CharacterBatchImport() {
             ) : null}
             {importRows.length > 0 ? (
               <>
-                <p className="mt-3 text-sm font-semibold" role="status">
+                <p className="mt-3 text-sm font-semibold" ref={statusRef} role="status" tabIndex={-1}>
                   {t("{valid} of {total} rows are ready. {created} created.", {
                     valid: importRows.filter((row) => row.draft).length,
                     total: importRows.length,
@@ -184,14 +211,12 @@ export function CharacterBatchImport() {
             ) : null}
             <div className="mt-4 flex flex-wrap justify-end gap-2">
               <WorkspaceButton disabled={running} onClick={() => setOpen(false)}>{t("Close")}</WorkspaceButton>
-              <WorkspaceButton disabled={running || pendingRows.length === 0} onClick={() => void createAll()} tone="primary">
+              {pendingRows.length > 0 ? <WorkspaceButton disabled={running} onClick={() => void createAll()} tone="primary">
                 {running ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" /> : null}
                 {t(hasFailures ? "Retry {count} rows" : "Create {count} private drafts", { count: pendingRows.length })}
-              </WorkspaceButton>
+              </WorkspaceButton> : null}
             </div>
-          </div>
-        </div>,
-        document.body,
+          </dialog>
       ) : null}
     </>
   );

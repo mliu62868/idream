@@ -440,6 +440,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
       const posted: Record<string, unknown>[] = [];
       let releaseFirst: (() => void) | undefined;
       adminV2Request.mockImplementation(async (path, options) => {
+        if (path.includes("/image-sources?")) return { items: [], nextCursor: null };
         if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
           const body = options.body as Record<string, unknown>;
           posted.push(body);
@@ -464,6 +465,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
     it("skips a purpose that already has a running request", async () => {
       const posted: Record<string, unknown>[] = [];
       adminV2Request.mockImplementation(async (path, options) => {
+        if (path.includes("/image-sources?")) return { items: [], nextCursor: null };
         if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
           const body = options.body as Record<string, unknown>;
           posted.push(body);
@@ -486,6 +488,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
 
     it("keeps the started Run and reports the one that failed", async () => {
       adminV2Request.mockImplementation(async (path, options) => {
+        if (path.includes("/image-sources?")) return { items: [], nextCursor: null };
         if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
           const body = options.body as Record<string, unknown>;
           if (body.purpose === "character_chat") throw new AdminV2RequestError("Rejected", 422, "invalid_request");
@@ -1024,7 +1027,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
     const request = adminV2Request.mock.calls.find(([path, options]) => path === "/api/v2/admin/creative/runs" && options?.method === "POST")?.[1]?.body;
     expect(request).toMatchObject({ purpose, profileId: "profile-reference-v1", orientation: expected });
     // A vague brief made the identity-edit route return copies of the reference.
-    expect((request as { brief: string }).brief).toMatch(/alone.*no other people/);
+    expect((request as { brief: string }).brief).toMatch(/Show exactly one person/);
     expect(container.textContent).toContain(`Aspect ratio: ${expected ?? "Default"}`);
   });
 

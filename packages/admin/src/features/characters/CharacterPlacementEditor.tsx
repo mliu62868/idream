@@ -157,7 +157,11 @@ export function CharacterPlacementEditor({
         {placements.map((placement) => {
           const slot = data.preview.draft.assetPack[placement.purpose];
           return (
-            <article className="overflow-hidden rounded-lg border border-[var(--ad-border)]" key={placement.purpose}>
+            <article
+              className="scroll-mt-24 overflow-hidden rounded-lg border border-[var(--ad-border)]"
+              id={`character-image-placement-${placement.purpose}`}
+              key={placement.purpose}
+            >
               <div className={`${placement.aspect} relative grid place-items-center overflow-hidden bg-black/[0.04]`}>
                 {slot.imageUrl ? (
                   <Image

@@ -6,6 +6,7 @@ import {
   characterDraftImageSelectionRequestSchema,
   characterIdentityBootstrapRequestSchema,
   creativeRunCreateRequestSchema,
+  type CharacterImageSourceAsset,
   type CharacterWorkspaceDetail,
   type CreativeRun,
   type CreativeRunDetail,
@@ -153,11 +154,26 @@ export function resolveCharacterAssetSubject(input: {
 // INTENT: 前端曾用 project.draftAssetPack 自己推一遍顺序，只过滤 routeCurrent，不过滤资产可用性
 // （软删 / 归属不对）。资产被软删时服务端说缺 cover、前端把运营带去 hero；同一屏的按钮文案用
 // 过滤后的 pack、点击行为用未过滤的 pack，说「下一个资产」却跳到别处。推导留在服务端一份。
-// 返回 null = 图池在当前路线下已齐，下一步是 Launch preview。
+// 返回 null 表示图池已齐，下一步是核对发布。
 export function nextIncompleteCharacterAssetPurpose(
   journey: CharacterWorkspaceDetail["journey"],
 ): CharacterAssetPurpose | null {
   return journey.assetPack.draft.missingPurposes[0] ?? null;
+}
+
+// The library supplies current eligibility. Reserve each existing image for one slot.
+export function characterDraftImageCandidates(
+  data: Pick<CharacterWorkspaceDetail, "journey" | "project">,
+  assets: readonly CharacterImageSourceAsset[],
+) {
+  const selected = new Set(Object.values(data.project.draftAssetPack));
+  const pool = assets.filter((asset) =>
+    asset.qualification && asset.qualification.selectablePurposes.length > 0 && !selected.has(asset.id),
+  ).sort((a, b) => a.qualification!.selectablePurposes.length - b.qualification!.selectablePurposes.length);
+  return data.journey.assetPack.draft.missingPurposes.flatMap((purpose) => {
+    const index = pool.findIndex((asset) => asset.qualification!.selectablePurposes.includes(purpose));
+    return index < 0 ? [] : [{ purpose, asset: pool.splice(index, 1)[0]! }];
+  });
 }
 
 export function resolveCharacterCustomerPreviewAssets(input: {

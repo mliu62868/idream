@@ -84,7 +84,6 @@ class ReconciledUncommittedCharacter extends Error {}
 export const characterCreateSteps = [
   "Persona",
   "Visual direction",
-  "Review & create",
 ] as const;
 const steps = characterCreateSteps;
 
@@ -110,7 +109,6 @@ const initialDraft: Draft = {
 export const characterCreateStepRequirements = [
   "Give the character a name, short description, and opening message.",
   "Say who they look like, the features that never change, and the image mood.",
-  "Review the character before creating it.",
 ] as const;
 const stepRequirements = characterCreateStepRequirements;
 
@@ -128,9 +126,7 @@ export function isCharacterCreateStepComplete(draft: Draft, step: number) {
 }
 
 export function firstIncompleteCharacterCreateStep(draft: Draft) {
-  if (!isCharacterCreateStepComplete(draft, 0)) return 0;
-  if (!isCharacterCreateStepComplete(draft, 1)) return 1;
-  return 2;
+  return isCharacterCreateStepComplete(draft, 0) ? 1 : 0;
 }
 
 function localDraftStorageKey(actorId: string) {
@@ -726,7 +722,7 @@ export function CharacterCreateWizard({
     }
     // Navigation to an editable section must remain possible while another
     // section is invalid. Only valid snapshots can be saved to the authority.
-    if (targetStep < steps.length - 1 && !createIntent && !characterProjectDraftSchema.safeParse(nextDraft).success) {
+    if (!createIntent && !characterProjectDraftSchema.safeParse(nextDraft).success) {
       setValidationAttemptedStep(null);
       setStep(targetStep);
       return;
@@ -752,9 +748,9 @@ export function CharacterCreateWizard({
     }
     if (
       !createIntent &&
-      !isCharacterCreateStepComplete(draft, steps.length - 1)
+      !characterProjectProductionReadyDraftSchema.safeParse(draft).success
     ) {
-      const errors = characterCreateStepFieldErrors(draft, steps.length - 1);
+      const errors = characterCreateStepFieldErrors(draft, 2);
       const targetStep = Object.keys(errors).some((field) => Object.hasOwn(characterProjectDraftSchema.shape.persona.shape, field)) ? 0 : 1;
       setStep(targetStep);
       setValidationAttemptedStep(targetStep);
@@ -788,7 +784,7 @@ export function CharacterCreateWizard({
       }
     } catch {
       setFinishing(false);
-      // Stay on Review so the operator can resolve and retry.
+      // Keep the fields and the saved request available for recovery.
     }
   }
 
@@ -818,8 +814,8 @@ export function CharacterCreateWizard({
   const currentLabel = steps[step];
   const fieldErrors =
     validationAttemptedStep === step
-      ? Object.fromEntries(Object.entries(characterCreateStepFieldErrors(draft, steps.length - 1))
-        .filter(([field]) => step === steps.length - 1 || Object.hasOwn(step === 0 ? draft.persona : draft.visualDirection, field)))
+      ? Object.fromEntries(Object.entries(characterCreateStepFieldErrors(draft, 2))
+        .filter(([field]) => Object.hasOwn(step === 0 ? draft.persona : draft.visualDirection, field)))
       : {};
   const currentStepComplete = isCharacterCreateStepComplete(draft, step) && Object.keys(fieldErrors).length === 0;
   const navigationLocked =
@@ -893,7 +889,7 @@ export function CharacterCreateWizard({
                     "Changes to this private draft autosave. Nothing goes live until a Release is published.",
                   )
                 : t(
-                    "Define who the Character is and what they look like. Final confirmation creates a private, inactive draft; nothing is published.",
+                    "Define the Character and their appearance, then save a private draft.",
                   )}
             </p>
           </div>
@@ -905,7 +901,7 @@ export function CharacterCreateWizard({
           </div>
         </div>
         <ol
-          className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-3"
+          className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-2"
           aria-label={t("Character creation progress")}
         >
           {steps.map((label, index) => (
@@ -924,7 +920,7 @@ export function CharacterCreateWizard({
               >
                 <span className="tabular-nums">{index + 1}.</span>
                 {t(label)}
-                {index < 2 && isCharacterCreateStepComplete(draft, index) ? <Check aria-hidden="true" className="ml-auto h-4 w-4" /> : null}
+                {isCharacterCreateStepComplete(draft, index) ? <Check aria-hidden="true" className="ml-auto h-4 w-4" /> : null}
               </button>
             </li>
           ))}
@@ -938,7 +934,7 @@ export function CharacterCreateWizard({
             ? t("Private server draft · version {version}", {
                 version: authority.projectVersion,
               })
-            : t("No Character has been created yet.")}
+            : t("This draft stays on this browser until you save the character.")}
         </p>
         <fieldset
           className="mt-5"
@@ -961,23 +957,22 @@ export function CharacterCreateWizard({
             <PersonaStep draft={draft} errors={fieldErrors} update={update} />
           ) : null}
           {step === 1 ? (
-            <VisualStep draft={draft} errors={fieldErrors} update={update} />
-          ) : null}
-          {step === 2 ? (
-            <>
-              <ReviewStep
-                draft={draft}
-                onEdit={(targetStep) => {
-                  setValidationAttemptedStep(null);
-                  setStep(targetStep);
-                }}
-              />
-              {canTag ? (
-                <div className="mt-4">
-                  <CharacterCreateTagPicker onChange={setSelectedTagIds} selected={selectedTagIds} />
-                </div>
-              ) : null}
-            </>
+            <div className="space-y-4">
+              <VisualStep draft={draft} errors={fieldErrors} update={update} />
+              <details className="rounded-lg border border-[var(--ad-border)] p-3">
+                <summary className="cursor-pointer text-sm font-semibold">{t("Review draft")}</summary>
+                <p className="mt-2 text-sm font-semibold">{draft.persona.name}</p>
+                <p className="mt-1 whitespace-pre-wrap break-words text-sm">{draft.persona.characterPromise}</p>
+                <p className="mt-2 whitespace-pre-wrap break-words text-sm">{draft.persona.firstMessage}</p>
+                <details className="mt-3" data-testid="character-create-soul-preview">
+                  <summary className="cursor-pointer text-xs font-semibold">{t("SOUL.md · exact Agent prompt")}</summary>
+                  <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap text-xs leading-6">
+                    {renderCharacterSoulMarkdown(draft.persona)}
+                  </pre>
+                </details>
+              </details>
+              {canTag ? <CharacterCreateTagPicker onChange={setSelectedTagIds} selected={selectedTagIds} /> : null}
+            </div>
           ) : null}
         </fieldset>
         <p
@@ -1088,7 +1083,7 @@ export function CharacterCreateWizard({
       </div>
         <footer className="sticky bottom-0 z-10 mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 sm:p-4">
           <p className="mb-3 text-xs text-[var(--ad-text-muted)]">
-            {t(authority ? "Saved changes stay private until you publish the character." : "This draft stays on this browser until you save the character.")}
+            {t(authority ? "Saved changes stay private until you publish the character." : "Save a private draft and continue to the portrait.")}
           </p>
           <div className="flex items-center justify-between gap-3">
           <WorkspaceButton
@@ -1103,7 +1098,7 @@ export function CharacterCreateWizard({
             <WorkspaceButton
               aria-describedby="character-create-step-requirements"
               disabled={navigationLocked}
-              onClick={() => void goToStep(Math.min(steps.length - 1, step + 1))}
+              onClick={() => void goToStep(1)}
               tone="primary"
             >
               {createIntent
@@ -1113,9 +1108,7 @@ export function CharacterCreateWizard({
                   ).success
                   ? t("Reconcile saved request")
                   : t("Resume Character creation")
-                : step === 0
-                  ? t("Continue to visual direction")
-                  : t("Continue")}{" "}
+                : t("Continue to visual direction")}{" "}
               <ArrowRight className="h-4 w-4" />
             </WorkspaceButton>
           ) : (
@@ -1125,7 +1118,12 @@ export function CharacterCreateWizard({
               onClick={() => void finish()}
               tone="primary"
             >
-              <Check className="h-4 w-4" /> {t("Save character")}
+              <Check className="h-4 w-4" /> {t(createIntent
+                ? createIntent.status === "reconciliation_required" ||
+                  !characterProjectCreateRequestSchema.safeParse(createIntent.requestSnapshot).success
+                  ? "Reconcile saved request"
+                  : "Resume Character creation"
+                : "Save private draft")}
             </WorkspaceButton>
           )}
           </div>
@@ -1409,101 +1407,6 @@ function VisualStep({ draft, errors, update }: StepProps) {
         value={draft.visualDirection.referenceDirection}
       />
     </Grid>
-  );
-}
-
-function ReviewStep({
-  draft,
-  onEdit,
-}: {
-  draft: Draft;
-  onEdit: (step: number) => void;
-}) {
-  const { t, value } = useAdminI18n();
-  const sections = [
-    {
-      title: "Persona & conversation",
-      rows: [
-        [
-          "Character",
-          `${draft.persona.name} · ${t("Age")} ${draft.persona.age} · ${value(draft.persona.gender)}`,
-        ],
-        ["Short description", draft.persona.characterPromise],
-        ["Opening message", draft.persona.firstMessage],
-        ["Additional details", draft.persona.detailsMarkdown],
-      ],
-    },
-    {
-      title: "Visual identity",
-      rows: [
-        ["Look in one line", draft.visualDirection.identityAnchor],
-        ["Features that never change", draft.visualDirection.stableTraits.join(" · ")],
-        ["Style", value(draft.visualDirection.style)],
-        ["Image mood and framing", draft.visualDirection.referenceDirection],
-      ],
-    },
-  ];
-  return (
-    <div className="grid gap-4">
-      <p className="rounded-lg bg-[var(--ad-blue-bg)] p-3 text-sm leading-6 text-[var(--ad-blue-text)]">
-        {t(
-          "Creating saves a private, inactive draft. It does not publish a Release or change what customers see. Next, establish the portrait identity.",
-        )}
-      </p>
-      {sections.map((section) => (
-        <section
-          className="overflow-hidden rounded-lg border border-[var(--ad-border)]"
-          key={section.title}
-        >
-          <div className="flex items-center justify-between gap-3 border-b border-[var(--ad-border)] bg-black/[0.025] px-3 py-2">
-            <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--ad-text-muted)]">
-              {t(section.title)}
-            </h3>
-            <button
-              aria-label={t("Edit {section}", { section: t(section.title) })}
-              className="text-xs font-semibold underline"
-              onClick={() =>
-                onEdit(section.title === "Persona & conversation" ? 0 : 1)
-              }
-              type="button"
-            >
-              {t("Edit")}
-            </button>
-          </div>
-          <dl className="divide-y divide-[var(--ad-border)]">
-            {section.rows.map(([label, value]) => (
-              <div
-                className="grid gap-1 p-3 sm:grid-cols-[140px_1fr]"
-                key={label}
-              >
-                <dt className="text-xs font-semibold text-[var(--ad-text-muted)]">
-                  {t(label)}
-                </dt>
-                <dd className="whitespace-pre-line text-sm leading-6">
-                  {value || t("None")}
-                </dd>
-              </div>
-            ))}
-          </dl>
-        </section>
-      ))}
-      <details
-        className="overflow-hidden rounded-lg border border-[var(--ad-border)]"
-        data-testid="character-create-soul-preview"
-      >
-        <summary className="cursor-pointer bg-black/[0.025] px-3 py-3 text-sm font-semibold text-[var(--ad-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--ad-ink)]">
-          {t("Technical details")}
-        </summary>
-        <div className="border-t border-[var(--ad-border)]">
-          <h3 className="px-3 pt-3 text-xs font-semibold uppercase tracking-[0.12em] text-[var(--ad-text-muted)]">
-            {t("SOUL.md · exact Agent prompt")}
-          </h3>
-          <pre className="max-h-96 overflow-auto whitespace-pre-wrap p-3 text-xs leading-6 text-[var(--ad-text)]">
-            {renderCharacterSoulMarkdown(draft.persona)}
-          </pre>
-        </div>
-      </details>
-    </div>
   );
 }
 

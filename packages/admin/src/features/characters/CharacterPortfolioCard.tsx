@@ -321,6 +321,7 @@ export function CharacterPortfolioCard({
   eager = false,
   item,
   onToggleSelected,
+  rosterQuery,
   selected = false,
 }: {
   canOpenAssets: boolean;
@@ -328,6 +329,7 @@ export function CharacterPortfolioCard({
   eager?: boolean;
   item: CharacterPortfolioItem;
   onToggleSelected?: () => void;
+  rosterQuery?: string;
   selected?: boolean;
 }) {
   const { t } = useAdminI18n();
@@ -337,6 +339,14 @@ export function CharacterPortfolioCard({
   const state = characterPortfolioState(item);
   const { assetPack } = item.journey;
   const characterHref = `/admin/characters/${encodeURIComponent(item.characterId)}`;
+  const withRoster = (href: string) => {
+    if (rosterQuery === undefined) return href;
+    const [pathAndQuery, hash] = href.split("#", 2);
+    const [path, query] = pathAndQuery.split("?", 2);
+    const params = new URLSearchParams(query);
+    params.set("roster", rosterQuery);
+    return `${path}?${params}${hash ? `#${hash}` : ""}`;
+  };
   const identity = (
     <>
       <CharacterPortfolioVisual
@@ -409,7 +419,7 @@ export function CharacterPortfolioCard({
         <Link
           aria-label={t("Open {name}", { name: item.name })}
           className="group block focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-3px] focus-visible:outline-[var(--ad-ink)]"
-          href={characterHref}
+          href={withRoster(characterHref)}
         >
           {identity}
         </Link>
@@ -417,10 +427,13 @@ export function CharacterPortfolioCard({
         identity
       )}
       <div className="mt-auto border-t border-[var(--ad-border)] px-4 py-3 text-xs">
+        {item.journey.status === "blocked" ? (
+          <p className="mb-1 leading-snug text-[var(--ad-text-muted)]">{t(primaryAction.eyebrow)}</p>
+        ) : null}
         {canOpenNextAction ? (
           <Link
             className="flex min-h-8 items-center justify-between gap-3 text-sm font-semibold text-[var(--ad-ink)] hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
-            href={primaryAction.href}
+            href={withRoster(primaryAction.href)}
           >
             <span className="truncate">{t(primaryAction.label)}</span>
             <ArrowRight aria-hidden="true" className="h-4 w-4 shrink-0" />

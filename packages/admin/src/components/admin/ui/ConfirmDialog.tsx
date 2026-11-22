@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { useAdminI18n } from "@/components/admin/i18n";
@@ -7,6 +7,7 @@ import { DangerButton, GhostButton, PrimaryButton } from "./buttons";
 import { INPUT_CLASS } from "./FormPage";
 import { RequestErrorDetails } from "./RequestErrorDetails";
 import { operatorErrorCopy, type OperatorErrorCopy } from "./request-error-copy";
+import { keepDialogTabFocus } from "./dialog-keyboard";
 
 export type ConfirmSpec = {
   title: string;
@@ -89,23 +90,6 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
     return () => document.removeEventListener("keydown", handleDocumentKeyDown);
   }, [busy, onClose]);
 
-  function handleDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key !== "Tab") return;
-    const focusable = [...(dialogRef.current?.querySelectorAll<HTMLElement>(
-      "button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex='-1'])",
-    ) ?? [])].filter((element) => !element.hasAttribute("hidden"));
-    if (focusable.length === 0) return;
-    const first = focusable[0];
-    const last = focusable.at(-1)!;
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }
-
   async function submit() {
     setBusy(true);
     setError(null);
@@ -127,7 +111,7 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
         aria-labelledby={titleId}
         aria-modal="true"
         className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto overscroll-contain rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6"
-        onKeyDown={handleDialogKeyDown}
+        onKeyDown={keepDialogTabFocus}
         ref={dialogRef}
         role="dialog"
       >

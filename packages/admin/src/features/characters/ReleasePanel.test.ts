@@ -52,7 +52,7 @@ describe("Character release panel", () => {
       "const noUnpublishedChanges = characterHasNoUnpublishedChanges(data)",
     );
     expect(workspaceSource).toContain(
-      "Live and draft are identical. There is nothing to release.",
+      "Boolean(candidate) || !noUnpublishedChanges || currentReleaseStale || legacyCurrent",
     );
   });
 

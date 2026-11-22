@@ -160,7 +160,7 @@ export function bulkGenerationRequest(
     bootstrapIdentity: false,
     ...(orientation ? { orientation } : {}),
     count: 1,
-    brief: defaultCharacterImageBrief(purpose, name),
+    brief: defaultCharacterImageBrief(purpose, name, detail.preview.draft.appearance.referenceDirection),
     consistencyMode: "strict" as const,
     priority: "normal" as const,
     reason: "Fill a missing image from the Character list",

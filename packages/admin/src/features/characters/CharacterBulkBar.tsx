@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AdminPermissionKey, CharacterPortfolioItem } from "@idream/shared/admin";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
@@ -34,16 +34,20 @@ export function CharacterBulkBar({
   onSettled,
   permissions,
   selected,
+  visibleSelectionCount,
 }: {
   actorId: string;
   onClear: () => void;
-  onSettled: () => void;
+  onSettled: (completedIds: ReadonlySet<string>) => void;
   permissions: ReadonlySet<AdminPermissionKey>;
   selected: readonly CharacterPortfolioItem[];
+  visibleSelectionCount: number;
 }) {
   const { t } = useAdminI18n();
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null);
   const [tasks, setTasks] = useState<readonly BulkTask[]>([]);
+  const [skipped, setSkipped] = useState<ReturnType<typeof planBulkTasks>["skipped"]>([]);
+  const lastTargets = useRef<readonly CharacterPortfolioItem[]>([]);
   const [lastAction, setLastAction] = useState<BulkAction | null>(null);
   const [running, setRunning] = useState(false);
   const [tags, setTags] = useState<readonly TagOption[] | null>(null);
@@ -58,7 +62,7 @@ export function CharacterBulkBar({
     if (!hasSelection || !canTag || tags !== null) return;
     let live = true;
     const timer = window.setTimeout(() => {
-      adminV2Operation("GET /api/v2/admin/content/tags", { query: "limit=200" })
+      adminV2Operation("GET /api/v2/admin/content/tags", {})
         .then((result) => {
           if (live) setTags(result.items.map((tag) => ({ id: tag.id, label: tag.label })));
         })
@@ -83,11 +87,15 @@ export function CharacterBulkBar({
       });
       const patch = (id: string, next: Partial<BulkTask>) =>
         setTasks((current) => current.map((task) => (task.id === id ? { ...task, ...next } : task)));
+      const completed = new Set<string>();
+      const failedTargets = new Set<string>();
       await runBulkTasks(batch, async (task) => {
         patch(task.id, { state: "running", message: null });
         try {
           patch(task.id, { state: await worker(task), attempts: task.attempts + 1 });
+          completed.add(task.characterId);
         } catch (cause) {
+          failedTargets.add(task.characterId);
           patch(task.id, {
             state: "failed",
             attempts: task.attempts + 1,
@@ -95,8 +103,9 @@ export function CharacterBulkBar({
           });
         }
       });
+      failedTargets.forEach((id) => completed.delete(id));
       setRunning(false);
-      onSettled();
+      onSettled(completed);
     },
     [actorId, onSettled],
   );
@@ -136,7 +145,9 @@ export function CharacterBulkBar({
       ),
       onSubmit: async () => {
         setConfirm(null);
+        setSkipped(plan.skipped);
         setTasks(plan.tasks);
+        lastTargets.current = selected;
         void execute(action, plan.tasks, selected);
       },
     });
@@ -147,7 +158,7 @@ export function CharacterBulkBar({
     if (!lastAction || failed.length === 0) return;
     const queued = failed.map((task) => ({ ...task, state: "queued" as const, message: null }));
     setTasks((current) => current.map((task) => queued.find((next) => next.id === task.id) ?? task));
-    void execute(lastAction, queued, selected);
+    void execute(lastAction, queued, lastTargets.current);
   };
 
   const planFor = (action: BulkAction) => planBulkTasks(action, selected);
@@ -174,10 +185,13 @@ export function CharacterBulkBar({
 
   if (!hasSelection && tasks.length === 0) return null;
   return (
-    <section aria-label={t("Bulk actions")} className="sticky bottom-4 z-20 mt-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 shadow-sm">
+    <section aria-label={t("Bulk actions")} className="sticky top-16 z-20 mt-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3">
       {hasSelection ? (
         <div className="flex flex-wrap items-center gap-2">
           <strong className="text-sm">{t("{count} selected", { count: selected.length })}</strong>
+          {visibleSelectionCount < selected.length ? (
+            <span className="text-xs text-[var(--ad-text-muted)]">{t("{count} selected outside this page", { count: selected.length - visibleSelectionCount })}</span>
+          ) : null}
           {actionButton({ kind: "pause" }, canPublish)}
           {actionButton({ kind: "resume" }, canPublish)}
           {actionButton({ kind: "archive" }, canPublish)}
@@ -222,7 +236,7 @@ export function CharacterBulkBar({
               ) : null}
             </div>
           </div>
-          <ul aria-live="polite" className="mt-2 grid max-h-56 gap-1 overflow-y-auto text-sm">
+          <ul aria-live="polite" className="mt-2 grid max-h-40 gap-1 overflow-y-auto text-sm">
             {tasks.map((task) => (
               <li className="flex flex-wrap items-baseline gap-x-2" key={task.id}>
                 <span className="font-medium">{task.name}</span>
@@ -233,6 +247,11 @@ export function CharacterBulkBar({
                   {t(STATE_LABELS[task.state])}
                 </span>
                 {task.message ? <span className="text-xs text-[var(--ad-red-text)]">{t(task.message)}</span> : null}
+              </li>
+            ))}
+            {skipped.map((item) => (
+              <li className="text-[var(--ad-text-muted)]" key={item.characterId}>
+                {t("Skipped {name}: {reason}", { name: item.name, reason: t(item.reason) })}
               </li>
             ))}
           </ul>

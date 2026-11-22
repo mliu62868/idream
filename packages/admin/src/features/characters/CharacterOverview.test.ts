@@ -86,7 +86,7 @@ function workspace(overrides: {
 }
 
 function factValue(data: CharacterWorkspaceDetail, label: string) {
-  return characterOperationsFacts(data).find((fact) => fact.label === label);
+  return characterOperationsFacts(data, (date) => date).find((fact) => fact.label === label);
 }
 
 type VisualAsset = CharacterWorkspaceDetail["visual"]["anchors"][number];
@@ -170,7 +170,7 @@ describe("Character detail facts", () => {
     });
     expect(factValue(live, "Serving")).toMatchObject({ value: "live", alert: false });
     // 按发布时间的序号，不是行级锁版本号（发布页显示的也是这个）。
-    expect(factValue(live, "Live release")).toMatchObject({ value: "#1 · 2026-07-24" });
+    expect(factValue(live, "Current release")).toMatchObject({ value: "#1 · 2026-07-24T00:40:28.926Z" });
     expect(factValue(live, "Unpublished changes")).toMatchObject({ value: "{fields} fields changed", values: { fields: 2 }, alert: true });
     expect(factValue(live, "Image pack")).toMatchObject({ value: "Live {live}/{total} · Draft {draft}/{total}", values: { live: 1, draft: 1, total: 3 }, alert: true });
     expect(factValue(live, "Owner")).toBeUndefined();
@@ -201,7 +201,7 @@ describe("Character detail facts", () => {
   it("flags an unpublished character on serving and release instead of showing a blank", () => {
     const draft = workspace({ servingState: null });
     expect(factValue(draft, "Serving")).toMatchObject({ value: "not_live", alert: true });
-    expect(factValue(draft, "Live release")).toMatchObject({ value: "None published", alert: true });
+    expect(factValue(draft, "Current release")).toMatchObject({ value: "None published", alert: true });
     expect(factValue(draft, "Unpublished changes")).toMatchObject({ value: "None", alert: false });
     expect(factValue(draft, "Image pack")).toMatchObject({ values: { live: 3, draft: 3, total: 3 }, alert: false });
     expect(factValue(draft, "Owner")).toBeUndefined();
@@ -219,7 +219,7 @@ describe("Character detail facts", () => {
         },
       },
     });
-    expect(characterOperationsFacts(data).find((fact) => fact.label === "Image pack")).toMatchObject({
+    expect(characterOperationsFacts(data, (date) => date).find((fact) => fact.label === "Image pack")).toMatchObject({
       value: "Paused {live}/{total} · Draft {draft}/{total}",
       values: { live: 1, draft: 2, total: 3 },
     });
@@ -250,7 +250,7 @@ describe("Character detail facts", () => {
     // shared-1 同时在 anchors 和 references 里，available 的去重后是 shared-1 + anchor-2。
     expect(factValue(detail, "Identity reference images")).toMatchObject({ value: "2", alert: false });
     expect(factValue(detail, "Images usable as video sources")).toMatchObject({ value: "1", alert: false });
-    expect(characterOperationsFacts(detail).some((fact) => fact.label === "Videos")).toBe(false);
+    expect(characterOperationsFacts(detail, (date) => date).some((fact) => fact.label === "Videos")).toBe(false);
   });
 
 
@@ -269,6 +269,6 @@ describe("Character detail facts", () => {
     const ordinal = characterReleaseOrdinals(detail.releases).get(
       detail.serving?.currentReleaseId ?? "",
     );
-    expect(factValue(detail, "Live release")?.value).toContain(`#${ordinal}`);
+    expect(factValue(detail, "Current release")?.value).toContain(`#${ordinal}`);
   });
 });

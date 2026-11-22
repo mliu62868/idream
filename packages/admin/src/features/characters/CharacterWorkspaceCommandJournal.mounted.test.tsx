@@ -105,7 +105,7 @@ function bannerContaining(fragment: string) {
 
 function commandTab() {
   return [...container.querySelectorAll<HTMLButtonElement>("button")].find(
-    (button) => button.id?.startsWith("character-tab-"),
+    (button) => button.id === "character-tab-monitor",
   );
 }
 

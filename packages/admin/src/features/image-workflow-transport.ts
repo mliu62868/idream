@@ -14,7 +14,6 @@ export const characterWorkspaceTabs = [
   "assets",
   "video",
   "voice",
-  "preview",
   "release",
   "monitor",
 ] as const;
@@ -25,6 +24,8 @@ export function characterWorkspaceTabFromSearch(
   search: string,
 ): CharacterWorkspaceTab {
   const requested = new URLSearchParams(search).get("tab");
+  // Existing launch-preview links now open the combined release and preview page.
+  if (requested === "preview") return "release";
   return characterWorkspaceTabs.includes(requested as CharacterWorkspaceTab)
     ? (requested as CharacterWorkspaceTab)
     : "project";

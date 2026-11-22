@@ -75,7 +75,7 @@ describe("character workspace one-line actions", () => {
       const request = vi.spyOn(transport, "adminV2Request").mockResolvedValue(handoff());
       await renderAction(characterWorkspaceDetail());
       expect(request).not.toHaveBeenCalled();
-      await act(async () => button("标记为可发布")!.click());
+      await act(async () => button("记录创作交接")!.click());
       expect(request).toHaveBeenCalledTimes(1);
       expect(request).toHaveBeenCalledWith(
         "/api/v2/admin/characters/character-fixture/handoffs",
@@ -86,17 +86,17 @@ describe("character workspace one-line actions", () => {
 
     it("shows the record instead of the button while nothing has drifted, and offers it again after drift", async () => {
       await renderAction(characterWorkspaceDetail({ handoff: handoff() }));
-      expect(button("标记为可发布")).toBeUndefined();
-      expect(container.textContent).toContain("已于");
+      expect(button("记录创作交接")).toBeUndefined();
+      expect(container.textContent).toContain("当时有 3 张可选图");
       await renderAction(characterWorkspaceDetail({ handoff: handoff({ drift: ["content"] }) }));
-      expect(button("标记为可发布")).toBeDefined();
+      expect(button("记录创作交接")).toBeDefined();
     });
 
     it("is not offered before the persona compiles, or on a retired Character", async () => {
       await renderAction(characterWorkspaceDetail({ soul: { valid: false } }));
-      expect(button("标记为可发布")).toBeUndefined();
+      expect(button("记录创作交接")).toBeUndefined();
       await renderAction(characterWorkspaceDetail({ serving: { characterId: "character-fixture", state: "retired", currentReleaseId: null, version: 1, updatedAt: stamp } }));
-      expect(button("标记为可发布")).toBeUndefined();
+      expect(button("记录创作交接")).toBeUndefined();
     });
 
     async function renderPanel(data: CharacterWorkspaceDetail) {
@@ -118,7 +118,7 @@ describe("character workspace one-line actions", () => {
       const notice = container.querySelector('[data-testid="character-handoff-notice"]');
       expect(notice?.textContent).toContain("Rin");
       expect(notice?.textContent).toContain("30分钟前");
-      expect(notice?.textContent).toContain("之后有 2 处改动");
+      expect(notice?.textContent).toContain("交接后已变更");
       expect(notice?.textContent).toContain("角色内容");
     });
 

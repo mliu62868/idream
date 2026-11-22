@@ -835,6 +835,11 @@ export const characterWorkspaceDetailSchema = z
         live: characterPreviewSnapshotSchema.nullable(),
         draft: characterPreviewSnapshotSchema,
         changedFields: z.array(z.string()).readonly(),
+        comparison: z.object({
+          name: z.string(),
+          description: z.string(),
+          opening: z.record(z.string(), z.unknown()),
+        }).strict().optional(),
       })
       .strict(),
     performance: z.array(characterPerformanceSummarySchema).readonly(),

@@ -79,6 +79,7 @@ export function previewSnapshot(input: {
   servingVersion: number | null;
   assetPack: ReturnType<typeof previewAssetPackDto>;
   label: "Live" | "Draft Preview";
+  render?: boolean;
 }) {
   const persona = input.content ? record(input.content.personaSnapshot) : record(input.character.advancedDetails);
   const opening = input.content ? record(input.content.openingSnapshot) : {
@@ -96,7 +97,7 @@ export function previewSnapshot(input: {
     character_hero: input.assetPack.character_hero.assetId!,
     character_chat: input.assetPack.character_chat.assetId!,
   } : null;
-  const renderUrl = input.content && exactAssetPack
+  const renderUrl = input.render !== false && input.content && exactAssetPack
     ? new URL(
         `/internal-preview/characters/${encodeURIComponent(issueCharacterPreviewToken({
           characterId: input.character.id,

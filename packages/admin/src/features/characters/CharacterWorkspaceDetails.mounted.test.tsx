@@ -557,7 +557,7 @@ describe("Character workspace details", () => {
       (candidate) => candidate.textContent === "Character operations",
     );
     await act(async () => operationsArea?.click());
-    await waitUntil(() => window.location.search === "?tab=preview", "launch preview tab");
+    await waitUntil(() => window.location.search === "?tab=release", "release and preview tab");
     expect(container.textContent).not.toContain("Choose where existing images appear");
   });
 
@@ -758,9 +758,8 @@ describe("Character workspace details", () => {
       () => container.querySelector('[data-testid="character-next-step"]') !== null,
       "next step strip",
     );
-    const header = container.querySelector("#character-workspace-title")?.parentElement;
-    expect(header?.textContent).toContain("Draft");
-    expect(header?.textContent).not.toContain("inactive");
+    expect(container.querySelector('[data-testid="character-customer-status"]')?.textContent).toBe("Not live");
+    expect(container.querySelector('[data-testid="character-draft-status"]')?.textContent).toBe("0/3 display images ready");
     const strip = container.querySelector('[data-testid="character-next-step"]')!;
     expect(strip.textContent).toContain("Create first identity portrait");
     const link = strip.querySelector("a")!;

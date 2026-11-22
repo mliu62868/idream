@@ -217,16 +217,21 @@ function isDefinitiveRejection(cause: unknown) {
   );
 }
 
-// SPEC: 三个用途的默认 brief；具体场景才能让三个槽位不是同一张图。生成输入不翻译。
+// SPEC: 展示位决定取景，角色自己的视觉方向决定场景与光线。
 // INVARIANT: Asset Studio 和批量生成共用这一份，不各写一遍。
 export function defaultCharacterImageBrief(
   purpose: "character_cover" | "character_hero" | "character_chat",
   name: string,
+  referenceDirection?: unknown,
 ) {
-  if (purpose === "character_cover") {
-    return `Head-and-shoulders portrait of ${name} facing the camera, soft even studio light, plain neutral backdrop, relaxed confident smile, sharp focus on the face.`;
-  }
-  return purpose === "character_hero"
-    ? `Full-body shot of ${name} alone in a stylish city apartment at golden hour, warm window light, relaxed confident pose, wide cinematic framing, no other people anywhere in the scene.`
-    : `Candid close-up selfie of ${name} alone, curled up on a cozy sofa at home in the evening, warm lamp light, casual comfortable clothes, playful smile at the camera, no other people.`;
+  const framing = purpose === "character_cover"
+    ? `Head-and-shoulders portrait of ${name}, with the face in sharp focus.`
+    : purpose === "character_hero"
+      ? `Wide, cinematic view of ${name} with a clear silhouette and space around the subject.`
+      : `Natural close-up of ${name} making eye contact as if starting a conversation.`;
+  const direction = typeof referenceDirection === "string" ? referenceDirection.trim() : "";
+  const scene = direction
+    ? `Keep the setting, lighting, and mood from the character's visual direction. Adapt the framing for this placement: ${direction}`
+    : "Use soft natural light and a clean, unobtrusive background.";
+  return `${framing} Show exactly one person. ${scene}`.slice(0, 2_000).trim();
 }

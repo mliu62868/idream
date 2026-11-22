@@ -1,6 +1,7 @@
 "use client";
 
 import { useAdminI18n } from "@/components/admin/i18n";
+import { useAdminFormat } from "@/components/admin/ui/format";
 import Link from "next/link";
 import Image from "next/image";
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
@@ -77,6 +78,7 @@ export function characterNotLiveReasons(
 // 采纳数用 missingPurposes 反推，不再数一遍 draftAssetPack——路线权威只有一份。
 export function characterOperationsFacts(
   data: CharacterWorkspaceDetail,
+  formatDate: (value: string) => string,
 ): readonly CharacterOperationsFact[] {
   const currentRelease =
     data.releases.find(
@@ -101,9 +103,9 @@ export function characterOperationsFacts(
     },
     { label: "Visibility", value: data.character.visibility, alert: false },
     {
-      label: "Live release",
+      label: "Current release",
       value: currentRelease
-        ? `#${releaseOrdinals.get(currentRelease.id) ?? "?"} · ${(currentRelease.publishedAt ?? currentRelease.createdAt).slice(0, 10)}`
+        ? `#${releaseOrdinals.get(currentRelease.id) ?? "?"} · ${formatDate(currentRelease.publishedAt ?? currentRelease.createdAt)}`
         : "None published",
       alert: currentRelease === null,
     },
@@ -179,6 +181,7 @@ export function CharacterOverview({
   data: CharacterWorkspaceDetail;
 }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   const recentAssets = useMemo(() => characterRecentAssets(data), [data]);
   // SPEC: 资料区显示正在编辑的草稿，与标题里的名字同源；是否已上线看「未发布改动」。
   // INTENT: 这里曾读 Character 行，而那一行只在发布时才更新，改完人设后标题是新名字、
@@ -190,7 +193,7 @@ export function CharacterOverview({
     { label: "Gender", value: persona?.gender ?? (data.character.gender || "N/A") },
     { label: "Style", value: visualFormFromWorkspace(data).style },
   ] as const;
-  const operationalFacts = characterOperationsFacts(data).filter(
+  const operationalFacts = characterOperationsFacts(data, format.dateTime).filter(
     (fact) => fact.label !== "Visibility",
   );
   const notLiveReasons = characterNotLiveReasons(data);

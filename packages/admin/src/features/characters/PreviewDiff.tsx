@@ -29,7 +29,7 @@ export function releasePreviewChangeSummary(changedFields: readonly string[], pr
   };
 }
 
-function ReleaseChangeSummary({
+export function ReleaseChangeSummary({
   data,
 }: {
   data: CharacterWorkspaceDetail;
@@ -37,27 +37,27 @@ function ReleaseChangeSummary({
   const { t } = useAdminI18n();
   const previouslyPublished = characterHasPublishedRelease(data);
   const summary = releasePreviewChangeSummary(data.preview.changedFields, previouslyPublished);
-  const message = previouslyPublished && !data.preview.live
-    ? "This character has a published version but is currently offline."
-    : summary.firstRelease
+  const message = summary.firstRelease
     ? "First release — nothing is live yet."
     : summary.labels.length
-      ? "{count} areas differ from Live."
-      : "No draft changes detected.";
+      ? "{count} areas differ from the current release."
+      : "Draft matches the current release.";
+  const baseline = data.preview.live ?? data.preview.comparison;
+  const { draft, changedFields } = data.preview;
+  const textChanges = baseline ? [
+    { field: "name", before: baseline.name, after: draft.name },
+    { field: "description", before: baseline.description, after: draft.description },
+    { field: "opening", before: baseline.opening.firstMessage, after: draft.opening.firstMessage },
+  ].filter(({ field }) => changedFields.includes(field)) : [];
   return (
     <section
       aria-labelledby="release-change-summary-title"
-      className="mb-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"
+      className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"
       data-testid="release-change-summary"
     >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold" id="release-change-summary-title">
-          {t("Release change summary")}
-        </h2>
-        <span className="text-xs font-semibold tabular-nums text-[var(--ad-text-muted)]">
-          {summary.labels.length}
-        </span>
-      </div>
+      <h2 className="text-sm font-semibold" id="release-change-summary-title">
+        {t("Release change summary")}
+      </h2>
       <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
         {t(message, { count: summary.labels.length })}
       </p>
@@ -70,6 +70,23 @@ function ReleaseChangeSummary({
             <StatusBadge key={label} tone="warn" value={label} />
           ))}
         </div>
+      ) : null}
+      {textChanges.length > 0 ? (
+        <dl className="mt-3 grid gap-3">
+          {textChanges.map(({ field, before, after }) => (
+            <div className="border-t border-[var(--ad-border)] pt-3" key={field}>
+              <dt className="text-xs font-semibold">{t(previewChangeLabels[field])}</dt>
+              <dd className="mt-2 grid gap-2 text-sm sm:grid-cols-2">
+                {([["Current release", before], ["Draft", after]] as const).map(([label, value]) => (
+                  <div className="min-w-0 rounded-md bg-black/[0.04] p-2" key={label}>
+                    <strong className="block text-xs text-[var(--ad-text-muted)]">{t(label)}</strong>
+                    <p className="mt-1 whitespace-pre-wrap break-words">{typeof value === "string" ? value : t("Unavailable")}</p>
+                  </div>
+                ))}
+              </dd>
+            </div>
+          ))}
+        </dl>
       ) : null}
     </section>
   );
@@ -87,33 +104,20 @@ export function PreviewDiff({ data }: { data: CharacterWorkspaceDetail }) {
     data.project.draftAssetRouteAuthority.releaseBlockers.includes(
       "draft_asset_generation_route_stale",
     );
-  if (characterHasNoUnpublishedChanges(data)) {
-    // INTENT: nothing to compare, but operators still need to see what customers see.
-    const liveRenderUrl = data.preview.live?.renderUrl ?? null;
-    return (
-      <div className="space-y-5">
-        <section
-          className="border-y border-[var(--ad-border)] py-5"
-          role="status"
-        >
-          <h2 className="font-semibold">{t("Live and draft are identical")}</h2>
-          <p className="mt-1 text-sm leading-6 text-[var(--ad-text-muted)]">
-            {t(
-              "There are no unpublished changes. Nothing needs review or release.",
-            )}
-          </p>
-        </section>
-        {liveRenderUrl ? (
-          <iframe
-            className="h-[760px] w-full rounded-xl border border-[var(--ad-border)] bg-[rgb(13,13,13)]"
-            loading="lazy"
-            sandbox="allow-scripts allow-same-origin"
-            src={liveRenderUrl}
-            title={t("{label} real frontend renderer", { label: t("Live") })}
-          />
-        ) : null}
-      </div>
-    );
+  if (characterHasNoUnpublishedChanges(data) && data.preview.live) {
+    const liveRenderUrl = data.preview.live.renderUrl;
+    return liveRenderUrl ? (
+      <section aria-labelledby="real-renderer-preview-title">
+        <h2 className="mb-3 font-semibold" id="real-renderer-preview-title">{t("Real user-surface renderer")}</h2>
+        <iframe
+          className="h-[760px] w-full rounded-xl border border-[var(--ad-border)] bg-[rgb(13,13,13)]"
+          loading="lazy"
+          sandbox="allow-scripts allow-same-origin"
+          src={liveRenderUrl}
+          title={t("{label} real frontend renderer", { label: t("Live") })}
+        />
+      </section>
+    ) : null;
   }
   if (!previewReady) {
     return (
@@ -152,7 +156,6 @@ export function PreviewDiff({ data }: { data: CharacterWorkspaceDetail }) {
               {t("Current and draft assets")}
             </h2>
           </div>
-          <ReleaseChangeSummary data={data} />
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             {snapshots.map((snapshot) => {
               const cover = snapshot.assetPack.character_cover;
@@ -206,28 +209,6 @@ export function PreviewDiff({ data }: { data: CharacterWorkspaceDetail }) {
   }
   return (
     <div>
-      {/* INTENT: 预览就绪时 journey 停在 preview_character，本页又会隐藏页头的下一步；
-          不给出口运营就卡在这里。发布前的阻塞仍由 Release 面板判定，这里只负责带路。 */}
-      <section
-        aria-labelledby="launch-preview-continue"
-        className="mb-4 flex flex-col gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:flex-row sm:items-center sm:justify-between"
-      >
-        <div>
-          <h2 className="font-semibold" id="launch-preview-continue">
-            {t("Looks right?")}
-          </h2>
-          <p className="mt-1 text-sm leading-6 text-[var(--ad-text-muted)]">
-            {t("Check the renderer below, then publish from Release.")}
-          </p>
-        </div>
-        <Link
-          className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-md border border-[var(--ad-ink)] bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white hover:bg-[#30322e]"
-          href={`/admin/characters/${data.character.id}?tab=release`}
-        >
-          {t("Continue to Release")}
-        </Link>
-      </section>
-      <ReleaseChangeSummary data={data} />
       {previewReady ? (
         <section aria-labelledby="real-renderer-preview-title">
           <div className="flex flex-wrap items-end justify-between gap-2">

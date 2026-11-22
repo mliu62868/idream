@@ -93,7 +93,7 @@ describe("templateSuggestion", () => {
 describe("withVisualDirectionDefaults", () => {
   it("defaults what can be defaulted and leaves the traits to the operator", () => {
     const next = withVisualDirectionDefaults({ ...empty, persona: { ...empty.persona, characterPromise: "A dry nurse" } });
-    expect(next.visualDirection.identityAnchor).toBe("A dry nurse");
+    expect(next.visualDirection.identityAnchor).toBe("");
     expect(next.visualDirection.referenceDirection).not.toBe("");
     expect(next.visualDirection.stableTraits).toEqual([]);
     expect(characterProjectDraftSchema.shape.visualDirection.shape.referenceDirection.safeParse(next.visualDirection.referenceDirection).success).toBe(true);

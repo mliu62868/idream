@@ -2,6 +2,7 @@
 
 import {
   creativeRunCreateRequestSchema,
+  type CharacterImageSourceAsset,
   type CharacterWorkspaceDetail,
   type CreativeRun,
   type CreativeRunDetail,
@@ -45,12 +46,12 @@ import { ImagePackResetNotice, draftSelectedImageCount } from "./ImagePackResetN
 import {
   canChooseCharacterAssetPurpose,
   candidateState,
-  characterAssetPurposes,
   characterAssetBootstrapRequestKey,
   characterAssetDraftSelectionRequestKey,
   characterAssetRunRequestKey,
   characterAssetRunReceiptMessage,
   characterAssetStudioLayoutClass,
+  characterDraftImageCandidates,
   characterSourceVariationBlockerMessage,
   characterSourceVariationAvailabilityMessage,
   committedCharacterRunProjectionMatches,
@@ -81,6 +82,7 @@ function savedAssetRunRequest(intent: DurableMutationIntent | null, characterId:
 export function CharacterAssetStudio({
   actorId = "anonymous",
   data,
+  libraryAssets = [],
   permissions,
   onContinue,
   onProjectReload,
@@ -88,12 +90,13 @@ export function CharacterAssetStudio({
 }: {
   actorId?: string;
   data: CharacterWorkspaceDetail;
+  libraryAssets?: readonly CharacterImageSourceAsset[];
   permissions: {
     read: boolean;
     create: boolean;
     selectDraft: boolean;
   };
-  onContinue: (tab: "visual" | "preview") => void;
+  onContinue: (tab: "visual" | "release") => void;
   onProjectReload: () => Promise<void>;
   commitProjectMutation: CharacterAssetProjectMutation;
 }) {
@@ -147,19 +150,15 @@ export function CharacterAssetStudio({
     : [], [activePurpose, runPages, selectedRun]);
   const activeRuns = runPages.purpose === activePurpose ? runPages.active : [];
   const historyCursor = runPages.purpose === activePurpose ? runPages.cursor : null;
-  // SPEC: a brief is generation input, not UI copy — it stays English in every
-  //   locale (like the Run title below) and names a concrete framing.
-  // INTENT: the qualified identity route edits the locked reference image. A
-  //   vague brief ("a cinematic hero scene") gave back three near-copies of the
-  //   reference for the three placements; a concrete setting, framing and light
-  //   gives three distinct, on-identity images.
+  const referenceDirection = data.preview.draft.appearance.referenceDirection;
+  // Preserve the author's scene across placements while varying the framing.
   const [briefs, setBriefs] = useState<Record<CharacterAssetPurpose, string>>(
     () => ({
       character_cover: data.visual.identityBootstrap.allowed
         ? `Create the first definitive portrait of ${subject.name} from the approved visual direction. This portrait will define the identity for future images.`
-        : defaultCharacterImageBrief("character_cover", subject.name),
-      character_hero: defaultCharacterImageBrief("character_hero", subject.name),
-      character_chat: defaultCharacterImageBrief("character_chat", subject.name),
+        : defaultCharacterImageBrief("character_cover", subject.name, referenceDirection),
+      character_hero: defaultCharacterImageBrief("character_hero", subject.name, referenceDirection),
+      character_chat: defaultCharacterImageBrief("character_chat", subject.name, referenceDirection),
       ...(savedCreateRequest ? { [savedCreateRequest.purpose]: savedCreateRequest.brief } : {}),
     }),
   );
@@ -257,7 +256,7 @@ export function CharacterAssetStudio({
   );
   // SPEC: 「已选中」按钮的文案和点击行为必须读同一个值。
   // INTENT: 文案曾读路由过滤后的 pack、点击读未过滤的原始 pack —— 写着「下一个资产」、点下去跳到别处。
-  // null = 当前用途就是最后一件待办（或图池已齐），下一步是 Launch preview。
+  // null 表示图池已齐，下一步是核对发布。
   const advanceTargetPurpose =
     nextIncompletePurpose === activePurpose ? null : nextIncompletePurpose;
   const pinnedRunIds = useMemo(
@@ -659,6 +658,17 @@ export function CharacterAssetStudio({
   const readinessDescriptionId = `character-image-readiness-${data.character.id}`;
   // INVARIANT: 服务端的 missingPurposes 还过滤了资产可用性（软删 / 归属），前端不另算一份。
   const missingPurposes = data.journey.assetPack.draft.missingPurposes;
+  const [checkedLibrary, setCheckedLibrary] = useState<{
+    projectVersion: number;
+    items: readonly CharacterImageSourceAsset[];
+  } | null>(null);
+  const candidates = characterDraftImageCandidates(data, [...new Map(
+    [
+      ...(checkedLibrary?.projectVersion === data.project.version ? checkedLibrary.items : []),
+      ...libraryAssets,
+    ].map((asset) => [asset.id, asset]),
+  ).values()]);
+  const generationPurposes = missingPurposes.filter((purpose) => !candidates.some((candidate) => candidate.purpose === purpose));
   const canGenerateMissing = recurringProductionReady && permissions.create && Boolean(qualifiedRoute) &&
     !mutationContextLocked && unconfirmedOperations.length === 0 && !refreshWarning;
   const canUseGenerationAction = runCreationIntent
@@ -847,7 +857,22 @@ export function CharacterAssetStudio({
     setError(null);
     setMessage(null);
     try {
-      const outcomes = await Promise.allSettled(missingPurposes.map(startMissingImageRun));
+      // Read the unfiltered library before spending, including candidates past the visible page.
+      let cursor: string | undefined;
+      const available: CharacterImageSourceAsset[] = [];
+      let existing: ReturnType<typeof characterDraftImageCandidates>;
+      do {
+        const page = await adminV2Operation("GET /api/v2/admin/characters/:id/image-sources", {
+          path: { id: data.character.id },
+          query: new URLSearchParams({ purpose: "character_library", ...(cursor ? { cursor } : {}) }),
+        });
+        available.push(...page.items);
+        existing = characterDraftImageCandidates(data, available);
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor && existing.length < missingPurposes.length);
+      setCheckedLibrary({ projectVersion: data.project.version, items: existing.map(({ asset }) => asset) });
+      const needed = missingPurposes.filter((purpose) => !existing.some((candidate) => candidate.purpose === purpose));
+      const outcomes = await Promise.allSettled(needed.map(startMissingImageRun));
       const started = outcomes.flatMap((outcome) => outcome.status === "fulfilled" && outcome.value.state === "started" ? [outcome.value] : []);
       const failed = outcomes.filter((outcome) => outcome.status === "rejected" || outcome.value.state === "not_started").length;
       if (failed > 0) {
@@ -1068,7 +1093,7 @@ export function CharacterAssetStudio({
     const selectedAsset = selectedItem.asset;
     if (isSelectedAsset) {
       if (advanceTargetPurpose) choosePurpose(advanceTargetPurpose);
-      else onContinue("preview");
+      else onContinue("release");
       return;
     }
     if (!isApprovedItem) return;
@@ -1160,7 +1185,7 @@ export function CharacterAssetStudio({
         } else if (activePurpose === "character_hero") {
           choosePurpose("character_chat");
         } else {
-          onContinue("preview");
+          onContinue("release");
         }
       },
     });
@@ -1418,14 +1443,34 @@ export function CharacterAssetStudio({
 
       <IdentityRail data={data} onRepair={() => onContinue("visual")} />
 
-      {canGenerateMissing && missingPurposes.length > 0 ? (
+      {recurringProductionReady && candidates.length > 0 ? (
+        <section aria-label={t("Available image candidates")} className="flex flex-wrap gap-3">
+          {candidates.map(({ purpose, asset }) => (
+            <div className="flex min-w-0 items-center gap-2 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-2" key={purpose}>
+              <AssetImage alt={t(purposeConfig[purpose].label)} className="h-14 w-14 rounded object-cover" src={asset.thumbnailUrl ?? asset.url} />
+              <WorkspaceButton
+                disabled={!permissions.selectDraft || busy !== null || mutationContextLocked}
+                onClick={() => void selection.selectLibraryAsset(purpose, asset, () => {
+                  const next = missingPurposes.find((missing) => missing !== purpose);
+                  if (next) choosePurpose(next);
+                  else onContinue("release");
+                })}
+              >
+                {t("Use candidate for {slot}", { slot: t(purposeConfig[purpose].label) })}
+              </WorkspaceButton>
+            </div>
+          ))}
+        </section>
+      ) : null}
+
+      {canGenerateMissing && generationPurposes.length > 0 ? (
         <div
           className="flex flex-col gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
           data-testid="generate-missing-images"
         >
           <span>
             {t("Still needs: {purposes}. Default briefs are ready, and you can adjust them below.", {
-              purposes: missingPurposes.map((purpose) => t(purposeConfig[purpose].label)).join(" · "),
+              purposes: generationPurposes.map((purpose) => t(purposeConfig[purpose].label)).join(" · "),
             })}
           </span>
           <WorkspaceButton disabled={busy !== null} onClick={() => void generateMissingImages()} tone="primary">

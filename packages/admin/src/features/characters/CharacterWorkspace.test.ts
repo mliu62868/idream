@@ -6,6 +6,7 @@ import {
   characterWorkspaceAreaTabs,
   characterWorkspaceTabLabel,
 } from "./CharacterWorkspace";
+import { characterWorkspaceTabFromSearch } from "@/features/image-workflow-transport";
 
 const workspaceSource = readFileSync(
   new URL("./CharacterWorkspace.tsx", import.meta.url),
@@ -19,7 +20,8 @@ describe("Character production entry", () => {
     expect(characterWorkspaceTabLabel("assets")).toBe("Images");
     expect(characterWorkspaceTabLabel("video")).toBe("Videos");
     expect(characterWorkspaceTabLabel("voice")).toBe("Voice");
-    expect(characterWorkspaceTabLabel("preview")).toBe("Launch preview");
+    expect(characterWorkspaceTabLabel("release")).toBe("Release and preview");
+    expect(characterWorkspaceTabFromSearch("?tab=preview")).toBe("release");
     expect(characterWorkspaceTabLabel("monitor")).toBe("Live monitoring");
   });
 
@@ -35,7 +37,6 @@ describe("Character production entry", () => {
     ]);
     expect(characterWorkspaceAreaTabs.assets).toEqual(["assets", "video"]);
     expect(characterWorkspaceAreaTabs.operations).toEqual([
-      "preview",
       "release",
       "monitor",
     ]);

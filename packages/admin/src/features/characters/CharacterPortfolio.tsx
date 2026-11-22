@@ -2,7 +2,7 @@
 
 import { useAdminI18n } from "@/components/admin/i18n";
 import Link from "next/link";
-import { characterPortfolioWorkQueueSchema, type AdminPageInfo, type AdminPermissionKey, type CharacterPortfolioItem, type DataQualityIssue } from "@idream/shared/admin";
+import type { AdminPageInfo, AdminPermissionKey, CharacterPortfolioItem, DataQualityIssue } from "@idream/shared/admin";
 import { Plus, Search } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -112,7 +112,8 @@ const WORK_QUEUE_VIEWS = [
   ["ready_to_publish", "Ready to publish"],
   ["live_asset_pack_incomplete", "Incomplete packs"],
 ] as const;
-type RosterView = (typeof ROSTER_VIEWS)[number][0] | (typeof WORK_QUEUE_VIEWS)[number][0];
+type RosterView = (typeof ROSTER_VIEWS)[number][0];
+type QueueView = (typeof WORK_QUEUE_VIEWS)[number][0];
 
 const SERVING_STATE_BY_VIEW: Partial<Record<RosterView, string>> = {
   draft: "inactive",
@@ -120,7 +121,6 @@ const SERVING_STATE_BY_VIEW: Partial<Record<RosterView, string>> = {
   paused: "paused",
   archived: "retired",
 };
-const WORK_QUEUES: readonly string[] = characterPortfolioWorkQueueSchema.options;
 
 function CharacterRoster({
   actorId = "",
@@ -277,45 +277,23 @@ function CharacterRoster({
     applyQuery({ ...applied, cursor: cursorStack.at(-1) || undefined }, "push", previous, true);
   }
 
-  const rosterView: RosterView = attention
-    ? "attention"
-    : workQueue
-      ? workQueue
-      : servingState === "live"
-        ? "live"
-        : servingState === "inactive"
-          ? "draft"
-          : servingState === "paused"
-            ? "paused"
-            : servingState === "retired"
-              ? "archived"
-              : "all";
+  const rosterView = ROSTER_VIEWS.find(([view]) => (SERVING_STATE_BY_VIEW[view] ?? "") === servingState)?.[0] ?? "all";
+  const queueView = attention ? "attention" : workQueue;
   const viewCounts = portfolio.data?.facets?.viewCounts;
+  const rosterQuery = characterPortfolioQuery({ ...applied, cursor: undefined });
 
-  // SPEC: 视图仍写回同一个 portfolio 查询；工作清单是服务端筛选，不是当前页的客户端过滤。
-  // INTENT: 运营先回答「我现在要看哪批角色」，再进入单个角色处理素材或上线动作。
   function changeRosterView(next: RosterView) {
-    const nextAttention = next === "attention";
-    const nextWorkQueue = WORK_QUEUES.includes(next)
-      ? (next as CharacterPortfolioWorkQueue)
-      : undefined;
-    const nextServingState = SERVING_STATE_BY_VIEW[next];
-    setAttention(nextAttention);
-    setWorkQueue(nextWorkQueue ?? "");
-    setServingState(nextServingState ?? "");
-    applyQuery(
-      {
-        search: applied.search,
-        servingState: nextServingState,
-        attention: nextAttention || undefined,
-        workQueue: nextWorkQueue,
-        source: applied.source,
-        sort,
-      },
-      "push",
-      [],
-      true,
-    );
+    applyQuery({ ...applied, cursor: undefined, servingState: SERVING_STATE_BY_VIEW[next] }, "push", [], true);
+  }
+
+  function toggleQueue(next: QueueView) {
+    const selectedQueue = queueView === next ? undefined : next;
+    applyQuery({
+      ...applied,
+      cursor: undefined,
+      attention: selectedQueue === "attention" || undefined,
+      workQueue: selectedQueue === "attention" ? undefined : selectedQueue,
+    }, "push", [], true);
   }
   function changeSource(next: CharacterPortfolioSource | "") {
     applyQuery({ ...applied, cursor: undefined, source: next || undefined }, "push", [], true);
@@ -330,6 +308,12 @@ function CharacterRoster({
   const selectedItems = [...selection.values()].map(
     (item) => items.find((row) => row.characterId === item.characterId) ?? item,
   );
+  function settleBulkAction(completedIds: ReadonlySet<string>) {
+    if (completedIds.size > 0) {
+      setSelection((current) => new Map([...current].filter(([id]) => !completedIds.has(id))));
+    }
+    void refresh();
+  }
   const canBulk = Boolean(permissions) && actorId !== "";
   const pageAllSelected = items.length > 0 && items.every((item) => selection.has(item.characterId));
   const togglePage = () =>
@@ -344,7 +328,7 @@ function CharacterRoster({
   const filterForm = (
     <form
       aria-label={t("Search and filter characters")}
-      className="grid w-full gap-2 sm:grid-cols-[minmax(14rem,1fr)_auto_auto_auto] sm:items-center"
+      className="grid w-full gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-center"
       onSubmit={(event) => {
         event.preventDefault();
         apply();
@@ -364,7 +348,7 @@ function CharacterRoster({
           value={search}
         />
       </label>
-      <WorkspaceButton type="submit">{t("Search")}</WorkspaceButton>
+      <WorkspaceButton className="whitespace-nowrap" type="submit">{t("Search")}</WorkspaceButton>
       <label className="shrink-0 text-xs font-semibold text-[var(--ad-text-muted)]">
         <span className="sr-only">{t("Source")}</span>
         <select
@@ -411,7 +395,7 @@ function CharacterRoster({
         </div>
         {canCreate ? (
           <div className="flex shrink-0 flex-wrap gap-2">
-            <CharacterBatchImport />
+            <CharacterBatchImport onImported={() => void refresh()} />
             <Link
               className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md bg-[var(--ad-ink)] px-5 text-sm font-semibold text-[var(--ad-surface)] hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
               href="/admin/characters/new"
@@ -449,22 +433,23 @@ function CharacterRoster({
           </div>
           <div className="w-full xl:max-w-[46rem]">{filterForm}</div>
         </div>
-        <div aria-label={t("Today's work queues")} className="mt-3 flex flex-wrap items-center gap-2" role="group">
+        <div aria-label={t("Work queues")} className="mt-3 flex flex-wrap items-center gap-2" role="group">
+          <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Work queues")}</span>
           {WORK_QUEUE_VIEWS.map(([value, label]) => {
             const count = viewCounts?.[value];
             return (
               <button
-                aria-pressed={rosterView === value}
+                aria-pressed={queueView === value}
                 className={cn(
                   "min-h-9 rounded-full border px-3 text-xs font-medium",
-                  rosterView === value
+                  queueView === value
                     ? "border-[var(--ad-ink)] bg-[var(--ad-ink)] text-[var(--ad-surface)]"
                     : count
                       ? "border-[var(--ad-border)] text-[var(--ad-ink)] hover:bg-black/[0.03]"
                       : "border-[var(--ad-border)] text-[var(--ad-text-muted)] hover:bg-black/[0.03]",
                 )}
                 key={value}
-                onClick={() => changeRosterView(value)}
+                onClick={() => toggleQueue(value)}
                 type="button"
               >
                 {t(label)}
@@ -479,6 +464,16 @@ function CharacterRoster({
             </label>
           ) : null}
         </div>
+      {canBulk && permissions ? (
+        <CharacterBulkBar
+          actorId={actorId}
+          onClear={() => setSelection(new Map())}
+          onSettled={settleBulkAction}
+          permissions={permissions}
+          selected={selectedItems}
+          visibleSelectionCount={items.filter((item) => selection.has(item.characterId)).length}
+        />
+      ) : null}
       {error ? (
         <div
           className="mt-5 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]"
@@ -541,6 +536,7 @@ function CharacterRoster({
                   item={item}
                   key={item.characterId}
                   onToggleSelected={canBulk ? () => toggleSelected(item) : undefined}
+                  rosterQuery={rosterQuery}
                   selected={selection.has(item.characterId)}
                 />
               ))}
@@ -548,15 +544,6 @@ function CharacterRoster({
           </>
         )}
       </div>
-      {canBulk && permissions ? (
-        <CharacterBulkBar
-          actorId={actorId}
-          onClear={() => setSelection(new Map())}
-          onSettled={() => void refresh()}
-          permissions={permissions}
-          selected={selectedItems}
-        />
-      ) : null}
       {backgroundQuality.length > 0 ? <details className="mt-4 text-xs text-[var(--ad-text-muted)]">
         <summary className="cursor-pointer">{t("Data quality")}</summary>
         {backgroundQuality.map((note) => <p className="mt-2" key={note.code}>{t(note.message)}</p>)}

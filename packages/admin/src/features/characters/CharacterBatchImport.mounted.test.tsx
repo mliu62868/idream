@@ -55,7 +55,7 @@ describe("parseCharacterImport", () => {
       visualDirection: { stableTraits: ["Glasses"], style: "anime" },
     }]));
     if (!parsed.ok) throw new Error("expected rows");
-    expect(parsed.rows[0]?.draft?.visualDirection).toMatchObject({ identityAnchor: "A quiet owner", style: "anime" });
+    expect(parsed.rows[0]?.draft?.visualDirection).toMatchObject({ identityAnchor: "Glasses", style: "anime" });
   });
 });
 
@@ -76,7 +76,7 @@ describe("runWithConcurrency", () => {
 describe("CharacterBatchImport", () => {
   let container: HTMLDivElement;
   let root: Root;
-  const dialog = () => document.querySelector('[role="dialog"]')!;
+  const dialog = () => document.querySelector('dialog[open]')!;
   const button = (text: string) => [...dialog().querySelectorAll("button")].find((node) => node.textContent?.includes(text))!;
 
   beforeEach(async () => {

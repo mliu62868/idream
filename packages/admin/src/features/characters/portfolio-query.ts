@@ -113,10 +113,10 @@ export function characterPortfolioQuery(
 export function characterPortfolioEmptyView(
   state: CharacterPortfolioUrlState,
 ): CharacterPortfolioEmptyView {
-  if (state.search.trim()) return "filtered";
+  if (state.search.trim() || state.servingState || state.source) return "filtered";
   if (state.attention) return "attention";
   if (state.workQueue) return state.workQueue;
-  return state.servingState || state.source ? "filtered" : "all";
+  return "all";
 }
 
 // SPEC: 地址栏之外、只属于请求的默认值。「全部」不含归档，归档有自己的视图；计数随列表一起取。

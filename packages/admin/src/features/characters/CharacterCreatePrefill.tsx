@@ -199,8 +199,8 @@ export function CharacterCreateTagPicker({
   // Tags are optional: an unavailable vocabulary must never stand in the way of creating.
   if (failed || (tags && tags.length === 0)) return null;
   return (
-    <section className="rounded-lg border border-[var(--ad-border)] p-3" data-testid="character-create-tags">
-      <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--ad-text-muted)]">{t("Tags (optional)")}</h3>
+    <details className="rounded-lg border border-[var(--ad-border)] p-3" data-testid="character-create-tags">
+      <summary className="cursor-pointer text-sm font-semibold">{t("Tags (optional)")}{selected.length ? ` · ${selected.length}` : ""}</summary>
       {!tags ? <p className="mt-2 text-xs text-[var(--ad-text-muted)]">{t("Loading tags")}</p> : (
         <div className="mt-2 flex flex-wrap gap-1.5">
           {tags.map((tag) => {
@@ -220,6 +220,6 @@ export function CharacterCreateTagPicker({
           })}
         </div>
       )}
-    </section>
+    </details>
   );
 }

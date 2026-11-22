@@ -304,7 +304,7 @@ describe("Character media availability", () => {
         .mockResolvedValue({ items: [asset] });
       await renderLibrary(kind);
       await waitUntil(() => container.querySelector("article") !== null);
-      await act(async () => button(kind === "images" ? "Create images" : "Create video").click());
+      if (kind === "videos") await act(async () => button("Create video").click());
       await act(async () => button("Finish production").click());
       await waitUntil(() => container.querySelector('[role="alert"]') !== null);
 
@@ -336,7 +336,7 @@ describe("Character media availability", () => {
       await act(async () => input?.dispatchEvent(new Event("change", { bubbles: true })));
       await waitUntil(() => container.querySelector('[role="alert"]') !== null);
       expect(container.querySelectorAll("article")).toHaveLength(1);
-      expect(button(kind === "images" ? "Import image" : "Import video").disabled).toBe(false);
+      expect(button(kind === "images" ? "Import existing image" : "Import video").disabled).toBe(false);
 
       await act(async () => input?.dispatchEvent(new Event("change", { bubbles: true })));
       await waitUntil(() => imports === 2 && container.querySelector('[role="status"]') !== null);

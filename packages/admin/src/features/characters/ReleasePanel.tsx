@@ -2,6 +2,7 @@
 
 import { characterCommandMessage, renderCharacterCommandMessage, type CharacterCommandMessage } from "./character-command-copy";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { useAdminFormat } from "@/components/admin/ui/format";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import Link from "next/link";
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
@@ -30,6 +31,8 @@ import type {
   RunCommittedCharacterMutation,
 } from "./character-workspace-permissions";
 import { CharacterHandoffNotice } from "./CharacterHandoff";
+import { characterAssetPurposeLabel } from "./character-asset-studio-authority";
+import { ReleaseChangeSummary } from "./PreviewDiff";
 import { commandSubmissionMessage, submitCharacterReleaseCommand } from "./release-command";
 
 type CharacterReleaseItem = CharacterWorkspaceDetail["releases"][number];
@@ -238,12 +241,15 @@ function ReleaseSummary({
   item,
   ordinal,
   serving,
+  rollbackSourceOrdinal,
 }: {
   item: CharacterReleaseItem;
   ordinal: number | undefined;
   serving: boolean;
+  rollbackSourceOrdinal?: number;
 }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   const { release, checks } = item;
   const historical = ["superseded", "withdrawn"].includes(release.status);
   return (
@@ -254,7 +260,7 @@ function ReleaseSummary({
         </strong>
         {release.publishedAt ? (
           <span className="text-xs text-[var(--ad-text-muted)]">
-            {release.publishedAt.slice(0, 10)}
+            <time dateTime={release.publishedAt}>{format.dateTime(release.publishedAt)}</time>
           </span>
         ) : null}
         {/* INTENT: 持久化枚举 approved 只表示「已准备好待发布」，从来没有人批准过它。 */}
@@ -263,6 +269,9 @@ function ReleaseSummary({
         {serving ? <StatusBadge tone="good" value="serving now" /> : null}
         {release.legacy ? <StatusBadge tone="neutral" value="Legacy release" /> : null}
       </div>
+      {rollbackSourceOrdinal !== undefined ? (
+        <p className="mt-2 text-sm">{t("Restored content from release #{ordinal}", { ordinal: rollbackSourceOrdinal })}</p>
+      ) : null}
       {release.legacy ? (
         <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
           {t("Historical editorial release with no automatic release check record. Publishing again runs the full checks.")}
@@ -355,6 +364,7 @@ export function ReleasePanel({
   runCommittedMutation: RunCommittedCharacterMutation;
 }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   const releaseOrdinals = useMemo(
     () => characterReleaseOrdinals(data.releases),
     [data.releases],
@@ -591,9 +601,12 @@ export function ReleasePanel({
   // Server blockers stay visible but never hide or disable Publish: the next
   // attempt is re-validated by the server anyway.
   const blockers = [...new Set([...draftBlockers, ...authorityBlockers])];
+  const incompletePlacements = blockers.includes("release_asset_manifest_available")
+    ? data.journey.assetPack.draft.missingPurposes
+    : [];
   const blockerGuidance = [
     ...new Map(
-      blockers.map((blocker) => {
+      blockers.filter((blocker) => blocker !== "release_asset_manifest_available" || incompletePlacements.length === 0).map((blocker) => {
         const guidance = releaseBlockerGuidance(blocker, data.character.id);
         return [`${guidance.message}|${guidance.href}`, guidance] as const;
       }),
@@ -608,8 +621,9 @@ export function ReleasePanel({
   const servingActionDisabled = !permissions.publishRelease || Boolean(busy) || writesLocked;
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[1fr_340px]">
+    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
       <div className="space-y-5">
+        <ReleaseChangeSummary data={data} />
         <CharacterHandoffNotice data={data} />
         {data.releases.length === 0 ? (
           <EmptyState
@@ -631,6 +645,7 @@ export function ReleasePanel({
                 <ReleaseSummary
                   item={current}
                   ordinal={releaseOrdinals.get(current.release.id)}
+                  rollbackSourceOrdinal={releaseOrdinals.get(current.release.rollbackOfReleaseId ?? "")}
                   serving={data.serving?.state === "live"}
                 />
                 {legacyCurrent ? (
@@ -686,13 +701,22 @@ export function ReleasePanel({
 
       <aside className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <h3 className="font-semibold">{t("Publish Character")}</h3>
-        {noUnpublishedChanges && !currentReleaseStale && !candidate && !legacyCurrent ? (
-          <p className="mt-3 text-sm text-[var(--ad-text-muted)]">
-            {t("Live and draft are identical. There is nothing to release.")}
-          </p>
-        ) : null}
-        {blockerGuidance.length > 0 ? (
+        {incompletePlacements.length > 0 || blockerGuidance.length > 0 ? (
           <div className="mt-3 space-y-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]" data-testid="release-blockers">
+            {incompletePlacements.map((purpose) => {
+              const slot = data.preview.draft.assetPack[purpose];
+              const title = t(characterAssetPurposeLabel(purpose));
+              return (
+                <p key={purpose}>
+                  <Link
+                    className="font-semibold underline"
+                    href={`/admin/characters/${encodeURIComponent(data.character.id)}?tab=assets#character-image-placement-${purpose}`}
+                  >
+                    {t(slot.status === "missing" ? "Select an image for {slot}" : "Fix the image for {slot}", { slot: title })}
+                  </Link>
+                </p>
+              );
+            })}
             {blockerGuidance.map((guidance) => (
               <div key={`${guidance.message}|${guidance.href}`}>
                 <p>{t(guidance.message)}</p>
@@ -744,7 +768,7 @@ export function ReleasePanel({
           </WorkspaceButton>
         ) : null}
         {data.serving?.state === "paused" ? (
-          <WorkspaceButton className="mt-3 w-full" disabled={servingActionDisabled} onClick={() => void servingCommand("resume")}>
+          <WorkspaceButton className="mt-3 w-full" disabled={servingActionDisabled} onClick={() => void servingCommand("resume")} tone={canPublish ? undefined : "primary"}>
             {t("Resume serving")}
           </WorkspaceButton>
         ) : null}
@@ -783,10 +807,9 @@ export function ReleasePanel({
               }
               value={rollbackSourceId}
             >
-              <option value="">{t("No superseded release available")}</option>
               {rollbackSources.map(({ release }) => (
                 <option key={release.id} value={release.id}>
-                  {t("Release")} #{releaseOrdinals.get(release.id) ?? "?"}
+                  {t("Release")} #{releaseOrdinals.get(release.id) ?? "?"}{release.publishedAt ? ` · ${format.dateTime(release.publishedAt)}` : ""}
                 </option>
               ))}
             </select>

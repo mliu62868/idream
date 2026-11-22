@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { writeFile } from "node:fs/promises";
 import type { Prisma } from "@prisma/client";
 import {
   characterProjectCreateResponseSchema,
@@ -8,6 +9,7 @@ import {
 import { compileCharacterSoul } from "@idream/shared";
 import axe, { type AxeResults } from "axe-core";
 import { prisma } from "@/server/lib/db";
+import { createChatSession } from "@/server/modules/chat/turn-ledger";
 import { executeCharacterReleaseCommand } from "@/server/modules/admin-v2/characters/release-executor";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-validation";
 import {
@@ -118,12 +120,12 @@ function internalToken() {
   return process.env.INTERNAL_TOKEN ?? "development-internal-token";
 }
 
-async function openCharacterTab(page: Page, tab: "assets" | "visual" | "preview" | "release" | "monitor") {
-  const area = tab === "assets" ? "Character assets" : tab === "visual" ? "Character settings" : "Character operations";
-  const labels = { assets: "Images", visual: "Visual identity", preview: "Launch preview", release: "Release", monitor: "Live monitoring" };
+async function openCharacterTab(page: Page, tab: "assets" | "soul" | "visual" | "preview" | "release" | "monitor") {
+  const area = tab === "assets" ? "Character assets" : tab === "visual" || tab === "soul" ? "Character settings" : "Character operations";
+  const labels = { assets: "Images", soul: "Persona & appearance", visual: "Visual identity", preview: "Release and preview", release: "Release and preview", monitor: "Live monitoring" };
   await page.getByRole("button", { name: area, exact: true }).click();
   const mobilePage = page.getByLabel("Workspace page", { exact: true });
-  if (await mobilePage.isVisible()) await mobilePage.selectOption(tab);
+  if (await mobilePage.isVisible()) await mobilePage.selectOption(tab === "preview" ? "release" : tab);
   else await page.getByRole("tab", { name: labels[tab], exact: true }).click();
   if (tab === "assets") {
     const create = page.getByRole("button", { name: "Create images", exact: true });
@@ -401,7 +403,15 @@ async function completeCharacterCreateDraft(
     .fill(
       "## Personality and voice\nObservant, measured, warm, and gently challenging.\n\n## Background\nYears hosting a late-night radio show taught her to notice what people leave unsaid.",
     );
-  await page.getByRole("button", { name: "Continue to visual direction", exact: true }).click();
+  const age = page.getByLabel("Age (18+)");
+  const next = page.getByRole("button", { name: "Continue to visual direction", exact: true });
+  await age.fill("17");
+  await next.click();
+  await expect(age).toHaveAttribute("aria-invalid", "true");
+  await expect(age).toBeFocused();
+  await assertNotCreated();
+  await age.fill("18");
+  await next.click();
   await assertNotCreated();
 
   await page
@@ -413,10 +423,9 @@ async function completeCharacterCreateDraft(
   await page
     .getByLabel("Image mood and framing")
     .fill("Low-key tungsten portraiture with an intimate editorial crop");
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
   await assertNotCreated();
 
-  await expect(page.getByRole("heading", { name: "Review & create", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Visual direction", exact: true })).toBeVisible();
 }
 
 function consoleFailures(page: Page, expected: RegExp[] = []) {
@@ -805,7 +814,7 @@ async function completeResponsiveCoreFlows(
     await expect(workspacePage).toHaveValue("monitor");
     await workspacePage.selectOption("release");
   } else {
-    const releaseTab = page.getByRole("tab", { name: "Release", exact: true });
+    const releaseTab = page.getByRole("tab", { name: "Release and preview", exact: true });
     await releaseTab.focus();
     await expect(releaseTab).toBeFocused();
     await releaseTab.press("ArrowRight");
@@ -816,6 +825,7 @@ async function completeResponsiveCoreFlows(
     await expect(releaseTab).toBeFocused();
   }
   const candidateCard = page
+    .getByRole("region", { name: "Pending publish", exact: true })
     .locator("article")
     .filter({ hasText: fixture.candidateReleaseId });
   await expect(candidateCard).toContainText("ready");
@@ -859,7 +869,8 @@ async function completeResponsiveCoreFlows(
     .toEqual({ currentReleaseId: fixture.candidateReleaseId, state: "live" });
   await page.reload();
   await expect(
-    page.locator("article").filter({ hasText: fixture.candidateReleaseId }),
+    page.getByRole("region", { name: "Current live release", exact: true })
+      .locator("article").filter({ hasText: fixture.candidateReleaseId }),
   ).toContainText("serving now");
 
   await page.goto(
@@ -2014,10 +2025,16 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await prisma.$disconnect();
   });
 
-  test("takes one blank Character through automatic checks, identity, a complete image pack, and a verified Release", async ({
+  test("takes one blank Character through automatic checks, identity, a complete image pack, and the serving lifecycle", async ({
     page,
-  }) => {
-    test.setTimeout(180_000);
+  }, testInfo) => {
+    test.setTimeout(240_000);
+    const shotDir = process.env.CHARACTER_OPS_SHOT_DIR;
+    const shot = async (name: string) => {
+      const path = shotDir ? `${shotDir}/${name}.png` : testInfo.outputPath(`${name}.png`);
+      await page.screenshot({ path });
+      await testInfo.attach(name, { path, contentType: "image/png" });
+    };
     const failures = consoleFailures(page);
     const createRequests: string[] = [];
     page.on("request", (request) => {
@@ -2056,7 +2073,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     );
     await page
       .getByRole("button", {
-        name: "Save character",
+        name: "Save private draft",
       })
       .click();
     const createdResponse = await characterCreateResponse;
@@ -2077,6 +2094,13 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     wizardCharacterId = new URL(page.url()).pathname.split("/").at(-1) ?? null;
     if (!wizardCharacterId)
       throw new Error("Character wizard did not return a Character id");
+    const ageGate = await page.request.post(
+      `${mainBaseURL()}/api/v1/age-gate/accept`,
+      { data: { sourcePath: `/characters/${wizardCharacterId}` } },
+    );
+    expect(ageGate.ok(), await ageGate.text()).toBeTruthy();
+    const publicDetail = `${mainBaseURL()}/api/v1/characters/${wizardCharacterId}`;
+    expect((await page.request.get(publicDetail)).status()).toBe(404);
     const initialProject = await prisma.characterProject.findFirstOrThrow({
       where: { characterId: wizardCharacterId },
     });
@@ -2087,6 +2111,12 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     ).toBe(0);
     await openCharacterTab(page, "assets");
 
+    await expect(page.getByTestId("character-customer-status")).toHaveText("Not live");
+    await expect(page.getByTestId("character-draft-status")).toHaveText("0/3 display images ready");
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await expect(page.getByRole("button", { name: "Generate 1 portrait" })).toBeInViewport();
+    await shot("01-private-draft-first-portrait");
+    await page.setViewportSize({ width: 1280, height: 900 });
     await expect(
       page.getByRole("heading", {
         name: "Establish the face customers will recognize",
@@ -2306,6 +2336,11 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       }),
     ).toMatchObject({ imageAssetId: null });
     await expect(page.getByRole("button", { name: "Generate 1 hero image" })).toBeEnabled();
+    await openCharacterTab(page, "release");
+    await expect(page.getByRole("button", { name: "Publish Character", exact: true })).toBeDisabled();
+    await page.getByTestId("release-blockers").getByRole("link", { name: "Select an image for Character hero" }).click();
+    await expect(page).toHaveURL(/tab=assets#character-image-placement-character_hero$/);
+    await expect(page.locator("#character-image-placement-character_hero")).toBeInViewport();
     await openCharacterTab(page, "visual");
     const referencePublication = page.getByRole("region", { name: "Anchors & published references", exact: true });
     await expect(referencePublication.getByRole("heading", { name: "Publish Reference Set revision", exact: true })).toBeVisible();
@@ -2317,10 +2352,24 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       "Generate 1 hero image",
       1,
     );
-    const selectHero = page.getByRole("button", {
-      name: "Select hero · next asset",
-    });
+    const selectHero = page.getByRole("button", { name: "Use candidate for Character hero" });
     await expect(selectHero).toBeEnabled();
+    const missingImages = page.getByTestId("generate-missing-images");
+    await expect(missingImages).toContainText("Chat moments");
+    await expect(missingImages).not.toContainText("Character hero");
+    const chatCreateResponse = page.waitForResponse((response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/v2/admin/creative/runs",
+    );
+    await missingImages.getByRole("button", { name: "Generate missing images" }).click();
+    const chatCreated = await chatCreateResponse;
+    expect(chatCreated.status()).toBe(202);
+    expect(chatCreated.request().postDataJSON()).toMatchObject({
+      purpose: "character_chat", count: 1,
+      brief: expect.stringContaining("Low-key tungsten portraiture"),
+    });
+    const chatRunId = (await chatCreated.json()).data.batch.id as string;
+    wizardRunIds.push(chatRunId);
     const heroSelectionResponsePromise = page.waitForResponse(
       (response) =>
         response.request().method() === "PATCH" &&
@@ -2341,18 +2390,8 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       assetId: heroSelectionPayload.data.selectedAssetId,
       purpose: "character_hero",
     });
-    await expect(
-      page.getByRole("button", { name: "Generate 1 chat image" }),
-    ).toBeEnabled();
-
-    const chatRunId = await generateCharacterAssetRun(
-      page,
-      "Generate 1 chat image",
-      1,
-    );
-    const selectChat = page.getByRole("button", {
-      name: "Select chat asset · preview",
-    });
+    await drainCreativeRun(page, chatRunId, 1);
+    const selectChat = page.getByRole("button", { name: "Use candidate for Chat moments" });
     await expect(selectChat).toBeEnabled();
     const chatSelectionResponsePromise = page.waitForResponse(
       (response) =>
@@ -2374,6 +2413,9 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       assetId: chatSelectionPayload.data.selectedAssetId,
       purpose: "character_chat",
     });
+    expect(await prisma.contentProductionBatch.count({
+      where: { targetType: "character", targetId: wizardCharacterId, purpose: { in: ["character_cover", "character_hero", "character_chat"] } },
+    })).toBe(3);
 
     await expect(
       page.getByRole("heading", {
@@ -2391,14 +2433,14 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     // The handoff is one click, records facts only, and never creates a Release.
     const releasesBeforeHandoff = await prisma.characterRelease.count({ where: { projectId: releaseProject.id } });
     await openCharacterTab(page, "assets");
-    await page.getByRole("button", { name: "Mark ready to publish", exact: true }).click();
+    await page.getByRole("button", { name: "Record creation handoff", exact: true }).click();
     await expect
       .poll(() => prisma.characterHandoff.count({ where: { characterId: releaseProject.characterId } }))
       .toBe(1);
     expect(await prisma.characterRelease.count({ where: { projectId: releaseProject.id } })).toBe(releasesBeforeHandoff);
 
     await openCharacterTab(page, "release");
-    await expect(page.getByText(/marked this ready to publish/)).toBeVisible();
+    await expect(page.getByText(/recorded a creation handoff/)).toBeVisible();
     await page.getByRole("button", { name: "Publish Character" }).click();
     const proposedRelease = await expect
       .poll(async () =>
@@ -2655,13 +2697,8 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       visibility: "public",
       imageAssetId: draftAssetPack.character_cover.assetId,
     });
-    const ageGate = await page.request.post(
-      `${mainBaseURL()}/api/v1/age-gate/accept`,
-      { data: { sourcePath: `/characters/${wizardCharacterId}` } },
-    );
-    expect(ageGate.ok(), await ageGate.text()).toBeTruthy();
     const detailResponse = await page.request.get(
-      `${mainBaseURL()}/api/v1/characters/${wizardCharacterId}`,
+      publicDetail,
     );
     expect(detailResponse.ok(), await detailResponse.text()).toBeTruthy();
     const detailPayload = (await detailResponse.json()) as {
@@ -2706,6 +2743,137 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(publicHero).toBeVisible();
     await expectNoHorizontalOverflow(page);
+
+    const characterId = wizardCharacterId;
+    const adminCharacter = `${adminBaseURL()}/admin/characters/${characterId}`;
+    const status = page.getByTestId("character-customer-status");
+    async function assertMainRelease(expectedReleaseId: string) {
+      await expect.poll(async () => {
+        const result = await page.request.get(publicDetail);
+        return result.ok() ? (await result.json()).data.character.currentReleaseId : result.status();
+      }).toBe(expectedReleaseId);
+    }
+    async function executeLatestCommand(commandType: string, targetId: string) {
+      const where = { commandType, targetId };
+      await expect.poll(() => prisma.controlPlaneCommand.count({ where })).toBe(1);
+      const command = await prisma.controlPlaneCommand.findFirstOrThrow({ where, select: { id: true } });
+      const receipt = await drainTargetAdminCommand(prisma, {
+        commandId: command.id,
+        workerId: `playwright-character-lifecycle-${suffix}`,
+        leaseMs: 30_000,
+      });
+      expect(receipt).toMatchObject({ examined: 1, succeeded: 1, failed: 0 });
+      return command.id;
+    }
+    const viewer = await prisma.user.findUniqueOrThrow({ where: { email: "chat-probe@idream.local" } });
+    expect(viewer.dataClass).toBe("audit");
+    const firstOpening = "You made it. What do you need to put down tonight?";
+    const secondOpening = "The station is quiet tonight. Come sit by the window.";
+    async function assertNewChat(expectedReleaseId: string, openingMessage: string) {
+      const session = await createChatSession(viewer.id, { characterId });
+      await expect(prisma.recentChat.findUniqueOrThrow({ where: { sessionId: session.id } })).resolves.toMatchObject({
+        characterReleaseId: expectedReleaseId, openingMessage,
+      });
+      return session.id;
+    }
+    const firstChatId = await assertNewChat(proposedRelease.id, firstOpening);
+    await shot("02-main-first-release");
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(`${adminCharacter}?tab=soul`);
+    await page.getByLabel("Opening message").fill(secondOpening);
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByTestId("character-draft-status")).toContainText("unpublished changes");
+    await openCharacterTab(page, "release");
+    const diff = page.getByTestId("release-change-summary");
+    await expect(diff).toContainText(firstOpening);
+    await expect(diff).toContainText(secondOpening);
+    await assertMainRelease(proposedRelease.id);
+    await shot("03-admin-opening-diff");
+    await page.getByRole("button", { name: "Publish Character", exact: true }).click();
+    const secondWhere = { projectId: releaseProject.id, id: { not: proposedRelease.id }, status: "approved" as const };
+    await expect.poll(() => prisma.characterRelease.count({ where: secondWhere })).toBe(1);
+    const second = await prisma.characterRelease.findFirstOrThrow({ where: secondWhere });
+    const publishSecondCommandId = await executeLatestCommand("character.release.publish", second.id);
+    await expect(status).toContainText("Live · Release #2");
+    await assertMainRelease(second.id);
+    const secondChatId = await assertNewChat(second.id, secondOpening);
+    expect(secondChatId).not.toBe(firstChatId);
+
+    const catalogIds = async () => {
+      const response = await page.request.get(`${mainBaseURL()}/api/v1/characters?q=${encodeURIComponent(characterName)}`);
+      expect(response.ok(), await response.text()).toBe(true);
+      return (await response.json()).data.items.map((item: { id: string }) => item.id);
+    };
+    await expect.poll(catalogIds).toContain(characterId);
+    const availability = page.locator("summary").filter({ hasText: "Character availability and rollback" });
+    if (await availability.locator("..").getAttribute("open") === null) await availability.click();
+    await page.getByRole("button", { name: "Hide from Explore" }).click();
+    await expect(status).toContainText("Direct link only");
+    await assertMainRelease(second.id);
+    await expect.poll(catalogIds).not.toContain(characterId);
+    if (await availability.locator("..").getAttribute("open") === null) await availability.click();
+    await page.getByRole("button", { name: "Show in Explore" }).click();
+    await expect(status).toContainText("Listed in Explore");
+    await expect.poll(catalogIds).toContain(characterId);
+
+    await page.getByRole("button", { name: "Pause serving" }).click();
+    const pauseCommandId = await executeLatestCommand("character.serving.pause", characterId);
+    await expect(status).toHaveText("Paused · Release #2");
+    await expect(diff).toContainText("Draft matches the current release.");
+    await expect(page.getByRole("button", { name: "Publish Character", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Resume serving" })).toBeEnabled();
+    expect((await page.request.get(publicDetail)).status()).toBe(404);
+    await expect(createChatSession(viewer.id, { characterId })).rejects.toMatchObject({ status: 404 });
+    await shot("04-admin-paused");
+
+    const roster = `${adminBaseURL()}/admin/characters?search=${encodeURIComponent(characterName)}&servingState=paused`;
+    await page.goto(roster);
+    const target = page.getByRole("checkbox", { name: `Select ${characterName}`, exact: true });
+    await target.check();
+    const bulk = page.getByRole("region", { name: "Bulk actions" });
+    await bulk.getByRole("button", { name: "Resume", exact: true }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Resume", exact: true }).click();
+    const resumeCommandId = await executeLatestCommand("character.serving.resume", characterId);
+    await expect(target).toHaveCount(0);
+    await expect(bulk.getByText("Done", { exact: true })).toBeVisible();
+    await expect(bulk.getByRole("button", { name: "Resume", exact: true })).toHaveCount(0);
+    await assertMainRelease(second.id);
+    await shot("05-resume-receipt");
+
+    await page.goto(`${adminCharacter}?tab=release`);
+    await expect(status).toContainText("Live · Release #2");
+    await expect(availability).toBeVisible();
+    if (await availability.locator("..").getAttribute("open") === null) await availability.click();
+    await page.getByLabel("Historical rollback source").selectOption(proposedRelease.id);
+    await page.getByRole("button", { name: "Roll back", exact: true }).click();
+    const confirm = page.getByRole("dialog");
+    await expect(confirm).toContainText("Roll back to Release #1?");
+    await confirm.getByRole("button", { name: "Roll back", exact: true }).click();
+    const rollbackCommandId = await executeLatestCommand("character.release.rollback", characterId);
+    await expect(status).toContainText("Live · Release #3");
+    await expect(page.getByText("Restored content from release #1")).toBeVisible();
+    const rollback = await prisma.characterRelease.findFirstOrThrow({
+      where: { projectId: releaseProject.id, rollbackOfReleaseId: proposedRelease.id },
+    });
+    expect(rollback.snapshotHash).toBe((await prisma.characterRelease.findUniqueOrThrow({ where: { id: proposedRelease.id } })).snapshotHash);
+    await assertMainRelease(rollback.id);
+    const rollbackChatId = await assertNewChat(rollback.id, firstOpening);
+    expect(rollbackChatId).not.toBe(secondChatId);
+    await expect(prisma.recentChat.findUniqueOrThrow({ where: { sessionId: firstChatId } })).resolves.toMatchObject({
+      characterReleaseId: proposedRelease.id, openingMessage: firstOpening,
+    });
+    await shot("06-admin-rollback");
+    const evidencePath = testInfo.outputPath("character-lifecycle.json");
+    await writeFile(evidencePath, JSON.stringify({
+      characterId, characterName,
+      sourceRevision: process.env.IDREAM_SOURCE_REVISION,
+      runId: process.env.PW_RUN_ID,
+      releases: { first: proposedRelease.id, second: second.id, rollback: rollback.id },
+      commands: { first: publishCommand.id, second: publishSecondCommandId, pause: pauseCommandId, resume: resumeCommandId, rollback: rollbackCommandId },
+      chats: { first: firstChatId, second: secondChatId, rollback: rollbackChatId },
+      assets: { cover: coverLineage, hero: heroLineage, chat: chatLineage },
+    }, null, 2));
+    await testInfo.attach("character-lifecycle", { path: evidencePath, contentType: "application/json" });
     expect(failures).toEqual([]);
   });
 
@@ -2725,7 +2893,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await expect(
       page.getByRole("heading", {
         level: 2,
-        name: "Launch preview is waiting for the image pack",
+        name: "Full launch preview is waiting for the image pack",
       }),
     ).toBeVisible();
     // This fixture intentionally represents a pre-Asset-Studio, avatar-only
@@ -2774,6 +2942,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       page.getByRole("heading", { level: 2, name: characterName }),
     ).toBeVisible();
     const candidateCard = page
+      .getByRole("region", { name: "Pending publish", exact: true })
       .locator("article")
       .filter({ hasText: candidateReleaseId });
     await expect(candidateCard).toContainText("ready");
@@ -2923,7 +3092,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       ),
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "Character settings", exact: true })).toBeDisabled();
-    await expect(page.getByRole("tab", { name: "Release", exact: true })).toHaveAttribute(
+    await expect(page.getByRole("tab", { name: "Release and preview", exact: true })).toHaveAttribute(
       "aria-selected",
       "true",
     );
@@ -2975,7 +3144,8 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await page.reload();
     await openCharacterTab(page, "release");
     await expect(
-      page.locator("article").filter({ hasText: candidateReleaseId }),
+      page.getByRole("region", { name: "Current live release", exact: true })
+        .locator("article").filter({ hasText: candidateReleaseId }),
     ).toContainText("serving now");
 
     await openCharacterTab(page, "monitor");
@@ -3045,33 +3215,21 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     if (await availabilitySummary.locator("..").getAttribute("open") === null) {
       await availabilitySummary.click();
     }
+    await page.getByLabel("Historical rollback source").selectOption(lifecycleOldReleaseId);
     // Rollback takes one plain confirmation: no checkbox and nothing to type.
     await page.getByRole("button", { name: "Roll back" }).click();
+    const rollbackAccepted = page.waitForResponse((response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname.endsWith("/commands/rollback"),
+    );
     await page.getByRole("dialog").getByRole("button", { name: "Roll back" }).click();
-    await expect
-      .poll(async () =>
-        prisma.controlPlaneCommand.findFirst({
-          where: {
-            commandType: "character.release.rollback",
-            targetId: lifecycleCharacterId,
-          },
-          orderBy: { createdAt: "desc" },
-          select: { id: true },
-        }),
-      )
-      .not.toBeNull();
-    const rollbackCommand = await prisma.controlPlaneCommand.findFirstOrThrow({
-      where: {
-        commandType: "character.release.rollback",
-        targetId: lifecycleCharacterId,
-      },
-      orderBy: { createdAt: "desc" },
-      select: { id: true },
-    });
-    await executeCharacterReleaseCommand(prisma, {
-      commandId: rollbackCommand.id,
+    const response = await rollbackAccepted;
+    expect(response.status()).toBe(202);
+    const { data: { commandId } } = await response.json();
+    await expect(executeCharacterReleaseCommand(prisma, {
+      commandId,
       workerId: `playwright-release-rollback-${suffix}`,
-    });
+    })).resolves.toMatchObject({ status: "succeeded", releaseId: `rollback:${commandId}` });
     await expect
       .poll(async () =>
         prisma.characterServing.findUnique({
@@ -3098,7 +3256,8 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await page.reload();
     await openCharacterTab(page, "release");
     await expect(
-      page.locator("article").filter({ hasText: rollbackRelease.id }),
+      page.getByRole("region", { name: "Current live release", exact: true })
+        .locator("article").filter({ hasText: rollbackRelease.id }),
     ).toContainText("serving now");
     await expectNoHorizontalOverflow(page);
     expect(failures).toEqual([]);
