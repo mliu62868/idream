@@ -13,7 +13,7 @@ import {
   type AdminPermissionKey,
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
-import { AlertTriangle, ImageIcon } from "lucide-react";
+import { ImageIcon } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -56,9 +56,7 @@ import { CharacterWorkspaceActionsProvider } from "./character-workspace-actions
 import { characterWorkspacePermissions } from "./character-workspace-permissions";
 import { permissionDenied } from "./character-permission-denied";
 import { CharacterPortfolio } from "./CharacterPortfolio";
-import {
-  resolveCharacterPortfolioPrimaryAction,
-} from "./CharacterPortfolioCard";
+import { characterPrimaryActionCopy } from "./character-primary-action-copy";
 import { CharacterOverview } from "./CharacterOverview";
 import { VisualIdentityPanel } from "./VisualIdentityPanel";
 import { PreviewDiff } from "./PreviewDiff";
@@ -68,7 +66,7 @@ import { ReleasePanel } from "./ReleasePanel";
 import { MonitorPanel } from "./MonitorPanel";
 import { characterHasNoUnpublishedChanges, characterMonitorNeedsAttention, characterReleaseOrdinals } from "./character-workspace-format";
 import { characterPortfolioQuery, parseCharacterPortfolioUrl } from "./portfolio-query";
-import { PerformancePanel, characterNoDataDiagnosis } from "./PerformancePanel";
+import { PerformancePanel } from "./PerformancePanel";
 import {
   CharacterMediaOperationsCard,
   shouldReleaseVoiceReclaimIdempotencyKey,
@@ -345,6 +343,12 @@ function CharacterDetail({
   // INVARIANT: 初值不许读地址栏或 journal 快照 —— 服务端得出 "project"、客户端首帧
   // 得出 URL 里的 tab，两边分叉就是 hydration mismatch。真实 tab 在挂载 effect 里对齐。
   const [tab, setTab] = useState<Tab>("project");
+  const [locationHash, setLocationHash] = useState("");
+  const navigateToWorkspaceTab = useCallback((next: Tab, options: Parameters<typeof setWorkspaceUrl>[1]) => {
+    setTab(next);
+    setLocationHash(options?.hash ?? "");
+    setCharacterWorkspaceTabUrl(next, options);
+  }, []);
   const [returnQuery, setReturnQuery] = useState<string | null>(null);
   const tabRef = useRef(tab);
   const load = useCallback(async () => {
@@ -408,13 +412,10 @@ function CharacterDetail({
         throw failure;
       }
       setCustomerPublicationPrepRecovery(null);
-      setTab("assets");
-      setCharacterWorkspaceTabUrl("assets", {
-        mode: "replace",
-      });
+      navigateToWorkspaceTab("assets", { mode: "replace" });
       await load().catch(() => undefined);
     },
-    [id, load],
+    [id, load, navigateToWorkspaceTab],
   );
   const loadAuthoritative = load;
   const reloadProject = useCallback(async () => { await load(); }, [load]);
@@ -589,10 +590,7 @@ function CharacterDetail({
   useEffect(() => {
     const restore = () => {
       if (!journal.restore()) return;
-      setTab("release");
-      setCharacterWorkspaceTabUrl("release", {
-        mode: "replace",
-      });
+      navigateToWorkspaceTab("release", { mode: "replace" });
     };
     const timer = window.setTimeout(restore, 0);
     const onStorage = (event: StorageEvent) => {
@@ -616,7 +614,7 @@ function CharacterDetail({
       window.clearTimeout(timer);
       window.removeEventListener("storage", onStorage);
     };
-  }, [journal, loadAuthoritative]);
+  }, [journal, loadAuthoritative, navigateToWorkspaceTab]);
   // INTENT: 与上面的日志恢复一样延后一个 tick 再切页签——effect 里同步 setState 会触发级联
   //          渲染（构建期 react-hooks/set-state-in-effect 会拦），而这里本来就是"服务端说还有
   //          命令在跑"的异步事实，不需要在同一次提交里生效。
@@ -629,13 +627,10 @@ function CharacterDetail({
       return;
     const timer = window.setTimeout(() => {
       journal.attachAuthorityCommand(active);
-      setTab("release");
-      setCharacterWorkspaceTabUrl("release", {
-        mode: "replace",
-      });
+      navigateToWorkspaceTab("release", { mode: "replace" });
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [data?.activeCommand, journal]);
+  }, [data?.activeCommand, journal, navigateToWorkspaceTab]);
   // SPEC: 待决命令的恢复循环。整轮推进归 journal —— 这里只把它给出的重试间隔交回调度器。
   // INVARIANT: cancelled 只在本轮开始前判一次，拿到 journal 的处置之后不再中途退出。
   //            journal 的每次状态推进（受理 / 挂到别的命令 / 标记终态）都会 publish 并触发
@@ -675,6 +670,7 @@ function CharacterDetail({
         ? "release"
         : characterWorkspaceTabFromSearch(window.location.search),
     );
+    setLocationHash(window.location.hash);
     const roster = new URLSearchParams(window.location.search).get("roster");
     if (roster !== null) setReturnQuery(characterPortfolioQuery(parseCharacterPortfolioUrl(roster)));
     /* eslint-enable react-hooks/set-state-in-effect */
@@ -682,7 +678,7 @@ function CharacterDetail({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
-    const targetId = window.location.hash.replace(/^#/, "");
+    const targetId = locationHash.replace(/^#/, "");
     const isVisualTarget = tab === "visual" && [
         "visual-production-readiness",
         "visual-identity-version",
@@ -694,23 +690,30 @@ function CharacterDetail({
     const frame = window.requestAnimationFrame(() => {
       const target = document.getElementById(targetId);
       target?.scrollIntoView({ block: "start" });
-      target?.querySelector<HTMLElement>(isVisualTarget ? "summary" : "button:not([disabled])")?.focus({ preventScroll: true });
+      const focusTarget = target?.hasAttribute("tabindex")
+        ? target
+        : target?.querySelector<HTMLElement>(isVisualTarget ? "summary" : "button:not([disabled])");
+      focusTarget?.focus({ preventScroll: true });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [tab, data?.visual.imageReadiness?.state, data?.visual.readiness.ready]);
+  }, [tab, locationHash, data?.visual.imageReadiness?.state, data?.visual.readiness.ready]);
   useEffect(() => {
     const restoreTab = () => {
       if (journal.getSnapshot().writesLocked || data?.activeCommand) {
-        setCharacterWorkspaceTabUrl(tabRef.current, {
-          mode: "replace",
-        });
+        navigateToWorkspaceTab(tabRef.current, { mode: "replace" });
         return;
       }
       setTab(characterWorkspaceTabFromSearch(window.location.search));
+      setLocationHash(window.location.hash);
     };
+    const syncHash = () => setLocationHash(window.location.hash);
     window.addEventListener("popstate", restoreTab);
-    return () => window.removeEventListener("popstate", restoreTab);
-  }, [data?.activeCommand, id, journal]);
+    window.addEventListener("hashchange", syncHash);
+    return () => {
+      window.removeEventListener("popstate", restoreTab);
+      window.removeEventListener("hashchange", syncHash);
+    };
+  }, [data?.activeCommand, id, journal, navigateToWorkspaceTab]);
   if (!permissions.read) return permissionDenied("character.project.read");
   if (loading && !data && !pendingCommand) {
     return <LoadingWorkspace label="Loading character workspace" />;
@@ -822,10 +825,7 @@ function CharacterDetail({
       next !== tab
     )
       return;
-    setTab(next);
-    setCharacterWorkspaceTabUrl(next, {
-      mode: "push",
-    });
+    navigateToWorkspaceTab(next, { mode: "push" });
   };
   const onWorkspaceLinkClick = (event: ReactMouseEvent<HTMLElement>) => {
     if (
@@ -858,11 +858,7 @@ function CharacterDetail({
     ) {
       return;
     }
-    setTab(next);
-    setCharacterWorkspaceTabUrl(next, {
-      hash: destination.hash,
-      mode: "push",
-    });
+    navigateToWorkspaceTab(next, { hash: destination.hash, mode: "push" });
   };
   const onTabKey = (
     event: KeyboardEvent<HTMLButtonElement>,
@@ -892,12 +888,6 @@ function CharacterDetail({
     data.preview.draft?.imageUrl ??
     data.preview.live?.imageUrl ??
     data.character.imageUrl;
-  const attentionMetric = data.performance.find(
-    (metric) => characterNoDataDiagnosis(metric)?.alert,
-  );
-  const attentionDiagnosis = attentionMetric
-    ? characterNoDataDiagnosis(attentionMetric)
-    : null;
   const servingState = data.journey.release.servingState;
   const releaseId = data.journey.release.currentReleaseId;
   const releaseOrdinal = releaseId ? characterReleaseOrdinals(data.releases).get(releaseId) : undefined;
@@ -917,10 +907,14 @@ function CharacterDetail({
       : releaseId && data.preview.changedFields.length
         ? t("{count} unpublished changes", { count: data.preview.changedFields.length })
         : null;
-  const nextStep = resolveCharacterPortfolioPrimaryAction(data.portfolio);
-  const nextStepTab = nextStep.href.includes("?tab=")
-    ? characterWorkspaceTabFromSearch(nextStep.href.slice(nextStep.href.indexOf("?")))
-    : null;
+  const nextStep = data.journey.primaryAction;
+  const nextStepCopy = characterPrimaryActionCopy[nextStep.code];
+  const destination = new URL(nextStep.deepLink, "https://admin.invalid");
+  const atNextStep =
+    destination.pathname === "/admin/characters/" + encodeURIComponent(id) &&
+    destination.searchParams.has("tab") &&
+    characterWorkspaceTabFromSearch(destination.search) === tab &&
+    (!destination.hash || destination.hash === locationHash);
   const activeArea = characterWorkspaceAreaForTab(tab);
   const visibleTabs = characterWorkspaceAreaTabs[activeArea];
   const writesLocked = commandWritesLocked || data.activeCommand !== null;
@@ -1053,7 +1047,7 @@ function CharacterDetail({
           refreshLabel="Refresh"
         />
       ) : null}
-      {!attentionDiagnosis && nextStepTab !== tab ? (
+      {!atNextStep || !nextStep.canReadTarget ? (
         <div
           className="mt-4 flex flex-col gap-2 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between"
           data-testid="character-next-step"
@@ -1062,41 +1056,19 @@ function CharacterDetail({
             <span className="mr-2 text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">
               {t("Next step")}
             </span>
-            <strong>{t(nextStep.eyebrow)}</strong>{" "}
-            <span className="text-[var(--ad-text-muted)]">{t(nextStep.description)}</span>
+            <strong>{t(nextStepCopy.eyebrow)}</strong>{" "}
+            <span className="text-[var(--ad-text-muted)]">{t(nextStepCopy.description)}</span>
           </p>
-          <Link
-            className="min-h-8 shrink-0 text-xs font-semibold underline underline-offset-4"
-            href={nextStep.href}
-          >
-            {t(nextStep.label)}
-          </Link>
-        </div>
-      ) : null}
-      {attentionDiagnosis && attentionMetric && tab !== "monitor" ? (
-        <div
-          className="mt-4 flex flex-col gap-2 border-l-2 border-[var(--ad-yellow-text)] bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)] sm:flex-row sm:items-center sm:justify-between"
-          role="status"
-        >
-          <p className="flex min-w-0 items-start gap-2">
-            <AlertTriangle
-              aria-hidden="true"
-              className="mt-0.5 h-4 w-4 shrink-0"
-            />
-            <span>
-              <strong>{t("Needs attention")}</strong>{" "}
-              {t(attentionDiagnosis.message, {
-                window: attentionMetric.window,
-              })}
-            </span>
-          </p>
-          <button
-            className="min-h-8 shrink-0 text-left text-xs font-semibold underline underline-offset-4"
-            onClick={() => selectTab("monitor")}
-            type="button"
-          >
-            {t("Inspect live monitoring")}
-          </button>
+          {nextStep.canReadTarget ? (
+            <Link
+              className="min-h-8 shrink-0 text-xs font-semibold underline underline-offset-4"
+              href={nextStep.deepLink}
+            >
+              {t(nextStepCopy.label)}
+            </Link>
+          ) : (
+            <span className="shrink-0 text-xs font-semibold">{t(nextStepCopy.label)}</span>
+          )}
         </div>
       ) : null}
       <div

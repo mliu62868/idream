@@ -18,7 +18,6 @@ export const CHARACTER_WORKSPACE_TABS = [
   "assets",
   "video",
   "voice",
-  "preview",
   "release",
   "monitor",
 ] as const;

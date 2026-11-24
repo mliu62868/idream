@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createModels, isContextOverflow, normalizeContext, type AssistantMessageEvent, type Tool } from "@earendil-works/pi-ai";
+import { REQUEST_CHARACTER_MEDIA_TOOL } from "@idream/shared/chat/media-library";
 import type { InvocationOptions } from "./openai-adapter";
 import type { ModelInputMessage } from "./model-request-format";
 import { formatCompanionMessages } from "./pi-context";
@@ -167,6 +168,60 @@ describe("OpenAI-compatible Pi adapter", () => {
     expect(bodies[0]).toMatchObject({ max_tokens: 16, chat_template_kwargs: { enable_thinking: true } });
     expect(bodies[0]).not.toHaveProperty("thinking_budget");
     expect(bodies[0]!.messages).toContainEqual({ role: "tool", tool_call_id: "read-1", content: "The original wording." });
+  });
+
+  it("gives Inkling's media selection and independent body their own reasoning settings", async () => {
+    const baseUrl = "http://127.0.0.1:8061/v1";
+    const bodies: Record<string, unknown>[] = [];
+    const adapter = adapterFor(baseUrl, async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response('data: {"choices":[{"delta":{"content":"Done."},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+    }, { profile: {
+      tier: "test", adapter: "openai-compatible-v1", provider: "openai", baseUrl,
+      model: "Inkling-2-Mini-Uncensored-oQ8-mtp", supportsTools: true, maxOutputTokens: 8_000, answerMaxOutputTokens: 256,
+      timeout: { firstTokenMs: 1_000, idleMs: 1_000 },
+      sampling: { temperature: 0.9, topP: 0.95, repetitionPenalty: 1.05 },
+    } });
+
+    await drain(adapter);
+    for await (const _event of streamRequest(adapter, { messages: [], purpose: "compaction", maxTokens: 16 })) {
+      // Wait for the response to complete.
+    }
+    await adapter.stream([], { purpose: "media_extraction", maxTokens: 32 }).result();
+    await adapter.stream([], { purpose: "media_body" }).result();
+    await adapter.stream([], { purpose: "media_body", maxTokens: 512 }).result();
+    const recall: Tool = { name: "session_recall", description: "Read prior chat", parameters: { type: "object", properties: {} } };
+    const media: Tool = { name: REQUEST_CHARACTER_MEDIA_TOOL, description: "Request media", parameters: { type: "object", properties: {} } };
+    await adapter.stream(formatCompanionMessages([], [], "", [recall], "character-1")).result();
+    await adapter.stream(formatCompanionMessages([], [], "", [recall, media], "character-1")).result();
+    expect(bodies[0]?.chat_template_kwargs).toEqual({ enable_thinking: true });
+    expect(bodies[0]).not.toHaveProperty("thinking_budget");
+    expect(bodies[1]).toMatchObject({
+      max_tokens: 16,
+      chat_template_kwargs: { enable_thinking: false, reasoning_effort: "none" },
+      thinking_budget: 0,
+    });
+    expect(bodies[2]).toMatchObject({
+      max_tokens: 32,
+      chat_template_kwargs: { enable_thinking: false, reasoning_effort: "none" },
+      thinking_budget: 0,
+    });
+    for (const [index, maxTokens] of [[3, 8_000], [4, 512]] as const) {
+      expect(bodies[index]).toMatchObject({
+        max_tokens: maxTokens,
+        chat_template_kwargs: { enable_thinking: false, reasoning_effort: "none" },
+        thinking_budget: 0,
+      });
+    }
+    expect(bodies[5]?.chat_template_kwargs).toEqual({ enable_thinking: true });
+    expect(bodies[5]).not.toHaveProperty("thinking_budget");
+    expect(bodies[6]).toMatchObject({
+      max_tokens: 8_000,
+      chat_template_kwargs: { enable_thinking: true, reasoning_effort: "minimal" },
+      tool_choice: "auto",
+      tools: expect.arrayContaining([expect.objectContaining({ function: expect.objectContaining({ name: REQUEST_CHARACTER_MEDIA_TOOL }) })]),
+    });
+    expect(bodies[6]).not.toHaveProperty("thinking_budget");
   });
 
   it("runs through Pi Models with the pinned capacity and explicit compaction policy", async () => {

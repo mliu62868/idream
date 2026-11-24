@@ -1,6 +1,7 @@
-import { COMPANION_MEDIA_TOOL_DEFINITIONS } from "@idream/shared/chat/media-library";
+import { COMPANION_MEDIA_REQUEST_GUIDANCE, COMPANION_MEDIA_TOOL_DEFINITIONS } from "@idream/shared/chat/media-library";
 import { describe, expect, it } from "vitest";
-import { buildCompanionSystemPrompt, buildTurnPreferencesBlock, buildTurnStateBlock, describeRequestedReplyConstraints, describeUserLanguage } from "./prompt.js";
+import type { BuiltContext } from "./context.js";
+import { buildCompanionSystemPrompt as renderSystemPrompt, buildTurnPreferencesBlock, buildTurnStateBlock, captureCompanionSystemSource, describeRequestedReplyConstraints, describeUserLanguage, renderCompanionReplyPrompt } from "./prompt.js";
 
 const persona = {
   name: "Mira",
@@ -18,6 +19,10 @@ const emptyScene = {
   emotionalBeat: null,
   unresolvedThreads: [],
 };
+
+function buildCompanionSystemPrompt(context: BuiltContext, tools: readonly { name: string }[]) {
+  return renderSystemPrompt(captureCompanionSystemSource(context), context.persona.name, tools);
+}
 
 describe("companion prompt instruction hierarchy", () => {
   it("keeps the system prompt to the stable layers: Soul first, then the contract and this turn's capabilities", () => {
@@ -95,6 +100,28 @@ describe("companion prompt instruction hierarchy", () => {
     } as never, []);
     expect(prompt).toContain("You are only Mira");
     expect(prompt).toContain("never write their next reply");
+  });
+
+  it("preserves frozen Soul and state text that matches stage-derived guidance", () => {
+    const mediaRequest = "写真を作ってください。";
+    const quotedCue = `- ${describeUserLanguage(mediaRequest)}`;
+    const soul = `Mira keeps exact notes.\n\n${COMPANION_MEDIA_REQUEST_GUIDANCE}\n\nEnd of example.`;
+    const turnFacts = `Right now:\n- Scene: at the library\n${quotedCue}`;
+    const source = {
+      system: { soulPrompt: soul, identityPromptLine: "", memoryEnabled: false, hasSavedUserPersona: false, isGroup: false },
+      turnFacts,
+      recentOpenings: [],
+    };
+    const first = renderCompanionReplyPrompt({ source, characterName: "Mira", tools: COMPANION_MEDIA_TOOL_DEFINITIONS, userText: mediaRequest });
+    const body = renderCompanionReplyPrompt({ source, characterName: "Mira", tools: [], userText: "Describe the library in one sentence." });
+    expect(first.system.split(COMPANION_MEDIA_REQUEST_GUIDANCE)).toHaveLength(3);
+    expect(body.system.split(COMPANION_MEDIA_REQUEST_GUIDANCE)).toHaveLength(2);
+    expect(body.system.startsWith(soul)).toBe(true);
+    expect(first.state.split(quotedCue)).toHaveLength(3);
+    expect(body.state.split(quotedCue)).toHaveLength(2);
+    expect(body.state).toContain(turnFacts);
+    expect(body.state).toContain("exactly 1 sentence");
+    expect(body.system).toContain("never say it is saved or will be remembered");
   });
 });
 

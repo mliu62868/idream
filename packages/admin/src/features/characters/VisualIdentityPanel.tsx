@@ -571,6 +571,7 @@ export function VisualIdentityPanel({
             <section
               className="scroll-mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"
               id="visual-reference-set"
+              tabIndex={-1}
               aria-labelledby="reference-set-title"
             >
               <div className="flex flex-wrap items-center justify-between gap-3">

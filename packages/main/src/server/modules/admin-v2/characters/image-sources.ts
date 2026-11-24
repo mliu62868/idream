@@ -29,6 +29,7 @@ import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { providers } from "@/server/providers";
 import { decodeAdminListCursor, encodeAdminListCursor, parseIsoCursorKey } from "../shared/list-cursor";
 import { characterImageQualifications } from "./image-qualification";
+import { lockCharacterGenerationAuthority } from "./generation-authority-lock";
 
 const LIST_LIMIT = 100;
 const IMAGE_SOURCE_PURPOSE = "identity_experiment_source";
@@ -62,13 +63,13 @@ export async function listCharacterImageSources(input: {
   cursor?: string;
   search?: string;
   limit?: number;
-}) {
-  await requireCharacter(input.characterId);
+}, db: Prisma.TransactionClient = prisma) {
+  await requireCharacter(input.characterId, db);
   const purpose = input.purpose ?? IMAGE_SOURCE_PURPOSE;
   const limit = input.limit ?? LIST_LIMIT;
   const search = input.search?.trim().toLowerCase() ?? "";
   const customerIdentity = purpose === CHARACTER_LIBRARY_PURPOSE
-    ? await resolveCustomerIdentitySource(prisma, { characterId: input.characterId }) : null;
+    ? await resolveCustomerIdentitySource(db, { characterId: input.characterId }) : null;
   const queryIdentity = { characterId: input.characterId, purpose, search };
   const scope = "character-image-sources";
   const cursorKeys = input.cursor
@@ -133,7 +134,7 @@ export async function listCharacterImageSources(input: {
   // Filter membership and search before the visible page limit. Scanning keyset
   // batches preserves legacy JSON metadata and never hides older eligible rows.
   while (items.length <= limit) {
-    const assets = await prisma.mediaAsset.findMany({
+    const assets = await db.mediaAsset.findMany({
       where: { AND: [where, ...(anchor ? [{ OR: [
         { createdAt: { lt: anchor.createdAt } },
         { createdAt: anchor.createdAt, id: { lt: anchor.id } },
@@ -145,7 +146,7 @@ export async function listCharacterImageSources(input: {
       mediaAssetPlatformStatus(asset.metadata) !== "archived"
     );
     const qualifications = purpose === CHARACTER_LIBRARY_PURPOSE
-      ? await characterImageQualifications(prisma, input.characterId, visibleAssets)
+      ? await characterImageQualifications(db, input.characterId, visibleAssets)
       : new Map<string, CharacterImageQualification>();
     for (const asset of visibleAssets) {
       const dto = characterImageSourceAssetDto(asset, qualifications.get(asset.id) ?? null);
@@ -222,6 +223,9 @@ export async function createCharacterImageSource(input: {
         return stored.data;
       },
       mutate: async (tx) => {
+        if (input.form.purpose === CHARACTER_LIBRARY_PURPOSE) {
+          await lockCharacterGenerationAuthority(tx, input.characterId);
+        }
         const locked = await tx.$queryRaw<Array<{ id: string }>>`
           SELECT "id" FROM "characters"
           WHERE "id" = ${input.characterId}
@@ -357,8 +361,8 @@ function characterImageSourceAssetDto(
   };
 }
 
-async function requireCharacter(characterId: string) {
-  const character = await prisma.character.findFirst({
+async function requireCharacter(characterId: string, db: Prisma.TransactionClient = prisma) {
+  const character = await db.character.findFirst({
     where: operationalCharacterWhere({
       id: characterId,
       deletedAt: null,

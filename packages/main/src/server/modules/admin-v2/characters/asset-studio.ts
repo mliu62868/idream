@@ -208,7 +208,7 @@ export async function selectCharacterDraftImage(
       selectedAssetId: asset.id,
       draftImageAssetId: updated.draftImageAssetId,
       draftAssetPack: draftAssetIds(updated.draftAssetPack),
-      deepLink: characterWorkspaceTabLink(input.characterId, "preview"),
+      deepLink: characterWorkspaceTabLink(input.characterId, "release"),
     });
   };
   return inTransaction(db, execute);

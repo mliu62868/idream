@@ -51,6 +51,7 @@ describe("model endpoint readiness", () => {
     const readiness = new RuntimeReadiness();
     const probeModel = createModelEndpointProbe({
       baseUrl: "http://127.0.0.1:8061/v1",
+      model: "current-model",
       apiKey: "local",
       fetch: (async () => { throw new TypeError("fetch failed"); }) as typeof fetch,
     });
@@ -69,17 +70,46 @@ describe("model endpoint readiness", () => {
     expect(readiness.canServeMaintenance()).toBe(true);
   });
 
+  it("keeps turns closed when the reachable provider omits the configured model", async () => {
+    const readiness = new RuntimeReadiness();
+    const probeModel = createModelEndpointProbe({
+      baseUrl: "http://127.0.0.1:8061/v1",
+      model: "current-model",
+      apiKey: "local",
+      fetch: (async () => Response.json({ data: [{ id: "old-model" }] })) as typeof fetch,
+    });
+    await expect(warmRuntime({
+      readiness,
+      pingRedis: async () => undefined,
+      probeAgentRuntime: async () => undefined,
+      probeModel,
+    })).rejects.toThrow('does not list configured model "current-model"');
+
+    const response = await handleChatRequest(new Request("http://chat.internal/readyz"), readiness);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      model: false,
+      reason: 'model endpoint http://127.0.0.1:8061 does not list configured model "current-model"',
+    });
+    expect(readiness.canAcceptTurns()).toBe(false);
+    expect(readiness.canServeMaintenance()).toBe(true);
+  });
+
   it("asks GET <baseUrl>/models at most once per 15s and reuses the outcome", async () => {
     let now = 0;
     const urls: string[] = [];
     let status = 503;
     const probe = createModelEndpointProbe({
       baseUrl: "http://model.internal/v1/",
+      model: "current-model",
       apiKey: "local",
       now: () => now,
       fetch: (async (url: string | URL | Request) => {
         urls.push(String(url));
-        return new Response(null, { status });
+        return status === 200
+          ? Response.json({ data: [{ id: "another-model" }, { id: "current-model" }] })
+          : new Response(null, { status });
       }) as typeof fetch,
     });
     await expect(probe()).rejects.toThrow("returned HTTP 503");

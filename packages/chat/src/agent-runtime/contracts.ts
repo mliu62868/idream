@@ -102,11 +102,24 @@ const preparedTrace = z.object({
   sceneVersion: nonNegativeInteger,
   contextRevision: z.string().regex(/^\d+$/),
 }).strict();
+const preparedReplyPrompt = z.object({
+  system: z.object({
+    soulPrompt: z.string(),
+    identityPromptLine: z.string(),
+    memoryEnabled: z.boolean(),
+    hasSavedUserPersona: z.boolean(),
+    isGroup: z.boolean(),
+  }).strict(),
+  turnFacts: z.string(),
+  recentOpenings: z.array(z.string()),
+}).strict();
 export const preparedTurnSchema = z.object({
   version: z.literal(6),
   model: nonEmptyString,
   characterName: nonEmptyString,
   messages: z.array(preparedTurnMessageSchema).min(1),
+  // Direct in-process probes also accept a literal model input.
+  replyPrompt: preparedReplyPrompt.optional(),
   omittedMessages: z.array(preparedTurnMessageSchema).optional(),
   tools: z.array(preparedToolDefinition),
   imageActionMode: imageActionModeSchema.optional(),
@@ -128,6 +141,10 @@ export const preparedTurnSchema = z.object({
   const current = turn.messages.filter((message) => message.sourceKind === "current_user");
   if (current.length !== 1 || current[0]?.role !== "user" || turn.messages.at(-1)?.id !== current[0]?.id) {
     context.addIssue({ code: "custom", path: ["messages"], message: "exactly one final user current message is required" });
+  }
+  if (turn.replyPrompt && (turn.messages[0]?.role !== "system" || !turn.messages.some(message =>
+    message.sourceKind === "plugin" && message.role === "user" && message.id === `state:${current[0]?.id}`))) {
+    context.addIssue({ code: "custom", path: ["messages"], message: "projected reply input requires a system message and current state" });
   }
   if (new Set(turn.messages.map(({ id }) => id)).size !== turn.messages.length) {
     context.addIssue({ code: "custom", path: ["messages"], message: "prepared message ids must be unique" });
@@ -297,6 +314,7 @@ export const companionEventSchema = z.discriminatedUnion("type", [
 });
 
 export type PreparedTurnMessage = z.infer<typeof preparedTurnMessageSchema>;
+export type PreparedReplyPrompt = z.infer<typeof preparedReplyPrompt>;
 export type PreparedTurnProfile = z.infer<typeof preparedTurnProfileSchema>;
 export type PreparedTurnInput = z.infer<typeof preparedTurnSchema>;
 export type CompanionInvocation = z.infer<typeof companionInvocationSchema>;

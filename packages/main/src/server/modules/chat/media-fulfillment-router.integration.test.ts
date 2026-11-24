@@ -21,6 +21,7 @@ import {
 import { characterVisualProfileSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
 import { characterContentHash } from "@/server/modules/admin-v2/shared/character-content-identity";
 import { createReferenceSetRevision } from "@/server/modules/ourdream/generation-reference-set";
+import * as generation from "@/server/modules/ourdream/service";
 import { libraryDescriptorHash } from "@/server/modules/character-media-library/service";
 import * as mediaModels from "@/server/modules/character-media-library/media-models";
 import { applyChatToolEffect } from "./tool-effect";
@@ -359,7 +360,7 @@ describe("unified paid media fulfillment router", () => {
 
     // Idempotent retry does not double-charge
     const again = await confirmChatMediaQuote(f.id, quote.attachmentId!);
-    expect(again.attachmentId).toBe(quote.attachmentId);
+    expect(again).toMatchObject({ attachmentId: quote.attachmentId, duplicate: true });
     expect(await dreamcoinBalance(f.id)).toBe(70);
   });
 
@@ -396,10 +397,94 @@ describe("unified paid media fulfillment router", () => {
     ]);
     expect(confirmed).toMatchObject({ status: "accepted", costDreamcoins: 5, generationJobId: expect.any(String) });
     expect(again.generationJobId).toBe(confirmed.generationJobId);
+    expect([confirmed.duplicate, again.duplicate].sort()).toEqual([false, true]);
     expect(await prisma.generationJob.count({ where: { userId: f.id } })).toBe(1);
     expect(await dreamcoinBalance(f.id)).toBe(95);
     await expect(applyChatToolEffect({ ...call, arguments: { ...call.arguments, direction: "A crowded train station" } }))
       .rejects.toMatchObject({ code: "conflict" });
+  });
+
+  it.each([
+    { kind: "image", mode: "auto", generates: true },
+    { kind: "image", mode: "existing_only", generates: false },
+    { kind: "video", mode: "auto", generates: false },
+  ] as const)("admits live generation only for an automatic image when the quoted $kind stock vanishes ($mode)", async ({ kind, mode, generates }) => {
+    const f = await seedOfficialFixture(kind);
+    const snapshot = await f.begin("Send me Mina in a red dress by the rainy window.");
+    const quote = await applyChatToolEffect({
+      version: 2, turnId: snapshot.turnId, attempt: snapshot.attempt, callId: "withdrawn-after-quote",
+      name: REQUEST_CHARACTER_MEDIA_TOOL, effectScope: "turn_action", intent: { requestedNudity: "none" },
+      arguments: { kind, mode, subject: "companion", direction: "Mina in a red dress by the rainy window", mustHave: ["red dress"], requestedNudity: "none" },
+    });
+    expect(quote).toMatchObject({ status: "awaiting_confirmation" });
+    await prisma.characterMediaLibraryEntry.update({ where: { id: f.entry.id }, data: { status: "withdrawn" } });
+    if (generates) {
+      const receipt = await confirmChatMediaQuote(f.id, quote.attachmentId!);
+      expect(receipt).toMatchObject({ attachmentId: quote.attachmentId, costDreamcoins: 5, duplicate: false, generationJobId: expect.any(String) });
+      await expect(confirmChatMediaQuote(f.id, quote.attachmentId!)).resolves.toMatchObject({ generationJobId: receipt.generationJobId, duplicate: true });
+    } else {
+      await expect(confirmChatMediaQuote(f.id, quote.attachmentId!)).rejects.toMatchObject({ code: "conflict" });
+    }
+    expect(await prisma.generationJob.count({ where: { userId: f.id } })).toBe(generates ? 1 : 0);
+    expect(await prisma.userCharacterLibraryReceipt.count({ where: { userId: f.id } })).toBe(0);
+    expect(await dreamcoinBalance(f.id)).toBe(generates ? 95 : 100);
+  });
+
+  it("replays the confirmed stock receipt when an earlier confirmation is still preparing live generation", async () => {
+    const f = await seedOfficialFixture();
+    const snapshot = await f.begin("Send me a photo of Mina beside the rainy window.");
+    const quote = await applyChatToolEffect({
+      version: 2, turnId: snapshot.turnId, attempt: snapshot.attempt, callId: "stock-and-live-confirmation",
+      name: REQUEST_CHARACTER_MEDIA_TOOL, effectScope: "turn_action", intent: { requestedNudity: "none" },
+      arguments: { kind: "image", mode: "auto", direction: "Mina beside the rainy window", subject: "companion", requestedNudity: "none" },
+    });
+    expect(quote).toMatchObject({ status: "awaiting_confirmation", costDreamcoins: 5 });
+    const attachmentId = quote.attachmentId!;
+    const preparingLive = Promise.withResolvers<void>();
+    const resumeLive = Promise.withResolvers<void>();
+    const admit = generation.createChatImageGenerationJob;
+    vi.spyOn(generation, "createChatImageGenerationJob").mockImplementationOnce(async (...args) => {
+      preparingLive.resolve();
+      await resumeLive.promise;
+      return admit(...args);
+    });
+    await prisma.characterMediaLibraryEntry.update({ where: { id: f.entry.id }, data: { status: "withdrawn" } });
+    const first = confirmChatMediaQuote(f.id, attachmentId);
+    try {
+      await Promise.race([preparingLive.promise, first.then(() => { throw new Error("Live admission was not reached"); })]);
+      await prisma.characterMediaLibraryEntry.update({ where: { id: f.entry.id }, data: { status: "published" } });
+      const stock = await confirmChatMediaQuote(f.id, attachmentId);
+      expect(stock).toMatchObject({ attachmentId, status: "accepted", costDreamcoins: 5, generationJobId: null, duplicate: false });
+      resumeLive.resolve();
+      expect(await first).toEqual({ ...stock, duplicate: true });
+      expect(await prisma.generationJob.count({ where: { userId: f.id } })).toBe(0);
+      expect(await prisma.userCharacterLibraryReceipt.count({ where: { userId: f.id, firstAttachmentId: attachmentId } })).toBe(1);
+      expect(await dreamcoinBalance(f.id)).toBe(95);
+    } finally {
+      resumeLive.resolve();
+      await Promise.allSettled([first]);
+    }
+  });
+
+  it("treats a changed image quote price as a refusal instead of trying another fulfillment route", async () => {
+    const f = await seedOfficialFixture();
+    const snapshot = await f.begin("Send me a photo of Mina beside the window.");
+    const quote = await applyChatToolEffect({
+      version: 2, turnId: snapshot.turnId, attempt: snapshot.attempt, callId: "price-changed-after-quote",
+      name: REQUEST_CHARACTER_MEDIA_TOOL, effectScope: "turn_action", intent: { requestedNudity: "none" },
+      arguments: { kind: "image", mode: "auto", direction: "Mina beside the rainy window", subject: "companion", requestedNudity: "none" },
+    });
+    expect(quote).toMatchObject({ status: "awaiting_confirmation", costDreamcoins: 5 });
+    const rule = await prisma.pricingRule.findFirstOrThrow({ where: { mode: "image", status: "active" } });
+    const admit = vi.spyOn(generation, "createChatImageGenerationJob");
+    try {
+      await prisma.pricingRule.update({ where: { id: rule.id }, data: { baseCost: rule.baseCost + 1 } });
+      await expect(confirmChatMediaQuote(f.id, quote.attachmentId!)).rejects.toMatchObject({ code: "conflict", message: expect.stringContaining("price changed") });
+      expect(admit).not.toHaveBeenCalled();
+      expect(await dreamcoinBalance(f.id)).toBe(100);
+    } finally {
+      await prisma.pricingRule.update({ where: { id: rule.id }, data: { baseCost: rule.baseCost, updatedAt: rule.updatedAt } });
+    }
   });
 
   it.each([

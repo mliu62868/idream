@@ -8,6 +8,7 @@ import {
   adminListResponseSchema,
   adminPrioritySchema,
   adminVerificationStateSchema,
+  creativeRunFillSkipSchema,
 } from "./common";
 
 export const creativeRunRetryFailedCommandRequestSchema = adminCommandRequestSchema;
@@ -412,6 +413,7 @@ export const creativeRunCreateRequestSchema = z
     presetIds: z.array(adminIdSchema).max(12).default([]),
     referenceAssetIds: z.array(adminIdSchema).max(10).default([]),
     bootstrapIdentity: z.boolean().default(false),
+    fillMissing: z.literal(true).optional(),
     orientation: z.string().trim().min(1).max(20).optional(),
     count: z.number().int().min(1).max(40).default(4),
     brief: z.string().trim().min(1).max(2_000),
@@ -443,6 +445,19 @@ export const creativeRunCreateRequestSchema = z
   })
   .strict()
   .superRefine((request, ctx) => {
+    if (request.fillMissing && (
+      request.targetType !== "character" ||
+      !["character_cover", "character_hero", "character_chat"].includes(request.purpose) ||
+      request.count !== 1 || request.bootstrapIdentity ||
+      request.referenceAssetIds.length > 0 || request.directions ||
+      request.routeEvaluationMatrixKey || request.identityExperiment
+    )) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["fillMissing"],
+        message: "Fill a missing Character placement with one image, without bootstrap, variants, or source images",
+      });
+    }
     const characterPurpose = [
       "character_cover",
       "character_hero",
@@ -641,10 +656,16 @@ export const creativeRunCreateRequestSchema = z
     }
   });
 
-export const creativeRunCreateResultSchema = z.object({
-  batch: z.object({ id: adminIdSchema }).strict(),
-  replayed: z.boolean(),
-}).strict();
+export const creativeRunCreateResultSchema = z.union([
+  z.object({
+    batch: z.object({ id: adminIdSchema }).strict(),
+    replayed: z.boolean(),
+  }).strict(),
+  z.object({
+    skip: creativeRunFillSkipSchema,
+    replayed: z.boolean(),
+  }).strict(),
+]);
 
 export const creativeRunGenericPurposeSchema = z.enum([
   "campaign",

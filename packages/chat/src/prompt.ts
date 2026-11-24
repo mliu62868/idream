@@ -3,6 +3,9 @@
 import {
   composeCompanionSystemPrompt,
 } from "@idream/shared";
+import { EDIT_LAST_IMAGE_TOOL } from "@idream/shared/chat/image-action";
+import { REQUEST_CHARACTER_MEDIA_TOOL } from "@idream/shared/chat/media-library";
+import type { PreparedReplyPrompt } from "./agent-runtime/contracts.js";
 import { identityPromptLine, type BuiltContext } from "./context.js";
 import type { SceneState } from "./scene.js";
 
@@ -18,26 +21,63 @@ import type { SceneState } from "./scene.js";
  * cache on every message; next to the current message it is also where a
  * roleplay model weighs it most.
  */
-export function buildCompanionSystemPrompt(context: BuiltContext, mediaTools: readonly { name: string }[]): string {
+export function captureCompanionSystemSource(context: BuiltContext): PreparedReplyPrompt["system"] {
   const persona = context.persona;
-  const prompt = composeCompanionSystemPrompt({
+  return {
     memoryEnabled: context.policy.memoryEnabled,
-    mediaTools,
     soulPrompt: persona.systemPrompt ?? persona.description,
     identityPromptLine: identityPromptLine(persona),
-    characterName: persona.name,
+    hasSavedUserPersona: context.userPersona?.enabled === true,
+    isGroup: Boolean(context.group),
+  };
+}
+
+export function buildCompanionSystemPrompt(
+  source: PreparedReplyPrompt["system"], characterName: string, mediaTools: readonly { name: string }[],
+): string {
+  const prompt = composeCompanionSystemPrompt({
+    memoryEnabled: source.memoryEnabled,
+    mediaTools,
+    soulPrompt: source.soulPrompt,
+    identityPromptLine: source.identityPromptLine,
+    characterName,
   });
   const layers = [prompt];
   // INTENT: a real group greeting chose an old remembered name over the
   // enabled profile. Keep the stable authority rule here while both the
   // current profile and historical resident facts remain turn context.
-  if (context.userPersona?.enabled) {
+  if (source.hasSavedUserPersona) {
     layers.push("When the turn includes a current saved chat persona, use it for the user's identity. It overrides conflicting names or self-descriptions in resident profiles, recalled memories and conversation history. It describes the user, never your Character identity.");
   }
-  if (context.group) {
-    layers.push(`Group conversation: several Characters share this chat and the user picks who answers each time. You are only ${persona.name}. Speak only for yourself; the other Characters' lines, actions and memories are theirs, and you never write their next reply.`);
+  if (source.isGroup) {
+    layers.push(`Group conversation: several Characters share this chat and the user picks who answers each time. You are only ${characterName}. Speak only for yourself; the other Characters' lines, actions and memories are theirs, and you never write their next reply.`);
   }
   return layers.join("\n\n");
+}
+
+/** Project the same frozen facts for the current stage and its allowed tools. */
+export function renderCompanionReplyPrompt(input: {
+  source: PreparedReplyPrompt;
+  characterName: string;
+  tools: readonly { name: string }[];
+  imageActionMode?: BuiltContext["imageActionMode"];
+  userText: string;
+  multipleRequests?: boolean;
+}) {
+  const { source, characterName, tools, imageActionMode, userText, multipleRequests } = input;
+  const language = multipleRequests ? "" : describeUserLanguage(userText);
+  const replyConstraints = describeRequestedReplyConstraints(userText, multipleRequests);
+  return {
+    system: buildCompanionSystemPrompt(source.system, characterName, tools),
+    state: [
+      source.turnFacts,
+      ...(tools.some(tool => tool.name === REQUEST_CHARACTER_MEDIA_TOOL || tool.name === EDIT_LAST_IMAGE_TOOL)
+        ? [`- ${describeImageActionAuthorization(imageActionMode)}`] : []),
+      ...(language ? [`- ${language}`] : []),
+      ...(replyConstraints ? [`- ${replyConstraints}`] : []),
+      ...source.recentOpenings,
+    ].join("\n"),
+  };
 }
 
 /**
@@ -90,7 +130,7 @@ export function buildTurnStateBlock(context: BuiltContext, now: Date): string {
   return ["Right now:", ...lines.map((line) => `- ${line}`)].join("\n");
 }
 
-export function describeImageActionAuthorization(mode: BuiltContext["imageActionMode"]): string {
+function describeImageActionAuthorization(mode: BuiltContext["imageActionMode"]): string {
   if (mode === "paid") return "The user authorized one paid photo or whole-image edit with this message. A video still needs its own price confirmation.";
   return "A paid photo or video must wait for the user's price confirmation. Local edits use their own area confirmation.";
 }
@@ -142,7 +182,10 @@ export function describeUserLanguage(userText: string): string {
 // These optional cues abstain on ambiguous/reporting syntax; the unchanged
 // message remains authoritative. A quote is a barrier, never deleted into a
 // new imperative assembled from words on either side.
-export function describeRequestedReplyConstraints(userText: string): string {
+export function describeRequestedReplyConstraints(userText: string, multipleRequests = false): string {
+  if (multipleRequests) {
+    return "Answer each independent request in order. Apply its own language, length and formatting instructions to that part of the reply.";
+  }
   const unquoted = userText.replace(/```[\s\S]*?```|`[^`]*`|"[^"]*"|“[^”]*”|‘[^’]*’|(?<!\w)'[^'\n]+'(?!\w)/gu, "\uFFFC");
   if (/\b(?:actually|instead|ignore|forget|retract)\b/iu.test(unquoted)
     || /[\r\n]/u.test(userText) && /\b(?:said|asked|wrote)\s*:/iu.test(unquoted)) return "";

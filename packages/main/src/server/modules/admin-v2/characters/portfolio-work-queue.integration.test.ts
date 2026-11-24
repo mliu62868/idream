@@ -193,7 +193,7 @@ describe("Character portfolio work queues and performance loop", () => {
     expect(await names({ workQueue: "publish_blocked" })).toEqual([id("stale")]);
     // 没有视觉身份的角色下一步是建身份，失败 Run 不抢这一步；有身份的情形见 portfolio.integration。
     expect(await names({ workQueue: "recent_generation_failed" })).toEqual([]);
-    const { facets } = await list({ includeFacets: true, servingState: "paused" });
+    const { facets } = await list({ includeFacets: true });
     expect(facets?.viewCounts).toMatchObject({
       all: 9,
       draft: 2,
@@ -206,6 +206,12 @@ describe("Character portfolio work queues and performance loop", () => {
     });
     // 零流量且 live 的只有 silent、stale、candidate；healthy/pending 有曝光，chat-only 有聊天。
     expect(facets?.viewCounts.attention).toBe(3);
+    const paused = await list({ includeFacets: true, servingState: "paused" });
+    // The lifecycle buttons retain their counts, while the task facets apply the selected lifecycle.
+    expect(paused.facets?.viewCounts).toMatchObject({
+      all: 9, draft: 2, live: 6, paused: 1, archived: 1,
+      pending_changes: 0, candidate_unpublished: 0, publish_blocked: 0, attention: 0,
+    });
     // 不要的调用方不付这个代价。
     expect((await list()).facets).toBeUndefined();
   });

@@ -6,7 +6,6 @@ import {
   characterDraftImageSelectionRequestSchema,
   characterIdentityBootstrapRequestSchema,
   creativeRunCreateRequestSchema,
-  type CharacterImageSourceAsset,
   type CharacterWorkspaceDetail,
   type CreativeRun,
   type CreativeRunDetail,
@@ -159,21 +158,6 @@ export function nextIncompleteCharacterAssetPurpose(
   journey: CharacterWorkspaceDetail["journey"],
 ): CharacterAssetPurpose | null {
   return journey.assetPack.draft.missingPurposes[0] ?? null;
-}
-
-// The library supplies current eligibility. Reserve each existing image for one slot.
-export function characterDraftImageCandidates(
-  data: Pick<CharacterWorkspaceDetail, "journey" | "project">,
-  assets: readonly CharacterImageSourceAsset[],
-) {
-  const selected = new Set(Object.values(data.project.draftAssetPack));
-  const pool = assets.filter((asset) =>
-    asset.qualification && asset.qualification.selectablePurposes.length > 0 && !selected.has(asset.id),
-  ).sort((a, b) => a.qualification!.selectablePurposes.length - b.qualification!.selectablePurposes.length);
-  return data.journey.assetPack.draft.missingPurposes.flatMap((purpose) => {
-    const index = pool.findIndex((asset) => asset.qualification!.selectablePurposes.includes(purpose));
-    return index < 0 ? [] : [{ purpose, asset: pool.splice(index, 1)[0]! }];
-  });
 }
 
 export function resolveCharacterCustomerPreviewAssets(input: {

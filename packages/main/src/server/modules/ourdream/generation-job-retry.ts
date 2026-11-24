@@ -455,7 +455,7 @@ export async function retryGenerationJobForUser(input: {
     outputCount: job.outputCount,
     costDreamcoins: cost,
   };
-  const retry = await acceptGenerationJobForUser({
+  const { job: retry } = await acceptGenerationJobForUser({
     userId,
     identity: { idempotencyKey: retryIdempotencyKey },
     transactionTimeoutMs: 30_000,

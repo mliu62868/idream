@@ -97,7 +97,7 @@ export async function createMediaEnhancement(userId: string, sourceMediaId: stri
       pricing: { ruleId: plan.pricing.id, ruleKey: plan.pricing.ruleKey, version: plan.pricing.version,
         effectiveFrom: plan.pricing.effectiveFrom?.toISOString() ?? null, fingerprint: plan.authority.pricingFingerprint } },
   };
-  return acceptGenerationJobForUser({
+  const { job } = await acceptGenerationJobForUser({
     userId,
     identity: options,
     transactionTimeoutMs: 60_000,
@@ -133,4 +133,5 @@ export async function createMediaEnhancement(userId: string, sourceMediaId: stri
       } };
     },
   });
+  return job;
 }

@@ -1,15 +1,11 @@
 import {
-  creativeRunCreateRequestSchema,
   type CharacterPortfolioItem,
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
-import {
-  clearDurableMutationIntent,
-  readActiveDurableMutationIntent,
-} from "@/lib/durable-mutation-intent";
+import { clearDurableMutationIntent } from "@/lib/durable-mutation-intent";
 import { purposeConfig, type CharacterAssetPurpose } from "./character-asset-studio-authority";
-import { createOrRecoverCharacterRun, defaultCharacterImageBrief } from "./creative-run-creation";
+import { characterImageFillSkipMessage, createOrRecoverMissingCharacterImage, defaultCharacterImageBrief } from "./creative-run-creation";
 
 // SPEC: 列表批量操作：逐项调用现有单角色命令，每项独立成败。不新增服务端 bulk 命令，
 //       不做键入确认或预览闸门；幂等、CAS 和不可变 Release 都还由单角色命令保证。
@@ -31,21 +27,20 @@ export const BULK_ACTION_LABELS: Record<BulkAction["kind"], string> = {
   generate_missing: "Generate missing images",
 };
 
-// SPEC: 下一步落在「先建身份/路线」或已有进行中的图片时，批量生成没有意义，和卡片同源判断。
-const GENERATION_BLOCKING_ACTIONS: Readonly<Record<string, string>> = {
-  create_primary_portrait: "No visual identity yet.",
-  prepare_image_production: "No visual identity yet.",
-  complete_image_route: "The Reference Set is not active yet.",
-  platform_route_unavailable: "No qualified image route. Platform operations can fix this.",
-  continue_image_run: "An image is already in progress.",
-  resolve_unknown_image_run: "Check the image with an unknown outcome first.",
-  recover_active_command: "Another command is in progress.",
+const GENERATION_BLOCKER_COPY: Readonly<Record<
+  NonNullable<CharacterPortfolioItem["journey"]["assetPack"]["generateMissingBlocker"]>,
+  string
+>> = {
+  visual_identity_missing: "No visual identity yet.",
+  reference_set_not_active: "The Reference Set is not active yet.",
+  generation_route_unqualified: "No qualified image route. Platform operations can fix this.",
+  image_run_in_progress: "An image is already in progress.",
+  image_run_outcome_unknown: "Check the image with an unknown outcome first.",
+  active_command: "Another command is in progress.",
 };
 
 export function bulkMissingPurposes(item: CharacterPortfolioItem) {
-  const { draft, live } = item.journey.assetPack;
-  const servesRelease = item.serving.state === "live" || item.serving.state === "paused";
-  return (servesRelease && draft.completed === 0 ? live : draft).missingPurposes;
+  return item.journey.assetPack.generateMissingPurposes;
 }
 
 export function bulkActionBlocker(
@@ -53,7 +48,7 @@ export function bulkActionBlocker(
   item: CharacterPortfolioItem,
 ): string | null {
   const state = item.serving.state;
-  const commandBusy = item.journey.primaryAction.code === "recover_active_command";
+  const commandBusy = item.journey.hasActiveCommand;
   if (kind === "pause") {
     if (state !== "live") return "Only live characters can be paused.";
     return commandBusy ? "Another command is in progress." : null;
@@ -69,8 +64,8 @@ export function bulkActionBlocker(
   }
   if (kind === "add_tag" || kind === "remove_tag") return null;
   if (state === "retired") return "Archived or retired.";
-  const blocking = GENERATION_BLOCKING_ACTIONS[item.journey.primaryAction.code];
-  if (blocking) return blocking;
+  const blocker = item.journey.assetPack.generateMissingBlocker;
+  if (blocker) return GENERATION_BLOCKER_COPY[blocker];
   return bulkMissingPurposes(item).length === 0 ? "No missing images." : null;
 }
 
@@ -235,9 +230,7 @@ async function changeTag(characterId: string, tagId: string, add: boolean) {
   });
 }
 
-// SPEC: 复用 creative-run-creation 的恢复协议：响应丢失后的重试核对原请求，不会多建一个付费 Run。
-// INTENT: scope 按角色+用途各占一格。Asset Studio 的 scope 一个角色只容一个进行中的创建意图，
-//         共用的话同一角色的第二个用途会被挡住。成功后立刻释放，不把工作台锁住。
+// 同一 Creative Run 接纳 module 处理工作台与批量。浏览器仍保存每个槽位的原始请求直至收到精确回执。
 async function createMissingImage(input: {
   readonly actorId: string;
   readonly detail: CharacterWorkspaceDetail;
@@ -246,26 +239,18 @@ async function createMissingImage(input: {
 }) {
   const characterId = input.detail.character.id;
   const scope = `character-bulk-run:${input.actorId}:${characterId}:${input.purpose}`;
-  const active = readActiveDurableMutationIntent({ scope });
-  const result = await createOrRecoverCharacterRun({
+  const { result, intent } = await createOrRecoverMissingCharacterImage({
     scope,
     characterId,
-    expectedPurpose: input.purpose,
-    intent: active,
-    request: active ? null : bulkGenerationRequest(input.detail, input.purpose, input.name),
-    parseRequest: (snapshot) => {
-      const parsed = creativeRunCreateRequestSchema.safeParse(snapshot);
-      return parsed.success ? parsed.data : null;
-    },
-    signature: (body) => JSON.stringify(body),
-    onIntentChange: () => undefined,
+    purpose: input.purpose,
+    draft: () => bulkGenerationRequest(input.detail, input.purpose, input.name),
   });
   if (result.state === "committed") {
-    const committed = readActiveDurableMutationIntent({ scope });
-    if (committed) clearDurableMutationIntent(committed);
-    return;
+    if (intent) clearDurableMutationIntent(intent);
+    return "accepted" as const;
   }
-  if (result.state === "superseded") return;
+  if (result.state === "skipped") return { state: "succeeded" as const, message: characterImageFillSkipMessage[result.skip.reason] };
+  if (result.state === "superseded") return "accepted" as const;
   if (result.state === "cancelled") throw new Error("The earlier request created nothing. Retry to create it.");
   throw new Error("The earlier request is still unconfirmed. Retry to check it; this cannot create a duplicate.");
 }
@@ -287,7 +272,7 @@ export function createBulkExecutor(input: {
     }
     return pending;
   };
-  return async (task: BulkTask): Promise<"succeeded" | "accepted"> => {
+  return async (task: BulkTask): Promise<"succeeded" | "accepted" | { state: "succeeded"; message: string }> => {
     const item = input.itemByCharacter.get(task.characterId);
     if (!item) throw new Error("This Character is no longer available.");
     const { action } = input;
@@ -297,13 +282,12 @@ export function createBulkExecutor(input: {
     }
     if (action.kind === "generate_missing") {
       if (!task.purpose) throw new Error("This task has no image purpose.");
-      await createMissingImage({
+      return createMissingImage({
         actorId: input.actorId,
         detail: await detail(task.characterId),
         purpose: task.purpose,
         name: task.name,
       });
-      return "accepted";
     }
     // 第一次用列表的版本；重试时列表可能已过期，重读后仍由服务端做 CAS 校验。
     const entityVersion = task.attempts > 0

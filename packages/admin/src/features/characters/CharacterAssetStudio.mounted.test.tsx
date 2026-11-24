@@ -111,7 +111,7 @@ function journeyFor(
     total: 3 as const,
   });
   return {
-    assetPack: { draft: progress(available), live: progress([]) },
+    assetPack: { draft: progress(available), live: progress([]), generateMissingPurposes: progress(available).missingPurposes },
     release: {
       servingState: "inactive" as const,
       currentReleaseId: null,
@@ -459,16 +459,17 @@ describe("Character Asset Studio bootstrap route projection", () => {
       await act(async () => releaseFirst?.());
       await waitUntil(() => container.textContent?.includes("Generating 2 images") === true);
       expect(posted.map((body) => body.purpose).sort()).toEqual(["character_chat", "character_hero"]);
-      expect(posted.every((body) => body.count === 1 && String(body.brief).length > 0)).toBe(true);
+      expect(posted.every((body) => body.count === 1 && body.fillMissing === true && String(body.brief).length > 0)).toBe(true);
     });
 
-    it("skips a purpose that already has a running request", async () => {
+    it("handles Main's pending Run receipt without polling the skipped slot", async () => {
       const posted: Record<string, unknown>[] = [];
       adminV2Request.mockImplementation(async (path, options) => {
         if (path.includes("/image-sources?")) return { items: [], nextCursor: null };
         if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
           const body = options.body as Record<string, unknown>;
           posted.push(body);
+          if (body.purpose === "character_chat") return { skip: { reason: "run_pending", runId: "run-chat-existing" }, replayed: false };
           return { batch: { id: `run-${String(body.purpose)}` }, replayed: false };
         }
         if (path.includes("/api/v2/admin/creative/runs?")) {
@@ -483,7 +484,57 @@ describe("Character Asset Studio bootstrap route projection", () => {
       await renderStudio("operator-missing-skip");
       await clickGenerate();
       await waitUntil(() => container.textContent?.includes("Generating 1 images") === true);
-      expect(posted.map((body) => body.purpose)).toEqual(["character_hero"]);
+      expect(posted.map((body) => body.purpose).sort()).toEqual(["character_chat", "character_hero"]);
+      expect(adminV2Request.mock.calls.some(([path]) => path.endsWith("/run-chat-existing"))).toBe(false);
+    });
+
+    it("keeps a candidate found by Main when another placement is retried", async () => {
+      const assetId = "older-library-hero";
+      const posted: string[] = [];
+      adminV2Request.mockImplementation(async (path, options) => {
+        if (path.includes("/image-sources?")) {
+          if (new URLSearchParams(path.split("?")[1]).get("search") !== assetId) return { items: [], nextCursor: null };
+          return { nextCursor: null, items: [{
+            id: assetId,
+            url: "/older-library-hero.webp",
+            thumbnailUrl: null,
+            filename: "older-library-hero.webp",
+            contentType: "image/webp", sizeBytes: 20, width: 20, height: 20,
+            createdAt: "2026-10-02T14:05:24.370Z",
+            qualification: {
+              source: "operator_upload", state: "selectable",
+              selectablePurposes: ["character_cover", "character_hero", "character_chat"],
+              selectedPurposes: [], releaseQualifiedPurposes: [], blockers: [], review: null,
+              authority: { runId: null, itemId: null, reviewDecisionId: null, generationJobId: null },
+            },
+          }] };
+        }
+        if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+          const purpose = String((options.body as Record<string, unknown>).purpose);
+          posted.push(purpose);
+          if (purpose === "character_hero") return { skip: { reason: "candidate_available", assetId }, replayed: false };
+          if (posted.filter((value) => value === "character_chat").length === 1) {
+            throw new AdminV2RequestError("Rejected", 422, "invalid_request");
+          }
+          return { batch: { id: "run-character_chat" }, replayed: false };
+        }
+        if (path.includes("/api/v2/admin/creative/runs?")) return { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
+        if (path.endsWith("/run-character_chat")) return runDetail("run-character_chat", "character_chat");
+        throw new Error(`Unexpected Admin request: ${path}`);
+      });
+      await renderStudio("operator-missing-retry-candidate");
+      await clickGenerate();
+      const fillBar = () => container.querySelector('[data-testid="generate-missing-images"]')?.textContent;
+      await waitUntil(() => container.textContent?.includes("Use candidate for Character hero") === true &&
+        fillBar()?.includes("Character hero") === false);
+      expect(fillBar()).toContain("Chat moments");
+      await clickGenerate();
+      await waitUntil(() => adminV2Request.mock.calls.some(([path]) => path.endsWith("/run-character_chat")) &&
+        container.querySelector<HTMLButtonElement>('[data-testid="generate-missing-images"] button')?.disabled === false);
+      expect(posted.filter((purpose) => purpose === "character_hero")).toHaveLength(1);
+      expect(posted.filter((purpose) => purpose === "character_chat")).toHaveLength(2);
+      expect(container.textContent).toContain("Use candidate for Character hero");
+      expect(fillBar()).not.toContain("Character hero");
     });
 
     it("keeps the started Run and reports the one that failed", async () => {

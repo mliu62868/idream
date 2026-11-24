@@ -1,14 +1,14 @@
 import type { CharacterPortfolioItem, CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { adminV2Operation, createOrRecoverCharacterRun } = vi.hoisted(() => ({
+const { adminV2Operation, createOrRecoverMissingCharacterImage } = vi.hoisted(() => ({
   adminV2Operation: vi.fn(),
-  createOrRecoverCharacterRun: vi.fn(),
+  createOrRecoverMissingCharacterImage: vi.fn(),
 }));
 vi.mock("@/lib/admin-v2-operation", () => ({ adminV2Operation }));
 vi.mock("./creative-run-creation", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./creative-run-creation")>()),
-  createOrRecoverCharacterRun,
+  createOrRecoverMissingCharacterImage,
 }));
 
 import {
@@ -24,7 +24,7 @@ function item(
   id: string,
   overrides: {
     state?: string;
-    code?: string;
+    blocker?: CharacterPortfolioItem["journey"]["assetPack"]["generateMissingBlocker"];
     draftMissing?: string[];
     draftCompleted?: number;
     liveMissing?: string[];
@@ -35,8 +35,12 @@ function item(
     name: `Name ${id}`,
     serving: { state: overrides.state ?? "live", version: 7 },
     journey: {
-      primaryAction: { code: overrides.code ?? "continue_asset_pack" },
+      hasActiveCommand: overrides.blocker === "active_command",
+      // An operational recommendation can send the user to Monitor while generation is blocked.
+      primaryAction: { code: "inspect_no_traffic" },
       assetPack: {
+        generateMissingBlocker: overrides.blocker ?? null,
+        generateMissingPurposes: overrides.draftCompleted === 0 ? overrides.liveMissing ?? [] : overrides.draftMissing ?? ["character_hero", "character_chat"],
         draft: { completed: overrides.draftCompleted ?? 1, missingPurposes: overrides.draftMissing ?? ["character_hero", "character_chat"] },
         live: { completed: 3, missingPurposes: overrides.liveMissing ?? [] },
       },
@@ -46,7 +50,7 @@ function item(
 
 beforeEach(() => {
   adminV2Operation.mockReset();
-  createOrRecoverCharacterRun.mockReset();
+  createOrRecoverMissingCharacterImage.mockReset();
 });
 
 describe("bulk eligibility", () => {
@@ -62,9 +66,9 @@ describe("bulk eligibility", () => {
   });
 
   it("explains why image generation does not apply", () => {
-    expect(bulkActionBlocker("generate_missing", item("a", { code: "create_primary_portrait" }))).toBe("No visual identity yet.");
-    expect(bulkActionBlocker("generate_missing", item("a", { code: "platform_route_unavailable" }))).toContain("Platform operations");
-    expect(bulkActionBlocker("generate_missing", item("a", { code: "continue_image_run" }))).toContain("in progress");
+    expect(bulkActionBlocker("generate_missing", item("a", { blocker: "visual_identity_missing" }))).toBe("No visual identity yet.");
+    expect(bulkActionBlocker("generate_missing", item("a", { blocker: "generation_route_unqualified" }))).toContain("Platform operations");
+    expect(bulkActionBlocker("generate_missing", item("a", { blocker: "image_run_in_progress" }))).toContain("in progress");
     expect(bulkActionBlocker("generate_missing", item("a", { state: "retired" }))).toContain("retired");
     expect(bulkActionBlocker("generate_missing", item("a", { draftMissing: [], draftCompleted: 3 }))).toBe("No missing images.");
     // 线上齐、草稿空的健康角色没有缺图，不能白花钱。
@@ -202,16 +206,16 @@ describe("bulk execution", () => {
       },
     };
     adminV2Operation.mockResolvedValue(detail);
-    createOrRecoverCharacterRun.mockResolvedValue({ state: "committed", runId: "run-1" });
+    createOrRecoverMissingCharacterImage.mockResolvedValue({ result: { state: "committed", runId: "run-1" }, intent: null });
     const run = createBulkExecutor({
       action: { kind: "generate_missing" },
       actorId: "actor",
       itemByCharacter: new Map([["a", item("a")]]),
     });
     await expect(run(task("a", 0, "character_hero"))).resolves.toBe("accepted");
-    const options = createOrRecoverCharacterRun.mock.calls[0][0];
+    const options = createOrRecoverMissingCharacterImage.mock.calls[0][0];
     expect(options.scope).toBe("character-bulk-run:actor:a:character_hero");
-    expect(options.request).toMatchObject({
+    expect(options.draft()).toMatchObject({
       purpose: "character_hero",
       brief: expect.stringContaining("Warm light in a quiet studio"),
       targetId: "a",
@@ -221,7 +225,9 @@ describe("bulk execution", () => {
       referenceAssetIds: [],
       bootstrapIdentity: false,
     });
-    createOrRecoverCharacterRun.mockResolvedValue({ state: "pending", receipt: {} });
+    createOrRecoverMissingCharacterImage.mockResolvedValue({ result: { state: "skipped", skip: { reason: "candidate_available", assetId: "existing" } }, intent: null });
+    await expect(run(task("a", 0, "character_hero"))).resolves.toEqual({ state: "succeeded", message: "A selectable image already covers this placement." });
+    createOrRecoverMissingCharacterImage.mockResolvedValue({ result: { state: "pending", receipt: {} }, intent: null });
     await expect(run(task("a", 1, "character_hero"))).rejects.toThrow("cannot create a duplicate");
   });
 

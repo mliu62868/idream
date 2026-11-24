@@ -110,6 +110,19 @@ describe("Agent runtime configuration", () => {
       .toThrow(/PI_MAX_PRIVATE_AGENTS/);
   });
 
+  it("disables Inkling reasoning on all igrep maintenance routes", () => {
+    const model = "Inkling-2-Mini-Uncensored-oQ8-mtp";
+    const { igrepEnvironment } = loadAgentRuntimeConfig(environment({ IGREP_LLM_MODEL: model }));
+
+    for (const prefix of ["LLM", "ASK_LLM", "LLM_FINAL_SORT"]) {
+      expect(igrepEnvironment[`IGREP_${prefix}_MODEL`]).toBe(model);
+      expect(JSON.parse(igrepEnvironment[`IGREP_${prefix}_EXTRA_BODY`]!)).toMatchObject({
+        chat_template_kwargs: { enable_thinking: false, reasoning_effort: "none" },
+        thinking_budget: 0,
+      });
+    }
+  });
+
   it("keeps canonical and private workspace authority roots disjoint", () => {
     expect(() => loadAgentRuntimeConfig(environment({
       PI_IGREP_CANONICAL_ROOT: "/var/lib/idream/memory",

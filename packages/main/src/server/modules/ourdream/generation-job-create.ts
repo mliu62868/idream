@@ -123,7 +123,7 @@ export type GenerationJobOptions = {
 
 export async function createGenerationJobForUser(userId: string, body: GenerationCreateBody, options: GenerationJobOptions = {}) {
   const admit = await prepareGenerationJobForUser(userId, body, options);
-  return admit(options.admissionTx);
+  return (await admit(options.admissionTx)).job;
 }
 
 /** Original geometry is an admission constraint, shared by review and submit. */
@@ -152,7 +152,7 @@ export async function prepareGenerationJobForUser(userId: string, body: Generati
   const preexisting = await findExistingGenerationJob(userId, options, options.admissionTx);
   if (preexisting) {
     if (!options.admissionTx && !options.confirmedEdit) await wakeQueuedGenerationDispatch(preexisting);
-    return async () => preexisting;
+    return async () => ({ job: preexisting, duplicate: true });
   }
   if (
     (

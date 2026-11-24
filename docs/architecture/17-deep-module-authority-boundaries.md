@@ -400,7 +400,10 @@ type CharacterProductionJourney = {
 - primary action 必须可执行，不能只链接到说明页；
 - Portfolio 与 Workspace 使用同一服务端投影；
 - UI 不再重算生产阶段、资产包完成度或下一步；
+- `primaryAction` 由 Journey 根据角色创作、发布与线上观察事实选择。表现数据沿用调用方的读取范围，`not_requested` 表示本次没有读取。工作队列仍在分页前按生产事实入队，批量补图使用 `assetPack.generateMissingBlocker`；运营动作优先级不参与这两个判断。
+- Main 随动作返回 `deepLink`、目标的 `readOperations` 和当前操作者的 `canReadTarget`。同一请求批量核对 manifest 与目标资源范围。待决命令指向 Release 恢复视图，只有能读取工作台及该命令的操作者可点击。Admin 将无读取权限的动作显示为文案。
 - **deepLink 是完整答案，包含页内锚点**：服务端一度只为路线类 blocker 下发 fragment，其余交给 admin 自建 `code → 锚点` 表补齐；两边各漏一半，`visual_identity_missing` 与 `visual_anchor_missing` 两类阻塞点进去只能落到页首。锚点表现在与 blocker code 联合类型绑定（漏一个 code 是编译错误），admin 侧原样透传；
+- 同 tab 的不同锚点仍可跳转，并将焦点交给目标。Release 与 Preview 合并后新链接统一使用 `tab=release`，已有 `tab=preview` 由 Admin 解析到 Release。
 - **链接的 base 也是答案的一部分，不能靠字符串手术拼**：只补 fragment 仍然不够。`readiness.ts` 这个纯闸门模块自己手拼 admin URL，用的却是一套 admin 不存在的 tab 词表（`?tab=visual-identity` / `?tab=persona` / `?tab=overview` 全部静默回落到缺省 tab），路线类更是指向 `/admin/ops/profiles` 这个完全不同的页面；workspace 投影再用 `String.replace` 修其中一个 tab、给另一个页面的 URL 拼上只有角色运营台才有的锚点——于是「路线未合格」的 deepLink 是 `/admin/ops/profiles?characterId=…#route-qualification-workbench`，URL 合法、页面能开、点了什么也不会发生。现在 base + tab + 锚点整体由 `characters/character-deep-link` 一份表拥有，`readiness.ts` 不再产出链接（它只回答哪些闸没过）；
 - **守卫必须是形状断言，不是符号黑名单**：ADR 首版的 Journey 守卫断言两个旧符号名不出现、且只扫一个文件，于是换个名字住到另一个文件的重算逻辑完全不可见。现在守卫扫 characters 目录全部前端文件、断言三类**形状**（自己数图池槽位、自己推用途顺序、自造 fragment 顶掉服务端 deepLink），并正向断言关键字段确实被消费；另有跨包守卫校验服务端每个锚点都对应 admin 里真实存在的 DOM id。新增守卫时应先注入一次真实漂移确认它会失败。
 - 成功动作后重新读取投影，并自动进入新的下一步；

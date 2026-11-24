@@ -59,7 +59,7 @@ async function bindFixtureJob(attachmentId: string, job: Awaited<ReturnType<type
     status: "accepted", generationJobId: job.id,
     metadata: { ...JSON.parse(JSON.stringify(attachment.metadata)), costDreamcoins: job.costDreamcoins },
   } });
-  return job;
+  return { job, duplicate: false };
 }
 
 function effect(snapshot: NonNullable<Awaited<ReturnType<typeof beginChatTurn>>["snapshot"]>): ChatToolEffect {

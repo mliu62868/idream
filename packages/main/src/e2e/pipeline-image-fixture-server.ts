@@ -61,7 +61,7 @@ function fixtureChatMessage(body: Record<string, unknown>) {
     if (!fixtureMediaToolName(input?.originalUserRequest)
       || typeof input?.existingAttachmentCard?.attachmentId !== "string"
       || !input.existingAttachmentCard.attachmentId.trim()) throw new Error("Unsupported media extraction fixture input");
-    return { role: "assistant", content: JSON.stringify({ requests: [] }) };
+    return { role: "assistant", content: "NONE" };
   }
   const format = body.response_format as { type?: string; json_schema?: { name?: string } } | undefined;
   if (format?.type === "json_schema" && format.json_schema?.name === "scene_changes") {

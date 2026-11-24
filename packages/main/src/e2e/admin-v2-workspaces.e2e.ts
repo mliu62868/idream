@@ -2365,7 +2365,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     const chatCreated = await chatCreateResponse;
     expect(chatCreated.status()).toBe(202);
     expect(chatCreated.request().postDataJSON()).toMatchObject({
-      purpose: "character_chat", count: 1,
+      purpose: "character_chat", count: 1, fillMissing: true,
       brief: expect.stringContaining("Low-key tungsten portraiture"),
     });
     const chatRunId = (await chatCreated.json()).data.batch.id as string;
@@ -3218,9 +3218,10 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await page.getByLabel("Historical rollback source").selectOption(lifecycleOldReleaseId);
     // Rollback takes one plain confirmation: no checkbox and nothing to type.
     await page.getByRole("button", { name: "Roll back" }).click();
+    const rollbackPath = `/api/v2/admin/characters/${encodeURIComponent(lifecycleCharacterId)}/releases/${encodeURIComponent(lifecycleOldReleaseId)}/commands/rollback`;
     const rollbackAccepted = page.waitForResponse((response) =>
       response.request().method() === "POST" &&
-      new URL(response.url()).pathname.endsWith("/commands/rollback"),
+      new URL(response.url()).pathname === rollbackPath,
     );
     await page.getByRole("dialog").getByRole("button", { name: "Roll back" }).click();
     const response = await rollbackAccepted;

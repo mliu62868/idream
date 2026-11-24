@@ -27,7 +27,7 @@ import { compilePreparedTurn } from "../prepared-turn";
 import { describeRequestedReplyConstraints } from "../prompt";
 import { resolvePolicy } from "../policy";
 import type { BuiltContext } from "../context";
-import { COMPANION_MEDIA_TOOL_DEFINITIONS } from "@idream/shared/chat/media-library";
+import { COMPANION_MEDIA_REQUEST_GUIDANCE, COMPANION_MEDIA_TOOL_DEFINITIONS } from "@idream/shared/chat/media-library";
 import { LOCAL_IMAGE_EDIT_TOOL_DEFINITION } from "@idream/shared/chat/image-action";
 import { companionInvocationSchema, companionToolResultSchema } from "./contracts";
 
@@ -47,7 +47,11 @@ afterEach(async () => {
   await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
-type WireRequest = { messages: Array<{role:string; content:string;tool_call_id?:string}>; tools?: Array<{function:{name:string}}> };
+type WireRequest = {
+  messages: Array<{ role: string; content: string; tool_call_id?: string; tool_calls?: Array<{ id: string; function: { name: string } }> }>;
+  tools?: Array<{ function: { name: string } }>;
+  max_tokens: number;
+};
 function response(delta: unknown, finish = "stop", usage?: TokenUsage): Response {
   return new Response(`data: ${JSON.stringify({ id: "provider-request-1", provider: "DeepSeek", choices: [{delta, finish_reason:finish}],
     ...(usage ? {usage:{prompt_tokens:usage.inputTokens+(usage.cacheReadTokens??0),completion_tokens:usage.outputTokens,
@@ -64,8 +68,7 @@ class FixtureAdapter extends OpenAiCompatibleAdapter {
         ? (this.extraction ?? (async (_url, requestInit) => {
           const request: WireRequest = JSON.parse(String(requestInit?.body));
           const evidence = JSON.parse(request.messages.at(-1)!.content);
-          const extracted = evidence.searchedExistingMedia ? { requests: [], language: "en" } : { requests: [] };
-          return response({ content: JSON.stringify(extracted) }, "stop", { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 });
+          return response({ content: evidence.searchedExistingMedia ? "en\nNONE" : "NONE" }, "stop", { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 });
         }))(url, init)
         : this.fixture.fetch!(url, init),
     });
@@ -475,7 +478,7 @@ describe("Chat embedded companion runtime", () => {
       if (++requests === 1) return call("request_character_media", { kind: "image", direction: "Mira at the observatory", subject: "companion" });
       if (requests === 2) return call("igrep_search", { query: "What did we see last time?" });
       return response({ content: "We saw the moon." });
-    } }, async () => response({ content: JSON.stringify({ requests: [independent] }) }));
+    } }, async () => response({ content: `> ${independent}` }));
     const search = vi.fn(async () => ({ results: [] }));
     const runtime = await engine(adapter, undefined, { runIgrep: search });
     const connection = port();
@@ -492,7 +495,7 @@ describe("Chat embedded companion runtime", () => {
     const native = vi.fn(async () => response({ tool_calls: [{ index: 0, id: "only-media", function: {
       name: "request_character_media", arguments: JSON.stringify({ kind: "image", direction: "Mira at the seaside", subject: "companion" }),
     } }] }, "tool_calls"));
-    const extraction = vi.fn(async () => response({ content: '{"requests":[]}' }));
+    const extraction = vi.fn(async () => response({ content: "NONE" }));
     const runtime = await engine(new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: native }, extraction));
     const connection = port();
     try {
@@ -513,7 +516,7 @@ describe("Chat embedded companion runtime", () => {
         name: "request_character_media", arguments: JSON.stringify({ kind: "image", subject: "companion", mode: "existing_only", direction: "Mira at the seaside" }),
       } }] }, "tool_calls");
       return response({ content: reply });
-    } }, async () => response({ content: JSON.stringify({ requests: [independent], language: "en" }) }));
+    } }, async () => response({ content: `en\n> ${independent}` }));
     const runtime = await engine(adapter);
     const connection = port({ executeTool: async call => ({ attemptId: call.attemptId, callId: call.callId, name: call.name,
       outcome: "succeeded", output: { accepted: true, duplicate: false, status: "no_match", kind: "image", costDreamcoins: 0 } }) });
@@ -541,7 +544,7 @@ describe("Chat embedded companion runtime", () => {
     native.mockImplementationOnce(async () => response({ tool_calls: [{ index: 0, id: "lookup", function: {
       name: "request_character_media", arguments: JSON.stringify({ kind: "image", subject: "companion", mode: "existing_only", direction: "existing photo at the seaside" }),
     } }] }, "tool_calls"));
-    const extraction = vi.fn(async () => response({ content: JSON.stringify({ requests: [otherRequest], language: "zh" }) }));
+    const extraction = vi.fn(async () => response({ content: `zh\n> ${otherRequest}` }));
     const runtime = await engine(new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: native }, extraction));
     const connection = port({ executeTool: async call => ({ attemptId: call.attemptId, callId: call.callId, name: call.name,
       outcome: "succeeded", output: { accepted: true, duplicate: false, status: "no_match", kind: "image", costDreamcoins: 0 } }) });
@@ -552,6 +555,56 @@ describe("Chat embedded companion runtime", () => {
       expect(connection.events.flatMap(event => event.type === "text_delta" ? [event.delta] : [])).toEqual([expected]);
       expect(extraction).toHaveBeenCalledOnce();
       expect(native).toHaveBeenCalledTimes(2);
+    } finally { await runtime.shutdown(); }
+  });
+
+  it.each([false, true])("keeps the scope of each of two text requests after a stock miss (compiled prompt=%s)", async compiled => {
+    const value = mediaInvocation();
+    const current = value.preparedTurn.messages.at(-1)!;
+    const first = "用一句话解释潮汐。";
+    const second = "再列三条防晒建议。\r\n标题：海边用品\r\n\r\n每条一行。";
+    const original = [first, "只发已有的码头照片，找不到就说没有。", second].join("\r\n");
+    current.content = original;
+    if (compiled) {
+      value.preparedTurn.replyPrompt = {
+        system: { soulPrompt: "Mira speaks simply.", identityPromptLine: "You are Mira.", memoryEnabled: false, hasSavedUserPersona: false, isGroup: false },
+        turnFacts: "Scene: the pier.", recentOpenings: [],
+      };
+      value.preparedTurn.messages.splice(1, 0, { id: `state:${current.id}`, role: "user", sourceKind: "plugin", content: "Scene: the pier." });
+    }
+    const requests: WireRequest[] = [];
+    const reply = "潮汐主要由月球和太阳的引力引起。\n\n海边用品\n1. 防晒霜\n2. 遮阳帽\n3. 防晒衣";
+    const adapter = new FixtureAdapter({
+      profile: value.preparedTurn.profile, apiKey: "fixture",
+      fetch: async (_url, init) => {
+        requests.push(JSON.parse(String(init?.body)));
+        if (requests.length === 1) return response({ tool_calls: [{ index: 0, id: "stock-miss", function: {
+          name: "request_character_media",
+          arguments: JSON.stringify({ kind: "image", subject: "scene", mode: "existing_only", direction: "An existing pier photo." }),
+        } }] }, "tool_calls");
+        return response({ content: reply });
+      },
+    }, async () => {
+      const quotedSecond = second.split("\r\n").filter(Boolean).map(line => `> ${line}`).join("\r\n\r\n");
+      return response({ content: `zh\r\n> ${first}\r\n\r\n${quotedSecond}` });
+    });
+    const runtime = await engine(adapter);
+    const executeTool = vi.fn<CompanionRuntimePort["executeTool"]>(async call => ({
+      attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded",
+      output: { accepted: true, duplicate: false, status: "no_match", kind: "image", costDreamcoins: 0 },
+    }));
+    const connection = port({ executeTool });
+    try {
+      await runtime.run(value, connection.runtimePort);
+      expect(executeTool).toHaveBeenCalledOnce();
+      expect(requests).toHaveLength(2);
+      const body = requests[1]!;
+      expect(body.messages.at(-1)?.content).toBe(`${first}\n\n${second}`);
+      const instructions = body.messages.map(message => message.content).join("\n");
+      expect(instructions).toContain("Answer each independent request in order");
+      expect(instructions.includes("exactly 1 sentence in the entire reply")).toBe(false);
+      expect(body.tools?.map(tool => tool.function.name)).not.toContain("request_character_media");
+      expect(connection.candidates[0]?.content).toBe(`我没找到符合你要求的现成内容。\n\n${reply}`);
     } finally { await runtime.shutdown(); }
   });
 
@@ -577,7 +630,7 @@ describe("Chat embedded companion runtime", () => {
       expect(data).not.toHaveProperty("executedMediaAction");
       expect(data).not.toHaveProperty("mainReceipt");
       expect(data.existingAttachmentCard).toEqual({ attachmentId: "rebound-attachment", status: facts.status, mediaAssetId: facts.mediaAssetId });
-      return response({ content: '{"requests":[]}' }, "stop", { inputTokens: 7, outputTokens: 2, reasoningTokens: 1 });
+      return response({ content: "NONE" }, "stop", { inputTokens: 7, outputTokens: 2, reasoningTokens: 1 });
     });
     const runtime = await engine(adapter);
     const connection = port({ executeTool });
@@ -623,7 +676,7 @@ describe("Chat embedded companion runtime", () => {
       } }] }, "tool_calls", { inputTokens: 10, outputTokens: 3 });
       expect(request.messages).toContainEqual(expect.objectContaining({ role: "tool", tool_call_id: "recovered-lookup", content: expect.stringContaining("I chose the cedar path.") }));
       return response({ content: "You chose the cedar path, love." }, "stop", { inputTokens: 12, outputTokens: 4 });
-    } }, async () => response({ content: JSON.stringify({ requests: [independent] }) }, "stop", { inputTokens: 6, outputTokens: 2 }));
+    } }, async () => response({ content: `> ${independent}` }, "stop", { inputTokens: 6, outputTokens: 2 }));
     const runtime = await engine(adapter, undefined, mode === "normal" ? memoryPorts : {});
     const connection = port({ executeTool });
     await runtime.run(value, connection.runtimePort);
@@ -649,7 +702,7 @@ describe("Chat embedded companion runtime", () => {
     const executeTool = vi.fn<CompanionRuntimePort["executeTool"]>();
     const native = vi.fn(async () => response({ content: " " }));
     const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: native }, async () =>
-      response({ content: failure === "extraction" ? "invalid" : JSON.stringify({ requests: [independent] }) }));
+      response({ content: failure === "extraction" ? "invalid" : `> ${independent}` }));
     const runtime = await engine(adapter, undefined, { maxSteps });
     const connection = port({ executeTool });
     await runtime.run(value, connection.runtimePort);
@@ -689,7 +742,7 @@ describe("Chat embedded companion runtime", () => {
       const data = JSON.parse(request.messages.at(-1).content);
       expect(data.mainReceipt).toMatchObject({ outcome: "succeeded", output: receipt });
       expect(data.existingAttachmentCard).toEqual({ attachmentId: "pending-edit", status: "awaiting_confirmation", mediaAssetId: null });
-      return response({ content: JSON.stringify({ requests: mixed ? [independent] : [] }) }, "stop", { inputTokens: 5, outputTokens: 1 });
+      return response({ content: mixed ? `> ${independent}` : "NONE" }, "stop", { inputTokens: 5, outputTokens: 1 });
     });
     const runtime = await engine(adapter);
     const connection = port({ executeTool });
@@ -730,7 +783,7 @@ describe("Chat embedded companion runtime", () => {
         expect(request.chat_template_kwargs).toEqual({ enable_thinking: true });
         const data = JSON.parse(request.messages.at(-1).content);
         expect(data.mainReceipt).toMatchObject(status === "failed" ? { outcome: "failed", attachmentId: "real-attachment" } : { output: { status, attachmentId: "real-attachment" } });
-        return response({ content: '```json\n{"requests":[]}\n```' }, "stop", { inputTokens: 5, outputTokens: 1 });
+        return response({ content: "NONE" }, "stop", { inputTokens: 5, outputTokens: 1 });
       });
       const runtime = await engine(adapter);
       await runtime.run(value, connection.runtimePort);
@@ -748,7 +801,7 @@ describe("Chat embedded companion runtime", () => {
     }
   });
 
-  it.each(["invalid-json", "invented-excerpt", "unavailable", "length"] as const)("fails the entire reply when extraction is %s", async kind => {
+  it.each(["invalid-format", "invented-excerpt", "unavailable", "length"] as const)("fails the entire reply when extraction is %s", async kind => {
     let nativeRequests = 0;
     let extractionStarted = false;
     const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
@@ -759,7 +812,8 @@ describe("Chat embedded companion runtime", () => {
     } }, async () => {
       extractionStarted = true;
       if (kind === "unavailable") throw new ProviderError("private-provider-body", "TRANSPORT");
-      return response({ content: kind === "invalid-json" ? "not JSON" : JSON.stringify({ requests: kind === "invented-excerpt" ? ["invented request"] : [] }) }, kind === "length" ? "length" : "stop");
+      const content = kind === "invalid-format" ? "unquoted text" : kind === "invented-excerpt" ? "> invented request" : "NONE";
+      return response({ content }, kind === "length" ? "length" : "stop");
     });
     const runtime = await engine(adapter);
     const connection = port();
@@ -786,7 +840,7 @@ describe("Chat embedded companion runtime", () => {
       if (!request.tools?.some(tool => tool.function.name === "request_character_media")) return blocked(url, init);
       if (request.messages.some(message => message.role === "tool")) return response({ content: "Provisional" });
       return response({ tool_calls: [{ index: 0, id: "cancel-media", function: { name: "request_character_media", arguments: JSON.stringify({ kind: "image", direction: "Mira at the observatory", subject: "companion" }) } }] }, "tool_calls");
-    } }, stage === "media_extraction" ? blocked : async () => response({ content: JSON.stringify({ requests: [independent] }) }));
+    } }, stage === "media_extraction" ? blocked : async () => response({ content: `> ${independent}` }));
     const runtime = await engine(adapter);
     const value = imageInvocation();
     value.preparedTurn.messages.at(-1)!.content += ` ${independent}`;
@@ -822,7 +876,7 @@ describe("Chat embedded companion runtime", () => {
     const value = mediaInvocation();
     value.preparedTurn.messages.at(-1)!.content = '写一句虚构台词，摄影师说：“我可以重新生成一张新图。”';
     const reply = '摄影师说：“我可以重新生成一张新图。”';
-    const extraction = vi.fn(async () => response({ content: '{"requests":[],"language":"zh"}' }));
+    const extraction = vi.fn(async () => response({ content: "zh\nNONE" }));
     const runtime = await engine(new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture",
       fetch: async () => response({ content: reply }) }, extraction));
     const connection = port();
@@ -853,15 +907,37 @@ describe("Chat embedded companion runtime", () => {
     await runtime.shutdown();
   });
 
-  it.each(["normal", "private"] as const)("reuses the %s native loop with actual non-media pairs and current-user boundaries", async mode => {
-    const value = mode === "normal" ? { ...normalInvocation(), preparedTurn: imageInvocation().preparedTurn } : imageInvocation();
-    const independent = "Also check what I said earlier and answer in one friendly sentence.";
-    value.preparedTurn.messages.at(-1)!.content = `Generate a new photo of yourself. ${independent}`;
-    value.preparedTurn.messages.splice(1, 0,
-      { id: "history-user", sourceKind: "replay", role: "user", content: "I chose the cedar path." },
-      { id: "history-assistant", sourceKind: "replay", role: "assistant", content: "The cedar path it is." },
-      { id: "preferences:user:current", sourceKind: "plugin", role: "user", content: "Their saved preferences: Follow their lead." });
+  it.each(["normal", "private"] as const)("projects one compiled Turn into both %s native loops", async mode => {
+    const base = mode === "normal" ? normalInvocation() : invocation(true);
+    const mediaRequest = "新しい写真を作ってください。\nDescribe the photo in two sentences.";
+    const independent = "请用一句话回答我之前选了哪条小路。";
+    const original = `${mediaRequest}\n${independent}`;
+    const reply = "你选了雪松小路。";
+    const policy = resolvePolicy({ modelTier: "free", unlimitedMessages: false, voiceEnabled: false, imageToolEnabled: true }, { memoryEnabled: mode === "normal" });
+    const source: BuiltContext = {
+      userLocale: "zh", hasRecentImageContext: false, imageActionMode: "paid",
+      persona: {
+        characterId: base.characterId, creatorId: null, name: "Mira", age: 31,
+        description: "A precise adult companion.", systemPrompt: "Pinned Mira Soul and Chat relationship boundary.",
+        visibility: "public", status: "approved", deletedAt: null, voiceId: null,
+        visualProfileId: null, visualProfileVersion: null, identityPrompt: null,
+        imageToolEnabled: true, contentVersion: null, release: null, characterContentVersionId: "content-1",
+        characterReleaseId: null, soulFingerprint: "a".repeat(64), compilerVersion: "character-soul-3",
+      },
+      policy: { ...policy, modelProfile: { ...policy.modelProfile, provider: "openai", model: "fixture", baseUrl: "https://provider.example/v1", supportsTools: true, maxOutputTokens: 1_500 } },
+      contextDirectives: [{ id: "style", kind: "custom_instruction", version: 1, content: "Follow their lead." }],
+      recentMessages: [
+        { id: "history-user", role: "user", content: "I chose the cedar path." },
+        { id: "history-assistant", role: "assistant", content: "The cedar path it is." },
+        { id: "current", role: "user", content: original },
+      ],
+      scene: { schemaVersion: 1, version: 1, location: "the library", time: "tonight", participants: ["Mira"], emotionalBeat: "calm", unresolvedThreads: [] },
+      sceneVersion: 1, lastExchangeAt: null, dropped: [], contextRevision: 0n,
+    };
+    const { context: _context, ...preparedTurn } = compilePreparedTurn(source, "current", new Date("2026-08-24T15:04:00Z"));
+    const value = companionInvocationSchema.parse({ ...base, preparedTurn });
     const requests: WireRequest[] = [];
+    const extractions: WireRequest[] = [];
     const firstLookup = mode === "normal" ? "memory_search" : "igrep_search";
     const call = (name: string, id: string, args: unknown) => response({ tool_calls: [{ index: 0, id, function: { name, arguments: JSON.stringify(args) } }] }, "tool_calls", { inputTokens: 4, outputTokens: 1 });
     const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: async (_url, init) => {
@@ -874,23 +950,50 @@ describe("Chat embedded companion runtime", () => {
       expect(names).toContain("igrep_search");
       expect(names.includes("memory_search")).toBe(mode === "normal");
       expect(names.some(name => ["request_character_media", "edit_last_image", "resend_session_media"].includes(name))).toBe(false);
-      expect(JSON.stringify(request.messages)).not.toContain("Generate a new photo of yourself.");
+      expect(JSON.stringify(request.messages)).not.toContain("新しい写真を作ってください");
+      expect(JSON.stringify(request.messages)).not.toContain("Describe the photo in two sentences.");
       expect(JSON.stringify(request.messages)).not.toContain("single-media");
-      expect(request.messages).toContainEqual(expect.objectContaining({ role: "tool", tool_call_id: "prior-lookup" }));
+      expect(request.messages).toContainEqual(requests[1]!.messages.find(message => message.role === "tool" && message.tool_call_id === "prior-lookup"));
+      expect(request.messages.some(message => message.tool_calls?.some(tool => tool.id === "prior-lookup" && tool.function.name === firstLookup))).toBe(true);
       expect(request.messages).toContainEqual(expect.objectContaining({ role: "user", content: independent }));
       expect(request.messages.some(message => message.content?.includes("<context>\nTheir saved preferences"))).toBe(true);
       expect(request.messages.some(message => message.content === "I chose the cedar path.")).toBe(true);
       expect(request.messages[0]!.content).toContain("Pinned Mira Soul");
-      return requests.length === 3 ? call("session_recall", "body-lookup", {}) : response({ content: "You chose the cedar path, love." }, "stop", { inputTokens: 4, outputTokens: 1 });
-    } }, async () => response({ content: JSON.stringify({ requests: [independent] }) }, "stop", { inputTokens: 4, outputTokens: 1 }));
+      expect(request.messages[0]!.content).not.toContain(COMPANION_MEDIA_REQUEST_GUIDANCE);
+      return requests.length === 3 ? call("session_recall", "body-lookup", {}) : response({ content: reply }, "stop", { inputTokens: 4, outputTokens: 1 });
+    } }, async (_url, init) => {
+      extractions.push(JSON.parse(String(init?.body)));
+      return response({ content: `> ${independent}` }, "stop", { inputTokens: 4, outputTokens: 1 });
+    });
     const runtime = await engine(adapter, undefined, mode === "normal" ? memoryPorts : { runIgrep: async () => ({ results: [] }) });
     const connection = port();
     await runtime.run(value, connection.runtimePort);
     expect(requests).toHaveLength(4);
-    expect(connection.events.filter(event => event.type === "text_delta").map(event => event.delta)).toEqual(["You chose the cedar path, love."]);
+    expect(extractions).toHaveLength(1);
+    expect(JSON.parse(extractions[0]!.messages.at(-1)!.content).originalUserRequest).toBe(original);
+    expect(extractions[0]!.max_tokens).toBe(1_024);
+    for (const [index, request] of requests.entries()) {
+      const first = index < 2;
+      const state = request.messages.find(message => message.content?.includes("Real-world clock:"))!.content;
+      expect(state).toContain("Real-world clock: 2026-08-24 15:04 UTC, Monday");
+      expect(state).toContain("Scene: at the library");
+      expect(state).toContain(first ? "They are writing in Japanese" : "They are writing in Chinese");
+      expect(state).not.toContain(first ? "They are writing in Chinese" : "They are writing in Japanese");
+      expect(state.includes("exactly 1 sentence")).toBe(!first);
+      expect(state.includes("authorized one paid photo")).toBe(first);
+      expect(request.messages[0]!.content.includes(COMPANION_MEDIA_REQUEST_GUIDANCE)).toBe(first);
+      expect(request.messages).toContainEqual(expect.objectContaining({ role: "user", content: first ? original : independent }));
+      expect(request.max_tokens).toBe(preparedTurn.profile.maxOutputTokens);
+    }
+    expect(connection.events.filter(event => event.type === "text_delta").map(event => event.delta)).toEqual([reply]);
     expect(connection.events.filter(event => event.type === "failed")).toEqual([]);
-    expect(connection.candidates[0]).toMatchObject({ content: "You chose the cedar path, love.", execution: { steps: 5, toolCalls: 1 }, mediaResponse: { attachmentId: "attachment-1" } });
+    expect(connection.candidates[0]).toMatchObject({ content: reply, execution: { steps: 5, toolCalls: 1 }, mediaResponse: { attachmentId: "attachment-1" } });
     expect(connection.candidates[0]?.modelRequests?.map(request => request.purpose)).toEqual([undefined, undefined, "media_extraction", "media_body", "media_body"]);
+    for (const request of connection.candidates[0]!.modelRequests!) {
+      const expectedBudget = preparedTurn.budget.maxInputTokens + (request.purpose === "media_extraction" ? preparedTurn.profile.maxOutputTokens - 1_024 : 0);
+      expect(request.maxInputTokens).toBe(expectedBudget);
+      expect(request.estimatedInputTokens).toBeLessThanOrEqual(expectedBudget);
+    }
     await runtime.shutdown();
   });
 
@@ -939,13 +1042,15 @@ describe("Chat embedded companion runtime", () => {
       }
       expect(result(request, "body-search")).toEqual([expect.objectContaining({ content: "Final words: cedar lantern." })]);
       return response({ content: "Your note ended with cedar lantern." }, "stop", { inputTokens: 4, outputTokens: 1 });
-    } }, async () => response({ content: JSON.stringify({ requests: [independent] }) }, "stop", { inputTokens: 4, outputTokens: 1 }));
+    } }, async () => response({ content: `> ${independent}` }, "stop", { inputTokens: 4, outputTokens: 1 }));
     const runtime = await engine(adapter, undefined, { runIgrep: async ({ args }) => {
       if (args[0] === "search") {
         const path = args.at(-1)!;
         searched.push(path);
         expect(path.endsWith("/media-body.jsonl")).toBe(true);
-        expect(JSON.parse((await readFile(path, "utf8")).trim().split("\n").at(-1)!).content).toBe(independent);
+        expect(JSON.parse((await readFile(path, "utf8")).trim().split("\n").at(-1)!)).toEqual({
+          id: value.preparedTurn.messages.at(-1)!.id, sourceKind: "current_user", role: "user", content: independent,
+        });
         return { results: [{ content: "Final words: cedar lantern.", location: { root: dirname(path), path: "media-body.jsonl", start_line: 1, end_line: 1 } }] };
       }
       expect(args[0]).toBe("read-source");
@@ -997,7 +1102,7 @@ describe("Chat embedded companion runtime", () => {
       calls++;
       if (calls === 1) return response({ tool_calls: [{ index: 0, id: "effect", function: { name: "request_character_media", arguments: JSON.stringify({ kind: "image", direction: "Mira at the cafe", subject: "companion" }) } }] }, "tool_calls");
       return response({ content: kind === "empty" ? " " : "42" }, kind === "length" ? "length" : "stop");
-    } }, async () => response({ content: JSON.stringify({ requests: [independent] }) }));
+    } }, async () => response({ content: `> ${independent}` }));
     const runtime = await engine(adapter, undefined, { maxSteps });
     const connection = port();
     await runtime.run(value, connection.runtimePort);
@@ -1020,7 +1125,7 @@ describe("Chat embedded companion runtime", () => {
       return new Response(`data: ${JSON.stringify({
         choices: [{ delta: requests === 1
           ? { tool_calls: [{ index: 0, id: "image-1", function: { name: "request_character_media", arguments: JSON.stringify({ kind: "image", direction: "Mira at the observatory", subject: "companion" }) } }] }
-          : { content: '{"requests":[]}' }, finish_reason: requests === 1 ? "tool_calls" : "stop" }],
+          : { content: "NONE" }, finish_reason: requests === 1 ? "tool_calls" : "stop" }],
         ...(requests === missingAttempt ? {} : { usage: { input_tokens: zero ? 0 : 40, output_tokens: zero ? 0 : 10 } }),
       })}\n\ndata: [DONE]\n\n`);
     };
@@ -1597,7 +1702,7 @@ describe("Chat embedded companion runtime", () => {
         : response({ reasoning_content: "PRIVATE_REVIEW", content: "A little glimpse of my evening for you." }, "stop", { inputTokens: 30, outputTokens: 14, reasoningTokens: 6 });
     } }, async (_url, init) => {
       requests.push(JSON.parse(String(init?.body)));
-      return response({ reasoning_content: "PRIVATE_REVIEW", content: '{"requests":[]}' }, "stop", { inputTokens: 30, outputTokens: 14, reasoningTokens: 6 });
+      return response({ reasoning_content: "PRIVATE_REVIEW", content: "NONE" }, "stop", { inputTokens: 30, outputTokens: 14, reasoningTokens: 6 });
     });
     const runtime = await engine(adapter);
     const connection = port();
@@ -1621,7 +1726,7 @@ describe("Chat embedded companion runtime", () => {
         } }],
       }, finish_reason: "tool_calls" }], usage: { prompt_tokens: 20, completion_tokens: 12 } })}\n\ndata: [DONE]\n\n`);
       throw new Error("A confirmed attachment must not request a provisional answer");
-    } }, async () => response({ content: '{"requests":[]}' }, "stop", { inputTokens: 30, outputTokens: 14, reasoningTokens: 6 }));
+    } }, async () => response({ content: "NONE" }, "stop", { inputTokens: 30, outputTokens: 14, reasoningTokens: 6 }));
     const runtime = await engine(adapter);
     const connection = port();
     await runtime.run(invocation(true), connection.runtimePort);
@@ -1696,7 +1801,7 @@ describe("Chat embedded companion runtime", () => {
         : response({ content: "A provisional answer must not be requested." });
     } }, async (_url, init) => {
       extractedReceipt = JSON.parse(JSON.parse(String(init?.body)).messages.at(-1).content).mainReceipt;
-      return response({ content: '{"requests":[]}' });
+      return response({ content: "NONE" });
     });
     const runtime = await engine(adapter);
     const connection = port({ executeTool: async call => {
@@ -2311,7 +2416,7 @@ describe("Chat embedded companion runtime", () => {
       }],
     })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } }));
     const extraction = vi.fn(async () => new Response(`data: ${JSON.stringify({
-      choices: [{ delta: { content: JSON.stringify({ requests: [], language: "zh" }) }, finish_reason: "stop" }],
+      choices: [{ delta: { content: "zh\nNONE" }, finish_reason: "stop" }],
     })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } }));
     const runtime = await engine(new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: native }, extraction));
     const connection = port({

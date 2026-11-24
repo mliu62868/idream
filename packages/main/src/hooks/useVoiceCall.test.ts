@@ -21,7 +21,9 @@ class Recorder {
   stop() { this.state = "inactive"; queueMicrotask(() => { this.ondataavailable?.({ data: new Blob(["speech"], { type: "audio/webm" }) }); this.onstop?.(); }); }
 }
 class Context {
+  static instances: Context[] = [];
   close = vi.fn(async () => undefined);
+  constructor() { Context.instances.push(this); }
   createAnalyser() { return { fftSize: 1024, getFloatTimeDomainData: (samples: Float32Array) => samples.fill(level) }; }
   createMediaStreamSource() { return { connect: vi.fn() }; }
 }
@@ -47,7 +49,7 @@ async function flush() { await act(async () => { for (let i = 0; i < 25; i++) aw
 async function connect(useMicrophone = true) { await act(async () => { await voice.prepare(4); }); await act(async () => { await voice.connect(useMicrophone); }); }
 function utterancePosts() { return fetcher.mock.calls.filter(([url, init]) => /\/utterances\/[^/]+$/.test(url) && init?.method === "POST"); }
 beforeEach(() => {
-  vi.useFakeTimers(); sessionStorage.clear(); serverCall = null; level = 0; Recorder.instances = []; Player.instances = [];
+  vi.useFakeTimers(); sessionStorage.clear(); serverCall = null; level = 0; Recorder.instances = []; Context.instances = []; Player.instances = [];
   onTurn.mockClear(); beforeConnect.mockClear(); track = { stop: vi.fn(), onended: null };
   getUserMedia = vi.fn().mockResolvedValue({ getTracks: () => [track] });
   Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia } });
@@ -281,6 +283,203 @@ describe("mounted Call microphone and playback ownership", () => {
     expect(track.stop).toHaveBeenCalledOnce(); expect(voice.call?.status).toBe("muted");
     await act(async () => { await voice.toggleMute(); }); expect(getUserMedia).toHaveBeenCalledTimes(2); expect(voice.phase).toBe("listening");
     await act(async () => { await voice.end(); }); expect(track.stop).toHaveBeenCalledTimes(2); expect(voice.call?.status).toBe("ended");
+  });
+  it.each(["end", "mute"])("releases a late unmute stream as soon as %s starts, before Main acknowledges it", async action => {
+    await render(); await connect();
+    await act(async () => voice.toggleMute());
+    const permission = deferred<MediaStream>();
+    const lateTrack = { stop: vi.fn(), onended: null };
+    getUserMedia.mockReturnValueOnce(permission.promise);
+    let unmuting!: Promise<void>;
+    await act(async () => { unmuting = voice.toggleMute(); });
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+
+    const base = fetcher.getMockImplementation()!;
+    const acknowledged = deferred<void>();
+    fetcher.mockImplementation(async (url, init) => {
+      if (url.endsWith(`/${action}`)) await acknowledged.promise;
+      return base(url, init);
+    });
+    let stopping!: Promise<void>;
+    await act(async () => { stopping = action === "end" ? voice.end() : voice.toggleMute(); });
+    expect(voice.call?.status).toBe("active");
+    await act(async () => { permission.resolve({ getTracks: () => [lateTrack] } as unknown as MediaStream); await unmuting; });
+    expect(lateTrack.stop).toHaveBeenCalledOnce();
+    expect(voice.microphoneActive).toBe(false);
+    expect(Recorder.instances).toHaveLength(1);
+    expect(utterancePosts()).toHaveLength(0);
+
+    await act(async () => { acknowledged.resolve(); await stopping; });
+    expect(voice.phase).toBe(action === "end" ? "ended" : "muted");
+  });
+  it("stops an older unmute stream without disturbing the current microphone", async () => {
+    await render(); await connect();
+    await act(async () => voice.toggleMute());
+    const older = deferred<MediaStream>();
+    const newer = deferred<MediaStream>();
+    const olderTrack = { stop: vi.fn(), onended: null };
+    const newerTrack = { stop: vi.fn(), onended: null };
+    getUserMedia.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+    let olderUnmute!: Promise<void>;
+    let newerUnmute!: Promise<void>;
+    await act(async () => { olderUnmute = voice.toggleMute(); });
+    await act(async () => voice.toggleMute());
+    await act(async () => { newerUnmute = voice.toggleMute(); });
+    await act(async () => { newer.resolve({ getTracks: () => [newerTrack] } as unknown as MediaStream); await newerUnmute; });
+    await act(async () => { older.resolve({ getTracks: () => [olderTrack] } as unknown as MediaStream); await olderUnmute; });
+
+    expect(olderTrack.stop).toHaveBeenCalledOnce();
+    expect(newerTrack.stop).not.toHaveBeenCalled();
+    expect(Recorder.instances).toHaveLength(2);
+    expect(Context.instances).toHaveLength(2);
+    expect(Context.instances[1].close).not.toHaveBeenCalled();
+    expect(voice.microphoneActive).toBe(true);
+    expect(voice.phase).toBe("listening");
+    await act(async () => voice.end());
+    expect(newerTrack.stop).toHaveBeenCalledOnce();
+    expect(Context.instances[1].close).toHaveBeenCalledOnce();
+  });
+  it("does not reopen the microphone when an earlier unmute acknowledgement arrives after End", async () => {
+    await render(); await connect();
+    await act(async () => voice.toggleMute());
+    const base = fetcher.getMockImplementation()!;
+    const acknowledged = deferred<void>();
+    fetcher.mockImplementation(async (url, init) => {
+      const receipt = await base(url, init);
+      if (url.endsWith("/unmute")) await acknowledged.promise;
+      return receipt;
+    });
+    let unmuting!: Promise<void>;
+    await act(async () => { unmuting = voice.toggleMute(); });
+    await act(async () => voice.end());
+    await act(async () => { acknowledged.resolve(); await unmuting; });
+
+    expect(voice.call?.status).toBe("ended");
+    expect(voice.phase).toBe("ended");
+    expect(getUserMedia).toHaveBeenCalledOnce();
+    expect(Recorder.instances).toHaveLength(1);
+  });
+  it("releases the microphone held during Call admission immediately on End", async () => {
+    await render(); await act(async () => voice.prepare(4));
+    const base = fetcher.getMockImplementation()!;
+    const admitted = deferred<void>();
+    fetcher.mockImplementation(async (url, init) => {
+      if (url.endsWith("/voice-call") && init?.method === "POST") await admitted.promise;
+      return base(url, init);
+    });
+    let connecting!: Promise<void>;
+    await act(async () => { connecting = voice.connect(); });
+    expect(fetcher.mock.calls.some(([url, init]) => url.endsWith("/voice-call") && init?.method === "POST")).toBe(true);
+    await act(async () => voice.end());
+    expect(track.stop).toHaveBeenCalledOnce();
+    expect(Recorder.instances).toHaveLength(0);
+    await act(async () => { admitted.resolve(); await connecting; });
+    expect(track.stop).toHaveBeenCalledOnce();
+    expect(Recorder.instances).toHaveLength(0);
+    expect(voice.microphoneActive).toBe(false);
+  });
+  it("keeps End authoritative when Resume is clicked before the End receipt", async () => {
+    await render(); await connect();
+    serverCall = { ...serverCall!, status: "disconnected" };
+    await act(async () => voice.refresh());
+    const base = fetcher.getMockImplementation()!;
+    const acknowledged = deferred<void>();
+    fetcher.mockImplementation(async (url, init) => {
+      if (url.endsWith("/end")) await acknowledged.promise;
+      return base(url, init);
+    });
+    let ending!: Promise<void>;
+    await act(async () => { ending = voice.end(); });
+    await act(async () => voice.resume());
+    expect(getUserMedia).toHaveBeenCalledOnce();
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/resume"))).toHaveLength(0);
+
+    await act(async () => { acknowledged.resolve(); await ending; });
+    expect(voice.phase).toBe("ended");
+    expect(voice.microphoneActive).toBe(false);
+  });
+  it("returns to the accepted quote after the page hides during microphone permission", async () => {
+    await render(); await act(async () => voice.prepare(4));
+    const permission = deferred<MediaStream>();
+    getUserMedia.mockReturnValueOnce(permission.promise);
+    let connecting!: Promise<void>;
+    await act(async () => { connecting = voice.connect(); });
+    await act(async () => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(voice.phase).toBe("confirm");
+    expect(voice.quote?.quoteToken).toBe("signed");
+    await act(async () => { permission.resolve({ getTracks: () => [track] } as unknown as MediaStream); await connecting; });
+    expect(track.stop).toHaveBeenCalledOnce();
+    expect(fetcher.mock.calls.some(([url, init]) => url.endsWith("/voice-call") && init?.method === "POST")).toBe(false);
+    expect(voice.microphoneActive).toBe(false);
+  });
+  it("releases provisional capture when Resume returns an already ended Call", async () => {
+    await render(); await connect(false);
+    serverCall = { ...serverCall!, status: "disconnected" };
+    await act(async () => voice.refresh());
+    const base = fetcher.getMockImplementation()!;
+    fetcher.mockImplementation((url, init) => url.endsWith("/resume")
+      ? Promise.resolve(Response.json({ call: { ...serverCall!, status: "ended" } }))
+      : base(url, init));
+    await act(async () => voice.resume());
+    expect(getUserMedia).toHaveBeenCalledOnce();
+    expect(track.stop).toHaveBeenCalledOnce();
+    expect(Recorder.instances).toHaveLength(0);
+    expect(voice.phase).toBe("ended");
+  });
+  it("mutes immediately while an earlier interrupt is awaiting its receipt", async () => {
+    await render(); await connect();
+    const base = fetcher.getMockImplementation()!;
+    const acknowledged = deferred<void>();
+    fetcher.mockImplementation(async (url, init) => {
+      const receipt = await base(url, init);
+      if (url.endsWith("/interrupt")) await acknowledged.promise;
+      return receipt;
+    });
+    let interrupting!: Promise<void>;
+    await act(async () => { interrupting = voice.interrupt(); });
+    await act(async () => voice.toggleMute());
+    expect(track.stop).toHaveBeenCalledOnce();
+    expect(voice.phase).toBe("muted");
+    await act(async () => { acknowledged.resolve(); await interrupting; });
+
+    expect(voice.call?.status).toBe("muted");
+    expect(voice.phase).toBe("muted");
+    expect(voice.microphoneActive).toBe(false);
+  });
+  it("releases capture when Main no longer reports the Call lease and ignores an earlier heartbeat", async () => {
+    await render(); await connect();
+    const base = fetcher.getMockImplementation()!;
+    const acknowledged = deferred<void>();
+    fetcher.mockImplementation(async (url, init) => {
+      const receipt = await base(url, init);
+      if (url.endsWith("/heartbeat")) await acknowledged.promise;
+      return receipt;
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(4100); });
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/heartbeat"))).toHaveLength(1);
+    serverCall = { ...serverCall!, leaseToken: "" };
+    await act(async () => voice.refresh());
+    expect(track.stop).toHaveBeenCalledOnce();
+    expect(voice.phase).toBe("disconnected");
+    await act(async () => acknowledged.resolve()); await flush();
+    await act(async () => voice.submitRecording(new Blob(["Late attempt"]))); await flush();
+
+    expect(voice.call?.leaseToken).toBe("");
+    expect(voice.microphoneActive).toBe(false);
+    expect(utterancePosts()).toHaveLength(0);
+  });
+  it("closes a partially initialized capture exactly once", async () => {
+    vi.spyOn(Context.prototype, "createMediaStreamSource").mockImplementationOnce(() => { throw new Error("Microphone setup failed"); });
+    await render(); await connect();
+
+    expect(track.stop).toHaveBeenCalledOnce();
+    expect(Context.instances).toHaveLength(1);
+    expect(Context.instances[0].close).toHaveBeenCalledOnce();
+    expect(Recorder.instances).toHaveLength(0);
+    expect(voice.microphoneActive).toBe(false);
   });
   it("never plays a late voice result after End or an account change", async () => {
     const result = deferred<Response>(), base = fetcher.getMockImplementation()!;

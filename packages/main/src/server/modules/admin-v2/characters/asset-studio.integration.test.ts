@@ -388,7 +388,7 @@ describe.sequential("Character image placement authority", () => {
         character_hero: heroAssetId,
         character_chat: chatAssetId,
       },
-      deepLink: `/admin/characters/${characterId}?tab=preview`,
+      deepLink: `/admin/characters/${characterId}?tab=release`,
     });
 
     await expect(prisma.characterProject.findUniqueOrThrow({

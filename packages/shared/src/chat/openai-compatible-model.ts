@@ -1,5 +1,5 @@
 import { pipelineEndpoint } from "../contracts/env";
-import type { ChatModelProfile } from "./model-profile";
+import { chatThinkingParameters, type ChatModelProfile } from "./model-profile";
 
 export interface ChatChunk {
   delta: string;
@@ -108,7 +108,7 @@ export class OpenAICompatibleChatModel implements OpenAICompatibleChatModelContr
           // INTENT: only source of real token counts — without it the caller can
           // only estimate from characters, which badly undercounts CJK.
           stream_options: { include_usage: true },
-          chat_template_kwargs: { enable_thinking: false },
+          ...chatThinkingParameters(model, false),
           ...(input.tools?.length
             ? {
                 tools: input.tools.map((tool) => ({
@@ -204,7 +204,7 @@ export class OpenAICompatibleChatModel implements OpenAICompatibleChatModelContr
           // schema obeyed, not personality — no top_p/repetition_penalty either,
           // both of which fight the repeated punctuation JSON legitimately needs.
           temperature: this.profile.structuredTemperature,
-          chat_template_kwargs: { enable_thinking: false },
+          ...chatThinkingParameters(model, false),
           ...(input.responseFormat
             ? { response_format: { type: input.responseFormat } }
             : {}),

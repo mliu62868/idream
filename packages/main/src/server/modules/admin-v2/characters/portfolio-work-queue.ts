@@ -70,17 +70,13 @@ export async function workQueueCharacterIds(
     ready_to_publish: new Set<string>(),
   };
   for (const [characterId, journey] of journeys) {
-    const code = journey.primaryAction.code;
-    if (
-      journey.release.currentReleaseId &&
-      (journey.release.pendingRevision !== null || code === "preview_character")
-    ) {
+    if (journey.hasPendingChanges) {
       queues.pending_changes.add(characterId);
     }
     if (journey.release.candidateReleaseId) {
       queues.candidate_unpublished.add(characterId);
     }
-    if (code === "retry_failed_image_run" || code === "resolve_unknown_image_run") {
+    if (journey.imageRunNeedsAttention) {
       queues.recent_generation_failed.add(characterId);
     }
     if (journey.status === "ready" && !publishBlocked.has(characterId)) {

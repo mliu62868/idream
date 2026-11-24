@@ -241,7 +241,7 @@ export async function confirmChatImageEdit(userId: string, attachmentId: string,
     const source = await tx.mediaAsset.findFirst({ where: { id: draft.sourceMediaAssetId, ...readableOwnedChatMediaWhere(userId, scope.session.characterId), characterId: draft.subject === "scene" ? null : scope.session.characterId } });
     if (!source || !isReadableChatMedia(source)) throw Errors.gone(SOURCE_UNAVAILABLE);
     await transitionToolEffectAttachment(tx, current, { to: "awaiting_confirmation", metadata: { ...record(current.metadata), editConfirmation: { fingerprint, idempotencyKey: key, confirmationId: pin.confirmationId, confirmedAt: pin.confirmedAt } } });
-    return admit(tx);
+    return (await admit(tx)).job;
   }, { timeout: 30_000 });
   await wakeQueuedGenerationDispatch(job);
   return { attachmentId, generationJobId: job.id, status: job.status, costDreamcoins: job.costDreamcoins };

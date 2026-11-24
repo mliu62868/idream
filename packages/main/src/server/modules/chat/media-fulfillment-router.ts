@@ -28,7 +28,7 @@ import { createChatImageGenerationJob } from "@/server/modules/ourdream/service"
 import { compileChatImagePrompt, sanitizeChatImageDirection } from "@/server/modules/ourdream/generation-prompt";
 import { loadChatAuthoritySnapshot } from "./chat-authority-snapshot";
 import { deliveredChatMedia } from "./chat-media-history";
-import { schedulePaidCuratedMediaDelivery } from "./delayed-media-reveal";
+import { CuratedMediaUnavailable, schedulePaidCuratedMediaDelivery, type MediaFulfillmentReceipt } from "./delayed-media-reveal";
 import { assertToolEffectRequest, createToolEffectAttachment, failedToolEffectReceipt, transitionToolEffectAttachment } from "./tool-effect-attachment";
 import { assertChatSessionServingAuthority } from "./turn-ledger";
 import { attachmentAttempt, lockChatScope } from "./turn-scope";
@@ -55,6 +55,16 @@ const paidMediaQuoteMetadataSchema = z.object({
 }).strict();
 
 type PaidMediaQuoteMetadata = z.infer<typeof paidMediaQuoteMetadataSchema>;
+type MediaPlan = Omit<PaidMediaQuoteMetadata, "version" | "costDreamcoins">;
+type AuthorizedMedia = {
+  readonly turn: Turn;
+  readonly attempt: number;
+  readonly attachmentId: string;
+  readonly plan: MediaPlan;
+  readonly effectMetadata: Record<string, unknown>;
+  readonly requestMetadata: Record<string, unknown>;
+  readonly confirmedQuoteCost?: number;
+};
 
 export type RouteCuratedMediaDecision =
   | { readonly route: "delayed_library"; readonly entry: CharacterMediaLibraryEntry; readonly score: number }
@@ -246,7 +256,10 @@ export async function fulfillCharacterMediaRequest(input: {
   if (prior) {
     assertToolEffectRequest(prior, effect.name, requestDigest);
     if (attachmentAttempt(prior.metadata) !== effect.attempt) throw Errors.conflict("This media action belongs to another Chat attempt");
-    if (prior.status !== "requesting") return requestMediaReceipt(prior, true);
+    if (prior.status !== "requesting") {
+      const current = await readMediaAttachment(judged.session.userId, attachmentId, effect.attempt, { name: effect.name, requestDigest });
+      if (current.status !== "requesting") return requestMediaReceipt(current, true);
+    }
   }
 
   if (!judged.characterContentVersionId) {
@@ -298,17 +311,18 @@ export async function fulfillCharacterMediaRequest(input: {
     ...(args.mustExclude.length ? [`Exclude: ${args.mustExclude.join(", ")}.`] : []),
   ].join(" "));
   if (direction.length > 1_200) throw Errors.badRequest("Shorten the media direction while keeping its required details.");
-  const liveNudity = args.requestedNudity === "partial" ? "unspecified" : args.requestedNudity;
-  if (decision.route === "live_gen") {
-    try {
-      compileChatImagePrompt(direction, args.subject === "scene" ? "unspecified" : liveNudity,
-        { userInstruction: args.subject === "scene" ? undefined : judged.userContent });
-    } catch (error) {
-      if (error instanceof RangeError) throw Errors.badRequest(error.message);
-      throw error;
-    }
-  }
-
+  const plan: MediaPlan = {
+    kind: args.kind,
+    direction,
+    subject: args.subject,
+    requestedNudity: args.requestedNudity,
+    mode: args.mode,
+    ...(args.orientation ? { orientation: args.orientation } : {}),
+    matchedEntryId: decision.route === "delayed_library" ? decision.entry.id : null,
+    ...(decision.route === "delayed_library" ? { matchedEntryRevision: decision.entry.revision } : {}),
+    visualProfileId: snapshot.characterVisualProfileId,
+    visualProfileVersion: snapshot.characterVisualProfileVersion,
+  };
   const effectMetadata = {
     turnId: effect.turnId,
     attempt: effect.attempt,
@@ -330,23 +344,11 @@ export async function fulfillCharacterMediaRequest(input: {
 
   // Unauthorized direct spend (`chat` mode) -> emit transparent paid quote confirmation card (0 debit).
   if (args.kind === "video" || judged.imageActionMode !== "paid") {
+    if (decision.route === "live_gen") validateLiveImageDirection(plan, judged);
     const pricingMode = args.kind === "video" ? "chat_curated_video" : "image";
     const pricing = await resolveGenerationPricingAuthority(pricingMode);
     const costDreamcoins = generationCostFromAuthority(pricing, 1, 1);
-    const quotePayload: PaidMediaQuoteMetadata = {
-      version: 1,
-      kind: args.kind,
-      costDreamcoins,
-      direction,
-      subject: args.subject,
-      requestedNudity: args.requestedNudity,
-      mode: args.mode,
-      ...(args.orientation ? { orientation: args.orientation } : {}),
-      matchedEntryId: decision.route === "delayed_library" ? decision.entry.id : null,
-      ...(decision.route === "delayed_library" ? { matchedEntryRevision: decision.entry.revision } : {}),
-      visualProfileId: snapshot.characterVisualProfileId,
-      visualProfileVersion: snapshot.characterVisualProfileVersion,
-    };
+    const quotePayload: PaidMediaQuoteMetadata = { ...plan, version: 1, costDreamcoins };
     return prisma.$transaction(async (tx) => {
       const scope = await lockChatScope(tx, {
         userId: snapshot.userId,
@@ -387,101 +389,154 @@ export async function fulfillCharacterMediaRequest(input: {
     });
   }
 
-  // Authorized direct spend (`paid` mode):
-  // Branch A: High-confidence official curated hit -> single atomic paid delayed schedule.
-  if (decision.route === "delayed_library") {
-    const scheduled = await schedulePaidCuratedMediaDelivery({
-      userId: snapshot.userId,
-      turnId: snapshot.turnId,
-      attempt: effect.attempt,
-      attachmentId,
-      entryId: decision.entry.id,
-      entryRevision: decision.entry.revision,
-      visualProfileId: snapshot.characterVisualProfileId!,
-      visualProfileVersion: snapshot.characterVisualProfileVersion!,
-      effectMetadata,
-      requestMetadata,
-    });
-    return {
-      accepted: true,
-      duplicate: scheduled.duplicate,
-      status: "accepted",
-      attachmentId: scheduled.attachmentId,
-      kind: args.kind,
-      generationJobId: null,
-      mediaAssetId: null,
-      costDreamcoins: scheduled.costDreamcoins,
-    };
+  const receipt = await fulfillAuthorizedMedia({
+    turn: judged, attempt: effect.attempt, attachmentId, plan, effectMetadata, requestMetadata,
+  }, authority);
+  return requestMediaReceipt(receipt.attachment, receipt.duplicate);
+}
+
+function liveImageNudity(plan: MediaPlan) {
+  return plan.requestedNudity === "partial" ? "unspecified" : plan.requestedNudity;
+}
+
+function validateLiveImageDirection(plan: MediaPlan, turn: Turn) {
+  try {
+    compileChatImagePrompt(plan.direction, plan.subject === "scene" ? "unspecified" : liveImageNudity(plan),
+      { userInstruction: plan.subject === "scene" ? undefined : turn.userContent });
+  } catch (error) {
+    if (error instanceof RangeError) throw Errors.badRequest(error.message);
+    throw error;
+  }
+}
+
+function assertMediaEffect(attachment: ChatTurnAttachment, effect: Record<string, unknown>) {
+  if (typeof effect.requestDigest === "string") {
+    assertToolEffectRequest(attachment, String(effect.name), effect.requestDigest);
+  }
+}
+
+async function readMediaAttachment(userId: string, attachmentId: string, attempt: number, effect: Record<string, unknown>) {
+  return prisma.$transaction(async (tx) => {
+    const scope = await lockChatScope(tx, { userId, at: { attachment: attachmentId },
+      expect: { attempt, attachmentAttemptMatchesTurn: true } });
+    if (scope.session.status !== "active") throw Errors.gone("Chat session is archived");
+    const attachment = scope.attachment!;
+    assertMediaEffect(attachment, effect);
+    return attachment;
+  });
+}
+
+async function fulfillAuthorizedMedia(
+  input: AuthorizedMedia,
+  authority?: Awaited<ReturnType<typeof loadChatAuthoritySnapshot>>,
+): Promise<MediaFulfillmentReceipt> {
+  const { turn, attempt, attachmentId, plan, effectMetadata, requestMetadata, confirmedQuoteCost } = input;
+  const userId = turn.session.userId;
+  if (plan.matchedEntryId && plan.visualProfileId && plan.visualProfileVersion) {
+    try {
+      const receipt = await schedulePaidCuratedMediaDelivery({
+        userId,
+        turnId: turn.id,
+        attempt,
+        attachmentId,
+        entryId: plan.matchedEntryId,
+        kind: plan.kind,
+        entryRevision: plan.matchedEntryRevision,
+        visualProfileId: plan.visualProfileId,
+        visualProfileVersion: plan.visualProfileVersion,
+        confirmedQuoteCost,
+        effectMetadata,
+        requestMetadata,
+      });
+      if (receipt.attachment.status !== "requesting") return receipt;
+      // The exact action had already reserved the live branch before this read.
+    } catch (error) {
+      if (!(error instanceof CuratedMediaUnavailable) || plan.kind !== "image" || plan.mode !== "auto") throw error;
+      logger.info({ attachmentId }, "Curated image is unavailable for this authorized action");
+    }
   }
 
-  // A live request reserves its exact attachment before entering Generation admission.
-  const racedReceipt = await prisma.$transaction(async (tx) => {
-    const scope = await lockChatScope(tx, {
-      userId: snapshot.userId,
-      at: { turn: effect.turnId },
-      expect: { attempt: effect.attempt, assistantStatus: ["pending", "generating"] },
-    });
-    if (scope.session.status !== "active") throw Errors.gone("Chat session is archived");
-    const existing = await tx.chatTurnAttachment.findUnique({ where: { id: attachmentId } });
-    if (existing) {
-      assertToolEffectRequest(existing, effect.name, requestDigest);
-      if (existing.status !== "requesting") return requestMediaReceipt(existing, true);
-      return;
-    }
-    await assertChatSessionServingAuthority(tx, snapshot.userId, scope.session);
-    await createToolEffectAttachment(tx, {
-      id: attachmentId,
-      turn: scope.turn!,
-      kind: "generated_image",
-      attempt: effect.attempt,
-      promptHint: direction,
-      metadata: {
-        effect: effectMetadata,
-        request: requestMetadata,
-      },
-    });
+  if (plan.kind !== "image" || plan.mode === "existing_only") {
+    throw Errors.conflict("This curated media is no longer available");
+  }
+  if (!turn.characterContentVersionId) throw Errors.gone("Chat Turn has no immutable Character content pin");
+  authority ??= await loadChatAuthoritySnapshot(userId, {
+    characterId: turn.session.characterId,
+    contentVersionId: turn.characterContentVersionId,
+    releaseId: turn.characterReleaseId,
+    visualProfileId: turn.characterVisualProfileId,
+    visualProfileVersion: turn.characterVisualProfileVersion,
   });
-  if (racedReceipt) return racedReceipt;
+  if (!authority.entitlement.imageToolEnabled || authority.character?.imageToolEnabled !== true) {
+    throw Errors.forbidden("Image generation is unavailable for this Chat");
+  }
+  validateLiveImageDirection(plan, turn);
 
-  await createChatImageGenerationJob(
-    {
+  if (confirmedQuoteCost === undefined) {
+    const existing = await prisma.$transaction(async (tx) => {
+      const scope = await lockChatScope(tx, {
+        userId,
+        at: { turn: turn.id },
+        expect: { attempt, assistantStatus: ["pending", "generating"] },
+      });
+      if (scope.session.status !== "active") throw Errors.gone("Chat session is archived");
+      const existing = await tx.chatTurnAttachment.findUnique({ where: { id: attachmentId } });
+      if (existing) {
+        assertMediaEffect(existing, effectMetadata);
+        if (existing.turnId !== turn.id || attachmentAttempt(existing.metadata) !== attempt) {
+          throw Errors.conflict("This media action belongs to another Chat attempt");
+        }
+        return existing.status === "requesting" ? null : existing;
+      }
+      await assertChatSessionServingAuthority(tx, userId, scope.session);
+      await createToolEffectAttachment(tx, {
+        id: attachmentId, turn: scope.turn!, kind: "generated_image", attempt,
+        promptHint: plan.direction, metadata: { effect: effectMetadata, request: requestMetadata },
+      });
+      return null;
+    });
+    if (existing) return { attachment: existing, duplicate: true };
+  }
+
+  let duplicate: boolean;
+  try {
+    ({ duplicate } = await createChatImageGenerationJob({
       version: 1,
       kind: "chat.image.requested",
-      requestId: `chat-tool:${attachmentId}`,
+      requestId: (confirmedQuoteCost === undefined ? "chat-tool:" : "chat-quote:") + attachmentId,
       attachmentId,
-      sessionId: judged.sessionId,
-      exchangeId: judged.id,
-      messageId: judged.assistantMessageId,
-      userId: snapshot.userId,
-      characterId: snapshot.characterId,
-      subject: args.subject,
-      ...(judged.characterReleaseId ? { characterReleaseId: judged.characterReleaseId } : {}),
-      promptHint: direction,
-      conversationContext: judged.userContent,
-      intent: { requestedNudity: liveNudity },
-      controls: {
-        orientation: imageOrientation[args.orientation ?? "portrait"],
-        outputCount: 1,
-      },
-      ...(judged.characterVisualProfileId && judged.characterVisualProfileVersion
-        ? {
-            visualProfileId: judged.characterVisualProfileId,
-            visualProfileVersion: judged.characterVisualProfileVersion,
-          }
-        : {}),
-      ...(authority.character?.release
-        ? {
-            releaseSnapshotHash: authority.character.release.snapshotHash,
-            referenceSetRevisionId: authority.character.release.referenceSetRevisionId ?? undefined,
-          }
-        : {}),
-    },
-    effect.attempt,
-  );
+      sessionId: turn.sessionId,
+      exchangeId: turn.id,
+      messageId: turn.assistantMessageId,
+      userId,
+      characterId: turn.session.characterId,
+      subject: plan.subject,
+      ...(turn.characterReleaseId ? { characterReleaseId: turn.characterReleaseId } : {}),
+      promptHint: plan.direction,
+      conversationContext: turn.userContent,
+      intent: { requestedNudity: liveImageNudity(plan) },
+      controls: { orientation: imageOrientation[plan.orientation ?? "portrait"], outputCount: 1 },
+      ...(turn.characterVisualProfileId && turn.characterVisualProfileVersion ? {
+        visualProfileId: turn.characterVisualProfileId,
+        visualProfileVersion: turn.characterVisualProfileVersion,
+      } : {}),
+      ...(authority.character?.release ? {
+        releaseSnapshotHash: authority.character.release.snapshotHash,
+        referenceSetRevisionId: authority.character.release.referenceSetRevisionId ?? undefined,
+      } : {}),
+    }, attempt, confirmedQuoteCost));
+  } catch (error) {
+    if (!(error instanceof AppError) || error.code !== "conflict") throw error;
+    // If a concurrent confirmation delivered stock while generation was being
+    // prepared, generation's lock rejects the spend. Replay the actual receipt.
+    const attachment = await readMediaAttachment(userId, attachmentId, attempt, effectMetadata);
+    if (attachment.generationJobId || record(attachment.metadata).paidCuratedDelivery === true) {
+      return { attachment, duplicate: true };
+    }
+    throw error;
+  }
 
-  const current = await prisma.chatTurnAttachment.findUnique({ where: { id: attachmentId } });
-  if (!current) throw Errors.gone("The image action is no longer available");
-  return requestMediaReceipt(current, false);
+  return { attachment: await readMediaAttachment(userId, attachmentId, attempt, effectMetadata), duplicate };
 }
 
 /**
@@ -569,136 +624,47 @@ export async function resendSessionMediaRequest(input: {
   }, { timeout: 15_000 });
 }
 
-/**
- * Confirms an `awaiting_confirmation` paid media quote card (`5` coins image or
- * `30` coins curated video). Uses the cached matched entry when still valid,
- * seamlessly falls back to 5-coin live Gen for images, and NEVER silently
- * upgrades a 30-coin video quote to 100-coin live video.
- */
-export async function confirmChatMediaQuote(userId: string, attachmentId: string) {
-  const initial = await prisma.chatTurnAttachment.findFirst({
-    where: { id: attachmentId, turn: { session: { userId, status: "active" } } },
-    include: { turn: { include: { session: true } } },
-  });
-  if (!initial) throw Errors.notFound("Media quote not found");
-  const meta = record(initial.metadata);
-  if (meta.confirmationKind !== "paid_media_quote") {
-    throw Errors.conflict("This attachment is not a paid media quote");
-  }
-  const quote = paidMediaQuoteMetadataSchema.safeParse(meta.paidMediaQuote);
+function readPaidMediaQuote(attachment: ChatTurnAttachment): PaidMediaQuoteMetadata {
+  const metadata = record(attachment.metadata);
+  if (metadata.confirmationKind !== "paid_media_quote") throw Errors.conflict("This attachment is not a paid media quote");
+  const quote = paidMediaQuoteMetadataSchema.safeParse(metadata.paidMediaQuote);
   if (!quote.success) throw Errors.conflict("This media quote is invalid");
+  return quote.data;
+}
 
-  if (initial.status === "accepted" || initial.status === "completed") {
-    return {
-      attachmentId: initial.id,
-      status: initial.status,
-      kind: quote.data.kind,
-      costDreamcoins: quote.data.costDreamcoins,
-      generationJobId: initial.generationJobId,
-      duplicate: true,
-    };
-  }
-  if (initial.status !== "awaiting_confirmation") {
+function paidMediaQuoteReceipt({ attachment, duplicate }: MediaFulfillmentReceipt, quote: PaidMediaQuoteMetadata) {
+  if (!["accepted", "completed"].includes(attachment.status) &&
+      !attachment.generationJobId && record(attachment.metadata).paidCuratedDelivery !== true) {
     throw Errors.conflict("This media quote can no longer be confirmed");
   }
-
-  // Attempt fast delayed curated fulfillment when we have a matched official entry.
-  if (quote.data.matchedEntryId && quote.data.visualProfileId && quote.data.visualProfileVersion) {
-    try {
-      const scheduled = await schedulePaidCuratedMediaDelivery({
-        userId,
-        turnId: initial.turnId,
-        attempt: attachmentAttempt(initial.metadata) ?? initial.turn.attempt,
-        attachmentId: initial.id,
-        entryId: quote.data.matchedEntryId,
-        entryRevision: quote.data.matchedEntryRevision,
-        visualProfileId: quote.data.visualProfileId,
-        visualProfileVersion: quote.data.visualProfileVersion,
-        confirmedQuoteCost: quote.data.costDreamcoins,
-        effectMetadata: record(meta.effect),
-        requestMetadata: record(meta.request),
-      });
-      return {
-        attachmentId: scheduled.attachmentId,
-        status: "accepted" as const,
-        kind: quote.data.kind,
-        costDreamcoins: scheduled.costDreamcoins,
-        generationJobId: null,
-        duplicate: scheduled.duplicate,
-      };
-    } catch (error) {
-      // Only an automatic image request may fall back to live generation.
-      if (quote.data.kind !== "image" || quote.data.mode !== "auto"
-        || !(error instanceof AppError) || error.code !== "conflict") throw error;
-      logger.info({ attachmentId }, "Curated image quote requires live generation");
-
-    }
-  }
-
-  if (quote.data.kind === "video" || quote.data.mode === "existing_only") {
-    throw Errors.conflict("This curated media is no longer available");
-  }
-
-  // Seamless 5-coin image live Gen fallback on the exact same attachmentId.
-  const turn = initial.turn;
-  const liveNudity = quote.data.requestedNudity === "partial" ? "unspecified" : quote.data.requestedNudity;
-  const authority = turn.characterContentVersionId
-    ? await loadChatAuthoritySnapshot(userId, {
-        characterId: turn.session.characterId,
-        contentVersionId: turn.characterContentVersionId,
-        releaseId: turn.characterReleaseId,
-        visualProfileId: turn.characterVisualProfileId,
-        visualProfileVersion: turn.characterVisualProfileVersion,
-      })
-    : null;
-  if (!authority?.entitlement.imageToolEnabled || authority.character?.imageToolEnabled !== true) {
-    throw Errors.forbidden("Image generation is unavailable for this Chat");
-  }
-  await createChatImageGenerationJob(
-    {
-      version: 1,
-      kind: "chat.image.requested",
-      requestId: `chat-quote:${initial.id}`,
-      attachmentId: initial.id,
-      sessionId: turn.sessionId,
-      exchangeId: turn.id,
-      messageId: turn.assistantMessageId,
-      userId,
-      characterId: turn.session.characterId,
-      subject: quote.data.subject,
-      ...(turn.characterReleaseId ? { characterReleaseId: turn.characterReleaseId } : {}),
-      promptHint: quote.data.direction,
-      conversationContext: turn.userContent,
-      intent: { requestedNudity: liveNudity },
-      controls: {
-        orientation: imageOrientation[quote.data.orientation ?? "portrait"],
-        outputCount: 1,
-      },
-      ...(turn.characterVisualProfileId && turn.characterVisualProfileVersion
-        ? {
-            visualProfileId: turn.characterVisualProfileId,
-            visualProfileVersion: turn.characterVisualProfileVersion,
-          }
-        : {}),
-      ...(authority.character?.release
-        ? {
-            releaseSnapshotHash: authority.character.release.snapshotHash,
-            referenceSetRevisionId: authority.character.release.referenceSetRevisionId ?? undefined,
-          }
-        : {}),
-    },
-    attachmentAttempt(initial.metadata) ?? turn.attempt,
-    quote.data.costDreamcoins,
-  );
-  const updated = await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: initial.id } });
   return {
-    attachmentId: updated.id,
-    status: updated.status,
-    kind: "image" as const,
-    costDreamcoins: quote.data.costDreamcoins,
-    generationJobId: updated.generationJobId,
-    duplicate: false,
+    attachmentId: attachment.id,
+    status: attachment.status,
+    kind: quote.kind,
+    costDreamcoins: quote.costDreamcoins,
+    generationJobId: attachment.generationJobId,
+    duplicate,
   };
+}
+
+export async function confirmChatMediaQuote(userId: string, attachmentId: string) {
+  const { attachment, turn, attempt, quote } = await prisma.$transaction(async (tx) => {
+    const scope = await lockChatScope(tx, { userId, at: { attachment: attachmentId }, allowDeletedSession: true });
+    if (scope.session.status !== "active") throw Errors.notFound("Media quote not found");
+    const attachment = scope.attachment!;
+    const turn = { ...scope.turn!, session: scope.session };
+    const attempt = attachmentAttempt(attachment.metadata);
+    if (turn.attempt !== attempt) throw Errors.conflict("This media quote belongs to another Chat attempt");
+    return { attachment, turn, attempt, quote: readPaidMediaQuote(attachment) };
+  });
+  if (attachment.status !== "awaiting_confirmation") return paidMediaQuoteReceipt({ attachment, duplicate: true }, quote);
+  const metadata = record(attachment.metadata);
+  const receipt = await fulfillAuthorizedMedia({
+    turn, attempt, attachmentId, plan: quote,
+    effectMetadata: record(metadata.effect), requestMetadata: record(metadata.request),
+    confirmedQuoteCost: quote.costDreamcoins,
+  });
+  return paidMediaQuoteReceipt(receipt, quote);
 }
 
 export async function cancelChatMediaQuote(userId: string, attachmentId: string) {

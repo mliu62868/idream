@@ -280,7 +280,7 @@ import {
   latestGenerationAttemptStatuses,
   type GenerationJobWithRelations,
 } from "./generation-job-read-model";
-import { createGenerationJobForUser } from "./generation-job-create";
+import { createGenerationJobForUser, prepareGenerationJobForUser } from "./generation-job-create";
 import {
   quoteGenerationRetry,
   resolveGenerationRetryTarget,
@@ -2791,7 +2791,8 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
   if (options.chatAttachment && confirmedMediaQuoteCost !== undefined) {
     options.chatAttachment.confirmedMediaQuoteCost = confirmedMediaQuoteCost;
   }
-  return createGenerationJobForUser(payload.userId, body, options);
+  const admit = await prepareGenerationJobForUser(payload.userId, body, options);
+  return admit();
 }
 
 async function chatReleaseGenerationPin(payload: ChatImageRequestedPayload) {

@@ -1,7 +1,7 @@
 import { createHash, randomInt } from "node:crypto";
 import type { ChatTurnAttachment, Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
-import { Errors } from "@/server/lib/errors";
+import { AppError, Errors } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
 import { SHARED_IMMUTABLE_BLOB_LOCATOR_SCHEMA } from "@/server/lib/media-asset-authority";
 import { generationCostFromAuthority, resolveGenerationPricingAuthority } from "@/server/lib/generation-pricing";
@@ -40,6 +40,7 @@ export type SchedulePaidCuratedMediaInput = {
   readonly attempt: number;
   readonly attachmentId: string;
   readonly entryId: string;
+  readonly kind: "image" | "video";
   readonly visualProfileId: string;
   readonly visualProfileVersion: number;
   readonly effectMetadata: Record<string, unknown>;
@@ -50,13 +51,14 @@ export type SchedulePaidCuratedMediaInput = {
   readonly overrideDelayMs?: number;
 };
 
-export type SchedulePaidCuratedMediaResult = {
-  readonly attachmentId: string;
-  readonly status: "accepted";
+// Only a change to the selected stock can authorize the image fallback.
+export class CuratedMediaUnavailable extends AppError {
+  constructor(message: string) { super("conflict", message); }
+}
+
+export type MediaFulfillmentReceipt = {
+  readonly attachment: ChatTurnAttachment;
   readonly duplicate: boolean;
-  readonly kind: "generated_image" | "generated_video";
-  readonly costDreamcoins: number;
-  readonly deliverAt: Date;
 };
 
 /**
@@ -71,7 +73,7 @@ export type SchedulePaidCuratedMediaResult = {
  */
 export async function schedulePaidCuratedMediaDelivery(
   input: SchedulePaidCuratedMediaInput,
-): Promise<SchedulePaidCuratedMediaResult> {
+): Promise<MediaFulfillmentReceipt> {
   const now = input.now ?? new Date();
   return prisma.$transaction(async (tx) => {
     const scope = await lockChatScope(tx, {
@@ -79,10 +81,12 @@ export async function schedulePaidCuratedMediaDelivery(
       at: input.confirmedQuoteCost === undefined ? { turn: input.turnId } : { attachment: input.attachmentId },
       expect: { attempt: input.attempt, ...(input.confirmedQuoteCost !== undefined ? { attachmentAttemptMatchesTurn: true } : {}) },
     });
+    if (scope.session.status !== "active") throw Errors.gone("Chat session is archived");
     const turn = scope.turn!;
     const existing = scope.attachment ?? await tx.chatTurnAttachment.findUnique({ where: { id: input.attachmentId } });
     if (existing) {
-      if (attachmentAttempt(existing.metadata) !== input.attempt) {
+      if (existing.turnId !== turn.id || attachmentAttempt(existing.metadata) !== input.attempt ||
+          existing.kind !== (input.kind === "video" ? "generated_video" : "generated_image")) {
         throw Errors.conflict("This Turn already has a different media action");
       }
       const existingMeta = record(existing.metadata);
@@ -90,31 +94,24 @@ export async function schedulePaidCuratedMediaDelivery(
       if (typeof digest === "string") {
         assertToolEffectRequest(existing, String(input.effectMetadata.name), digest);
       }
-      if (["accepted", "completed"].includes(existing.status) && existing.deliverAt) {
-        return {
-          attachmentId: existing.id,
-          status: "accepted" as const,
-          duplicate: true,
-          kind: existing.kind === "generated_video" ? "generated_video" : "generated_image",
-          costDreamcoins: paidCost(existing.metadata),
-          deliverAt: existing.deliverAt,
-        };
+      if (input.confirmedQuoteCost !== undefined) {
+        const quote = record(existingMeta.paidMediaQuote);
+        if (existingMeta.confirmationKind !== "paid_media_quote" || quote.matchedEntryId !== input.entryId ||
+            quote.costDreamcoins !== input.confirmedQuoteCost ||
+            (existing.status === "awaiting_confirmation" && paidCost(existing.metadata) !== input.confirmedQuoteCost)) {
+          throw Errors.conflict("This Chat media action is no longer available");
+        }
       }
-      if (input.confirmedQuoteCost === undefined || existing.status !== "awaiting_confirmation"
-        || existingMeta.confirmationKind !== "paid_media_quote"
-        || record(existingMeta.paidMediaQuote).matchedEntryId !== input.entryId
-        || paidCost(existing.metadata) !== input.confirmedQuoteCost) {
-        throw Errors.conflict("This Chat media action is no longer available");
-      }
+      // A sibling request can have selected live generation or finished delivery.
+      // Return the same locked action, including an unpaid requesting reservation.
+      if (existing.status !== "awaiting_confirmation") return { attachment: existing, duplicate: true };
+      if (input.confirmedQuoteCost === undefined) throw Errors.conflict("This Chat media action requires confirmation");
     } else if (input.confirmedQuoteCost !== undefined) {
       throw Errors.notFound("Media quote not found");
     }
 
     if (input.confirmedQuoteCost === undefined && !["pending", "generating"].includes(turn.assistantStatus)) {
       throw Errors.conflict("Media delivery does not belong to an active Chat attempt");
-    }
-    if (scope.session.status !== "active") {
-      throw Errors.gone("Chat session is archived");
     }
 
     const characterId = scope.session.characterId;
@@ -140,6 +137,7 @@ export async function schedulePaidCuratedMediaDelivery(
     if (
       !entry
       || entry.status !== "published"
+      || entry.kind !== input.kind
       || entry.characterId !== characterId
       || entry.visualProfileId !== input.visualProfileId
       || entry.visualProfileVersion !== input.visualProfileVersion
@@ -149,9 +147,14 @@ export async function schedulePaidCuratedMediaDelivery(
       || turn.characterVisualProfileId !== input.visualProfileId
       || turn.characterVisualProfileVersion !== input.visualProfileVersion
     ) {
-      throw Errors.conflict("Curated media entry is no longer published for this Character identity");
+      throw new CuratedMediaUnavailable("Curated media entry is no longer published for this Character identity");
     }
-    await assertLibraryEntryAvailable(tx, entry, { characterId, visualProfileId: input.visualProfileId, visualProfileVersion: input.visualProfileVersion });
+    try {
+      await assertLibraryEntryAvailable(tx, entry, { characterId, visualProfileId: input.visualProfileId, visualProfileVersion: input.visualProfileVersion });
+    } catch (error) {
+      if (error instanceof AppError && error.code === "conflict") throw new CuratedMediaUnavailable(error.message);
+      throw error;
+    }
 
     // Enforce lifetime non-repeating paid delivery (survives deleted chat history).
     const existingReceipt = await tx.userCharacterLibraryReceipt.findFirst({
@@ -167,7 +170,7 @@ export async function schedulePaidCuratedMediaDelivery(
       select: { id: true },
     });
     if (existingReceipt) {
-      throw Errors.conflict("This curated media asset has already been delivered to this user");
+      throw new CuratedMediaUnavailable("This curated media asset has already been delivered to this user");
     }
 
     const mediaKind = entry.kind === "video" ? "video" : "image";
@@ -230,7 +233,7 @@ export async function schedulePaidCuratedMediaDelivery(
       promptHint: null,
       metadata,
     });
-    await transitionToolEffectAttachment(tx, attachment, {
+    const scheduled = await transitionToolEffectAttachment(tx, attachment, {
       to: "accepted",
       generationJobId: null,
       mediaAssetId: null,
@@ -238,14 +241,7 @@ export async function schedulePaidCuratedMediaDelivery(
       metadata,
     });
 
-    return {
-      attachmentId: attachment.id,
-      status: "accepted" as const,
-      duplicate: false,
-      kind: attachmentKind,
-      costDreamcoins,
-      deliverAt,
-    };
+    return { attachment: scheduled, duplicate: false };
   }, { timeout: 15_000 });
 }
 

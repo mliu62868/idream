@@ -10,7 +10,7 @@ import {
   updateDurableMutationIntent,
   type DurableMutationIntent,
 } from "@/lib/durable-mutation-intent";
-import { createOrRecoverCharacterRun } from "./creative-run-creation";
+import { createOrRecoverCharacterRun, createOrRecoverMissingCharacterImage } from "./creative-run-creation";
 
 const { request } = vi.hoisted(() => ({ request: vi.fn() }));
 vi.mock("@/lib/admin-v2-api", async (importOriginal) => ({
@@ -366,5 +366,26 @@ describe("Character creative Run creation", () => {
     await expect(create()).resolves.toMatchObject({ state: "pending", receipt: { state: "failed" } });
     expect(saved()?.idempotencyKey).toBe(old.idempotencyKey);
     expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays a lost missing-image result with the exact key and reports a candidate without a Run", async () => {
+    const fillScope = "character-asset:create-missing:actor-1:character-1:character_cover";
+    const fill = (brief: string) => createOrRecoverMissingCharacterImage({
+      scope: fillScope,
+      characterId: "character-1",
+      purpose: "character_cover",
+      draft: () => ({ ...original, bootstrapIdentity: false, brief }),
+    });
+    request.mockRejectedValueOnce(new TypeError("Reply lost after admission"));
+    await expect(fill("Original fill brief")).rejects.toThrow("Reply lost after admission");
+    const key = readActiveDurableMutationIntent({ scope: fillScope })?.idempotencyKey;
+    expect(key).toBeTruthy();
+    const skip = { reason: "candidate_available", assetId: "candidate-1" };
+    request.mockResolvedValueOnce({ skip, replayed: true });
+    await expect(fill("An edited brief")).resolves.toEqual({ result: { state: "skipped", skip }, intent: null });
+    expect(request.mock.calls.map(([, options]) => options.idempotencyKey)).toEqual([key, key]);
+    expect(request.mock.calls[0][1].body).toMatchObject({ fillMissing: true, count: 1, brief: "Original fill brief" });
+    expect(request.mock.calls[1][1].body).toEqual(request.mock.calls[0][1].body);
+    expect(readActiveDurableMutationIntent({ scope: fillScope })).toBeNull();
   });
 });

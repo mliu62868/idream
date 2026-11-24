@@ -1,4 +1,4 @@
-import { creativeRunCreateRequestSchema } from "@idream/shared/admin";
+import { creativeRunCreateRequestSchema, type CreativeRunFillSkip } from "@idream/shared/admin";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import {
@@ -27,7 +27,8 @@ type CommittedRun = {
 };
 type SupersededRun = { readonly state: "superseded" };
 type BlockedRun = { readonly state: "blocked"; readonly intent: DurableMutationIntent };
-type SubmissionResult = CommittedRun | BlockedRun | SupersededRun;
+type SkippedRun = { readonly state: "skipped"; readonly skip: CreativeRunFillSkip };
+type SubmissionResult = CommittedRun | SkippedRun | BlockedRun | SupersededRun;
 type CreateResult = SubmissionResult
   | { readonly state: "cancelled" }
   | { readonly state: "pending"; readonly receipt: RecoveryReceipt };
@@ -54,6 +55,12 @@ type CreateOptions = {
   readonly commit?: (submit: () => Promise<SubmissionResult>) => Promise<SubmissionResult>;
 };
 
+export async function createOrRecoverCharacterRun(options: CreateOptions): Promise<Exclude<CreateResult, SkippedRun>> {
+  const result = await executeCharacterRunIntent(options, false);
+  if (result.state === "skipped") throw new Error("The receipt does not match this explicit Run request.");
+  return result;
+}
+
 /**
  * SPEC: Own the complete Creative Run admission/recovery protocol. Callers provide
  * the creative request and verify its displayed projection; they never decide
@@ -62,12 +69,13 @@ type CreateOptions = {
  * Replay marking, response settlement and projection release share the claim lock.
  * HTTP stays outside that lock so a lost response cannot block another tab's recovery.
  */
-export async function createOrRecoverCharacterRun(options: CreateOptions): Promise<CreateResult> {
+async function executeCharacterRunIntent(options: CreateOptions, allowFill: boolean): Promise<CreateResult> {
   const locked = <T>(transition: () => T) => withDurableMutationIntentLock(options.scope, transition);
   const remember = (next: DurableMutationIntent | null) => options.onIntentChange(next);
   const parseRequest = (snapshot: unknown) => {
     const request = options.parseRequest(snapshot);
     return request?.targetType === "character" && request.targetId === options.characterId &&
+      (allowFill || !request.fillMissing) &&
       (!options.expectedPurpose || request.purpose === options.expectedPurpose)
       ? request : null;
   };
@@ -152,6 +160,15 @@ export async function createOrRecoverCharacterRun(options: CreateOptions): Promi
         return { state: "cancelled" };
       }
       if (receipt.state !== "committed") return { state: "pending", receipt };
+      if (receipt.verification?.kind === "creative_run_fill_skipped") {
+        const request = parseRequest(receipt.verification.requestSnapshot);
+        if (!request?.fillMissing || receipt.verification.projectId !== receipt.committedTargetId) {
+          throw new Error("The receipt does not match this Character image fill.");
+        }
+        clearDurableMutationIntent(current);
+        remember(null);
+        return { state: "skipped", skip: receipt.verification.skip };
+      }
       if (!receipt.committedTargetId || receipt.verification?.kind !== "creative_run" ||
         receipt.verification.runId !== receipt.committedTargetId) {
         throw new Error("The committed Run receipt is missing exact projection evidence. The workspace remains locked.");
@@ -200,7 +217,13 @@ export async function createOrRecoverCharacterRun(options: CreateOptions): Promi
     }
     // Record the receipt before any workspace refresh can fail. From here on,
     // recovery must only read/verify this Run; it must never submit another POST.
-    return settle((current): CommittedRun => {
+    return settle((current): CommittedRun | SkippedRun => {
+      if ("skip" in result) {
+        if (!body.fillMissing) throw new Error("The Run creation receipt does not match the requested operation.");
+        clearDurableMutationIntent(current);
+        remember(null);
+        return { state: "skipped", skip: result.skip };
+      }
       remember(updateDurableMutationIntent(current, {
         status: "committed_projection_pending", committedTargetId: result.batch.id,
       }));
@@ -209,6 +232,42 @@ export async function createOrRecoverCharacterRun(options: CreateOptions): Promi
   };
   return options.commit ? options.commit(submit) : submit();
 }
+
+export async function createOrRecoverMissingCharacterImage(options: {
+  readonly scope: string;
+  readonly characterId: string;
+  readonly purpose: RecoveryPurpose;
+  readonly draft: () => object;
+  readonly signature?: CreateOptions["signature"];
+}) {
+  // Keep intent scopes and pre-cutover signatures so existing local journals
+  // replay their original payload byte-for-byte, including the absence of fillMissing.
+  let intent = readActiveDurableMutationIntent({ scope: options.scope });
+  const result = await executeCharacterRunIntent({
+    scope: options.scope,
+    characterId: options.characterId,
+    expectedPurpose: options.purpose,
+    intent,
+    request: intent ? null : { ...options.draft(), fillMissing: true },
+    parseRequest: (snapshot) => {
+      const parsed = creativeRunCreateRequestSchema.safeParse(snapshot);
+      return parsed.success ? parsed.data : null;
+    },
+    signature: options.signature ?? ((request) => {
+      const base = { ...request };
+      delete base.fillMissing;
+      return JSON.stringify(base);
+    }),
+    onIntentChange: (next) => { intent = next; },
+  }, true);
+  return { result, intent };
+}
+
+export const characterImageFillSkipMessage: Readonly<Record<CreativeRunFillSkip["reason"], string>> = {
+  slot_filled: "This placement already has an image.",
+  candidate_available: "A selectable image already covers this placement.",
+  run_pending: "An earlier image Run still covers this placement.",
+};
 
 function isDefinitiveRejection(cause: unknown) {
   return cause instanceof AdminV2RequestError && (

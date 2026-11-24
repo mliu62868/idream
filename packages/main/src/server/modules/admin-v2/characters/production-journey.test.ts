@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import {
+  completeCharacterProductionJourney,
   imageRunIssueFromItems,
   projectCharacterProductionJourneys,
   projectCharacterProductionJourneySnapshot,
@@ -35,6 +36,72 @@ function journey(
     ...overrides,
   });
 }
+
+describe("operational next step", () => {
+  const live = { servingState: "live", currentReleaseId: "release-1", livePurposes: allPurposes } as const;
+  const activeCommand = { id: "restore-1", type: "character.project.restore", status: "running", needsReconciliation: false } as const;
+  const pendingRevision = { id: "revision-2", revision: 2, createdAt: new Date("2026-07-30") };
+  const noTraffic = { attentionReason: "no_traffic_after_window" } as const;
+  const workspaceRead = "GET /api/v2/admin/characters/:id";
+  const primary = (
+    production: Parameters<typeof journey>[0] = {},
+    facts: Partial<Parameters<typeof completeCharacterProductionJourney>[1]> = {},
+  ) => completeCharacterProductionJourney(journey({ ...live, ...production }), {
+    characterId: "character-1",
+    serving: { state: production.servingState ?? "live", currentReleaseId: production.currentReleaseId === null ? null : "release-1" },
+    currentRelease: { status: "published", legacy: false },
+    readiness: "ready",
+    qualityState: "not_requested",
+    attentionReason: null,
+    ...facts,
+  });
+
+  it.each([
+    [{ servingState: "retired", currentReleaseId: null, activeCommand }, noTraffic, "recover_active_command", "release"],
+    [{ servingState: "retired", currentReleaseId: null, referenceCount: 0 }, noTraffic, "restore_archived_draft", "release"],
+    [{ servingState: "retired" }, {}, "review_retired_character", "release"],
+    [{ pendingRevision, referenceCount: 0 }, { ...noTraffic, readiness: "blocked" }, "complete_image_route", "visual#visual-reference-set"],
+    [{ servingState: "paused" }, { readiness: "blocked" }, "review_paused_character", "release"],
+    [{ servingState: "paused", pendingRevision, draftPurposes: allPurposes }, {}, "prepare_pending_release", "release"],
+    [{ servingState: "paused", candidateReleaseId: "candidate-1", draftPurposes: allPurposes }, {}, "publish_character", "release"],
+    [{}, { ...noTraffic, readiness: "blocked" }, "resolve_live_release_blocker", "monitor"],
+    [{}, { ...noTraffic, readiness: "stale" }, "republish_stale_release", "release"],
+    [{}, { ...noTraffic, qualityState: "invalid" }, "inspect_performance_quality", "monitor"],
+    [{}, { attentionReason: "release_monitor_action" }, "review_release_monitor", "monitor"],
+    [{ hasActiveImageRun: true }, noTraffic, "inspect_no_traffic", "monitor"],
+    [{ livePurposes: ["character_cover"] }, {}, "complete_live_asset_pack", "assets"],
+    [{}, { currentRelease: { status: "published", legacy: true } }, "republish_legacy_release", "release"],
+    [{}, { ...noTraffic, currentRelease: { status: "published", legacy: true } }, "inspect_no_traffic", "monitor"],
+    [{}, {}, "monitor_live_character", "monitor"],
+  ] as const)("chooses %j with %j as %s", (production, facts, code, tab) => {
+    const result = primary(production, facts);
+    expect(result.primaryAction).toMatchObject({ code, deepLink: "/admin/characters/character-1?tab=" + tab });
+    expect(result).not.toHaveProperty("productionAction");
+  });
+
+  it("keeps generation blocking independent of a monitoring recommendation", () => {
+    const result = primary({ hasActiveImageRun: true }, noTraffic);
+    expect(result.primaryAction).toMatchObject({ code: "inspect_no_traffic", readOperations: [workspaceRead] });
+    expect(result.assetPack.generateMissingBlocker).toBe("image_run_in_progress");
+  });
+
+  it("declares both the workspace and the particular command needed for recovery", () => {
+    expect(primary({ activeCommand }).primaryAction).toMatchObject({
+      code: "recover_active_command",
+      readOperations: [workspaceRead, "GET /api/v2/admin/commands/:commandId"],
+      canReadTarget: false,
+    });
+  });
+
+  it("uses the destination's reads for platform and image actions", () => {
+    expect(primary({ pendingRevision, routeQualified: false }).primaryAction.readOperations).toEqual([
+      "GET /api/v2/admin/generation/model-profiles", "GET /api/v2/admin/feature-flags", "GET /api/v2/admin/jobs",
+    ]);
+    expect(primary({ livePurposes: ["character_cover"] }).primaryAction.readOperations).toEqual([
+      workspaceRead, "GET /api/v2/admin/characters/:id/image-sources",
+    ]);
+  });
+});
 
 describe("Character Production Journey", () => {
   it("loads a page in a bounded number of queries instead of once per Character", async () => {
@@ -162,7 +229,7 @@ describe("Character Production Journey", () => {
     expect(result).toMatchObject({
       stage: "publishing",
       status: "blocked",
-      primaryAction: {
+      productionAction: {
         code: "recover_active_command",
         deepLink: "/admin/characters/character-1?tab=release",
         command: { id: "command-1", needsReconciliation: true },
@@ -183,9 +250,9 @@ describe("Character Production Journey", () => {
     expect(result).toMatchObject({
       stage: "image_production",
       status: "in_progress",
-      primaryAction: {
+      productionAction: {
         code: "recover_active_command",
-        deepLink: "/admin/characters/character-1?tab=assets",
+        deepLink: "/admin/characters/character-1?tab=release",
       },
     });
     expect(result.steps[1]).toMatchObject({
@@ -203,7 +270,7 @@ describe("Character Production Journey", () => {
     });
     expect(result).toMatchObject({
       stage: "visual_setup",
-      primaryAction: { code: "prepare_image_production" },
+      productionAction: { code: "prepare_image_production" },
       release: { servingState: "live", currentReleaseId: "release-live" },
     });
     expect(result.steps[0]).toMatchObject({
@@ -214,7 +281,7 @@ describe("Character Production Journey", () => {
 
   it("blocks on the earliest missing visual authority before active image work", () => {
     const result = journey({ referenceCount: 0, hasActiveImageRun: true });
-    expect(result.primaryAction).toMatchObject({
+    expect(result.productionAction).toMatchObject({
       code: "complete_image_route",
       deepLink: "/admin/characters/character-1?tab=visual#visual-reference-set",
     });
@@ -228,7 +295,7 @@ describe("Character Production Journey", () => {
   });
 
   it("continues the active run before selecting another missing purpose", () => {
-    expect(journey({ hasActiveImageRun: true }).primaryAction.code).toBe(
+    expect(journey({ hasActiveImageRun: true }).productionAction.code).toBe(
       "continue_image_run",
     );
   });
@@ -241,7 +308,7 @@ describe("Character Production Journey", () => {
     });
     expect(result).toMatchObject({
       stage: "image_production",
-      primaryAction: { code: "continue_asset_pack" },
+      productionAction: { code: "continue_asset_pack" },
       assetPack: {
         live: {
           completed: 1,
@@ -264,7 +331,7 @@ describe("Character Production Journey", () => {
       journey({
         draftPurposes: allPurposes,
         candidateReleaseId: "release-candidate",
-      }).primaryAction.code,
+      }).productionAction.code,
     ).toBe("publish_character");
     expect(
       journey({
@@ -275,7 +342,7 @@ describe("Character Production Journey", () => {
     ).toMatchObject({
       stage: "live_operations",
       status: "live",
-      primaryAction: { code: "monitor_live_character" },
+      productionAction: { code: "monitor_live_character" },
     });
   });
 
@@ -287,33 +354,33 @@ describe("Character Production Journey", () => {
       livePurposes: allPurposes,
       draftPurposes: allPurposes,
     };
-    expect(journey({ ...live, draftPackMatchesLive: true }).primaryAction.code)
+    expect(journey({ ...live, draftPackMatchesLive: true }).productionAction.code)
       .toBe("monitor_live_character");
-    expect(journey({ ...live, servingState: "paused", draftPackMatchesLive: true }).primaryAction.code)
+    expect(journey({ ...live, servingState: "paused", draftPackMatchesLive: true }).productionAction.code)
       .toBe("monitor_live_character");
-    expect(journey({ ...live, draftPackMatchesLive: false }).primaryAction.code)
+    expect(journey({ ...live, draftPackMatchesLive: false }).productionAction.code)
       .toBe("preview_character");
     expect(journey({
       servingState: "live",
       currentReleaseId: "release-live",
       livePurposes: allPurposes,
       pendingRevision: { id: "revision-2", revision: 2, createdAt: new Date("2026-10-01T00:00:00Z") },
-    }).primaryAction.code).toBe("preview_character");
+    }).productionAction.code).toBe("preview_character");
     expect(journey({
       ...live,
       draftPackMatchesLive: true,
       pendingRevision: { id: "revision-2", revision: 2, createdAt: new Date("2026-10-01T00:00:00Z") },
-    }).primaryAction.code).toBe("preview_character");
+    }).productionAction.code).toBe("preview_character");
   });
 
   // SPEC: 暂停的角色保留 Release。空草稿不是「该补图」，而是和线上一样只剩恢复或继续隐藏的决定。
   it("does not send a paused Character with an empty draft back to filling images", () => {
     expect(
-      journey({ servingState: "paused", currentReleaseId: "release-1", livePurposes: allPurposes }).primaryAction.code,
+      journey({ servingState: "paused", currentReleaseId: "release-1", livePurposes: allPurposes }).productionAction.code,
     ).toBe("monitor_live_character");
     // 线上包本身不齐时才补图。
     expect(
-      journey({ servingState: "paused", currentReleaseId: "release-1", livePurposes: ["character_cover"] }).primaryAction.code,
+      journey({ servingState: "paused", currentReleaseId: "release-1", livePurposes: ["character_cover"] }).productionAction.code,
     ).toBe("continue_asset_pack");
   });
 
@@ -321,7 +388,7 @@ describe("Character Production Journey", () => {
   it("sends an unqualified route to platform operations instead of the read-only route section", () => {
     const blocked = journey({ routeQualified: false });
     expect(blocked.status).toBe("blocked");
-    expect(blocked.primaryAction).toMatchObject({
+    expect(blocked.productionAction).toMatchObject({
       code: "platform_route_unavailable",
       deepLink: "/admin/ops/profiles",
     });
@@ -331,7 +398,7 @@ describe("Character Production Journey", () => {
     });
     expect(blocked.blockers[0].message).toContain("platform");
     // 缺参考集是运营能修的，留在角色页。
-    expect(journey({ referenceCount: 0 }).primaryAction).toMatchObject({
+    expect(journey({ referenceCount: 0 }).productionAction).toMatchObject({
       code: "complete_image_route",
       deepLink: "/admin/characters/character-1?tab=visual#visual-reference-set",
     });
@@ -345,7 +412,7 @@ describe("Character Production Journey", () => {
         currentReleaseId: "release-1",
         livePurposes: allPurposes,
       }),
-    ).toMatchObject({ status: "live", blockers: [], primaryAction: { code: "monitor_live_character" } });
+    ).toMatchObject({ status: "live", blockers: [], productionAction: { code: "monitor_live_character" } });
     // 有活要干时才拦。
     expect(
       journey({
@@ -354,7 +421,7 @@ describe("Character Production Journey", () => {
         currentReleaseId: "release-1",
         livePurposes: allPurposes,
         pendingRevision: { id: "revision-2", revision: 2, createdAt: new Date("2026-10-01T00:00:00Z") },
-      }).primaryAction.code,
+      }).productionAction.code,
     ).toBe("platform_route_unavailable");
   });
 
@@ -362,17 +429,17 @@ describe("Character Production Journey", () => {
   it("gives a failed or unknown image Run its own next step", () => {
     expect(journey({ imageRunIssue: "failed" })).toMatchObject({
       status: "in_progress",
-      primaryAction: { code: "retry_failed_image_run", deepLink: "/admin/characters/character-1?tab=assets" },
+      productionAction: { code: "retry_failed_image_run", deepLink: "/admin/characters/character-1?tab=assets" },
       blockers: [{ code: "image_run_failed" }],
     });
     // 未知结局排在进行中之前：Job 可能永远停在 running，再生成又可能重复扣费。
     expect(journey({ imageRunIssue: "unknown", hasActiveImageRun: true })).toMatchObject({
       status: "blocked",
-      primaryAction: { code: "resolve_unknown_image_run" },
+      productionAction: { code: "resolve_unknown_image_run" },
       blockers: [{ code: "image_run_outcome_unknown" }],
     });
     // 进行中的下一轮优先于上一轮的失败。
-    expect(journey({ imageRunIssue: "failed", hasActiveImageRun: true }).primaryAction.code).toBe("continue_image_run");
+    expect(journey({ imageRunIssue: "failed", hasActiveImageRun: true }).productionAction.code).toBe("continue_image_run");
     // 健康线上角色不因历史失败被制造待办。
     expect(
       journey({
@@ -380,7 +447,7 @@ describe("Character Production Journey", () => {
         servingState: "live",
         currentReleaseId: "release-1",
         livePurposes: allPurposes,
-      }).primaryAction.code,
+      }).productionAction.code,
     ).toBe("monitor_live_character");
   });
 
@@ -402,7 +469,7 @@ describe("Character Production Journey", () => {
     ).toMatchObject({
       stage: "preview",
       status: "ready",
-      primaryAction: { code: "preview_character", deepLink: "/admin/characters/character-1?tab=preview" },
+      productionAction: { code: "preview_character", deepLink: "/admin/characters/character-1?tab=release" },
       blockers: [],
     });
   });
@@ -413,11 +480,11 @@ describe("Character Production Journey", () => {
     expect(journey({ draftPurposes: allPurposes, soulBlocker: "soul_release_policy" })).toMatchObject({
       stage: "preview",
       status: "blocked",
-      primaryAction: { code: "repair_character_soul", deepLink: "/admin/characters/character-1?tab=soul" },
+      productionAction: { code: "repair_character_soul", deepLink: "/admin/characters/character-1?tab=soul" },
       blockers: [{ code: "soul_release_policy", deepLink: "/admin/characters/character-1?tab=soul" }],
     });
     // Image work still comes first; a live unchanged Character keeps monitoring.
-    expect(journey({ draftPurposes: ["character_cover"], soulBlocker: "opening_complete" }).primaryAction.code)
+    expect(journey({ draftPurposes: ["character_cover"], soulBlocker: "opening_complete" }).productionAction.code)
       .toBe("continue_asset_pack");
   });
 
@@ -426,7 +493,7 @@ describe("Character Production Journey", () => {
       journey({
         draftPurposes: allPurposes,
         hasActiveImageRun: true,
-      }).primaryAction.code,
+      }).productionAction.code,
     ).toBe("continue_image_run");
   });
 });

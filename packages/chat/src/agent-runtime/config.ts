@@ -1,5 +1,6 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
+  chatThinkingParameters,
   isOpenRouterBaseUrl,
   resolveChatModelProfile,
   type ChatModelProfile,
@@ -27,12 +28,14 @@ export interface IgrepLlmConfig {
 // sampling caused invalid empty-profile operations even after igrep's repairs.
 // These settings are independent of the companion's conversational sampling.
 // Helper routes must not inherit a model server's companion thinking default.
-export const IGREP_MAINTENANCE_SAMPLING = Object.freeze({
-  temperature: 0,
-  top_p: 1,
-  presence_penalty: 0,
-  chat_template_kwargs: Object.freeze({ enable_thinking: false }),
-});
+export function igrepMaintenanceSampling(model: string | undefined) {
+  return {
+    temperature: 0,
+    top_p: 1,
+    presence_penalty: 0,
+    ...chatThinkingParameters(model, false),
+  };
+}
 
 export type IgrepEnvironment = Record<string, string | undefined>;
 export type IgrepEndpoint = IgrepLlmConfig;
@@ -45,8 +48,6 @@ export interface IgrepChildConfig {
   rerank: (IgrepEndpoint & { format: "omlx" | "tei" }) | null;
   web?: IgrepWebConfig | null;
 }
-
-const sampling = JSON.stringify(IGREP_MAINTENANCE_SAMPLING);
 
 /** Route isolation, not a claim that igrep stops reading ~/.igreprc/.env. */
 export function createIgrepEnvironment(config: IgrepChildConfig, ambient: Readonly<Record<string, string | undefined>>): IgrepEnvironment {
@@ -69,6 +70,7 @@ export function createIgrepEnvironment(config: IgrepChildConfig, ambient: Readon
     env[`IGREP_${prefix}_API_KEY`] = endpoint?.apiKey ?? "";
   };
   // Maintain uses ASK; Ultra's local selector has a third independent route.
+  const sampling = JSON.stringify(igrepMaintenanceSampling(config.llm?.model));
   for (const prefix of ["LLM", "ASK_LLM", "LLM_FINAL_SORT"]) {
     pin(prefix, config.llm);
     env[`IGREP_${prefix}_EXTRA_BODY`] = sampling;

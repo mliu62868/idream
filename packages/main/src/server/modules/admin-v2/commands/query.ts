@@ -11,6 +11,7 @@ import {
   requireActorPermission,
 } from "@/server/modules/admin-v2/shared/authority";
 import type { PermissionKey } from "@/server/admin/permissions";
+import type { PrismaClient } from "@prisma/client";
 
 function isAdminCommandTargetType(targetType: string): targetType is AdminCommandTargetType {
   return Object.hasOwn(ADMIN_COMMAND_TARGET_READ_PERMISSIONS, targetType);
@@ -32,40 +33,63 @@ function payloadCharacterId(payload: unknown) {
   return typeof characterId === "string" && characterId ? characterId : null;
 }
 
-// SPEC: The Character a command acted on, resolved from its target rather than from the actor's
-// input, so that Character scope applies to reading a command as it did to issuing it.
-async function commandTargetCharacterId(command: {
+type CommandTarget = {
+  readonly id: string;
   readonly targetType: string;
   readonly targetId: string;
   readonly requestPayload: unknown;
-}) {
-  if (command.targetType === "character_serving") return command.targetId;
-  if (command.targetType === "chat_session") {
-    const session = await prisma.recentChat.findUnique({
-      where: { sessionId: command.targetId },
-      select: { characterId: true },
-    });
-    return session?.characterId ?? payloadCharacterId(command.requestPayload);
-  }
-  if (command.targetType === "character_project") {
-    const project = await prisma.characterProject.findUnique({
-      where: { id: command.targetId },
-      select: { characterId: true },
-    });
-    return project?.characterId ?? payloadCharacterId(command.requestPayload);
-  }
-  if (command.targetType === "character_release") {
-    const release = await prisma.characterRelease.findUnique({
-      where: { id: command.targetId },
-      select: { projectId: true },
-    });
-    const project = release && await prisma.characterProject.findUnique({
-      where: { id: release.projectId },
-      select: { characterId: true },
-    });
-    return project?.characterId ?? payloadCharacterId(command.requestPayload);
-  }
-  return payloadCharacterId(command.requestPayload);
+};
+
+export type CommandReadScope = {
+  readonly permission: PermissionKey;
+  readonly characterId?: string;
+};
+
+// Resolve scope from the actual target for both the command endpoint and its navigation links.
+export async function commandReadScopes(
+  db: Pick<PrismaClient, "recentChat" | "characterRelease" | "characterProject">,
+  commands: readonly CommandTarget[],
+): Promise<ReadonlyMap<string, CommandReadScope>> {
+  const targetIds = (type: AdminCommandTargetType) => commands
+    .filter((command) => command.targetType === type)
+    .map((command) => command.targetId);
+  const sessionIds = targetIds("chat_session");
+  const releaseIds = targetIds("character_release");
+  const [sessions, releases] = await Promise.all([
+    sessionIds.length ? db.recentChat.findMany({
+      where: { sessionId: { in: sessionIds } }, select: { sessionId: true, characterId: true },
+    }) : [],
+    releaseIds.length ? db.characterRelease.findMany({
+      where: { id: { in: releaseIds } }, select: { id: true, projectId: true },
+    }) : [],
+  ]);
+  const projectIds = [...targetIds("character_project"), ...releases.map((release) => release.projectId)];
+  const projects = projectIds.length ? await db.characterProject.findMany({
+    where: { id: { in: projectIds } }, select: { id: true, characterId: true },
+  }) : [];
+  const sessionCharacters = new Map(sessions.map((row) => [row.sessionId, row.characterId]));
+  const projectCharacters = new Map(projects.map((row) => [row.id, row.characterId]));
+  const releaseProjects = new Map(releases.map((row) => [row.id, row.projectId]));
+  return new Map(commands.flatMap((command) => {
+    if (!isAdminCommandTargetType(command.targetType)) return [];
+    const permission = commandTargetReadPermission(command.targetType);
+    if (!permission.startsWith("character.")) return [[command.id, { permission }] as const];
+    let characterId: string | undefined;
+    switch (command.targetType) {
+      case "character_serving": characterId = command.targetId; break;
+      case "chat_session": characterId = sessionCharacters.get(command.targetId); break;
+      case "character_project": characterId = projectCharacters.get(command.targetId); break;
+      case "character_release": {
+        const projectId = releaseProjects.get(command.targetId);
+        characterId = projectId ? projectCharacters.get(projectId) : undefined;
+        break;
+      }
+    }
+    return [[command.id, {
+      permission,
+      characterId: characterId ?? payloadCharacterId(command.requestPayload) ?? UNRESOLVED_CHARACTER_TARGET,
+    }] as const];
+  }));
 }
 
 function verificationState(status: string) {
@@ -82,14 +106,13 @@ export async function getControlPlaneCommand(request: Request, commandId: string
     const actor = await actorWithPermission(request, "dashboard.read");
     const command = await prisma.controlPlaneCommand.findUnique({ where: { id: commandId } });
     if (!command) throw Errors.notFound("Admin command not found", { commandId });
-    const permission = commandTargetReadPermission(command.targetType);
+    const scope = (await commandReadScopes(prisma, [command])).get(command.id);
+    if (!scope) throw Errors.internal("Command target type has no declared read authority", { targetType: command.targetType });
     await requireActorPermission(
       request,
       actor,
-      permission,
-      permission.startsWith("character.")
-        ? { characterId: await commandTargetCharacterId(command) ?? UNRESOLVED_CHARACTER_TARGET }
-        : undefined,
+      scope.permission,
+      scope.characterId ? { characterId: scope.characterId } : undefined,
     );
     const data = adminCommandStatusSchema.parse({
       commandId: command.id,

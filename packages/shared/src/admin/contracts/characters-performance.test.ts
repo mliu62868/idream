@@ -83,7 +83,7 @@ describe("Character Portfolio v2 contracts", () => {
           {
             code: "preview",
             state: "upcoming",
-            deepLink: "/admin/characters/character-1?tab=preview",
+            deepLink: "/admin/characters/character-1?tab=release",
           },
           {
             code: "release",
@@ -107,8 +107,13 @@ describe("Character Portfolio v2 contracts", () => {
           code: "prepare_image_production",
           deepLink: "/admin/characters/character-1?tab=assets",
           command: null,
+          readOperations: ["GET /api/v2/admin/characters/:id", "GET /api/v2/admin/characters/:id/image-sources"],
+          canReadTarget: true,
         },
+        hasActiveCommand: false,
         assetPack: {
+          generateMissingBlocker: "visual_identity_missing",
+          generateMissingPurposes: ["character_hero", "character_chat"],
           draft: {
             availablePurposes: [],
             missingPurposes: [

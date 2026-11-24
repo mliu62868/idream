@@ -166,6 +166,23 @@ export type CharacterImageSourceAsset = z.infer<
   typeof characterImageSourceAssetSchema
 >;
 
+/** A selectable image can cover only one missing placement. Keep the supplied order for equally flexible images. */
+export function assignCharacterImageCandidates(
+  purposes: readonly z.infer<typeof characterImagePlacementPurposeSchema>[],
+  selectedAssetIds: ReadonlySet<string | undefined>,
+  assets: readonly CharacterImageSourceAsset[],
+) {
+  const pool = [...new Map(assets.map((asset) => [asset.id, asset])).values()]
+    .flatMap((asset) => asset.qualification?.selectablePurposes.length && !selectedAssetIds.has(asset.id)
+      ? [{ asset, selectablePurposes: asset.qualification.selectablePurposes }]
+      : [])
+    .sort((a, b) => a.selectablePurposes.length - b.selectablePurposes.length);
+  return purposes.flatMap((purpose) => {
+    const index = pool.findIndex((candidate) => candidate.selectablePurposes.includes(purpose));
+    return index < 0 ? [] : [{ purpose, asset: pool.splice(index, 1)[0].asset }];
+  });
+}
+
 export type CharacterImageSourceListResponse = z.infer<
   typeof characterImageSourceListResponseSchema
 >;

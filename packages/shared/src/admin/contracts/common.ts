@@ -279,11 +279,24 @@ export type AdminMutationRecoveryRequest = z.infer<
   typeof adminMutationRecoveryRequestSchema
 >;
 
+export const creativeRunFillSkipSchema = z.discriminatedUnion("reason", [
+  z.object({ reason: z.literal("slot_filled") }).strict(),
+  z.object({ reason: z.literal("candidate_available"), assetId: adminIdSchema }).strict(),
+  z.object({ reason: z.literal("run_pending"), runId: adminIdSchema }).strict(),
+]);
+export type CreativeRunFillSkip = z.infer<typeof creativeRunFillSkipSchema>;
+
 export const adminMutationRecoveryVerificationSchema =
   z.discriminatedUnion("kind", [
     z.object({
       kind: z.literal("creative_run"),
       runId: adminIdSchema,
+      requestSnapshot: adminJsonValueSchema,
+    }).strict(),
+    z.object({
+      kind: z.literal("creative_run_fill_skipped"),
+      projectId: adminIdSchema,
+      skip: creativeRunFillSkipSchema,
       requestSnapshot: adminJsonValueSchema,
     }).strict(),
     z.object({

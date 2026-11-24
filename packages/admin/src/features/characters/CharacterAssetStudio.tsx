@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  assignCharacterImageCandidates,
   creativeRunCreateRequestSchema,
   type CharacterImageSourceAsset,
   type CharacterWorkspaceDetail,
@@ -24,7 +25,7 @@ import {
 } from "@/features/operations/WorkspaceUi";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
-import { createOrRecoverCharacterRun, defaultCharacterImageBrief } from "./creative-run-creation";
+import { characterImageFillSkipMessage, createOrRecoverCharacterRun, createOrRecoverMissingCharacterImage, defaultCharacterImageBrief } from "./creative-run-creation";
 import { useCharacterDraftImageSelection } from "./useCharacterDraftImageSelection";
 import {
   clearDurableMutationIntent,
@@ -50,8 +51,8 @@ import {
   characterAssetDraftSelectionRequestKey,
   characterAssetRunRequestKey,
   characterAssetRunReceiptMessage,
+  characterAssetPurposes,
   characterAssetStudioLayoutClass,
-  characterDraftImageCandidates,
   characterSourceVariationBlockerMessage,
   characterSourceVariationAvailabilityMessage,
   committedCharacterRunProjectionMatches,
@@ -222,7 +223,7 @@ export function CharacterAssetStudio({
         setNegativePrompts((current) => ({ ...current, [saved.purpose]: saved.negativePrompt ?? "" }));
       }
     },
-    [data.character.id],
+    [data.character.id, setBriefs, setNegativePrompts],
   );
   const identityBootstrap = data.visual.identityBootstrap;
   const bootstrapMode = identityBootstrap.allowed;
@@ -660,15 +661,22 @@ export function CharacterAssetStudio({
   const missingPurposes = data.journey.assetPack.draft.missingPurposes;
   const [checkedLibrary, setCheckedLibrary] = useState<{
     projectVersion: number;
-    items: readonly CharacterImageSourceAsset[];
+    candidates: readonly { purpose: CharacterAssetPurpose; asset: CharacterImageSourceAsset }[];
   } | null>(null);
-  const candidates = characterDraftImageCandidates(data, [...new Map(
-    [
-      ...(checkedLibrary?.projectVersion === data.project.version ? checkedLibrary.items : []),
-      ...libraryAssets,
-    ].map((asset) => [asset.id, asset]),
-  ).values()]);
-  const generationPurposes = missingPurposes.filter((purpose) => !candidates.some((candidate) => candidate.purpose === purpose));
+  const confirmedCandidates = checkedLibrary?.projectVersion === data.project.version ? checkedLibrary.candidates : [];
+  const candidates = [...confirmedCandidates, ...assignCharacterImageCandidates(
+    missingPurposes.filter((purpose) => !confirmedCandidates.some((candidate) => candidate.purpose === purpose)),
+    new Set([
+      ...characterAssetPurposes.map((purpose) => data.project.draftAssetPack[purpose]),
+      ...confirmedCandidates.map((candidate) => candidate.asset.id),
+    ]),
+    libraryAssets,
+  )];
+  // Offer the already displayed candidates first. The request merely picks
+  // which slots to try. Main revalidates every one before it can enqueue work.
+  const generationPurposes = data.journey.assetPack.generateMissingPurposes.filter(
+    (purpose) => !candidates.some((candidate) => candidate.purpose === purpose),
+  );
   const canGenerateMissing = recurringProductionReady && permissions.create && Boolean(qualifiedRoute) &&
     !mutationContextLocked && unconfirmedOperations.length === 0 && !refreshWarning;
   const canUseGenerationAction = runCreationIntent
@@ -819,30 +827,17 @@ export function CharacterAssetStudio({
     negativePrompt: body.negativePrompt,
   });
 
-  // SPEC: 为每个还没选图的用途各建一个 count=1 的 Run（ADR-16 §3.1），互不等待。
-  // INTENT: 每个用途一条独立的持久意图，所以「创建中断」可以逐个靠再次点击，用原幂等键恢复；
-  //         已有在跑的请求时跳过，只有服务端的列表能回答这个问题。
+  // Each slot keeps its own durable request. Main may return a committed skip instead of a Run.
   const startMissingImageRun = async (purpose: CharacterAssetPurpose) => {
-    const readActive = (executionOutcome: string) => adminV2Operation("GET /api/v2/admin/creative/runs", {
-      query: new URLSearchParams({
-        limit: "1", targetType: "character", targetId: data.character.id, purpose, executionOutcome,
-      }),
-    });
     const scope = `character-asset:create-missing:${actorId}:${data.character.id}:${purpose}`;
-    let intent = readActiveDurableMutationIntent({ scope });
-    if (!intent) {
-      const [pending, running] = await Promise.all([readActive("pending"), readActive("running")]);
-      if (pending.items.length + running.items.length > 0) return { purpose, state: "already_running" as const };
-    }
-    const result = await createOrRecoverCharacterRun({
+    const { result, intent } = await createOrRecoverMissingCharacterImage({
       scope,
       characterId: data.character.id,
-      intent,
-      request: runRequestDraft(purpose),
-      parseRequest: parseRunRequest,
+      purpose,
+      draft: () => runRequestDraft(purpose),
       signature: runRequestSignature,
-      onIntentChange: (next) => { intent = next; },
     });
+    if (result.state === "skipped") return { purpose, state: "skipped" as const, skip: result.skip };
     if (result.state !== "committed") return { purpose, state: "not_started" as const };
     awaitingDeliveryRunIds.current.add(result.runId);
     const detail = await adminV2Operation("GET /api/v2/admin/creative/runs/:id", { path: { id: result.runId } });
@@ -857,29 +852,43 @@ export function CharacterAssetStudio({
     setError(null);
     setMessage(null);
     try {
-      // Read the unfiltered library before spending, including candidates past the visible page.
-      let cursor: string | undefined;
-      const available: CharacterImageSourceAsset[] = [];
-      let existing: ReturnType<typeof characterDraftImageCandidates>;
-      do {
-        const page = await adminV2Operation("GET /api/v2/admin/characters/:id/image-sources", {
-          path: { id: data.character.id },
-          query: new URLSearchParams({ purpose: "character_library", ...(cursor ? { cursor } : {}) }),
-        });
-        available.push(...page.items);
-        existing = characterDraftImageCandidates(data, available);
-        cursor = page.nextCursor ?? undefined;
-      } while (cursor && existing.length < missingPurposes.length);
-      setCheckedLibrary({ projectVersion: data.project.version, items: existing.map(({ asset }) => asset) });
-      const needed = missingPurposes.filter((purpose) => !existing.some((candidate) => candidate.purpose === purpose));
-      const outcomes = await Promise.allSettled(needed.map(startMissingImageRun));
+      const outcomes = await Promise.allSettled(generationPurposes.map(startMissingImageRun));
       const started = outcomes.flatMap((outcome) => outcome.status === "fulfilled" && outcome.value.state === "started" ? [outcome.value] : []);
+      const skipped = outcomes.flatMap((outcome) => outcome.status === "fulfilled" && outcome.value.state === "skipped" ? [outcome.value] : []);
       const failed = outcomes.filter((outcome) => outcome.status === "rejected" || outcome.value.state === "not_started").length;
       if (failed > 0) {
         setError(t("{failed} of {total} images could not be started. Try again to resume them; nothing will be generated twice.", { failed, total: outcomes.length }));
       }
       if (started.length > 0) {
         setMessage(t("Generating {count} images. Results will appear here automatically; you can leave this page and come back.", { count: started.length }));
+      } else if (skipped.length === 1) {
+        setMessage(t(characterImageFillSkipMessage[skipped[0].skip.reason]));
+      } else if (skipped.length > 0) {
+        setMessage(t("The checked placements already have images, selectable candidates, or pending Runs."));
+      }
+      const confirmed = await Promise.allSettled(skipped.map(async ({ purpose, skip }) => {
+        if (skip.reason !== "candidate_available") return null;
+        const asset = libraryAssets.find((item) => item.id === skip.assetId) ?? (
+          await adminV2Operation("GET /api/v2/admin/characters/:id/image-sources", {
+            path: { id: data.character.id },
+            query: new URLSearchParams({ purpose: "character_library", search: skip.assetId }),
+          })
+        ).items.find((item) => item.id === skip.assetId);
+        return asset?.qualification?.selectablePurposes.includes(purpose) ? { purpose, asset } : null;
+      }));
+      const candidateById = new Map(confirmed.flatMap((item) => item.status === "fulfilled" && item.value
+        ? [[item.value.asset.id, item.value] as const] : []));
+      if (candidateById.size > 0) {
+        const candidates = [...candidateById.values()];
+        setCheckedLibrary((current) => ({
+          projectVersion: data.project.version,
+          candidates: [
+            ...candidates,
+            ...(current?.projectVersion === data.project.version ? current.candidates.filter((candidate) =>
+              !candidateById.has(candidate.asset.id) && !candidates.some(({ purpose }) => purpose === candidate.purpose),
+            ) : []),
+          ],
+        }));
       }
       const current = started.find((run) => run.purpose === activePurpose) ?? started[0];
       if (current?.purpose === activePurpose) {

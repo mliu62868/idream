@@ -23,6 +23,6 @@ export function POST(request: Request) {
     }
     const body = await jsonBody(request, "creativeRunCreateRequestSchema+idempotency-key");
     const result = await createCreativeRun(request, actor, body);
-    return ok(result, { status: result.replayed ? 200 : 202 });
+    return ok(result, { status: result.replayed || "skip" in result ? 200 : 202 });
   });
 }

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { chatThinkingParameters } from "@idream/shared";
 import type { IgrepLlmConfig } from "./config";
 import { profileLineKey, residentProfileFacts } from "./resident-profile";
 import { logger } from "../logger";
@@ -129,7 +130,7 @@ export function llmProfileClaimVerifier(
           model: config.model,
           temperature: 0,
           max_tokens: 8,
-          chat_template_kwargs: { enable_thinking: false },
+          ...chatThinkingParameters(config.model, false),
           messages: [
             { role: "system", content: VERIFIER_SYSTEM },
             {

@@ -4,7 +4,9 @@ import {
   characterRouteEvaluationMatrixSchemaVersion,
   characterVideoProductionRecipe,
 } from "@idream/shared";
+import { creativeRunFillSkipSchema, type CreativeRunFillSkip } from "@idream/shared/admin";
 import { dimensionsForImageOrientation } from "@idream/shared/media/image-orientation";
+import type { Prisma } from "@prisma/client";
 import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
@@ -36,9 +38,10 @@ import {
 } from "@/server/modules/admin-v2/characters/release-snapshot";
 import { loadCharacterIdentityBootstrapAuthority } from "@/server/modules/admin-v2/characters/identity-bootstrap-authority";
 import {
-  lockCharacterGenerationAndMediaAssetAuthorities,
+  lockCharacterGenerationAuthority,
   lockCharacterMediaAssetAuthorities,
 } from "@/server/modules/admin-v2/characters/generation-authority-lock";
+import { checkMissingCharacterImage } from "@/server/modules/admin-v2/characters/fill-missing-image";
 import { freezeGenerationReferences } from "@/server/modules/ourdream/generation-reference-snapshot";
 import { lockUserLedger } from "@/server/modules/ourdream/subscription-lifecycle";
 import {
@@ -82,6 +85,74 @@ import {
 // 形成第二处契约引用（ADR-13 §2.3.1），api-manifest 守卫会当场拒绝。
 export type CreativeRunCreateInput =
   AdminV2RequestBody<"creativeRunCreateRequestSchema+idempotency-key">;
+
+type CreativeRunReceiptKey = { scope: string; idempotencyKey: string; requestHash: string };
+type CreativeRunReceipt = { batch: { id: string; items: { id: string }[] } } | { skip: CreativeRunFillSkip };
+
+async function readCreativeRunReceipt(db: Prisma.TransactionClient, key: CreativeRunReceiptKey): Promise<CreativeRunReceipt | null> {
+  const existing = await db.controlPlaneCommand.findUnique({
+    where: { scope_idempotencyKey: { scope: key.scope, idempotencyKey: key.idempotencyKey } },
+  });
+  if (!existing) return null;
+  if (existing.requestHash !== key.requestHash) {
+    throw Errors.conflict("Idempotency key was reused with a different Creative Run brief", { commandId: existing.id });
+  }
+  const result = jsonRecord(existing.result);
+  if (existing.status === "succeeded") {
+    const skip = creativeRunFillSkipSchema.safeParse(result.fillSkip);
+    if (skip.success) return { skip: skip.data };
+    if (typeof result.batchId === "string") {
+      return { batch: await db.contentProductionBatch.findUniqueOrThrow({
+        where: { id: result.batchId }, select: { id: true, items: { select: { id: true } } },
+      }) };
+    }
+  }
+  throw Errors.conflict("The original Creative Run create command has not completed", {
+    commandId: existing.id,
+    status: existing.status,
+  });
+}
+
+async function lockCreativeRunReceipt(tx: Prisma.TransactionClient, key: CreativeRunReceiptKey) {
+  await tx.$queryRaw`SELECT 1::int AS locked FROM pg_advisory_xact_lock(hashtext(${`${key.scope}:${key.idempotencyKey}`}))`;
+  return readCreativeRunReceipt(tx, key);
+}
+
+async function skipMissingImageFill(
+  tx: Prisma.TransactionClient,
+  input: { key: CreativeRunReceiptKey; actor: AdminActor; body: CreativeRunCreateInput; characterId: string; requestId: string },
+) {
+  const decision = await checkMissingCharacterImage(tx, input.characterId, input.body.purpose);
+  if (!decision) return null;
+  await tx.controlPlaneCommand.create({
+    data: {
+      ...input.key,
+      commandType: "creative.run.create",
+      targetType: "character_project",
+      targetId: decision.projectId,
+      actorId: input.actor.id,
+      requestId: input.requestId,
+      requestPayload: toInputJson(input.body),
+      retryMode: "idempotent",
+      status: "succeeded",
+      result: toInputJson({ fillSkip: decision.skip }),
+      finishedAt: new Date(),
+    },
+  });
+  await tx.adminAuditLog.create({
+    data: {
+      actorId: input.actor.id,
+      actorRole: input.actor.role,
+      action: "content.production.batch.fill.skipped",
+      targetType: "character_project",
+      targetId: decision.projectId,
+      reason: input.body.reason,
+      after: toInputJson({ purpose: input.body.purpose, ...decision.skip }),
+      requestId: input.requestId,
+    },
+  });
+  return { skip: decision.skip };
+}
 
 /** Creative Run 创建表单的成本预估：与创建走同一套 profile 准入判断。 */
 export async function estimateCreativeRunCost(input: {
@@ -142,7 +213,7 @@ export async function createCreativeRun(
   request: Request,
   actor: AdminActor,
   body: CreativeRunCreateInput,
-): Promise<{ batch: { id: string }; replayed: boolean }> {
+): Promise<{ batch: { id: string }; replayed: boolean } | { skip: CreativeRunFillSkip; replayed: boolean }> {
   const characterLibraryImagePackRun = body.purpose === "character_library_image_pack";
   const characterLibraryVideoPackRun = body.purpose === "character_library_video_pack";
   const characterVideoRun = body.purpose === "character_video" || characterLibraryVideoPackRun;
@@ -150,31 +221,29 @@ export async function createCreativeRun(
   const idempotencyKey = request.headers.get("idempotency-key")?.trim() || null;
   const commandScope = `${env.APP_ENV}:${actor.id}:creative.run.create`;
   const requestHash = canonicalSha256({ commandType: "creative.run.create", payload: body });
-  if (idempotencyKey) {
-    const existing = await prisma.controlPlaneCommand.findUnique({
-      where: { scope_idempotencyKey: { scope: commandScope, idempotencyKey } },
-    });
-    if (existing) {
-      if (existing.requestHash !== requestHash) {
-        throw Errors.conflict("Idempotency key was reused with a different Creative Run brief", {
-          commandId: existing.id,
-        });
-      }
-      const result = existing.result && typeof existing.result === "object" && !Array.isArray(existing.result)
-        ? existing.result as Record<string, unknown>
-        : {};
-      if (existing.status !== "succeeded" || typeof result.batchId !== "string") {
-        throw Errors.conflict("The original Creative Run create command has not completed", {
-          commandId: existing.id,
-          status: existing.status,
-        });
-      }
-      const batch = await prisma.contentProductionBatch.findUniqueOrThrow({
-        where: { id: result.batchId },
-        select: { id: true },
-      });
-      return { batch, replayed: true };
-    }
+  const receiptKey = idempotencyKey ? { scope: commandScope, idempotencyKey, requestHash } : null;
+  const existing = receiptKey ? await readCreativeRunReceipt(prisma, receiptKey) : null;
+  if (existing) return "skip" in existing
+    ? { skip: existing.skip, replayed: true }
+    : { batch: { id: existing.batch.id }, replayed: true };
+
+  const fill = body.fillMissing && receiptKey && body.targetId
+    ? { key: receiptKey, actor, body, characterId: body.targetId, requestId: request.headers.get("x-request-id") ?? crypto.randomUUID() }
+    : null;
+  if (body.fillMissing && !fill) throw Errors.badRequest("A Character placement fill requires an idempotency key and target");
+  if (fill) {
+    // Do not require current generation availability to report an existing
+    // image or an already-pending Run. Recheck in the write transaction below.
+    const skipped = await auditedTransaction("content.production.batch.fill", async (tx) => {
+      const replay = await lockCreativeRunReceipt(tx, fill.key);
+      if (replay) return "skip" in replay
+        ? { skip: replay.skip, replayed: true }
+        : { batch: { id: replay.batch.id }, replayed: true };
+      await lockCharacterGenerationAuthority(tx, fill.characterId);
+      const resolved = await skipMissingImageFill(tx, fill);
+      return resolved ? { ...resolved, replayed: false } : null;
+    }, { timeout: 60_000 });
+    if (skipped) return skipped;
   }
   const profile = await resolveProductionProfile(
     body.profileId,
@@ -681,44 +750,27 @@ export async function createCreativeRun(
   const totalOutputCount = workItems.length;
 
   let replayed = false;
-  const batch = await auditedTransaction("content.production.batch.create", async (tx) => {
+  const result = await auditedTransaction<CreativeRunReceipt>("content.production.batch.create", async (tx) => {
     await lockUserLedger(tx, actor.id);
-    if (idempotencyKey) {
-      await tx.$queryRaw`SELECT 1::int AS locked FROM pg_advisory_xact_lock(hashtext(${`${commandScope}:${idempotencyKey}`}))`;
-      const existing = await tx.controlPlaneCommand.findUnique({
-        where: { scope_idempotencyKey: { scope: commandScope, idempotencyKey } },
-      });
+    if (receiptKey) {
+      const existing = await lockCreativeRunReceipt(tx, receiptKey);
       if (existing) {
-        if (existing.requestHash !== requestHash) {
-          throw Errors.conflict("Idempotency key was reused with a different Creative Run brief", {
-            commandId: existing.id,
-          });
-        }
-        const result = existing.result && typeof existing.result === "object" && !Array.isArray(existing.result)
-          ? existing.result as Record<string, unknown>
-          : {};
-        if (existing.status !== "succeeded" || typeof result.batchId !== "string") {
-          throw Errors.conflict("The original Creative Run create command has not completed", {
-            commandId: existing.id,
-            status: existing.status,
-          });
-        }
         replayed = true;
-        return tx.contentProductionBatch.findUniqueOrThrow({
-          where: { id: result.batchId },
-          select: { id: true, items: { select: { id: true } } },
-        });
+        return existing;
       }
     }
     if (recipeNegative && (await resolveImageRecipeNegative(recipe, tx)).promptRecipeFingerprint !== recipeNegative.promptRecipeFingerprint) {
       throw Errors.conflict("The negative recipe changed before the Run was committed. Refresh and create the Run again.");
     }
     if (body.targetType === "character" && body.targetId) {
-      await lockCharacterGenerationAndMediaAssetAuthorities(
-        tx,
-        body.targetId,
-        referenceAssetIds,
-      );
+      await lockCharacterGenerationAuthority(tx, body.targetId);
+      if (fill) {
+        // A skipped fill can lock its one candidate and exits. An admitted Run
+        // takes the complete sorted reference lock set below.
+        const skipped = await skipMissingImageFill(tx, fill);
+        if (skipped) return skipped;
+      }
+      await lockCharacterMediaAssetAuthorities(tx, referenceAssetIds);
       const lockedCharacter = await tx.character.findFirst({
         where: {
           id: body.targetId,
@@ -1363,11 +1415,13 @@ export async function createCreativeRun(
         requestId: request.headers.get("x-request-id"),
       },
     });
-    return tx.contentProductionBatch.findUniqueOrThrow({
+    return { batch: await tx.contentProductionBatch.findUniqueOrThrow({
       where: { id: createdBatch.id },
       select: { id: true, items: { select: { id: true } } },
-    });
+    }) };
   }, { timeout: 60_000 });
+  if ("skip" in result) return { skip: result.skip, replayed };
+  const { batch } = result;
   await dispatchGenerationAttemptOutbox(prisma, {
     limit: totalOutputCount,
     outboxIds: batch.items.map((item) => `creative_initial_${batch.id}_${item.id}`),

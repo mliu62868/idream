@@ -26,12 +26,13 @@ import type { CompanionWorkspaceRebuildPromotion, CompanionWorkspaceRebuildSourc
 import { assertNotFenced, withDrainFence, type FenceScope } from "../fence.js";
 import { stableJson } from "../stable-json";
 import { describeRequestedReplyConstraints } from "../prompt.js";
+import { projectPreparedBody } from "../prepared-turn.js";
 import { ProviderError, type OpenAiCompatibleAdapter, type OpenAiCompatibleAdapterOptions, type TokenUsage } from "./openai-adapter";
 import { aggregateModelRequestUsage } from "./model-request-evidence";
 import { buildReplaySeed, finishReason, messageText } from "./pi-context";
 import { executePiConversation, toolSignal, withToolCancellation } from "./pi-runtime";
 import { projectRecall } from "./session-recall";
-import { MEDIA_EXTRACTION_MAX_TOKENS, mediaAttachmentId, mediaBodySystemPrompt, mediaExtractionMessages, parseMediaSearchReply, parseMediaTextRequests, prepareMediaBody, type MediaSearchObservation } from "./media-response";
+import { MEDIA_EXTRACTION_MAX_TOKENS, mediaAttachmentId, mediaExtractionMessages, parseMediaSearchReply, parseMediaTextRequests, type MediaSearchObservation, type MediaTextRequests } from "./media-response";
 export { buildReplaySeed } from "./pi-context";
 type EventPayload = CompanionEvent extends infer Event ? Event extends CompanionEvent
   ? Omit<Event, "invocationId" | "attemptId" | "sequence" | "occurredAt"> : never : never;
@@ -437,7 +438,11 @@ export class CompanionEngine {
     let sequence = 0;
     let terminalCommitted = false;
     let deadlineTimer: NodeJS.Timeout | undefined;
+    const deadlineAt = Date.parse(invocation.deadlineAt);
     let failurePhase: "composition" | "workspace" | "agent" = "composition";
+    let executionStage: "reply" | "tool_selection" | "media_extraction" | "media_body" | "terminal_commit" | undefined;
+    let modelStopReason: AssistantMessage["stopReason"] | undefined;
+    const modelRequests: CompanionModelRequestEvidence[] = [];
     let turnFailure: ProviderError | undefined;
     let igrepFailure: "wake" | "search" | "memory" | undefined;
     let retrievalCompleted = false;
@@ -464,7 +469,7 @@ export class CompanionEngine {
     const onAbort = () => active.cancel("transport");
     if (signal?.aborted) onAbort(); else signal?.addEventListener("abort", onAbort, { once: true });
     try {
-      const deadlineMs = Date.parse(invocation.deadlineAt) - Date.now();
+      const deadlineMs = deadlineAt - Date.now();
       if (!Number.isFinite(deadlineMs) || deadlineMs <= 0) { await event({ type: "cancelled", reason: "timeout" }); return; }
       deadlineTimer = setTimeout(() => active.cancel("timeout"), deadlineMs);
       const plan = createCompanionCompositionPlan(mode, companionIgrepConfig(mode, this.options.igrep.command, this.options.igrep.env), {
@@ -574,7 +579,6 @@ export class CompanionEngine {
         }
       }
 
-      const modelRequests: CompanionModelRequestEvidence[] = [];
       let currentText = "";
       const bridge = new ToolBridge(port.executeTool, event, invocation.preparedTurn.imageActionMode);
       const requestPolicy: Parameters<CompanionEngineOptions["adapter"]>[1] = {
@@ -595,24 +599,32 @@ export class CompanionEngine {
       const adapter = this.options.adapter(invocation.preparedTurn.profile, { ...requestPolicy,
         ...(needsFactualSampling(current.content) ? { samplingTemperature: Math.min(invocation.preparedTurn.profile.sampling.temperature, 0.2) } : {}),
       });
-      const seed = buildReplaySeed(invocation, recallContext);
-      const replyConstraints = describeRequestedReplyConstraints(current.content);
-      // Prepared turns already budget this line. Also cover callers that supply
-      // a valid PreparedTurn directly, and pin it through tool calls/compaction.
-      if (replyConstraints && !seed.some(message => message.sourceKind === "plugin" && message.content.includes(replyConstraints))) {
-        seed.push({ id: `reply-form:${invocation.attemptId}`, sourceKind: "plugin", role: "user", content: replyConstraints });
-      }
       const profileContext = mode === "normal" ? renderResidentProfile(residentProfile, supportedProfileLines) : "";
-      // Verified memories may quote historical instructions. Preserve their
-      // words as context; verification never promotes them to platform rules.
-      if (profileContext) seed.push({ id: `resident-profile:${invocation.attemptId}`, sourceKind: "plugin", role: "user", content: profileContext });
-      const pinned = [...seed.filter(message => message.sourceKind === "plugin"), current];
-      const systemPrompt = [
-        ...invocation.preparedTurn.messages.filter(message => message.role === "system").map(message => message.content),
-        COMPANION_SEARCH_GUIDANCE, COMPANION_SESSION_GUIDANCE,
-        ...(mode === "normal" ? [COMPANION_MEMORY_GUIDANCE] : []),
-        COMPANION_REPLY_GUIDANCE,
-      ].join("\n\n");
+      const projectStage = (independentRequests?: MediaTextRequests) => {
+        const multipleRequests = (independentRequests?.excerptCount ?? 0) > 1;
+        const { preparedTurn, current: stageCurrent } = independentRequests === undefined
+          ? { preparedTurn: invocation.preparedTurn, current }
+          : projectPreparedBody(invocation.preparedTurn, current, independentRequests.content, multipleRequests);
+        const staged = { ...invocation, preparedTurn };
+        const seed = buildReplaySeed(staged, recallContext);
+        // The compiler already budgets these cues. Literal callers such as
+        // the probes can supply an advisory reply-form context of their own.
+        if (!preparedTurn.replyPrompt) {
+          const constraints = describeRequestedReplyConstraints(stageCurrent.content, multipleRequests);
+          if (constraints && !seed.some(message => message.sourceKind === "plugin" && message.content.includes(constraints))) {
+            seed.push({ id: `reply-form:${invocation.attemptId}`, sourceKind: "plugin", role: "user", content: constraints });
+          }
+        }
+        // Verified memories remain context even if they quote instructions.
+        if (profileContext) seed.push({ id: `resident-profile:${invocation.attemptId}`, sourceKind: "plugin", role: "user", content: profileContext });
+        const systemPrompt = [
+          ...staged.preparedTurn.messages.filter(message => message.role === "system").map(message => message.content),
+          COMPANION_SEARCH_GUIDANCE, COMPANION_SESSION_GUIDANCE,
+          ...(mode === "normal" ? [COMPANION_MEMORY_GUIDANCE] : []),
+          COMPANION_REPLY_GUIDANCE,
+        ].join("\n\n");
+        return { invocation: staged, seed, pinned: [...seed.filter(message => message.sourceKind === "plugin"), stageCurrent], current: stageCurrent, systemPrompt };
+      };
       const memoryWorkspacePath = workspace.path;
       const assertContinuation = () => {
         assertEventDelivery();
@@ -699,7 +711,9 @@ export class CompanionEngine {
       const maxSteps = this.options.maxSteps ?? 8;
       // Main already rebound this durable action to the current attempt. A
       // reply retry must not ask the model to select or buy it again.
-      const completed = recovered ? undefined : await runConversation({ invocation, seed, pinned, systemPrompt, adapter, maxSteps, searchPath: knowledgeSource });
+      if (!recovered) executionStage = bufferText ? "tool_selection" : "reply";
+      const completed = recovered ? undefined : await runConversation({ ...projectStage(), adapter, maxSteps, searchPath: knowledgeSource });
+      modelStopReason = completed?.message.stopReason;
       assertContinuation();
       let latestAssistant = completed?.message;
       let replyAdapter = adapter;
@@ -721,6 +735,8 @@ export class CompanionEngine {
           evidence = action;
           mediaResponse = { version: 1, attachmentId: confirmedId };
         }
+        executionStage = "media_extraction";
+        modelStopReason = undefined;
         if (++steps > maxSteps) throw new Error("media extraction exceeds the invocation step budget");
         const outputLimit = Math.min(invocation.preparedTurn.profile.maxOutputTokens, MEDIA_EXTRACTION_MAX_TOKENS);
         const extractor = this.options.adapter({ ...invocation.preparedTurn.profile, maxOutputTokens: outputLimit, answerMaxOutputTokens: outputLimit }, {
@@ -730,16 +746,19 @@ export class CompanionEngine {
         const extracted = await extractor.stream(mediaExtractionMessages(current.content, evidence), {
           purpose: "media_extraction", signal: active.cancellation.signal,
         }).result();
+        modelStopReason = extracted.stopReason;
         active.cancellation.signal.throwIfAborted();
         if (extracted.stopReason !== "stop") throw extractor.getError(extracted) ?? new Error("media text extraction was incomplete");
         const extractedText = messageText(extracted);
         const { requests, feedback } = searchReply
           ? parseMediaSearchReply(extractedText, current.content, searchReply.outcome)
           : { requests: parseMediaTextRequests(extractedText, current.content), feedback: undefined };
-        if (requests.length === 0) bodyText = feedback ?? "";
+        if (requests.excerptCount === 0) bodyText = feedback ?? "";
         else {
+          executionStage = "media_body";
+          modelStopReason = undefined;
           if (steps >= maxSteps) throw new Error("media body exceeds the invocation step budget");
-          const body = prepareMediaBody({ invocation, seed, requests });
+          const body = projectStage(requests);
           // The separate native loop retains Soul, history and real lookup pairs;
           // only this turn's media instruction, calls and receipts are absent.
           const executionEvidence = [...retrievalEvidence];
@@ -752,9 +771,9 @@ export class CompanionEngine {
             ...requestPolicy,
             ...(needsFactualSampling(body.current.content) ? { samplingTemperature: Math.min(invocation.preparedTurn.profile.sampling.temperature, 0.2) } : {}),
           });
-          const replied = await runConversation({ ...body, executionEvidence,
-            systemPrompt: mediaBodySystemPrompt(systemPrompt, mode === "normal"), adapter: replyAdapter,
+          const replied = await runConversation({ ...body, executionEvidence, adapter: replyAdapter,
             purpose: "media_body", maxSteps: maxSteps - steps, searchPath: bodySource, streamText: feedback === undefined });
+          modelStopReason = replied.message.stopReason;
           steps += replied.steps;
           latestAssistant = replied.message;
           // A truncated or empty independent answer cannot become card-only success.
@@ -783,6 +802,7 @@ export class CompanionEngine {
       if (!currentText && candidate.content) { currentText = candidate.content; await event({ type: "text_delta", delta: currentText }); }
       else if (currentText !== candidate.content) throw new Error("streamed assistant text differs from terminal message");
       active.cancellation.signal.throwIfAborted();
+      executionStage = "terminal_commit";
       await event({ type: "terminal_candidate", candidate });
       const ack = await port.commit(candidate, active.cancellation.signal);
       if (ack.attemptId !== invocation.attemptId || !ack.accepted) throw new Error("Main rejected the terminal candidate");
@@ -792,12 +812,21 @@ export class CompanionEngine {
     } catch (error) {
       await eventTail;
       assertEventDelivery();
-      if (active.cancelReason) await event({ type: "cancelled", reason: active.cancelReason });
+      const lastRequest = modelRequests.at(-1);
+      const failureEvidence = { component: "chat", invocationId: invocation.invocationId, attemptId: invocation.attemptId,
+        phase: failurePhase, executionStage, modelStopReason, remainingMs: Math.max(0, deadlineAt - Date.now()),
+        lastModelRequest: lastRequest && { purpose: lastRequest.purpose ?? "reply", usage: lastRequest.usage } };
+      if (active.cancelReason) {
+        if (active.cancelReason === "timeout") {
+          process.stderr.write(`${JSON.stringify({ level: "warn", event: "companion_invocation_timed_out", ...failureEvidence })}\n`);
+        }
+        await event({ type: "cancelled", reason: active.cancelReason });
+      }
       else {
         if (error instanceof ProviderError) turnFailure = error;
         const failure = invocationFailure({ terminalCommitted, phase: failurePhase, turnFailure, igrepFailure, preflightCode, terminalValidationCode, unconfirmedImageEffect });
-        process.stderr.write(`${JSON.stringify({ level: "error", component: "chat", event: "companion_invocation_failed", invocationId: invocation.invocationId,
-          attemptId: invocation.attemptId, phase: failurePhase, code: failure.code, retryable: failure.retryable, errorType: describeInvocationCause(error),
+        process.stderr.write(`${JSON.stringify({ level: "error", event: "companion_invocation_failed", ...failureEvidence,
+          code: failure.code, retryable: failure.retryable, errorType: describeInvocationCause(error),
           ...(turnFailure ? { providerCode: turnFailure.code, ...(turnFailure.status !== undefined ? { providerStatus: turnFailure.status } : {}) } : {}),
           ...(igrepFailure ? { igrepFailure } : {}), ...(preflightCode ? { preflightCode } : {}) })}\n`);
         await event({ type: "failed", error: failure });

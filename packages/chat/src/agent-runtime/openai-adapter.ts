@@ -6,7 +6,8 @@ import {
   type AssistantMessageEventStream, type ToolCall,
 } from "@earendil-works/pi-ai";
 
-import { isOpenRouterBaseUrl } from "@idream/shared";
+import { chatThinkingParameters, INKLING_2_MINI_OQ8_MODEL, isOpenRouterBaseUrl } from "@idream/shared";
+import { COMPANION_MEDIA_TOOL_DEFINITIONS } from "@idream/shared/chat/media-library";
 import type { CompanionModelRequestEvidence, CompanionModelTokenUsage, PreparedTurnProfile } from "./contracts";
 import { estimateModelRequestInputTokens } from "./model-request-format";
 
@@ -79,6 +80,7 @@ interface OpenAiStreamPayload {
 const MAX_PROVIDER_STREAM_BYTES = 4_194_304;
 const MAX_PROVIDER_EVENT_BYTES = 1_048_576;
 const MAX_PROVIDER_OUTPUT_BYTES = 2_097_152;
+const MEDIA_TOOL_NAMES = new Set(COMPANION_MEDIA_TOOL_DEFINITIONS.map(tool => tool.name));
 
 function chatCompletionsUrl(baseUrl: string): string {
   const url = new URL(baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`);
@@ -344,24 +346,28 @@ export class OpenAiCompatibleAdapter {
     stream: AssistantMessageEventStream, output: AssistantMessage): Promise<void> {
     const { profile, maxInputTokens, responseFormat, observeRequest, observeUsage } = this.config;
     const compacting = options.purpose === "compaction";
-    const thinking = options.purpose === "media_extraction" || options.purpose === "media_body"
-      || (!options.purpose && !responseFormat);
+    const mediaBody = options.purpose === "media_body";
+    const inkling = profile.model === INKLING_2_MINI_OQ8_MODEL;
+    const thinking = (!options.purpose && !responseFormat)
+      || (!inkling && (mediaBody || options.purpose === "media_extraction"));
     const input = modelRequestInput(messages);
-    // The provider's output cap covers reasoning and visible text together.
-    // Answer preferences cannot cap that shared budget for thinking requests.
+    // Independent text keeps its total allowance even when reasoning is disabled.
+    // One media request can carry multiple answers with their own length constraints.
     const maxTokens = compacting ? options.maxTokens ?? profile.maxOutputTokens : Math.min(
       options.maxTokens ?? profile.maxOutputTokens, profile.maxOutputTokens,
-      thinking ? profile.maxOutputTokens : profile.answerMaxOutputTokens ?? profile.maxOutputTokens);
+      thinking || mediaBody ? profile.maxOutputTokens : profile.answerMaxOutputTokens ?? profile.maxOutputTokens);
+    // A media-capable native round can also produce an ordinary reply. Use the
+    // model's lower effort hint while preserving its native tool selection.
+    const thinkingParameters = inkling && thinking && input.tools.some(tool => MEDIA_TOOL_NAMES.has(tool.function.name))
+      ? { chat_template_kwargs: { enable_thinking: true, reasoning_effort: "minimal" } }
+      : chatThinkingParameters(profile.model, thinking);
     const body = {
       model: profile.model, messages: input.messages, stream: true,
       stream_options: { include_usage: true },
       temperature: compacting ? 0 : this.config.samplingTemperature ?? profile.sampling.temperature,
       top_p: profile.sampling.topP, repetition_penalty: profile.sampling.repetitionPenalty,
       max_tokens: maxTokens,
-      // Companion replies use the selected model's private reasoning. It shares
-      // the request's total output budget; never force-close it into visible text.
-      // Bounded summaries stay non-thinking; media extraction uses native thinking without grammar.
-      chat_template_kwargs: { enable_thinking: thinking },
+      ...thinkingParameters,
       ...(responseFormat ? { response_format: responseFormat } : {}),
       ...(options.stop?.length ? { stop: options.stop } : {}),
       ...(input.tools.length ? { tools: input.tools, tool_choice: compacting ? "none" : "auto" } : {}),

@@ -1553,7 +1553,7 @@ describe("image generation service contract", () => {
     });
     await grantCoins(userId, 100, "seed");
 
-    const job = await import("@/server/modules/ourdream/service").then((mod) =>
+    const { job } = await import("@/server/modules/ourdream/service").then((mod) =>
       mod.createChatImageGenerationJob({
         subject: "companion",
         version: 1,
@@ -1627,7 +1627,7 @@ describe("image generation service contract", () => {
     });
 
     try {
-      const job = await import("@/server/modules/ourdream/service").then((mod) =>
+      const { job } = await import("@/server/modules/ourdream/service").then((mod) =>
         mod.createChatImageGenerationJob({
           subject: "companion",
           version: 1,
@@ -3239,7 +3239,7 @@ describe("image generation service contract", () => {
       "fully clothed in a silk robe",
     ].join(" ");
 
-    const job = await import("@/server/modules/ourdream/service").then((mod) =>
+    const { job } = await import("@/server/modules/ourdream/service").then((mod) =>
       mod.createChatImageGenerationJob({
         version: 1,
         kind: "chat.image.requested",

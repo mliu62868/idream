@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { COMPANION_PI_VERSION, COMPANION_IGREP_VERSION } from "@idream/shared/chat/companion-runtime";
 import { stableJson } from "../stable-json";
-import { IGREP_MAINTENANCE_SAMPLING } from "./config";
+import { igrepMaintenanceSampling } from "./config";
 
 export const COMPANION_CORE_PACKAGES = ["@earendil-works/pi-ai", "@earendil-works/pi-durable", "@earendil-works/chord"] as const;
 export const COMPANION_COMPACTION_CONFIG = Object.freeze({ thresholdRatio: 0.85, headroomTokens: 512, retainRatio: 0.25, maxTokens: 1024 });
@@ -39,16 +39,18 @@ export function companionCompositionManifest(mode: CompanionCompositionMode, igr
   if (!Number.isSafeInteger(authority.maxSteps) || authority.maxSteps <= 0) throw new Error("companion maxSteps must be a positive integer");
   const url = new URL(authority.igrepLlm.url);
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("igrep maintenance URL must be credential-free HTTP(S)");
+  const maintenanceModel = authority.igrepLlm.model.trim();
   return {
     schemaVersion: 3, piVersion: COMPANION_PI_VERSION, igrepVersion: COMPANION_IGREP_VERSION,
     corePackages: COMPANION_CORE_PACKAGES, storage: "memory", builtInTools: [],
     compaction: { backend: "pi-durable", ...COMPANION_COMPACTION_CONFIG },
-    reasoning: { generation: true, compaction: false, structured: false, totalLimit: "profile" },
-    execution: { version: 75, maxSteps: authority.maxSteps, toolExecution: "sequential", maxParallelToolCalls: 1,
-      mediaReply: { bufferCapableSteps: true, afterAttachment: "terminate-native-round", afterUnfulfilledSearch: "verified-status-and-independent-body", pureBody: "empty-with-main-attachment", extraction: "ordered-verbatim-native", extractionMaxOutputTokens: 1024, body: "native-loop-without-media-tools", history: "answered-card-only-replay", sharedStepBudget: true },
+    reasoning: { generation: true, compaction: false, structured: false, totalLimit: "profile",
+      inkling: { mediaToolEffort: "minimal", mediaExtraction: false, mediaBody: false } },
+    execution: { version: 78, maxSteps: authority.maxSteps, toolExecution: "sequential", maxParallelToolCalls: 1,
+      mediaReply: { bufferCapableSteps: true, afterAttachment: "terminate-native-round", afterUnfulfilledSearch: "verified-status-and-independent-body", pureBody: "empty-with-main-attachment", extraction: "ordered-verbatim-blockquotes", extractionMaxOutputTokens: 1024, body: "native-loop-without-media-tools", history: "answered-card-only-replay", sharedStepBudget: true },
       retry: false, backgroundCompaction: false, deadlineSource: "invocation.deadlineAt", commitBeforeProjection: true,
       recovery: "Main snapshot and immutable local proposal" },
-    igrepMaintenance: { url: url.toString().replace(/\/$/u, ""), model: authority.igrepLlm.model.trim(), sampling: IGREP_MAINTENANCE_SAMPLING },
+    igrepMaintenance: { url: url.toString().replace(/\/$/u, ""), model: maintenanceModel, sampling: igrepMaintenanceSampling(maintenanceModel) },
     ...(authority.igrepRoutes ? { igrepRoutes: digestSafeIgrepConfig(authority.igrepRoutes as Record<string, unknown>) } : {}),
     mode, igrep: digestSafeIgrepConfig(igrep),
   };

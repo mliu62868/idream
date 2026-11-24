@@ -39,6 +39,43 @@ async function createDraftThroughWizard(page: Page, name: string) {
   return new URL(page.url()).pathname.split("/").pop()!;
 }
 
+test("follows the Main next step to a same-tab anchor and opens legacy Preview in Release", async ({ page }) => {
+  await login(page);
+  await page.setViewportSize({ width: 1280, height: 620 });
+  const characterId = await createDraftThroughWizard(page, `Next Step Anchor ${suffix}`);
+  // An active identity and no published references make the reference-set control the next step.
+  await prisma.characterVisualProfile.create({ data: {
+    characterId,
+    status: "active",
+    identityPrompt: "Composed radio host with dark wavy hair and warm brown eyes",
+    faceTraits: {},
+    hairTraits: {},
+    bodyTraits: {},
+    signatureTraits: {},
+    styleTraits: {},
+    anchorAssetIds: [],
+    adapterRefs: {},
+    createdFrom: "operator",
+  } });
+
+  const workspace = `${adminBaseURL()}/admin/characters/${characterId}`;
+  await page.goto(`${workspace}?tab=visual#visual-identity-version`);
+  const referenceSet = page.locator("#visual-reference-set");
+  const next = page.getByTestId("character-next-step");
+  const link = next.getByRole("link", { name: "Complete image route setup" });
+  await expect(link).toHaveAttribute("href", `/admin/characters/${characterId}?tab=visual#visual-reference-set`);
+  await expect(referenceSet).not.toBeInViewport();
+  await link.click();
+  await expect(page).toHaveURL(`${workspace}?tab=visual#visual-reference-set`);
+  await expect(referenceSet).toBeInViewport();
+  await expect(referenceSet).toBeFocused();
+  await expect(next).toHaveCount(0);
+
+  await page.goto(`${workspace}?tab=preview`);
+  await expect(page.getByRole("tab", { name: "Release and preview", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator("#character-panel-release")).toBeVisible();
+});
+
 test.describe.serial("Character operations stay one click", () => {
   test.setTimeout(180_000);
 

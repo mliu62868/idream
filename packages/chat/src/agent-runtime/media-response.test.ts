@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { COMPANION_IMAGE_SKILL_PROMPT, buildCompanionRuntimeAuthority } from "@idream/shared";
-import { COMPANION_MEDIA_REQUEST_GUIDANCE } from "@idream/shared/chat/media-library";
-import { mediaAttachmentId, mediaBodySystemPrompt, mediaExtractionMessages, parseMediaSearchReply, parseMediaTextRequests } from "./media-response";
+import { mediaAttachmentId, mediaExtractionMessages, parseMediaSearchReply, parseMediaTextRequests } from "./media-response";
 
 it.each([false, true])("keeps a completed media resend out of the independent text scope (recovered=%s)", recovered => {
   const source = "把刚才那段原样再发一次。另外用中文告诉我 17 + 25 的结果。";
@@ -18,25 +16,37 @@ it.each([false, true])("keeps a completed media resend out of the independent te
   expect(input.existingAttachmentCard).toEqual({ attachmentId: receipt.attachmentId, status: "completed", mediaAssetId: receipt.mediaAssetId });
   // Independent text still comes from the complete original request; a real
   // media receipt must not discard the separate question or its language.
-  expect(parseMediaTextRequests(JSON.stringify({ requests: ["另外用中文告诉我 17 + 25 的结果。"] }), source)).toEqual(["另外用中文告诉我 17 + 25 的结果。"]);
+  expect(parseMediaTextRequests("> 另外用中文告诉我 17 + 25 的结果。", source)).toEqual({ content: "另外用中文告诉我 17 + 25 的结果。", excerptCount: 1 });
 });
 
 describe("source-bound independent media requests", () => {
   const source = 'Edit the mug. Also write a story saying "Done — everything else stayed exactly as it was." Keep it in one paragraph.';
-  const remainder = source.slice(source.indexOf("Also"));
-  it.each([JSON.stringify({ requests: [remainder] }), `\n\`\`\`json\n${JSON.stringify({ requests: [remainder] })}\n\`\`\`\n`])("accepts a complete envelope without changing its source", text => {
-    expect(parseMediaTextRequests(text, source)).toEqual([remainder]);
-  });
   it("preserves distinct ordered excerpts and permits pure media", () => {
-    expect(parseMediaTextRequests('{"requests":[]}', source)).toEqual([]);
-    expect(parseMediaTextRequests(JSON.stringify({ requests: ["Also write a story", "Keep it in one paragraph."] }), source)).toEqual(["Also write a story", "Keep it in one paragraph."]);
+    expect(parseMediaTextRequests("NONE", source)).toEqual({ content: "", excerptCount: 0 });
+    expect(parseMediaTextRequests("> Also write a story\n\n> Keep it in one paragraph.", source)).toEqual({ content: "Also write a story\n\nKeep it in one paragraph.", excerptCount: 2 });
+    expect(parseMediaTextRequests("> NONE", "Edit the mug and print NONE")).toEqual({ content: "NONE", excerptCount: 1 });
+  });
+  it.each(["\n", "\r\n"])("preserves quoted blank lines, indentation and literal quote markers (%j)", newline => {
+    const excerpt = ["Also copy this layout:", "", "> quoted content", "  indented content  "].join(newline);
+    const original = `Edit the mug. ${excerpt}`;
+    const output = ["> Also copy this layout:", ">", "> > quoted content", ">   indented content  "].join(newline);
+    expect(parseMediaTextRequests(`${newline}${output}${newline}`, original)).toEqual({ content: excerpt, excerptCount: 1 });
+  });
+  it.each([["\r\n", "\n"], ["\n", "\r\n"]])("recovers the original line endings when the provider changes them (%j to %j)", (sourceNewline, wireNewline) => {
+    const lines = ["Keep this layout: [title].", "", "> Indent \\here."];
+    const excerpt = lines.join(sourceNewline);
+    const output = lines.map(line => `> ${line}`).join(wireNewline);
+    expect(parseMediaTextRequests(output, `Find the original photo. ${excerpt}`)).toEqual({ content: excerpt, excerptCount: 1 });
+  });
+  it("rejects a carriage return added to the excerpt outside the line ending", () => {
+    expect(() => parseMediaTextRequests("> First\r\r\n> Next", "First\r\nNext")).toThrow();
   });
   it.each([
-    'Here is the result: {"requests":[]}', '```json\n{"requests":[]}\n```\nProse',
-    '```json\n{"requests":[]}\n```\n```json\n{"requests":[]}\n```', '```json\n{"requests":[]}',
-    '{"requests":[]', '[]', '{"requests":[],"other":true}', '{"requests":["invented"]}',
-    JSON.stringify({ requests: ["Keep it in one paragraph.", "Also write a story"] }),
-    JSON.stringify({ requests: ["Also write a story", "Also write a story"] }),
+    "", 'Here is the result:\n> Also write a story', '> Also write a story\nProse',
+    'NONE\n\n> Also write a story', '```text\n> Also write a story\n```',
+    '{"requests":[]}', '> ', '> invented',
+    '> Keep it in one paragraph.\n\n> Also write a story',
+    '> Also write a story\n\n> Also write a story',
   ])("rejects malformed or non-source extraction: %s", text => {
     expect(() => parseMediaTextRequests(text, source)).toThrow();
   });
@@ -50,30 +60,32 @@ describe("stock lookup without delivery", () => {
     const evidence = { searchedExistingMedia: { kind: "image", outcome: "available" } } as const;
     const messages = mediaExtractionMessages(source, evidence);
     expect(JSON.parse(messages[1]!.content as string)).toEqual({ originalUserRequest: source, ...evidence });
-    const extracted = JSON.stringify({ requests: [question], language: "zh-Hant" });
-    expect(parseMediaSearchReply(extracted, source, "available")).toEqual({ requests: [question], feedback: "我找到了可能相關的現成內容，暫時沒有傳送。" });
+    const extracted = `zh-Hant\n> ${question}`;
+    expect(parseMediaSearchReply(extracted, source, "available")).toEqual({ requests: { content: question, excerptCount: 1 }, feedback: "我找到了可能相關的現成內容，暫時沒有傳送。" });
     expect(parseMediaSearchReply(extracted, source, "unavailable").feedback).toBe("我現在沒法確認有沒有符合你要求的現成內容。");
   });
 
   it("reports the Main no-match receipt for an existing-only request", () => {
     const source = "有木門旁不穿淺毛衣的現成照片才發，找不到就說沒有。";
-    const extracted = JSON.stringify({ requests: [], language: "zh-Hant" });
-    expect(parseMediaSearchReply(extracted, source, "no_match")).toEqual({ requests: [], feedback: "我沒找到符合你要求的現成內容。" });
+    const extracted = "zh-Hant\nNONE";
+    expect(parseMediaSearchReply(extracted, source, "no_match")).toEqual({ requests: { content: "", excerptCount: 0 }, feedback: "我沒找到符合你要求的現成內容。" });
+  });
+
+  it("retains both excerpts when a model spaces the unquoted separator", () => {
+    const original = "先解釋潮汐。只傳港口的現成照片。再寫一句晚安。";
+    expect(parseMediaSearchReply("zh-Hant\n> 先解釋潮汐。\n \t\n> 再寫一句晚安。", original, "no_match")).toEqual({
+      requests: { content: "先解釋潮汐。\n\n再寫一句晚安。", excerptCount: 2 }, feedback: "我沒找到符合你要求的現成內容。",
+    });
   });
 
   it.each([
-    { requests: [], language: "zh", feedback: "I will make one next." },
-    { requests: [], language: "invented" },
-    { requests: ["Invented independent request"], language: "zh" },
-  ])("rejects extractor output outside the closed schema and original user text", output => {
-    expect(() => parseMediaSearchReply(JSON.stringify(output), source, "no_match")).toThrow();
+    "zh\nNONE\nI will make one next.",
+    "invented\nNONE",
+    "zh",
+    "zh\n> Invented independent request",
+  ])("rejects invalid language, extra prose or text outside the original request", output => {
+    expect(() => parseMediaSearchReply(output, source, "no_match")).toThrow();
   });
-});
-
-it("strips only known media guidance while retaining Soul and memory authority", () => {
-  const soul = "My favorite photo is the blue cafe. Keep my exact voice.";
-  const full = [soul, buildCompanionRuntimeAuthority({ memoryEnabled: false, imageToolEnabled: true }), COMPANION_IMAGE_SKILL_PROMPT, COMPANION_MEDIA_REQUEST_GUIDANCE, "ordinary guidance"].join("\n\n");
-  expect(mediaBodySystemPrompt(full, false)).toBe([soul, buildCompanionRuntimeAuthority({ memoryEnabled: false, imageToolEnabled: false }), "ordinary guidance"].join("\n\n"));
 });
 
 it("requires real acknowledged attachment identity", () => {

@@ -272,7 +272,7 @@ describe("Main group conversation authority", () => {
         status: "accepted", generationJobId: job.id,
         metadata: { ...JSON.parse(JSON.stringify(attachment.metadata)), costDreamcoins: job.costDreamcoins },
       } });
-      return job;
+      return { job, duplicate: false };
     });
     try {
       expect(await applyChatToolEffect(call)).toMatchObject({ accepted: true, costDreamcoins: 8 });

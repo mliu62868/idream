@@ -163,15 +163,16 @@ const MODEL_PROBE_TIMEOUT_MS = 2_000;
 const MODEL_PROBE_TTL_MS = 15_000;
 
 /**
- * SPEC: the model endpoint answers `GET <baseUrl>/models` within 2s.
+ * SPEC: `GET <baseUrl>/models` lists the configured model ID within 2s.
  * INTENT: every other dependency here is local, so a stopped model server left
  * /readyz reporting ok for four days while every Turn failed in 0.5s. This is
- * the cheapest request that proves the server is up; it does not generate.
+ * a cheap check for both gateway reachability and the availability of its route.
  * INVARIANT: one outcome is reused for 15s, success or failure, so /readyz
  * polling cannot turn into a request per poll against the model server.
  */
 export function createModelEndpointProbe(input: {
   baseUrl: string;
+  model: string;
   apiKey: string;
   fetch?: typeof globalThis.fetch;
   now?: () => number;
@@ -189,8 +190,19 @@ export function createModelEndpointProbe(input: {
           headers: { authorization: `Bearer ${input.apiKey}` },
           signal: AbortSignal.timeout(MODEL_PROBE_TIMEOUT_MS),
         });
-        await response.body?.cancel().catch(() => undefined);
-        if (!response.ok) error = `model endpoint ${url.origin} returned HTTP ${response.status}`;
+        if (!response.ok) {
+          await response.body?.cancel().catch(() => undefined);
+          error = `model endpoint ${url.origin} returned HTTP ${response.status}`;
+        } else {
+          const catalog = await response.json().catch(() => null) as {
+            data?: Array<{ id?: unknown } | null>;
+          } | null;
+          if (!Array.isArray(catalog?.data)) {
+            error = `model endpoint ${url.origin} returned an invalid model catalog`;
+          } else if (!catalog.data.some(entry => entry?.id === input.model)) {
+            error = `model endpoint ${url.origin} does not list configured model ${JSON.stringify(input.model)}`;
+          }
+        }
       } catch {
         error = `model endpoint ${url.origin} unreachable`;
       }
@@ -205,7 +217,7 @@ let configuredModelProbe: (() => Promise<void>) | null = null;
 function probeConfiguredModel(): Promise<void> {
   if (!configuredModelProbe) {
     const { modelProfile } = loadAgentRuntimeConfig();
-    configuredModelProbe = createModelEndpointProbe({ baseUrl: modelProfile.baseUrl, apiKey: modelProfile.apiKey });
+    configuredModelProbe = createModelEndpointProbe(modelProfile);
   }
   return configuredModelProbe();
 }

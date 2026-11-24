@@ -225,6 +225,7 @@ describe("Paid delayed curated media fulfillment & write-path safety", () => {
       attempt: snapshot.attempt,
       attachmentId,
       entryId: f.entry.id,
+      kind: "image",
       visualProfileId: f.visual.id,
       visualProfileVersion: f.visual.version,
       effectMetadata: { turnId: snapshot.turnId, attempt: snapshot.attempt, name: "request_character_media" },
@@ -232,8 +233,8 @@ describe("Paid delayed curated media fulfillment & write-path safety", () => {
       now,
       overrideDelayMs: 4_000,
     });
-    expect(scheduled.status).toBe("accepted");
-    expect(scheduled.costDreamcoins).toBe(5);
+    expect(scheduled.attachment.status).toBe("accepted");
+    expect(scheduled.attachment.metadata).toMatchObject({ costDreamcoins: 5 });
     expect(await dreamcoinBalance(f.id)).toBe(15);
 
     // Replay with the same attachmentId never double-charges.
@@ -243,6 +244,7 @@ describe("Paid delayed curated media fulfillment & write-path safety", () => {
       attempt: snapshot.attempt,
       attachmentId,
       entryId: f.entry.id,
+      kind: "image",
       visualProfileId: f.visual.id,
       visualProfileVersion: f.visual.version,
       effectMetadata: { turnId: snapshot.turnId, attempt: snapshot.attempt, name: "request_character_media" },
@@ -334,6 +336,7 @@ describe("Paid delayed curated media fulfillment & write-path safety", () => {
       attempt: nextTurn.snapshot!.attempt,
       attachmentId: `chatfx_${randomUUID().replace(/-/g, "")}`,
       entryId: f.entry.id,
+      kind: "image",
       visualProfileId: f.visual.id,
       visualProfileVersion: f.visual.version,
       effectMetadata: {},
@@ -353,6 +356,7 @@ describe("Paid delayed curated media fulfillment & write-path safety", () => {
       attempt: poorTurn.attempt,
       attachmentId: `chatfx_${randomUUID().replace(/-/g, "")}`,
       entryId: poor.entry.id,
+      kind: "video",
       visualProfileId: poor.visual.id,
       visualProfileVersion: poor.visual.version,
       effectMetadata: {},
@@ -370,14 +374,15 @@ describe("Paid delayed curated media fulfillment & write-path safety", () => {
       attempt: fundedTurn.attempt,
       attachmentId: vidAttachmentId,
       entryId: funded.entry.id,
+      kind: "video",
       visualProfileId: funded.visual.id,
       visualProfileVersion: funded.visual.version,
       effectMetadata: {},
       requestMetadata: {},
       overrideDelayMs: 6_000,
     });
-    expect(scheduled.costDreamcoins).toBe(30);
-    expect(scheduled.kind).toBe("generated_video");
+    expect(scheduled.attachment.metadata).toMatchObject({ costDreamcoins: 30 });
+    expect(scheduled.attachment.kind).toBe("generated_video");
     expect(await dreamcoinBalance(funded.id)).toBe(20);
 
     // Non-official (UGC) character is forbidden.
@@ -389,6 +394,7 @@ describe("Paid delayed curated media fulfillment & write-path safety", () => {
       attempt: ugcTurn.attempt,
       attachmentId: `chatfx_${randomUUID().replace(/-/g, "")}`,
       entryId: ugc.entry.id,
+      kind: "image",
       visualProfileId: ugc.visual.id,
       visualProfileVersion: ugc.visual.version,
       effectMetadata: {},
@@ -408,6 +414,7 @@ describe("Paid delayed curated media fulfillment & write-path safety", () => {
       attempt: t1.attempt,
       attachmentId: att1,
       entryId: f1.entry.id,
+      kind: "image",
       visualProfileId: f1.visual.id,
       visualProfileVersion: f1.visual.version,
       effectMetadata: {},
@@ -461,6 +468,7 @@ describe("Paid delayed curated media fulfillment & write-path safety", () => {
       attempt: t2.attempt,
       attachmentId: att2,
       entryId: f2.entry.id,
+      kind: "video",
       visualProfileId: f2.visual.id,
       visualProfileVersion: f2.visual.version,
       effectMetadata: {},

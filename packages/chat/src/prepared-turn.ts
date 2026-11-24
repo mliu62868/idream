@@ -11,11 +11,13 @@ import { REQUEST_CHARACTER_MEDIA_TOOL, RESEND_SESSION_MEDIA_TOOL, COMPANION_MEDI
 import type { ChatAuthoritySnapshot } from "@idream/shared/bff";
 import type { ChatExecutionSnapshot } from "@idream/shared/contracts";
 import { buildContext, type BuiltContext } from "./context.js";
-import { buildCompanionSystemPrompt, buildTurnPreferencesBlock, buildTurnStateBlock, describeImageActionAuthorization, describeRequestedReplyConstraints, describeUserLanguage } from "./prompt.js";
+import { buildTurnPreferencesBlock, buildTurnStateBlock, captureCompanionSystemSource, renderCompanionReplyPrompt } from "./prompt.js";
 import { dropOldestReplayExchange, estimateModelRequestInputTokens, formatModelRequestInput } from "./agent-runtime/model-request-format.js";
 import {
   preparedTurnSchema,
+  type PreparedReplyPrompt,
   type PreparedTurnInput,
+  type PreparedTurnMessage,
 } from "./agent-runtime/contracts.js";
 
 export interface PreparedTurn extends PreparedTurnInput {
@@ -69,6 +71,7 @@ export function compilePreparedTurn(
     model: profile.model,
     characterName: fitted.context.persona.name,
     messages: fitted.messages,
+    replyPrompt: fitted.replyPrompt,
     omittedMessages: (context.replayMessages ?? context.recentMessages)
       .filter(message => message.id !== currentUserMessageId && !fitted.messages.some(retained => retained.id === message.id))
       .map(message => ({
@@ -101,6 +104,35 @@ export function compilePreparedTurn(
   };
 }
 
+/** Project verified text excerpts under the current user's original identity. */
+export function projectPreparedBody(
+  prepared: PreparedTurnInput,
+  original: Extract<PreparedTurnMessage, { role: "user" }>,
+  independentText: string,
+  multipleRequests: boolean,
+) {
+  const tools: PreparedTurnInput["tools"] = [];
+  const prompt = prepared.replyPrompt && renderCompanionReplyPrompt({
+    source: prepared.replyPrompt, characterName: prepared.characterName, tools, userText: independentText,
+    multipleRequests,
+  });
+  const current = { ...original, content: independentText };
+  const messages = prepared.messages.map((message, index) => {
+    if (message.id === original.id) return current;
+    // Literal probe inputs own their fixed messages. Compiled Turns identify
+    // their projected system and state frames independently of their wording.
+    if (!prompt) return message;
+    if (index === 0) return preparedSystemMessage(prompt.system);
+    if (message.id === `state:${original.id}`) return { ...message, content: prompt.state };
+    return message;
+  });
+  return { preparedTurn: { ...prepared, messages, tools }, current };
+}
+
+function preparedSystemMessage(content: string): Extract<PreparedTurnMessage, { role: "system" }> {
+  return { id: `system:${sha256(content)}`, sourceKind: "plugin", role: "system", content };
+}
+
 function buildPreparedMessages(
   context: BuiltContext,
   currentUserMessageId: string,
@@ -108,12 +140,7 @@ function buildPreparedMessages(
   turnState: string,
   turnPreferences: string,
 ): PreparedTurnInput["messages"] {
-  const messages: PreparedTurnInput["messages"] = [{
-    id: `system:${sha256(systemContent)}`,
-    sourceKind: "plugin",
-    role: "system",
-    content: systemContent,
-  }];
+  const messages: PreparedTurnInput["messages"] = [preparedSystemMessage(systemContent)];
   for (const message of context.recentMessages) {
     const isCurrent = message.id === currentUserMessageId;
     if (isCurrent) {
@@ -161,6 +188,7 @@ export function fitPreparedTurnBudget(
 ): {
   context: BuiltContext;
   messages: PreparedTurnInput["messages"];
+  replyPrompt: PreparedReplyPrompt;
   tools: ChatToolDefinition[];
   budget: PreparedTurn["budget"];
 } {
@@ -203,26 +231,21 @@ export function fitPreparedTurnBudget(
         }];
       })
     : [];
-  const systemContent = buildCompanionSystemPrompt(fitted, tools);
+  const system = captureCompanionSystemSource(fitted);
+  const turnFacts = buildTurnStateBlock(fitted, now);
   const maxInputTokens = Math.max(1, Math.ceil(fitted.policy.maxContextChars / 4));
   const dropped = new Set(fitted.dropped);
   const replayMessageIds = new Set(fitted.recentMessages.filter(message => message.id !== currentUserMessageId).map(message => message.id));
-  const language = describeUserLanguage(currentUser.content);
-  const replyConstraints = describeRequestedReplyConstraints(currentUser.content);
-  // Rebuilt on every budget pass so it only quotes dialogue that is still retained.
-  const turnState = () => [
-    buildTurnStateBlock(fitted, now),
-    ...(tools.some(tool => tool.name === REQUEST_CHARACTER_MEDIA_TOOL || tool.name === EDIT_LAST_IMAGE_TOOL)
-      ? [`- ${describeImageActionAuthorization(imageActionMode)}`] : []),
-    ...(language ? [`- ${language}`] : []),
-    ...(replyConstraints ? [`- ${replyConstraints}`] : []),
-    ...recentOpeningsLines(fitted, currentUserMessageId),
-  ].join("\n");
   const turnPreferences = buildTurnPreferencesBlock(fitted);
   const calculate = () => {
-    const messages = buildPreparedMessages(fitted, currentUserMessageId, systemContent, turnState(), turnPreferences);
+    // Only quote replies retained by this budget pass.
+    const replyPrompt = { system, turnFacts, recentOpenings: recentOpeningsLines(fitted, currentUserMessageId) };
+    const prompt = renderCompanionReplyPrompt({
+      source: replyPrompt, characterName: fitted.persona.name, tools, imageActionMode, userText: currentUser.content,
+    });
+    const messages = buildPreparedMessages(fitted, currentUserMessageId, prompt.system, prompt.state, turnPreferences);
     const usedInputTokens = estimateModelRequestInputTokens(formatModelRequestInput({ messages, tools, respondingCharacterId: fitted.persona.characterId }));
-    return { messages, usedInputTokens };
+    return { messages, replyPrompt, usedInputTokens };
   };
 
   // SPEC: leave room for runtime tools, recall notes and compaction headroom.
@@ -254,6 +277,7 @@ export function fitPreparedTurnBudget(
   return {
     context: fitted,
     messages: calculated.messages,
+    replyPrompt: calculated.replyPrompt,
     tools,
     budget: {
       maxInputTokens,

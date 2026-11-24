@@ -37,8 +37,13 @@ const journey = {
     code: "create_primary_portrait",
     deepLink: "/admin/characters/character-fixture",
     command: null,
+    readOperations: ["GET /api/v2/admin/characters/:id", "GET /api/v2/admin/characters/:id/image-sources"],
+    canReadTarget: true,
   },
+  hasActiveCommand: false,
   assetPack: {
+    generateMissingBlocker: "visual_identity_missing",
+    generateMissingPurposes: [],
     draft: {
       availablePurposes: [],
       missingPurposes: [],

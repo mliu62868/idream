@@ -6,6 +6,7 @@ import { operationalCharacterWhere } from "@/server/modules/metric-data-scope";
 import {
   resolveCharacterVoiceAuthority,
 } from "@/server/modules/voice-defaults";
+import type { AdminActor } from "../shared/authority";
 import { ACTIVE_CONTROL_PLANE_COMMAND_STATUSES } from "../shared/control-plane-command";
 import { loadCharacterMediaOperationsProjection } from "./character-media-operations";
 import { characterCommandCoordinationKey } from "./command-coordination";
@@ -39,7 +40,7 @@ import { inspectCustomerIdentitySource, resolveCustomerIdentitySource } from "./
  * 改的是那个文件，不是这里。取数顺序仍是原来那串批次：能并行的进同一个 Promise.all，
  * 有依赖的（先有身份版本才能查参考集）保持串行。
  */
-export async function getCharacterWorkspace(characterId: string) {
+export async function getCharacterWorkspace(characterId: string, actor?: AdminActor) {
   const [
     character,
     project,
@@ -315,7 +316,7 @@ export async function getCharacterWorkspace(characterId: string) {
       includePerformance: true,
       performanceWindow: "28d",
     },
-    { authorizedDraftAssetCharacterIds: [characterId] },
+    { actor, authorizedDraftAssetCharacterIds: [characterId] },
   );
   const portfolioItem =
     portfolio.items.find((item) => item.characterId === characterId) ?? null;

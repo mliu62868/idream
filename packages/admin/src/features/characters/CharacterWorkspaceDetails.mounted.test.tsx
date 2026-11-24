@@ -740,7 +740,7 @@ describe("Character workspace details", () => {
   it("shows the list card's lifecycle label and next step in the header, and follows it in place", async () => {
     // An inactive draft whose server-projected next step is the first identity portrait.
     const draft = withCharacterWorkspaceDetail(workspace, {
-      portfolio: { journey: { primaryAction: { deepLink: "/admin/characters/character-detail?tab=assets" } } },
+      journey: { primaryAction: { deepLink: "/admin/characters/character-detail?tab=assets" } },
     });
     const original = adminV2Request.getMockImplementation()!;
     adminV2Request.mockImplementation(async (path: string, ...args: unknown[]) =>
@@ -768,5 +768,31 @@ describe("Character workspace details", () => {
     });
     await waitUntil(() => container.querySelector("#character-panel-assets") !== null, "assets after next step");
     expect(window.location.search).toBe("?tab=assets");
+  });
+
+  it("shows the projected next step as text when the operator cannot read the target", async () => {
+    const restricted = withCharacterWorkspaceDetail(workspace, {
+      journey: { primaryAction: { deepLink: "/admin/characters/character-detail?tab=assets", canReadTarget: false } },
+    });
+    const original = adminV2Request.getMockImplementation()!;
+    adminV2Request.mockImplementation(async (path: string, ...args: unknown[]) =>
+      path === "/api/v2/admin/characters/character-detail" ? restricted : original(path, ...args),
+    );
+    await act(async () => {
+      root.render(
+        <AdminI18nProvider locale="en">
+          <CharacterWorkspace actorId="operator-a" permissions={permissions}
+            view={{ kind: "detail", id: "character-detail" }} />
+        </AdminI18nProvider>,
+      );
+    });
+    const selector = '[data-testid="character-next-step"]';
+    await waitUntil(
+      () => container.querySelector(selector) !== null,
+      "read-only next step",
+    );
+    const strip = container.querySelector(selector);
+    expect(strip?.textContent).toContain("Create first identity portrait");
+    expect(strip?.querySelector("a")).toBeNull();
   });
 });

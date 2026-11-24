@@ -12,6 +12,7 @@ import { acceptGenerationJobForUser } from "../ourdream/generation-job-authority
 import { createReferenceSetRevision } from "../ourdream/generation-reference-set";
 import { quoteAuthorityFor } from "../ourdream/generation-quote";
 import { applyChatToolEffect } from "./tool-effect";
+import { confirmChatMediaQuote } from "./media-fulfillment-router";
 import { beginChatTurn, commitChatTerminal, createChatSession, executionSnapshot, getChatSession } from "./turn-ledger";
 
 const prefix = `zt-chat-effect-delivery-${randomUUID()}-`;
@@ -54,8 +55,11 @@ describe("initial Chat image delivery", () => {
   });
 
   it.each((["companion", "scene"] as const).flatMap(subject =>
-    (["failed", "completed", "retry-completed"] as const).map(scenario => ({ subject, scenario }))
-  ))("preserves $subject $scenario image delivery and reservation identity", async ({ subject, scenario }) => {
+    (["failed", "completed", "retry-completed"] as const).flatMap(scenario =>
+      (subject === "scene" ? (["direct", "quote"] as const) : (["direct"] as const))
+        .map(authorization => ({ subject, scenario, authorization }))
+    )
+  ))("preserves $subject $scenario image delivery and reservation identity with $authorization authorization", async ({ subject, scenario, authorization }) => {
     const outcome = scenario;
     const userId = `${prefix}${randomUUID()}`;
     await createUser({ id: userId });
@@ -74,7 +78,7 @@ describe("initial Chat image delivery", () => {
     const session = await createChatSession(userId, { characterId: character.id });
     await prisma.recentChat.update({ where: { sessionId: session.id }, data: { memoryEnabled: false } });
     const direction = subject === "scene" ? "A basil plant in a terracotta pot on a sunny balcony. No people visible." : "Avery beside the rainy window.";
-    const { snapshot } = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId, sessionId: session.id, content: subject === "scene" ? `Generate one picture of ${direction}` : "Send me a portrait beside the rainy window.", idempotencyKey: randomUUID(), allowPaidImage: true });
+    const { snapshot } = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId, sessionId: session.id, content: subject === "scene" ? `Generate one picture of ${direction}` : "Send me a portrait beside the rainy window.", idempotencyKey: randomUUID(), allowPaidImage: authorization === "direct" });
     if (!snapshot) throw new Error("Missing accepted Turn");
     const gen = await generationTestProviders();
     const generate = vi.spyOn(gen.image, "generate");
@@ -86,7 +90,8 @@ describe("initial Chat image delivery", () => {
     let finalCost = 0;
     const createSpy = vi.spyOn(generation, "createChatImageGenerationJob").mockImplementationOnce(async (...args) => {
       try {
-        const job = await create(...args);
+        const receipt = await create(...args);
+        const { job } = receipt;
         originalJobId = job.id;
         finalCost = job.costDreamcoins;
         // Force the real Gen terminal + Main refund to commit before the caller
@@ -111,7 +116,7 @@ describe("initial Chat image delivery", () => {
           expect(repeated.data.job.id).toBe(replacementJobId);
           await runQueuedGenerationJobs();
         }
-        return job;
+        return receipt;
       } catch (error) {
         creationFailure = error;
         throw error;
@@ -128,11 +133,24 @@ describe("initial Chat image delivery", () => {
       expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(0);
       expect(await dreamcoinBalance(userId)).toBe(40);
     }
-    const accepted = await applyChatToolEffect(effect);
+    const requested = await applyChatToolEffect(effect);
+    if (authorization === "quote") expect(requested).toMatchObject({ status: "awaiting_confirmation", costDreamcoins: 5 });
+    const accepted = authorization === "quote" ? await confirmChatMediaQuote(userId, requested.attachmentId!) : requested;
     if (creationFailure) throw creationFailure;
-    if (outcome === "failed") {
-      // The first receipt must reflect a failure already committed by Main,
-      // just as a replay does; it must not tell the Agent the photo is pending.
+    if (authorization === "quote") {
+      expect(accepted).toMatchObject({
+        status: outcome === "failed" ? "failed" : "completed",
+        duplicate: false,
+        generationJobId: replacementJobId ?? originalJobId,
+        costDreamcoins: 5,
+      });
+      await expect(confirmChatMediaQuote(userId, requested.attachmentId!)).resolves.toMatchObject({
+        status: outcome === "failed" ? "failed" : "completed",
+        duplicate: true,
+        generationJobId: replacementJobId ?? originalJobId,
+      });
+    } else if (outcome === "failed") {
+      // A first receipt reflects a terminal failure already committed by Main.
       expect(accepted).toMatchObject({ accepted: false, duplicate: false, error: { code: "backend_error", retryable: true } });
     } else {
       expect(accepted, JSON.stringify(accepted)).toMatchObject({ accepted: true, duplicate: false, status: "completed", generationJobId: replacementJobId ?? originalJobId });

@@ -2,6 +2,7 @@
 // Character listing, production journey, backfill and reconciliation.
 
 import { z } from "zod";
+import type { AdminV2DeclaredOperationId } from "../api-manifest";
 import {
   adminCursorQuerySchema,
   adminControlPlaneCommandStatusSchema,
@@ -270,6 +271,45 @@ export const characterProductionActionCodeSchema = z.enum([
   "monitor_live_character",
 ]);
 
+const characterPrimaryActionCodeSchema = z.enum([
+  ...characterProductionActionCodeSchema.options,
+  "restore_archived_draft",
+  "review_retired_character",
+  "review_paused_character",
+  "resolve_live_release_blocker",
+  "republish_stale_release",
+  "inspect_performance_quality",
+  "review_release_monitor",
+  "inspect_no_traffic",
+  "prepare_pending_release",
+  "complete_live_asset_pack",
+  "republish_legacy_release",
+]);
+
+export const CHARACTER_PROFILES_READ_OPERATIONS = [
+  "GET /api/v2/admin/generation/model-profiles",
+  "GET /api/v2/admin/feature-flags",
+  "GET /api/v2/admin/jobs",
+] as const satisfies readonly AdminV2DeclaredOperationId[];
+
+const characterActionReadOperationSchema = z.enum([
+  "GET /api/v2/admin/characters/:id",
+  "GET /api/v2/admin/characters/:id/image-sources",
+  "GET /api/v2/admin/commands/:commandId",
+  ...CHARACTER_PROFILES_READ_OPERATIONS,
+] as const satisfies readonly AdminV2DeclaredOperationId[]);
+
+export type CharacterActionReadOperation = z.infer<typeof characterActionReadOperationSchema>;
+
+const generateMissingBlockerSchema = z.enum([
+  "visual_identity_missing",
+  "reference_set_not_active",
+  "generation_route_unqualified",
+  "image_run_in_progress",
+  "image_run_outcome_unknown",
+  "active_command",
+]);
+
 const characterProductionPurposeSchema = z.enum([
   "character_cover",
   "character_hero",
@@ -373,8 +413,10 @@ export const characterProductionJourneySchema = z
       .readonly(),
     primaryAction: z
       .object({
-        code: characterProductionActionCodeSchema,
+        code: characterPrimaryActionCodeSchema,
         deepLink: z.string().startsWith("/admin/"),
+        readOperations: z.array(characterActionReadOperationSchema).min(1).readonly(),
+        canReadTarget: z.boolean(),
         command: z
           .object({
             id: adminIdSchema,
@@ -386,10 +428,13 @@ export const characterProductionJourneySchema = z
           .nullable(),
       })
       .strict(),
+    hasActiveCommand: z.boolean(),
     assetPack: z
       .object({
         draft: characterProductionAssetPackProgressSchema,
         live: characterProductionAssetPackProgressSchema,
+        generateMissingPurposes: characterProductionAssetPackProgressSchema.shape.missingPurposes,
+        generateMissingBlocker: generateMissingBlockerSchema.nullable(),
       })
       .strict(),
     release: z

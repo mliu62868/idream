@@ -92,7 +92,8 @@ export function CharacterBulkBar({
       await runBulkTasks(batch, async (task) => {
         patch(task.id, { state: "running", message: null });
         try {
-          patch(task.id, { state: await worker(task), attempts: task.attempts + 1 });
+          const result = await worker(task);
+          patch(task.id, { ...(typeof result === "string" ? { state: result } : result), attempts: task.attempts + 1 });
           completed.add(task.characterId);
         } catch (cause) {
           failedTargets.add(task.characterId);
@@ -126,7 +127,7 @@ export function CharacterBulkBar({
         <div className="grid gap-2 text-sm">
           {action.kind === "generate_missing" ? (
             <p className="font-semibold">
-              {t("This creates {count} generation tasks, one image each. Generation costs real money.", {
+              {t("This checks {count} missing placements and generates one image for each that still needs one. Generation costs real money.", {
                 count: plan.tasks.length,
               })}
             </p>
@@ -246,7 +247,7 @@ export function CharacterBulkBar({
                 <span className={task.state === "failed" ? "text-[var(--ad-red-text)]" : "text-[var(--ad-text-muted)]"}>
                   {t(STATE_LABELS[task.state])}
                 </span>
-                {task.message ? <span className="text-xs text-[var(--ad-red-text)]">{t(task.message)}</span> : null}
+                {task.message ? <span className={task.state === "failed" ? "text-xs text-[var(--ad-red-text)]" : "text-xs text-[var(--ad-text-muted)]"}>{t(task.message)}</span> : null}
               </li>
             ))}
             {skipped.map((item) => (

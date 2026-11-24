@@ -235,13 +235,15 @@ Every physical model request, including compaction, contributes its raw provider
 usage receipt. Missing receipts keep usage unknown; a missing reasoning subtotal
 stays null while known prompt/completion totals remain usable. Reasoning is already
 included in completion totals and is never added again.
-Companion generation enables hidden reasoning on the configured Ornith 8-bit model.
+Companion generation enables hidden reasoning on the configured Chat model.
+The default oMLX model is `Inkling-2-Mini-Uncensored-oQ8-mtp`.
 Its reasoning and answer share the prepared model output budget; Quick's 256-token
 answer setting must not cap that combined request. Reply length remains a product
 preference: this provider has no independent hard cap for visible tokens while
-thinking is enabled. Compaction, structured extraction, warmup and igrep helpers
-keep reasoning disabled. Tool choice remains automatic; unfinished reasoning is
-never force-closed into a user reply.
+thinking is enabled. Compaction, general structured extraction, warmup and igrep
+helpers keep reasoning disabled. On oMLX, the default Inkling model uses a zero
+thinking budget for these requests. Tool choice remains automatic. Unfinished
+reasoning stays private.
 The responding Character's history stays in the assistant role; other Characters'
 ordinary lines use the incoming user role with their speaker name. Original Main
 roles and speaker identities remain unchanged in the recall archive. Per-turn context ends at an

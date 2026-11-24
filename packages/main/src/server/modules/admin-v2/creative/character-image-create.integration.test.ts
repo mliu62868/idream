@@ -4,6 +4,7 @@ import sharp from "sharp";
 import { compileCharacterSoul } from "@idream/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { POST as createCreativeRun } from "@/app/api/v2/admin/creative/runs/route";
+import { POST as reconcileMutationReceipt } from "@/app/api/v2/admin/mutation-receipts/reconcile/route";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
@@ -61,7 +62,8 @@ function createCharacterVisualProfile(request: Request, characterId: string) {
 }
 
 
-const { generationBackendHealth, multiReferenceWorkflowKey } = vi.hoisted(() => ({
+const { beforeCreateWorkflow, generationBackendHealth, multiReferenceWorkflowKey } = vi.hoisted(() => ({
+  beforeCreateWorkflow: vi.fn<() => Promise<void>>(async () => {}),
   generationBackendHealth: vi.fn<
     () => Promise<{ ok: boolean; detail?: string }>
   >(async () => ({ ok: true })),
@@ -82,6 +84,7 @@ vi.mock("@/server/modules/generation/generation-catalog", async (importOriginal)
   return {
     ...actual,
     generationWorkflowDescriptor: async (workflowKey: string) => {
+      await beforeCreateWorkflow();
       const descriptor = await actual.generationWorkflowDescriptor(
         workflowKey === multiReferenceWorkflowKey
           ? "qwen-image-edit-img2img"
@@ -168,6 +171,9 @@ describe("Character image Creative Run authority", () => {
   const legacyQualificationId = `character-image-create-legacy-qualification-${suffix}`;
   const archiveRaceCharacterId =
     `character-image-create-archive-race-character-${suffix}`;
+  const archiveRaceProjectId = `character-image-create-archive-race-project-${suffix}`;
+  const otherOperatorId = `character-image-create-other-operator-${suffix}`;
+  const lateCandidateId = `character-image-create-late-candidate-${suffix}`;
   const archiveRaceContentId =
     `character-image-create-archive-race-content-${suffix}`;
   const archiveRaceAssetId =
@@ -208,18 +214,54 @@ describe("Character image Creative Run authority", () => {
     });
   }
 
-  function request(payload: Record<string, unknown>, key: string) {
-    return new Request("http://localhost/api/v2/admin/creative/runs", {
+  function request(payload: Record<string, unknown>, key: string, operatorId = actorId, path = "creative/runs") {
+    return new Request(`http://localhost/api/v2/admin/${path}`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         "idempotency-key": key,
-        "x-idream-user-id": actorId,
+        "x-idream-user-id": operatorId,
         "x-idream-role": "admin",
         "x-request-id": randomUUID(),
       },
       body: JSON.stringify(payload),
     });
+  }
+
+  function raceRunPayload(title: string, purpose = "character_hero") {
+    return {
+      title,
+      purpose,
+      targetType: "character",
+      targetId: archiveRaceCharacterId,
+      profileId: profileKey,
+      orientation: "4:5",
+      count: 1,
+      brief: "Preserve the sealed identity while creating a customer-facing image.",
+      consistencyMode: "strict",
+      priority: "normal",
+      reason: "Verify concurrent Character image admission",
+    };
+  }
+
+  async function submitRun(payload: Record<string, unknown>, key: string, operatorId = actorId) {
+    const response = await createCreativeRun(request(payload, key, operatorId));
+    const body = await response.json();
+    if (response.status === 202) batchIds.push(body.data.batch.id);
+    return { status: response.status, body };
+  }
+
+  function pauseRunPreflights(count: number) {
+    const started = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    let remaining = count;
+    for (let index = 0; index < count; index++) {
+      beforeCreateWorkflow.mockImplementationOnce(async () => {
+        if (--remaining === 0) started.resolve();
+        await resume.promise;
+      });
+    }
+    return { started: started.promise, resume: resume.resolve };
   }
 
   beforeAll(async () => {
@@ -358,9 +400,9 @@ describe("Character image Creative Run authority", () => {
     });
     await prisma.generationJob.deleteMany({ where: { id: variationDependentJobId } });
     await prisma.controlPlaneCommand.deleteMany({
-      where: { actorId },
+      where: { actorId: { in: [actorId, otherOperatorId] } },
     });
-    await prisma.adminAuditLog.deleteMany({ where: { actorId } });
+    await prisma.adminAuditLog.deleteMany({ where: { actorId: { in: [actorId, otherOperatorId] } } });
     await prisma.generationRouteQualification.deleteMany({
       where: {
         OR: [
@@ -392,7 +434,7 @@ describe("Character image Creative Run authority", () => {
       where: { id: { in: [visualProfileId, archiveRaceVisualProfileId] } },
     });
     await prisma.mediaAsset.deleteMany({
-      where: { id: { in: [anchorAssetId, archiveRaceAssetId] } },
+      where: { id: { in: [anchorAssetId, archiveRaceAssetId, lateCandidateId] } },
     });
     await prisma.generationModelProfile.deleteMany({
       where: { id: { in: [profileId, multiReferenceProfileId] } },
@@ -400,11 +442,11 @@ describe("Character image Creative Run authority", () => {
     await prisma.characterContentVersion.deleteMany({
       where: { id: { in: [contentId, archiveRaceContentId] } },
     });
-    await prisma.characterProject.deleteMany({ where: { id: projectId } });
+    await prisma.characterProject.deleteMany({ where: { id: { in: [projectId, archiveRaceProjectId] } } });
     await prisma.character.deleteMany({
       where: { id: { in: [characterId, archiveRaceCharacterId] } },
     });
-    await prisma.user.deleteMany({ where: { id: actorId } });
+    await prisma.user.deleteMany({ where: { id: { in: [actorId, otherOperatorId] } } });
     await prisma.$disconnect();
   });
 
@@ -960,7 +1002,15 @@ describe("Character image Creative Run authority", () => {
     await prisma.mediaAsset.delete({ where: { id: legacyAssetId } });
   });
 
-  it("serializes Character image create against Library archive in both winner orders", async () => {
+  beforeAll(async () => {
+    await prisma.user.create({
+      data: {
+        id: otherOperatorId,
+        email: `${otherOperatorId}@idream.internal`,
+        role: "admin",
+        status: "active",
+      },
+    });
     await prisma.character.create({
       data: {
         id: archiveRaceCharacterId,
@@ -974,6 +1024,13 @@ describe("Character image Creative Run authority", () => {
         status: "approved",
         appearance: {},
         advancedDetails: {},
+      },
+    });
+    await prisma.characterProject.create({
+      data: {
+        id: archiveRaceProjectId,
+        characterId: archiveRaceCharacterId,
+        activeKey: `character-image-create:${archiveRaceCharacterId}`,
       },
     });
     await prisma.characterContentVersion.create({
@@ -1086,21 +1143,9 @@ describe("Character image Creative Run authority", () => {
         policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
       },
     });
+  });
 
-    const createPayload = (title: string) => ({
-      title,
-      purpose: "character_hero",
-      targetType: "character",
-      targetId: archiveRaceCharacterId,
-      profileId: profileKey,
-      orientation: "4:5",
-      count: 1,
-      brief: "Preserve the sealed identity while creating a customer-facing hero.",
-      consistencyMode: "strict",
-      priority: "normal",
-      reason: "Prove Character create and Library archive serialize on media authority",
-    });
-
+  it("serializes Character image create against Library archive in both winner orders", async () => {
     const archiveFirstTitle = "Archive wins before Character image create";
     const jobsBeforeArchiveFirst = await prisma.generationJob.count({
       where: { characterId: archiveRaceCharacterId },
@@ -1126,7 +1171,7 @@ describe("Character image Creative Run authority", () => {
         },
       });
       pendingCreate = createCreativeRun(request(
-        createPayload(archiveFirstTitle),
+        raceRunPayload(archiveFirstTitle),
         `character-image-archive-first-${suffix}`,
       ));
       let mediaAuthorityWaitObserved = false;
@@ -1179,7 +1224,7 @@ describe("Character image Creative Run authority", () => {
 
     const createFirstTitle = "Character image create wins before archive";
     const createFirst = await createCreativeRun(request(
-      createPayload(createFirstTitle),
+      raceRunPayload(createFirstTitle),
       `character-image-create-first-${suffix}`,
     ));
     const createFirstFailure = createFirst.status === 202
@@ -1269,6 +1314,132 @@ describe("Character image Creative Run authority", () => {
         data: { status: "active" },
       });
     });
+    await cleanupBatches([createFirstBatchId]);
+  });
+
+  it("admits one fill per missing placement across actors and ignores refunded history", async () => {
+    const historical = await submitRun(raceRunPayload("Earlier Hero failed"), `fill-history-${suffix}`);
+    expect(historical.status, JSON.stringify(historical.body)).toBe(202);
+    const historicalId: string = historical.body.data.batch.id;
+    const historicalItem = await prisma.contentProductionItem.findFirstOrThrow({ where: { batchId: historicalId } });
+    const historicalJobId = historicalItem.jobId!;
+    await prisma.$transaction(async (tx) => {
+      await tx.generationJob.update({ where: { id: historicalJobId }, data: { status: "refunded" } });
+      await tx.contentProductionItem.update({ where: { id: historicalItem.id }, data: { status: "failed" } });
+    });
+
+    const hero = { ...raceRunPayload("Fill missing Hero"), fillMissing: true };
+    const chat = { ...raceRunPayload("Fill missing chat", "character_chat"), fillMissing: true };
+    const requests = [
+      { body: hero, key: `fill-hero-a-${suffix}`, operatorId: actorId },
+      { body: hero, key: `fill-hero-b-${suffix}`, operatorId: otherOperatorId },
+      { body: chat, key: `fill-chat-${suffix}`, operatorId: otherOperatorId },
+    ];
+    // All three requests must reach profile/workflow preflight before any can commit.
+    const gate = pauseRunPreflights(requests.length);
+    const pending = requests.map(({ body, key, operatorId }) => submitRun(body, key, operatorId));
+    try {
+      const early = await Promise.race([gate.started.then(() => null), ...pending]);
+      expect(early, JSON.stringify(early)).toBeNull();
+    } finally {
+      gate.resume();
+      beforeCreateWorkflow.mockReset();
+    }
+    const responses = await Promise.all(pending);
+    expect(responses.map(({ status }) => status).sort(), JSON.stringify(responses)).toEqual([200, 202, 202]);
+    const finalChat = responses[2];
+    const heroWinnerIndex = responses[0].status === 202 ? 0 : 1;
+    const finalHero = responses[heroWinnerIndex];
+    const skippedIndex = 1 - heroWinnerIndex;
+    const skipped = responses[skippedIndex];
+    expect(finalChat.status).toBe(202);
+    expect(finalHero.status).toBe(202);
+    const heroId: string = finalHero.body.data.batch.id;
+    const chatId: string = finalChat.body.data.batch.id;
+    expect(skipped.body.data).toEqual({ skip: { reason: "run_pending", runId: heroId }, replayed: false });
+    await expect(submitRun(hero, requests[skippedIndex].key, requests[skippedIndex].operatorId)).resolves.toMatchObject({
+      status: 200,
+      body: { data: { skip: { reason: "run_pending", runId: heroId }, replayed: true } },
+    });
+    await expect(prisma.contentProductionBatch.findMany({
+      where: { targetType: "character", targetId: archiveRaceCharacterId },
+      select: { id: true, purpose: true, items: { select: { job: { select: { status: true, outputCount: true } } } } },
+    })).resolves.toEqual(expect.arrayContaining([
+      { id: historicalId, purpose: "character_hero", items: [{ job: { status: "refunded", outputCount: 1 } }] },
+      { id: heroId, purpose: "character_hero", items: [{ job: { status: "queued", outputCount: 1 } }] },
+      { id: chatId, purpose: "character_chat", items: [{ job: { status: "queued", outputCount: 1 } }] },
+    ]));
+    expect(await prisma.generationJob.count({ where: { characterId: archiveRaceCharacterId } })).toBe(3);
+    await cleanupBatches([historicalId, heroId, chatId]);
+  });
+
+  it("returns a selectable candidate that arrives before commit and replays the persisted skip", async () => {
+    const payload = { ...raceRunPayload("Cover where a candidate just arrived", "character_cover"), fillMissing: true };
+    const key = `fill-late-candidate-${suffix}`;
+    const gate = pauseRunPreflights(1);
+    const pending = submitRun(payload, key);
+    try {
+      const early = await Promise.race([gate.started.then(() => null), pending]);
+      expect(early, JSON.stringify(early)).toBeNull();
+      const sha256 = "a".repeat(64);
+      await prisma.$transaction(async (tx) => {
+        await lockCharacterGenerationAuthority(tx, archiveRaceCharacterId);
+        await tx.mediaAsset.create({
+          data: {
+            id: lateCandidateId,
+            ownerId: actorId,
+            characterId: archiveRaceCharacterId,
+            type: "image",
+            url: `/assets/${lateCandidateId}.webp`,
+            storageKey: `test-fixtures/${lateCandidateId}.webp`,
+            safetyStatus: "passed",
+            metadata: {
+              source: "admin_asset_upload",
+              sha256,
+              uploadAuthority: {
+                schemaVersion: "platform-asset-operator-upload-v1",
+                kind: "operator_upload",
+                assetId: lateCandidateId,
+                uploadedById: actorId,
+                sha256,
+              },
+              platformAsset: { status: "draft", purpose: "character_library" },
+            },
+          },
+        });
+      });
+    } finally {
+      gate.resume();
+      beforeCreateWorkflow.mockReset();
+    }
+    const skip = { reason: "candidate_available", assetId: lateCandidateId };
+    await expect(pending).resolves.toMatchObject({
+      status: 200,
+      body: { data: { skip, replayed: false } },
+    });
+    await expect(prisma.contentProductionBatch.count({ where: { title: payload.title } })).resolves.toBe(0);
+    await expect(prisma.generationJob.count({ where: { characterId: archiveRaceCharacterId } })).resolves.toBe(0);
+
+    // A later asset change cannot turn a lost acknowledgement into new generation.
+    await prisma.mediaAsset.delete({ where: { id: lateCandidateId } });
+    const reconciled = await reconcileMutationReceipt(request({
+      commandType: "creative.run.create",
+      expectedCharacterId: archiveRaceCharacterId,
+      expectedPurpose: "character_cover",
+    }, key, actorId, "mutation-receipts/reconcile"));
+    const receipt = await reconciled.json();
+    expect(reconciled.status, JSON.stringify(receipt)).toBe(200);
+    expect(receipt).toMatchObject({
+      data: { state: "committed", verification: {
+        kind: "creative_run_fill_skipped", projectId: archiveRaceProjectId, skip,
+        requestSnapshot: { fillMissing: true, purpose: "character_cover" },
+      } },
+    });
+    await expect(submitRun(payload, key)).resolves.toMatchObject({
+      status: 200,
+      body: { data: { skip, replayed: true } },
+    });
+    await expect(prisma.generationJob.count({ where: { characterId: archiveRaceCharacterId } })).resolves.toBe(0);
   });
 
   it("pins the active sealed reference snapshot into every normal Character asset job", async () => {

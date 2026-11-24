@@ -61,7 +61,7 @@ async function fixture(outputCount = 1) {
       status: "accepted", generationJobId: job.id,
       metadata: { ...JSON.parse(JSON.stringify(attachment.metadata)), costDreamcoins: job.costDreamcoins },
     } });
-    return job;
+    return { job, duplicate: false };
   });
   const effect = { version: 2 as const, turnId: snapshot.turnId, attempt: 1, callId: randomUUID(), name: "request_character_media" as const, effectScope: "turn_action" as const, intent: { requestedNudity: "unspecified" as const }, arguments: { subject: "companion", kind: "image", direction: "Avery beside the rainy window.", orientation: "portrait" } };
   const accepted = await applyChatToolEffect(effect);

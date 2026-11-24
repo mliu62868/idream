@@ -181,7 +181,7 @@ export async function createVideoSequence(userId: string, body: VideoSequenceReq
       idempotencyKey, requestFingerprint: fingerprint, request: toInputJson(request), acceptedQuote: toInputJson(quoted), audio: body.audio,
       ...(quoted.voicePin ? { voicePin: toInputJson(quoted.voicePin) } : {}) } });
     for (const [ordinal, admit] of admissions.entries()) {
-      const job = await admit(tx);
+      const { job } = await admit(tx);
       await tx.videoSequenceScene.create({ data: { sequenceId: sequence.id, ordinal, generationJobId: job.id } });
     }
     return sequence;

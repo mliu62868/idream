@@ -6,253 +6,7 @@ import type { CharacterPortfolioItem } from "@idream/shared/admin";
 import { ArrowRight, ImageIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { CharacterPortfolioVisual } from "./CharacterPortfolioVisual";
-
-type CharacterPortfolioPrimaryAction = {
-  readonly description: string;
-  readonly eyebrow: string;
-  readonly href: string;
-  readonly label: string;
-  readonly requiresAssets: boolean;
-};
-
-const characterPortfolioPrimaryActionCopy: Record<
-  CharacterPortfolioItem["journey"]["primaryAction"]["code"],
-  Omit<CharacterPortfolioPrimaryAction, "href">
-> = {
-  recover_active_command: {
-    description:
-      "Finish or reconcile the command that currently owns this Character.",
-    eyebrow: "Mutation in progress",
-    label: "Open active command",
-    requiresAssets: false,
-  },
-  create_primary_portrait: {
-    description:
-      "Start here: lock the face once, then reuse it for every new image.",
-    eyebrow: "First-time setup",
-    label: "Create first identity portrait",
-    requiresAssets: true,
-  },
-  prepare_image_production: {
-    description:
-      "Use the existing live portrait once, then create future images without changing the live character.",
-    eyebrow: "Enable image production",
-    label: "Use existing portrait",
-    requiresAssets: true,
-  },
-  complete_image_route: {
-    description:
-      "The identity portrait is locked. Activate a compatible image route before creating an image.",
-    eyebrow: "Image route setup",
-    label: "Complete image route setup",
-    requiresAssets: false,
-  },
-  platform_route_unavailable: {
-    description:
-      "No qualified image route can serve this Character. This is a platform configuration issue you cannot fix on this page; platform operations manages it under Profiles & Rollout.",
-    eyebrow: "Platform issue",
-    label: "Open Profiles & Rollout",
-    requiresAssets: false,
-  },
-  retry_failed_image_run: {
-    description:
-      "The latest image failed without a result. Open Images and generate it again.",
-    eyebrow: "Image generation failed",
-    label: "Generate again",
-    requiresAssets: true,
-  },
-  resolve_unknown_image_run: {
-    description:
-      "The latest image has an unknown outcome and may already have cost money. Check that Run before generating again.",
-    eyebrow: "Image outcome unknown",
-    label: "Check image Run",
-    requiresAssets: true,
-  },
-  continue_image_run: {
-    description: "Return to the latest unfinished image without starting over.",
-    eyebrow: "Image in progress",
-    label: "Continue current image",
-    requiresAssets: true,
-  },
-  continue_asset_pack: {
-    description: "Complete the portrait, hero, and chat image set.",
-    eyebrow: "Image pack in progress",
-    label: "Continue filling image pack",
-    requiresAssets: true,
-  },
-  repair_character_soul: {
-    description:
-      "The images are ready, but the persona or opening message must be saved again before it can be published.",
-    eyebrow: "Persona needs repair",
-    label: "Repair persona",
-    requiresAssets: false,
-  },
-  preview_character: {
-    description: "Preview the customer-facing draft before publishing.",
-    eyebrow: "Ready to preview",
-    label: "Preview Character",
-    requiresAssets: false,
-  },
-  publish_character: {
-    description: "Publish the prepared immutable Character snapshot.",
-    eyebrow: "Ready to publish",
-    label: "Publish Character",
-    requiresAssets: false,
-  },
-  // SPEC: 走到这里说明线上没有任何待办。不要写成一个看起来要做的动作，运营不需要被提醒。
-  monitor_live_character: {
-    description: "Nothing needs you right now. Live monitoring is here if you want it.",
-    eyebrow: "Live character",
-    label: "No action needed",
-    requiresAssets: false,
-  },
-};
-
-export function resolveCharacterPortfolioPrimaryAction(
-  item: CharacterPortfolioItem,
-): CharacterPortfolioPrimaryAction {
-  const journeyAction = {
-    ...characterPortfolioPrimaryActionCopy[item.journey.primaryAction.code],
-    href: item.journey.primaryAction.deepLink,
-  };
-  // SPEC: 卡片主动作只服从这个优先级：未完成命令 → 归档/停用 → 旅程阻塞 → Release 阻塞 → 线上零观测
-  //       → 待发布版本 → 待发布修订 → 线上图片包缺失 → 普通制作旅程。
-  // INTENT: 生成批次只是生产过程，不能盖过线上故障或发布决策。
-  if (item.journey.primaryAction.code === "recover_active_command") return journeyAction;
-  if (item.serving.state === "retired") {
-    const archivedDraft = item.serving.currentReleaseId === null;
-    return {
-      description: archivedDraft
-        ? "Restore this archived draft before continuing character production."
-        : "This character is retired. Review its release history.",
-      eyebrow: archivedDraft ? "Archived draft" : "Retired character",
-      href: `/admin/characters/${encodeURIComponent(item.characterId)}?tab=release`,
-      label: archivedDraft ? "Restore draft" : "Review retired character",
-      requiresAssets: false,
-    };
-  }
-  if (item.journey.status === "blocked") return journeyAction;
-  // INTENT: a paused Character with nothing new to publish has one decision left —
-  //         resume or keep it hidden — and that control lives under Release.
-  if (
-    item.serving.state === "paused" &&
-    item.journey.primaryAction.code === "monitor_live_character"
-  ) {
-    return {
-      description:
-        "Customers cannot open this paused character. Resume it or keep it hidden under Release availability.",
-      eyebrow: "Paused character",
-      href: `/admin/characters/${encodeURIComponent(item.characterId)}?tab=release`,
-      label: "Review paused character",
-      requiresAssets: false,
-    };
-  }
-  if (item.readiness === "blocked") {
-    return {
-      description:
-        "Resolve the current live Release blocker before continuing routine production.",
-      eyebrow: "Live release blocked",
-      href:
-        item.operationalState.blockers[0]?.deepLink ??
-        `/admin/characters/${encodeURIComponent(item.characterId)}?tab=monitor`,
-      label: "Resolve live release blocker",
-      requiresAssets: false,
-    };
-  }
-  // SPEC: 对照 ReleasePanel：路线资格失效的线上 Release 要重新发布，内容一致也不能自动恢复。
-  if (item.currentRelease?.status === "published" && item.readiness === "stale") {
-    return {
-      description:
-        "The live Release lost its route qualification. Customers still see it; publish again to bring it back to a checked state.",
-      eyebrow: "Live release stale",
-      href: `/admin/characters/${encodeURIComponent(item.characterId)}?tab=release`,
-      label: "Publish again",
-      requiresAssets: false,
-    };
-  }
-  // SPEC: 权威判定"表现数据不可信"要比"没有数据"更早说出来。
-  // INTENT: qualityState=invalid 的意思是漏斗事实自相矛盾或曝光链不精确（performance.ts:191-198），
-  //         也就是这张卡上的数字不能用来做决定。此前这个状态在前端没有任何出口：
-  //         needsAttention 只覆盖"发布满 7 天零观测"(no_data)，invalid 的角色因此和正常角色
-  //         长得一模一样，运营会照着一份已知有问题的数据做下架和资源分配。
-  if (item.operationalState.qualityState === "invalid") {
-    return {
-      description:
-        "The performance authority marked this Character's funnel facts invalid, so these numbers cannot support a decision.",
-      eyebrow: "Performance data invalid",
-      href: `/admin/characters/${encodeURIComponent(item.characterId)}?tab=monitor`,
-      label: "Inspect performance quality",
-      requiresAssets: false,
-    };
-  }
-  if (item.attentionReason === "release_monitor_action") {
-    return {
-      description:
-        "The published monitor needs a decision. Review its evidence, then keep or roll back this Release.",
-      eyebrow: "Monitor needs action",
-      href: `/admin/characters/${encodeURIComponent(item.characterId)}?tab=monitor`,
-      label: "Review monitor evidence",
-      requiresAssets: false,
-    };
-  }
-  if (item.attentionReason === "no_traffic_after_window") {
-    return {
-      description:
-        "No exposure, funnel, or chat traffic in 7 days live. Check placement targeting and event delivery.",
-      eyebrow: "No traffic after 7 days",
-      href: `/admin/characters/${encodeURIComponent(item.characterId)}?tab=monitor`,
-      label: "Inspect live monitoring",
-      requiresAssets: false,
-    };
-  }
-  if (
-    item.journey.primaryAction.code === "publish_character" ||
-    item.journey.primaryAction.code === "retry_failed_image_run"
-  ) {
-    return journeyAction;
-  }
-  // INTENT: 创作者改了已发布角色只会写 Revision、不动 Serving；这里不出声，改动就一直停在未发布。
-  const pendingRevision = item.journey.release.pendingRevision;
-  if (pendingRevision) {
-    return {
-      description:
-        "A newer Character revision is saved but the live Release still serves the previous one.",
-      eyebrow: "Unpublished revision",
-      href: pendingRevision.deepLink,
-      label: "Prepare release",
-      requiresAssets: false,
-    };
-  }
-  if (
-    item.serving.state === "live" &&
-    item.journey.assetPack.live.completed < item.journey.assetPack.live.total
-  ) {
-    return {
-      description: "Complete the portrait, hero, and chat image set.",
-      eyebrow: "Live with an incomplete image pack",
-      href: item.visualProduction.deepLink,
-      label: "Complete image pack",
-      requiresAssets: true,
-    };
-  }
-  // SPEC: 对照 ReleasePanel：legacy Release 在线上照常，靠发布一次经过检查的版本离开。
-  // INTENT: 不算故障，排在所有真实待办之后，只在别无他事时提示。
-  if (
-    item.currentRelease?.legacy === true &&
-    !item.journey.release.candidateReleaseId &&
-    item.journey.primaryAction.code === "monitor_live_character"
-  ) {
-    return {
-      description:
-        "This Release predates current checks. It keeps serving; publish once to move it onto a checked Release.",
-      eyebrow: "Legacy release",
-      href: `/admin/characters/${encodeURIComponent(item.characterId)}?tab=release`,
-      label: "Publish a checked Release",
-      requiresAssets: false,
-    };
-  }
-  return journeyAction;
-}
+import { characterPrimaryActionCopy } from "./character-primary-action-copy";
 
 // SPEC: 线上/暂停/退役要分得清。暂停的角色线上没有人看得到，不能继续写 Live。
 export function characterReleasePackLabel(servingState: string) {
@@ -287,7 +41,7 @@ export function characterPortfolioState(item: CharacterPortfolioItem) {
       tone: "text-[var(--ad-blue-text)]",
     } as const;
   }
-  if (item.journey.primaryAction.code === "repair_character_soul") {
+  if (item.journey.blockers.some(({ code }) => code === "opening_complete" || code === "soul_snapshot_valid" || code === "soul_release_policy")) {
     return {
       badge: "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]",
       label: "Persona needs repair",
@@ -333,9 +87,8 @@ export function CharacterPortfolioCard({
   selected?: boolean;
 }) {
   const { t } = useAdminI18n();
-  const primaryAction = resolveCharacterPortfolioPrimaryAction(item);
-  const canOpenNextAction =
-    canOpenProject && (!primaryAction.requiresAssets || canOpenAssets);
+  const primaryAction = item.journey.primaryAction;
+  const actionCopy = characterPrimaryActionCopy[primaryAction.code];
   const state = characterPortfolioState(item);
   const { assetPack } = item.journey;
   const characterHref = `/admin/characters/${encodeURIComponent(item.characterId)}`;
@@ -428,19 +181,19 @@ export function CharacterPortfolioCard({
       )}
       <div className="mt-auto border-t border-[var(--ad-border)] px-4 py-3 text-xs">
         {item.journey.status === "blocked" ? (
-          <p className="mb-1 leading-snug text-[var(--ad-text-muted)]">{t(primaryAction.eyebrow)}</p>
+          <p className="mb-1 leading-snug text-[var(--ad-text-muted)]">{t(actionCopy.eyebrow)}</p>
         ) : null}
-        {canOpenNextAction ? (
+        {primaryAction.canReadTarget ? (
           <Link
             className="flex min-h-8 items-center justify-between gap-3 text-sm font-semibold text-[var(--ad-ink)] hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
-            href={withRoster(primaryAction.href)}
+            href={withRoster(primaryAction.deepLink)}
           >
-            <span className="truncate">{t(primaryAction.label)}</span>
+            <span className="truncate">{t(actionCopy.label)}</span>
             <ArrowRight aria-hidden="true" className="h-4 w-4 shrink-0" />
           </Link>
         ) : (
           <p className="flex min-h-8 items-center text-sm font-semibold text-[var(--ad-ink)]">
-            {t(primaryAction.label)}
+            {t(actionCopy.label)}
           </p>
         )}
       </div>

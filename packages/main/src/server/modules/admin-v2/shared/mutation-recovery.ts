@@ -1,6 +1,7 @@
 import {
   adminRecoverableMutationCommandTypeSchema,
   adminMutationRecoveryResultSchema,
+  creativeRunFillSkipSchema,
   type AdminRecoverableMutationCommandType,
   type AdminMutationRecoveryRequest,
 } from "@idream/shared/admin";
@@ -270,6 +271,7 @@ function committedVerification(
   commandType: AdminRecoverableMutationCommandType,
   command: {
     readonly targetId: string;
+    readonly targetType: string;
     readonly requestPayload: Prisma.JsonValue;
     readonly result: Prisma.JsonValue | null;
   },
@@ -277,6 +279,15 @@ function committedVerification(
   const payload = record(command.requestPayload);
   switch (commandType) {
     case "creative.run.create": {
+      if (command.targetType === "character_project") {
+        const skip = creativeRunFillSkipSchema.safeParse(record(command.result).fillSkip);
+        return skip.success && payload.fillMissing === true ? {
+          kind: "creative_run_fill_skipped" as const,
+          projectId: command.targetId,
+          skip: skip.data,
+          requestSnapshot: command.requestPayload,
+        } : null;
+      }
       const runId = stringField(command.result, "batchId") ??
         command.targetId;
       return {

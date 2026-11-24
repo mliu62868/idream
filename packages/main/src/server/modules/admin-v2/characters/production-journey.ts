@@ -1,4 +1,15 @@
-import type { CharacterProductionJourney } from "@idream/shared/admin";
+import {
+  ADMIN_COMMAND_TARGET_READ_PERMISSIONS,
+  ADMIN_V2_API_OPERATIONS_BY_ID,
+  CHARACTER_PROFILES_READ_OPERATIONS,
+  resolveAdminV2ManifestAuthorization,
+  type CharacterActionReadOperation,
+  type CharacterPortfolioItem,
+  type CharacterProductionJourney,
+  type characterProductionActionCodeSchema,
+} from "@idream/shared/admin";
+import { effectiveCharacterIdsForPermission, effectivePermissions } from "@/server/admin/effective-permissions";
+import type { PermissionKey } from "@/server/admin/permissions";
 import type {
   CharacterProject,
   CharacterRelease,
@@ -8,6 +19,8 @@ import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-authority";
 import { operationalMediaAssetWhere } from "@/server/modules/metric-data-scope";
+import { commandReadScopes } from "../commands/query";
+import type { AdminActor } from "../shared/authority";
 import { deriveCreativeItemExecutionState } from "../creative/run-state";
 import { ACTIVE_CONTROL_PLANE_COMMAND_STATUSES } from "../shared/control-plane-command";
 import { characterCommandCoordinationKey } from "./command-coordination";
@@ -40,8 +53,35 @@ export type CharacterProductionAssetPack = Partial<
 
 type Db = PrismaClient;
 
+type PrimaryAction = CharacterProductionJourney["primaryAction"];
+type ActionChoice = Omit<PrimaryAction, "readOperations" | "canReadTarget">;
+type ProductionAction = ActionChoice & {
+  code: (typeof characterProductionActionCodeSchema.options)[number];
+};
+type ProductionJourney = Omit<CharacterProductionJourney, "primaryAction"> & {
+  productionAction: ProductionAction;
+  hasPendingChanges: boolean;
+  imageRunNeedsAttention: boolean;
+};
+
+const generationBlockerByProductionAction: Partial<Record<
+  ProductionAction["code"],
+  NonNullable<CharacterProductionJourney["assetPack"]["generateMissingBlocker"]>
+>> = {
+  create_primary_portrait: "visual_identity_missing",
+  prepare_image_production: "visual_identity_missing",
+  complete_image_route: "reference_set_not_active",
+  platform_route_unavailable: "generation_route_unqualified",
+  continue_image_run: "image_run_in_progress",
+  resolve_unknown_image_run: "image_run_outcome_unknown",
+  recover_active_command: "active_command",
+};
+
 // SPEC: 路线资格的运维入口。不走 character-deep-link：它不在角色工作台内。
 const PLATFORM_ROUTE_ADMIN_LINK = "/admin/ops/profiles";
+const WORKSPACE_READ = "GET /api/v2/admin/characters/:id";
+const IMAGE_LIBRARY_READ = "GET /api/v2/admin/characters/:id/image-sources";
+const COMMAND_READ = "GET /api/v2/admin/commands/:commandId";
 
 export function distinctPurposeAssetPack(
   input: Partial<Record<CharacterProductionPurpose, string>>,
@@ -121,7 +161,7 @@ function packAssetIds(pack: CharacterProductionAssetPack) {
   });
 }
 
-function progress(available: readonly CharacterProductionPurpose[]) {
+export function characterImagePackProgress(available: readonly CharacterProductionPurpose[]) {
   const availableSet = new Set(available);
   return {
     availablePurposes: [...available],
@@ -133,13 +173,12 @@ function progress(available: readonly CharacterProductionPurpose[]) {
   };
 }
 
-function commandDeepLink(characterId: string, commandType: string) {
-  return characterWorkspaceTabLink(
-    characterId,
-    commandType.includes("identity") || commandType.includes("image")
-      ? "assets"
-      : "release",
-  );
+export function workingCharacterImagePack<T extends { completed: number }>(
+  servingState: string,
+  draft: T,
+  live: T,
+): T {
+  return (servingState === "live" || servingState === "paused") && draft.completed === 0 ? live : draft;
 }
 
 function journeySteps(input: {
@@ -171,14 +210,14 @@ function journeySteps(input: {
       deepLink: tabLink(input.hasVisualProfile ? "visual" : "assets"),
     },
     { code: "image_assets", state: state(1), deepLink: tabLink("assets") },
-    { code: "preview", state: state(2), deepLink: tabLink("preview") },
+    { code: "preview", state: state(2), deepLink: tabLink("release") },
     { code: "release", state: state(3), deepLink: tabLink("release") },
     { code: "live_monitor", state: state(4), deepLink: tabLink("monitor") },
   ] as const;
 }
 
 function actionIndex(
-  code: CharacterProductionJourney["primaryAction"]["code"],
+  code: ProductionAction["code"],
 ) {
   if (
     [
@@ -260,13 +299,14 @@ export function projectCharacterProductionJourneySnapshot(input: {
   activeCommand: NonNullable<
     CharacterProductionJourney["primaryAction"]["command"]
   > | null;
-}): CharacterProductionJourney {
+}): ProductionJourney {
   const tabLink = (tab: Parameters<typeof characterWorkspaceTabLink>[1]) =>
     characterWorkspaceTabLink(input.characterId, tab);
-  const draft = progress(input.draftPurposes);
-  const live = progress(input.livePurposes);
+  const draft = characterImagePackProgress(input.draftPurposes);
+  const live = characterImagePackProgress(input.livePurposes);
+  const workingPack = workingCharacterImagePack(input.servingState, draft, live);
   const blockers: Array<CharacterProductionJourney["blockers"][number]> = [];
-  let primaryAction: CharacterProductionJourney["primaryAction"];
+  let productionAction: ProductionAction;
   let stage: CharacterProductionJourney["stage"];
   let status: CharacterProductionJourney["status"];
   let activeStep: number | null = null;
@@ -281,10 +321,7 @@ export function projectCharacterProductionJourneySnapshot(input: {
     !input.pendingRevision &&
     (draft.completed === 0 || input.draftPackMatchesLive === true);
   if (input.activeCommand) {
-    const deepLink = commandDeepLink(
-      input.characterId,
-      input.activeCommand.type,
-    );
+    const deepLink = tabLink("release");
     const commandStage = activeCommandStage(input.activeCommand.type);
     if (input.activeCommand.needsReconciliation) {
       blockers.push({
@@ -294,7 +331,7 @@ export function projectCharacterProductionJourneySnapshot(input: {
         deepLink,
       });
     }
-    primaryAction = {
+    productionAction = {
       code: "recover_active_command",
       deepLink,
       command: input.activeCommand,
@@ -311,7 +348,7 @@ export function projectCharacterProductionJourneySnapshot(input: {
       message: "A reusable visual identity has not been established.",
       deepLink,
     });
-    primaryAction = {
+    productionAction = {
       code: live.availablePurposes.includes("character_cover")
         ? "prepare_image_production"
         : "create_primary_portrait",
@@ -339,7 +376,7 @@ export function projectCharacterProductionJourneySnapshot(input: {
         : "No qualified image route can consume this Character's Reference Set. This is a platform configuration issue; platform operations can fix it under Profiles & Rollout.",
       deepLink,
     });
-    primaryAction = {
+    productionAction = {
       code: operatorFixable ? "complete_image_route" : "platform_route_unavailable",
       deepLink,
       command: null,
@@ -356,11 +393,11 @@ export function projectCharacterProductionJourneySnapshot(input: {
         "The latest image Run has an unknown outcome and may already have cost money. Check that Run before generating again.",
       deepLink,
     });
-    primaryAction = { code: "resolve_unknown_image_run", deepLink, command: null };
+    productionAction = { code: "resolve_unknown_image_run", deepLink, command: null };
     stage = "image_production";
     status = "blocked";
   } else if (input.hasActiveImageRun) {
-    primaryAction = {
+    productionAction = {
       code: "continue_image_run",
       deepLink: tabLink("assets"),
       command: null,
@@ -368,7 +405,6 @@ export function projectCharacterProductionJourneySnapshot(input: {
     stage = "image_production";
     status = "in_progress";
   } else {
-    const workingPack = servesRelease && draft.completed === 0 ? live : draft;
     if (workingPack.completed < workingPack.total && input.imageRunIssue === "failed") {
       const deepLink = tabLink("assets");
       blockers.push({
@@ -376,11 +412,11 @@ export function projectCharacterProductionJourneySnapshot(input: {
         message: "The latest image Run failed without producing an image. Generate it again.",
         deepLink,
       });
-      primaryAction = { code: "retry_failed_image_run", deepLink, command: null };
+      productionAction = { code: "retry_failed_image_run", deepLink, command: null };
       stage = "image_production";
       status = "in_progress";
     } else if (workingPack.completed < workingPack.total) {
-      primaryAction = {
+      productionAction = {
         code: "continue_asset_pack",
         deepLink: tabLink("assets"),
         command: null,
@@ -388,7 +424,7 @@ export function projectCharacterProductionJourneySnapshot(input: {
       stage = "image_production";
       status = "in_progress";
     } else if (input.candidateReleaseId) {
-      primaryAction = {
+      productionAction = {
         code: "publish_character",
         deepLink: tabLink("release"),
         command: null,
@@ -400,7 +436,7 @@ export function projectCharacterProductionJourneySnapshot(input: {
       // draft pack is empty or equals the live pack, with no newer Revision, has
       // nothing to preview; an unpublished Revision always goes back to Preview.
       // A paused Character keeps its Release, so the same holds for it.
-      primaryAction = {
+      productionAction = {
         code: "monitor_live_character",
         deepLink: tabLink("monitor"),
         command: null,
@@ -418,13 +454,13 @@ export function projectCharacterProductionJourneySnapshot(input: {
           : "The draft persona must be saved in the current format before publishing.",
         deepLink,
       });
-      primaryAction = { code: "repair_character_soul", deepLink, command: null };
+      productionAction = { code: "repair_character_soul", deepLink, command: null };
       stage = "preview";
       status = "blocked";
     } else {
-      primaryAction = {
+      productionAction = {
         code: "preview_character",
-        deepLink: tabLink("preview"),
+        deepLink: tabLink("release"),
         command: null,
       };
       stage = "preview";
@@ -439,13 +475,21 @@ export function projectCharacterProductionJourneySnapshot(input: {
     steps: journeySteps({
       characterId: input.characterId,
       hasVisualProfile: input.hasVisualProfile,
-      activeIndex: activeStep ?? actionIndex(primaryAction.code),
+      activeIndex: activeStep ?? actionIndex(productionAction.code),
       blocked: status === "blocked",
       live: input.servingState === "live",
     }),
     blockers,
-    primaryAction,
-    assetPack: { draft, live },
+    productionAction,
+    hasPendingChanges: Boolean(input.currentReleaseId && (input.pendingRevision || productionAction.code === "preview_character")),
+    imageRunNeedsAttention: productionAction.code === "retry_failed_image_run" || productionAction.code === "resolve_unknown_image_run",
+    hasActiveCommand: input.activeCommand !== null,
+    assetPack: {
+      draft,
+      live,
+      generateMissingPurposes: workingPack.missingPurposes,
+      generateMissingBlocker: generationBlockerByProductionAction[productionAction.code] ?? null,
+    },
     release: {
       servingState: input.servingState,
       currentReleaseId: input.currentReleaseId,
@@ -460,6 +504,113 @@ export function projectCharacterProductionJourneySnapshot(input: {
         : null,
     },
   };
+}
+
+type OperationalFacts = Pick<CharacterPortfolioItem, "characterId" | "readiness" | "attentionReason"> & {
+  serving: { state: string; currentReleaseId: string | null };
+  currentRelease: Pick<NonNullable<CharacterPortfolioItem["currentRelease"]>, "status" | "legacy"> | null;
+  qualityState: CharacterPortfolioItem["operationalState"]["qualityState"];
+  releaseBlockerLink?: string;
+};
+
+function selectPrimaryAction(journey: ProductionJourney, facts: OperationalFacts): ActionChoice {
+  const { productionAction } = journey;
+  const { characterId, currentRelease, readiness, serving } = facts;
+  const link = (tab: Parameters<typeof characterWorkspaceTabLink>[1]) => characterWorkspaceTabLink(characterId, tab);
+  const action = (code: PrimaryAction["code"], deepLink: string): ActionChoice => ({ code, deepLink, command: null });
+
+  // SPEC: Commands, Serving disposition, production blockers and Release checks precede routine work.
+  if (journey.hasActiveCommand) return productionAction;
+  if (serving.state === "retired") {
+    return action(serving.currentReleaseId === null ? "restore_archived_draft" : "review_retired_character", link("release"));
+  }
+  if (journey.status === "blocked") return productionAction;
+  if (serving.state === "paused" && productionAction.code === "monitor_live_character") {
+    return action("review_paused_character", link("release"));
+  }
+  if (readiness === "blocked") return action("resolve_live_release_blocker", facts.releaseBlockerLink ?? link("monitor"));
+  if (currentRelease?.status === "published" && readiness === "stale") return action("republish_stale_release", link("release"));
+  if (facts.qualityState === "invalid") return action("inspect_performance_quality", link("monitor"));
+  if (facts.attentionReason === "release_monitor_action") return action("review_release_monitor", link("monitor"));
+  if (facts.attentionReason === "no_traffic_after_window") return action("inspect_no_traffic", link("monitor"));
+  if (productionAction.code === "publish_character" || productionAction.code === "retry_failed_image_run") return productionAction;
+  if (journey.release.pendingRevision) return action("prepare_pending_release", journey.release.pendingRevision.deepLink);
+  if (serving.state === "live" && journey.assetPack.live.completed < journey.assetPack.live.total) {
+    return action("complete_live_asset_pack", link("assets"));
+  }
+  if (currentRelease?.legacy && !journey.release.candidateReleaseId && productionAction.code === "monitor_live_character") {
+    return action("republish_legacy_release", link("release"));
+  }
+  return productionAction;
+}
+
+type ActionReadAccess = (characterId: string, operations: readonly CharacterActionReadOperation[], commandId?: string) => boolean;
+
+export function completeCharacterProductionJourney(
+  journey: ProductionJourney,
+  facts: OperationalFacts,
+  canReadTarget?: ActionReadAccess,
+): CharacterProductionJourney {
+  const { productionAction, hasPendingChanges, imageRunNeedsAttention, ...projection } = journey;
+  const action = selectPrimaryAction(journey, facts);
+  let readOperations: readonly CharacterActionReadOperation[] = [WORKSPACE_READ];
+  if (action.deepLink === PLATFORM_ROUTE_ADMIN_LINK) {
+    readOperations = CHARACTER_PROFILES_READ_OPERATIONS;
+  } else if (action.code === "recover_active_command") {
+    readOperations = [WORKSPACE_READ, COMMAND_READ];
+  } else if (action.deepLink === characterWorkspaceTabLink(facts.characterId, "assets")) {
+    readOperations = [WORKSPACE_READ, IMAGE_LIBRARY_READ];
+  }
+  return {
+    ...projection,
+    primaryAction: {
+      ...action,
+      readOperations,
+      canReadTarget: canReadTarget?.(facts.characterId, readOperations, action.command?.id) ?? false,
+    },
+  };
+}
+
+export async function loadCharacterActionReadAccess(
+  db: Db,
+  actor: AdminActor,
+  journeys: ReadonlyMap<string, ProductionJourney>,
+): Promise<ActionReadAccess> {
+  const commandIds = [...journeys.values()].flatMap(({ productionAction }) => productionAction.command ? [productionAction.command.id] : []);
+  const permissionsForTarget = ([WORKSPACE_READ, IMAGE_LIBRARY_READ, ...CHARACTER_PROFILES_READ_OPERATIONS] as const).flatMap((id) => {
+    const authorization = ADMIN_V2_API_OPERATIONS_BY_ID[id].authorization;
+    return authorization.kind === "all_of" ? [...authorization.permissions] : [];
+  });
+  const characterPermissions = [...new Set([...permissionsForTarget, ...Object.values(ADMIN_COMMAND_TARGET_READ_PERMISSIONS)])]
+    .filter((permission) => permission.startsWith("character."));
+  const [permissions, scopeEntries, commands] = await Promise.all([
+    effectivePermissions(actor.id, actor.role, db),
+    Promise.all(characterPermissions.map(async (permission) => [
+      permission, await effectiveCharacterIdsForPermission(actor.id, actor.role, permission),
+    ] as const)),
+    commandIds.length ? db.controlPlaneCommand.findMany({
+      where: { id: { in: commandIds } }, select: { id: true, targetType: true, targetId: true, requestPayload: true },
+    }) : [],
+  ]);
+  const characterScopes = new Map<PermissionKey, ReadonlySet<string> | null>(scopeEntries);
+  const commandScopes = await commandReadScopes(db, commands);
+  const hasPermission = (permission: PermissionKey, characterId?: string) => {
+    if (!permissions.has(permission)) return false;
+    if (!characterId || !permission.startsWith("character.")) return true;
+    const scope = characterScopes.get(permission);
+    return scope === null || scope?.has(characterId) === true;
+  };
+  return (characterId, operations, commandId) => operations.every((id) => {
+    const operation = ADMIN_V2_API_OPERATIONS_BY_ID[id];
+    if (id === COMMAND_READ) {
+      const scope = commandId ? commandScopes.get(commandId) : undefined;
+      if (!scope) return false;
+      const required = resolveAdminV2ManifestAuthorization(operation, scope.permission);
+      return required?.every((permission) => hasPermission(permission, scope.characterId)) ?? false;
+    }
+    const { authorization } = operation;
+    return authorization.kind === "all_of" && authorization.permissions.every((permission) => hasPermission(permission, characterId));
+  });
 }
 
 function samePack(
@@ -485,7 +636,7 @@ export async function projectCharacterProductionJourneys(
       ReadonlySet<string>
     >;
   } = {},
-): Promise<ReadonlyMap<string, CharacterProductionJourney>> {
+): Promise<ReadonlyMap<string, ProductionJourney>> {
   const ids = [...new Set(characterIds)];
   if (ids.length === 0) return new Map();
   const coordinationKeys = ids.map(characterCommandCoordinationKey);
@@ -792,7 +943,7 @@ export async function projectCharacterProductionJourneys(
       commandByCoordinationKey.set(command.coordinationKey, command);
     }
   }
-  const journeys = new Map<string, CharacterProductionJourney>();
+  const journeys = new Map<string, ProductionJourney>();
   for (const characterId of ids) {
     const project = projectByCharacter.get(characterId);
     if (!project) continue;

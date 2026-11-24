@@ -3,11 +3,14 @@ import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { characterPortfolioQuerySchema } from "@idream/shared/admin";
+import { GET as getWorkspaceRoute } from "@/app/api/v2/admin/characters/[id]/route";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { createUser } from "@/server/test/helpers";
 import { operationalCharacterWhere } from "../../metric-data-scope";
 import { toInputJson } from "../shared/prisma-json";
+import { getControlPlaneCommand } from "../commands/query";
+import { characterCommandCoordinationKey } from "./command-coordination";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-validation";
 import {
   listCharacterPortfolio,
@@ -637,9 +640,10 @@ describe("Character Portfolio authority/read model", () => {
       totalPurposes: 3,
       deepLink: `/admin/characters/${characterA}?tab=assets`,
     });
-    expect(item.journey.primaryAction).toEqual({
-      code: "preview_character",
-      deepLink: `/admin/characters/${characterA}?tab=preview`,
+    // The existing roster prioritizes the incomplete live pack over a routine draft preview.
+    expect(item.journey.primaryAction).toMatchObject({
+      code: "complete_live_asset_pack",
+      deepLink: `/admin/characters/${characterA}?tab=assets`,
       command: null,
     });
     expect(
@@ -737,7 +741,7 @@ describe("Character Portfolio authority/read model", () => {
   });
 
   // SPEC: 队列判定直接读 Journey：卡片说「重新生成」，「最近生成失败」就收它。
-  it("queues a failed image Run under the same next step the card shows", async () => {
+  it("keeps a failed image Run in the work queue while its card prioritizes zero traffic", async () => {
     const runId = `portfolio-failed-run-${suffix}`;
     await prisma.contentProductionBatch.create({
       data: {
@@ -764,7 +768,7 @@ describe("Character Portfolio authority/read model", () => {
       expect(queue.items.map((item) => item.characterId)).toContain(characterB);
       expect(
         queue.items.find((item) => item.characterId === characterB)?.journey.primaryAction,
-      ).toMatchObject({ code: "retry_failed_image_run" });
+      ).toMatchObject({ code: "inspect_no_traffic" });
       expect(queue.items.map((item) => item.characterId)).not.toContain(characterA);
     } finally {
       await prisma.contentProductionBatch.delete({ where: { id: runId } });
@@ -798,7 +802,7 @@ describe("Character Portfolio authority/read model", () => {
     ).toBe(true);
   });
 
-  it("returns an unfinished image run to the latest batch before ongoing production", async () => {
+  it("blocks bulk generation while an unfinished image Run owns that work", async () => {
     const runId = `portfolio-active-image-run-${suffix}`;
     const originalProject = await prisma.characterProject.findUniqueOrThrow({
       where: { id: projectA },
@@ -832,8 +836,9 @@ describe("Character Portfolio authority/read model", () => {
         characterPortfolioQuerySchema.parse({ search: "Astra", limit: 20 }),
         { asOf, authorizedDraftAssetCharacterIds: null },
       );
-      expect(data.items[0].journey.primaryAction).toEqual({
-        code: "continue_image_run",
+      expect(data.items[0].journey.assetPack.generateMissingBlocker).toBe("image_run_in_progress");
+      expect(data.items[0].journey.primaryAction).toMatchObject({
+        code: "complete_live_asset_pack",
         deepLink: `/admin/characters/${characterA}?tab=assets`,
         command: null,
       });
@@ -841,7 +846,7 @@ describe("Character Portfolio authority/read model", () => {
       const completed = await listCharacterPortfolioData(prisma,
         characterPortfolioQuerySchema.parse({ search: "Astra", limit: 20 }),
         { asOf, authorizedDraftAssetCharacterIds: null });
-      expect(completed.items[0].journey.primaryAction.code).toBe("continue_asset_pack");
+      expect(completed.items[0].journey.assetPack.generateMissingBlocker).toBeNull();
     } finally {
       await prisma.contentProductionItem.deleteMany({ where: { batchId: runId } });
       await prisma.generationJob.delete({ where: { id: job.id } });
@@ -871,8 +876,9 @@ describe("Character Portfolio authority/read model", () => {
         characterPortfolioQuerySchema.parse({ search: "Astra", limit: 20 }),
         { asOf, authorizedDraftAssetCharacterIds: null },
       );
-      expect(data.items[0].journey.primaryAction).toEqual({
-        code: "continue_asset_pack",
+      expect(data.items[0].journey.assetPack.generateMissingBlocker).toBeNull();
+      expect(data.items[0].journey.primaryAction).toMatchObject({
+        code: "complete_live_asset_pack",
         deepLink: `/admin/characters/${characterA}?tab=assets`,
         command: null,
       });
@@ -1368,6 +1374,83 @@ describe("Character Portfolio authority/read model", () => {
     });
   });
 
+  it("offers the same recovery action in both views and links only when its command is readable", async () => {
+    const command = await prisma.controlPlaneCommand.create({ data: {
+      scope: `test:portfolio-recover:${suffix}`,
+      idempotencyKey: suffix,
+      coordinationKey: characterCommandCoordinationKey(characterA),
+      commandType: "character.release.publish",
+      targetType: "character_release",
+      targetId: releaseA,
+      actorId: adminId,
+      requestId: suffix,
+      requestHash: suffix,
+      status: "running",
+    } });
+    const headers = { "x-idream-user-id": adminId, "x-idream-role": "admin" };
+    const readAction = async (canReadTarget: boolean) => {
+      const list = await listCharacterPortfolio(new Request(
+        "http://localhost/api/v2/admin/characters/portfolio?search=" + characterA, { headers },
+      ));
+      const detail = await getWorkspaceRoute(new Request(
+        "http://localhost/api/v2/admin/characters/" + characterA, { headers },
+      ), { params: Promise.resolve({ id: characterA }) });
+      expect(list.status).toBe(200);
+      expect(detail.status).toBe(200);
+      const { data } = await detail.json();
+      const listAction = (await list.json()).data.items[0].journey.primaryAction;
+      expect(listAction).toMatchObject({
+        code: "recover_active_command",
+        deepLink: `/admin/characters/${characterA}?tab=release`,
+        readOperations: ["GET /api/v2/admin/characters/:id", "GET /api/v2/admin/commands/:commandId"],
+        canReadTarget,
+      });
+      expect(data.journey.primaryAction).toEqual(listAction);
+    };
+    try {
+      // This portfolio-only fixture normally isolates its routes with a synthetic style.
+      await prisma.characterVisualProfile.update({ where: { id: visualProfileId }, data: { style: "realistic" } });
+      await readAction(true);
+      await prisma.adminUserPermission.create({ data: {
+        userId: adminId, permissionKey: "dashboard.read", effect: "revoke",
+        reason: "Release access without command status access", createdById: adminId,
+      } });
+      await readAction(false);
+      const commandResponse = await getControlPlaneCommand(new Request(
+        "http://localhost/api/v2/admin/commands/" + command.id, { headers },
+      ), command.id);
+      expect(commandResponse.status).toBe(403);
+    } finally {
+      await prisma.adminUserPermission.deleteMany({ where: { userId: adminId, permissionKey: "dashboard.read" } });
+      await prisma.controlPlaneCommand.delete({ where: { id: command.id } });
+      await prisma.characterVisualProfile.update({ where: { id: visualProfileId }, data: { style: routeStyle } });
+    }
+  });
+
+  it("checks each card's target against the operator's Character scope", async () => {
+    const grant = await prisma.adminUserGrantBundle.create({ data: {
+      userId: analystId,
+      bundleKey: "character_producer",
+      scope: { characterIds: [characterB] },
+      reason: "Portfolio can list both roles but operate one",
+      createdById: adminId,
+    } });
+    try {
+      const response = await listCharacterPortfolio(new Request(
+        "http://localhost/api/v2/admin/characters/portfolio?search=Portfolio&limit=20",
+        { headers: { "x-idream-user-id": analystId, "x-idream-role": "analyst" } },
+      ));
+      expect(response.status).toBe(200);
+      const { data } = await response.json();
+      expect(data.items).toEqual(expect.arrayContaining([
+        expect.objectContaining({ characterId: characterA, journey: expect.objectContaining({ primaryAction: expect.objectContaining({ canReadTarget: false }) }) }),
+        expect.objectContaining({ characterId: characterB, journey: expect.objectContaining({ primaryAction: expect.objectContaining({ canReadTarget: true }) }) }),
+      ]));
+    } finally {
+      await prisma.adminUserGrantBundle.delete({ where: { id: grant.id } });
+    }
+  });
+
   it("projects draft role images only inside the creative.run.read Character scope", async () => {
     const originalProjectB = await prisma.characterProject.findUniqueOrThrow({
       where: { id: projectB },
@@ -1415,6 +1498,9 @@ describe("Character Portfolio authority/read model", () => {
         primaryImageSource: "draft",
         draftPurposes: ["character_cover"],
       });
+      // Draft thumbnail exposure and the image-source route's read gate are distinct.
+      expect(itemA.journey.primaryAction.canReadTarget).toBe(true);
+      expect(itemB.journey.primaryAction.canReadTarget).toBe(true);
     } finally {
       await prisma.characterProject.update({
         where: { id: projectB },

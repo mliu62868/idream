@@ -18,6 +18,7 @@ import { isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-au
 import {
   actorWithPermission,
   queryParams,
+  type AdminActor,
 } from "@/server/modules/admin-v2/shared/authority";
 import {
   type AdminKeysetKey,
@@ -63,6 +64,8 @@ import {
 import {
   availablePurposes,
   characterProductionPurposes,
+  completeCharacterProductionJourney,
+  loadCharacterActionReadAccess,
   projectCharacterProductionJourneys,
   projectCurrentDraftAssetPack,
   releaseAssetPack,
@@ -681,6 +684,7 @@ export async function listCharacterPortfolioData(
     readonly asOf?: Date;
     readonly authorizedCharacterIds?: readonly string[] | null;
     readonly authorizedDraftAssetCharacterIds?: readonly string[] | null;
+    readonly actor?: AdminActor;
   } = {},
 ) {
   const asOf = input.asOf ?? new Date();
@@ -963,6 +967,9 @@ export async function listCharacterPortfolioData(
       availableAssetIdsByCharacter,
     },
   );
+  const actionReadAccess = input.actor && journeyByCharacter.size > 0
+    ? await loadCharacterActionReadAccess(db, input.actor, journeyByCharacter)
+    : undefined;
   const orphanProjectIds: string[] = [];
   const projectedItems = await Promise.all(
     page.map(async (project) => {
@@ -1102,34 +1109,52 @@ export async function listCharacterPortfolioData(
       const primaryImageAsset = primaryImageAssetId
         ? (availableAssets.get(primaryImageAssetId) ?? null)
         : null;
-      const journey = journeyByCharacter.get(character.id);
-      if (!journey) {
+      const production = journeyByCharacter.get(character.id);
+      if (!production) {
         throw new Error(
           `Character production journey missing for ${character.id}`,
         );
       }
-      const draftPurposes = mayReadDraftAssets
-        ? journey.assetPack.draft.availablePurposes
-        : [];
-      const livePurposes = journey.assetPack.live.availablePurposes;
+      const draftPurposes = mayReadDraftAssets ? production.assetPack.draft.availablePurposes : [];
+      const livePurposes = production.assetPack.live.availablePurposes;
+      const attentionReason = pageAttention.get(character.id) ?? null;
+      const servingProjection = {
+        characterId: character.id,
+        state: serving?.state ?? ("inactive" as const),
+        currentReleaseId: serving?.currentReleaseId ?? null,
+        version: serving?.version ?? 0,
+        updatedAt: (serving?.updatedAt ?? project.updatedAt).toISOString(),
+      };
+      const release = currentRelease ? characterReleaseContract(currentRelease) : null;
+      // An unread performance window differs from a completed read with no observations.
+      const qualityState = !includePerformance ? "not_requested"
+        : performance.some((item) => item.qualityState === "invalid") ? "invalid"
+        : performance.every((item) => item.qualityState === "no_data") ? "no_data"
+        : "certified";
+      const releaseBlockers = readiness === "ready" ? [] : [{
+        code: "release_" + readiness,
+        message: "Current release readiness is " + readiness,
+        deepLink: characterWorkspaceTabLink(character.id, "monitor"),
+      }];
+      const journey = completeCharacterProductionJourney(production, {
+        characterId: character.id,
+        serving: servingProjection,
+        currentRelease: release,
+        readiness,
+        attentionReason,
+        qualityState,
+        releaseBlockerLink: releaseBlockers[0]?.deepLink,
+      }, actionReadAccess);
       return {
         characterId: character.id,
         name: draftNameByCharacter.get(character.id) || character.name,
         source: character.source,
         visibility: character.visibility,
         updatedAt: project.updatedAt.toISOString(),
-        needsAttention: pageAttention.has(character.id),
-        attentionReason: pageAttention.get(character.id) ?? null,
-        serving: {
-          characterId: character.id,
-          state: serving?.state ?? "inactive",
-          currentReleaseId: serving?.currentReleaseId ?? null,
-          version: serving?.version ?? 0,
-          updatedAt: (serving?.updatedAt ?? project.updatedAt).toISOString(),
-        },
-        currentRelease: currentRelease
-          ? characterReleaseContract(currentRelease)
-          : null,
+        needsAttention: attentionReason !== null,
+        attentionReason,
+        serving: servingProjection,
+        currentRelease: release,
         readiness,
         verificationState:
           validation?.result === "passed"
@@ -1171,34 +1196,10 @@ export async function listCharacterPortfolioData(
         operationalState: {
           workflowState: journey.stage,
           servingState: serving?.state ?? "inactive",
-          // SPEC: 汇总取最坏，但"全是无观测"要报 no_data，不能借 invalid 冒充数据故障。
-          // INVARIANT: 空的 performance 数组也是 no_data —— 一条观测都没有，
-          //   不构成"已认证"。此前的判据要求 `performance.length > 0` 才判 no_data，
-          //   于是零表现行反而落进 certified 分支（实测 33 个角色里 14 个如此，
-          //   且这 14 个全部 performance: []）。`every` 对空数组恒真，
-          //   所以去掉长度前置条件就能同时覆盖两种情况。
-          qualityState: !includePerformance ? "not_requested" : performance.some(
-            (item) => item.qualityState === "invalid",
-          )
-            ? "invalid"
-            : performance.every((item) => item.qualityState === "no_data")
-              ? "no_data"
-              : "certified",
+          qualityState,
           readiness,
           checks: [],
-          blockers:
-            readiness === "ready"
-              ? []
-              : [
-                  {
-                    code: `release_${readiness}`,
-                    message: `Current release readiness is ${readiness}`,
-                    deepLink: characterWorkspaceTabLink(
-                      character.id,
-                      "monitor",
-                    ),
-                  },
-                ],
+          blockers: releaseBlockers,
           verificationState:
             validation?.result === "passed"
               ? "passed"
@@ -1271,6 +1272,7 @@ export async function listCharacterPortfolio(request: Request) {
   ]);
   return ok(
     await listCharacterPortfolioData(prisma, query, {
+      actor,
       authorizedCharacterIds: scope === null ? null : [...scope],
       authorizedDraftAssetCharacterIds:
         draftAssetScope === null ? null : [...draftAssetScope],

@@ -31,7 +31,7 @@ import {
 import {
   firstScreenPermissions,
 } from "./workspace-access";
-import type { AdminV2DeclaredOperationId } from "@idream/shared/admin";
+import { CHARACTER_PROFILES_READ_OPERATIONS, type AdminV2DeclaredOperationId } from "@idream/shared/admin";
 import type { WorkMode } from "./shell-preferences";
 import {
   matchAdminRoute,
@@ -172,7 +172,7 @@ export const navItems: NavItem[] = [
   //         它过去挂在 metrics 工作区（analytics.metric.read），于是只有 analytics.metric.read 的
   //         分析师能看到入口、点进去下拉框必 403。共用 metrics 这个 key 是接错了，不是两条配置。
   item({ id: "insights", label: "Profile Diagnostics", href: "/admin/growth/funnels", icon: BarChart3, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/generation/model-profiles"), navigation: "tool" }),
-  item({ id: "generation/config", label: "Profiles & Rollout", href: "/admin/ops/profiles", icon: SlidersHorizontal, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/generation/model-profiles", "GET /api/v2/admin/feature-flags", "GET /api/v2/admin/jobs") }),
+  item({ id: "generation/config", label: "Profiles & Rollout", href: "/admin/ops/profiles", icon: SlidersHorizontal, group: "Platform Operations", read: readForOperations(...CHARACTER_PROFILES_READ_OPERATIONS) }),
   item({ id: "generation/recipes", label: "Prompt Recipes", href: "/admin/ops/recipes", icon: ScrollText, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/generation/recipes") }),
   item({ id: "generation/presets", label: "Presets", href: "/admin/ops/recipes?view=presets", icon: Layers, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/generation/presets"), navigation: "tool" }),
   item({ id: "generation/workflows", label: "Workflow Diagnostics", href: "/admin/ops/recipes?view=workflows", icon: Workflow, group: "Platform Operations", read: readForOperations("GET /api/v2/admin/generation/workflows"), navigation: "tool" }),

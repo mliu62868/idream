@@ -270,13 +270,14 @@ export async function acceptGenerationJobForUser(input: GenerationAdmission, adm
 
   // Wake only after the transaction commits: dispatch must see the durable
   // Request, Attempt, debit and attachment binding together.
-  if (admissionTx) return reservation.job;
+  const receipt = { job: reservation.job, duplicate: reservation.outboxId === null };
+  if (admissionTx) return receipt;
   if (reservation.outboxId) {
     await dispatchGenerationAttemptOutbox(prisma, { outboxIds: [reservation.outboxId] });
   } else {
     await wakeQueuedGenerationDispatch(reservation.job);
   }
-  return reservation.job;
+  return receipt;
 }
 
 // SPEC: 把聊天侧的效果附件锁进本次生成接纳。Turn 所有权、attempt 匹配、

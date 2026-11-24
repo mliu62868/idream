@@ -706,6 +706,7 @@ function BatchPregenPackPanel({ characterId, mediaType, visualIdentity, defaultP
             reason: `Batch pre-generate chat library video pack for visual v${visualIdentity.visualProfileVersion}`,
           };
       const result = await adminV2Operation("POST /api/v2/admin/creative/runs", { body });
+      if ("skip" in result) throw new Error(t("Pre-generation pack could not be started"));
       const runId = result.batch.id;
       setCreatedRunId(runId);
       onCreated(runId, count);
@@ -730,7 +731,7 @@ function BatchPregenPackPanel({ characterId, mediaType, visualIdentity, defaultP
         </p>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block text-sm">{t("Generation profile key")}
-            <input className={`${fieldClass} mt-1`} value={profileId} onChange={event => setProfileId(event.target.value)} placeholder="profile-key" />
+            <input className={`${fieldClass} mt-1`} value={profileId} onChange={event => setProfileId(event.target.value)} placeholder={t("profile-key")} />
           </label>
           <label className="block text-sm">{t("Pack brief")}
             <input className={`${fieldClass} mt-1`} value={brief} onChange={event => setBrief(event.target.value)} placeholder={mediaType === "image" ? "Everyday lifestyle chat photos" : "Subtle smile and natural motion"} />

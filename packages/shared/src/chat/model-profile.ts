@@ -24,8 +24,7 @@ export interface ChatModelProfile {
 
 type Environment = Record<string, string | undefined>;
 
-const DEFAULT_MODEL =
-  "Ornith-1.5-35B-A3B-Abliterated-MLX-8bit";
+export const INKLING_2_MINI_OQ8_MODEL = "Inkling-2-Mini-Uncensored-oQ8-mtp";
 const DEFAULT_BASE_URL = "http://127.0.0.1:8061/v1";
 const DEFAULT_TIMEOUT_MS = 45_000;
 
@@ -34,7 +33,7 @@ export function resolveChatModelProfile(
   source: Environment = process.env,
 ): ChatModelProfile {
   const provider = parseProvider(source.CHAT_MODEL_PROVIDER ?? "mock");
-  const defaultModel = source.CHAT_MODEL_NAME ?? DEFAULT_MODEL;
+  const defaultModel = source.CHAT_MODEL_NAME ?? INKLING_2_MINI_OQ8_MODEL;
   const defaultTimeout = positiveInt(
     source.CHAT_MODEL_TIMEOUT_MS,
     DEFAULT_TIMEOUT_MS,
@@ -86,6 +85,18 @@ export function resolveChatModelProfile(
 
 export function isOpenRouterBaseUrl(baseUrl: string): boolean {
   return new URL(baseUrl).hostname === "openrouter.ai";
+}
+
+export function chatThinkingParameters(model: string | undefined, enabled: boolean) {
+  if (!enabled && model === INKLING_2_MINI_OQ8_MODEL) {
+    // Inkling can still emit reasoning at effort "none". A zero oMLX budget
+    // prevents it from consuming the output allowance of non-thinking calls.
+    return {
+      chat_template_kwargs: { enable_thinking: false, reasoning_effort: "none" },
+      thinking_budget: 0,
+    };
+  }
+  return { chat_template_kwargs: { enable_thinking: enabled } };
 }
 
 /** The one configured DSH surface that must carry live Soul canary evidence. */

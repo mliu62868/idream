@@ -8,6 +8,13 @@ type Quote = { quoteToken: string; costPerReply: number; allowanceMinutes: numbe
 type Intent = { id: string; clientLeaseToken: string; language: "en"; maxCostDreamcoins: number; maxDurationMs: number; quoteToken?: string };
 type Options = { sessionPath: string; ownerScope: string | null; enabled: boolean; beforeConnect: () => void;
   onTurn: (value: { userMessage: RuntimeChatMessage; assistant: RuntimeChatMessage; streamUrl?: string | null }) => void };
+type MicrophoneCapture = {
+  stream: MediaStream | null;
+  recorder: MediaRecorder | null;
+  context: AudioContext | null;
+  vad: ReturnType<typeof setInterval> | null;
+  clip: { send: () => void; discard?: () => void } | null;
+};
 const FORMATS = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/mp4"];
 const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 // Mirrors the server Call lease. Every successful control command renews it.
@@ -37,20 +44,17 @@ export function useVoiceCall(options: Options) {
   const intent = useRef<Intent | null>(null);
   const scopeEpoch = useRef(0);
   const operationEpoch = useRef(0);
-  const stream = useRef<MediaStream | null>(null);
-  const recorder = useRef<MediaRecorder | null>(null);
-  const context = useRef<AudioContext | null>(null);
+  const controlRequest = useRef<{ action?: string }>({});
+  const capture = useRef<MicrophoneCapture | null>(null);
   const audio = useRef<HTMLAudioElement | null>(null);
   const playbackDone = useRef<(() => void) | null>(null);
   const interruptPending = useRef<Promise<void> | null>(null);
-  const vad = useRef<ReturnType<typeof setInterval> | null>(null);
   const controller = useRef<AbortController | null>(null);
   const retryRecording = useRef<{ id: string; expiresAt: number; blob?: Blob; recognitionFailed?: boolean } | null>(null);
   const retryExpiry = useRef<ReturnType<typeof setTimeout> | null>(null);
   const leaseRenewedAt = useRef(0);
   const recordingMode = useRef(false);
-  const microphoneClip = useRef<{ send: () => void; discard?: () => void } | null>(null);
-  const isListening = () => liveCall.current?.status === "active";
+  const isListening = () => liveCall.current?.status === "active" && Boolean(liveCall.current.leaseToken);
   const setView = (next: Phase) => { phaseRef.current = next; setPhase(next); };
   function retainRecording(value: typeof retryRecording.current) {
     if (retryExpiry.current) clearTimeout(retryExpiry.current);
@@ -64,7 +68,6 @@ export function useVoiceCall(options: Options) {
   }
   const applyCall = (value: unknown) => {
     const parsed = voiceCallSchema.parse(value);
-    if (!parsed.leaseToken && liveCall.current?.id === parsed.id) parsed.leaseToken = liveCall.current.leaseToken;
     liveCall.current = parsed; setCall(parsed);
     if (parsed.leaseToken) sessionStorage.setItem(storageKey(), parsed.leaseToken);
     return parsed;
@@ -83,41 +86,111 @@ export function useVoiceCall(options: Options) {
   }
   function stopPlayback() { audio.current?.pause(); audio.current = null; playbackDone.current?.(); playbackDone.current = null; }
   function readyNotice() {
-    if (microphoneClip.current?.discard) return "Recording paused after 25 seconds. Send sentence or discard it and keep listening.";
-    return stream.current ? "Listening. Pause at the end of your sentence to send it."
+    if (capture.current?.clip?.discard) return "Recording paused after 25 seconds. Send sentence or discard it and keep listening.";
+    return capture.current?.context ? "Listening. Pause at the end of your sentence to send it."
       : "Ready for next recording. Send an English audio recording to speak in this call.";
   }
-  function releaseCapture() {
-    microphoneClip.current = null; setMicrophoneActive(false); setMicrophonePaused(false);
-    if (vad.current) clearInterval(vad.current);
-    vad.current = null;
-    const current = recorder.current; recorder.current = null;
-    if (current) { current.onstop = null; current.ondataavailable = null; current.onerror = null; if (current.state !== "inactive") current.stop(); }
-    stream.current?.getTracks().forEach(track => { track.onended = null; track.stop(); }); stream.current = null;
-    if (context.current) void context.current.close().catch(() => {});
-    context.current = null;
+  function beginOperation(callId?: string) {
+    const epoch = scopeEpoch.current;
+    const operation = ++operationEpoch.current;
+    return () => epoch === scopeEpoch.current && operation === operationEpoch.current &&
+      (callId === undefined || liveCall.current?.id === callId);
   }
-  async function command(action: string) {
-    if (!liveCall.current) return null;
+  function releaseCapture(owner = capture.current) {
+    if (!owner || capture.current !== owner) return;
+    // Revoke ownership first. Recorder and track callbacks can outlive stop().
+    capture.current = null;
+    setMicrophoneActive(false); setMicrophonePaused(false);
+    if (owner.vad !== null) clearInterval(owner.vad);
+    const recorder = owner.recorder;
+    if (recorder) {
+      recorder.onstop = null; recorder.ondataavailable = null; recorder.onerror = null;
+      if (recorder.state !== "inactive") recorder.stop();
+    }
+    owner.stream?.getTracks().forEach(track => { track.onended = null; track.stop(); });
+    if (owner.context) void owner.context.close().catch(() => {});
+  }
+  async function acquireCapture(alive: () => boolean): Promise<MicrophoneCapture | null> {
+    if (!alive()) return null;
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) throw new Error("Microphone calls need HTTPS and microphone support.");
+    releaseCapture();
+    // Ownership starts before the permission prompt, including a stream held while Main admits a Call.
+    const owner: MicrophoneCapture = { stream: null, recorder: null, context: null, vad: null, clip: null };
+    capture.current = owner;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: { ideal: 1 }, echoCancellation: true, noiseSuppression: true } });
+      if (capture.current !== owner || !alive()) {
+        stream.getTracks().forEach(track => track.stop());
+        releaseCapture(owner);
+        return null;
+      }
+      owner.stream = stream;
+      return owner;
+    } catch (error) {
+      const stillOwned = capture.current === owner && alive();
+      releaseCapture(owner);
+      if (stillOwned) throw error;
+      return null;
+    }
+  }
+  function stopLocalCallWork() {
+    interruptPending.current = null;
+    controller.current?.abort();
+    releaseCapture(); stopPlayback();
+  }
+  async function command(action: string, alive?: () => boolean) {
     const current = liveCall.current, epoch = scopeEpoch.current;
-    const payload = await request(`/${current.id}/${action}`, { method: "POST" });
-    if (epoch !== scopeEpoch.current || liveCall.current?.id !== current.id) return null;
-    leaseRenewedAt.current = Date.now();
-    return applyCall(payload.call);
+    if (!current || (alive && !alive())) return null;
+    const heartbeat = action === "heartbeat";
+    // A passive heartbeat must never restore the state preceding a user command.
+    const control = heartbeat ? controlRequest.current : { action };
+    if (heartbeat && control.action) return null;
+    if (!heartbeat) controlRequest.current = control;
+    const currentRequest = () => controlRequest.current === control && epoch === scopeEpoch.current &&
+      liveCall.current?.id === current.id && (!alive || alive());
+    try {
+      const payload = await request(`/${current.id}/${action}`, { method: "POST" });
+      if (!currentRequest()) return null;
+      const updated = applyCall(payload.call);
+      leaseRenewedAt.current = Date.now();
+      return updated;
+    } catch (error) {
+      if (!currentRequest()) return null;
+      throw error;
+    } finally {
+      if (!heartbeat && controlRequest.current === control) controlRequest.current = {};
+    }
   }
   async function refresh() {
     if (!latest.current.enabled || !latest.current.ownerScope) return;
     const epoch = scopeEpoch.current;
+    const control = controlRequest.current, previousId = liveCall.current?.id;
     try {
       const payload = await request("");
       if (epoch !== scopeEpoch.current) return;
       setAvailable(payload.status === "available"); setBalance(payload.balance ?? 0);
       setOtherCallSessionId(payload.otherCallSessionId ?? null);
-      if (payload.call && payload.call.status !== "ended") {
+      if (control.action || controlRequest.current !== control || liveCall.current?.id !== previousId) return;
+      if (payload.call === null && previousId) {
+        ++operationEpoch.current; controlRequest.current = {};
+        retainRecording(null); stopLocalCallWork();
+        liveCall.current = null; setCall(null); setView("idle");
+        return;
+      }
+      if (payload.call && (payload.call.status !== "ended" || payload.call.id === previousId)) {
+        const previous = liveCall.current;
         const current = applyCall(payload.call);
+        if (previous && (current.id !== previous.id || current.leaseToken !== previous.leaseToken ||
+          (current.status !== previous.status && current.status !== "active"))) {
+          ++operationEpoch.current; controlRequest.current = {};
+          if (current.id !== previous.id || current.status === "ended") retainRecording(null);
+          stopLocalCallWork();
+        }
         if (phaseRef.current === "idle" && current.leaseToken && ["active", "muted"].includes(current.status)) {
-          await command("disconnect"); setView("disconnected");
-        } else if (!current.leaseToken || current.status === "disconnected") setView("disconnected");
+          await disconnect();
+        } else if (current.status === "ended") setView("ended");
+        else if (!current.leaseToken || current.status === "disconnected") setView("disconnected");
+        else if (current.status === "muted") setView("muted");
       }
     } catch { if (epoch === scopeEpoch.current) setAvailable(false); }
   }
@@ -136,11 +209,11 @@ export function useVoiceCall(options: Options) {
   async function processRecording(blob: Blob | null, existingId?: string, retryRecognition = false): Promise<void> {
     const current = liveCall.current;
     const epoch = scopeEpoch.current;
-    if (!current || current.status !== "active") return;
+    const operation = operationEpoch.current;
+    if (!current || !isListening() || (controlRequest.current.action && !interruptPending.current)) return;
     if (interruptPending.current) await interruptPending.current;
-    if (epoch !== scopeEpoch.current || liveCall.current?.id !== current.id || !isListening()) return;
-    const op = ++operationEpoch.current;
-    const alive = () => epoch === scopeEpoch.current && op === operationEpoch.current && liveCall.current?.id === current.id;
+    if (epoch !== scopeEpoch.current || operation !== operationEpoch.current || liveCall.current?.id !== current.id || !isListening()) return;
+    const alive = beginOperation(current.id);
     const id = existingId ?? crypto.randomUUID();
     controller.current?.abort(); controller.current = new AbortController();
     const signal = controller.current.signal;
@@ -150,10 +223,10 @@ export function useVoiceCall(options: Options) {
     try {
       // A failed recognition releases hardware. An explicit retry restores the
       // original microphone mode instead of silently switching to file uploads.
-      if (existingId && !recordingMode.current && !stream.current) {
-        const captured = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: { ideal: 1 }, echoCancellation: true, noiseSuppression: true } });
-        if (!alive() || signal.aborted || !isListening()) { captured.getTracks().forEach(track => track.stop()); return; }
-        startCapture(captured);
+      if (existingId && !recordingMode.current && !capture.current?.context) {
+        const canCapture = () => alive() && !signal.aborted && isListening();
+        const owner = await acquireCapture(canCapture);
+        if (!owner || !startCapture(owner, canCapture)) return;
       }
       let state;
       if (!existingId && blob) {
@@ -233,23 +306,31 @@ export function useVoiceCall(options: Options) {
   }
   function interrupt(): Promise<void> {
     if (interruptPending.current) return interruptPending.current;
-    const epoch = scopeEpoch.current;
-    ++operationEpoch.current; controller.current?.abort(); retainRecording(null); stopPlayback();
-    interruptPending.current = command("interrupt").then(result => {
-      if (result) { setView("listening"); setNotice(readyNotice()); }
+    if (!isListening() || controlRequest.current.action) return Promise.resolve();
+    const alive = beginOperation(liveCall.current?.id);
+    controller.current?.abort(); retainRecording(null); stopPlayback();
+    const pending = command("interrupt", alive).then(result => {
+      if (!alive() || !result) return;
+      if (result.status === "active") { setView("listening"); setNotice(readyNotice()); }
+      else { releaseCapture(); setView(result.status); }
     }).catch(error => {
-      if (epoch !== scopeEpoch.current) return;
+      if (!alive()) return;
       setView("disconnected"); setNotice(error instanceof Error ? error.message : "Call disconnected"); releaseCapture();
-    }).finally(() => { interruptPending.current = null; });
-    return interruptPending.current;
+    }).finally(() => { if (interruptPending.current === pending) interruptPending.current = null; });
+    interruptPending.current = pending;
+    return pending;
   }
-  function startCapture(captured: MediaStream) {
-    stream.current = captured;
+  function startCapture(owner: MicrophoneCapture, alive: () => boolean) {
+    const captured = owner.stream;
+    if (!captured || capture.current !== owner || !alive() || !isListening()) {
+      releaseCapture(owner);
+      return false;
+    }
     const epoch = scopeEpoch.current, callId = liveCall.current?.id;
-    const ownsCapture = () => epoch === scopeEpoch.current && stream.current === captured && liveCall.current?.id === callId && liveCall.current?.status === "active";
+    const ownsCapture = () => epoch === scopeEpoch.current && capture.current === owner && liveCall.current?.id === callId && isListening();
     const mimeType = FORMATS.find(format => MediaRecorder.isTypeSupported(format));
     if (!mimeType) throw new Error("This browser cannot record supported audio.");
-    const audioContext = new AudioContext(); context.current = audioContext;
+    const audioContext = new AudioContext(); owner.context = audioContext;
     const analyser = audioContext.createAnalyser(); analyser.fftSize = 1024;
     audioContext.createMediaStreamSource(captured).connect(analyser);
     setMicrophoneActive(true);
@@ -259,22 +340,22 @@ export function useVoiceCall(options: Options) {
     let submit = false, pauseAtLimit = false;
     const begin = () => {
       if (!ownsCapture()) return;
-      microphoneClip.current = null; setMicrophonePaused(false);
+      owner.clip = null; setMicrophonePaused(false);
       chunks = []; bytes = 0; speechAt = 0; lastSpeechAt = 0; confirmedSpeech = false; startedAt = Date.now(); submit = false; pauseAtLimit = false;
-      const current = new MediaRecorder(captured, { mimeType }); recorder.current = current;
-      current.ondataavailable = event => { if (event.data.size) { chunks.push(event.data); bytes += event.data.size; } };
-      current.onerror = () => { if (recorder.current !== current || !ownsCapture()) return; releaseCapture(); setView("error"); setNotice("Microphone recording was interrupted. Resume or use a recording."); };
+      const current = new MediaRecorder(captured, { mimeType }); owner.recorder = current;
+      current.ondataavailable = event => { if (owner.recorder === current && ownsCapture() && event.data.size) { chunks.push(event.data); bytes += event.data.size; } };
+      current.onerror = () => { if (owner.recorder !== current || !ownsCapture()) return; releaseCapture(owner); setView("error"); setNotice("Microphone recording was interrupted. Resume or use a recording."); };
       current.onstop = () => {
-        if (recorder.current !== current || !ownsCapture()) return;
-        const blob = new Blob(chunks, { type: mimeType }); recorder.current = null;
+        if (owner.recorder !== current || !ownsCapture()) return;
+        const blob = new Blob(chunks, { type: mimeType }); owner.recorder = null;
         current.onstop = null; current.ondataavailable = null; current.onerror = null; chunks = [];
-        if (bytes > 8 * 1024 * 1024) { releaseCapture(); setView("error"); setNotice("Microphone recording exceeded 8 MiB. Mute and unmute or use a shorter recording."); return; }
+        if (bytes > 8 * 1024 * 1024) { releaseCapture(owner); setView("error"); setNotice("Microphone recording exceeded 8 MiB. Mute and unmute or use a shorter recording."); return; }
         if (pauseAtLimit && blob.size) {
           // RMS only times automatic sentence boundaries. A quiet clip stays
           // local and bounded until its owner sends or discards it.
           const ready = () => ownsCapture() && phaseRef.current === "listening";
-          microphoneClip.current = {
-            send: () => { if (!ready()) return; microphoneClip.current = null; setMicrophonePaused(false); void processRecording(blob); begin(); },
+          owner.clip = {
+            send: () => { if (!ready()) return; owner.clip = null; setMicrophonePaused(false); void processRecording(blob); begin(); },
             discard: () => { if (!ready()) return; begin(); setNotice(readyNotice()); },
           };
           setMicrophonePaused(true); setNotice(readyNotice()); return;
@@ -283,18 +364,18 @@ export function useVoiceCall(options: Options) {
         else if (!blob.size) setNotice("The microphone did not capture audio. Speak again or use a recording.");
         begin();
       };
-      microphoneClip.current = { send: () => {
-        if (!ownsCapture() || phaseRef.current !== "listening" || recorder.current !== current || current.state !== "recording") return;
+      owner.clip = { send: () => {
+        if (!ownsCapture() || phaseRef.current !== "listening" || owner.recorder !== current || current.state !== "recording") return;
         submit = true; current.stop();
       } };
       current.start(250);
     };
     begin();
     captured.getTracks().forEach(track => { track.onended = () => { if (ownsCapture()) void disconnect(); }; });
-    vad.current = setInterval(() => {
-      const current = recorder.current;
+    owner.vad = setInterval(() => {
+      const current = owner.recorder;
       if (!current || current.state === "inactive" || !ownsCapture()) return;
-      if (bytes > 8 * 1024 * 1024) { releaseCapture(); setView("error"); setNotice("Microphone recording exceeded 8 MiB. Mute and unmute or use a shorter recording."); return; }
+      if (bytes > 8 * 1024 * 1024) { releaseCapture(owner); setView("error"); setNotice("Microphone recording exceeded 8 MiB. Mute and unmute or use a shorter recording."); return; }
       if (!["listening", "speaking", "thinking"].includes(phaseRef.current)) return;
       analyser.getFloatTimeDomainData(samples);
       const level = Math.sqrt(samples.reduce((sum, sample) => sum + sample * sample, 0) / samples.length);
@@ -313,31 +394,41 @@ export function useVoiceCall(options: Options) {
         submit = true; current.stop();
       } else if (now - startedAt > 25_000) { pauseAtLimit = true; current.stop(); }
     }, 80);
+    return true;
   }
   async function connect(useMicrophone = true, resume = false) {
-    const epoch = scopeEpoch.current;
-    const op = ++operationEpoch.current;
-    const alive = () => epoch === scopeEpoch.current && op === operationEpoch.current;
-    let captured: MediaStream | null = null;
+    if (controlRequest.current.action || phaseRef.current === "connecting") return;
+    if (resume && liveCall.current?.status !== "disconnected") return;
+    const alive = beginOperation(resume ? liveCall.current?.id : undefined);
+    stopLocalCallWork();
+    let owner: MicrophoneCapture | null = null;
     setView("connecting"); setNotice(null); latest.current.beforeConnect();
     try {
       if (useMicrophone) {
-        if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) throw new Error("Microphone calls need HTTPS and microphone support.");
-        captured = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: { ideal: 1 }, echoCancellation: true, noiseSuppression: true } });
+        owner = await acquireCapture(alive);
+        if (!owner) return;
       }
-      if (!alive()) { captured?.getTracks().forEach(track => track.stop()); return; }
-      if (resume) await command("resume");
+      if (!alive()) { releaseCapture(owner); return; }
+      if (resume) await command("resume", alive);
       else {
         if (!intent.current?.quoteToken) throw new Error("Accept a quote first");
         sessionStorage.setItem(storageKey(), intent.current.clientLeaseToken);
         const payload = await request("", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(intent.current) });
-        if (!alive()) { captured?.getTracks().forEach(track => track.stop()); return; }
+        if (!alive()) { releaseCapture(owner); return; }
         leaseRenewedAt.current = Date.now();
         applyCall(payload.call);
       }
-      if (!alive() || !isListening()) { captured?.getTracks().forEach(track => track.stop()); return; }
+      if (!alive()) { releaseCapture(owner); return; }
+      if (!isListening()) {
+        releaseCapture(owner);
+        const current = liveCall.current;
+        if (current?.status === "ended") { retainRecording(null); setView("ended"); }
+        else setView(current?.status === "muted" && current.leaseToken ? "muted" : "disconnected");
+        setQuote(null);
+        return;
+      }
       recordingMode.current = !useMicrophone;
-      if (captured) startCapture(captured);
+      if (owner && !startCapture(owner, alive)) return;
       setView("listening"); setQuote(null); setNotice(readyNotice());
       // A disconnect keeps the in-flight spoken turn alive on the server;
       // Resume continues that same reply instead of asking the user to repeat.
@@ -347,9 +438,8 @@ export function useVoiceCall(options: Options) {
         if (alive() && pending) void processRecording(null, pending.utteranceId);
       }
     } catch (error) {
-      captured?.getTracks().forEach(track => track.stop());
+      releaseCapture(owner);
       if (!alive()) return;
-      releaseCapture();
       setView("error"); setNotice(error instanceof Error ? error.message : "Call could not connect");
       // A lost start response is inspected under the same call key; never dial
       // a new ID and expand the user's accepted budget.
@@ -358,7 +448,7 @@ export function useVoiceCall(options: Options) {
           const payload = await request(`/${intent.current.id}`);
           if (!alive()) return;
           applyCall(payload.call); setQuote(null);
-          if (liveCall.current?.status !== "ended") await command("disconnect");
+          if (liveCall.current?.status !== "ended") await command("disconnect", alive);
           if (!alive()) return;
           setView(liveCall.current?.status === "ended" ? "ended" : "disconnected");
           setNotice("The start response was interrupted. Resume this original call when you are ready.");
@@ -376,31 +466,51 @@ export function useVoiceCall(options: Options) {
     }
   }
   async function end() {
-    const epoch = scopeEpoch.current;
-    ++operationEpoch.current; controller.current?.abort(); retainRecording(null); releaseCapture(); stopPlayback();
-    try { const result = await command("end"); if (epoch === scopeEpoch.current) { setView(result?.status === "ended" ? "ended" : liveCall.current ? "disconnected" : "idle"); setNotice(null); } }
-    catch (error) { if (epoch === scopeEpoch.current) { setView("disconnected"); setNotice(error instanceof Error ? error.message : "End could not be confirmed. Check the original call."); } }
+    if (controlRequest.current.action === "end") return;
+    const alive = beginOperation(liveCall.current?.id);
+    retainRecording(null); stopLocalCallWork();
+    try { const result = await command("end", alive); if (alive()) { setView(result?.status === "ended" ? "ended" : liveCall.current ? "disconnected" : "idle"); setNotice(null); } }
+    catch (error) { if (alive()) { setView("disconnected"); setNotice(error instanceof Error ? error.message : "End could not be confirmed. Check the original call."); } }
   }
   async function disconnect() {
-    const epoch = scopeEpoch.current;
-    ++operationEpoch.current; controller.current?.abort(); releaseCapture(); stopPlayback();
-    await command("disconnect").catch(() => {});
-    if (epoch === scopeEpoch.current && liveCall.current) { applyCall({ ...liveCall.current, status: "disconnected" }); setView("disconnected"); setNotice("Call paused. Resume when you are ready."); }
+    if (controlRequest.current.action === "end" || controlRequest.current.action === "disconnect") return;
+    const alive = beginOperation(liveCall.current?.id);
+    stopLocalCallWork();
+    if (!liveCall.current || liveCall.current.status === "ended") {
+      if (phaseRef.current === "connecting") setView(intent.current?.quoteToken ? "confirm" : "idle");
+      return;
+    }
+    await command("disconnect", alive).catch(() => {});
+    const current = liveCall.current;
+    if (!alive() || !current) return;
+    if (current.status === "ended") { setView("ended"); return; }
+    applyCall({ ...current, status: "disconnected" }); setView("disconnected"); setNotice("Call paused. Resume when you are ready.");
   }
   async function toggleMute() {
-    const epoch = scopeEpoch.current;
-    ++operationEpoch.current; controller.current?.abort(); stopPlayback(); releaseCapture();
+    const current = liveCall.current;
+    // Wait for the actual mute/unmute receipt before another toggle. Once unmute is
+    // accepted, a new mute can still revoke the browser's pending permission prompt.
+    if (!current?.leaseToken || !["active", "muted"].includes(current.status)) return;
+    const pending = controlRequest.current.action;
+    if (pending && pending !== "interrupt") return;
+    const alive = beginOperation(current.id);
+    stopLocalCallWork();
     try {
-      if (liveCall.current?.status === "muted") {
-        await command("unmute");
-        if (!recordingMode.current) {
-          const captured = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
-          if (epoch !== scopeEpoch.current || !isListening()) { captured.getTracks().forEach(track => track.stop()); return; }
-          startCapture(captured);
-        }
-        if (epoch === scopeEpoch.current) { setView("listening"); setNotice(readyNotice()); }
-      } else { await command("mute"); if (epoch === scopeEpoch.current) { setView("muted"); setNotice("Call muted. Unmute when you are ready."); } }
-    } catch (error) { if (epoch === scopeEpoch.current) { setView("error"); setNotice(error instanceof Error ? error.message : "Mute failed"); } }
+      const result = await command(current.status === "muted" ? "unmute" : "mute", alive);
+      if (!alive() || !result) return;
+      if (result.status !== "active") {
+        setView(result.status); setNotice(result.status === "muted" ? "Call muted. Unmute when you are ready." : null);
+        return;
+      }
+      if (!recordingMode.current) {
+        const canCapture = () => alive() && isListening();
+        const owner = await acquireCapture(canCapture);
+        if (!owner || !startCapture(owner, canCapture)) return;
+      }
+      setView("listening"); setNotice(readyNotice());
+    } catch (error) {
+      if (alive()) { releaseCapture(); setView("error"); setNotice(error instanceof Error ? error.message : "Mute failed"); }
+    }
   }
   useEffect(() => {
     const epoch = ++scopeEpoch.current;
@@ -412,13 +522,14 @@ export function useVoiceCall(options: Options) {
       setQuote(null); setCall(null); setOtherCallSessionId(null); setView("idle"); void refresh();
     });
     return () => {
-      scopeEpoch.current += 1; operationEpoch.current += 1; controller.current?.abort(); retainRecording(null); releaseCapture(); stopPlayback();
+      scopeEpoch.current += 1; operationEpoch.current += 1; controlRequest.current = {};
+      retainRecording(null); stopLocalCallWork();
     };
     // The call's resources belong to one authenticated conversation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [options.sessionPath, options.ownerScope, options.enabled]);
   function lose(notice: string) {
-    ++operationEpoch.current; controller.current?.abort(); releaseCapture(); stopPlayback();
+    ++operationEpoch.current; controlRequest.current = {}; stopLocalCallWork();
     if (liveCall.current) applyCall({ ...liveCall.current, status: "disconnected" });
     setView("disconnected"); setNotice(notice);
   }
@@ -428,20 +539,30 @@ export function useVoiceCall(options: Options) {
     // server lease has certainly lapsed, or the server definitely refused it.
     const lapsed = "Connection lost. Resume the call to continue; a reply in progress is kept.";
     const heartbeat = setInterval(() => {
-      if (!liveCall.current || !["active", "muted"].includes(liveCall.current.status) || !liveCall.current.leaseToken) return;
+      const previous = liveCall.current, control = controlRequest.current;
+      if (!previous || !["active", "muted"].includes(previous.status) || !previous.leaseToken || control.action) return;
       if (document.visibilityState !== "visible") { void disconnect(); return; }
       if (Date.now() - leaseRenewedAt.current >= LEASE_MS) { lose(lapsed); return; }
       const epoch = scopeEpoch.current;
-      void command("heartbeat").then(result => { if (result && !["active", "muted"].includes(result.status)) { ++operationEpoch.current; controller.current?.abort(); releaseCapture(); stopPlayback(); setView(result.status === "ended" ? "ended" : "disconnected"); } })
+      void command("heartbeat").then(result => {
+        if (!result || controlRequest.current !== control || epoch !== scopeEpoch.current) return;
+        if (result.status !== "active" && result.status !== previous.status) {
+          ++operationEpoch.current; controlRequest.current = {};
+          stopLocalCallWork(); setView(result.status);
+        }
+      })
         .catch(error => {
-          if (epoch !== scopeEpoch.current || !liveCall.current || !["active", "muted"].includes(liveCall.current.status)) return;
+          if (epoch !== scopeEpoch.current || controlRequest.current !== control || liveCall.current?.id !== previous.id || !["active", "muted"].includes(liveCall.current.status)) return;
           if (!transient(error)) lose(error instanceof Error ? error.message : lapsed);
           else if (Date.now() - leaseRenewedAt.current >= LEASE_MS) lose(lapsed);
         });
     }, 4000);
-    const hidden = () => { if (document.visibilityState !== "visible" && liveCall.current?.status !== "ended") void disconnect(); };
+    const hidden = () => {
+      const current = liveCall.current;
+      if (document.visibilityState !== "visible" && (phaseRef.current === "connecting" || (current && current.status !== "ended"))) void disconnect();
+    };
     const leaving = () => {
-      ++operationEpoch.current; controller.current?.abort(); releaseCapture(); stopPlayback();
+      ++operationEpoch.current; controlRequest.current = {}; stopLocalCallWork();
       if (liveCall.current) void fetch(`${latest.current.sessionPath}/voice-call/${liveCall.current.id}/end`, { method: "POST", headers: headers(), keepalive: true });
     };
     document.addEventListener("visibilitychange", hidden); window.addEventListener("pagehide", leaving);
@@ -452,9 +573,9 @@ export function useVoiceCall(options: Options) {
     canRetryOriginal: Boolean(retryRecording.current && retryRecording.current.expiresAt > Date.now()),
     canRetryRecognition: Boolean(retryRecording.current?.recognitionFailed && retryRecording.current.blob && retryRecording.current.expiresAt > Date.now()),
     prepare, connect, end, interrupt, toggleMute, refresh,
-    finishSentence: () => { if (latest.current.ownerScope === options.ownerScope && latest.current.sessionPath === options.sessionPath && liveCall.current?.id === call?.id) microphoneClip.current?.send(); },
-    discardSentence: () => { if (latest.current.ownerScope === options.ownerScope && latest.current.sessionPath === options.sessionPath && liveCall.current?.id === call?.id) microphoneClip.current?.discard?.(); },
-    cancelQuote: () => { ++operationEpoch.current; setQuote(null); intent.current = null; setView("idle"); },
+    finishSentence: () => { if (latest.current.ownerScope === options.ownerScope && latest.current.sessionPath === options.sessionPath && liveCall.current?.id === call?.id) capture.current?.clip?.send(); },
+    discardSentence: () => { if (latest.current.ownerScope === options.ownerScope && latest.current.sessionPath === options.sessionPath && liveCall.current?.id === call?.id) capture.current?.clip?.discard?.(); },
+    cancelQuote: () => { ++operationEpoch.current; releaseCapture(); setQuote(null); intent.current = null; setView("idle"); },
     resume: (useMicrophone = true) => connect(useMicrophone, true),
     submitRecording: (blob: Blob) => { if (blob.size <= 8 * 1024 * 1024) void processRecording(blob); else setNotice("Keep recordings below 8 MiB and one minute."); },
     retry: () => { const pending = retryRecording.current; if (pending && pending.expiresAt > Date.now()) void processRecording(null, pending.id, true); else setNotice("This recording expired. Speak again or end the call."); },
