@@ -45,13 +45,13 @@ describe("Character production entry", () => {
     expect(characterWorkspaceAreaForTab("release")).toBe("operations");
   });
 
-  it("uses three primary areas and keeps one compact mobile page selector", () => {
-    expect(workspaceSource).toContain('aria-label={t("Character workspace area")}');
+  it("renders a single flat tab bar on desktop and one compact mobile page selector", () => {
     expect(workspaceSource).not.toContain("<CharacterJourneyRail");
+    expect(workspaceSource).toContain("ALL_WORKSPACE_TABS");
     expect(workspaceSource).toContain('aria-label={t("Workspace page")}');
-    expect(workspaceSource).toContain('className="mt-3 block sm:hidden"');
+    expect(workspaceSource).toContain('className="mt-4 block sm:hidden"');
     expect(workspaceSource).toContain(
-      'className="mt-3 hidden gap-1 overflow-x-auto border-b border-[var(--ad-border)] sm:flex"',
+      'className="mt-4 hidden gap-1 overflow-x-auto border-b border-[var(--ad-border)] sm:flex"',
     );
   });
 

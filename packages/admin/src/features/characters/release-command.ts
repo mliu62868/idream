@@ -17,6 +17,21 @@ export function commandSubmissionMessage(
     : characterCommandMessage("{action} acceptance is unknown. The same command will be replayed safely.", { action });
 }
 
+interface ReleaseCommandInput {
+  readonly characterId: string;
+  readonly kind: "publish" | "rollback" | "withdraw";
+  readonly release: { readonly id: string; readonly version: number };
+  readonly summary: string;
+}
+
+export function characterReleaseCommandBody({ characterId, kind, release, summary }: ReleaseCommandInput) {
+  return {
+    entityVersion: release.version,
+    reason: { code: `operator_${kind}`, summary },
+    confirmation: `${characterId}:${release.id}:${kind}`,
+  };
+}
+
 /**
  * SPEC: 发布候选的 durable command 只有这一种提交形状：reason 与 confirmation 由客户端自动生成，
  *       运营不填。调用方必须已经持有 journal.beginSubmission 的写入锁。
@@ -24,19 +39,10 @@ export function commandSubmissionMessage(
  */
 export function submitCharacterReleaseCommand(
   journal: CharacterCommandJournal,
-  input: {
-    readonly characterId: string;
-    readonly kind: "publish" | "rollback" | "withdraw";
-    readonly release: { readonly id: string; readonly version: number };
-    readonly summary: string;
-  },
+  input: ReleaseCommandInput,
 ) {
-  const { characterId, kind, release, summary } = input;
-  const body = {
-    entityVersion: release.version,
-    reason: { code: `operator_${kind}`, summary },
-    confirmation: `${characterId}:${release.id}:${kind}`,
-  };
+  const { characterId, kind, release } = input;
+  const body = characterReleaseCommandBody(input);
   return journal.submit({
     action: `Release ${kind}`,
     signature: `${kind}:${release.id}:${JSON.stringify(body)}`,
@@ -46,4 +52,45 @@ export function submitCharacterReleaseCommand(
     ),
     body,
   });
+}
+
+export type CharacterServingAction = "pause" | "resume" | "retire" | "restore";
+
+interface ServingCommandInput {
+  readonly characterId: string;
+  readonly action: CharacterServingAction;
+  readonly entityVersion: number;
+  readonly summary: string;
+}
+
+export function characterServingCommandBody({ characterId, action, entityVersion, summary }: ServingCommandInput) {
+  return {
+    entityVersion,
+    reason: { code: `operator_${action}`, summary },
+    confirmation: `${characterId}:${action}`,
+  };
+}
+
+// All workspace serving buttons persist the exact request before sending it.
+export async function submitWorkspaceServingCommand(journal: CharacterCommandJournal, input: ServingCommandInput) {
+  const action = `Serving ${input.action}`;
+  if (!journal.beginSubmission(
+    characterCommandMessage("Submitting {action}. Character writes stay locked until command acceptance is known.", { action }),
+  )) return null;
+  try {
+    const body = characterServingCommandBody(input);
+    const outcome = await journal.submit({
+      action,
+      signature: `${input.action}:${input.characterId}:${JSON.stringify(body)}`,
+      endpoint: adminV2OperationEndpoint(
+        `POST /api/v2/admin/characters/:id/commands/${input.action}`,
+        { id: input.characterId },
+      ),
+      body,
+    });
+    return outcome.kind === "accepted" ? null : commandSubmissionMessage(outcome, action);
+  } catch (cause) {
+    journal.abortSubmission();
+    throw cause;
+  }
 }

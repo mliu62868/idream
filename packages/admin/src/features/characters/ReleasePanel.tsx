@@ -15,10 +15,7 @@ import {
   WorkspaceButton,
   fieldClass,
 } from "@/features/operations/WorkspaceUi";
-import {
-  adminV2Operation,
-  adminV2OperationEndpoint,
-} from "@/lib/admin-v2-operation";
+import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import type { CharacterCommandJournal } from "./character-command-journal";
 import {
@@ -33,7 +30,7 @@ import type {
 import { CharacterHandoffNotice } from "./CharacterHandoff";
 import { characterAssetPurposeLabel } from "./character-asset-studio-authority";
 import { ReleaseChangeSummary } from "./PreviewDiff";
-import { commandSubmissionMessage, submitCharacterReleaseCommand } from "./release-command";
+import { commandSubmissionMessage, submitCharacterReleaseCommand, submitWorkspaceServingCommand, type CharacterServingAction } from "./release-command";
 
 type CharacterReleaseItem = CharacterWorkspaceDetail["releases"][number];
 
@@ -477,37 +474,18 @@ export function ReleasePanel({
     }
   };
 
-  const servingCommand = async (action: "pause" | "resume" | "retire" | "restore") => {
+  const servingCommand = async (action: CharacterServingAction) => {
     if (!data.serving || writesLocked) return;
     setBusy(action);
     setError(null);
-    if (
-      !journal.beginSubmission(
-        characterCommandMessage("Submitting {action}. Character writes stay locked until command acceptance is known.", { action: `Serving ${action}` }),
-      )
-    ) {
-      setBusy(null);
-      return;
-    }
     try {
-      const body = {
+      setError(await submitWorkspaceServingCommand(journal, {
+        characterId: data.character.id,
+        action,
         entityVersion: data.serving.version,
-        reason: { code: `operator_${action}`, summary: t(action === "restore" ? "Restore draft" : action === "retire" ? (data.serving.state === "inactive" ? "Archive draft" : "Retire Character") : action === "pause" ? "Pause serving" : "Resume serving") },
-        confirmation: `${data.character.id}:${action}`,
-      };
-      const outcome = await journal.submit({
-        action: `Serving ${action}`,
-        signature: `${action}:${data.character.id}:${JSON.stringify(body)}`,
-        endpoint: adminV2OperationEndpoint(
-          `POST /api/v2/admin/characters/:id/commands/${action}`,
-          { id: data.character.id },
-        ),
-        body,
-      });
-      if (outcome.kind === "accepted") return;
-      setError(commandSubmissionMessage(outcome, `Serving ${action}`));
+        summary: t(action === "restore" ? "Restore draft" : action === "retire" ? (data.serving.state === "inactive" ? "Archive draft" : "Retire Character") : action === "pause" ? "Pause serving" : "Resume serving"),
+      }));
     } catch (cause) {
-      journal.abortSubmission();
       setError(
         cause instanceof Error ? cause.message : t("Serving action failed"),
       );

@@ -5,7 +5,7 @@ import { env } from "@/server/lib/env";
 import { createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import { canonicalSha256 } from "../shared/canonical-json";
-import { CHARACTER_RELEASE_POLICY_VERSION, evaluateCharacterReleaseSnapshot, type CharacterReleaseSnapshotCandidate } from "./release-validation";
+import { CHARACTER_RELEASE_POLICY_VERSION, characterDraftSoulBlocker, evaluateCharacterReleaseSnapshot, type CharacterReleaseSnapshotCandidate } from "./release-validation";
 import { characterReleaseSnapshotHash, characterVisualProfileSnapshotHash, referenceSetSnapshotHash } from "./release-snapshot";
 import { createCharacterSoulVersion } from "./soul-version";
 import { createCharacterRelease } from "./release-lifecycle";
@@ -149,7 +149,13 @@ function candidateSnapshotHash(candidate: CharacterReleaseSnapshotCandidate) {
 }
 
 describe("Release historical image authority", () => {
-  it.each(["ordinary", "underage", "minor", "csam"])("rechecks %s in pre-existing content before publication", async (term) => {
+  it.each([
+    { term: "ordinary", detailsMarkdown: "Warm and observant", expectedEvidence: null },
+    { term: "underage", detailsMarkdown: "underage", expectedEvidence: { textModerationStatus: "blocked", policyCode: "age_under_18" } },
+    { term: "minor", detailsMarkdown: "minor", expectedEvidence: { textModerationStatus: "blocked", policyCode: "age_under_18" } },
+    { term: "csam", detailsMarkdown: "csam", expectedEvidence: { textModerationStatus: "blocked", policyCode: "potential_underage_content" } },
+    { term: "over-budget", detailsMarkdown: "x".repeat(24_000), expectedEvidence: { textModerationStatus: "passed", warningCodes: ["compiled_prompt_budget_exceeded"] } },
+  ])("rechecks $term in pre-existing content before publication", async ({ term, detailsMarkdown, expectedEvidence }) => {
     const candidate = await imageCandidate(`text-safety-${term}`);
     const characterId = `${P}text-safety-${term}`;
     const actorId = `${characterId}-owner`;
@@ -157,8 +163,9 @@ describe("Release historical image authority", () => {
     // rejects blocked text, so it cannot be used to set up this release risk.
     const snapshots = characterDraftSnapshots({ persona: {
       name: "Mara", age: 28, gender: "female", characterPromise: "A thoughtful adult companion",
-      detailsMarkdown: term === "ordinary" ? "Warm and observant" : term, firstMessage: "How was your day?",
+      detailsMarkdown, firstMessage: "How was your day?",
     }, visualDirection: { identityAnchor: "Adult portrait", stableTraits: ["brown eyes"], style: "realistic", referenceDirection: "Studio light" } });
+    expect(characterDraftSoulBlocker(snapshots)).toBe(term === "over-budget" ? "soul_release_policy" : null);
     const content = await prisma.characterContentVersion.create({ data: {
       characterId, version: 1, contentHash: snapshots.contentHash,
       personaSnapshot: toInputJson(snapshots.personaSnapshot), openingSnapshot: toInputJson(snapshots.openingSnapshot),
@@ -170,13 +177,13 @@ describe("Release historical image authority", () => {
     const pinned = { ...candidate, revisionId: revision.id, characterContentVersionId: content.id };
     pinned.snapshotHash = candidateSnapshotHash(pinned);
     const evaluation = await evaluate(pinned);
-    if (term === "ordinary") {
+    if (!expectedEvidence) {
       expect(evaluation.failed).toEqual([]);
       return;
     }
     expect(evaluation.failed.map((check) => check.key)).toEqual(["soul_release_policy"]);
     expect(evaluation.checks.find((check) => check.key === "soul_release_policy")).toMatchObject({
-      passed: false, evidence: { textModerationStatus: "blocked", policyCode: term === "csam" ? "potential_underage_content" : "age_under_18" },
+      passed: false, evidence: expectedEvidence,
     });
     const release = await prisma.characterRelease.create({ data: {
       ...pinned, generationProvenance: toInputJson(pinned.generationProvenance),
@@ -197,7 +204,7 @@ describe("Release historical image authority", () => {
       const validationRun = await prisma.releaseValidationRun.findFirstOrThrow({ where: { releaseId: release.id } });
       expect(await prisma.releaseCheckResult.findFirstOrThrow({ where: {
         validationRunId: validationRun.id, checkKey: "soul_release_policy",
-      } })).toMatchObject({ result: "failed", evidence: { textModerationStatus: "blocked" } });
+      } })).toMatchObject({ result: "failed", evidence: expectedEvidence });
     } finally {
       await prisma.controlPlaneCommandAttempt.deleteMany({ where: { commandId: accepted.commandId } });
       await prisma.controlPlaneCommand.delete({ where: { id: accepted.commandId } });

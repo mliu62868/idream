@@ -4,7 +4,7 @@ import {
   characterRouteEvaluationMatrixSchemaVersion,
   characterVideoProductionRecipe,
 } from "@idream/shared";
-import { creativeRunFillSkipSchema, type CreativeRunFillSkip } from "@idream/shared/admin";
+import { creativeRunFillSkipSchema, creativeRunGroupIdsSchema, type CreativeRunFillSkip } from "@idream/shared/admin";
 import { dimensionsForImageOrientation } from "@idream/shared/media/image-orientation";
 import type { Prisma } from "@prisma/client";
 import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
@@ -77,7 +77,7 @@ import {
 // INTENT: 这是「Creative Run 存在」这一事实的唯一写入口。它此前住在按目录命名的
 // legacy `admin/content-ops.ts` 里，和 Image Library、Placement 两套不相干的权威共处
 // 一个文件，而 v2 路由直接 import 它 —— 权威在 v1 杂物间、调用方在 v2，是错的方向。
-// INVARIANT: 角色目标的 Run 恒为一张图（model_eval 例外）；identity/route/source 三类
+// INVARIANT: 每个展示位 Run 仅一张图；同一批请求的所有 Run 共用事务和回执。identity/route/source 三类
 // 权威都必须在事务内复核一次，preflight 结论不作数。
 
 // SPEC: 入参就是 manifest 为 `POST /api/v2/admin/creative/runs` 声明的 body 契约。
@@ -87,7 +87,16 @@ export type CreativeRunCreateInput =
   AdminV2RequestBody<"creativeRunCreateRequestSchema+idempotency-key">;
 
 type CreativeRunReceiptKey = { scope: string; idempotencyKey: string; requestHash: string };
-type CreativeRunReceipt = { batch: { id: string; items: { id: string }[] } } | { skip: CreativeRunFillSkip };
+type CreatedRun = { id: string; items: { id: string }[] };
+type CreativeRunReceipt = { batches: CreatedRun[] } | { skip: CreativeRunFillSkip };
+
+function createdRunResponse(batches: CreatedRun[], replayed: boolean) {
+  return {
+    batch: { id: batches[0].id },
+    ...(batches.length > 1 ? { runIds: batches.map(({ id }) => id) } : {}),
+    replayed,
+  };
+}
 
 async function readCreativeRunReceipt(db: Prisma.TransactionClient, key: CreativeRunReceiptKey): Promise<CreativeRunReceipt | null> {
   const existing = await db.controlPlaneCommand.findUnique({
@@ -102,9 +111,15 @@ async function readCreativeRunReceipt(db: Prisma.TransactionClient, key: Creativ
     const skip = creativeRunFillSkipSchema.safeParse(result.fillSkip);
     if (skip.success) return { skip: skip.data };
     if (typeof result.batchId === "string") {
-      return { batch: await db.contentProductionBatch.findUniqueOrThrow({
-        where: { id: result.batchId }, select: { id: true, items: { select: { id: true } } },
-      }) };
+      const groupSize = jsonRecord(existing.requestPayload).runCount;
+      const ids = groupSize ? creativeRunGroupIdsSchema.parse(result.runIds) : [result.batchId];
+      if (ids[0] !== result.batchId || (groupSize && ids.length !== groupSize)) {
+        throw Errors.conflict("The Creative Run receipt contains inconsistent Run IDs");
+      }
+      const batches = await Promise.all(ids.map((id) => db.contentProductionBatch.findUniqueOrThrow({
+        where: { id }, select: { id: true, items: { select: { id: true } } },
+      })));
+      return { batches };
     }
   }
   throw Errors.conflict("The original Creative Run create command has not completed", {
@@ -213,7 +228,7 @@ export async function createCreativeRun(
   request: Request,
   actor: AdminActor,
   body: CreativeRunCreateInput,
-): Promise<{ batch: { id: string }; replayed: boolean } | { skip: CreativeRunFillSkip; replayed: boolean }> {
+): Promise<{ batch: { id: string }; runIds?: string[]; replayed: boolean } | { skip: CreativeRunFillSkip; replayed: boolean }> {
   const characterLibraryImagePackRun = body.purpose === "character_library_image_pack";
   const characterLibraryVideoPackRun = body.purpose === "character_library_video_pack";
   const characterVideoRun = body.purpose === "character_video" || characterLibraryVideoPackRun;
@@ -225,7 +240,7 @@ export async function createCreativeRun(
   const existing = receiptKey ? await readCreativeRunReceipt(prisma, receiptKey) : null;
   if (existing) return "skip" in existing
     ? { skip: existing.skip, replayed: true }
-    : { batch: { id: existing.batch.id }, replayed: true };
+    : createdRunResponse(existing.batches, true);
 
   const fill = body.fillMissing && receiptKey && body.targetId
     ? { key: receiptKey, actor, body, characterId: body.targetId, requestId: request.headers.get("x-request-id") ?? crypto.randomUUID() }
@@ -238,7 +253,7 @@ export async function createCreativeRun(
       const replay = await lockCreativeRunReceipt(tx, fill.key);
       if (replay) return "skip" in replay
         ? { skip: replay.skip, replayed: true }
-        : { batch: { id: replay.batch.id }, replayed: true };
+        : createdRunResponse(replay.batches, true);
       await lockCharacterGenerationAuthority(tx, fill.characterId);
       const resolved = await skipMissingImageFill(tx, fill);
       return resolved ? { ...resolved, replayed: false } : null;
@@ -1174,7 +1189,7 @@ export async function createCreativeRun(
     const videoSourceIdentity = videoSource
       ? videoSourceIdentityByAssetId.get(videoSource.id) ?? null
       : null;
-    const createdBatch = await tx.contentProductionBatch.create({
+    const createBatch = () => tx.contentProductionBatch.create({
       data: {
         title,
         purpose: body.purpose,
@@ -1201,7 +1216,8 @@ export async function createCreativeRun(
       },
     });
 
-    for (let itemIndex = 0; itemIndex < workItems.length; itemIndex += 1) {
+    const batches = await Promise.all(Array.from({ length: body.runCount ?? 1 }, createBatch));
+    async function createItem(createdBatch: typeof batches[number], itemIndex: number) {
       const { direction, variantIndex } = workItems[itemIndex];
       const directionSnapshot = direction ? toInputJson(direction) : undefined;
       const directionHash = direction ? canonicalSha256(direction) : null;
@@ -1376,9 +1392,18 @@ export async function createCreativeRun(
           },
         },
       });
+      return { id: item.id };
     }
 
-    await refreshContentProductionBatchStats(tx, createdBatch.id);
+    const acceptedRuns: CreatedRun[] = [];
+    for (const batch of batches) {
+      const items: { id: string }[] = [];
+      for (let index = 0; index < workItems.length; index += 1) {
+        items.push(await createItem(batch, index));
+      }
+      acceptedRuns.push({ id: batch.id, items });
+    }
+    const primaryId = batches[0].id;
     if (idempotencyKey) {
       await tx.controlPlaneCommand.create({
         data: {
@@ -1386,45 +1411,47 @@ export async function createCreativeRun(
           idempotencyKey,
           commandType: "creative.run.create",
           targetType: "creative_run",
-          targetId: createdBatch.id,
+          targetId: primaryId,
           actorId: actor.id,
           requestId: request.headers.get("x-request-id") ?? crypto.randomUUID(),
           requestHash,
           requestPayload: toInputJson(body),
           retryMode: "idempotent",
           status: "succeeded",
-          result: toInputJson({ batchId: createdBatch.id }),
+          result: toInputJson({
+            batchId: primaryId,
+            ...(body.runCount ? { runIds: batches.map(({ id }) => id) } : {}),
+          }),
           finishedAt: new Date(),
         },
       });
     }
-    await tx.adminAuditLog.create({
-      data: {
-        actorId: actor.id,
-        actorRole: actor.role,
-        action: "content.production.batch.create",
-        targetType: "content_production_batch",
-        targetId: createdBatch.id,
-        reason: body.reason,
-        after: toInputJson({
-          purpose: createdBatch.purpose,
-          count: createdBatch.totalItems,
-          profileId: createdBatch.profileId,
-          recipeId: createdBatch.recipeId,
-        }),
-        requestId: request.headers.get("x-request-id"),
-      },
-    });
-    return { batch: await tx.contentProductionBatch.findUniqueOrThrow({
-      where: { id: createdBatch.id },
-      select: { id: true, items: { select: { id: true } } },
-    }) };
+    for (const createdBatch of batches) {
+      await refreshContentProductionBatchStats(tx, createdBatch.id);
+      await tx.adminAuditLog.create({
+        data: {
+          actorId: actor.id,
+          actorRole: actor.role,
+          action: "content.production.batch.create",
+          targetType: "content_production_batch",
+          targetId: createdBatch.id,
+          reason: body.reason,
+          after: toInputJson({
+            purpose: createdBatch.purpose,
+            count: createdBatch.totalItems,
+            profileId: createdBatch.profileId,
+            recipeId: createdBatch.recipeId,
+          }),
+          requestId: request.headers.get("x-request-id"),
+        },
+      });
+    }
+    return { batches: acceptedRuns };
   }, { timeout: 60_000 });
   if ("skip" in result) return { skip: result.skip, replayed };
-  const { batch } = result;
-  await dispatchGenerationAttemptOutbox(prisma, {
-    limit: totalOutputCount,
-    outboxIds: batch.items.map((item) => `creative_initial_${batch.id}_${item.id}`),
-  });
-  return { batch: { id: batch.id }, replayed };
+  const outboxIds = result.batches.flatMap((batch) =>
+    batch.items.map((item) => `creative_initial_${batch.id}_${item.id}`),
+  );
+  await dispatchGenerationAttemptOutbox(prisma, { limit: outboxIds.length, outboxIds });
+  return createdRunResponse(result.batches, replayed);
 }

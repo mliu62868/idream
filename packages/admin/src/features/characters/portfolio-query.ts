@@ -86,6 +86,15 @@ export function parseCharacterPortfolioUrl(search: string): CharacterPortfolioUr
   };
 }
 
+export function withCharacterRoster(href: string, rosterQuery?: string) {
+  if (rosterQuery === undefined) return href;
+  const [pathAndQuery, hash] = href.split("#", 2);
+  const [path, query] = pathAndQuery.split("?", 2);
+  const params = new URLSearchParams(query);
+  params.set("roster", rosterQuery);
+  return `${path}?${params}${hash ? `#${hash}` : ""}`;
+}
+
 export function characterPortfolioQuery(
   state: CharacterPortfolioUrlState,
   includeAuthorityDefaults = false,

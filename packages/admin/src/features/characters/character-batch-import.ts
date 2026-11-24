@@ -1,4 +1,4 @@
-// SPEC: 批量导入的纯逻辑：把粘贴/上传的 JSON 数组解析成逐行结果，校验与创建向导同一份契约。
+// SPEC: 批量导入的纯逻辑：把粘贴/上传的表格或 JSON 数组解析成逐行结果，校验与创建向导同一份契约。
 // INTENT: 能默认的视觉字段照向导默认，只把真正缺的东西告诉运营。
 import {
   characterProjectProductionReadyDraftSchema,
@@ -33,6 +33,12 @@ export const CHARACTER_IMPORT_EXAMPLE = JSON.stringify([
   },
 ], null, 2);
 
+export const CHARACTER_IMPORT_CSV_EXAMPLE = [
+  "name,age,gender,description,firstMessage,style,stableTraits",
+  '"Mara Vale",30,female,"A dry-witted night-shift nurse who remembers everything you tell her","Long shift. Sit down, and tell me the real version of your day.",realistic,"Dark wavy hair; Warm brown eyes"',
+  '"Ren Hale",34,male,"A quiet bookshop owner with an old-fashioned sense of courtesy","You came back. I kept the book you were reading aside.",realistic,"Short black hair; Round glasses"',
+].join("\n");
+
 export type CharacterImportRow = {
   readonly index: number;
   readonly label: string;
@@ -42,7 +48,7 @@ export type CharacterImportRow = {
 
 export type CharacterImportParseResult =
   | { readonly ok: true; readonly rows: readonly CharacterImportRow[] }
-  | { readonly ok: false; readonly error: "invalid_json" | "not_array" | "empty" | "too_many" };
+  | { readonly ok: false; readonly error: "invalid_json" | "invalid_table" | "not_array" | "empty" | "too_many" };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -75,12 +81,101 @@ function draftFromRow(row: Record<string, unknown>): CharacterProjectDraft {
   } as CharacterProjectDraft;
 }
 
+// A spreadsheet cell can contain a full Markdown document, including blank lines.
+function parseDelimitedRows(text: string): string[][] | null {
+  let delimiter: string | undefined;
+  const rows: string[][] = [];
+  let fields: string[] = [];
+  let value = "";
+  let quoted = false;
+  let closedQuote = false;
+
+  function finishRow() {
+    if (fields.length || value.trim() || closedQuote) rows.push([...fields, value.trim()]);
+    fields = [];
+    value = "";
+    closedQuote = false;
+  }
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch !== '"') value += ch;
+      else if (text[i + 1] === '"') {
+        value += '"';
+        i += 1;
+      } else {
+        quoted = false;
+        closedQuote = true;
+      }
+    } else if (delimiter ? ch === delimiter : ch === "," || ch === "\t") {
+      delimiter ??= ch;
+      fields.push(value.trim());
+      value = "";
+      closedQuote = false;
+    } else if (ch === "\r" || ch === "\n") {
+      finishRow();
+      if (ch === "\r" && text[i + 1] === "\n") i += 1;
+    } else if (ch === '"') {
+      if (closedQuote || value.trim()) return null;
+      quoted = true;
+    } else {
+      if (closedQuote && ch.trim()) return null;
+      value += ch;
+    }
+  }
+  if (quoted) return null;
+  finishRow();
+  return rows;
+}
+
+const CSV_HEADER_MAP: Record<string, string> = {
+  name: "name",
+  age: "age",
+  gender: "gender",
+  description: "characterPromise",
+  shortdescription: "characterPromise",
+  characterpromise: "characterPromise",
+  firstmessage: "firstMessage",
+  opening: "firstMessage",
+  openingmessage: "firstMessage",
+  details: "detailsMarkdown",
+  detailsmarkdown: "detailsMarkdown",
+  style: "style",
+  identityanchor: "identityAnchor",
+  stabletraits: "stableTraits",
+  traits: "stableTraits",
+  referencedirection: "referenceDirection",
+};
+
+function parseTabularImport(text: string): Record<string, unknown>[] | null {
+  const rows = parseDelimitedRows(text);
+  if (!rows?.length) return null;
+  const [headers, ...data] = rows;
+  const mappedHeaders = headers.map((header) => CSV_HEADER_MAP[header.toLowerCase().replace(/[^a-z]/g, "")]);
+  if (!mappedHeaders.includes("name") || data.some((row) => row.length > headers.length)) return null;
+  return data.map((values) => {
+    const record: Record<string, unknown> = {};
+    mappedHeaders.forEach((key, idx) => {
+      const value = values[idx];
+      if (!key || !value) return;
+      if (key === "stableTraits") record.stableTraits = value.split(/[|;\n]/).map((item) => item.trim()).filter(Boolean);
+      else record[key] = value;
+    });
+    return record;
+  });
+}
+
 export function parseCharacterImport(text: string): CharacterImportParseResult {
+  const trimmed = text.trim();
   let value: unknown;
   try {
-    value = JSON.parse(text);
+    value = JSON.parse(trimmed);
   } catch {
-    return { ok: false, error: "invalid_json" };
+    const headerLine = trimmed.split(/[\r\n]/, 1)[0];
+    if (!/[,\t]/.test(headerLine) || trimmed.startsWith("[") || trimmed.startsWith("{")) return { ok: false, error: "invalid_json" };
+    value = parseTabularImport(text);
+    if (!value) return { ok: false, error: "invalid_table" };
   }
   if (!Array.isArray(value)) return { ok: false, error: "not_array" };
   if (value.length === 0) return { ok: false, error: "empty" };

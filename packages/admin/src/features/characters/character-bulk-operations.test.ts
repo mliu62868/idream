@@ -241,4 +241,39 @@ describe("bulk execution", () => {
     expect(() => bulkGenerationRequest({ ...base, visual: { ...base.visual, identityBootstrap: { allowed: true } } } as never, "character_hero", "A")).toThrow("visual identity");
     expect(() => bulkGenerationRequest({ ...base, visual: { ...base.visual, readiness: { ready: false } } } as never, "character_hero", "A")).toThrow("not ready");
   });
+
+  it("publishes eligible characters in bulk by creating a release and submitting the publish command", async () => {
+    const readyItem = {
+      ...item("a", { state: "inactive" }),
+      journey: {
+        ...item("a", { state: "inactive" }).journey,
+        stage: "publishing",
+        blockers: [],
+        release: { candidateReleaseId: null, pendingRevision: null },
+      },
+    } as unknown as CharacterPortfolioItem;
+    expect(bulkActionBlocker("publish", readyItem)).toBeNull();
+    expect(bulkActionBlocker("publish", item("a", { state: "retired" }))).toContain("retired");
+
+    adminV2Operation.mockImplementation(async (id: string) => {
+      if (id === "GET /api/v2/admin/characters/:id") return { project: { version: 3 }, releases: [] };
+      if (id === "POST /api/v2/admin/characters/:id/releases") return { id: "rel-1", version: 1 };
+      if (id === "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/publish") return { status: "accepted", commandId: "cmd-pub-1" };
+      return { status: "succeeded" };
+    });
+    const run = createBulkExecutor({
+      action: { kind: "publish" },
+      actorId: "actor",
+      itemByCharacter: new Map([["a", readyItem]]),
+      sleep,
+    });
+    await expect(run(task("a"))).resolves.toBe("succeeded");
+    expect(adminV2Operation).toHaveBeenCalledWith(
+      "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/publish",
+      expect.objectContaining({
+        path: { id: "a", releaseId: "rel-1" },
+        body: { entityVersion: 1, confirmation: "a:rel-1:publish", reason: { code: "operator_publish", summary: "Publish current Character" } },
+      }),
+    );
+  });
 });

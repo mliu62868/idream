@@ -77,7 +77,7 @@ describe("Character list work queues and bulk actions", () => {
   };
   const button = (label: string, within: ParentNode = document) =>
     [...within.querySelectorAll("button")].find((node) => node.textContent?.trim().startsWith(label));
-  const render = async () => {
+  const render = async (extraPermissions: AdminPermissionKey[] = []) => {
     await act(async () => root.render(
       <AdminI18nProvider locale="en">
         <CharacterPortfolio
@@ -87,7 +87,7 @@ describe("Character list work queues and bulk actions", () => {
           canOpenProjects
           canRead
           mode="studio"
-          permissions={new Set<AdminPermissionKey>(["character.release.publish"])}
+          permissions={new Set<AdminPermissionKey>(["character.release.publish", ...extraPermissions])}
         />
       </AdminI18nProvider>,
     ));
@@ -110,6 +110,60 @@ describe("Character list work queues and bulk actions", () => {
     const lastQuery = new URLSearchParams(adminV2Operation.mock.calls.filter(([id]) => id === "GET /api/v2/admin/characters/portfolio").at(-1)?.[1].query);
     expect(lastQuery.get("servingState")).toBe("retired");
     expect(lastQuery.has("excludeArchived")).toBe(false);
+  });
+
+  it("keeps the filtered roster, tab, and anchor on table navigation", async () => {
+    pages.queue = [{
+      ...item("c", "Rae", "live"),
+      journey: {
+        ...baseItem.journey,
+        primaryAction: { ...baseItem.journey.primaryAction, deepLink: "/admin/characters/c?tab=visual#visual-reference-set" },
+      },
+    }];
+    await render();
+    await act(async () => button("Generation failed")?.click());
+    await settle(() => container.textContent?.includes("Rae") === true);
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Table view"]')?.click());
+    const links = [...container.querySelectorAll<HTMLAnchorElement>("tbody a")].map((link) => new URL(link.href));
+    expect(links).toHaveLength(3);
+    expect(links.every((link) => link.searchParams.get("roster") === "workQueue=recent_generation_failed")).toBe(true);
+    expect(links.find((link) => link.hash === "#visual-reference-set")?.searchParams.get("tab")).toBe("visual");
+  });
+
+  it("follows an accepted row command past six polls and shows a late failure", async () => {
+    await render(["dashboard.read", "character.release.read"]);
+    const original = adminV2Operation.getMockImplementation()!;
+    let reads = 0;
+    adminV2Operation.mockImplementation((id, options) =>
+      id === "GET /api/v2/admin/commands/:commandId"
+        ? Promise.resolve({ status: ++reads > 6 ? "failed" : "running" })
+        : original(id, options),
+    );
+    vi.useFakeTimers();
+    try {
+      await act(async () => button("Pause", container.querySelector("article")!)?.click());
+      expect(container.textContent).toContain("Mira · Accepted");
+      for (let i = 0; i < 8; i += 1) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+      }
+      expect(reads).toBe(7);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Mira · Command failed.");
+      expect(container.textContent).not.toContain("Mira · Accepted");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("uses the portfolio to confirm serving when command details are outside the operator's grants", async () => {
+    await render();
+    await act(async () => button("Pause", container.querySelector("article")!)?.click());
+    pages.default = [item("a", "Mira", "paused")];
+    await settle(() => button("Resume", container.querySelector("article")!) !== undefined);
+    expect(container.textContent).not.toContain("Mira · Accepted");
+    expect(adminV2Operation.mock.calls.some(([id]) => id === "GET /api/v2/admin/commands/:commandId")).toBe(false);
+    expect(adminV2Operation.mock.calls.some(([id, options]) =>
+      id === "GET /api/v2/admin/characters/portfolio" && new URLSearchParams(options.query).get("search") === "a",
+    )).toBe(true);
   });
 
   // SPEC: 选中绑定角色 ID；确认框只显示数量和名字；不适用的跳过并说明；失败项可重试。

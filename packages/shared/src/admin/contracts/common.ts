@@ -286,11 +286,17 @@ export const creativeRunFillSkipSchema = z.discriminatedUnion("reason", [
 ]);
 export type CreativeRunFillSkip = z.infer<typeof creativeRunFillSkipSchema>;
 
+export const creativeRunGroupIdsSchema = z.array(adminIdSchema).refine(
+  (ids) => (ids.length === 2 || ids.length === 4) && new Set(ids).size === ids.length,
+  "Expected two or four distinct single-image Run IDs",
+);
+
 export const adminMutationRecoveryVerificationSchema =
   z.discriminatedUnion("kind", [
     z.object({
       kind: z.literal("creative_run"),
       runId: adminIdSchema,
+      runIds: creativeRunGroupIdsSchema.optional(),
       requestSnapshot: adminJsonValueSchema,
     }).strict(),
     z.object({

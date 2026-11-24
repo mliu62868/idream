@@ -219,9 +219,14 @@ describe("Soul draft retention", () => {
     expect(saveButton().disabled).toBe(true);
   });
 
-  it("says compiler diagnostics block publishing, warnings included", async () => {
+  it("explains how to clear the prompt budget blocker and keeps errors blocking", async () => {
     await render(actor, withCharacterWorkspaceDetail(data, { soul: { current: {
-      diagnostics: [{ code: "long", path: ["detailsMarkdown"], severity: "warning", message: "Too long" }],
+      diagnostics: [{ code: "compiled_prompt_budget_exceeded", path: ["compiled", "estimatedTokens"], severity: "warning", message: "Too long" }],
+    } } }));
+    expect(container.textContent).toContain("Shorten Additional details before publishing.");
+
+    await render(actor, withCharacterWorkspaceDetail(data, { soul: { current: {
+      diagnostics: [{ code: "invalid", path: ["detailsMarkdown"], severity: "error", message: "Invalid" }],
     } } }));
     expect(container.textContent).toContain("Publishing stays blocked until every item below is cleared");
   });

@@ -178,8 +178,8 @@ test.describe.serial("Character operations stay one click", () => {
     await expect(importedCard).toHaveCount(0);
     await importButton.click();
     const dialog = page.getByRole("dialog", { name: "Import characters" });
-    const json = dialog.getByLabel("Characters as JSON");
-    await expect(json).toBeFocused();
+    const source = dialog.getByLabel("Character import data");
+    await expect(source).toBeFocused();
     for (const key of ["Tab", "Tab", "Shift+Tab"]) {
       await page.keyboard.press(key);
       expect(await dialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
@@ -188,7 +188,14 @@ test.describe.serial("Character operations stay one click", () => {
       name, age: 31, gender: "female", characterPromise: "A late-night radio host with a quiet sense of humor.",
       firstMessage: "You can stay until the next song.", stableTraits: ["Dark wavy hair", "Brown eyes"],
     };
-    await json.fill(JSON.stringify([valid, { ...valid, name: rejectedName, age: 17 }]));
+    await source.fill(JSON.stringify([valid, { ...valid, name: rejectedName, age: 17 }]));
+    await expect(dialog.getByText("1 of 2 rows are ready. 0 created.")).toBeVisible();
+    const details = 'Greets new listeners.\n\nSays "good night" softly.';
+    await source.fill([
+      "name,age,gender,description,firstMessage,stableTraits,detailsMarkdown",
+      [name, "31", valid.gender, valid.characterPromise, valid.firstMessage, valid.stableTraits.join(";"), '"' + details.replaceAll('"', '""') + '"'].join(","),
+      [rejectedName, "17", valid.gender, valid.characterPromise, valid.firstMessage, valid.stableTraits.join(";"), ""].join(","),
+    ].join("\n"));
     await dialog.getByRole("button", { name: "Create 1 private drafts" }).click();
     await expect(dialog.getByText("1 of 2 rows are ready. 1 created.")).toBeVisible();
     await expect(dialog.getByRole("link", { name: "Open draft" })).toHaveCount(1);
@@ -200,6 +207,9 @@ test.describe.serial("Character operations stay one click", () => {
     await expect(importedCard).toBeVisible();
     expect(await prisma.character.count({ where: { name, visibility: "private", status: "draft" } })).toBe(1);
     expect(await prisma.character.count({ where: { name: rejectedName } })).toBe(0);
+    const imported = await prisma.character.findFirstOrThrow({ where: { name }, select: { id: true } });
+    const content = await prisma.characterContentVersion.findFirstOrThrow({ where: { characterId: imported.id } });
+    expect(content.personaSnapshot).toMatchObject({ soul: { detailsMarkdown: details } });
     await importedCard.click();
     await expect(page.getByTestId("character-customer-status")).toHaveText("Not live");
     await page.getByRole("link", { name: "Back to character results" }).click();
@@ -207,6 +217,13 @@ test.describe.serial("Character operations stay one click", () => {
     await expect(draftFilter).toHaveAttribute("aria-pressed", "true");
     await expect(importedCard).toBeVisible();
     await shot(page, "restored-roster");
+
+    await page.getByRole("button", { name: "Table view" }).click();
+    const row = page.getByRole("row").filter({ has: page.getByRole("link", { name, exact: true }) });
+    await row.getByRole("link", { name: "Create first identity portrait", exact: true }).click();
+    await page.getByRole("link", { name: "Back to character results" }).click();
+    await expect(page.getByLabel("Search characters")).toHaveValue(name);
+    await expect(draftFilter).toHaveAttribute("aria-pressed", "true");
 
     await page.getByRole("checkbox", { name: `Select ${name}`, exact: true }).check();
     const bulk = page.getByRole("region", { name: "Bulk actions" });
@@ -218,7 +235,6 @@ test.describe.serial("Character operations stay one click", () => {
     await bulk.getByRole("button", { name: "Add tag", exact: true }).click();
     await page.getByRole("dialog").getByRole("button", { name: "Add tag", exact: true }).click();
     await expect(bulk.getByText("Done", { exact: true })).toBeVisible();
-    const imported = await prisma.character.findFirstOrThrow({ where: { name }, select: { id: true } });
     expect(await prisma.characterTag.count({ where: { characterId: imported.id, tagId } })).toBe(1);
   });
 

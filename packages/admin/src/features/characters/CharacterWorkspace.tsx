@@ -36,6 +36,7 @@ import {
 } from "@/features/image-workflow-transport";
 import {
   LoadingWorkspace,
+  WorkspaceButton,
   fieldClass,
 } from "@/features/operations/WorkspaceUi";
 import { AdminV2RequestError, setWorkspaceUrl } from "@/lib/admin-v2-api";
@@ -51,7 +52,9 @@ import {
 import { createLatestRequestGate, type LatestRequestToken } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { cn } from "@/lib/utils";
+import { submitWorkspaceServingCommand } from "./release-command";
 import { CharacterHandoffAction } from "./CharacterHandoff";
+import { CharacterFeaturedToggle, FeaturedAuthorityProvider } from "@/features/content-merchandising/CharacterFeaturedToggle";
 import { CharacterWorkspaceActionsProvider } from "./character-workspace-actions";
 import { characterWorkspacePermissions } from "./character-workspace-permissions";
 import { permissionDenied } from "./character-permission-denied";
@@ -112,6 +115,17 @@ export const characterWorkspaceAreaTabs: Record<
   assets: ["assets", "video"],
   operations: ["release", "monitor"],
 };
+
+const ALL_WORKSPACE_TABS: readonly Tab[] = [
+  "project",
+  "soul",
+  "visual",
+  "voice",
+  "assets",
+  "video",
+  "release",
+  "monitor",
+];
 
 const characterWorkspaceAreas = Object.keys(
   characterWorkspaceAreaTabs,
@@ -319,6 +333,9 @@ function CharacterDetail({
     useState<CustomerPublicationPrepRecovery | null>(null);
   const [reclaimingVoiceRequestId, setReclaimingVoiceRequestId] = useState<
     string | null
+  >(null);
+  const [quickActionBusy, setQuickActionBusy] = useState<
+    "pause" | "resume" | "visibility" | null
   >(null);
   // SPEC: 待决命令与写入锁只有 journal 一份权威，组件通过订阅镜像它。
   // INTENT: 这两个事实此前同时存在于 2 个 useState、2 个 useRef 和 coordinator 内部共 5 份
@@ -867,8 +884,7 @@ function CharacterDetail({
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
     if (mutationNotice || pendingCommand || data.activeCommand) return;
-    const visibleTabs =
-      characterWorkspaceAreaTabs[characterWorkspaceAreaForTab(tab)];
+    const visibleTabs = ALL_WORKSPACE_TABS;
     const nextIndex =
       event.key === "Home"
         ? 0
@@ -915,14 +931,62 @@ function CharacterDetail({
     destination.searchParams.has("tab") &&
     characterWorkspaceTabFromSearch(destination.search) === tab &&
     (!destination.hash || destination.hash === locationHash);
-  const activeArea = characterWorkspaceAreaForTab(tab);
-  const visibleTabs = characterWorkspaceAreaTabs[activeArea];
+  const visibleTabs = ALL_WORKSPACE_TABS;
   const writesLocked = commandWritesLocked || data.activeCommand !== null;
   const guardedPermissions = characterWorkspacePermissions(
     granted,
     writesLocked,
   );
-  return (
+  const quickToggleServing = async (action: "pause" | "resume") => {
+    if (!data.serving || quickActionBusy || writesLocked) return;
+    setQuickActionBusy(action);
+    setError(null);
+    try {
+      const message = await submitWorkspaceServingCommand(journal, {
+        characterId: data.character.id,
+        action,
+        entityVersion: data.serving.version,
+        summary: t(action === "pause" ? "Pause serving" : "Resume serving"),
+      });
+      if (message) setError(renderCharacterCommandMessage(message, t));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Serving action failed");
+    } finally {
+      setQuickActionBusy(null);
+    }
+  };
+  const quickToggleVisibility = async () => {
+    if (!data.serving || data.serving.state !== "live" || quickActionBusy || writesLocked) return;
+    const visibility = data.character.visibility === "unlisted" ? "public" : "unlisted";
+    const action = visibility === "public" ? "Show in Explore" : "Hide from Explore";
+    setQuickActionBusy("visibility");
+    setError(null);
+    try {
+      await runCommittedMutation({
+        action,
+        commit: () =>
+          adminV2Operation("POST /api/v2/admin/content/characters/:id/visibility", {
+            path: { id: data.character.id },
+            body: {
+              visibility,
+              entityVersion: data.serving!.version,
+              reason: action,
+              confirmation: `${data.character.id}:visibility:${visibility}`,
+            },
+          }),
+      });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not update Explore visibility");
+    } finally {
+      setQuickActionBusy(null);
+    }
+  };
+  const hasQuickPublish =
+    servingState !== "retired" &&
+    tab !== "release" &&
+    (!characterHasNoUnpublishedChanges(data) ||
+      Boolean(data.journey.release.candidateReleaseId));
+  const detailSection = (
     <section
       aria-labelledby="character-workspace-title"
       onClickCapture={onWorkspaceLinkClick}
@@ -976,7 +1040,49 @@ function CharacterDetail({
             </dl>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-3 lg:justify-end">
+        <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+        {hasQuickPublish && guardedPermissions.publishRelease ? (
+          <WorkspaceButton
+            disabled={writesLocked || quickActionBusy !== null}
+            onClick={() => selectTab("release")}
+            tone="primary"
+          >
+            {t("Publish Character")}
+          </WorkspaceButton>
+        ) : null}
+        {tab !== "release" && servingState === "live" && guardedPermissions.publishRelease ? (
+          <WorkspaceButton
+            disabled={writesLocked || quickActionBusy !== null}
+            onClick={() => void quickToggleServing("pause")}
+          >
+            {t("Pause serving")}
+          </WorkspaceButton>
+        ) : tab !== "release" && servingState === "paused" && guardedPermissions.publishRelease ? (
+          <WorkspaceButton
+            disabled={writesLocked || quickActionBusy !== null}
+            onClick={() => void quickToggleServing("resume")}
+            tone="primary"
+          >
+            {t("Resume serving")}
+          </WorkspaceButton>
+        ) : null}
+        {tab !== "release" && servingState === "live" &&
+        ["public", "unlisted"].includes(data.character.visibility) &&
+        guardedPermissions.manageCatalogVisibility ? (
+          <WorkspaceButton
+            disabled={writesLocked || quickActionBusy !== null}
+            onClick={() => void quickToggleVisibility()}
+          >
+            {t(data.character.visibility === "unlisted" ? "Show in Explore" : "Hide from Explore")}
+          </WorkspaceButton>
+        ) : null}
+        {tab !== "project" && servingState === "live" && permissions.readContent ? (
+          <CharacterFeaturedToggle
+            canWrite={guardedPermissions.manageFeatured}
+            characterId={data.character.id}
+            compact
+          />
+        ) : null}
         {canCreateCharacters && permissions.writeProject ? (
           <CharacterDuplicateButton characterId={id} />
         ) : null}
@@ -1071,34 +1177,7 @@ function CharacterDetail({
           )}
         </div>
       ) : null}
-      <div
-        aria-label={t("Character workspace area")}
-        className="mt-5 grid grid-cols-3 gap-1 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface-subtle)] p-1 sm:max-w-xl"
-        role="group"
-      >
-        {characterWorkspaceAreas.map((area) => (
-          <button
-            aria-pressed={activeArea === area}
-            className={cn(
-              "min-h-10 rounded-md px-3 text-sm font-medium focus-visible:outline focus-visible:outline-2",
-              activeArea === area
-                ? "bg-[var(--ad-surface)] text-[var(--ad-ink)] shadow-sm"
-                : "text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]",
-            )}
-            disabled={writesLocked && activeArea !== area}
-            key={area}
-            onClick={() => {
-              if (activeArea !== area) {
-                selectTab(characterWorkspaceAreaTabs[area][0]);
-              }
-            }}
-            type="button"
-          >
-            {t(characterWorkspaceAreaLabel(area))}
-          </button>
-        ))}
-      </div>
-      <label className="mt-3 block sm:hidden">
+      <label className="mt-4 block sm:hidden">
         <span className="sr-only">{t("Workspace page")}</span>
         <select
           aria-label={t("Workspace page")}
@@ -1115,7 +1194,7 @@ function CharacterDetail({
         </select>
       </label>
       <div
-        className="mt-3 hidden gap-1 overflow-x-auto border-b border-[var(--ad-border)] sm:flex"
+        className="mt-4 hidden gap-1 overflow-x-auto border-b border-[var(--ad-border)] sm:flex"
         role="tablist"
         aria-label={t("Character workspace")}
       >
@@ -1124,10 +1203,10 @@ function CharacterDetail({
             aria-controls={`character-panel-${item}`}
             aria-selected={tab === item}
             className={cn(
-              "min-h-11 shrink-0 border-b-2 px-3 text-sm capitalize focus-visible:outline focus-visible:outline-2",
+              "min-h-11 shrink-0 border-b-2 px-3 text-sm focus-visible:outline focus-visible:outline-2",
               tab === item
                 ? "border-[var(--ad-ink)] font-semibold text-[var(--ad-ink)]"
-                : "border-transparent text-[var(--ad-text-muted)]",
+                : "border-transparent text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]",
             )}
             disabled={writesLocked && item !== tab}
             id={`character-tab-${item}`}
@@ -1286,6 +1365,9 @@ function CharacterDetail({
       />
     </section>
   );
+  return permissions.readContent ? (
+    <FeaturedAuthorityProvider>{detailSection}</FeaturedAuthorityProvider>
+  ) : detailSection;
 }
 
 export function CharacterWorkspace({

@@ -119,6 +119,19 @@ describe("Creative Run create contract", () => {
     expect(creativeRunCreateRequestSchema.parse(request)).toMatchObject(request);
   });
 
+  it("restricts grouped submissions to two or four independent single-image placement Runs", () => {
+    const placement = { ...request, targetType: "character", targetId: "character-1", purpose: "character_cover", count: 1 };
+    for (const runCount of [2, 4]) {
+      expect(creativeRunCreateRequestSchema.safeParse({ ...placement, runCount }).success).toBe(true);
+    }
+    for (const change of [
+      { runCount: 3 }, { count: 2 }, { bootstrapIdentity: true }, { fillMissing: true },
+      { purpose: "character_library_image_pack" }, { purpose: "feed", targetType: "none" },
+    ]) {
+      expect(creativeRunCreateRequestSchema.safeParse({ ...placement, runCount: 2, ...change }).success).toBe(false);
+    }
+  });
+
   it("rejects missing target identity and client-authored lifecycle state", () => {
     expect(creativeRunCreateRequestSchema.safeParse({
       ...request,

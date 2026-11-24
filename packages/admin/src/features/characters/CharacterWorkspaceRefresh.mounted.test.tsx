@@ -17,10 +17,13 @@ vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams(w
 vi.mock("./CharacterPortfolioCard", () => ({ CharacterPortfolioCard: ({ item }: { item: { characterId: string } }) => <article>{item.characterId}</article> }));
 
 import { CharacterPortfolio } from "./CharacterPortfolio";
+import { characterWorkspaceDetail } from "./character-workspace-fixture";
 import { CharacterChatToolsPanel } from "./CharacterChatToolsPanel";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+const portfolioItem = characterWorkspaceDetail().portfolio;
 
 async function waitUntil(predicate: () => boolean) {
   const deadline = Date.now() + 2_000;
@@ -50,7 +53,7 @@ describe("Character workspace shell refresh", () => {
     window.history.replaceState(null, "", "/admin/characters?search=Mira");
     let finishOld!: (value: unknown) => void;
     adminV2Operation.mockReturnValueOnce(new Promise((resolve) => { finishOld = resolve; }))
-      .mockResolvedValue({ items: [{ characterId: "fresh-character" }], pageInfo: { endCursor: null, hasNextPage: false }, asOf: "2026-09-02T22:00:00Z" });
+      .mockResolvedValue({ items: [{ ...portfolioItem, characterId: "fresh-character" }], pageInfo: { endCursor: null, hasNextPage: false }, asOf: "2026-09-02T22:00:00Z" });
     await act(async () => root.render(<CharacterPortfolio canCreate canRead canOpenAssets canOpenProjects mode="studio" />));
     await waitUntil(() => adminV2Operation.mock.calls.length === 1);
     const firstQuery = adminV2Operation.mock.calls[0][1].query;
@@ -59,7 +62,7 @@ describe("Character workspace shell refresh", () => {
     await waitUntil(() => adminV2Operation.mock.calls.length === 2);
     expect(adminV2Operation.mock.calls[1][1].query).toBe(firstQuery);
     await waitUntil(() => container.textContent?.includes("fresh-character") === true);
-    await act(async () => finishOld({ items: [{ characterId: "stale-character" }], pageInfo: { endCursor: null, hasNextPage: false }, asOf: "2026-09-02T21:00:00Z" }));
+    await act(async () => finishOld({ items: [{ ...portfolioItem, characterId: "stale-character" }], pageInfo: { endCursor: null, hasNextPage: false }, asOf: "2026-09-02T21:00:00Z" }));
     expect(container.textContent).toContain("fresh-character");
     expect(container.textContent).not.toContain("stale-character");
     expect(container.querySelector<HTMLInputElement>('input[aria-label="Search characters"]')!.value).toBe("Mira");
@@ -73,7 +76,7 @@ describe("Character workspace shell refresh", () => {
 
   it("pages the applied results without submitting an unfinished search", async () => {
     adminV2Operation.mockResolvedValue({
-      items: [{ characterId: "character-a" }],
+      items: [{ ...portfolioItem, characterId: "character-a" }],
       pageInfo: { endCursor: "page-2", hasNextPage: true },
       asOf: "2026-09-30T10:00:00Z",
     });

@@ -5,6 +5,7 @@ import Link from "next/link";
 import type { CharacterPortfolioItem } from "@idream/shared/admin";
 import { ArrowRight, ImageIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { withCharacterRoster } from "./portfolio-query";
 import { CharacterPortfolioVisual } from "./CharacterPortfolioVisual";
 import { characterPrimaryActionCopy } from "./character-primary-action-copy";
 
@@ -74,7 +75,9 @@ export function CharacterPortfolioCard({
   canOpenProject,
   eager = false,
   item,
+  onQuickToggleServing,
   onToggleSelected,
+  quickBusy = false,
   rosterQuery,
   selected = false,
 }: {
@@ -82,7 +85,9 @@ export function CharacterPortfolioCard({
   canOpenProject: boolean;
   eager?: boolean;
   item: CharacterPortfolioItem;
+  onQuickToggleServing?: () => void;
   onToggleSelected?: () => void;
+  quickBusy?: boolean;
   rosterQuery?: string;
   selected?: boolean;
 }) {
@@ -92,14 +97,6 @@ export function CharacterPortfolioCard({
   const state = characterPortfolioState(item);
   const { assetPack } = item.journey;
   const characterHref = `/admin/characters/${encodeURIComponent(item.characterId)}`;
-  const withRoster = (href: string) => {
-    if (rosterQuery === undefined) return href;
-    const [pathAndQuery, hash] = href.split("#", 2);
-    const [path, query] = pathAndQuery.split("?", 2);
-    const params = new URLSearchParams(query);
-    params.set("roster", rosterQuery);
-    return `${path}?${params}${hash ? `#${hash}` : ""}`;
-  };
   const identity = (
     <>
       <CharacterPortfolioVisual
@@ -172,7 +169,7 @@ export function CharacterPortfolioCard({
         <Link
           aria-label={t("Open {name}", { name: item.name })}
           className="group block focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-3px] focus-visible:outline-[var(--ad-ink)]"
-          href={withRoster(characterHref)}
+          href={withCharacterRoster(characterHref, rosterQuery)}
         >
           {identity}
         </Link>
@@ -183,19 +180,31 @@ export function CharacterPortfolioCard({
         {item.journey.status === "blocked" ? (
           <p className="mb-1 leading-snug text-[var(--ad-text-muted)]">{t(actionCopy.eyebrow)}</p>
         ) : null}
-        {primaryAction.canReadTarget ? (
-          <Link
-            className="flex min-h-8 items-center justify-between gap-3 text-sm font-semibold text-[var(--ad-ink)] hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
-            href={withRoster(primaryAction.deepLink)}
-          >
-            <span className="truncate">{t(actionCopy.label)}</span>
-            <ArrowRight aria-hidden="true" className="h-4 w-4 shrink-0" />
-          </Link>
-        ) : (
-          <p className="flex min-h-8 items-center text-sm font-semibold text-[var(--ad-ink)]">
-            {t(actionCopy.label)}
-          </p>
-        )}
+        <div className="flex items-center justify-between gap-2">
+          {primaryAction.canReadTarget ? (
+            <Link
+              className="flex min-h-8 min-w-0 flex-1 items-center justify-between gap-2 text-sm font-semibold text-[var(--ad-ink)] hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
+              href={withCharacterRoster(primaryAction.deepLink, rosterQuery)}
+            >
+              <span className="truncate">{t(actionCopy.label)}</span>
+              <ArrowRight aria-hidden="true" className="h-4 w-4 shrink-0" />
+            </Link>
+          ) : (
+            <p className="flex min-h-8 min-w-0 flex-1 items-center text-sm font-semibold text-[var(--ad-ink)]">
+              <span className="truncate">{t(actionCopy.label)}</span>
+            </p>
+          )}
+          {onQuickToggleServing && (item.serving.state === "live" || item.serving.state === "paused") ? (
+            <button
+              className="min-h-8 shrink-0 rounded-md border border-[var(--ad-border)] px-2.5 text-xs font-semibold text-[var(--ad-ink)] hover:bg-black/[0.03] disabled:opacity-40"
+              disabled={quickBusy || item.journey.hasActiveCommand}
+              onClick={onQuickToggleServing}
+              type="button"
+            >
+              {t(item.serving.state === "paused" ? "Resume" : "Pause")}
+            </button>
+          ) : null}
+        </div>
       </div>
     </article>
   );

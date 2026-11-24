@@ -182,6 +182,7 @@ export function characterAssetRunRequestKey(input: {
   readonly bootstrapIdentity: boolean;
   readonly orientation: string;
   readonly count: number;
+  readonly runCount?: 2 | 4;
   readonly brief: string;
   readonly negativePrompt?: string;
 }) {
@@ -194,6 +195,7 @@ export function characterAssetRunRequestKey(input: {
     bootstrapIdentity: input.bootstrapIdentity,
     orientation: input.orientation,
     count: input.count,
+    ...(input.runCount ? { runCount: input.runCount } : {}),
     brief: input.brief.trim(),
   };
   const negativePrompt = input.negativePrompt?.trim();

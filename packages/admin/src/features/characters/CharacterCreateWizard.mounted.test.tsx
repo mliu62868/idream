@@ -154,6 +154,7 @@ describe("Character create wizard restore authority", () => {
     expect(container.querySelector('[data-testid="character-create-prefill"] [role="status"]')?.textContent).toContain("could not draft every field");
     const request = adminV2Request.mock.calls.find(([path]) => String(path).includes("character-assist"))!;
     expect(request[1]?.body).toMatchObject({ seed: "A dry night-shift nurse", includeVisualDirection: true });
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Save private draft")).toBe(true);
     await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Continue to visual direction"))!.click());
     await waitUntil(() => Boolean(container.querySelector('[name="visualDirection.stableTraits"]')));
     expect(container.querySelector<HTMLTextAreaElement>('[name="visualDirection.stableTraits"]')?.value).toBe("Dark hair\nTired eyes");
@@ -273,6 +274,8 @@ describe("Character create wizard restore authority", () => {
       firstMessage: values["persona.firstMessage"],
       detailsMarkdown: values["persona.detailsMarkdown"],
     });
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Save private draft")).toBe(false);
+    expect(saved.visualDirection).toMatchObject({ identityAnchor: "", stableTraits: [] });
   });
 
   it("returns a rejected placeholder from the final step to the editable field", async () => {

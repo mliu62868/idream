@@ -2,6 +2,7 @@ import {
   adminRecoverableMutationCommandTypeSchema,
   adminMutationRecoveryResultSchema,
   creativeRunFillSkipSchema,
+  creativeRunGroupIdsSchema,
   type AdminRecoverableMutationCommandType,
   type AdminMutationRecoveryRequest,
 } from "@idream/shared/admin";
@@ -290,9 +291,12 @@ function committedVerification(
       }
       const runId = stringField(command.result, "batchId") ??
         command.targetId;
+      const group = payload.runCount ? creativeRunGroupIdsSchema.safeParse(record(command.result).runIds) : null;
+      if (group && (!group.success || group.data.length !== payload.runCount || group.data[0] !== runId)) return null;
       return {
         kind: "creative_run" as const,
         runId,
+        ...(group?.success ? { runIds: group.data } : {}),
         requestSnapshot: command.requestPayload,
       };
     }

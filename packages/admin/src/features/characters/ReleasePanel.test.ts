@@ -139,8 +139,9 @@ describe("Character release panel", () => {
 
     expect(blockers({})).toEqual([]);
     expect(blockers({ soul: { valid: false } })).toEqual(["soul_snapshot_valid"]);
-    // Warnings fail soul_release_policy too; the backend does not filter by severity.
-    expect(blockers({ soul: { current: { diagnostics: [{ code: "w", path: [], severity: "warning", message: "w" }] } } }))
+    expect(blockers({ soul: { current: { diagnostics: [{ code: "compiled_prompt_budget_exceeded", path: ["compiled", "estimatedTokens"], severity: "warning", message: "Over budget" }] } } }))
+      .toEqual(["soul_release_policy"]);
+    expect(blockers({ soul: { current: { diagnostics: [{ code: "e", path: [], severity: "error", message: "e" }] } } }))
       .toEqual(["soul_release_policy"]);
     expect(blockers({ soul: { current: { schemaVersion: 2 } } })).toEqual(["soul_release_policy"]);
     expect(blockers({ preview: { draft: { assetPackReady: true, opening: { firstMessage: "  " } } } })).toEqual(["opening_complete"]);

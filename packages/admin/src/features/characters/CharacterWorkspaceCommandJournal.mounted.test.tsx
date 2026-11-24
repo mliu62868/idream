@@ -312,6 +312,40 @@ describe("Character workspace — 每个命令出口都接到了运营界面", (
     expect(bannerContaining("projection unavailable")).toBeNull();
   });
 
+  it("persists a quick pause from Overview and safely replays the lost response after a reload", async () => {
+    const live = characterWorkspaceDetail({
+      character: { id: "character-1", name: "Mira" },
+      journey: { release: { servingState: "live" } },
+      serving: { ...workspace.portfolio.serving, characterId: "character-1", state: "live", version: 4 },
+    });
+    let attempts = 0;
+    const endpoint = "/api/v2/admin/characters/character-1/commands/pause";
+    adminV2Request.mockImplementation(async (path) => {
+      if (path === "/api/v2/admin/characters/character-1") return live;
+      if (path === endpoint) {
+        if (++attempts === 1) throw new TypeError("Response lost");
+        return { commandId: "quick-pause" };
+      }
+      return { commandId: "quick-pause", status: "running" };
+    });
+    await render();
+    await act(async () => clickButton("Pause serving").click());
+    expect(commandTab()?.disabled).toBe(true);
+    const persisted = JSON.parse(window.localStorage.getItem(pendingCommandKey)!);
+    expect(persisted).toMatchObject({
+      endpoint, body: { entityVersion: 4, confirmation: "character-1:pause" },
+      idempotencyKey: expect.any(String),
+    });
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render();
+    await waitUntil(() => bannerContaining("command is pending") !== null, "restored quick pause");
+    expect(releaseTabSelected()).toBe(true);
+    expect(adminV2Request.mock.calls.filter(([path]) => path === endpoint).map(([, options]) => options?.idempotencyKey))
+      .toEqual([persisted.idempotencyKey, persisted.idempotencyKey]);
+  });
+
   it("restores a persisted command, locks writes, and lands on the release tab", async () => {
     seedPendingCommand();
     adminV2Request.mockImplementation(async (path) => {

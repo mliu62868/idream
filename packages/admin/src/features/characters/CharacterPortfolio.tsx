@@ -2,8 +2,8 @@
 
 import { useAdminI18n } from "@/components/admin/i18n";
 import Link from "next/link";
-import type { AdminPageInfo, AdminPermissionKey, CharacterPortfolioItem, DataQualityIssue } from "@idream/shared/admin";
-import { Plus, Search } from "lucide-react";
+import { ADMIN_COMMAND_TARGET_READ_PERMISSIONS, type AdminPageInfo, type AdminPermissionKey, type CharacterPortfolioItem, type DataQualityIssue } from "@idream/shared/admin";
+import { LayoutGrid, List, Plus, Search } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAdminFormat } from "@/components/admin/ui/format";
@@ -12,8 +12,9 @@ import {
   WorkspaceButton,
   fieldClass,
 } from "@/features/operations/WorkspaceUi";
-import { adminV2Operation } from "@/lib/admin-v2-operation";
-import { useAuthorityResource } from "@/lib/authority-resource";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
+import { adminV2Operation, adminV2OperationAllowed } from "@/lib/admin-v2-operation";
+import { useAuthorityResource, usePollingTask, type PollingTask } from "@/lib/authority-resource";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { cn } from "@/lib/utils";
 import {
@@ -25,6 +26,7 @@ import {
   characterPortfolioQuery,
   characterPortfolioRequestParams,
   parseCharacterPortfolioUrl,
+  withCharacterRoster,
   type CharacterPortfolioSort,
   type CharacterPortfolioSource,
   type CharacterPortfolioUrlState,
@@ -36,8 +38,10 @@ import { UnpreparedCharacters } from "./UnpreparedCharacters";
 import { CharacterBulkBar } from "./CharacterBulkBar";
 import { CharacterFeaturedToggle, FeaturedAuthorityProvider } from "@/features/content-merchandising/CharacterFeaturedToggle";
 import { CharacterPerformanceBoard } from "./CharacterPerformanceBoard";
-import { CharacterPortfolioCard } from "./CharacterPortfolioCard";
+import { CharacterPortfolioCard, characterPortfolioState, characterReleasePackLabel } from "./CharacterPortfolioCard";
 import { CharacterBatchImport } from "./CharacterBatchImport";
+import { requestServingCommand } from "./character-bulk-operations";
+import { characterPrimaryActionCopy } from "./character-primary-action-copy";
 
 // INTENT: 稳定引用，避免"投影还没到"时每次渲染都换一个新的空值。
 const EMPTY_PORTFOLIO_ITEMS: readonly CharacterPortfolioItem[] = [];
@@ -72,7 +76,7 @@ type CharacterPortfolioProps = {
 
 // SPEC: 表现页是比较页，不是又一份按更新时间排的角色列表；两个页面只共用数据接口。
 export function CharacterPortfolio(props: CharacterPortfolioProps) {
-  if (props.mode !== "performance") return <CharacterRoster {...props} />;
+  if (props.mode !== "performance") return <CharacterRoster key={props.actorId} {...props} />;
   const board = (
     <CharacterPerformanceBoard
       canOpenProject={props.canOpenProjects}
@@ -122,6 +126,53 @@ const SERVING_STATE_BY_VIEW: Partial<Record<RosterView, string>> = {
   archived: "retired",
 };
 
+type PendingServingCommand = {
+  commandId: string;
+  characterId: string;
+  name: string;
+  expectedState: "paused" | "live";
+};
+
+function RosterServingCommandStatus({ command, canReadCommand, onSettled }: {
+  command: PendingServingCommand;
+  canReadCommand: boolean;
+  onSettled: (command: PendingServingCommand, error: string | null) => void;
+}) {
+  const { t } = useAdminI18n();
+  const failedReads = useRef(0);
+  const poll = useCallback<PollingTask>(async (context) => {
+    let error: string | null = null;
+    try {
+      if (canReadCommand) {
+        const result = await adminV2Operation("GET /api/v2/admin/commands/:commandId", {
+          path: { commandId: command.commandId },
+        });
+        failedReads.current = 0;
+        if (result.status === "failed" || result.status === "cancelled") error = `Command ${result.status}.`;
+        else if (result.status !== "succeeded") return 1500;
+      } else {
+        // The portfolio grant can confirm the serving state even without command-detail access.
+        const result = await adminV2Operation("GET /api/v2/admin/characters/portfolio", {
+          query: new URLSearchParams({ search: command.characterId, includePerformance: "false" }),
+        });
+        failedReads.current = 0;
+        const item = result.items.find((row) => row.characterId === command.characterId);
+        if (item?.journey.hasActiveCommand) return 1500;
+        if (item?.serving.state !== command.expectedState) error = "Could not confirm the requested serving state.";
+      }
+    } catch (cause) {
+      if (context.cancelled) return null;
+      const transient = !(cause instanceof AdminV2RequestError) || cause.outcome === "unknown";
+      if (transient && ++failedReads.current < 3) return 3000;
+      error = cause instanceof Error ? cause.message : "Could not confirm the requested serving state.";
+    }
+    if (!context.cancelled) onSettled(command, error);
+    return null;
+  }, [canReadCommand, command, onSettled]);
+  usePollingTask(poll, 700);
+  return <p className="mt-3 text-sm text-[var(--ad-text-muted)]" role="status">{command.name} · {t("Accepted")}</p>;
+}
+
 function CharacterRoster({
   actorId = "",
   canReadUnprepared = false,
@@ -141,6 +192,10 @@ function CharacterRoster({
   );
   const [source, setSource] = useState<CharacterPortfolioSource | "">("");
   const [sort, setSort] = useState<CharacterPortfolioSort>(CHARACTER_PORTFOLIO_DEFAULT_SORT);
+  const [layout, setLayout] = useState<"cards" | "table">("cards");
+  const [quickBusyId, setQuickBusyId] = useState<string | null>(null);
+  const [quickCommands, setQuickCommands] = useState<readonly PendingServingCommand[]>([]);
+  const [quickErrors, setQuickErrors] = useState<readonly { characterId: string; name: string; message: string }[]>([]);
   // SPEC: 选中绑定具体角色 ID。翻页和筛选都不改变已选集合。
   const [selection, setSelection] = useState<ReadonlyMap<string, CharacterPortfolioItem>>(new Map());
   // SPEC: 已生效的查询与筛选表单草稿分开保存。
@@ -176,6 +231,11 @@ function CharacterRoster({
         throw reason instanceof Error ? reason : new Error("Characters could not be loaded");
       }
     }, [portfolioRequestKey]),
+  }, {
+    // Active commands survive navigation. Keep the visible row in sync after a remount or a status read failure.
+    pollWhile: ({ data, consecutiveFailures }) => data?.items.some((item) =>
+      item.journey.hasActiveCommand && !quickCommands.some((command) => command.characterId === item.characterId)
+    ) ? (consecutiveFailures ? 8000 : 4000) : null,
   });
   const { refresh } = portfolio;
   useEffect(() => {
@@ -240,6 +300,14 @@ function CharacterRoster({
       stack,
     );
   }, [applyQuery, locationQuery]);
+
+  useEffect(() => {
+    if (search === applied.search) return;
+    const timer = window.setTimeout(() => {
+      applyQuery({ ...applied, search, cursor: undefined }, "replace", [], true);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [applied, applyQuery, search]);
 
   function apply(nextCursor?: string, nextCursorStack?: readonly string[]) {
     applyQuery(
@@ -315,6 +383,44 @@ function CharacterRoster({
     void refresh();
   }
   const canBulk = Boolean(permissions) && actorId !== "";
+  const canQuickToggleServing = Boolean(
+    permissions && adminV2OperationAllowed("POST /api/v2/admin/characters/:id/commands/pause", permissions),
+  );
+  const canReadServingCommand = Boolean(
+    permissions?.has(ADMIN_COMMAND_TARGET_READ_PERMISSIONS.character_serving) &&
+    adminV2OperationAllowed("GET /api/v2/admin/commands/:commandId", permissions),
+  );
+  const settleQuickCommand = useCallback(async (command: PendingServingCommand, message: string | null) => {
+    // Refresh the current filters even when this character has moved off the page.
+    await refresh();
+    setQuickCommands((current) => current.filter((entry) => entry.commandId !== command.commandId));
+    if (message) setQuickErrors((current) => [...current, { characterId: command.characterId, name: command.name, message }]);
+  }, [refresh]);
+  const quickBusy = (characterId: string) =>
+    quickBusyId !== null || quickCommands.some((command) => command.characterId === characterId);
+  async function quickToggleRowServing(item: CharacterPortfolioItem) {
+    if (quickBusy(item.characterId) || !canQuickToggleServing || item.journey.hasActiveCommand) return;
+    if (item.serving.state !== "live" && item.serving.state !== "paused") return;
+    const action = item.serving.state === "paused" ? "resume" : "pause";
+    setQuickBusyId(item.characterId);
+    setQuickErrors((current) => current.filter((entry) => entry.characterId !== item.characterId));
+    try {
+      const { commandId } = await requestServingCommand({
+        characterId: item.characterId,
+        action,
+        entityVersion: item.serving.version,
+      });
+      setQuickCommands((current) => [...current, {
+        commandId, characterId: item.characterId, name: item.name,
+        expectedState: action === "pause" ? "paused" : "live",
+      }]);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "Serving action failed";
+      setQuickErrors((current) => [...current, { characterId: item.characterId, name: item.name, message }]);
+    } finally {
+      setQuickBusyId(null);
+    }
+  }
   const pageAllSelected = items.length > 0 && items.every((item) => selection.has(item.characterId));
   const togglePage = () =>
     setSelection((current) => {
@@ -435,7 +541,11 @@ function CharacterRoster({
         </div>
         <div aria-label={t("Work queues")} className="mt-3 flex flex-wrap items-center gap-2" role="group">
           <span className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Work queues")}</span>
-          {WORK_QUEUE_VIEWS.map(([value, label]) => {
+          {WORK_QUEUE_VIEWS.filter(([value]) => {
+            const primary = value === "attention" || value === "ready_to_publish" || value === "pending_changes" || value === "recent_generation_failed";
+            const count = viewCounts?.[value];
+            return primary || queueView === value || (count !== undefined && count > 0);
+          }).map(([value, label]) => {
             const count = viewCounts?.[value];
             return (
               <button
@@ -463,6 +573,36 @@ function CharacterRoster({
               {t("Select this page")}
             </label>
           ) : null}
+          <div
+            aria-label={t("Layout view")}
+            className={cn("inline-flex rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)]", !(canBulk && items.length > 0) && "ml-auto")}
+            role="group"
+          >
+            <button
+              aria-label={t("Card view")}
+              aria-pressed={layout === "cards"}
+              className={cn(
+                "grid min-h-9 min-w-9 place-items-center border-r border-[var(--ad-border)]",
+                layout === "cards" ? "bg-[var(--ad-ink)] text-[var(--ad-surface)]" : "text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]",
+              )}
+              onClick={() => setLayout("cards")}
+              type="button"
+            >
+              <LayoutGrid aria-hidden="true" className="h-4 w-4" />
+            </button>
+            <button
+              aria-label={t("Table view")}
+              aria-pressed={layout === "table"}
+              className={cn(
+                "grid min-h-9 min-w-9 place-items-center",
+                layout === "table" ? "bg-[var(--ad-ink)] text-[var(--ad-surface)]" : "text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]",
+              )}
+              onClick={() => setLayout("table")}
+              type="button"
+            >
+              <List aria-hidden="true" className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       {canBulk && permissions ? (
         <CharacterBulkBar
@@ -507,6 +647,14 @@ function CharacterRoster({
           ))}
         </ul>
       ) : null}
+      {quickCommands.map((command) => (
+        <RosterServingCommandStatus key={command.commandId} command={command} canReadCommand={canReadServingCommand} onSettled={settleQuickCommand} />
+      ))}
+      {quickErrors.map((entry) => (
+        <p key={entry.characterId} className="mt-4 rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">
+          {entry.name} · {t(entry.message)}
+        </p>
+      ))}
       <div className="mt-6">
         {loading && items.length === 0 ? (
           <div role="status" aria-label={t("Loading characters")} className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
@@ -527,20 +675,111 @@ function CharacterRoster({
           )
         ) : (
           <>
-            <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-              {items.map((item, index) => (
-                <CharacterPortfolioCard
-                  canOpenAssets={canOpenAssets}
-                  canOpenProject={canOpenProjects}
-                  eager={index < 8}
-                  item={item}
-                  key={item.characterId}
-                  onToggleSelected={canBulk ? () => toggleSelected(item) : undefined}
-                  rosterQuery={rosterQuery}
-                  selected={selection.has(item.characterId)}
-                />
-              ))}
-            </div>
+            {layout === "table" ? (
+              <div className="overflow-x-auto rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+                <table className="w-full border-collapse text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-[var(--ad-border)] bg-[var(--ad-surface-subtle)] text-xs font-semibold text-[var(--ad-text-muted)]">
+                      {canBulk ? <th className="w-10 px-3 py-2.5"><span className="sr-only">{t("Select")}</span></th> : null}
+                      <th className="px-3 py-2.5">{t("Name")}</th>
+                      <th className="px-3 py-2.5">{t("Status")}</th>
+                      <th className="px-3 py-2.5">{t("Image pack")}</th>
+                      <th className="px-3 py-2.5">{t("Next step")}</th>
+                      <th className="px-3 py-2.5 text-right">{t("Actions")}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--ad-border)]">
+                    {items.map((item) => {
+                      const state = characterPortfolioState(item);
+                      const actionCopy = characterPrimaryActionCopy[item.journey.primaryAction.code];
+                      const characterHref = withCharacterRoster(`/admin/characters/${encodeURIComponent(item.characterId)}`, rosterQuery);
+                      const isLiveOrPaused = item.serving.state === "live" || item.serving.state === "paused";
+                      return (
+                        <tr className="hover:bg-black/[0.015]" key={item.characterId}>
+                          {canBulk ? (
+                            <td className="px-3 py-2.5">
+                              <input
+                                aria-label={t("Select {name}", { name: item.name })}
+                                checked={selection.has(item.characterId)}
+                                className="h-4 w-4"
+                                onChange={() => toggleSelected(item)}
+                                type="checkbox"
+                              />
+                            </td>
+                          ) : null}
+                          <td className="px-3 py-2.5 font-semibold">
+                            {canOpenProjects ? (
+                              <Link className="hover:underline" href={characterHref}>{item.name}</Link>
+                            ) : item.name}
+                          </td>
+                          <td className="px-3 py-2.5">
+                            <span className={cn("inline-flex rounded-md px-2 py-0.5 text-xs font-semibold", state.badge)}>
+                              {t(state.label)}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2.5 text-xs text-[var(--ad-text-muted)]">
+                            {t("Draft {completed}/{total}", {
+                              completed: item.journey.assetPack.draft.completed,
+                              total: item.journey.assetPack.draft.total,
+                            })}
+                            {" · "}
+                            {t(characterReleasePackLabel(item.serving.state), {
+                              completed: item.journey.assetPack.live.completed,
+                              total: item.journey.assetPack.live.total,
+                            })}
+                          </td>
+                          <td className="px-3 py-2.5 text-xs">
+                            {item.journey.primaryAction.canReadTarget ? (
+                              <Link className="font-semibold underline underline-offset-4" href={withCharacterRoster(item.journey.primaryAction.deepLink, rosterQuery)}>
+                                {t(actionCopy.label)}
+                              </Link>
+                            ) : (
+                              <span>{t(actionCopy.label)}</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2.5 text-right">
+                            <div className="inline-flex items-center gap-2">
+                              {canQuickToggleServing && isLiveOrPaused ? (
+                                <button
+                                  className="min-h-8 rounded-md border border-[var(--ad-border)] px-2.5 text-xs font-semibold hover:bg-black/[0.03] disabled:opacity-40"
+                                  disabled={quickBusy(item.characterId) || item.journey.hasActiveCommand}
+                                  onClick={() => void quickToggleRowServing(item)}
+                                  type="button"
+                                >
+                                  {t(item.serving.state === "paused" ? "Resume" : "Pause")}
+                                </button>
+                              ) : null}
+                              {canOpenProjects ? (
+                                <Link className="text-xs font-semibold underline underline-offset-4" href={characterHref}>
+                                  {t("Open")}
+                                </Link>
+                              ) : null}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {items.map((item, index) => (
+                  <CharacterPortfolioCard
+                    canOpenAssets={canOpenAssets}
+                    canOpenProject={canOpenProjects}
+                    eager={index < 8}
+                    item={item}
+                    key={item.characterId}
+                    onQuickToggleServing={canQuickToggleServing ? () => void quickToggleRowServing(item) : undefined}
+                    onToggleSelected={canBulk ? () => toggleSelected(item) : undefined}
+                    quickBusy={quickBusy(item.characterId)}
+                    rosterQuery={rosterQuery}
+                    selected={selection.has(item.characterId)}
+                  />
+                ))}
+              </div>
+            )}
           </>
         )}
       </div>

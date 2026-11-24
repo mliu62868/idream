@@ -430,11 +430,52 @@ describe("Character Asset Studio bootstrap route projection", () => {
           commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
         />);
       });
-      await waitUntil(() => Boolean(container.querySelector('[data-testid="generate-missing-images"]')));
+      await waitUntil(() => Boolean(container.querySelector('[data-testid="generate-missing-images"]')) ||
+        container.textContent?.includes("Resume generation") === true);
     };
     const clickGenerate = async () => {
       await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="generate-missing-images"] button')?.click());
     };
+
+    it("recovers a lost grouped submission with its original key and lists each single-image Run", async () => {
+      const runIds = ["grouped-first", "grouped-second"];
+      const purpose = "character_hero";
+      const requests: { key?: string; body: unknown }[] = [];
+      adminV2Request.mockImplementation(async (path, options) => {
+        if (path.includes("/image-sources?")) return { items: [], nextCursor: null };
+        if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+          requests.push({ key: options.idempotencyKey, body: options.body });
+          if (requests.length === 1) throw new TypeError("Response lost after commit");
+          return { batch: { id: runIds[0] }, runIds, replayed: true };
+        }
+        if (path.includes("/api/v2/admin/creative/runs?")) {
+          const items = requests.length > 1 ? runIds.map((id) => runDetail(id, purpose)) : [];
+          return { items, pageInfo: { endCursor: null, hasNextPage: false } };
+        }
+        const id = runIds.find((id) => path.endsWith(`/runs/${id}`));
+        if (id) return runDetail(id, purpose);
+        throw new Error(`Unexpected Admin request: ${path}`);
+      });
+      const button = (label: string) => [...container.querySelectorAll("button")].find((node) => node.textContent?.trim() === label);
+      await renderStudio("operator-group");
+      await act(async () => button("2")!.click());
+      await act(async () => button("Generate 2 images")!.click());
+      await waitUntil(() => Boolean(button("Resume generation")));
+      const scope = `character-asset:create:operator-group:${data.character.id}`;
+      expect(readActiveDurableMutationIntent({ scope })).toMatchObject({ status: "outcome_unknown" });
+      await act(async () => root.render(null));
+      await renderStudio("operator-group");
+      await act(async () => button("Resume generation")!.click());
+      await waitUntil(() => container.textContent?.includes("Started 2 image runs") === true);
+      expect(requests).toHaveLength(2);
+      expect(requests[0]).toMatchObject({ key: expect.any(String), body: { purpose, count: 1, runCount: 2 } });
+      expect(requests[1]).toEqual(requests[0]);
+      await waitUntil(() => readActiveDurableMutationIntent({ scope }) === null);
+      for (const id of runIds) expect(container.querySelector<HTMLButtonElement>(`button[value="${id}"]`)?.disabled).toBe(false);
+      await act(async () => container.querySelector<HTMLButtonElement>(`button[value="${runIds[1]}"]`)!.click());
+      await waitUntil(() => adminV2Request.mock.calls.some(([path]) => path.endsWith(`/runs/${runIds[1]}`)));
+      expect(requests).toHaveLength(2);
+    });
 
     it("creates one count=1 Run per missing purpose without waiting for the other", async () => {
       const posted: Record<string, unknown>[] = [];
@@ -454,12 +495,13 @@ describe("Character Asset Studio bootstrap route projection", () => {
         throw new Error(`Unexpected Admin request: ${path}`);
       });
       await renderStudio("operator-missing-all");
+      await act(async () => [...container.querySelectorAll("button")].find((node) => node.textContent?.trim() === "4")!.click());
       await clickGenerate();
       await waitUntil(() => posted.length === 2);
       await act(async () => releaseFirst?.());
       await waitUntil(() => container.textContent?.includes("Generating 2 images") === true);
       expect(posted.map((body) => body.purpose).sort()).toEqual(["character_chat", "character_hero"]);
-      expect(posted.every((body) => body.count === 1 && body.fillMissing === true && String(body.brief).length > 0)).toBe(true);
+      expect(posted.every((body) => body.count === 1 && !body.runCount && body.fillMissing === true && String(body.brief).length > 0)).toBe(true);
     });
 
     it("handles Main's pending Run receipt without polling the skipped slot", async () => {
@@ -1076,7 +1118,9 @@ describe("Character Asset Studio bootstrap route projection", () => {
     await act(async () => generate?.click());
     await waitUntil(() => adminV2Request.mock.calls.some(([path, options]) => path === "/api/v2/admin/creative/runs" && options?.method === "POST"));
     const request = adminV2Request.mock.calls.find(([path, options]) => path === "/api/v2/admin/creative/runs" && options?.method === "POST")?.[1]?.body;
-    expect(request).toMatchObject({ purpose, profileId: "profile-reference-v1", orientation: expected });
+    expect(request).toMatchObject({ purpose, profileId: "profile-reference-v1" });
+    if (expected === undefined) expect(request).not.toHaveProperty("orientation");
+    else expect(request).toHaveProperty("orientation", expected);
     // A vague brief made the identity-edit route return copies of the reference.
     expect((request as { brief: string }).brief).toMatch(/Show exactly one person/);
     expect(container.textContent).toContain(`Aspect ratio: ${expected ?? "Default"}`);

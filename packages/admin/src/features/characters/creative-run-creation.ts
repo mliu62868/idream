@@ -40,6 +40,10 @@ type PreparedRun = {
   readonly persisted: boolean;
 };
 
+function matchesRunGroup(request: CreateRequest, runId: string, runIds?: readonly string[]) {
+  return !request.runCount || (runIds?.length === request.runCount && runIds[0] === runId);
+}
+
 type CreateOptions = {
   readonly scope: string;
   readonly characterId: string;
@@ -174,7 +178,7 @@ async function executeCharacterRunIntent(options: CreateOptions, allowFill: bool
         throw new Error("The committed Run receipt is missing exact projection evidence. The workspace remains locked.");
       }
       const request = parseRequest(receipt.verification.requestSnapshot);
-      if (!request) {
+      if (!request || !matchesRunGroup(request, receipt.committedTargetId, receipt.verification.runIds)) {
         throw new Error("The recovered Run receipt does not contain this Character workspace's exact request.");
       }
       remember(updateDurableMutationIntent(current, {
@@ -223,6 +227,10 @@ async function executeCharacterRunIntent(options: CreateOptions, allowFill: bool
         clearDurableMutationIntent(current);
         remember(null);
         return { state: "skipped", skip: result.skip };
+      }
+      if (!matchesRunGroup(body, result.batch.id, result.runIds)) {
+        remember(updateDurableMutationIntent(current, { status: "reconciliation_required" }));
+        throw new Error("The Run receipt does not contain the requested image runs.");
       }
       remember(updateDurableMutationIntent(current, {
         status: "committed_projection_pending", committedTargetId: result.batch.id,

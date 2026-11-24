@@ -171,6 +171,9 @@ export function CharacterAssetStudio({
     character_chat: "",
     ...(savedCreateRequest ? { [savedCreateRequest.purpose]: savedCreateRequest.negativePrompt ?? "" } : {}),
   }));
+  const [batchCount, setBatchCount] = useState<1 | 2 | 4>(() =>
+    savedCreateRequest?.runCount ?? 1,
+  );
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<
     "generate" | "select" | "prepare" | null
@@ -218,12 +221,13 @@ export function CharacterAssetStudio({
       setRunCreationIntent(intent);
       const saved = savedAssetRunRequest(intent, data.character.id);
       if (saved) {
+        setBatchCount(saved.runCount ?? 1);
         setActivePurpose(saved.purpose);
         setBriefs((current) => ({ ...current, [saved.purpose]: saved.brief }));
         setNegativePrompts((current) => ({ ...current, [saved.purpose]: saved.negativePrompt ?? "" }));
       }
     },
-    [data.character.id, setBriefs, setNegativePrompts],
+    [data.character.id, setBatchCount, setBriefs, setNegativePrompts],
   );
   const identityBootstrap = data.visual.identityBootstrap;
   const bootstrapMode = identityBootstrap.allowed;
@@ -461,7 +465,10 @@ export function CharacterAssetStudio({
       }
       if (verdict.kind === "reflected") {
         setRefreshWarning(null);
-        setMessage({ runId: detail.id });
+        const runCount = savedAssetRunRequest(runCreationIntentRef.current, data.character.id)?.runCount;
+        setMessage(runCount
+          ? t("Started {count} image runs. Each appears in the run history.", { count: runCount })
+          : { runId: detail.id });
       }
     },
   });
@@ -786,28 +793,31 @@ export function CharacterAssetStudio({
   const runRequestDraft = (
     purpose: CharacterAssetPurpose,
     referenceAssetIds: string[] = [],
-  ) => ({
-    // This title is persisted creative input, not translated interface copy.
-    title: `${subject.name} · ${purposeConfig[purpose].label}`,
-    purpose,
-    targetType: "character" as const,
-    targetId: data.character.id,
-    profileId: (bootstrapMode ? bootstrapProfile?.profileKey : qualifiedRoute?.generationProfileKey) ?? "",
-    presetIds: [],
-    referenceAssetIds,
-    bootstrapIdentity: bootstrapMode,
-    orientation: orientationForPurpose(purpose),
-    count: 1,
-    brief: briefs[purpose].trim(),
-    ...(negativePrompts[purpose].trim() ? { negativePrompt: negativePrompts[purpose].trim() } : {}),
-    consistencyMode: "strict" as const,
-    priority: "normal" as const,
-    reason: bootstrapMode
-      ? "Create the first identity portrait"
-      : referenceAssetIds.length
-        ? "Create identity-preserving variations from the selected character asset"
-        : "Create a customer-facing character asset pack candidate",
-  });
+  ) => {
+    const orientation = orientationForPurpose(purpose);
+    return {
+      // This title is persisted creative input, not translated interface copy.
+      title: `${subject.name} · ${purposeConfig[purpose].label}`,
+      purpose,
+      targetType: "character" as const,
+      targetId: data.character.id,
+      profileId: (bootstrapMode ? bootstrapProfile?.profileKey : qualifiedRoute?.generationProfileKey) ?? "",
+      presetIds: [],
+      referenceAssetIds,
+      bootstrapIdentity: bootstrapMode,
+      ...(orientation ? { orientation } : {}),
+      count: 1,
+      brief: briefs[purpose].trim(),
+      ...(negativePrompts[purpose].trim() ? { negativePrompt: negativePrompts[purpose].trim() } : {}),
+      consistencyMode: "strict" as const,
+      priority: "normal" as const,
+      reason: bootstrapMode
+        ? "Create the first identity portrait"
+        : referenceAssetIds.length
+          ? "Create identity-preserving variations from the selected character asset"
+          : "Create a customer-facing character asset pack candidate",
+    };
+  };
   const parseRunRequest = (snapshot: unknown) => {
     const parsed = creativeRunCreateRequestSchema.safeParse(snapshot);
     return parsed.success && parsed.data.targetType === "character" &&
@@ -823,6 +833,7 @@ export function CharacterAssetStudio({
     bootstrapIdentity: body.bootstrapIdentity,
     orientation: body.orientation ?? "",
     count: body.count,
+    runCount: body.runCount,
     brief: body.brief,
     negativePrompt: body.negativePrompt,
   });
@@ -909,6 +920,7 @@ export function CharacterAssetStudio({
   const createRun = async (
     purpose: CharacterAssetPurpose,
     referenceAssetIds: string[] = [],
+    runCount: 1 | 2 | 4 = 1,
   ) => {
     if (unconfirmedOperations.length > 0) return;
     if (!runCreationIntent && runPages.purpose !== purpose) return;
@@ -924,7 +936,10 @@ export function CharacterAssetStudio({
       : qualifiedRoute?.generationProfileKey;
     const orientation = orientationForPurpose(purpose);
     if (!intent && (!profileId || (bootstrapMode && (!orientation || purpose !== "character_cover")))) return;
-    const draft = runRequestDraft(purpose, referenceAssetIds);
+    const draft = {
+      ...runRequestDraft(purpose, referenceAssetIds),
+      ...(!bootstrapMode && runCount !== 1 ? { runCount } : {}),
+    };
     let committedRun = false;
     setBusy("generate");
     setError(null);
@@ -990,7 +1005,9 @@ export function CharacterAssetStudio({
       setActivePurpose(body.purpose);
       setSelectedIndex(0);
       if (result.source === "submission") {
-        setMessage(body.bootstrapIdentity
+        setMessage(body.runCount
+          ? t("Started {count} image runs. Each appears in the run history.", { count: body.runCount })
+          : body.bootstrapIdentity
           ? "First-portrait generation was committed. Results will appear here automatically."
           : body.referenceAssetIds.length
             ? "Variation run was committed from this candidate."
@@ -1243,13 +1260,12 @@ export function CharacterAssetStudio({
           ? "Generation result awaiting confirmation"
           : imageRequestInProgress
           ? "Image request in progress"
-          : `Generate 1 ${activeConfig.pluralLabel}`;
-  const generationActionText = generationActionLabel.startsWith("Generate ")
-    ? t("Generate {count} {assetType}", {
-        count: 1,
-        assetType: t(activeConfig.pluralLabel),
-      })
-    : t(generationActionLabel);
+          : null;
+  const generationActionText = generationActionLabel
+    ? t(generationActionLabel)
+    : !bootstrapMode && batchCount > 1
+      ? t("Generate {count} images", { count: batchCount })
+      : t("Generate {count} {assetType}", { count: 1, assetType: t(activeConfig.pluralLabel) });
   const generationActionDescriptionId = `character-generation-action-${data.character.id}`;
   const generationActionDisabled =
     !canUseGenerationAction ||
@@ -1713,7 +1729,7 @@ export function CharacterAssetStudio({
             aria-labelledby="new-image-title"
           >
             <div
-                className="flex border-b border-[var(--ad-border)]"
+                className="flex border-b border-[var(--ad-border)] [&>[role=tab]]:scroll-mt-24"
                 role="tablist"
                 aria-label={t("Image inspector mode")}
               >
@@ -1754,9 +1770,29 @@ export function CharacterAssetStudio({
                 value={briefs[activePurpose]}
               />
             </label>
-            <p className="mt-3 text-xs text-[var(--ad-text-muted)]">
-              {t("Aspect ratio")}: {orientationForPurpose(activePurpose) ?? t("Default")}
-            </p>
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ad-text-muted)]">
+              <span>{t("Aspect ratio")}: {orientationForPurpose(activePurpose) ?? t("Default")}</span>
+              <div aria-label={t("Images per request")} className="inline-flex items-center gap-1" role="group">
+                <span className="mr-1 font-semibold">{t("Images per request")}</span>
+                {([1, 2, 4] as const).map((option) => (
+                  <button
+                    aria-pressed={batchCount === option}
+                    className={cn(
+                      "min-h-7 min-w-7 rounded border px-2 font-semibold",
+                      batchCount === option
+                        ? "border-[var(--ad-ink)] bg-[var(--ad-ink)] text-[var(--ad-surface)]"
+                        : "border-[var(--ad-border)] text-[var(--ad-ink)] hover:bg-black/[0.03]",
+                    )}
+                    disabled={mutationContextLocked}
+                    key={option}
+                    onClick={() => setBatchCount(option)}
+                    type="button"
+                  >
+                    {option}
+                  </button>
+                ))}
+              </div>
+            </div>
             <details className="mt-4 border-t border-[var(--ad-border)] pt-3 text-xs">
               <summary className="cursor-pointer font-semibold">
                 {t("Settings")}
@@ -1790,7 +1826,7 @@ export function CharacterAssetStudio({
               }
               className="mt-5 w-full justify-center"
               disabled={generationActionDisabled}
-              onClick={() => void createRun(activePurpose)}
+              onClick={() => void createRun(activePurpose, [], batchCount)}
               tone="primary"
             >
               <WandSparkles className="h-4 w-4" /> {generationActionText}
@@ -1812,7 +1848,7 @@ export function CharacterAssetStudio({
           >
             {recurringProductionReady ? (
               <div
-                className="flex border-b border-[var(--ad-border)]"
+                className="flex border-b border-[var(--ad-border)] [&>[role=tab]]:scroll-mt-24"
                 role="tablist"
                 aria-label={t("Image inspector mode")}
               >

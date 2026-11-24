@@ -553,10 +553,8 @@ describe("Character workspace details", () => {
       "placements in Images",
     );
     expect(container.textContent).toContain("All images for Mira");
-    const operationsArea = [...container.querySelectorAll("button")].find(
-      (candidate) => candidate.textContent === "Character operations",
-    );
-    await act(async () => operationsArea?.click());
+    const releaseTab = container.querySelector<HTMLButtonElement>("#character-tab-release");
+    await act(async () => releaseTab?.click());
     await waitUntil(() => window.location.search === "?tab=release", "release and preview tab");
     expect(container.textContent).not.toContain("Choose where existing images appear");
   });
@@ -692,9 +690,6 @@ describe("Character workspace details", () => {
     expect(container.querySelector("#character-panel-video")).not.toBeNull();
     expect(container.querySelector("#character-panel-visual")).toBeNull();
     expect(container.querySelector('#character-tab-video[aria-selected="true"]')).not.toBeNull();
-    expect([...container.querySelectorAll('[aria-label="Character workspace area"] button')].find(
-      (button) => button.textContent === "Character assets",
-    )?.getAttribute("aria-pressed")).toBe("true");
   });
 
   it("keeps the visible panel synchronized with same-Character tab links", async () => {

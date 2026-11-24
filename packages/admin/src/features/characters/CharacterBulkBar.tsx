@@ -193,6 +193,7 @@ export function CharacterBulkBar({
           {visibleSelectionCount < selected.length ? (
             <span className="text-xs text-[var(--ad-text-muted)]">{t("{count} selected outside this page", { count: selected.length - visibleSelectionCount })}</span>
           ) : null}
+          {actionButton({ kind: "publish" }, canPublish)}
           {actionButton({ kind: "pause" }, canPublish)}
           {actionButton({ kind: "resume" }, canPublish)}
           {actionButton({ kind: "archive" }, canPublish)}

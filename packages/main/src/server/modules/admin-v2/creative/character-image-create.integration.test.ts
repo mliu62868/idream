@@ -1317,6 +1317,43 @@ describe("Character image Creative Run authority", () => {
     await cleanupBatches([createFirstBatchId]);
   });
 
+  it.each([2, 4])("admits %i single-image Runs atomically and recovers their exact IDs", async (runCount) => {
+    const key = `manual-group-${runCount}-${suffix}`;
+    const payload = { ...raceRunPayload(`Manual Hero group of ${runCount}`), runCount };
+    const attempts = await Promise.all([submitRun(payload, key), submitRun(payload, key)]);
+    expect(attempts.map(({ status }) => status).sort()).toEqual([200, 202]);
+    const { batch, runIds } = attempts[0].body.data as { batch: { id: string }; runIds: string[] };
+    expect(new Set(runIds).size).toBe(runCount);
+    expect(runIds[0]).toBe(batch.id);
+    expect(attempts[1].body.data).toMatchObject({ batch, runIds });
+    batchIds.push(...runIds.slice(1));
+    try {
+      const runs = await prisma.contentProductionBatch.findMany({
+        where: { title: payload.title },
+        include: { items: { include: { job: true } } },
+      });
+      expect(runs.map(({ id }) => id).sort()).toEqual([...runIds].sort());
+      for (const run of runs) {
+        expect(run).toMatchObject({ count: 1, totalItems: 1, targetId: archiveRaceCharacterId, purpose: "character_hero" });
+        expect(run.items).toHaveLength(1);
+        expect(run.items[0].job).toMatchObject({
+          outputCount: 1, sourceId: run.items[0].id, costDreamcoins: run.estimatedCostDreamcoins,
+          sourceMeta: { batchId: run.id, purpose: "character_hero", referenceSetRevisionId: archiveRaceReferenceSetId },
+        });
+        expect(run.estimatedCostDreamcoins).toBeGreaterThan(0);
+      }
+      const reconciled = await reconcileMutationReceipt(request({
+        commandType: "creative.run.create", expectedCharacterId: archiveRaceCharacterId, expectedPurpose: "character_hero",
+      }, key, actorId, "mutation-receipts/reconcile"));
+      expect(await reconciled.json()).toMatchObject({
+        data: { state: "committed", verification: { kind: "creative_run", runId: batch.id, runIds, requestSnapshot: { count: 1, runCount } } },
+      });
+      await expect(submitRun({ ...payload, runCount: runCount === 2 ? 4 : 2 }, key)).resolves.toMatchObject({ status: 409 });
+    } finally {
+      await cleanupBatches(runIds);
+    }
+  });
+
   it("admits one fill per missing placement across actors and ignores refunded history", async () => {
     const historical = await submitRun(raceRunPayload("Earlier Hero failed"), `fill-history-${suffix}`);
     expect(historical.status, JSON.stringify(historical.body)).toBe(202);

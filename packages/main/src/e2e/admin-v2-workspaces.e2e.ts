@@ -121,9 +121,7 @@ function internalToken() {
 }
 
 async function openCharacterTab(page: Page, tab: "assets" | "soul" | "visual" | "preview" | "release" | "monitor") {
-  const area = tab === "assets" ? "Character assets" : tab === "visual" || tab === "soul" ? "Character settings" : "Character operations";
   const labels = { assets: "Images", soul: "Persona & appearance", visual: "Visual identity", preview: "Release and preview", release: "Release and preview", monitor: "Live monitoring" };
-  await page.getByRole("button", { name: area, exact: true }).click();
   const mobilePage = page.getByLabel("Workspace page", { exact: true });
   if (await mobilePage.isVisible()) await mobilePage.selectOption(tab === "preview" ? "release" : tab);
   else await page.getByRole("tab", { name: labels[tab], exact: true }).click();
@@ -2789,11 +2787,17 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await expect(diff).toContainText(secondOpening);
     await assertMainRelease(proposedRelease.id);
     await shot("03-admin-opening-diff");
-    await page.getByRole("button", { name: "Publish Character", exact: true }).click();
+    await page.goto(`${adminBaseURL()}/admin/characters?search=${encodeURIComponent(characterName)}`);
+    await page.getByRole("checkbox", { name: `Select ${characterName}`, exact: true }).check();
+    const publishBatch = page.getByRole("region", { name: "Bulk actions" });
+    await publishBatch.getByRole("button", { name: "Publish", exact: true }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Publish", exact: true }).click();
     const secondWhere = { projectId: releaseProject.id, id: { not: proposedRelease.id }, status: "approved" as const };
     await expect.poll(() => prisma.characterRelease.count({ where: secondWhere })).toBe(1);
     const second = await prisma.characterRelease.findFirstOrThrow({ where: secondWhere });
     const publishSecondCommandId = await executeLatestCommand("character.release.publish", second.id);
+    await expect(publishBatch.getByText("Done", { exact: true })).toBeVisible();
+    await page.goto(`${adminCharacter}?tab=release`);
     await expect(status).toContainText("Live · Release #2");
     await assertMainRelease(second.id);
     const secondChatId = await assertNewChat(second.id, secondOpening);

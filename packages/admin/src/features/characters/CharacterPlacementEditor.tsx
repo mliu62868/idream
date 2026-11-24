@@ -153,41 +153,39 @@ export function CharacterPlacementEditor({
           <Link className="min-h-9 content-center font-semibold underline" href={`/admin/characters/${encodeURIComponent(data.character.id)}?tab=release`}>{t("Go to Release")}</Link>
         </div>
       ) : null}
-      <div className="mt-5 grid gap-3 lg:grid-cols-3">
+      <div className="mt-4 grid gap-3 lg:grid-cols-3">
         {placements.map((placement) => {
           const slot = data.preview.draft.assetPack[placement.purpose];
           return (
             <article
-              className="scroll-mt-24 overflow-hidden rounded-lg border border-[var(--ad-border)]"
+              className="flex scroll-mt-24 items-center gap-3 overflow-hidden rounded-lg border border-[var(--ad-border)] p-3"
               id={`character-image-placement-${placement.purpose}`}
               key={placement.purpose}
             >
-              <div className={`${placement.aspect} relative grid place-items-center overflow-hidden bg-black/[0.04]`}>
+              <div className="relative grid h-20 w-16 shrink-0 place-items-center overflow-hidden rounded-md bg-black/[0.04]">
                 {slot.imageUrl ? (
                   <Image
                     alt={t("{name} {placement}", { name: data.character.name, placement: t(placement.label) })}
                     className="object-cover"
                     fill
-                    sizes="(min-width: 1024px) 33vw, 100vw"
+                    sizes="64px"
                     src={slot.imageUrl}
                     unoptimized
                   />
                 ) : (
-                  <ImageIcon className="h-7 w-7 text-[var(--ad-text-muted)]" />
+                  <ImageIcon className="h-5 w-5 text-[var(--ad-text-muted)]" />
                 )}
               </div>
-              <div className="p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <h4 className="font-semibold">{t(placement.label)}</h4>
-                    <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t(placement.description)}</p>
-                  </div>
-                  <span className={`text-xs font-semibold ${slot.status === "available" ? "text-[var(--ad-green-text)]" : "text-[var(--ad-yellow-text)]"}`}>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="truncate text-sm font-semibold">{t(placement.label)}</h4>
+                  <span className={`shrink-0 text-xs font-semibold ${slot.status === "available" ? "text-[var(--ad-green-text)]" : "text-[var(--ad-yellow-text)]"}`}>
                     {t(slot.status === "available" ? "Selected" : "Missing")}
                   </span>
                 </div>
-                <WorkspaceButton className="mt-3 w-full justify-center" disabled={!canRead || !canWrite || candidatePending} onClick={() => openChooser(placement.purpose)}>
-                  <Replace className="h-4 w-4" /> {t(slot.assetId ? "Replace image" : "Choose image")}
+                <p className="mt-0.5 truncate text-xs text-[var(--ad-text-muted)]">{t(placement.description)}</p>
+                <WorkspaceButton className="mt-2 min-h-8 px-2.5 text-xs" disabled={!canRead || !canWrite || candidatePending} onClick={() => openChooser(placement.purpose)}>
+                  <Replace className="h-3.5 w-3.5" /> {t(slot.assetId ? "Replace image" : "Choose image")}
                 </WorkspaceButton>
               </div>
             </article>

@@ -13,6 +13,7 @@ vi.mock("next/link", () => ({
 import { CharacterBatchImport } from "./CharacterBatchImport";
 import {
   CHARACTER_IMPORT_CONCURRENCY,
+  CHARACTER_IMPORT_CSV_EXAMPLE,
   CHARACTER_IMPORT_EXAMPLE,
   parseCharacterImport,
   runWithConcurrency,
@@ -56,6 +57,38 @@ describe("parseCharacterImport", () => {
     }]));
     if (!parsed.ok) throw new Error("expected rows");
     expect(parsed.rows[0]?.draft?.visualDirection).toMatchObject({ identityAnchor: "Glasses", style: "anime" });
+  });
+
+  it("uses the same visual defaults and required fields for CSV, TSV and JSON", () => {
+    const csvParsed = parseCharacterImport(CHARACTER_IMPORT_CSV_EXAMPLE);
+    expect(csvParsed.ok).toBe(true);
+    if (!csvParsed.ok) throw new Error("expected csv rows");
+    expect(csvParsed.rows).toHaveLength(2);
+    expect(csvParsed.rows.every((item) => item.draft !== null)).toBe(true);
+    expect(csvParsed.rows[0]?.draft?.visualDirection.stableTraits).toEqual(["Dark wavy hair", "Warm brown eyes"]);
+
+    const tsv = "name\tage\tgender\tdescription\tfirstMessage\nSora\t26\tfemale\tQuiet architect\tWelcome in.";
+    const tsvParsed = parseCharacterImport(tsv);
+    expect(tsvParsed.ok).toBe(true);
+    if (!tsvParsed.ok) throw new Error("expected tsv rows");
+    expect(tsvParsed.rows[0]?.draft).toBeNull();
+    expect(tsvParsed.rows[0]?.errors).toContain("Add at least one feature that never changes.");
+    expect(csvParsed.rows[0]?.draft?.visualDirection.identityAnchor).toBe("Dark wavy hair");
+  });
+
+  it.each([",", "\t"])("preserves quoted multiline cells and escaped quotes with separator %j", (separator) => {
+    const headers = ["name", "description", "firstMessage", "stableTraits", "detailsMarkdown"].join(separator);
+    const markdown = 'First paragraph\r\n\r\nSecond paragraph, with "quotes" and a\ttab.';
+    const fields = ["Mara", "A night nurse", "Welcome in.", "Brown eyes", '"' + markdown.replaceAll('"', '""') + '"'];
+    const next = ["Ren", "Bookshop owner", "Hello again.", "Glasses", "Quiet."];
+    const parsed = parseCharacterImport([headers, fields.join(separator), "", next.join(separator)].join("\r\n"));
+    if (!parsed.ok) throw new Error("expected table rows");
+    expect(parsed.rows.map((row) => row.draft?.persona.detailsMarkdown)).toEqual([markdown, "Quiet."]);
+  });
+
+  it("rejects a truncated quoted field without importing partial rows", () => {
+    expect(parseCharacterImport('name,description,firstMessage,traits,details\nMara,Nurse,Hello.,Brown eyes,"unfinished\ntext'))
+      .toEqual({ ok: false, error: "invalid_table" });
   });
 });
 

@@ -201,7 +201,9 @@ function SoulEditor({
               ? "The form was filled from the character profile and opening message. Review it, then save to repair. Publishing is blocked until then."
               : needsUpgrade
                 ? "Save once to convert it. The content stays the same. Publishing is blocked until then."
-                : "Publishing stays blocked until every item below is cleared, warnings included.")}
+                : data.soul.current.diagnostics.some((item) => item.code === "compiled_prompt_budget_exceeded")
+                  ? "Shorten Additional details before publishing. The compiled persona exceeds its prompt budget."
+                  : "Publishing stays blocked until every item below is cleared, warnings included.")}
           </p>
           {data.soul.current.diagnostics.length > 0 ? (
             <details className="mt-2 text-sm" open={!needsRepair && !needsUpgrade}>

@@ -4,6 +4,8 @@ import {
 } from "@idream/shared/admin";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { clearDurableMutationIntent } from "@/lib/durable-mutation-intent";
+import { characterReleaseCommandBody, characterServingCommandBody } from "./release-command";
+import { characterReleaseCreateMutation } from "@/features/image-workflow-transport";
 import { purposeConfig, type CharacterAssetPurpose } from "./character-asset-studio-authority";
 import { characterImageFillSkipMessage, createOrRecoverMissingCharacterImage, defaultCharacterImageBrief } from "./creative-run-creation";
 
@@ -15,10 +17,11 @@ export const BULK_GENERATION_CHARACTER_LIMIT = 20;
 const MAX_CHARACTER_TAGS = 24;
 
 export type BulkAction =
-  | { readonly kind: "pause" | "resume" | "archive" | "generate_missing" }
+  | { readonly kind: "publish" | "pause" | "resume" | "archive" | "generate_missing" }
   | { readonly kind: "add_tag" | "remove_tag"; readonly tagId: string; readonly tagLabel: string };
 
 export const BULK_ACTION_LABELS: Record<BulkAction["kind"], string> = {
+  publish: "Publish",
   pause: "Pause",
   resume: "Resume",
   archive: "Archive",
@@ -49,6 +52,15 @@ export function bulkActionBlocker(
 ): string | null {
   const state = item.serving.state;
   const commandBusy = item.journey.hasActiveCommand;
+  if (kind === "publish") {
+    if (state === "retired") return "Archived or retired.";
+    if (commandBusy) return "Another command is in progress.";
+    if ((item.journey.blockers?.length ?? 0) > 0) return "Resolve publish blockers first.";
+    const readyStage = item.journey.stage === "publishing" || item.journey.stage === "preview";
+    const hasPending = Boolean(item.journey.release?.candidateReleaseId || item.journey.release?.pendingRevision);
+    if (!readyStage && !hasPending) return "Not ready to publish.";
+    return null;
+  }
   if (kind === "pause") {
     if (state !== "live") return "Only live characters can be paused.";
     return commandBusy ? "Another command is in progress." : null;
@@ -189,26 +201,27 @@ const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(r
 
 // SPEC: 与发布页同一条命令；reason 自动填，不问运营。幂等键由 adminV2Operation 的账本管，
 //       重试不会变成第二次写入；entityVersion 仍是 CAS，版本过期由服务端拒绝。
-export async function submitServingCommand(input: {
+interface BulkServingCommandInput {
   readonly characterId: string;
   readonly action: BulkServingAction;
   readonly entityVersion: number;
-  readonly sleep?: (ms: number) => Promise<void>;
-}) {
+}
+
+export function requestServingCommand(input: BulkServingCommandInput) {
   const { characterId, action } = input;
   const options = {
     path: { id: characterId },
-    body: {
-      entityVersion: input.entityVersion,
-      reason: { code: `operator_${action}`, summary: SERVING_SUMMARY[action] },
-      confirmation: `${characterId}:${action}`,
-    },
+    body: characterServingCommandBody({ ...input, summary: SERVING_SUMMARY[action] }),
   };
-  const accepted = action === "pause"
-    ? await adminV2Operation("POST /api/v2/admin/characters/:id/commands/pause", options)
+  return action === "pause"
+    ? adminV2Operation("POST /api/v2/admin/characters/:id/commands/pause", options)
     : action === "resume"
-      ? await adminV2Operation("POST /api/v2/admin/characters/:id/commands/resume", options)
-      : await adminV2Operation("POST /api/v2/admin/characters/:id/commands/retire", options);
+      ? adminV2Operation("POST /api/v2/admin/characters/:id/commands/resume", options)
+      : adminV2Operation("POST /api/v2/admin/characters/:id/commands/retire", options);
+}
+
+export async function submitServingCommand(input: BulkServingCommandInput & { readonly sleep?: (ms: number) => Promise<void> }) {
+  const accepted = await requestServingCommand(input);
   return waitForCommand(accepted.commandId, input.sleep ?? defaultSleep);
 }
 
@@ -279,6 +292,35 @@ export function createBulkExecutor(input: {
     if (action.kind === "add_tag" || action.kind === "remove_tag") {
       await changeTag(task.characterId, action.tagId, action.kind === "add_tag");
       return "succeeded";
+    }
+    if (action.kind === "publish") {
+      const current = await detail(task.characterId, true);
+      const existingCandidate = current.releases.find(({ release }) => release.status === "approved")?.release;
+      const targetRelease = existingCandidate
+        ? { id: existingCandidate.id, version: existingCandidate.version }
+        : await (async () => {
+            const mutation = characterReleaseCreateMutation(
+              task.characterId,
+              current.project.version,
+              "Publish current Character",
+              `${task.characterId}:publish`,
+            );
+            const created = await adminV2Operation(mutation.operationId, mutation.options);
+            return { id: created.id, version: created.version };
+          })();
+      const accepted = await adminV2Operation(
+        "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/publish",
+        {
+          path: { id: task.characterId, releaseId: targetRelease.id },
+          body: characterReleaseCommandBody({
+            characterId: task.characterId,
+            kind: "publish",
+            release: targetRelease,
+            summary: "Publish current Character",
+          }),
+        },
+      );
+      return waitForCommand(accepted.commandId, input.sleep ?? defaultSleep);
     }
     if (action.kind === "generate_missing") {
       if (!task.purpose) throw new Error("This task has no image purpose.");

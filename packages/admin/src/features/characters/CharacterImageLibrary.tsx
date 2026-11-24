@@ -74,6 +74,7 @@ export function CharacterImageLibrary({
   const { locale, t } = useAdminI18n();
   const [assets, setAssets] = useState<CharacterImageSourceAsset[]>([]);
   const [chatSource, setChatSource] = useState<CharacterChatLibrarySource | null>(null);
+  const [chatLibraryOpen, setChatLibraryOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [archiveSelection, setArchiveSelection] = useState<ReadonlySet<string>>(() => new Set());
@@ -401,9 +402,28 @@ export function CharacterImageLibrary({
       {!incomplete ? creator : null}
       {placements}
 
-      {canReadProduction ? <CharacterChatLibrary characterId={data.character.id} mediaType="image"
-        canWrite={canCreate} canPublish={canPublish} source={chatSource} onCloseSource={() => setChatSource(null)}
-        defaultProfileId={data.visual.routeQualifications.find(route => route.result === "qualified" && !route.stale)?.generationProfileKey ?? undefined} /> : null}
+      {canReadProduction ? (
+        <details
+          className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]"
+          onToggle={(event) => setChatLibraryOpen(event.currentTarget.open)}
+          open={chatLibraryOpen || chatSource !== null}
+        >
+          <summary className="cursor-pointer px-4 py-3 text-sm font-semibold sm:px-5">
+            {t("Chat media library")}
+          </summary>
+          <div className="border-t border-[var(--ad-border)] p-4 sm:p-5">
+            <CharacterChatLibrary
+              characterId={data.character.id}
+              mediaType="image"
+              canWrite={canCreate}
+              canPublish={canPublish}
+              source={chatSource}
+              onCloseSource={() => setChatSource(null)}
+              defaultProfileId={data.visual.routeQualifications.find(route => route.result === "qualified" && !route.stale)?.generationProfileKey ?? undefined}
+            />
+          </div>
+        </details>
+      ) : null}
 
       <section aria-busy={loading} aria-label={t("Character image library")}>
         {/* SPEC: Only a successful read can establish an empty library. */}

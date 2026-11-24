@@ -12,6 +12,7 @@ import { WorkspaceButton, textAreaClass } from "@/features/operations/WorkspaceU
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import {
   CHARACTER_IMPORT_CONCURRENCY,
+  CHARACTER_IMPORT_CSV_EXAMPLE,
   CHARACTER_IMPORT_EXAMPLE,
   CHARACTER_IMPORT_MAX_ROWS,
   characterImportIntent,
@@ -27,8 +28,9 @@ type RowResult =
 
 const PARSE_ERRORS = {
   invalid_json: "This is not valid JSON. Check the brackets and quotes.",
+  invalid_table: "Check the table header, separators and quoted fields.",
   not_array: "The JSON must be an array of characters.",
-  empty: "The array is empty.",
+  empty: "There are no character rows to import.",
   too_many: "Import at most {max} characters at a time.",
 } as const;
 
@@ -118,6 +120,15 @@ export function CharacterBatchImport({ onImported }: { onImported?: () => void }
     URL.revokeObjectURL(url);
   }
 
+  function downloadCsvExample() {
+    const url = URL.createObjectURL(new Blob([CHARACTER_IMPORT_CSV_EXAMPLE], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "characters-template.csv";
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <>
       <WorkspaceButton onClick={() => setOpen(true)}>
@@ -138,7 +149,7 @@ export function CharacterBatchImport({ onImported }: { onImported?: () => void }
               <div>
                 <h3 className="text-base font-semibold" id="character-import-title">{t("Import characters")}</h3>
                 <p className="mt-1 text-sm text-[var(--ad-text-muted)]">
-                  {t("Paste or upload a JSON array. Each row becomes a private draft; nothing is published.")}
+                  {t("Paste or upload CSV, spreadsheet rows, or a JSON array. Each row becomes a private draft; nothing is published.")}
                 </p>
               </div>
               <button aria-label={t("Close")} className="grid min-h-10 min-w-10 place-items-center" disabled={running} onClick={() => setOpen(false)} type="button">
@@ -147,9 +158,12 @@ export function CharacterBatchImport({ onImported }: { onImported?: () => void }
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
               <label className="inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-sm font-medium">
-                <Upload aria-hidden="true" className="h-4 w-4" /> {t("Upload JSON file")}
-                <input accept="application/json,.json" aria-label={t("Upload JSON file")} className="sr-only" disabled={running} onChange={(event) => void readFile(event)} type="file" />
+                <Upload aria-hidden="true" className="h-4 w-4" /> {t("Upload CSV or JSON")}
+                <input accept=".csv,.tsv,.json,text/csv,text/tab-separated-values,application/json" aria-label={t("Upload CSV or JSON")} className="sr-only" disabled={running} onChange={(event) => void readFile(event)} type="file" />
               </label>
+              <WorkspaceButton onClick={downloadCsvExample}>
+                <Download aria-hidden="true" className="h-4 w-4" /> {t("Download CSV template")}
+              </WorkspaceButton>
               <WorkspaceButton onClick={() => void copyExample()}>
                 {copied ? <Check aria-hidden="true" className="h-4 w-4" /> : <Copy aria-hidden="true" className="h-4 w-4" />}
                 {t(copied ? "Example copied" : "Copy example")}
@@ -159,7 +173,7 @@ export function CharacterBatchImport({ onImported }: { onImported?: () => void }
               </WorkspaceButton>
             </div>
             <textarea
-              aria-label={t("Characters as JSON")}
+              aria-label={t("Character import data")}
               className={`${textAreaClass} mt-3 min-h-40 font-mono text-xs`}
               disabled={running}
               onChange={(event) => changeText(event.target.value)}

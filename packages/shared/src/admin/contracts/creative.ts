@@ -9,6 +9,7 @@ import {
   adminPrioritySchema,
   adminVerificationStateSchema,
   creativeRunFillSkipSchema,
+  creativeRunGroupIdsSchema,
 } from "./common";
 
 export const creativeRunRetryFailedCommandRequestSchema = adminCommandRequestSchema;
@@ -416,6 +417,7 @@ export const creativeRunCreateRequestSchema = z
     fillMissing: z.literal(true).optional(),
     orientation: z.string().trim().min(1).max(20).optional(),
     count: z.number().int().min(1).max(40).default(4),
+    runCount: z.union([z.literal(2), z.literal(4)]).optional(),
     brief: z.string().trim().min(1).max(2_000),
     negativePrompt: z.string().trim().max(2_000).optional(),
     directions: z.array(z.object({
@@ -445,6 +447,14 @@ export const creativeRunCreateRequestSchema = z
   })
   .strict()
   .superRefine((request, ctx) => {
+    // Each explicit placement Run keeps its own single-image source lineage.
+    if (request.runCount && (
+      request.targetType !== "character" ||
+      !["character_cover", "character_hero", "character_chat"].includes(request.purpose) ||
+      request.count !== 1 || request.fillMissing || request.bootstrapIdentity || request.directions
+    )) {
+      ctx.addIssue({ code: "custom", path: ["runCount"], message: "Only explicit single-image Character placements can start multiple Runs" });
+    }
     if (request.fillMissing && (
       request.targetType !== "character" ||
       !["character_cover", "character_hero", "character_chat"].includes(request.purpose) ||
@@ -659,6 +669,7 @@ export const creativeRunCreateRequestSchema = z
 export const creativeRunCreateResultSchema = z.union([
   z.object({
     batch: z.object({ id: adminIdSchema }).strict(),
+    runIds: creativeRunGroupIdsSchema.optional(),
     replayed: z.boolean(),
   }).strict(),
   z.object({

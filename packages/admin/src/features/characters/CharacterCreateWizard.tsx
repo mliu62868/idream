@@ -742,15 +742,15 @@ export function CharacterCreateWizard({
     }
   }
 
-  async function finish() {
+  async function finish(targetDraft = draft) {
     if (finishing || ["checking", "restoring", "restore_failed"].includes(resumeState)) {
       return;
     }
     if (
       !createIntent &&
-      !characterProjectProductionReadyDraftSchema.safeParse(draft).success
+      !characterProjectProductionReadyDraftSchema.safeParse(targetDraft).success
     ) {
-      const errors = characterCreateStepFieldErrors(draft, 2);
+      const errors = characterCreateStepFieldErrors(targetDraft, 2);
       const targetStep = Object.keys(errors).some((field) => Object.hasOwn(characterProjectDraftSchema.shape.persona.shape, field)) ? 0 : 1;
       setStep(targetStep);
       setValidationAttemptedStep(targetStep);
@@ -759,7 +759,7 @@ export function CharacterCreateWizard({
     }
     setFinishing(true);
     try {
-      await persist(draft, true);
+      await persist(targetDraft, true);
       const created = authorityRef.current;
       const destination = created?.deepLink;
       if (created && selectedTagIds.length > 0) {
@@ -811,6 +811,9 @@ export function CharacterCreateWizard({
     url.searchParams.delete("template");
     window.history.replaceState(null, "", url.searchParams.size ? `${url.pathname}?${url.searchParams.toString()}` : url.pathname);
   };
+  const quickSaveDraft = step === 0 && !createIntent
+    ? authority ? draft : withVisualDirectionDefaults(draft)
+    : null;
   const currentLabel = steps[step];
   const fieldErrors =
     validationAttemptedStep === step
@@ -914,7 +917,7 @@ export function CharacterCreateWizard({
                   "flex min-h-11 w-full items-center gap-2 rounded-md border px-3 py-2 text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)] disabled:opacity-50",
                   index === step ? "border-[var(--ad-ink)] font-semibold" : "border-[var(--ad-border)] text-[var(--ad-text-muted)] enabled:hover:bg-black/[0.03]",
                 )}
-                disabled={navigationLocked || Boolean(createIntent) || index > Math.max(step, firstIncompleteCharacterCreateStep(draft))}
+                disabled={navigationLocked || Boolean(createIntent)}
                 onClick={() => void goToStep(index)}
                 type="button"
               >
@@ -1095,22 +1098,35 @@ export function CharacterCreateWizard({
             <ArrowLeft className="h-4 w-4" /> {t("Back")}
           </WorkspaceButton>
           {step < steps.length - 1 ? (
-            <WorkspaceButton
-              aria-describedby="character-create-step-requirements"
-              disabled={navigationLocked}
-              onClick={() => void goToStep(1)}
-              tone="primary"
-            >
-              {createIntent
-                ? createIntent.status === "reconciliation_required" ||
-                  !characterProjectCreateRequestSchema.safeParse(
-                    createIntent.requestSnapshot,
-                  ).success
-                  ? t("Reconcile saved request")
-                  : t("Resume Character creation")
-                : t("Continue to visual direction")}{" "}
-              <ArrowRight className="h-4 w-4" />
-            </WorkspaceButton>
+            <div className="flex flex-wrap items-center gap-2">
+              {quickSaveDraft && isCharacterCreateStepComplete(quickSaveDraft, 2) ? (
+                <WorkspaceButton
+                  disabled={navigationLocked}
+                  onClick={() => {
+                    setDraft(quickSaveDraft);
+                    void finish(quickSaveDraft);
+                  }}
+                >
+                  <Check className="h-4 w-4" /> {t("Save private draft")}
+                </WorkspaceButton>
+              ) : null}
+              <WorkspaceButton
+                aria-describedby="character-create-step-requirements"
+                disabled={navigationLocked}
+                onClick={() => void goToStep(1)}
+                tone="primary"
+              >
+                {createIntent
+                  ? createIntent.status === "reconciliation_required" ||
+                    !characterProjectCreateRequestSchema.safeParse(
+                      createIntent.requestSnapshot,
+                    ).success
+                    ? t("Reconcile saved request")
+                    : t("Resume Character creation")
+                  : t("Continue to visual direction")}{" "}
+                <ArrowRight className="h-4 w-4" />
+              </WorkspaceButton>
+            </div>
           ) : (
             <WorkspaceButton
               aria-describedby="character-create-step-requirements"
