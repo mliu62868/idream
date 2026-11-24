@@ -263,6 +263,9 @@ export async function patchSupportRequest(request: Request, ticketId: string) {
   if (body.confirmation !== ticketId) {
     throw Errors.badRequest("Support request updates require ticket confirmation");
   }
+  if (body.expectedCase && (body.status !== "resolved" || !body.customerMessage)) {
+    throw Errors.badRequest("An expected Case is only used when replying and resolving together");
+  }
   const terminal = body.status === "resolved" || body.status === "closed";
   return runSupportCommand({
     request,
@@ -271,10 +274,20 @@ export async function patchSupportRequest(request: Request, ticketId: string) {
     ticketId,
     payload: body,
     execute: async (tx, requestId) => {
+      // Customer replies and Case reopen also lock Support first. Hold it through the Case version check.
+      await tx.$queryRaw`SELECT id FROM support_requests WHERE "ticketId" = ${ticketId} FOR UPDATE`;
       const before = await tx.supportRequest.findUnique({ where: { ticketId } });
       if (!before) throw Errors.notFound("Support request not found");
       if (before.updatedAt.getTime() !== new Date(body.expectedUpdatedAt).getTime()) {
-        throw Errors.conflict("Support request changed. Refresh it before updating.");
+        throw Errors.versionConflict("Support request changed. Refresh it before updating.");
+      }
+      if (body.expectedCase) {
+        const linkedCase = await ensureSupportCaseForRequest(tx, before);
+        if (linkedCase?.id !== body.expectedCase.id) throw Errors.versionConflict("The linked Support Case changed");
+        const locked = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT id FROM admin_cases WHERE id = ${linkedCase.id} AND version = ${body.expectedCase.version} FOR UPDATE
+        `;
+        if (locked.length !== 1) throw Errors.versionConflict("The linked Support Case changed");
       }
       if (body.assignedToId) {
         const adminCase = await ensureSupportCaseForRequest(tx, before);

@@ -1003,6 +1003,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Create the first Character video from an image.":
     "从一张角色图片开始创建首个视频。",
   "Create the first identity portrait": "创建首张身份肖像",
+  "Ask someone with access to this character’s image workspace to complete this step.": "请有此角色图片工作区权限的同事完成这一步。",
   "Create the first official character to get started.":
     "创建第一个官方角色，从这里开始。",
   "Create the first starter template to get started.":
@@ -1552,6 +1553,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Review decision was committed.": "审核决定已记录。",
   "Review generation route": "检查生成路由",
   "Preview Character": "预览角色",
+  "Preview and publish": "预览并发布",
   "Preview the customer-facing draft before publishing.":
     "发布前预览用户看到的角色草稿。",
   "Publish the prepared immutable Character snapshot.":

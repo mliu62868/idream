@@ -24,6 +24,7 @@ import { CaseWorkspace } from "./CaseWorkspace";
 import { AdminI18nProvider } from "@/components/admin/i18n";
 import { ToastProvider } from "@/components/admin/ui/Toast";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -174,14 +175,77 @@ describe("CaseWorkspace browser URL interactions", () => {
     await act(async () => root!.render(<CaseWorkspace canAssign canDecide initialCaseId="case-1" />));
     await waitUntil(() => container.textContent?.includes("SUP-CASE-1") === true);
     expect(adminV2Request.mock.calls.some(([path]) => path.includes("/support/requests/"))).toBe(false);
-    expect(container.querySelector('a[href="/admin/support?ticket=SUP-CASE-1"]')).not.toBeNull();
+    expect(container.querySelector('a[href="#support-conversation"]')).toBeNull();
     await act(async () => root!.render(<CaseWorkspace canAssign canDecide canReadSupport initialCaseId="case-1" />));
     await waitUntil(() => container.textContent?.includes("My image failed") === true);
+    expect(container.querySelector('a[href="#support-conversation"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Message to customer"]')).toBeNull();
     expect(container.textContent).not.toContain("Plaintext access");
     await act(async () => root!.render(<CaseWorkspace canAssign canDecide canReadSupport canReplySupport initialCaseId="case-1" />));
-    expect(container.querySelector('[aria-label="Message to customer"]')).not.toBeNull();
+    const reply = container.querySelector<HTMLTextAreaElement>('[aria-label="Message to customer"]')!;
+    expect(reply).not.toBeNull();
     expect(container.textContent).not.toContain("Plaintext access");
+    await act(async () => setReactValue(reply, "Open My Media to find the saved image."));
+    await act(async () => findButton("Reply and mark resolved")!.click());
+    const writes = adminV2Request.mock.calls.filter(([path, options]) =>
+      path === "/api/v2/admin/support/requests/SUP-CASE-1" && options?.method === "PATCH",
+    );
+    expect(writes).toHaveLength(1);
+    expect(writes[0]![1]).toMatchObject({
+      idempotencyKey: expect.any(String),
+      body: {
+        confirmation: "SUP-CASE-1",
+        expectedUpdatedAt: adminCase.updatedAt,
+        expectedCase: { id: adminCase.id, version: adminCase.version },
+        status: "resolved",
+        customerMessage: "Open My Media to find the saved image.",
+        resolutionNotes: "Open My Media to find the saved image.",
+      },
+    });
+  });
+
+  it("preserves a drafted reply while an escalated Case is refreshed and while changing mobile steps", async () => {
+    window.history.replaceState(null, "", "/admin/cases/case-1");
+    const fallback = adminV2Request.getMockImplementation()!;
+    let escalated = false;
+    const ticketCase = { ...adminCase, caseKey: "ticket:SUP-CASE-1" };
+    adminV2Request.mockImplementation(async (path, init) => {
+      if (path === "/api/v2/admin/cases/case-1") return {
+        case: escalated ? { ...ticketCase, version: 2, relatedIncidentIds: ["incident-1"], resolutionSummary: "Escalation recorded" } : ticketCase,
+        evidence: [], decisions: [], activity: [],
+      };
+      if (path === "/api/v2/admin/support/requests/SUP-CASE-1") {
+        if (init?.method === "PATCH") {
+          escalated = true;
+          throw new AdminV2RequestError("The linked Support Case changed", 409, "conflict", { blocker: "version_mismatch" });
+        }
+        return { request: { ticketId: "SUP-CASE-1", subject: "Customer issue", description: "Customer intake", status: "open", canReply: true,
+          createdAt: adminCase.createdAt, updatedAt: adminCase.updatedAt, messages: [] } };
+      }
+      return fallback(path, init);
+    });
+    root = createRoot(container);
+    await act(async () => root!.render(<CaseWorkspace canAssign={false} canDecide canReadSupport canReplySupport initialCaseId="case-1" />));
+    const inputSelector = '[aria-label="Message to customer"]';
+    await waitUntil(() => container.querySelector(inputSelector) !== null);
+    const reply = container.querySelector<HTMLTextAreaElement>(inputSelector)!;
+    await act(async () => setReactValue(reply, "Please try the updated download link."));
+
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-case-mobile-step="evidence"]')!.click());
+    const conversation = container.querySelector('#support-conversation')!;
+    expect(conversation.parentElement?.classList.contains("max-md:hidden")).toBe(true);
+    await act(async () => container.querySelector<HTMLAnchorElement>('a[href="#support-conversation"]')!.click());
+    expect(conversation.parentElement?.classList.contains("max-md:hidden")).toBe(false);
+    expect(reply.value).toBe("Please try the updated download link.");
+
+    await act(async () => findButton("Reply and mark resolved")!.click());
+    expect(container.textContent).toContain("Your reply draft is kept.");
+    expect(findButton("Send reply")?.disabled).toBe(true);
+    await act(async () => findButton("Refresh conversation")!.click());
+    await waitUntil(() => container.textContent?.includes("Escalation recorded") === true && findButton("Send reply")?.disabled === false);
+    expect(findButton("Reply and mark resolved")).toBeUndefined();
+    expect(container.querySelector<HTMLTextAreaElement>(inputSelector)?.value).toBe("Please try the updated download link.");
+    expect(adminV2Request.mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(1);
   });
 
   it("returns to the actual preceding cursor after paging past an unapplied filter draft", async () => {
@@ -738,7 +802,7 @@ describe("CaseWorkspace decision loop", () => {
     expect(requests[1]?.[1]).toEqual(requests[0]?.[1]);
   });
 
-  it("assigns the case to the signed-in operator in one click and links a ticket to its customer reply", async () => {
+  it("assigns the case to the signed-in operator in one click", async () => {
     const read = adminV2Request.getMockImplementation()!;
     adminV2Request.mockImplementation(async (path, options) => {
       if (path.endsWith("/assignment")) return { caseId: "case-1", version: 5 };
@@ -746,8 +810,6 @@ describe("CaseWorkspace decision loop", () => {
       return read(path, options);
     });
     await mount({ canAssign: true, canDecide: false, actorId: "operator-7" });
-    const reply = [...container.querySelectorAll("a")].find((link) => link.textContent === "Reply to customer");
-    expect(reply?.getAttribute("href")).toBe("/admin/support?ticket=SUP-TEST123");
     const assign = [...container.querySelectorAll("button")].find((button) => button.textContent === "Assign to me")!;
     await act(async () => assign.click());
     await waitUntil(() => adminV2Request.mock.calls.some(([path]) => path.endsWith("/assignment")));
@@ -835,7 +897,7 @@ describe("CaseWorkspace decision loop", () => {
     expect(priorityField().value).toBe("urgent");
   });
 
-  it.each([false, true])("keeps Support navigation when a Case assignment finishes late (unmounted: %s)", async (unmountBeforeCompletion) => {
+  it.each([false, true])("keeps Customer 360 navigation when a Case assignment finishes late (unmounted: %s)", async (unmountBeforeCompletion) => {
     const read = adminV2Request.getMockImplementation()!;
     let resolveAssignment!: (result: unknown) => void;
     adminV2Request.mockImplementation(async (path, options) => {
@@ -845,10 +907,10 @@ describe("CaseWorkspace decision loop", () => {
     });
     await mount({ canAssign: true, canDecide: false, actorId: "operator-7" });
     const assign = [...container.querySelectorAll("button")].find((button) => button.textContent === "Assign to me")!;
-    const reply = [...container.querySelectorAll("a")].find((link) => link.textContent === "Reply to customer")!;
+    const customer = [...container.querySelectorAll("a")].find((link) => link.textContent === "Open Customer 360")!;
     await act(async () => assign.click());
     await waitUntil(() => Boolean(resolveAssignment));
-    window.history.pushState(null, "", reply.getAttribute("href"));
+    window.history.pushState(null, "", customer.getAttribute("href"));
     if (unmountBeforeCompletion) {
       await act(async () => root?.unmount());
       root = null;
@@ -856,11 +918,11 @@ describe("CaseWorkspace decision loop", () => {
     const readsBeforeCompletion = adminV2Request.mock.calls.length;
     await act(async () => resolveAssignment({ caseId: "case-1", version: 5 }));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(window.location.pathname + window.location.search).toBe("/admin/support?ticket=SUP-TEST123");
+    expect(window.location.pathname + window.location.search).toBe("/admin/customers/user-1");
     expect(adminV2Request.mock.calls).toHaveLength(readsBeforeCompletion);
   });
 
-  it("does not rewrite browser history while Reply navigation is still pending", async () => {
+  it("does not rewrite browser history while Customer 360 navigation is still pending", async () => {
     const read = adminV2Request.getMockImplementation()!;
     let resolveAssignment!: (result: unknown) => void;
     adminV2Request.mockImplementation(async (path, options) => {
@@ -872,10 +934,10 @@ describe("CaseWorkspace decision loop", () => {
     const assign = [...container.querySelectorAll("button")].find((button) => button.textContent === "Assign to me")!;
     await act(async () => assign.click());
     await waitUntil(() => Boolean(resolveAssignment));
-    const reply = [...container.querySelectorAll("a")].find((link) => link.textContent === "Reply to customer")!;
+    const customer = [...container.querySelectorAll("a")].find((link) => link.textContent === "Open Customer 360")!;
     // Next keeps the old pathname until the destination RSC payload commits.
-    reply.addEventListener("click", (event) => event.preventDefault());
-    await act(async () => reply.click());
+    customer.addEventListener("click", (event) => event.preventDefault());
+    await act(async () => customer.click());
     const replace = vi.spyOn(window.history, "replaceState");
     const push = vi.spyOn(window.history, "pushState");
     const readsBeforeCompletion = adminV2Request.mock.calls.length;

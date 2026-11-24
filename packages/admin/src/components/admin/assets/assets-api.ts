@@ -19,6 +19,23 @@ export type ContentAsset = SharedContentAsset;
 export type AssetAuthorityDependency = ContentAssetAuthorityDependency;
 export type AssetSourceJob = NonNullable<ContentAsset["sourceJob"]>;
 export type AssetSourceBatch = NonNullable<ContentAsset["sourceBatch"]>;
+
+export function isPublishableOperatorUpload(asset: Pick<ContentAsset, "customerPublishable"> & { metadata?: unknown; sourceBatch?: { id: string } | null }) {
+  const { metadata } = asset;
+  return asset.customerPublishable && !asset.sourceBatch && !!metadata && typeof metadata === "object" &&
+    "source" in metadata && metadata.source === "admin_asset_upload";
+}
+
+export function assetDisplayName(asset: { id: string; description?: string | null; metadata?: unknown }) {
+  const { metadata } = asset;
+  if (metadata && typeof metadata === "object" && "source" in metadata &&
+    metadata.source === "admin_asset_upload" && "filename" in metadata &&
+    typeof metadata.filename === "string" && metadata.filename.trim()) {
+    return metadata.filename.trim();
+  }
+  return asset.description?.trim() || asset.id;
+}
+
 export function assetAuthorityDependencyView(
   dependency: AssetAuthorityDependency,
 ): { detail: string; key: string; title: string } {

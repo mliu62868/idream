@@ -52,6 +52,10 @@ export function todayWorkItemTitle(item: TodayWorkItem, t: Translate) {
     const incident = /^(?:critical|high|medium|low) incident(?::\s*(.+))?$/i.exec(item.title);
     if (incident) return !incident[1] || /^[a-f0-9]{32,}$/i.test(incident[1]) ? t("Operational incident") : t("Incident: {signature}", { signature: incident[1] });
   }
+  const caseKey = item.impactSnapshot.caseKey;
+  if (item.sourceType === "admin_case" && typeof caseKey === "string" && caseKey.startsWith("ticket:")) {
+    return `${t(item.title)} · ${caseKey.slice("ticket:".length)}`;
+  }
   return t(item.title);
 }
 
@@ -249,7 +253,7 @@ export function WorkQueue({
       {preview ? <div className={`${mobilePreview ? "" : "hidden lg:block"} min-w-0 scroll-mt-28 outline-none lg:sticky lg:top-20`} ref={previewRef} tabIndex={-1}>
         <button className="mb-3 inline-flex min-h-10 items-center gap-2 text-sm lg:hidden" onClick={() => { setMobilePreview(false); requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('[data-today-preview][aria-pressed="true"]')?.focus()); }} type="button"><ArrowLeft className="h-4 w-4" />{t("Back to work list")}</button>
         <WorkItem {...itemProps} detail item={preview} key={workItemKey(preview)} onToggleSelected={actionable ? toggle : undefined} selected={false} />
-      </div> : <div className="hidden min-h-96 items-center justify-center rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-8 text-sm text-[var(--ad-text-muted)] lg:flex">{t("Select a work item to preview its details.")}</div>}
+      </div> : queue.items.length > 0 ? <div className="hidden min-h-96 items-center justify-center rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-8 text-sm text-[var(--ad-text-muted)] lg:flex">{t("Select a work item to preview its details.")}</div> : null}
     </section>
   );
 }

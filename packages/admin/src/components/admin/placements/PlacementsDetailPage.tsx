@@ -220,7 +220,7 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
 
   const canPause = canPublish &&
     !row.managedRunId &&
-    !["paused", "archived"].includes(row.status);
+    ["published", "scheduled"].includes(row.status);
   const canArchive = canPublish &&
     !row.managedRunId &&
     row.status !== "archived";

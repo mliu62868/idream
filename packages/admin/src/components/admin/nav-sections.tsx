@@ -79,8 +79,17 @@ const SECTION_RENDERERS: Record<AdminSectionId, (ctx: SectionContext) => ReactNo
   />,
   "content/tags": (ctx) => <TagsView canWrite={ctx.permissions.has("content.tag.write")} />,
 
-  "content/assets": (ctx) => <AssetsSection canReview={ctx.permissions.has("content.asset.review")} view={ctx.view} />,
-  "content/placements": (ctx) => <PlacementsSection canPublish={ctx.permissions.has("creative.placement.publish")} view={ctx.view} />,
+  "content/assets": (ctx) => <AssetsSection
+    canReview={ctx.permissions.has("content.asset.review")}
+    canPlace={ctx.permissions.has("creative.placement.read") && ctx.permissions.has("creative.placement.publish")}
+    view={ctx.view}
+  />,
+  "content/placements": (ctx) => <PlacementsSection
+    canPublish={ctx.permissions.has("creative.placement.publish")}
+    canReadRuns={adminV2OperationAllowed("GET /api/v2/admin/creative/runs", ctx.permissions)}
+    canUpload={ctx.permissions.has("content.asset.read") && ctx.permissions.has("content.asset.review")}
+    view={ctx.view}
+  />,
   "content/production": (ctx) => <CreativeRunWorkspace actorId={ctx.actorId} permissions={{
     read: ctx.canRead,
     write: ctx.permissions.has("creative.run.write"),

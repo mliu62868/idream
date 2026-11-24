@@ -80,17 +80,9 @@ async function select(index: number, label = "Model profile") {
   expect(container.inert).toBe(false);
   await act(async () => { selector.value = profiles[index]!.id; selector.dispatchEvent(new Event("change", { bubbles: true })); });
 }
-async function confirm(reason = "Controlled configuration validation") {
+async function checkConfiguration() {
   await act(async () => button("Configuration check", container).click());
-  const dialog = document.querySelector('[role="dialog"]')!;
-  expect(container.inert).toBe(true);
-  const input = dialog.querySelector<HTMLInputElement>('[aria-label="Reason (≥3)"]')!;
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, reason);
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-  await act(async () => button("Confirm configuration check", dialog).click());
-  return dialog;
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
 }
 function result(label = "Configuration check") {
   return container.querySelector<HTMLElement>(`[role="region"][aria-label="${label}"]`);
@@ -136,26 +128,39 @@ describe("Profile Diagnostics configuration receipt", () => {
     expect(writes).toHaveLength(0);
   });
 
-  it("keeps a configuration confirmation and its command gate intact during shell refresh", async () => {
+  it("keeps one in-flight configuration check intact during shell refresh", async () => {
+    let finish!: (response: Response) => void;
+    writeResponse = () => new Promise((resolve) => { finish = resolve; });
     await mount();
     await select(0);
     await act(async () => button("Health", container).click());
-    await act(async () => button("Configuration check", container).click());
-    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
-    const reason = dialog.querySelector<HTMLInputElement>('[aria-label="Reason (≥3)"]')!;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(reason, "Retain the pending diagnostic command");
-      reason.dispatchEvent(new Event("input", { bubbles: true }));
-    });
+    await checkConfiguration();
+    expect(button("Checking configuration…", container).disabled).toBe(true);
     await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
-    expect(document.querySelector('[role="dialog"]')).toBe(dialog);
-    expect(reason.value).toBe("Retain the pending diagnostic command");
     expect(vi.mocked(fetch).mock.calls.filter(([path]) => String(path).endsWith("/health"))).toHaveLength(1);
-    expect(writes).toHaveLength(0);
-    await act(async () => button("Confirm configuration check", dialog).click());
     expect(writes).toHaveLength(1);
-    expect(writes[0]!.body).toEqual({ reason: "Retain the pending diagnostic command", confirmation: profiles[0]!.id });
+    expect(writes[0]!.body).toEqual({ reason: "Validate the selected model configuration", confirmation: profiles[0]!.id });
+    await act(async () => finish(verdict()));
     expect(result()?.textContent).toContain("Configuration check pass:");
+  });
+
+  it("keeps a previous health error from interrupting a running configuration check", async () => {
+    let finish!: (response: Response) => void;
+    healthResponse = async () => Response.json({ ok: false, error: { code: "unavailable", message: "Health unavailable" } }, { status: 503 });
+    writeResponse = () => new Promise((resolve) => { finish = resolve; });
+    await mount();
+    await select(0);
+    await act(async () => button("Health", container).click());
+    const healthRetry = container.querySelector<HTMLButtonElement>('[role="alert"] button')!;
+    expect(healthRetry.textContent).toContain("Retry");
+    await checkConfiguration();
+
+    expect(container.querySelector('[role="alert"] button')).toBeNull();
+    await act(async () => healthRetry.click());
+    await act(async () => finish(verdict()));
+    expect(vi.mocked(fetch).mock.calls.filter(([path]) => String(path).endsWith("/health"))).toHaveLength(1);
+    expect(result()?.textContent).toContain("Configuration check pass:");
+    expect(container.querySelector('[role="alert"] button')?.textContent).toContain("Retry");
   });
 
   it("keeps configuration checks unavailable for a read-only configuration grant while health remains usable", async () => {
@@ -173,19 +178,23 @@ describe("Profile Diagnostics configuration receipt", () => {
     expect(total.nextElementSibling?.textContent).toBe("17");
   });
 
-  it("retires an open configuration confirmation when write access is revoked and regranted", async () => {
+  it("cannot show an old configuration receipt after write access is revoked and regranted", async () => {
+    let finish!: (response: Response) => void;
+    writeResponse = () => new Promise((resolve) => { finish = resolve; });
     await mount();
     await select(0);
-    await act(async () => button("Configuration check", container).click());
-    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
-    await mount("en", false);
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
-    await mount();
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
-    expect(writes).toHaveLength(0);
-    await select(0);
-    await confirm();
+    await checkConfiguration();
     expect(writes).toHaveLength(1);
+    await mount("en", false);
+    expect(button("Configuration check", container).disabled).toBe(true);
+    await mount();
+    await act(async () => finish(verdict()));
+    expect(result()).toBeNull();
+    expect(writes).toHaveLength(1);
+    writeResponse = async () => verdict();
+    await select(0);
+    await checkConfiguration();
+    expect(writes).toHaveLength(2);
     expect(result()?.textContent).toContain("Configuration check pass:");
   });
 
@@ -193,7 +202,7 @@ describe("Profile Diagnostics configuration receipt", () => {
     writeResponse = async () => verdict("fail");
     await mount();
     await select(0);
-    await confirm();
+    await checkConfiguration();
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(container.textContent).toContain("runnerConfig fixture backend is unavailable");
     expect(container.textContent).toContain("pipelineModel must be configured");
@@ -205,13 +214,13 @@ describe("Profile Diagnostics configuration receipt", () => {
     expect(result()?.textContent).toContain("freeplay");
     expect(result()?.textContent).toContain("landscape");
     expect(writes).toEqual([{ path: `/api/v2/admin/generation/model-profiles/${profiles[0]!.id}/commands/dry-run`,
-      body: { reason: "Controlled configuration validation", confirmation: profiles[0]!.id }, key: expect.any(String) }]);
+      body: { reason: "Validate the selected model configuration", confirmation: profiles[0]!.id }, key: expect.any(String) }]);
   });
 
   it("retains the completed result after the transient feedback window without sending another command", async () => {
     await mount();
     await select(0);
-    await confirm();
+    await checkConfiguration();
     await act(async () => vi.advanceTimersByTimeAsync(10_000));
     expect(container.textContent).toContain("Configuration check pass: 2/2 configuration cases passed. No provider call was made.");
     expect(result()?.textContent).toContain("Fixture image A");
@@ -221,12 +230,12 @@ describe("Profile Diagnostics configuration receipt", () => {
   it("clears the previous configuration result when the operator selects another profile", async () => {
     await mount();
     await select(0);
-    await confirm();
+    await checkConfiguration();
     await select(1);
     expect(result()).toBeNull();
     expect(container.textContent).not.toContain("Configuration check pass:");
     writeResponse = async () => verdict("fail");
-    await confirm("Validate the newly selected profile");
+    await checkConfiguration();
     expect(result()?.textContent).toContain(profiles[1]!.id);
     expect(result()?.textContent).not.toContain(profiles[0]!.id);
     expect(result()?.textContent).toContain("Version: 2");
@@ -249,22 +258,19 @@ describe("Profile Diagnostics configuration receipt", () => {
     expect(total.nextElementSibling?.textContent).toBe("17");
   });
 
-  it("keeps an unknown response explicit and retries only on operator confirmation with the same key", async () => {
+  it("keeps an unknown response explicit and retries only on request with the same key", async () => {
     writeResponse = async () => { if (writes.length === 1) throw new TypeError("Controlled unknown response"); return verdict(); };
     await mount();
     await select(0);
-    const dialog = await confirm("Keep this reason on explicit retry");
-    expect(document.querySelector('[role="dialog"]')).toBe(dialog);
+    await checkConfiguration();
     expect(result()).toBeNull();
-    expect(dialog.querySelector('[role="alert"]')).not.toBeNull();
-    expect(dialog.querySelector<HTMLInputElement>('[aria-label="Reason (≥3)"]')!.value).toBe("Keep this reason on explicit retry");
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
     await act(async () => vi.advanceTimersByTimeAsync(10_000));
     expect(writes).toHaveLength(1);
-    await act(async () => button("Confirm configuration check", dialog).click());
+    await act(async () => button("Retry", container).click());
     expect(writes).toHaveLength(2);
     expect(writes[0]!.key).toBeTruthy();
     expect(writes[1]).toEqual(writes[0]);
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(result()?.textContent).toContain("Configuration check pass:");
   });
 
@@ -274,18 +280,16 @@ describe("Profile Diagnostics configuration receipt", () => {
       : writes.length === 2 ? Response.json({ ok: true, data: { dryRun: { status: "pass", passed: 2, total: 2 } } }) : verdict();
     await mount();
     await select(0);
-    const dialog = await confirm();
-    expect(document.querySelector('[role="dialog"]')).toBe(dialog);
+    await checkConfiguration();
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
     expect(result()).toBeNull();
-    expect(container.textContent).not.toContain("Configuration check pass:");
-    await act(async () => button("Confirm configuration check", dialog).click());
-    expect(document.querySelector('[role="dialog"]')).toBe(dialog);
+    await act(async () => button("Retry", container).click());
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
     expect(result()).toBeNull();
-    expect(container.textContent).not.toContain("Configuration check pass:");
     expect(writes).toHaveLength(2);
     await act(async () => vi.advanceTimersByTimeAsync(10_000));
     expect(writes).toHaveLength(2);
-    await act(async () => button("Confirm configuration check", dialog).click());
+    await act(async () => button("Retry", container).click());
     expect(writes).toHaveLength(3);
     expect(writes[0]!.key).toBeTruthy();
     expect(writes[1]).toEqual(writes[0]);
@@ -297,7 +301,7 @@ describe("Profile Diagnostics configuration receipt", () => {
     writeResponse = async () => verdict("fail");
     await mount();
     await select(0);
-    await confirm();
+    await checkConfiguration();
     await mount("zh");
     expect(result("配置检查")?.textContent).toContain("配置检查 失败：1/2");
     expect(result("配置检查")?.textContent).toContain("已选配置");
@@ -314,12 +318,12 @@ describe("Profile Diagnostics configuration receipt", () => {
       ? new Promise((resolve) => { finishOld = resolve; }) : Promise.resolve(verdict("fail"));
     await mount();
     await select(0);
-    await confirm();
-    // Actual route navigation unmounts InsightsView; it does not edit the inert background selector.
+    await checkConfiguration();
+    // Actual route navigation unmounts InsightsView; an old receipt must not attach to a later page.
     await act(async () => root.render(<div>Another admin route</div>));
     await mount();
     await select(1);
-    await confirm();
+    await checkConfiguration();
     await act(async () => finishOld(verdict()));
     expect(result()?.textContent).toContain(profiles[1]!.id);
     expect(result()?.textContent).not.toContain(profiles[0]!.id);

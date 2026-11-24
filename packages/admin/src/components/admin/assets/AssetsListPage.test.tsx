@@ -116,7 +116,7 @@ describe("AssetsListPage request authority", () => {
 
   beforeEach(() => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    window.history.replaceState(null, "", "/admin/content/assets");
+    window.history.replaceState(null, "", "/admin/creative/library");
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -140,7 +140,7 @@ describe("AssetsListPage request authority", () => {
     });
 
     await act(async () => root.render(<AssetsListPage />));
-    await waitUntil(() => container.querySelector('a[href="/admin/content/assets/old-card"]') !== null);
+    await waitUntil(() => container.querySelector('a[href="/admin/creative/library/old-card"]') !== null);
 
     const status = container.querySelector<HTMLSelectElement>('select[aria-label="Status"]');
     expect(status).not.toBeNull();
@@ -148,7 +148,7 @@ describe("AssetsListPage request authority", () => {
       (status as HTMLSelectElement).value = "approved";
       (status as HTMLSelectElement).dispatchEvent(new Event("change", { bubbles: true }));
     });
-    expect(container.querySelector('a[href="/admin/content/assets/old-card"]')).toBeNull();
+    expect(container.querySelector('a[href="/admin/creative/library/old-card"]')).toBeNull();
     expect(container.firstElementChild?.getAttribute("aria-busy")).toBe("true");
     await waitUntil(() => apiGet.mock.calls.some(([path]) => path.includes("status=approved")));
 
@@ -159,13 +159,13 @@ describe("AssetsListPage request authority", () => {
     await waitUntil(() => apiGet.mock.calls.some(([path]) => path.includes("status=rejected")));
 
     rejected.resolve(response(asset("latest-card", "rejected")));
-    await waitUntil(() => container.querySelector('a[href="/admin/content/assets/latest-card"]') !== null);
+    await waitUntil(() => container.querySelector('a[href="/admin/creative/library/latest-card"]') !== null);
     expect(container.firstElementChild?.getAttribute("aria-busy")).toBe("false");
 
     approved.resolve(response(asset("stale-card", "approved")));
     await act(async () => { await approved.promise; });
-    expect(container.querySelector('a[href="/admin/content/assets/latest-card"]')).not.toBeNull();
-    expect(container.querySelector('a[href="/admin/content/assets/stale-card"]')).toBeNull();
+    expect(container.querySelector('a[href="/admin/creative/library/latest-card"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/admin/creative/library/stale-card"]')).toBeNull();
   });
 
   it("selects only archive-eligible cards and clears the current page selection", async () => {
@@ -176,7 +176,7 @@ describe("AssetsListPage request authority", () => {
     ));
 
     await act(async () => root.render(<AssetsListPage />));
-    await waitUntil(() => container.querySelector('a[href="/admin/content/assets/asset-a"]') !== null);
+    await waitUntil(() => container.querySelector('a[href="/admin/creative/library/asset-a"]') !== null);
 
     await click(findButton("Select page", container));
     await waitUntil(() => container.textContent?.includes("2 selected") === true);
@@ -195,14 +195,14 @@ describe("AssetsListPage request authority", () => {
 
     await act(async () => root.render(<AssetsListPage canReview={false} />));
     await waitUntil(() =>
-      container.querySelector('a[href="/admin/content/assets/asset-read-only"]') !== null,
+      container.querySelector('a[href="/admin/creative/library/asset-read-only"]') !== null,
     );
 
     expect(container.querySelector('input[aria-label="Select asset asset-read-only"]')).toBeNull();
     expect(findButton("Select page", container)).toBeNull();
     expect(findButton("Archive selected", container)).toBeNull();
     expect(findButton("Upload images", container)).toBeNull();
-    expect(container.querySelector('input[aria-label="Choose images to upload"]')).toBeNull();
+    expect(container.querySelector('input[type="file"]')).toBeNull();
   });
 
   it("uploads external artwork with its operational purpose and refreshes the Library", async () => {
@@ -229,7 +229,7 @@ describe("AssetsListPage request authority", () => {
       purpose.dispatchEvent(new Event("change", { bubbles: true }));
     });
     const input = container.querySelector<HTMLInputElement>(
-      'input[aria-label="Choose images to upload"]',
+      'input[type="file"]',
     );
     expect(input).not.toBeNull();
     const file = new File([new Uint8Array(1_024)], "finished-feed.png", {
@@ -282,7 +282,7 @@ describe("AssetsListPage request authority", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await act(async () => root.render(<AssetsListPage />));
-    await waitUntil(() => container.querySelector('a[href="/admin/content/assets/asset-free"]') !== null);
+    await waitUntil(() => container.querySelector('a[href="/admin/creative/library/asset-free"]') !== null);
     await click(findButton("Select page", container));
     await click(findButton("Archive selected", container));
 
@@ -315,7 +315,7 @@ describe("AssetsListPage request authority", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await act(async () => root.render(<AssetsListPage />));
-    await waitUntil(() => container.querySelector('a[href="/admin/content/assets/asset-a"]') !== null);
+    await waitUntil(() => container.querySelector('a[href="/admin/creative/library/asset-a"]') !== null);
     await click(findButton("Select page", container));
     await click(findButton("Archive selected", container));
     await waitUntil(() => document.querySelector('[role="dialog"]') !== null);
@@ -382,7 +382,7 @@ describe("AssetsListPage request authority", () => {
       }, { status: 409 })));
 
     await act(async () => root.render(<AssetsListPage />));
-    await waitUntil(() => container.querySelector('a[href="/admin/content/assets/asset-race"]') !== null);
+    await waitUntil(() => container.querySelector('a[href="/admin/creative/library/asset-race"]') !== null);
     await click(findButton("Select page", container));
     await click(findButton("Archive selected", container));
     await waitUntil(() => document.querySelector('[role="dialog"]') !== null);
@@ -415,7 +415,7 @@ describe("AssetsListPage request authority", () => {
     }, { status: 404 })));
 
     await act(async () => root.render(<AssetsListPage />));
-    await waitUntil(() => container.querySelector('a[href="/admin/content/assets/asset-stale"]') !== null);
+    await waitUntil(() => container.querySelector('a[href="/admin/creative/library/asset-stale"]') !== null);
     await click(findButton("Select page", container));
     await click(findButton("Archive selected", container));
 

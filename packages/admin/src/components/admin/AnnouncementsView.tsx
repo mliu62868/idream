@@ -391,7 +391,7 @@ function AnnouncementForm({
   const [body, setBody] = useState(editing?.body ?? "");
   const [href, setHref] = useState(editing?.href ?? "");
   const [level, setLevel] = useState<"info" | "promo" | "warning">(editing?.level ?? "info");
-  const [active, setActive] = useState(true);
+  const [active, setActive] = useState(false);
   // SPEC: 时间窗一直存在于契约、存储、公开过滤器和更新服务里，只有后台没有入口。
   // INTENT: 没有入口就没人能排期公告（发版公告、活动开始/结束都要它），而且上面那列
   //         「在展示 / 已启用但不在窗口内」也永远只能显示前者——补上入口这两件事才同时成立。
@@ -404,19 +404,19 @@ function AnnouncementForm({
   const effectiveEndsAt = editing && endsAt === isoToLocalInput(editing.endsAt)
     ? editing.endsAt : localInputToIso(endsAt);
   const [reason, setReason] = useState("");
-  const [confirmation, setConfirmation] = useState("");
   const [err, setErr] = useState<{ message: string; cause: unknown } | null>(null);
   const trimmedTitle = title.trim();
   const expectedConfirmation = editing ? editing.id : trimmedTitle;
+  const needsReason = editing ? editing.active : active;
   const dirty = title !== (editing?.title ?? "") || body !== (editing?.body ?? "") ||
-    href !== (editing?.href ?? "") || level !== (editing?.level ?? "info") || !active ||
+    href !== (editing?.href ?? "") || level !== (editing?.level ?? "info") || active ||
     startsAt !== isoToLocalInput(editing?.startsAt ?? null) || endsAt !== isoToLocalInput(editing?.endsAt ?? null) ||
-    Boolean(reason || confirmation);
+    Boolean(reason);
   // The parent owns navigation and target changes; this keyed form owns input.
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
 
   async function submit() {
-    if (!canWrite || busy) return;
+    if (!canWrite || !canCreate) return;
     onBusyChange(true);
     setErr(null);
     try {
@@ -429,8 +429,8 @@ function AnnouncementForm({
           level,
           startsAt: effectiveStartsAt,
           endsAt: effectiveEndsAt,
-          reason: reason.trim(),
-          confirmation: confirmation.trim(),
+          reason: needsReason ? reason.trim() : "Save inactive announcement",
+          confirmation: expectedConfirmation,
         });
         reload();
         onSaved(t("Saved “{title}”.", { title: trimmedTitle }));
@@ -445,18 +445,17 @@ function AnnouncementForm({
         // datetime-local 没有时区，按本机时区转成契约要的带偏移 ISO 串。
         startsAt: effectiveStartsAt,
         endsAt: effectiveEndsAt,
-        reason: reason.trim(),
-        confirmation: confirmation.trim(),
+        reason: needsReason ? reason.trim() : "Create inactive announcement",
+        confirmation: expectedConfirmation,
       });
       setTitle("");
       setBody("");
       setHref("");
       setLevel("info");
-      setActive(true);
+      setActive(false);
       setStartsAt("");
       setEndsAt("");
       setReason("");
-      setConfirmation("");
       reload();
       onSaved(
         !active
@@ -472,18 +471,11 @@ function AnnouncementForm({
     }
   }
 
-  // SPEC: 按钮为什么不能点，逐条说出来。
-  // INTENT: 这个表单有五个前置条件（标题、正文、原因≥3、确认文本要和标题一字不差、时间窗顺序），
-  //         过去只把按钮置灰 —— 运营看不出是差原因还是确认文本敲错了，只能一个个试。
+  // 默认保存未启用公告。只有操作会改变站内广播时才请运营填写原因。
   const missing: string[] = [];
   if (trimmedTitle.length === 0) missing.push("a title");
   if (body.trim().length === 0) missing.push("body text");
-  if (reason.trim().length < 3) missing.push("a reason of at least 3 characters");
-  if (editing && confirmation.trim() !== editing.id) {
-    missing.push("the announcement ID typed to confirm");
-  } else if (!editing && trimmedTitle.length > 0 && confirmation.trim() !== trimmedTitle) {
-    missing.push("the title typed again to confirm");
-  }
+  if (needsReason && reason.trim().length < 3) missing.push("a reason of at least 3 characters");
   if (!announcementWindowOrdered(effectiveStartsAt ?? "", effectiveEndsAt ?? "")) missing.push("an end time after the start time");
   const canCreate = !busy && missing.length === 0;
 
@@ -493,7 +485,7 @@ function AnnouncementForm({
     <details open={editing ? true : undefined} className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <summary className="cursor-pointer text-sm font-semibold"><h2 className="inline">
         {editing ? t("Edit announcement") : t("Create announcement")}
-        {editing ? <span className="ml-2 font-mono text-xs font-normal text-[var(--ad-text-muted)]">{editing.id}</span> : null}
+        {editing ? <span className="ml-2 text-xs font-normal text-[var(--ad-text-muted)]">{editing.title}</span> : null}
       </h2></summary>
       <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("An in-product banner — this is the site-wide broadcast channel. Active means visible to everyone.")}</p>
       {/* The parent also freezes target changes while this write owns the form. */}
@@ -536,23 +528,14 @@ function AnnouncementForm({
             {t("Active immediately")}
           </label>
         )}
-        <Field label={t("Reason (≥3)")}>
+        {needsReason ? <Field label={t("Reason (≥3)")}>
           <input
             className={inputClass}
             onChange={(e) => setReason(e.target.value)}
             placeholder={t("Reason (≥3)")}
             value={reason}
           />
-        </Field>
-        <Field label={t("Confirmation")}>
-          <input
-            aria-label={t("Announcement create confirmation")}
-            className={editing ? `${inputClass} font-mono` : inputClass}
-            onChange={(e) => setConfirmation(e.target.value)}
-            placeholder={editing ? expectedConfirmation : t("Type title to confirm")}
-            value={confirmation}
-          />
-        </Field>
+        </Field> : null}
         {editing ? (
           <button
             className="rounded-md inline-flex h-10 items-center justify-center border border-[var(--ad-border)] px-3 text-sm"
@@ -571,10 +554,9 @@ function AnnouncementForm({
           type="button"
         >
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : editing ? <Pencil className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
-          {editing ? t("Save changes") : t("Create")}
+          {t(editing ? "Save changes" : active ? "Enable announcement" : "Save announcement draft")}
         </button>
       </fieldset>
-      {expectedConfirmation ? <p className="mt-3 break-all text-xs text-[var(--ad-text-muted)]">{t("Confirmation target: {target}", { target: expectedConfirmation })}</p> : null}
       {missing.length > 0 ? (
         <div className="mt-2 text-xs text-[var(--ad-text-muted)]" id="announcement-create-missing">
           {editing ? t("Still needed before you can save it:") : t("Still needed before you can create it:")}

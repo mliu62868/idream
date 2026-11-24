@@ -32,9 +32,9 @@ describe("legacy admin views: locale leaks", () => {
   it("renders the Chinese locale without falling back to the English source strings", () => {
     const html = zhMarkup(<InsightsView />);
 
-    expect(html).toContain("漏斗与留存数据暂不可用");
-    expect(html).toContain("留存指标口径完成验证前，不提供相关数值或导出");
-    expect(html).not.toContain("Funnel and retention data are unavailable");
+    expect(html).toContain("模型健康度 + 配置检查");
+    expect(html).toContain("不会调用生成供应商，也不会生成媒体。");
+    expect(html).not.toContain("Profile health + configuration check");
   });
 
   // SPEC: StatusPill 印出来的词一律过 value()，label 传了也一样。

@@ -8,7 +8,6 @@ import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { FilterBar } from "@/components/admin/ui/FilterBar";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
-import { PrimaryButton } from "@/components/admin/ui/buttons";
 import { StatusPill } from "@/components/admin/ui/StatusPill";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
@@ -106,10 +105,9 @@ export function PlacementsListPage({ canPublish }: { canPublish: boolean }) {
   }
 
   const newAction = canPublish ? (
-    <Link href="/admin/content/placements/new">
-      <PrimaryButton>
-        <Plus className="h-4 w-4" /> {t("New placement")}
-      </PrimaryButton>
+    <Link className="inline-flex min-h-11 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-medium text-white"
+      href="/admin/creative/placements/new">
+      <Plus aria-hidden="true" className="h-4 w-4" /> {t("New placement")}
     </Link>
   ) : null;
 
@@ -118,7 +116,7 @@ export function PlacementsListPage({ canPublish }: { canPublish: boolean }) {
     id: row.id,
     cells: [
       <AssetImage asset={row.asset} compact key="thumb" />,
-      <Link className="font-semibold underline underline-offset-4" href={`/admin/content/placements/${row.id}`} key="slot">{value(row.slot)}</Link>,
+      <Link className="font-semibold underline underline-offset-4" href={`/admin/creative/placements/${encodeURIComponent(row.id)}`} key="slot">{value(row.slot)}</Link>,
       `${value(row.targetType)} · ${row.targetId}`,
       <StatusPill key="status" status={row.status} />,
       <StatusPill key="verification" status={row.verificationState} />,

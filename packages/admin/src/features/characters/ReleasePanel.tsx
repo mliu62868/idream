@@ -28,7 +28,7 @@ import type {
   RunCommittedCharacterMutation,
 } from "./character-workspace-permissions";
 import { CharacterHandoffNotice } from "./CharacterHandoff";
-import { characterAssetPurposeLabel } from "./character-asset-studio-authority";
+import { characterAssetPurposeLabel, nextIncompleteCharacterAssetPurpose } from "./character-asset-studio-authority";
 import { ReleaseChangeSummary } from "./PreviewDiff";
 import { commandSubmissionMessage, submitCharacterReleaseCommand, submitWorkspaceServingCommand, type CharacterServingAction } from "./release-command";
 
@@ -130,11 +130,11 @@ export function releaseBlockerGuidance(
   // INTENT: with no identity yet, the fix is the first portrait in Images (identity
   // bootstrap), the same place the production journey sends operators. Visual
   // identity only repairs an identity that already exists.
-  if (["visual_identity_missing", "active_visual_profile_missing_or_unsealed"].includes(blocker)) {
+  if (blocker === "visual_identity_missing") {
     return {
       blocker,
       message: "Create the first identity portrait before publishing.",
-      action: "Open image assets",
+      action: "Create first identity portrait",
       href: `${base}?tab=assets`,
     };
   }
@@ -143,6 +143,7 @@ export function releaseBlockerGuidance(
       "visual_identity_exact_version",
       "reference_set_published_snapshot",
       "generation_route_qualified",
+      "active_visual_profile_missing_or_unsealed",
       "active_visual_profile_hash_invalid",
       "active_reference_set_media_unavailable",
       "active_reference_set_missing_or_empty",
@@ -579,14 +580,31 @@ export function ReleasePanel({
   // Server blockers stay visible but never hide or disable Publish: the next
   // attempt is re-validated by the server anyway.
   const blockers = [...new Set([...draftBlockers, ...authorityBlockers])];
-  const incompletePlacements = blockers.includes("release_asset_manifest_available")
-    ? data.journey.assetPack.draft.missingPurposes
-    : [];
+  const needsFirstPortrait = !data.visual.activeIdentity && blockers.some((code) =>
+    code === "visual_identity_missing" || code === "active_visual_profile_missing_or_unsealed"
+  );
+  const nextPlacement = !needsFirstPortrait && blockers.includes("release_asset_manifest_available")
+    ? nextIncompleteCharacterAssetPurpose(data.journey)
+    : null;
+  const primaryAction = data.journey.primaryAction;
+  const canReadImageStep = permissions.readImages && (
+    !primaryAction.readOperations.includes("GET /api/v2/admin/characters/:id/image-sources") || primaryAction.canReadTarget
+  );
   const blockerGuidance = [
     ...new Map(
-      blockers.filter((blocker) => blocker !== "release_asset_manifest_available" || incompletePlacements.length === 0).map((blocker) => {
-        const guidance = releaseBlockerGuidance(blocker, data.character.id);
-        return [`${guidance.message}|${guidance.href}`, guidance] as const;
+      blockers.flatMap((blocker) => {
+        if (blocker === "release_asset_manifest_available" && (needsFirstPortrait || nextPlacement)) return [];
+        const activeIdentityMissing = blocker === "active_visual_profile_missing_or_unsealed";
+        const guidance = releaseBlockerGuidance(
+          needsFirstPortrait && activeIdentityMissing ? "visual_identity_missing"
+            : !needsFirstPortrait && blocker === "visual_identity_missing" ? "active_visual_profile_missing_or_unsealed"
+            : blocker,
+          data.character.id,
+        );
+        // Identity creation supplies the reference set and route. Those checks
+        // are actionable only once the first portrait has been adopted.
+        if (needsFirstPortrait && guidance.action === "Open visual identity") return [];
+        return [[`${guidance.message}|${guidance.href}`, guidance] as const];
       }),
     ).values(),
   ];
@@ -679,37 +697,36 @@ export function ReleasePanel({
 
       <aside className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <h3 className="font-semibold">{t("Publish Character")}</h3>
-        {incompletePlacements.length > 0 || blockerGuidance.length > 0 ? (
+        {nextPlacement || blockerGuidance.length > 0 ? (
           <div className="mt-3 space-y-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]" data-testid="release-blockers">
-            {incompletePlacements.map((purpose) => {
-              const slot = data.preview.draft.assetPack[purpose];
-              const title = t(characterAssetPurposeLabel(purpose));
-              return (
-                <p key={purpose}>
-                  <Link
-                    className="font-semibold underline"
-                    href={`/admin/characters/${encodeURIComponent(data.character.id)}?tab=assets#character-image-placement-${purpose}`}
-                  >
-                    {t(slot.status === "missing" ? "Select an image for {slot}" : "Fix the image for {slot}", { slot: title })}
-                  </Link>
-                </p>
-              );
-            })}
+            {nextPlacement ? (
+              <p>
+                {canReadImageStep ? <Link
+                  className="font-semibold underline"
+                  href={`/admin/characters/${encodeURIComponent(data.character.id)}?tab=assets#character-image-placement-${nextPlacement}`}
+                >
+                  {t(data.preview.draft.assetPack[nextPlacement].status === "missing" ? "Select an image for {slot}" : "Fix the image for {slot}", { slot: t(characterAssetPurposeLabel(nextPlacement)) })}
+                </Link> : t("Complete and repair the selected image pack before publishing.")}
+              </p>
+            ) : null}
             {blockerGuidance.map((guidance) => (
               <div key={`${guidance.message}|${guidance.href}`}>
                 <p>{t(guidance.message)}</p>
-                {guidance.href && guidance.action ? (
+                {guidance.href && guidance.action ? (!guidance.href.includes("?tab=assets") || canReadImageStep ? (
                   <Link
                     className="mt-1 inline-flex font-semibold underline"
                     href={guidance.href}
                   >
                     {t(guidance.action)}
                   </Link>
-                ) : (
+                ) : null) : (
                   <code className="mt-1 block break-all text-xs">{guidance.blocker}</code>
                 )}
               </div>
             ))}
+            {!canReadImageStep && (nextPlacement || blockerGuidance.some(({ href }) => href?.includes("?tab=assets"))) ? (
+              <p>{t("Ask someone with access to this character’s image workspace to complete this step.")}</p>
+            ) : null}
           </div>
         ) : currentReleaseStale && !candidate ? (
           <p className="mt-3 text-sm text-[var(--ad-text-muted)]">

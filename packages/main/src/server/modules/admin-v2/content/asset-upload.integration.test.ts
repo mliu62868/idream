@@ -26,7 +26,7 @@ vi.mock("@/server/providers", () => ({
   },
 }));
 
-import { POST as uploadAsset } from "@/app/api/v2/admin/assets/route";
+import { GET as listAssets, POST as uploadAsset } from "@/app/api/v2/admin/assets/route";
 import { POST as createPlacement } from "@/app/api/v2/admin/content/placements/route";
 
 describe("Admin platform asset upload", () => {
@@ -117,6 +117,15 @@ describe("Admin platform asset upload", () => {
         uploadedById: actorId,
       },
       platformAsset: { status: "approved", purpose: "feed" },
+    });
+    const search = await listAssets(new Request(
+      "http://localhost/api/v2/admin/assets?search=EXTERNAL-FEED-ART&status=approved",
+      { headers: adminHeaders(`search-${suffix}`, false) },
+    ));
+    expect(search.status).toBe(200);
+    await expect(search.json()).resolves.toMatchObject({
+      ok: true,
+      data: { items: [{ id: assetId }] },
     });
 
     const placement = await createPlacement(new Request(

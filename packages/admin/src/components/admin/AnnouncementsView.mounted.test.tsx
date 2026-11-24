@@ -109,18 +109,23 @@ describe("AnnouncementsView edit", () => {
     await waitFor(() => container.querySelector('[aria-label="Edit announcement"]') !== null);
     await changeInput(container.querySelector<HTMLInputElement>('input[placeholder="Title"]')!, "New scheduled notice");
     await changeInput(container.querySelector<HTMLInputElement>('input[placeholder="Body"]')!, "A new scheduled announcement");
+    const activate = container.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    expect(activate.checked).toBe(false);
+    await act(async () => activate.click());
     await changeInput(container.querySelector<HTMLInputElement>('input[placeholder="Reason (≥3)"]')!, "Schedule a notice");
-    await changeInput(container.querySelector<HTMLInputElement>('[aria-label="Announcement create confirmation"]')!, "New scheduled notice");
     const times = container.querySelectorAll<HTMLInputElement>('input[type="datetime-local"]');
     await changeInput(times[0], "2026-10-07T10:00");
     await changeInput(times[1], "2026-10-07T09:00");
-    const create = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent?.trim() === "Create")!;
+    const create = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent?.trim() === "Enable announcement")!;
     expect(create().disabled).toBe(true);
     await changeInput(times[1], "2026-10-07T11:00");
     expect(create().disabled).toBe(false);
     await act(async () => create().click());
     const post = fetchMock.mock.calls.find(([, init]) => init?.method === "POST")!;
-    expect(JSON.parse(String(post[1]?.body))).toMatchObject({ startsAt: "2026-10-07T14:00:00.000Z", endsAt: "2026-10-07T15:00:00.000Z" });
+    expect(JSON.parse(String(post[1]?.body))).toMatchObject({
+      active: true, confirmation: "New scheduled notice", reason: "Schedule a notice",
+      startsAt: "2026-10-07T14:00:00.000Z", endsAt: "2026-10-07T15:00:00.000Z",
+    });
   });
 
   async function openScheduledAnnouncement(schedule: { startsAt: string; endsAt: string }) {
@@ -135,7 +140,6 @@ describe("AnnouncementsView edit", () => {
 
   async function confirmScheduledEdit() {
     await changeInput(container.querySelector<HTMLInputElement>('input[placeholder="Reason (≥3)"]')!, "Correct the scheduled announcement");
-    await changeInput(container.querySelector<HTMLInputElement>('[aria-label="Announcement create confirmation"]')!, announcement.id);
   }
 
   function saveButton() {
@@ -196,7 +200,6 @@ describe("AnnouncementsView edit", () => {
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Edit announcement"]')!.click());
     await changeInput(container.querySelector<HTMLInputElement>('input[placeholder="Title"]')!, "My revoked draft");
     await changeInput(container.querySelector<HTMLInputElement>('input[placeholder="Reason (≥3)"]')!, "Fix the announcement copy");
-    await changeInput(container.querySelector<HTMLInputElement>('[aria-label="Announcement create confirmation"]')!, announcement.id);
     let finishWrite!: (response: Response) => void;
     fetchMock.mockImplementationOnce(() => new Promise(resolve => { finishWrite = resolve; }));
     const save = [...container.querySelectorAll("button")].find(node => node.textContent?.trim() === "Save changes")!;
@@ -230,7 +233,6 @@ describe("AnnouncementsView edit", () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(container.querySelector<HTMLInputElement>('input[placeholder="Title"]')!.value).toBe("My conflicting announcement copy");
     await changeInput(container.querySelector<HTMLInputElement>('input[placeholder="Reason (≥3)"]')!, "Reconcile the announcement copy");
-    await changeInput(container.querySelector<HTMLInputElement>('[aria-label="Announcement create confirmation"]')!, announcement.id);
     await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent?.trim() === "Save changes")!.click());
     const write = fetchMock.mock.calls.find(([, init]) => init?.method === "PATCH")!;
     expect(JSON.parse(String(write[1]?.body))).toMatchObject({ entityVersion: announcement.version, title: "My conflicting announcement copy" });
@@ -300,7 +302,6 @@ describe("AnnouncementsView edit", () => {
 
     await changeInput(title!, "Launch sale v2");
     await changeInput(container.querySelector<HTMLInputElement>('input[placeholder="Reason (≥3)"]')!, "fix copy");
-    await changeInput(container.querySelector<HTMLInputElement>('[aria-label="Announcement create confirmation"]')!, "ann-1");
 
     const save = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Save changes");
     expect(save?.disabled).toBe(false);
@@ -467,7 +468,6 @@ describe("AnnouncementsView edit", () => {
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Edit announcement"]')!.click());
     await changeInput(container.querySelector<HTMLInputElement>('input[placeholder="Title"]')!, "My pending copy");
     await changeInput(container.querySelector<HTMLInputElement>('input[placeholder="Reason (≥3)"]')!, "Correct the announcement");
-    await changeInput(container.querySelector<HTMLInputElement>('[aria-label="Announcement create confirmation"]')!, announcement.id);
     fetchMock.mockResolvedValueOnce(Response.json({ ok: false, error: { code: "conflict", message: "Announcement changed. Refresh and reopen it before trying again." } }, { status: 409 }));
     const save = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Save changes")!;
     await act(async () => save.click());
@@ -487,7 +487,6 @@ describe("AnnouncementsView edit", () => {
     const title = container.querySelector<HTMLInputElement>('input[placeholder="Title"]')!;
     await changeInput(title, "My pending copy");
     await changeInput(container.querySelector<HTMLInputElement>('input[placeholder="Reason (≥3)"]')!, "Correct the announcement");
-    await changeInput(container.querySelector<HTMLInputElement>('[aria-label="Announcement create confirmation"]')!, announcement.id);
     let finishWrite!: (response: Response) => void;
     fetchMock.mockImplementationOnce(() => new Promise(resolve => { finishWrite = resolve; }));
     const save = [...container.querySelectorAll("button")].find(node => node.textContent?.trim() === "Save changes")!;
@@ -517,11 +516,9 @@ describe("AnnouncementsView edit", () => {
     title.closest("details")!.open = true;
     await changeInput(title, "New operational notice");
     await changeInput(container.querySelector<HTMLInputElement>('input[placeholder="Body"]')!, "A complete announcement body");
-    await changeInput(container.querySelector<HTMLInputElement>('input[placeholder="Reason (≥3)"]')!, "Create a scheduled notice");
-    await changeInput(container.querySelector<HTMLInputElement>('[aria-label="Announcement create confirmation"]')!, "New operational notice");
     let finishWrite!: (response: Response) => void;
     fetchMock.mockImplementationOnce(() => new Promise(resolve => { finishWrite = resolve; }));
-    const create = [...container.querySelectorAll("button")].find(node => node.textContent?.trim() === "Create")!;
+    const create = [...container.querySelectorAll("button")].find(node => node.textContent?.trim() === "Save announcement draft")!;
     await act(async () => create.click());
     const edit = container.querySelector<HTMLButtonElement>('[aria-label="Edit announcement"]')!;
     expect(edit.disabled).toBe(true);
@@ -531,7 +528,13 @@ describe("AnnouncementsView edit", () => {
     await act(async () => finishWrite(Response.json({ ok: true, data: { announcement: { ...announcement, title: "New operational notice" } } })));
     await waitFor(() => container.textContent?.includes("Created “New operational notice”.") === true);
     expect(container.querySelector<HTMLInputElement>('input[placeholder="Title"]')?.value).toBe("");
-    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST");
+    expect(posts).toHaveLength(1);
+    expect(JSON.parse(String(posts[0]?.[1]?.body))).toMatchObject({
+      active: false,
+      confirmation: "New operational notice",
+      reason: "Create inactive announcement",
+    });
   });
 
   it("restores editable inputs after a failed write and retries only the deliberate new copy", async () => {
@@ -540,7 +543,6 @@ describe("AnnouncementsView edit", () => {
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Edit announcement"]')!.click());
     await changeInput(container.querySelector<HTMLInputElement>('input[placeholder="Title"]')!, "My failed copy");
     await changeInput(container.querySelector<HTMLInputElement>('input[placeholder="Reason (≥3)"]')!, "Correct the announcement");
-    await changeInput(container.querySelector<HTMLInputElement>('[aria-label="Announcement create confirmation"]')!, announcement.id);
     fetchMock.mockResolvedValueOnce(Response.json({ ok: false, error: { code: "unavailable", message: "Announcement write unavailable" } }, { status: 503 }));
     const save = () => [...container.querySelectorAll("button")].find(node => node.textContent?.trim() === "Save changes")!;
     await act(async () => save().click());

@@ -1,22 +1,15 @@
 "use client";
 
-// SPEC: 生成质量 + 增长洞察面板（BackendFeatureSpec 生成质量与指标契约）。
-//   - Phase 0 hides invalid legacy retention values and export.
-//   - 按 profile 查健康度 + 跑不调用 provider 的配置检查（兼容既有 dry-run API）。
-// INTENT: 自取数；外壳只传按操作契约算出的写权限，样式对齐 TagsView。
-// WHY(诚实化): 导航把本页叫「Funnels & Retention」，但本页两个响应类型里既没有漏斗也没有
-//   cohort——这不是渲染缺口，是数据契约里就没有。所以顶部直说"契约里还没有"，不编指标、
-//   不放占位图；页面实际提供的能力（profile 健康度 + 配置检查）如实说明。
+// 按模型配置查健康度，或执行不会调用 provider 的确定性配置检查。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, AlertTriangle, Loader2 } from "lucide-react";
+import { Activity, Loader2 } from "lucide-react";
 import { apiGet } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
-import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { requestErrorMessage } from "@/components/admin/section-kit";
 import { adminV2Operation, type AdminV2OperationResponse } from "@/lib/admin-v2-operation";
-import { createLatestRequestGate, type LatestRequestToken } from "@/lib/latest-request";
+import { createLatestRequestGate } from "@/lib/latest-request";
 import { useWorkspaceRefresh } from "@/features/workspace-refresh";
 
 const inputClass =
@@ -50,36 +43,7 @@ type ConfigurationResult = {
 };
 
 export function InsightsView({ canWrite = false }: { canWrite?: boolean } = {}) {
-  return (
-    <div className="space-y-6">
-      <RetentionSection />
-      {/* A changed write grant retires filled confirmations and in-flight receipts. */}
-      <ProfileHealthSection canWrite={canWrite} key={canWrite ? "write" : "read"} />
-    </div>
-  );
-}
-
-function RetentionSection() {
-  const { t } = useAdminI18n();
-
-  return (
-    <section className="rounded-lg border border-[var(--ad-yellow-text)]/25 bg-[var(--ad-yellow-bg)] p-4" role="status">
-      <div className="flex items-start gap-3">
-        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--ad-yellow-text)]" />
-        <div>
-          <h2 className="text-sm font-semibold text-[var(--ad-yellow-text)]">
-            {t("Funnel and retention data are unavailable")}
-          </h2>
-          <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
-            {t("View generation health and check model configuration below.")}
-          </p>
-          <p className="mt-3 text-xs leading-5 text-[var(--ad-text-muted)]">
-            {t("D1 / D7 retention values and exports remain unavailable until the metric definitions are verified.")}
-          </p>
-        </div>
-      </div>
-    </section>
-  );
+  return <ProfileHealthSection canWrite={canWrite} key={canWrite ? "write" : "read"} />;
 }
 
 function ProfileHealthSection({ canWrite }: { canWrite: boolean }) {
@@ -93,9 +57,9 @@ function ProfileHealthSection({ canWrite }: { canWrite: boolean }) {
   const [selectedProfile, setSelectedProfile] = useState<ProfileOption | null>(null);
   const [profileId, setProfileId] = useState("");
   const [health, setHealth] = useState<Health | null>(null);
-  const [busy, setBusy] = useState<"health" | null>(null);
+  const [busy, setBusy] = useState<"health" | "check" | null>(null);
   const [err, setErr] = useState<unknown>(null);
-  const [dryRunTarget, setDryRunTarget] = useState<{ profile: ProfileOption; request: LatestRequestToken } | null>(null);
+  const [configurationError, setConfigurationError] = useState<unknown>(null);
   const [configurationResult, setConfigurationResult] = useState<ConfigurationResult | null>(null);
   const requestGate = useRef(createLatestRequestGate());
   const requestedProfileCursor = useRef<string | undefined>(undefined);
@@ -130,14 +94,17 @@ function ProfileHealthSection({ canWrite }: { canWrite: boolean }) {
 
   useEffect(() => {
     const gate = requestGate.current;
-    const diagnostics = diagnosticGate.current;
     const timer = window.setTimeout(() => void loadProfiles(), 0);
     return () => {
       gate.invalidate();
-      diagnostics.invalidate();
       window.clearTimeout(timer);
     };
   }, [loadProfiles]);
+
+  useEffect(() => {
+    const diagnostics = diagnosticGate.current;
+    return () => diagnostics.invalidate();
+  }, []);
 
   const selected = useMemo(
     () => profiles?.find((profile) => profile.id === profileId) ?? (selectedProfile?.id === profileId ? selectedProfile : null),
@@ -145,7 +112,7 @@ function ProfileHealthSection({ canWrite }: { canWrite: boolean }) {
   );
 
   async function loadHealth() {
-    if (!selected) return;
+    if (!selected || busy) return;
     const request = diagnosticGate.current.begin();
     setBusy("health");
     setErr(null);
@@ -163,29 +130,27 @@ function ProfileHealthSection({ canWrite }: { canWrite: boolean }) {
 
   useWorkspaceRefresh(() => {
     void loadProfiles();
-    // A data refresh must not retire an open or unresolved configuration command.
-    if (health && !dryRunTarget) void loadHealth();
+    if (health && !busy && !configurationError) void loadHealth();
   });
 
-  // WHY(confirmation 自动填充): 后端要求 confirmation === profile.id，但 id 现在由选择器给出，
-  // 让运营再把 UUID 抄一遍不增加任何安全性。走 TagsView 改名同款约定：ConfirmDialog 采集
-  // reason，confirmation 由代码填 id，人读到的是 label。
-  const dryRunSpec: ConfirmSpec | null = canWrite && dryRunTarget
-    ? {
-        title: t("Confirm configuration check"),
-        summary: t("Runs deterministic profile and runtime validation for {label}. No provider is called and no media is generated.", { label: dryRunTarget.profile.label }),
-        submitLabel: t("Confirm configuration check"),
-        onSubmit: async (reason) => {
-          if (!canWrite || !dryRunTarget.request.isCurrent()) return;
-          setConfigurationResult(null);
-          const data = await adminV2Operation("POST /api/v2/admin/generation/model-profiles/:id/commands/dry-run", {
-            path: { id: dryRunTarget.profile.id }, body: { reason, confirmation: dryRunTarget.profile.id },
-          });
-          if (!dryRunTarget.request.isCurrent()) return;
-          setConfigurationResult({ profile: dryRunTarget.profile, verdict: data.dryRun });
-        },
-      }
-    : null;
+  async function checkConfiguration() {
+    if (!canWrite || !selected || busy) return;
+    const request = diagnosticGate.current.begin();
+    setBusy("check");
+    setConfigurationError(null);
+    setConfigurationResult(null);
+    try {
+      const data = await adminV2Operation("POST /api/v2/admin/generation/model-profiles/:id/commands/dry-run", {
+        path: { id: selected.id },
+        body: { reason: "Validate the selected model configuration", confirmation: selected.id },
+      });
+      if (request.isCurrent()) setConfigurationResult({ profile: selected, verdict: data.dryRun });
+    } catch (error) {
+      if (request.isCurrent()) setConfigurationError(error);
+    } finally {
+      if (request.isCurrent()) setBusy(null);
+    }
+  }
 
   return (
     <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
@@ -215,7 +180,7 @@ function ProfileHealthSection({ canWrite }: { canWrite: boolean }) {
               setHealth(null);
               setErr(null);
               setBusy(null);
-              setDryRunTarget(null);
+              setConfigurationError(null);
               setConfigurationResult(null);
             }}
             value={profileId}
@@ -245,14 +210,13 @@ function ProfileHealthSection({ canWrite }: { canWrite: boolean }) {
           {t("Health")}
         </button>
         <button
-          className="inline-flex h-10 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
+          className="inline-flex h-10 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
           disabled={!canWrite || busy !== null || !selected}
-          onClick={() => {
-            if (canWrite && selected) setDryRunTarget({ profile: selected, request: diagnosticGate.current.begin() });
-          }}
+          onClick={() => void checkConfiguration()}
           type="button"
         >
-          {t("Configuration check")}
+          {busy === "check" ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" /> : null}
+          {t(busy === "check" ? "Checking configuration…" : "Configuration check")}
         </button>
       </div>
       {nextProfileCursor ? <button className="mt-2 rounded-md border border-[var(--ad-border)] px-3 py-2 text-sm disabled:opacity-50" disabled={profilesLoading} onClick={() => void loadProfiles(nextProfileCursor)} type="button">{t("Load more")}</button> : null}
@@ -263,17 +227,15 @@ function ProfileHealthSection({ canWrite }: { canWrite: boolean }) {
         </div>
       ) : null}
       {configurationResult ? <ConfigurationCheckResult result={configurationResult} /> : null}
-      {err ? (
+      {configurationError && !busy ? (
+        <AuthorityRequestError cause={configurationError} message={t("Configuration check could not finish")} onRetry={() => void checkConfiguration()} requestKind="write" />
+      ) : null}
+      {err && !busy ? (
         <div className="mt-2">
           <AuthorityRequestError cause={err} message={requestErrorMessage(err, t)} onRetry={() => void loadHealth()} requestKind="read" />
         </div>
       ) : null}
       {health ? <ProfileHealthMetrics health={health} /> : null}
-      {dryRunSpec && dryRunTarget ? <ConfirmDialog onClose={() => {
-        if (!dryRunTarget.request.isCurrent()) return;
-        diagnosticGate.current.invalidate();
-        setDryRunTarget(null);
-      }} spec={dryRunSpec} /> : null}
     </section>
   );
 }

@@ -184,7 +184,11 @@ export async function listContentAssets(query: ContentAssetQuery) {
       if (tag && !tags.includes(tag)) continue;
       if (search) {
         const dto = contentAssetDTO(asset);
-        const haystack = [dto.id, dto.description ?? "", dto.purpose ?? "", dto.targetId ?? "", ...dto.tags].join(" ").toLowerCase();
+        const metadata = jsonRecord(asset.metadata);
+        const filename = metadata.source === "admin_asset_upload" && typeof metadata.filename === "string"
+          ? metadata.filename
+          : "";
+        const haystack = [dto.id, filename, dto.description ?? "", dto.purpose ?? "", dto.targetId ?? "", ...dto.tags].join(" ").toLowerCase();
         if (!haystack.includes(search)) continue;
       }
       matches.push(asset);

@@ -74,7 +74,7 @@ describe("Character release history empty state", () => {
 
   async function render(data: CharacterWorkspaceDetail, canPublish = true, journal = createCharacterCommandJournal({
     actorId: "release-operator", characterId: data.character.id, storage: null,
-  })) {
+  }), canReadImages = true) {
     await act(async () => {
       root.render(
         <AdminI18nProvider locale="zh">
@@ -82,7 +82,10 @@ describe("Character release history empty state", () => {
             data={data}
             journal={journal}
             permissions={characterWorkspacePermissions(
-              new Set<AdminPermissionKey>(canPublish ? ["character.release.publish", "content.takedown.write"] : []),
+              new Set<AdminPermissionKey>([
+                ...(canPublish ? ["character.release.publish", "content.takedown.write"] as const : []),
+                ...(canReadImages ? ["character.project.read", "creative.run.read"] as const : []),
+              ]),
               false,
             )}
             runCommittedMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
@@ -394,6 +397,19 @@ describe("Character release history empty state", () => {
     expect(container.textContent).not.toContain("事故或工单");
     expect(container.querySelector('a[href="/admin/characters/character-fixture?tab=assets"]')).not.toBeNull();
     expect(container.querySelector('a[href="/admin/characters/character-fixture?tab=soul"]')).not.toBeNull();
+    expect(publishButton()?.disabled).toBe(true);
+  });
+
+  it.each([true, false])("offers a handoff if the image step is unreadable despite the workspace grant (local grant %s)", async (canReadImages) => {
+    const data = characterWorkspaceDetail();
+    await render(withCharacterWorkspaceDetail(data, {
+      journey: { primaryAction: { ...data.journey.primaryAction, canReadTarget: false } },
+      visual: { readiness: { ...data.visual.readiness, blockers: [{ code: "visual_identity_missing", message: "First portrait missing", deepLink: data.journey.primaryAction.deepLink }] } },
+    }), true, undefined, canReadImages);
+
+    const blockers = container.querySelector('[data-testid="release-blockers"]')!;
+    expect(blockers.textContent).toContain("请有此角色图片工作区权限的同事完成这一步");
+    expect(blockers.querySelector('a[href*="tab=assets"]')).toBeNull();
     expect(publishButton()?.disabled).toBe(true);
   });
 

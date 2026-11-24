@@ -31,6 +31,7 @@ import {
   ASSET_UPLOAD_PURPOSES,
   assetArchiveBlocker,
   assetAuthorityDependencyView,
+  assetDisplayName,
   assetsListPath,
   bulkArchiveAssets,
   canonicalAssetIds,
@@ -78,6 +79,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const failureToast = useFailureToast();
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
+  const [uploadedAssetId, setUploadedAssetId] = useState<string | null>(null);
   const [uploadRevision, setUploadRevision] = useState(0);
   const requestGate = useRef(createLatestRequestGate());
   const preflightRequestGate = useRef(createLatestRequestGate());
@@ -241,14 +243,16 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
     setUploadBusy(true);
     setUploadError(null);
     setUploadStatus(null);
+    setUploadedAssetId(null);
     let uploadedCount = 0;
     try {
       for (const file of files) {
-        await uploadPlatformAsset({
+        const uploaded = await uploadPlatformAsset({
           file,
           purpose: uploadPurpose,
           fallbackMessage: t("Image upload failed"),
         });
+        if (files.length === 1) setUploadedAssetId(uploaded.asset.id);
         uploadedCount += 1;
       }
       setUploadStatus(t("{count} images uploaded to the Library.", {
@@ -335,9 +339,8 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
               </label>
               <input
                 accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
-                aria-label={t("Choose images to upload")}
-                className="sr-only"
                 disabled={uploadBusy}
+                hidden
                 multiple
                 onChange={(event) => {
                   const files = [...(event.currentTarget.files ?? [])];
@@ -363,6 +366,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
           {uploadStatus ? (
             <p className="mt-3 rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" role="status">
               {uploadStatus}
+              {uploadedAssetId ? <Link className="ml-3 font-semibold underline" href={`/admin/creative/library/${encodeURIComponent(uploadedAssetId)}`}>{t("Open uploaded image")}</Link> : null}
             </p>
           ) : null}
         </section>
@@ -392,7 +396,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
           setCursor(undefined);
         }}
         search={search}
-        searchPlaceholder={t("Search by tag, description, or asset ID")}
+        searchPlaceholder={t("Search by filename, tag, description, or asset ID")}
         selects={[
           {
             name: t("Status"),
@@ -729,6 +733,7 @@ function AssetCard({
 }) {
   const { t, value } = useAdminI18n();
   const archiveSelectable = asset.platformStatus !== "archived";
+  const displayName = assetDisplayName(asset);
   return (
     <article
       className={`overflow-hidden rounded-lg border bg-[var(--ad-surface)] transition-colors ${
@@ -759,14 +764,14 @@ function AssetCard({
       ) : null}
       <Link
         className="group block transition-shadow hover:shadow-[var(--ad-shadow-hover)]"
-        href={`/admin/content/assets/${asset.id}`}
+        href={`/admin/creative/library/${encodeURIComponent(asset.id)}`}
       >
         <AssetImage asset={asset} eager={eager} />
         <div className="space-y-1.5 p-4">
           <MediaAssetAuthorityNotice asset={asset} />
           <StatusPill status={asset.platformStatus} />
-          <p className="truncate font-mono text-xs text-[var(--ad-text-muted)]" title={asset.id}>
-            {asset.id}
+          <p className="truncate text-sm font-medium" title={displayName}>
+            {displayName}
           </p>
           <p className="truncate text-xs text-[var(--ad-text-muted)]">
             {asset.purpose ? value(asset.purpose) : "—"}

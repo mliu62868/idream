@@ -246,7 +246,7 @@ describe("shell permission authority through actual workspace HTTP requests", ()
     expect(writes).toBe(1);
     expect(bootstrapCalls).toBe(1);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
-    expect(container.textContent).toContain(asset.id);
+    expect(container.querySelector(`a[href="/admin/creative/library/${asset.id}"]`)).not.toBeNull();
     expect(container.querySelector('[aria-label="Bulk archive"]')).toBeNull();
     await act(async () => pending.resolve(bootstrap(["creative.asset.read"])));
     bootstrapRead = async () => bootstrap(allowed);

@@ -1,9 +1,8 @@
 // SPEC: 内容铺位（Placements）三件套的共享契约 —— 类型/端点/payload 构造（SSoT，三页共用）。
 // INVARIANTS: payload 字段与旧内容运营视图的 POST（ContentOpsViews.tsx:536-543）/
 // PATCH（:566-570）body 完全一致；placementCreateSchema/placementPatchSchema
-// （server admin/content/placements.ts）都要求 reason（≥3 字符）—— 与 Recipes/Presets 不同，铺位的创建与状态
-// 流转都走 ConfirmDialog/FormFooter 采集 reason（T14/T15 规则里"backend 收 reason"的分支，与
-// Assets 图片库同款）。PATCH 还要求 confirmation===完整 placement id——由调用方用已知 id 自动
+// （server admin/content/placements.ts）都要求 reason（≥3 字符）。新建只保存草稿，原因由命令填充；
+// 状态流转仍由运营确认并填写原因。PATCH 还要求 confirmation===完整 placement id——由调用方用已知 id 自动
 // 填充，不是运营手敲（真正需要手敲重复确认的只有 archive 这一步破坏性操作，走 ConfirmDialog 的
 // destructive.expectedName）。
 
@@ -37,6 +36,8 @@ export type ApprovedAsset = {
   customerPublishable: boolean;
   publishabilityReasons: string[];
   description?: string | null;
+  metadata?: unknown;
+  sourceBatch?: { id: string } | null;
   url?: string;
   thumbnailUrl?: string;
 };
@@ -63,9 +64,6 @@ export const SLOTS = [
 // 原有下拉顺序。
 export const TARGET_TYPES = ["character", "template", "route_page", "campaign"] as const;
 
-// Creating a draft never publishes it; uploaded Campaigns use the explicit verification command.
-export const CREATE_STATUSES = ["draft"] as const;
-
 // Legacy 详情页只保留 pause/archive；archive 是终态。
 export const PATCH_ACTIONS = ["paused", "archived"] as const;
 
@@ -85,8 +83,6 @@ export type PlacementDraft = {
   slot: (typeof SLOTS)[number];
   targetType: (typeof TARGET_TYPES)[number];
   targetId: string;
-  status: (typeof CREATE_STATUSES)[number];
-  reason: string;
   eyebrow: string;
   title: string;
   ctaLabel: string;
@@ -98,8 +94,6 @@ export const defaultPlacementDraft: PlacementDraft = {
   slot: "campaign",
   targetType: "campaign",
   targetId: "",
-  status: "draft",
-  reason: "",
   eyebrow: "",
   title: "",
   ctaLabel: "",
@@ -112,16 +106,14 @@ export function publishableApprovedAssets(
   return assets.filter((asset) => asset.customerPublishable);
 }
 
-// SPEC: 原样搬运 create()（ContentOpsViews.tsx:536-543）的 POST body；reason 原逻辑硬编码为
-// "Created from Placements"，现在改为 FormFooter 采集的真实原因。
 export function placementCreatePayload(draft: PlacementDraft): Record<string, unknown> {
   return {
     mediaAssetId: draft.mediaAssetId,
     slot: draft.slot,
     targetType: draft.targetType,
-    targetId: draft.targetId,
-    status: draft.status,
-    reason: draft.reason.trim(),
+    targetId: draft.targetId.trim(),
+    status: "draft",
+    reason: "Create an unpublished placement draft",
     ...(draft.slot === "campaign" ? { metadata: {
       eyebrow: draft.eyebrow.trim(), title: draft.title.trim(),
       ...(draft.ctaLabel.trim() || draft.href.trim() ? { ctaLabel: draft.ctaLabel.trim(), href: draft.href.trim() } : {}),

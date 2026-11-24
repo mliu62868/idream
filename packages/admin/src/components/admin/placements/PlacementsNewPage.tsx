@@ -1,4 +1,5 @@
 "use client";
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
@@ -9,11 +10,12 @@ import { FormPage, FormSection, Field, FormFooter, INPUT_CLASS } from "@/compone
 import { PrimaryButton } from "@/components/admin/ui/buttons";
 import { Pagination } from "@/components/admin/ui/Pagination";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
+import { assetDisplayName, isPublishableOperatorUpload } from "@/components/admin/assets/assets-api";
+import { useUrlBootstrap } from "@/components/admin/section-kit";
 import type { AdminPageInfo } from "@idream/shared/admin";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import {
   approvedAssetsListPath,
-  CREATE_STATUSES,
   PLACEMENTS_BASE,
   SLOTS,
   TARGET_TYPES,
@@ -26,7 +28,7 @@ import {
 } from "./placements-api";
 
 // A Campaign draft includes the copy actually rendered to customers. Selecting artwork does not publish it.
-export function PlacementsNewPage() {
+export function PlacementsNewPage({ canUpload = false, canReadRuns = false }: { canUpload?: boolean; canReadRuns?: boolean }) {
   const { t, value } = useAdminI18n();
   const [assets, setAssets] = useState<ApprovedAsset[]>([]);
   const [blockedAssets, setBlockedAssets] = useState<ApprovedAsset[]>([]);
@@ -38,9 +40,12 @@ export function PlacementsNewPage() {
   const [error, setError] = useState<unknown>(null);
   const failureToast = useFailureToast();
   const [assetSearch, setAssetSearch] = useState("");
+  const [preselectedAssetId, setPreselectedAssetId] = useState("");
+  const [urlReady, setUrlReady] = useState(false);
   const [assetCursors, setAssetCursors] = useState<Array<string | undefined>>([undefined]);
   const [pageInfo, setPageInfo] = useState<AdminPageInfo>({ hasNextPage: false, endCursor: null });
   const requestGate = useRef(createLatestRequestGate());
+  const lastUrlAsset = useRef("");
   const assetCursor = assetCursors.at(-1);
 
   const loadAssets = useCallback(async () => {
@@ -56,26 +61,46 @@ export function PlacementsNewPage() {
       setBlockedAssets(
         data.items.filter((asset) => !asset.customerPublishable),
       );
+      const preselected = eligible.find((asset) => asset.id === preselectedAssetId && isPublishableOperatorUpload(asset));
       // A page of search results is not the selected Campaign artwork. Update known
       // eligibility if the selected asset is present; absence says nothing about it.
       setSelectedAsset((current) => current
         ? data.items.find((asset) => asset.id === current.id) ?? current
-        : null);
+        : preselected ?? null);
+      if (preselected) {
+        setDraft((current) => current.mediaAssetId
+          ? current
+          : { ...current, mediaAssetId: preselected.id, targetId: current.targetId || preselected.targetId || "" });
+      }
     } catch (loadError) {
       if (!request.isCurrent()) return;
       setError(loadError);
     } finally {
       if (request.isCurrent()) setLoadingAssets(false);
     }
-  }, [assetSearch, assetCursor]);
+  }, [assetSearch, assetCursor, preselectedAssetId]);
+
+  useUrlBootstrap(useCallback((params) => {
+    const id = params.get("assetId")?.trim() ?? "";
+    if (id !== lastUrlAsset.current) {
+      lastUrlAsset.current = id;
+      setSelectedAsset(null);
+      setDraft((current) => current.mediaAssetId ? { ...current, mediaAssetId: "" } : current);
+    }
+    setPreselectedAssetId(id);
+    setAssetSearch(id);
+    setAssetCursors([undefined]);
+    setUrlReady(true);
+  }, []), requestGate);
 
   useEffect(() => {
+    if (!urlReady) return;
     const timer = window.setTimeout(() => {
       void loadAssets();
     }, 200);
     const gate = requestGate.current;
     return () => { window.clearTimeout(timer); gate.invalidate(); };
-  }, [loadAssets]);
+  }, [loadAssets, urlReady]);
 
   function patch(partial: Partial<PlacementDraft>) {
     setDraft((current) => ({ ...current, ...partial }));
@@ -85,7 +110,7 @@ export function PlacementsNewPage() {
     const asset = assets.find((item) => item.id === assetId);
     if (!asset) return;
     setSelectedAsset(asset);
-    patch({ mediaAssetId: assetId, targetId: asset?.targetId ?? draft.targetId });
+    patch({ mediaAssetId: assetId, targetId: asset.targetId ?? draft.targetId });
   }
 
   function invalidateAssets() {
@@ -96,15 +121,32 @@ export function PlacementsNewPage() {
     setPageInfo({ hasNextPage: false, endCursor: null });
   }
 
-  const canSubmit =
-    !creating &&
-    selectedAsset?.id === draft.mediaAssetId &&
-    selectedAsset.customerPublishable &&
-    draft.targetId.trim().length > 0 &&
-    validCampaignDraft(draft) &&
-    draft.reason.trim().length >= 3;
+  const isCampaign = draft.slot === "campaign";
+  const fixedTarget = isCampaign || draft.slot === "template_cover";
+  const targetLabel = t(isCampaign ? "Campaign destination key" : draft.slot === "template_cover" ? "Template ID" : "Target ID");
+  const selectableAssets = isCampaign ? assets.filter(isPublishableOperatorUpload) : assets;
+  const selectedIsAvailable = selectedAsset && selectedAsset.customerPublishable &&
+    (!isCampaign || isPublishableOperatorUpload(selectedAsset));
+  const matchedGeneratedAssets = isCampaign && assetSearch.trim()
+    ? assets.filter((asset) => !isPublishableOperatorUpload(asset) && asset.sourceBatch)
+    : [];
+  const sourceRun = matchedGeneratedAssets.find(({ id }) => id === preselectedAssetId)?.sourceBatch ??
+    (matchedGeneratedAssets.length === 1 ? matchedGeneratedAssets[0]?.sourceBatch : null);
+
+  let nextStep: string | null = null;
+  if (!selectedIsAvailable || selectedAsset?.id !== draft.mediaAssetId) {
+    nextStep = "Choose an eligible image for the placement.";
+  } else if (!draft.targetId.trim()) {
+    nextStep = "Enter a destination key for this placement.";
+  } else if (isCampaign && (!draft.eyebrow.trim() || !draft.title.trim())) {
+    nextStep = "Enter the campaign eyebrow and title.";
+  } else if (!validCampaignDraft(draft)) {
+    nextStep = "Add a button label and a site path or HTTPS URL, or leave both blank.";
+  }
+  const canSubmit = !creating && nextStep === null;
 
   async function create() {
+    if (!canSubmit) return;
     setCreating(true);
     setError(null);
     try {
@@ -123,27 +165,25 @@ export function PlacementsNewPage() {
 
   return (
     <FormPage backHref="/admin/creative/placements" backLabel={t("Back to placements")} title={t("New placement")}>
-      <div className="rounded-lg bg-[var(--ad-blue-bg)] p-3 text-sm leading-6 text-[var(--ad-blue-text)]">
-        {t("Upload artwork, prepare a Campaign draft, then publish it after image verification. Generated campaigns use Creative Runs; Character images use Character Releases.")}
-      </div>
+      {isCampaign ? <p className="text-sm text-[var(--ad-text-muted)]">{t("Save the draft first. You can preview and publish it from the placement detail.")}</p> : null}
       <FormSection title={t("Basic info")}>
         <Field full label={t("Asset")}>
           <input aria-label={t("Search images")} className={`${INPUT_CLASS} mb-2`} placeholder={t("Search images")}
-            value={assetSearch} onChange={(event) => { invalidateAssets(); setAssetSearch(event.target.value); setAssetCursors([undefined]); }} />
+            value={assetSearch} onChange={(event) => { invalidateAssets(); setPreselectedAssetId(""); setAssetSearch(event.target.value); setAssetCursors([undefined]); }} />
           <select
             aria-label={t("Asset")}
             className={INPUT_CLASS}
-            disabled={loadingAssets || (assets.length === 0 && !selectedAsset)}
+            disabled={loadingAssets || (selectableAssets.length === 0 && !selectedIsAvailable)}
             onChange={(event) => selectAsset(event.target.value)}
-            value={draft.mediaAssetId}
+            value={selectedIsAvailable ? draft.mediaAssetId : ""}
           >
-            {!selectedAsset ? <option value="">{t("Asset")}</option> : null}
-            {selectedAsset && !assets.some((asset) => asset.id === selectedAsset.id) ? (
-              <option value={selectedAsset.id}>{selectedAsset.description || selectedAsset.id}</option>
+            {!selectedIsAvailable ? <option value="">{t("Select an image")}</option> : null}
+            {selectedIsAvailable && !selectableAssets.some((asset) => asset.id === selectedAsset.id) ? (
+              <option value={selectedAsset.id}>{assetDisplayName(selectedAsset)}</option>
             ) : null}
-            {assets.map((asset) => (
+            {selectableAssets.map((asset) => (
               <option key={asset.id} value={asset.id}>
-                {asset.description || asset.id} · {asset.purpose ? value(asset.purpose) : t("Asset")}
+                {assetDisplayName(asset)} · {asset.purpose ? value(asset.purpose) : t("Asset")}
               </option>
             ))}
           </select>
@@ -156,7 +196,7 @@ export function PlacementsNewPage() {
               invalidateAssets();
               setAssetCursors(current => current.at(-1) === nextCursor ? current : [...current, nextCursor]);
             }} />
-          {selectedAsset?.url ? <AssetImage asset={{
+          {selectedIsAvailable && selectedAsset.url ? <AssetImage asset={{
             url: selectedAsset.url,
             thumbnailUrl: selectedAsset.thumbnailUrl ?? "",
           }} preview /> : null}
@@ -167,14 +207,26 @@ export function PlacementsNewPage() {
                 : t("{count} approved assets are hidden because generation authority is incomplete or untrusted.", { count: blockedAssets.length })}
             </p>
           ) : null}
-          {!loadingAssets && !error && assets.length === 0 ? (
-            <p className="mt-2 text-xs text-[var(--ad-red-text)]" role="alert">
-              {t("No customer-publishable approved assets are available. Repair generation authority in the Image Library or create a new reviewed asset.")}
+          {!loadingAssets && !error && selectableAssets.length === 0 && !selectedIsAvailable && !sourceRun ? (
+            <p className="mt-2 text-sm text-[var(--ad-text-muted)]" role="status">
+              {t(assetSearch ? "No eligible image matches this search. Try another name or clear the search." : "Choose an uploaded campaign image from the Image Library.")}
+              {canUpload ? <Link className="ml-2 font-semibold underline" href="/admin/creative/library">{t("Open image library")}</Link> : null}
+            </p>
+          ) : null}
+          {isCampaign ? (
+            <p className="mt-2 text-sm text-[var(--ad-text-muted)]">
+              {t(canReadRuns ? "Generated artwork is placed from Generation History." : "Ask someone with access to Generation History to place generated artwork.")}
+              {canReadRuns ? <Link className="ml-2 font-semibold underline" href={sourceRun ? `/admin/creative/runs/${encodeURIComponent(sourceRun.id)}` : "/admin/creative/runs"}>
+                {t(sourceRun ? "Open the source generation record" : "Open Generation History")}
+              </Link> : null}
             </p>
           ) : null}
         </Field>
         <Field label={t("Slot")}>
-          <select className={INPUT_CLASS} onChange={(event) => patch({ slot: event.target.value as PlacementDraft["slot"] })} value={draft.slot}>
+          <select className={INPUT_CLASS} onChange={(event) => {
+            const slot = event.target.value as PlacementDraft["slot"];
+            patch({ slot, targetType: slot === "campaign" ? "campaign" : slot === "template_cover" ? "template" : draft.targetType });
+          }} value={draft.slot}>
             {SLOTS.map((slot) => (
               <option key={slot} value={slot}>
                 {value(slot)}
@@ -182,22 +234,9 @@ export function PlacementsNewPage() {
             ))}
           </select>
         </Field>
-        <Field label={t("Status")}>
-          <select
-            className={INPUT_CLASS}
-            onChange={(event) => patch({ status: event.target.value as PlacementDraft["status"] })}
-            value={draft.status}
-          >
-            {CREATE_STATUSES.map((statusValue) => (
-              <option key={statusValue} value={statusValue}>
-                {value(statusValue)}
-              </option>
-            ))}
-          </select>
-        </Field>
       </FormSection>
       <FormSection title={t("Target")}>
-        <Field label={t("Target type")}>
+        {!fixedTarget ? <Field label={t("Target type")}>
           <select
             className={INPUT_CLASS}
             onChange={(event) => patch({ targetType: event.target.value as PlacementDraft["targetType"] })}
@@ -209,31 +248,24 @@ export function PlacementsNewPage() {
               </option>
             ))}
           </select>
-        </Field>
-        <Field label={t("Target ID")}>
-          <input aria-label={t(draft.slot === "campaign" ? "Campaign destination key" : "Target ID")} className={INPUT_CLASS} maxLength={180} onChange={(event) => patch({ targetId: event.target.value })} value={draft.targetId} />
+        </Field> : null}
+        <Field full={fixedTarget} label={targetLabel}>
+          <input aria-label={targetLabel} className={INPUT_CLASS} maxLength={180} onChange={(event) => patch({ targetId: event.target.value })} required value={draft.targetId} />
         </Field>
       </FormSection>
-      {draft.slot === "campaign" ? <FormSection title={t("Campaign")}>
-        <Field label={t("Campaign eyebrow")}><input aria-label={t("Campaign eyebrow")} className={INPUT_CLASS} maxLength={80} value={draft.eyebrow} onChange={event => patch({ eyebrow: event.target.value })} /></Field>
-        <Field label={t("Campaign title")}><input aria-label={t("Campaign title")} className={INPUT_CLASS} maxLength={120} value={draft.title} onChange={event => patch({ title: event.target.value })} /></Field>
+      {isCampaign ? <FormSection title={t("Campaign")}>
+        <Field label={t("Campaign eyebrow")}><input aria-label={t("Campaign eyebrow")} className={INPUT_CLASS} maxLength={80} required value={draft.eyebrow} onChange={event => patch({ eyebrow: event.target.value })} /></Field>
+        <Field label={t("Campaign title")}><input aria-label={t("Campaign title")} className={INPUT_CLASS} maxLength={120} required value={draft.title} onChange={event => patch({ title: event.target.value })} /></Field>
         <Field label={t("Campaign CTA label")}><input aria-label={t("Campaign CTA label")} className={INPUT_CLASS} maxLength={60} value={draft.ctaLabel} onChange={event => patch({ ctaLabel: event.target.value })} /></Field>
         <Field label={t("Campaign CTA href")}><input aria-label={t("Campaign CTA href")} className={INPUT_CLASS} maxLength={512} value={draft.href} onChange={event => patch({ href: event.target.value })} /></Field>
-        <p className="text-sm text-[var(--ad-text-muted)]">{t("Add both a CTA label and destination, or leave both blank.")}</p>
       </FormSection> : <p className="text-sm text-[var(--ad-yellow-text)]">{t("This slot has no customer-facing renderer. It can be saved as a draft only.")}</p>}
       {error ? <AuthorityRequestError cause={error} message={t("The latest data could not be loaded.")} onRetry={() => void loadAssets()} requestKind="read" /> : null}
       <FormFooter>
-        <input
-          aria-label={t("Reason (≥3)")}
-          className={`${INPUT_CLASS} max-w-xs`}
-          onChange={(event) => patch({ reason: event.target.value })}
-          placeholder={t("Reason (≥3)")}
-          value={draft.reason}
-        />
         <PrimaryButton disabled={!canSubmit} onClick={() => void create()}>
           {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-          {t("Create placement")}
+          {t("Save placement draft")}
         </PrimaryButton>
+        {nextStep ? <p className="text-sm text-[var(--ad-text-muted)]" role="status">{t(nextStep)}</p> : null}
       </FormFooter>
     </FormPage>
   );

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { adminV2 } from "@/server/test/admin-v2-http";
 import { api, createUser, expectError, expectOk, purgeTestData } from "@/server/test/helpers";
+import { recordCustomerCaseAction } from "./service";
 
 const P = "zt-case-support-lifecycle-";
 const CUSTOMER = `${P}customer`;
@@ -45,6 +46,54 @@ async function caseCommand(caseId: string, command: "wait" | "reopen" | "close",
 }
 
 describe("linked Support and Case lifecycle", () => {
+  it("replays a current reply-and-resolve with one customer message", async () => {
+    const { request, caseId } = await fileRequest();
+    const current = await prisma.adminCase.findUniqueOrThrow({ where: { id: caseId } });
+    const input = { userId: ADMIN, role: "admin" as const, idempotencyKey: crypto.randomUUID(), body: {
+      expectedUpdatedAt: request.updatedAt.toISOString(), expectedCase: { id: caseId, version: current.version },
+      status: "resolved", customerMessage: "The image can be downloaded now.", resolutionNotes: "The image can be downloaded now.",
+      reason: "Supported the repaired download", confirmation: request.ticketId,
+    } };
+    expectOk(await adminV2("PATCH", `support/requests/${request.ticketId}`, input));
+    const replayed = await adminV2("PATCH", `support/requests/${request.ticketId}`, input);
+    expectOk(replayed);
+    expect(replayed.data.replayed).toBe(true);
+    const conversation = await api("GET", `support/requests/${request.ticketId}`, { userId: CUSTOMER });
+    expectOk(conversation);
+    expect(conversation.data.request).toMatchObject({ status: "resolved", canReply: false, messages: [{ body: input.body.customerMessage }] });
+    await expect(prisma.adminCase.findUniqueOrThrow({ where: { id: caseId } })).resolves.toMatchObject({ status: "resolved" });
+  });
+
+  it("rejects a stale reply-and-resolve without changing the ticket or sending its reply", async () => {
+    const { request, caseId } = await fileRequest();
+    const current = await prisma.adminCase.findUniqueOrThrow({ where: { id: caseId } });
+    const intake = await prisma.caseEvidence.findFirstOrThrow({ where: { caseId, sourceType: "support_request" } });
+    const incident = await prisma.opsIncident.create({ data: {
+      signature: `${P}${request.id}`, signatureVersion: "generation-error-v1", status: "triaged", severity: "medium",
+      firstSeen: new Date(), lastSeen: new Date(), impact: {}, mitigation: {},
+    } });
+    try {
+      const escalated = await recordCustomerCaseAction({
+        caseId, actor: { id: ADMIN, role: "admin" }, expectedVersion: current.version, action: "incident_escalated",
+        summary: "Escalated recurring delivery failures", evidenceRefs: [intake.id], outcomeRef: incident.id, requestId: crypto.randomUUID(),
+      });
+      const stale = await adminV2("PATCH", `support/requests/${request.ticketId}`, {
+        userId: ADMIN, role: "admin", body: {
+          expectedUpdatedAt: request.updatedAt.toISOString(), expectedCase: { id: caseId, version: current.version },
+          status: "resolved", customerMessage: "The image works again.", resolutionNotes: "The image works again.",
+          reason: "The issue appears fixed", confirmation: request.ticketId,
+        },
+      });
+      expectError(stale, 409, "conflict");
+      expect(stale.error?.details).toMatchObject({ blocker: "version_mismatch" });
+      await expect(prisma.supportRequest.findUniqueOrThrow({ where: { id: request.id } })).resolves.toEqual(request);
+      await expect(prisma.adminCase.findUniqueOrThrow({ where: { id: caseId } })).resolves.toEqual(escalated);
+      await expect(prisma.caseEvidence.count({ where: { caseId, sourceType: "support_message" } })).resolves.toBe(0);
+    } finally {
+      await prisma.opsIncident.delete({ where: { id: incident.id } });
+    }
+  });
+
   it.each(["case", "support"] as const)("uses the current recurrence episode for SLA changes through %s", async (source) => {
     const { request, caseId } = await fileRequest();
     const historicalStart = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);

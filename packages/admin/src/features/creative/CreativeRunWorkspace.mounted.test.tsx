@@ -264,6 +264,26 @@ describe("Creative Run asynchronous retry command", () => {
     expect(adminV2Request.mock.calls.every(([, options]) => !options?.method || options.method === "GET")).toBe(true);
   });
 
+  it.each(["list", "detail"] as const)("shows Character generation in the %s without campaign placement defaults", async (kind) => {
+    const detail = {
+      ...campaignRun(),
+      id: runId,
+      purpose: "character_cover",
+      target: { type: "character", id: "portrait-character" },
+    } satisfies CreativeRunDetail;
+    adminV2Request.mockImplementation(async () => kind === "list"
+      ? { items: [detail], pageInfo: { endCursor: null, hasNextPage: false }, asOf: "2026-07-17T12:00:00.000Z", freshness: "fresh" }
+      : detail);
+
+    await act(async () => root.render(<CreativeRunWorkspace permissions={permissions} view={kind === "list" ? { kind } : { kind, id: runId }} />));
+    await advance();
+
+    expect(container.textContent).toContain("succeeded");
+    expect(container.textContent).not.toMatch(/unplaced|verification|Retry 0/i);
+    const destination = kind === "list" ? `/admin/creative/runs/${runId}` : "/admin/characters/portrait-character?tab=assets";
+    expect(container.querySelector(`a[href="${destination}"]`)).not.toBeNull();
+  });
+
   it("shows unknown generation consistently and opens the exact recovery request without submitting a retry", async () => {
     const detail = runDetail();
     detail.executionOutcome = "running";

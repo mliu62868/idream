@@ -20,6 +20,7 @@ import type { SupportConversation } from "@idream/shared/contracts";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
 import { StatusPill } from "@/components/admin/ui/StatusPill";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import {
   ConfirmDialog,
@@ -439,14 +440,22 @@ export function SupportWorkspace({
   );
 }
 
-export function SupportConversationPanel({ ticketId, canWrite, canViewPlaintext, refreshRevision, onClose, onUpdated }: {
-  ticketId: string; canWrite: boolean; canViewPlaintext: boolean; refreshRevision: number; onClose?: () => void; onUpdated: () => void;
+export function SupportConversationPanel({ ticketId, canWrite, resolutionCase, canViewPlaintext, refreshRevision, onClose, onUpdated, onConflictRefresh }: {
+  ticketId: string;
+  canWrite: boolean;
+  resolutionCase?: { id: string; version: number };
+  canViewPlaintext: boolean;
+  refreshRevision: number;
+  onClose?: () => void;
+  onUpdated: () => void;
+  onConflictRefresh?: () => Promise<void>;
 }) {
   const { t, value } = useAdminI18n();
   const format = useAdminFormat();
   const [conversation, setConversation] = useState<SupportConversation | null>(null);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<unknown>(null);
+  const [replyConflict, setReplyConflict] = useState<AdminV2RequestError | null>(null);
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const replyInFlight = useRef(false);
@@ -459,31 +468,47 @@ export function SupportConversationPanel({ ticketId, canWrite, canViewPlaintext,
     setLoading(true); setError(null);
     try {
       const result = await adminV2Operation("GET /api/v2/admin/support/requests/:id", { path: { id: ticketId } });
-      if (request.isCurrent()) setConversation(result.request);
-    } catch (cause) { if (request.isCurrent()) setError(cause); }
+      if (!request.isCurrent()) return false;
+      setConversation(result.request);
+      return true;
+    } catch (cause) {
+      if (request.isCurrent()) setError(cause);
+      return false;
+    }
     finally { if (request.isCurrent()) setLoading(false); }
   }, [ticketId]);
   useEffect(() => {
     const requestGate = gate.current;
     const refresh = () => { void load(); };
     window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
-    const timer = window.setTimeout(() => {
-      void load();
-      section.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
-    }, 0);
+    const timer = window.setTimeout(() => void load(), 0);
     return () => {
       window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
       window.clearTimeout(timer);
       requestGate.invalidate();
     };
   }, [load, refreshRevision]);
+  const standalone = Boolean(onClose);
+  useEffect(() => {
+    if (standalone) section.current?.scrollIntoView?.({ block: "nearest" });
+  }, [standalone, ticketId]);
+
+  async function refreshAfterConflict() {
+    if (loading || !(await load())) return;
+    try {
+      await onConflictRefresh?.();
+      setReplyConflict(null);
+    } catch (cause) {
+      setError(cause);
+    }
+  }
 
   // INTENT: 回复客户是客服最高频的动作，按下「发送」就是意图本身 —— 不再弹确认框让人重敲工单号、
   //         编一条审计原因。确认串与原因照旧随请求送达，服务端契约不变。
-  // SPEC: 回复后工单进入「等待客户」；客户再回复时前台会把它改回 open（customer-care.ts）。
-  async function reply() {
+  // SPEC: 普通回复等待客户；明确解决时，回复和解决状态由同一条 Support 命令接收。
+  async function reply(resolve: boolean) {
     const customerMessage = draft.trim();
-    if (!customerMessage || !canWrite || !conversation?.canReply || loading || replyInFlight.current) return;
+    if (!customerMessage || !canWrite || !conversation?.canReply || (resolve && !resolutionCase) || loading || replyConflict || replyInFlight.current) return;
     // INVARIANT: repeated submit events can arrive before React disables the button.
     replyInFlight.current = true;
     setSending(true);
@@ -491,21 +516,27 @@ export function SupportConversationPanel({ ticketId, canWrite, canViewPlaintext,
       await apiWrite(`/api/v2/admin/support/requests/${encodeURIComponent(ticketId)}`, "PATCH", {
         expectedUpdatedAt: conversation.updatedAt,
         customerMessage,
-        reason: "Customer-visible support reply",
+        reason: resolve ? "Customer-facing guidance resolved the support request" : "Customer-visible support reply",
         confirmation: ticketId,
-        ...(conversation.status === "received" || conversation.status === "open" ? { status: "waiting_on_user" } : {}),
+        ...(resolve
+          ? { status: "resolved", resolutionNotes: customerMessage, expectedCase: resolutionCase }
+          : conversation.status === "received" || conversation.status === "open" ? { status: "waiting_on_user" } : {}),
       });
       setDraft("");
-      toast({ tone: "success", title: t("Reply sent to {id}", { id: ticketId }) });
+      toast({ tone: "success", title: t(resolve ? "Reply sent and {id} resolved" : "Reply sent to {id}", { id: ticketId }) });
       await load(); onUpdated();
     } catch (cause) {
-      failureToast(cause);
+      if (cause instanceof AdminV2RequestError && cause.status === 409 && cause.outcome === "answered") {
+        setReplyConflict(cause);
+      } else {
+        failureToast(cause);
+      }
     } finally {
       replyInFlight.current = false;
       setSending(false);
     }
   }
-  return <section className="space-y-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5" ref={section}>
+  return <section className="scroll-mt-24 space-y-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5" id="support-conversation" ref={section} tabIndex={-1}>
     <div className="flex items-center justify-between gap-3"><h2 className="font-semibold">{t("Support conversation")} · {ticketId}</h2>{onClose ? <GhostButton onClick={onClose}>{t("Close conversation")}</GhostButton> : null}</div>
     {error ? <AuthorityRequestError cause={error} message={t("Support conversation could not load")} onRetry={() => void load()} requestKind="read" /> : null}
     {loading ? <p role="status">{t("Loading conversation…")}</p> : null}
@@ -518,12 +549,19 @@ export function SupportConversationPanel({ ticketId, canWrite, canViewPlaintext,
           <p className="mt-1 whitespace-pre-wrap break-words text-sm">{message.body}</p>
         </article>)}
       </div>
-      {canWrite && conversation.canReply ? <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void reply(); }}>
+      {canWrite && conversation.canReply ? <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void reply(false); }}>
         <label className="grid gap-2 text-sm font-medium">{t("Message to customer")}<textarea aria-label={t("Message to customer")} className="min-h-28 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3" disabled={sending} maxLength={2000} onChange={(event) => setDraft(event.target.value)} value={draft} /></label>
         <p className="text-xs text-[var(--ad-text-muted)]">{t("Visible to the customer in Help Desk. Internal reasons stay private.")}</p>
-        <PrimaryButton disabled={!draft.trim() || loading || sending} type="submit">{t("Send reply")}</PrimaryButton>
+        {replyConflict ? <>
+          <AuthorityRequestError cause={replyConflict} message={t("This action did not complete.")} onRetry={() => void refreshAfterConflict()} retryLabel={t("Refresh conversation")} />
+          <p className="text-sm">{t("Your reply draft is kept. Review the latest conversation before sending it.")}</p>
+        </> : null}
+        <div className="flex flex-wrap gap-2">
+          <PrimaryButton disabled={!draft.trim() || loading || sending || replyConflict !== null} type="submit">{t("Send reply")}</PrimaryButton>
+          {resolutionCase ? <GhostButton disabled={!draft.trim() || loading || sending || replyConflict !== null} onClick={() => void reply(true)} type="button">{t("Reply and mark resolved")}</GhostButton> : null}
+        </div>
       </form> : null}
-      <GhostButton disabled={loading || sending} onClick={() => void load()}>{t("Refresh conversation")}</GhostButton>
+      {!replyConflict ? <GhostButton disabled={loading || sending} onClick={() => void load()}>{t("Refresh conversation")}</GhostButton> : null}
       {canViewPlaintext ? <details className="rounded-md border border-[var(--ad-border)] p-3">
         <summary className="cursor-pointer text-sm font-semibold">{t("Plaintext access")}</summary>
         <PlaintextAccessPanel initialTicketId={ticketId} />

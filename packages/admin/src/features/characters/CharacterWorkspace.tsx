@@ -925,6 +925,7 @@ function CharacterDetail({
         : null;
   const nextStep = data.journey.primaryAction;
   const nextStepCopy = characterPrimaryActionCopy[nextStep.code];
+  const releaseShowsNextStep = tab === "release" && nextStep.code === "create_primary_portrait";
   const destination = new URL(nextStep.deepLink, "https://admin.invalid");
   const atNextStep =
     destination.pathname === "/admin/characters/" + encodeURIComponent(id) &&
@@ -984,6 +985,7 @@ function CharacterDetail({
   const hasQuickPublish =
     servingState !== "retired" &&
     tab !== "release" &&
+    data.journey.assetPack.draft.completed === data.journey.assetPack.draft.total &&
     (!characterHasNoUnpublishedChanges(data) ||
       Boolean(data.journey.release.candidateReleaseId));
   const detailSection = (
@@ -1047,7 +1049,7 @@ function CharacterDetail({
             onClick={() => selectTab("release")}
             tone="primary"
           >
-            {t("Publish Character")}
+            {t("Preview and publish")}
           </WorkspaceButton>
         ) : null}
         {tab !== "release" && servingState === "live" && guardedPermissions.publishRelease ? (
@@ -1153,7 +1155,7 @@ function CharacterDetail({
           refreshLabel="Refresh"
         />
       ) : null}
-      {!atNextStep || !nextStep.canReadTarget ? (
+      {!releaseShowsNextStep && (!atNextStep || !nextStep.canReadTarget) ? (
         <div
           className="mt-4 flex flex-col gap-2 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between"
           data-testid="character-next-step"

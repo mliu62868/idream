@@ -117,6 +117,7 @@ export const supportRequestListResponseSchema = z
 export const supportRequestPatchSchema = z
   .object({
     expectedUpdatedAt: adminIsoDateTimeSchema,
+    expectedCase: z.object({ id: adminIdSchema, version: z.number().int().nonnegative() }).strict().optional(),
     status: supportRequestStatusSchema.optional(),
     assignedToId: z.string().trim().min(1).max(160).nullable().optional(),
     priority: z.number().int().min(1).max(5).optional(),

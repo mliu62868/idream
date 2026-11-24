@@ -75,8 +75,6 @@ type EditDraft = {
   indexingStatus: IndexingStatus;
   bodyJson: string;
   expectedUpdatedAt: string;
-  reason: string;
-  confirmation: string;
 };
 
 const emptyArticleBody =
@@ -294,8 +292,6 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
           indexingStatus: data.page.indexingStatus,
           bodyJson: JSON.stringify(data.page.body, null, 2),
           expectedUpdatedAt: data.page.updatedAt,
-          reason: "",
-          confirmation: "",
         };
         setEditDraft(nextDraft);
         setEditBaseline(nextDraft);
@@ -322,8 +318,8 @@ export function CmsView({ canWrite = false }: { canWrite?: boolean }) {
         indexingStatus: editDraft.indexingStatus,
         body,
         expectedUpdatedAt: editDraft.expectedUpdatedAt,
-        reason: editDraft.reason.trim(),
-        confirmation: editDraft.confirmation.trim(),
+        reason: "Save unpublished CMS page changes",
+        confirmation: editDraft.path,
       });
       const savedPath = editDraft.path;
       setEditDraft(null);
@@ -668,27 +664,6 @@ function EditPageForm({
           />
         </Field>
         <CmsArticleEditor bodyJson={draft.bodyJson} onChange={(bodyJson) => onChange({ ...draft, bodyJson })} />
-        <Field label={t("Reason (≥3)")}>
-          <input
-            className={inputClass}
-            onChange={(event) =>
-              onChange({ ...draft, reason: event.target.value })
-            }
-            placeholder={t("Reason (≥3)")}
-            value={draft.reason}
-          />
-        </Field>
-        <Field label={t("Type page path")}>
-          <input
-            aria-label={t("CMS edit confirmation")}
-            className={`${inputClass} font-mono`}
-            onChange={(event) =>
-              onChange({ ...draft, confirmation: event.target.value })
-            }
-            placeholder={t("Type page path")}
-            value={draft.confirmation}
-          />
-        </Field>
         <div className="flex justify-end gap-2 md:col-span-2">
           <button
             className="rounded-md inline-flex h-10 items-center justify-center border border-[var(--ad-border)] px-3 text-sm"
@@ -724,13 +699,11 @@ function CreatePageForm({ canWrite, onCreated, reload }: { canWrite: boolean; on
   const [indexingStatus, setIndexingStatus] =
     useState<IndexingStatus>("noindex");
   const [bodyJson, setBodyJson] = useState(emptyArticleBody);
-  const [reason, setReason] = useState("");
-  const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<{ message: string; cause: unknown } | null>(null);
   const { guard } = useUnsavedChanges(Boolean(
     path || title || description || canonical || indexingStatus !== "noindex" ||
-    bodyJson !== emptyArticleBody || reason || confirmation,
+    bodyJson !== emptyArticleBody,
   ));
 
   async function create() {
@@ -747,8 +720,8 @@ function CreatePageForm({ canWrite, onCreated, reload }: { canWrite: boolean; on
         canonical: canonical.trim() || null,
         indexingStatus,
         body,
-        reason: reason.trim(),
-        confirmation: confirmation.trim(),
+        reason: "Create an unpublished CMS page draft",
+        confirmation: expectedPath,
       });
       setPath("");
       setTitle("");
@@ -756,8 +729,6 @@ function CreatePageForm({ canWrite, onCreated, reload }: { canWrite: boolean; on
       setCanonical("");
       setIndexingStatus("noindex");
       setBodyJson(emptyArticleBody);
-      setReason("");
-      setConfirmation("");
       await reload();
       onCreated(t("Created draft {path}. It is not served until you publish it.", { path: expectedPath }));
     } catch (error) {
@@ -768,12 +739,8 @@ function CreatePageForm({ canWrite, onCreated, reload }: { canWrite: boolean; on
   }
 
   const expectedPath = path.trim();
-  const canCreate =
-    !busy &&
-    expectedPath.startsWith("/") &&
-    title.trim().length > 0 &&
-    reason.trim().length >= 3 &&
-    confirmation.trim() === expectedPath;
+  const validPath = expectedPath.startsWith("/") && expectedPath.length > 1;
+  const canCreate = !busy && validPath && title.trim().length > 0;
 
   if (!canWrite) return guard;
 
@@ -831,23 +798,11 @@ function CreatePageForm({ canWrite, onCreated, reload }: { canWrite: boolean; on
           <option value="index">{t("index")}</option>
         </select></Field>
         <CmsArticleEditor bodyJson={bodyJson} onChange={setBodyJson} />
-        <Field label={t("Reason (≥3)")}>
-          <input
-            className={inputClass}
-            onChange={(event) => setReason(event.target.value)}
-            placeholder={t("Reason (≥3)")}
-            value={reason}
-          />
-        </Field>
-        <Field label={t("Type page path")}>
-          <input
-            aria-label={t("CMS page confirmation")}
-            className={`${inputClass} font-mono`}
-            onChange={(event) => setConfirmation(event.target.value)}
-            placeholder={t("Type page path")}
-            value={confirmation}
-          />
-        </Field>
+        {!validPath || !title.trim() ? (
+          <p className="text-sm text-[var(--ad-text-muted)] md:col-span-2">
+            {t("Enter a page path and title to save the draft.")}
+          </p>
+        ) : null}
         <button
           className="inline-flex h-10 items-center justify-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50 md:col-span-2"
           disabled={!canCreate}
@@ -870,11 +825,7 @@ function CreatePageForm({ canWrite, onCreated, reload }: { canWrite: boolean; on
 }
 
 function canSaveEdit(draft: EditDraft) {
-  return (
-    draft.title.trim().length > 0 &&
-    draft.reason.trim().length >= 3 &&
-    draft.confirmation.trim() === draft.path
-  );
+  return draft.title.trim().length > 0;
 }
 
 // INTENT: 文案由调用方注入——这是个模块级纯函数，拿不到 t()，硬编码英文会在中文 locale 露馅。

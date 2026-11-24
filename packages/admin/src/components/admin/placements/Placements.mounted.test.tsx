@@ -8,8 +8,8 @@ import { PlacementsDetailPage } from "./PlacementsDetailPage";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const { apiGet, operation } = vi.hoisted(() => ({ apiGet: vi.fn(), operation: vi.fn() }));
-vi.mock("@/components/admin/api", () => ({ apiGet, apiWrite: vi.fn() }));
+const { apiGet, apiWrite, operation } = vi.hoisted(() => ({ apiGet: vi.fn(), apiWrite: vi.fn(), operation: vi.fn() }));
+vi.mock("@/components/admin/api", () => ({ apiGet, apiWrite }));
 vi.mock("@/lib/admin-v2-operation", () => ({ adminV2Operation: operation }));
 
 const placement = {
@@ -19,6 +19,10 @@ const placement = {
   metadata: { eyebrow: "Featured", title: "Autumn collection" },
   asset: { id: "artwork", url: "/artwork.png", thumbnailUrl: "/artwork.png" },
 };
+const approvedUpload = {
+  id: "artwork", purpose: "campaign", targetId: null, customerPublishable: true, publishabilityReasons: [],
+  metadata: { source: "admin_asset_upload", filename: "exhibition.png" },
+};
 
 describe("operational artwork publication", () => {
   let root: Root;
@@ -26,6 +30,7 @@ describe("operational artwork publication", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     apiGet.mockReset();
+    apiWrite.mockReset();
     operation.mockReset();
     container = document.createElement("div");
     document.body.append(container);
@@ -38,8 +43,9 @@ describe("operational artwork publication", () => {
   });
 
   it("collects customer campaign copy and validates both halves of the optional CTA", async () => {
-    apiGet.mockResolvedValue({ items: [{ id: "artwork", purpose: "campaign", targetId: null, customerPublishable: true, publishabilityReasons: [] }], pageInfo: { hasNextPage: false, endCursor: null } });
+    apiGet.mockResolvedValue({ items: [approvedUpload], pageInfo: { hasNextPage: false, endCursor: null } });
     await act(async () => root.render(<PlacementsNewPage />));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     const assetSelector = container.querySelector<HTMLSelectElement>('[aria-label="Asset"]')!;
     expect(assetSelector.disabled).toBe(true);
     await act(async () => { await vi.advanceTimersByTimeAsync(199); });
@@ -54,8 +60,7 @@ describe("operational artwork publication", () => {
     await change(title!, "Autumn collection");
     await change(container.querySelector<HTMLInputElement>('[aria-label="Campaign eyebrow"]')!, "Featured");
     await change(container.querySelector<HTMLInputElement>('[aria-label="Campaign destination key"]')!, "autumn");
-    await change(container.querySelector<HTMLInputElement>('[aria-label="Reason (≥3)"]')!, "Launch collection");
-    const submit = button(container, "Create placement")!;
+    const submit = button(container, "Save placement draft")!;
     expect(submit.disabled).toBe(false);
     await change(container.querySelector<HTMLInputElement>('[aria-label="Campaign CTA label"]')!, "Explore");
     expect(submit.disabled).toBe(true);
@@ -69,20 +74,20 @@ describe("operational artwork publication", () => {
 
   it("preserves the explicitly selected asset when paging fails", async () => {
     let rejectPage: (reason: Error) => void = () => {};
-    apiGet.mockResolvedValueOnce({ items: [{ id: "artwork", purpose: "campaign", targetId: null, customerPublishable: true, publishabilityReasons: [] }], pageInfo: { hasNextPage: true, endCursor: "page-two" } })
+    apiGet.mockResolvedValueOnce({ items: [approvedUpload], pageInfo: { hasNextPage: true, endCursor: "page-two" } })
       .mockImplementation(() => new Promise((_resolve, reject) => { rejectPage = reject; }));
     await act(async () => root.render(<PlacementsNewPage />));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     await act(async () => { await vi.advanceTimersByTimeAsync(200); });
     expect(container.querySelector<HTMLSelectElement>('[aria-label="Asset"]')!.disabled).toBe(false);
     await chooseAsset(container, "artwork");
     await change(container.querySelector<HTMLInputElement>('[aria-label="Campaign title"]')!, "Autumn collection");
     await change(container.querySelector<HTMLInputElement>('[aria-label="Campaign eyebrow"]')!, "Featured");
     await change(container.querySelector<HTMLInputElement>('[aria-label="Campaign destination key"]')!, "autumn");
-    await change(container.querySelector<HTMLInputElement>('[aria-label="Reason (≥3)"]')!, "Launch collection");
-    expect(button(container, "Create placement")!.disabled).toBe(false);
+    expect(button(container, "Save placement draft")!.disabled).toBe(false);
     const next = button(container, "Next page")!;
     await act(async () => { next.click(); next.click(); });
-    expect(button(container, "Create placement")!.disabled).toBe(false);
+    expect(button(container, "Save placement draft")!.disabled).toBe(false);
     expect(container.querySelector('[data-testid="admin-pagination"]')?.textContent).toContain("Page 2");
     expect(container.querySelector('select')!.disabled).toBe(true);
     await act(async () => { await vi.advanceTimersByTimeAsync(200); });
@@ -91,9 +96,63 @@ describe("operational artwork publication", () => {
     expect(container.querySelector('select')!.value).toBe("artwork");
     expect(container.querySelector('select')!.options.length).toBe(1);
     expect(container.querySelector<HTMLInputElement>('[aria-label="Campaign destination key"]')!.value).toBe("autumn");
-    expect(button(container, "Create placement")!.disabled).toBe(false);
+    expect(button(container, "Save placement draft")!.disabled).toBe(false);
     expect(container.textContent).toContain("Image library unavailable");
     expect(apiGet.mock.calls[1][0]).toContain("cursor=page-two");
+  });
+
+  it("opens from an uploaded asset and selects that exact eligible image", async () => {
+    window.history.replaceState(null, "", "/admin/creative/placements/new?assetId=artwork");
+    apiGet.mockResolvedValue({
+      items: [
+        { id: "artwork-copy", purpose: "campaign", customerPublishable: true, publishabilityReasons: [] },
+        { id: "artwork", purpose: "campaign", customerPublishable: true, publishabilityReasons: [],
+          metadata: { source: "admin_asset_upload", filename: "exhibition.png" } },
+      ],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    });
+    try {
+      await act(async () => root.render(<PlacementsNewPage />));
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+      expect(apiGet).toHaveBeenCalledWith("/api/v2/admin/assets?status=approved&limit=25&search=artwork");
+      const picker = container.querySelector<HTMLSelectElement>('[aria-label="Asset"]')!;
+      expect(picker.value).toBe("artwork");
+      expect(picker.selectedOptions[0]?.textContent).toContain("exhibition.png");
+      expect(container.textContent).toContain("Enter a destination key for this placement.");
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
+  });
+
+  it("routes a generated campaign image to its run and keeps the template draft path usable", async () => {
+    window.history.replaceState(null, "", "/admin/creative/placements/new?assetId=generated");
+    apiGet.mockResolvedValue({
+      items: [{ ...approvedUpload, id: "generated", metadata: {}, sourceBatch: { id: "source-run" } }],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    });
+    try {
+      await act(async () => root.render(<PlacementsNewPage canReadRuns />));
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+      const picker = container.querySelector<HTMLSelectElement>('[aria-label="Asset"]')!;
+      expect(picker.options.namedItem("generated")).toBeNull();
+      expect([...picker.options].map(({ value }) => value)).not.toContain("generated");
+      expect(button(container, "Save placement draft")!.disabled).toBe(true);
+      expect(container.querySelector('a[href="/admin/creative/runs/source-run"]')).not.toBeNull();
+
+      const slot = [...container.querySelectorAll("select")].find((control) => [...control.options].some(({ value }) => value === "template_cover"))!;
+      await act(async () => { slot.value = "template_cover"; slot.dispatchEvent(new Event("change", { bubbles: true })); });
+      await chooseAsset(container, "generated");
+      await change(container.querySelector<HTMLInputElement>('[aria-label="Template ID"]')!, "template-1");
+      apiWrite.mockResolvedValue({ placement: { id: "template-placement" } });
+      await act(async () => button(container, "Save placement draft")!.click());
+      expect(apiWrite).toHaveBeenCalledWith("/api/v2/admin/content/placements", "POST", expect.objectContaining({
+        mediaAssetId: "generated", status: "draft", slot: "template_cover", targetType: "template", targetId: "template-1",
+      }));
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
   });
 
   it("offers a versioned publish action for eligible artwork and shows the refreshed public result", async () => {

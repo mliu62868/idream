@@ -296,8 +296,6 @@ describe("CMS operating permissions and article fields", () => {
     const title = editor().querySelector<HTMLInputElement>('[placeholder="Page title"]')!;
     await act(async () => {
       input(title, "My pending article title");
-      input(editor().querySelector<HTMLInputElement>('[placeholder="Reason (≥3)"]')!, "Update article copy");
-      input(editor().querySelector<HTMLInputElement>('[aria-label="CMS edit confirmation"]')!, page.path);
     });
     await act(async () => button("Save draft").click());
     expect(apiWrite).toHaveBeenCalledTimes(1);
@@ -447,12 +445,14 @@ describe("CMS operating permissions and article fields", () => {
     await act(async () => {
       input(createForm().querySelector<HTMLInputElement>('[placeholder="/guides/example"]')!, "/guides/new-draft");
       input(createForm().querySelector<HTMLInputElement>('[placeholder="Page title"]')!, "Keep my new page");
-      input(createForm().querySelector<HTMLInputElement>('[placeholder="Reason (≥3)"]')!, "Create a new guide");
-      input(createForm().querySelector<HTMLInputElement>('[aria-label="CMS page confirmation"]')!, "/guides/new-draft");
     });
     const reload = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(reload);
     expect(reload.defaultPrevented).toBe(true);
     await act(async () => button("Create draft").click());
+    expect(apiWrite).toHaveBeenCalledWith("/api/v2/admin/cms/pages", "POST", expect.objectContaining({
+      confirmation: "/guides/new-draft",
+      reason: "Create an unpublished CMS page draft",
+    }));
     expect(createForm().querySelector<HTMLFieldSetElement>("fieldset")?.disabled).toBe(true);
     await act(async () => root.render(<CmsView canWrite={false} />));
     await act(async () => failWrite(new AdminV2RequestError("Missing admin permission", 403, "forbidden")));
@@ -474,8 +474,6 @@ describe("CMS operating permissions and article fields", () => {
     await act(async () => {
       input(title(), "My pending title");
       input(editor().querySelector<HTMLTextAreaElement>('[aria-label="CMS article body JSON"]')!, JSON.stringify(body));
-      input(editor().querySelector<HTMLInputElement>('[placeholder="Reason (≥3)"]')!, "Improve the article");
-      input(editor().querySelector<HTMLInputElement>('[aria-label="CMS edit confirmation"]')!, page.path);
     });
     await act(async () => button("Save draft").click());
     await act(async () => failWrite(new AdminV2RequestError("CMS write unavailable", 503, "unavailable")));
@@ -502,8 +500,6 @@ describe("CMS operating permissions and article fields", () => {
     const title = () => editor().querySelector<HTMLInputElement>('[placeholder="Page title"]')!;
     await act(async () => {
       input(title(), "Keep my conflicting article");
-      input(editor().querySelector<HTMLInputElement>('[placeholder="Reason (≥3)"]')!, "Improve the article");
-      input(editor().querySelector<HTMLInputElement>('[aria-label="CMS edit confirmation"]')!, page.path);
     });
     current = { ...page, title: "Another operator's article", updatedAt: "2026-10-02T05:00:00.000Z" };
     await act(async () => button("Save draft").click()); await settle();
@@ -520,8 +516,6 @@ describe("CMS operating permissions and article fields", () => {
     expect(title().value).toBe(current.title);
     await act(async () => {
       input(title(), "My explicit fresh edit");
-      input(editor().querySelector<HTMLInputElement>('[placeholder="Reason (≥3)"]')!, "Reconcile the newer article");
-      input(editor().querySelector<HTMLInputElement>('[aria-label="CMS edit confirmation"]')!, page.path);
     });
     await act(async () => button("Save draft").click()); await settle();
     expect(apiWrite).toHaveBeenLastCalledWith("/api/v2/admin/cms/pages", "PATCH", expect.objectContaining({ expectedUpdatedAt: current.updatedAt, title: "My explicit fresh edit" }));
@@ -535,8 +529,6 @@ describe("CMS operating permissions and article fields", () => {
     const editor = () => [...container.querySelectorAll("section")].find(node => node.querySelector("h2")?.textContent?.includes("Edit CMS draft"))!;
     await act(async () => {
       input(editor().querySelector<HTMLInputElement>('[placeholder="Page title"]')!, "Permission-sensitive input");
-      input(editor().querySelector<HTMLInputElement>('[placeholder="Reason (≥3)"]')!, "Improve the article");
-      input(editor().querySelector<HTMLInputElement>('[aria-label="CMS edit confirmation"]')!, page.path);
     });
     await act(async () => button("Save draft").click());
     await act(async () => root.render(<CmsView canWrite={false} />));
@@ -557,8 +549,6 @@ describe("CMS operating permissions and article fields", () => {
     await act(async () => {
       input(container.querySelector<HTMLInputElement>('[placeholder="/guides/example"]')!, "/guides/test");
       input(container.querySelector<HTMLInputElement>('[placeholder="页面标题"]')!, "页面标题");
-      input(container.querySelector<HTMLInputElement>('[placeholder="原因（≥3 字符）"]')!, "创建文章草稿");
-      input(container.querySelector<HTMLInputElement>('[aria-label="CMS 页面确认文本"]')!, "/guides/test");
       input(field("文章标题"), "文章正文标题");
     });
     await act(async () => button("创建草稿").click());

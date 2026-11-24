@@ -34,6 +34,9 @@ export const adminZhCustomers: Record<string, string> = {
   "Loading conversation…": "正在加载对话…",
   "Send reply": "发送回复",
   "Reply sent to {id}": "已回复 {id}，工单转为等待客户",
+  "Reply and mark resolved": "回复并标为已解决",
+  "Your reply draft is kept. Review the latest conversation before sending it.": "回复草稿已保留。查看最新会话后再发送。",
+  "Reply sent and {id} resolved": "已回复客户，工单 {id} 已解决",
   "Refresh conversation": "刷新对话",
   "Case Detail": "案件详情",
   ". This records an already-completed provider refund and closes the late-settlement exception; it does not issue a refund.":

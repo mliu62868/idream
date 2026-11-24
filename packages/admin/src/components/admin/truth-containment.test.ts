@@ -25,8 +25,7 @@ describe("Phase 0 metric truth containment", () => {
 
   it("does not render legacy D1/D7 percentages or an export action", () => {
     const html = renderToStaticMarkup(createElement(InsightsView));
-    expect(html).toContain("Funnel and retention data are unavailable");
-    expect(html).toContain("D1 / D7 retention values and exports remain unavailable until the metric definitions are verified.");
+    expect(html).not.toMatch(/retention|\bD[17]\b/i);
     expect(html).not.toContain("Export CSV");
   });
 

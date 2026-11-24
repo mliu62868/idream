@@ -6,7 +6,7 @@ import { useAdminI18n } from "@/components/admin/i18n";
 import { DetailPage, DetailSection } from "@/components/admin/ui/DetailPage";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { FormSection, Field, INPUT_CLASS, TEXTAREA_CLASS } from "@/components/admin/ui/FormPage";
-import { DangerButton, GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
+import { DangerButton, GhostButton } from "@/components/admin/ui/buttons";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
@@ -18,6 +18,8 @@ import {
   ASSETS_LIST,
   assetAuthorityDependencyView,
   assetPatchPayload,
+  assetDisplayName,
+  isPublishableOperatorUpload,
   draftFromAsset,
   type AssetDraft,
   type ContentAsset,
@@ -29,7 +31,7 @@ import { MediaAssetAuthorityNotice } from "./MediaAssetAuthority";
 // Character, Release, and Campaign dependency must be repaired before archival.
 type PendingAction = { action: "save" | "archive"; assetId: string };
 
-export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: string }) {
+export function AssetsDetailPage({ canReview, canPlace = false, id }: { canReview: boolean; canPlace?: boolean; id: string }) {
   const { t, value } = useAdminI18n();
   const [rows, setRows] = useState<ContentAsset[]>([]);
   const [loading, setLoading] = useState(true);
@@ -177,9 +179,7 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
     return (
       <EmptyState
         action={
-          <Link href="/admin/content/assets">
-            <PrimaryButton>{t("Back to image library")}</PrimaryButton>
-          </Link>
+          <Link className="inline-flex min-h-11 items-center font-semibold underline" href="/admin/creative/library">{t("Back to image library")}</Link>
         }
         title={t("Asset not found.")}
       />
@@ -188,8 +188,16 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
 
   const authorityDependencies = row.authorityDependencies ?? [];
   const hasActiveAuthority = authorityDependencies.length > 0;
-  const actions = canReview || refreshWarning ? (
+  const canDraftPlacement = canPlace && row.platformStatus === "approved" && row.purpose === "campaign" &&
+    isPublishableOperatorUpload(row);
+  const actions = canReview || refreshWarning || canDraftPlacement ? (
     <>
+      {canDraftPlacement ? (
+        <Link className="inline-flex min-h-11 items-center rounded-md bg-[var(--ad-ink)] px-4 text-sm font-medium text-white"
+          href={`/admin/creative/placements/new?assetId=${encodeURIComponent(row.id)}`}>
+          {t("Create a placement draft")}
+        </Link>
+      ) : null}
       {refreshWarning ? <GhostButton onClick={() => void reload()}>{t("Refresh")}</GhostButton> : null}
       {canReview ? <GhostButton disabled={Boolean(refreshWarning)} onClick={() => beginAction("save")}>{t("Save")}</GhostButton> : null}
       {canReview ? <DangerButton disabled={hasActiveAuthority || Boolean(refreshWarning)} onClick={() => beginAction("archive")}>{t("Archive")}</DangerButton> : null}
@@ -199,10 +207,10 @@ export function AssetsDetailPage({ canReview, id }: { canReview: boolean; id: st
   return (
     <DetailPage
       actions={actions}
-      backHref="/admin/content/assets"
+      backHref="/admin/creative/library"
       backLabel={t("Back to image library")}
       status={row.platformStatus}
-      title={shortId}
+      title={assetDisplayName(row)}
     >
       <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
       {error ? <AuthorityRequestError cause={error} message={t("The latest data could not be loaded.")} onRetry={() => void reload()} requestKind="read" /> : null}

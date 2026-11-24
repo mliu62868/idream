@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  CREATE_STATUSES,
   PATCH_ACTIONS,
   placementCreatePayload,
   placementPatchPayload,
@@ -14,9 +13,7 @@ const baseDraft: PlacementDraft = {
   mediaAssetId: "asset-1",
   slot: "feed_card",
   targetType: "character",
-  targetId: "char-1",
-  status: "draft",
-  reason: " because reasons ",
+  targetId: " char-1 ",
   eyebrow: " Featured ", title: " Collection ", ctaLabel: "", href: "",
 };
 
@@ -30,14 +27,14 @@ describe("placementCreatePayload", () => {
       expect(validCampaignDraft({ ...draft, href }), href).toBe(true);
     }
   });
-  it("carries every create field verbatim and trims reason", () => {
+  it("normalizes the target and carries a draft-only audit reason", () => {
     expect(placementCreatePayload(baseDraft)).toEqual({
       mediaAssetId: "asset-1",
       slot: "feed_card",
       targetType: "character",
       targetId: "char-1",
       status: "draft",
-      reason: "because reasons",
+      reason: "Create an unpublished placement draft",
     });
   });
 
@@ -47,7 +44,6 @@ describe("placementCreatePayload", () => {
         ...baseDraft,
         slot: "campaign",
         targetType: "campaign",
-        status: "draft",
       }),
     ).toEqual({
       mediaAssetId: "asset-1",
@@ -55,13 +51,13 @@ describe("placementCreatePayload", () => {
       targetType: "campaign",
       targetId: "char-1",
       status: "draft",
-      reason: "because reasons",
+      reason: "Create an unpublished placement draft",
       metadata: { eyebrow: "Featured", title: "Collection" },
     });
   });
 
   it("keeps legacy create draft-only and patch non-publishing", () => {
-    expect(CREATE_STATUSES).toEqual(["draft"]);
+    expect(placementCreatePayload(baseDraft).status).toBe("draft");
     expect(PATCH_ACTIONS).toEqual(["paused", "archived"]);
   });
 });
@@ -129,6 +125,6 @@ describe("publishableApprovedAssets", () => {
     expect(detailSource).toContain("Placement archival was committed, but the latest projection could not be refreshed");
     expect(detailSource).toContain("await reload(true)");
     expect(detailSource).toContain('row.status !== "archived"');
-    expect(detailSource).toContain('!["paused", "archived"].includes(row.status)');
+    expect(detailSource).toContain('["published", "scheduled"].includes(row.status)');
   });
 });
