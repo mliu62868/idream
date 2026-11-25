@@ -4,6 +4,7 @@ import {
   agentRunFailureEvidence,
   agentRunTraceEvent,
   classifyAgentRunCancellation,
+  createDeltaCoalescer,
 } from "./agent-runner";
 
 describe("AgentRun failure evidence", () => {
@@ -110,5 +111,31 @@ describe("AgentRun local trace", () => {
       kind: "pi.failed",
       payload: { error: event.error },
     });
+  });
+});
+
+describe("SSE delta coalescer", () => {
+  it("coalesces rapid small token chunks and flushes immediately at char cap or explicit boundary", async () => {
+    const emitted: string[] = [];
+    const coalescer = createDeltaCoalescer(async (delta) => {
+      emitted.push(delta);
+    }, { flushMs: 50, maxChars: 10 });
+
+    await coalescer.push("Hel");
+    await coalescer.push("lo ");
+    expect(emitted).toEqual([]);
+    await coalescer.push("world!");
+    expect(emitted).toEqual(["Hello world!"]);
+
+    await coalescer.push("Tail");
+    expect(emitted).toEqual(["Hello world!"]);
+    await coalescer.flush();
+    expect(emitted).toEqual(["Hello world!", "Tail"]);
+
+    await coalescer.push("Cut");
+    coalescer.discard();
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    await coalescer.flush();
+    expect(emitted).toEqual(["Hello world!", "Tail"]);
   });
 });

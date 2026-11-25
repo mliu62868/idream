@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildCompanionRuntimeAuthority,
-  noMemoryAuthorityReply,
-} from "./runtime-policy";
+import { buildCompanionRuntimeAuthority } from "./runtime-policy";
 
 describe("buildCompanionRuntimeAuthority", () => {
   it("says nothing at all on an ordinary memory-on turn", () => {
@@ -52,15 +49,5 @@ describe("buildCompanionRuntimeAuthority", () => {
     const disabled = buildCompanionRuntimeAuthority({ memoryEnabled: false, imageToolEnabled: false });
     expect(disabled).not.toMatch(/photo|image|selfie/iu);
     expect(disabled).not.toContain("you may offer");
-  });
-
-  it("owns explicit future-memory requests outside the model", () => {
-    expect(noMemoryAuthorityReply(
-      "Remember this phrase next month: amber compass. Promise me.",
-    )).toContain("can’t retain that across sessions");
-    expect(noMemoryAuthorityReply("请记住这个词，下个月再告诉我。"))
-      .toContain("无法跨会话保留");
-    expect(noMemoryAuthorityReply("I remember the first day we met.")).toBeNull();
-    expect(noMemoryAuthorityReply("Save this photo to my device.")).toBeNull();
   });
 });

@@ -4866,12 +4866,12 @@ describe("launch readiness", () => {
     expect(genValues.GEN_VIDEO_TIMEOUT_MS).toBe("1800000");
   });
 
-  it("pins Ming for default speech while retaining Pocket character identities", () => {
+  it("pins IndexTTS for default speech while retaining Pocket character identities", () => {
     const mainValues = envTemplateValues("../../.env.production.example");
 
     expect(mainValues.VOICE_PROVIDER).toBe("fish-audio");
     expect(mainValues.FISH_AUDIO_API_URL).toBe("http://127.0.0.1:8062/v1");
-    expect(mainValues.FISH_AUDIO_MODEL).toBe("ming-3.0-tts-0.5b-8bit");
+    expect(mainValues.FISH_AUDIO_MODEL).toBe("indextts-2.5-mlx-8bit");
     expect(mainValues.FISH_AUDIO_LANGUAGE).toBe("auto");
     expect(mainValues.FISH_AUDIO_API_TOKEN).toBeTruthy();
     expect(mainValues.POCKET_TTS_API_URL).toBe("http://127.0.0.1:8063/v1");

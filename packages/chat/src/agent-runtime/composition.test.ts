@@ -33,8 +33,9 @@ describe("companion composition identity", () => {
       igrepMaintenance: { sampling: { temperature: 0, top_p: 1, presence_penalty: 0, chat_template_kwargs: { enable_thinking: false } } },
       reasoning: { generation: true, compaction: false, structured: false, totalLimit: "profile",
         inkling: { mediaToolEffort: "minimal", mediaExtraction: false, mediaBody: false } },
-      execution: { version: 78, maxSteps: 8, maxParallelToolCalls: 1, toolExecution: "sequential", retry: false,
-        mediaReply: { bufferCapableSteps: true, afterAttachment: "terminate-native-round", afterUnfulfilledSearch: "verified-status-and-independent-body", pureBody: "empty-with-main-attachment", extraction: "ordered-verbatim-blockquotes", extractionMaxOutputTokens: 1024, history: "answered-card-only-replay", sharedStepBudget: true },
+      execution: { version: 79, maxSteps: 8, maxParallelToolCalls: 1, toolExecution: "sequential", retry: false,
+        mediaReply: { bufferCapableSteps: "intent-aware", pureFastPath: "explicit-hint-with-single-intent-guard", afterAttachment: "terminate-native-round", afterUnfulfilledSearch: "verified-status-and-independent-body", pureBody: "empty-with-main-attachment", extraction: "ordered-verbatim-blockquotes", extractionMaxOutputTokens: 1024, history: "answered-card-only-replay", sharedStepBudget: true },
+        kvCache: { blockAlignedEvictionStride: 8, scriptAwareTokenEstimate: true },
         deadlineSource: "invocation.deadlineAt", commitBeforeProjection: true },
     });
     expect(manifest.corePackages).toEqual(COMPANION_CORE_PACKAGES);

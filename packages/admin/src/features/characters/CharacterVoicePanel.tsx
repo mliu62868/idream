@@ -6,6 +6,7 @@ import {
   type FishAudioDeliverySettings,
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
+import { INDEXTTS_VOICE_MODEL_ID } from "@idream/shared/contracts";
 import {
   AudioLines,
   Check,
@@ -954,7 +955,7 @@ export function CharacterVoicePanel({
                     value={referenceText}
                   />
                   <span className="mt-1 block font-normal">
-                    {t(voiceReferenceTranscriptHelp(voice.provider))}
+                    {t(voiceReferenceTranscriptHelp(voice.provider, voice.runtimeModel))}
                   </span>
                 </label>
               </section>
@@ -1419,7 +1420,7 @@ function cloneStatusDetail(provider: VoiceData["provider"], status: ModelStatus)
 
 function engineLabel(voice: VoiceData) {
   const version = voice.runtimeVersion ?? "";
-  if (voice.runtimeEngine === "mlx_audio") return `MLX ${version}`.trim();
+  if (voice.runtimeEngine === "mlx_audio" || voice.runtimeEngine === "mlx_indextts") return `MLX ${version}`.trim();
   if (voice.runtimeEngine === "pocket_tts") return `Pocket TTS ${version}`.trim();
   return null;
 }
@@ -1531,9 +1532,9 @@ function VoiceDeliveryEditor({
           />
         </label>
       </div>
-      {runtimeModel?.startsWith("ming-") ? (
+      {runtimeModel === INDEXTTS_VOICE_MODEL_ID ? (
         <p className="border-t border-[var(--ad-border)] pt-3 text-xs leading-5 text-[var(--ad-text-muted)]">
-          {t("Ming uses fixed sampling. Saved advanced settings are retained for other models.")}
+          {t("IndexTTS uses fixed sampling. Saved advanced settings are retained for other models.")}
         </p>
       ) : (
         <details className="border-t border-[var(--ad-border)] pt-3">
@@ -1767,6 +1768,7 @@ function voiceProviderLabel(
 ) {
   if (provider === "pocket_tts") return "Pocket TTS";
   if (provider === "fish_audio") {
+    if (model === INDEXTTS_VOICE_MODEL_ID) return "IndexTTS 2.5";
     if (model?.startsWith("ming-")) return "Ming 3.0 TTS";
     if (model?.startsWith("breeze-")) return "Breeze TTS 2";
     return model ?? "Local voice";
@@ -1776,7 +1778,11 @@ function voiceProviderLabel(
 
 function voiceReferenceTranscriptHelp(
   provider: CharacterWorkspaceDetail["voice"]["provider"],
+  model?: string | null,
 ) {
+  if (model === INDEXTTS_VOICE_MODEL_ID) {
+    return "This transcript is stored with the IndexTTS reference voice for audit and reproducibility.";
+  }
   return provider === "pocket_tts"
     ? "This transcript is stored with the Pocket TTS reference voice for audit and reproducibility."
     : "This transcript is stored with the voice reference and used by Fish Audio when synthesizing.";

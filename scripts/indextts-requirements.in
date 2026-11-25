@@ -1,0 +1,10 @@
+# IndexTTS 2.5 MLX port and its Apple Silicon inference dependencies.
+mlx-indextts[v25] @ https://github.com/vanch007/mlx-indextts2/archive/a7666367b8551656a2029ad75f259cb5e4936b3b.tar.gz
+mlx==0.32.4
+torch==2.10.0
+torchaudio==2.10.0
+transformers==5.24.0
+huggingface-hub==2.4.0
+fastapi
+uvicorn
+python-multipart

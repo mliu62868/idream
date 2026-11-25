@@ -137,3 +137,10 @@ Scene v1 的持久形状由 Shared 唯一定义，Main execution snapshot / term
 2026-09-09 的单 route 资格实验没有证明来源绑定的结构化候选足以替代现有入口：即使 Main 提供消息索引，模型仍会混淆剧情更新、图片专属覆盖和冲突复述。因此不启用未经资格验证的必填 MomentSpec，不保留第二 route、运行开关或并行解析 implementation；持续 Scene 理解与像素保真仍是明确的质量缺口。该判断不把 schema 合法、来源真实或请求被拒绝当成语义成功。
 
 运营批量图片和视频包以 draft、unknown 入库。审核员确认服装事实后可发布到聊天库存或专属合集。
+
+2026-11-24 第一性原理优化更新至执行 composition 79：
+- **意图感知流式解耦**：媒体工具暴露不再一刀切抑制所有普通文本对话的流式推送。携带显式付费授权、多语种媒体/改图/重发意图或紧接图片邀约的短确认轮次仍缓冲前导正文以防媒体承诺泄漏；其余纯文本对话直接实时推送 `text_delta`，若意外触发媒体工具调用则通过既有 `text_reset` 清空流并转入媒体处理。
+- **纯媒体请求零二次 LLM 快路**：媒体工具参数新增 Chat 侧纯路由提示 `independentTextRequest`（在转发 Main `tool-effects` 前剥离，不影响 Main 账本与收据 schema）。当模型显式声明 `independentTextRequest=false` 且通过确定性单意图守卫（单句短文本、无问号、无多任务连接词）并获得 Main 真实附件确认时，直接跳过 `media_extraction` LLM 调用以空正文 + 卡片提交；其余场景沿用原逐字抽取与独立正文流程。
+- **KV Prefix Cache 与多语种预算优化**：历史窗口超限时改为固定 8 条（4 轮）块对齐阶梯淘汰（`selectCacheAlignedTranscriptWindow`），消除逐轮滑动导致的连续前缀缓存失效；输入 token 估算器升级为脚本感知加权（ASCII 4 chars/token、CJK 1.5 tokens/char），修复中文长对话低估 4~6 倍触发 400 overflow 的问题。
+- **高并发调度与热路径减负**：新增进程内 `ConcurrencyWaitQueue`（默认 `PI_CAPACITY_WAIT_MS=15000` FIFO 即时唤醒，超时才退回 `CompanionCapacityError`）与 `InferencePriorityGate`（前台实时 Turn 推理期间，后台 `mem maintain` 与 `profile-evidence` 自动礼让让路）；对空记忆工作区及纯寒暄短语跳过无意义的 `memory-search` 子进程；SSE 流引入 25ms / 48-char `DeltaCoalescer` 微批合并并将 `STREAM_MAXLEN` 提升至 4000。
+- **异步轻量 Scene 投影器**：新增单次 JSON Schema 增量投影模块 `packages/chat/src/scene-light.ts`（含前台礼让与失败软降级），为异步 post-commit 场景追踪提供低延迟替代方案；同步 commit 仍保持零阻塞。

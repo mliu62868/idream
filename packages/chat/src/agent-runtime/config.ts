@@ -16,6 +16,8 @@ export interface AgentRuntimeConfig {
   openRouterProviderOnly?: string[];
   maxSteps: number;
   maxConcurrentAgents: { normal: number; private: number };
+  /** Bounded in-memory FIFO wait before deferring a Turn under pool saturation. */
+  capacityWaitMs?: number;
 }
 
 export interface IgrepLlmConfig {
@@ -157,6 +159,13 @@ function positiveInteger(raw: string | undefined, fallback: number, name: string
   return value;
 }
 
+function nonNegativeInteger(raw: string | undefined, fallback: number, name: string): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${name} must be a non-negative integer`);
+  return value;
+}
+
 function absolutePath(value: string, name: string): string {
   const path = resolve(value);
   if (!isAbsolute(path)) throw new Error(`${name} must resolve to an absolute path`);
@@ -247,5 +256,6 @@ export function loadAgentRuntimeConfig(
       normal: positiveInteger(env.PI_MAX_NORMAL_AGENTS, 4, "PI_MAX_NORMAL_AGENTS"),
       private: positiveInteger(env.PI_MAX_PRIVATE_AGENTS, 4, "PI_MAX_PRIVATE_AGENTS"),
     },
+    capacityWaitMs: nonNegativeInteger(env.PI_CAPACITY_WAIT_MS, 15_000, "PI_CAPACITY_WAIT_MS"),
   };
 }

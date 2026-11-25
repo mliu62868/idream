@@ -23,6 +23,7 @@ import type {
   MemoryStatus,
 } from "./workspace";
 import { readSupportedProfileLines, verifyProfileEvidence, type ProfileClaimVerifier } from "./profile-evidence";
+import { type InferencePriorityGate } from "./execution-scheduler";
 import { renderResidentProfile } from "./resident-profile";
 import { logger } from "../logger";
 import { IGREP_WEB_PROVIDERS, type IgrepWebProvider } from "./config";
@@ -406,6 +407,7 @@ export class IgrepMemoryBuilder {
     private readonly probe: MemoryProbe = new IgrepMemoryProbe(cli),
     private readonly run: RunJsonCommand = runJsonCommand,
     private readonly verifyClaim?: ProfileClaimVerifier,
+    private readonly priorityGate?: InferencePriorityGate,
   ) {}
 
   async build(
@@ -572,6 +574,9 @@ export class IgrepMemoryBuilder {
       const before = await verifyMemorySourceCorpus(workspace, sessions, signal);
       let maintenanceOutput: unknown;
       try {
+        // Yield background model maintenance while foreground Turns are actively
+        // streaming so background projection does not starve live TTFT.
+        await this.priorityGate?.waitForBackgroundSlot(signal);
         maintenanceOutput = await this.run({
           ...this.cli,
           args: ["mem", "maintain", "--workspace", workspace, ...(mode === "rebuild" ? ["--rebuild"] : [])],
@@ -635,7 +640,7 @@ export class IgrepMemoryBuilder {
     }
     // A rejected derivation has no profile; an unverified one renders nothing.
     if (!rejectionReason && this.verifyClaim) {
-      await verifyProfileEvidence(join(workspace, ".igrep"), this.verifyClaim, signal);
+      await verifyProfileEvidence(join(workspace, ".igrep"), this.verifyClaim, signal, undefined, this.priorityGate);
     }
     assertMemoryEnvelope(await this.run({
       ...this.cli,

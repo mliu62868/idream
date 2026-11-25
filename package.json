@@ -70,8 +70,8 @@
     "launch:probe:voice:local": "node scripts/run-local-voice-probe.mjs",
     "voice:fish:start": "bun scripts/start-fish-audio.cjs",
     "voice:fish:prepare-system": "node scripts/prepare-fish-system-voice.mjs",
-    "voice:fish:install": "uv run --no-project --python 3.12 --with-requirements scripts/breeze-tts-requirements.lock python -c \"import mlx_audio.tts.models.breeze_tts\"",
-    "test:voice:fish": "uv run --offline --no-project --python 3.12 --with-requirements scripts/breeze-tts-requirements.lock python -m unittest scripts.test_fish_audio_gateway",
+    "voice:fish:install": "uv run --no-project --isolated --python 3.12 --with-requirements scripts/breeze-tts-requirements.lock python -c \"import mlx_audio.tts.models.breeze_tts\"",
+    "test:voice:fish": "uv run --offline --no-project --isolated --python 3.12 --with-requirements scripts/breeze-tts-requirements.lock python -m unittest scripts.test_fish_audio_gateway",
     "voice:pocket:install": "uv run --no-project --python 3.12 --with-requirements scripts/pocket-tts-requirements.lock python -c \"import pocket_tts\"",
     "voice:pocket:start": "bun scripts/start-pocket-tts.cjs",
     "voice:asr:install": "UV_HTTP_TIMEOUT=120 uv run --no-project --python 3.12 --with-requirements scripts/asr-requirements.lock python -m scripts.install_asr",
@@ -92,8 +92,8 @@
     "pi-companion:setup": "node scripts/setup-pi-companion.mjs",
     "pi-companion:check": "node scripts/setup-pi-companion.mjs --check",
     "test:pi-gate": "node scripts/run-pi-gate.mjs",
-    "voice:ming:install": "env -u PYTHONPATH -u PYTHONHOME uv run --no-project --python 3.12 --with-requirements scripts/ming-tts-requirements.lock python -m scripts.install_ming_tts",
-    "test:voice:ming": "env -u PYTHONPATH -u PYTHONHOME uv run --offline --no-project --python 3.12 --with-requirements scripts/ming-tts-requirements.lock python -m unittest scripts.test_fish_audio_gateway",
+    "voice:indextts:install": "env -u PYTHONPATH -u PYTHONHOME uv run --no-project --isolated --python 3.12 --with-requirements scripts/indextts-requirements.lock python -m scripts.install_indextts",
+    "test:voice:indextts": "env -u PYTHONPATH -u PYTHONHOME uv run --offline --no-project --isolated --python 3.12 --with-requirements scripts/indextts-requirements.lock python -m unittest scripts.test_indextts_voice_runtime",
     "probe:voice:asr": "uv run --offline --no-project --python 3.12 --with-requirements scripts/asr-requirements.lock python scripts/probe-asr.py"
   },
   "devDependencies": {

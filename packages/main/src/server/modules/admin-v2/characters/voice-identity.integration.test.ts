@@ -26,15 +26,16 @@ const providerState = vi.hoisted(() => ({
   unavailableProviders: [] as string[],
   persistedPreviewOk: true,
   voiceCloning: true,
-  runtime: "mlx_audio",
-  runtimeVersion: "mlx-audio-test",
-  runtimeModel: "ming-3.0-tts-0.5b-8bit",
+  runtime: "mlx_indextts",
+  runtimeVersion: "mlx-indextts-test",
+  runtimeModel: "indextts-2.5-mlx-8bit",
   catalogVoices: [] as string[],
 }));
 
 vi.mock("@/server/lib/env", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/server/lib/env")>();
   return { ...actual, env: { ...actual.env,
+    FISH_AUDIO_MODEL: "indextts-2.5-mlx-8bit",
     get VOICE_IDENTITY_PROVIDER() {
       return providerState.identityProviderKey?.replace("_", "-") ?? actual.env.VOICE_IDENTITY_PROVIDER;
     },
@@ -136,7 +137,7 @@ vi.mock("@/server/providers", () => ({
                   voiceCloning: providerState.voiceCloning,
                   model: (providerState.identityProviderKey ?? providerState.providerKey) === "pocket_tts" ? "pocket-tts" : providerState.runtimeModel,
                   runtime: providerState.identityProviderKey
-                    ? (providerState.identityProviderKey === "pocket_tts" ? "pocket_tts" : "mlx_audio")
+                    ? (providerState.identityProviderKey === "pocket_tts" ? "pocket_tts" : "mlx_indextts")
                     : providerState.runtime,
                   runtimeVersion: providerState.runtimeVersion,
                   acceleration:
@@ -250,7 +251,7 @@ vi.mock("@/server/providers/voice/factory", () => ({
             data: {
               voiceCloning: providerState.voiceCloning,
               model: providerKey === "pocket_tts" ? "pocket-tts" : providerState.runtimeModel,
-              runtime: providerKey === "pocket_tts" ? "pocket_tts" : "mlx_audio",
+              runtime: providerKey === "pocket_tts" ? "pocket_tts" : "mlx_indextts",
               runtimeVersion: providerState.runtimeVersion,
               acceleration: providerKey === "pocket_tts" ? "cpu" : "mlx",
               catalogVoices:
@@ -327,15 +328,15 @@ describe("Character voice identity authority", () => {
     providerState.providerKey = "fish_audio";
     providerState.inspectOk = true;
     providerState.voiceCloning = true;
-    providerState.runtime = "mlx_audio";
-    providerState.runtimeVersion = "mlx-audio-test";
+    providerState.runtime = "mlx_indextts";
+    providerState.runtimeVersion = "mlx-indextts-test";
 
     await expect(inspectConfiguredVoiceIdentityRuntime()).resolves.toMatchObject({
       provider: "fish_audio",
       cloningAvailable: true,
       runtimeStatus: "ready",
-      runtimeEngine: "mlx_audio",
-      runtimeVersion: "mlx-audio-test",
+      runtimeEngine: "mlx_indextts",
+      runtimeVersion: "mlx-indextts-test",
       runtimeLanguage: expect.any(String),
     });
 
@@ -498,8 +499,8 @@ describe("Character voice identity authority", () => {
       });
       providerState.providerKey = "fish_audio";
       providerState.voiceCloning = true;
-      providerState.runtime = "mlx_audio";
-      providerState.runtimeVersion = "mlx-audio-test";
+      providerState.runtime = "mlx_indextts";
+      providerState.runtimeVersion = "mlx-indextts-test";
       providerState.catalogVoices = [];
     }
   });
@@ -1092,7 +1093,7 @@ describe("Character voice identity authority", () => {
     const idempotencyKey = `voice-lost-blob-${kind}-${prefix}-${suffix}`;
     providerState.loseStorageAckFor = prefix;
     providerState.providerKey = kind === "clone" ? "fish_audio" : "pocket_tts";
-    providerState.runtime = kind === "clone" ? "mlx_audio" : "pocket_tts";
+    providerState.runtime = kind === "clone" ? "mlx_indextts" : "pocket_tts";
     providerState.catalogVoices = ["anna"];
     try {
       const input = { characterId, actor: { id: actorId, role: "admin" as const }, idempotencyKey, requestId: randomUUID() };
@@ -1108,7 +1109,7 @@ describe("Character voice identity authority", () => {
     } finally {
       providerState.loseStorageAckFor = null;
       providerState.providerKey = "fish_audio";
-      providerState.runtime = "mlx_audio";
+      providerState.runtime = "mlx_indextts";
       providerState.catalogVoices = [];
     }
   });
@@ -1160,7 +1161,7 @@ describe("Character voice identity authority", () => {
 
   it.each(["clone", "preset"] as const)("records the losing %s alias when failed preview preparation returns a concurrent receipt", async kind => {
     providerState.providerKey = kind === "clone" ? "fish_audio" : "pocket_tts";
-    providerState.runtime = kind === "clone" ? "mlx_audio" : "pocket_tts";
+    providerState.runtime = kind === "clone" ? "mlx_indextts" : "pocket_tts";
     providerState.catalogVoices = ["anna"];
     const input = { characterId, actor: { id: actorId, role: "admin" as const },
       idempotencyKey: `voice-preview-replay-${kind}-${suffix}`, requestId: randomUUID() };
@@ -1199,7 +1200,7 @@ describe("Character voice identity authority", () => {
       providerState.beforePreviewResponse = null;
       providerState.failVoiceDelete = null;
       providerState.providerKey = "fish_audio";
-      providerState.runtime = "mlx_audio";
+      providerState.runtime = "mlx_indextts";
       providerState.catalogVoices = [];
     }
   });
@@ -1294,7 +1295,7 @@ describe("Character voice identity authority", () => {
     const profilesBefore = await prisma.characterVoiceProfile.count({ where: { characterId } });
     const idempotencyKey = `voice-revoked-during-prepare-${kind}-${suffix}`;
     providerState.providerKey = kind === "clone" ? "fish_audio" : "pocket_tts";
-    providerState.runtime = kind === "clone" ? "mlx_audio" : "pocket_tts";
+    providerState.runtime = kind === "clone" ? "mlx_indextts" : "pocket_tts";
     providerState.catalogVoices = ["anna"];
     if (kind === "preset") await prisma.character.update({ where: { id: characterId }, data: { source: "user", creatorId: actorId } });
     providerState.beforeStorageAck = async () => {
@@ -1315,7 +1316,7 @@ describe("Character voice identity authority", () => {
     } finally {
       providerState.beforeStorageAck = null;
       providerState.providerKey = "fish_audio";
-      providerState.runtime = "mlx_audio";
+      providerState.runtime = "mlx_indextts";
       providerState.catalogVoices = [];
       await prisma.character.update({ where: { id: characterId }, data: { source: "official", creatorId: null, deletedAt: null } });
       await prisma.user.update({ where: { id: actorId }, data: { status: "active", deletedAt: null } });

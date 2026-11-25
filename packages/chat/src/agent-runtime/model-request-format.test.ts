@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dropOldestReplayExchange, formatModelRequestInput } from "./model-request-format";
+import { dropOldestReplayExchange, estimateModelRequestInputTokens, formatModelRequestInput } from "./model-request-format";
 
 const messages = [
   { id: "user-1", sourceKind: "replay" as const, role: "user" as const, content: "I chose basil and have not planted it." },
@@ -148,4 +148,18 @@ it("only marks the open incoming tail after the responding Character's last answ
   expect(request.messages[0]).toEqual({ role: "user", content: "What about the old plan?" });
   expect(request.messages[3]).toEqual({ role: "user", content: "Earlier user message, already answered:\nWhere would you sit?" });
   expect(request.messages.at(-1)).toEqual({ role: "user", content: "Tell me the new code." });
+});
+
+describe("script-aware token estimation", () => {
+  it("keeps pure-ASCII estimation at 4 chars per token while accounting for CJK expansion", () => {
+    const asciiPayload = { messages: [{ role: "user", content: "a".repeat(400) }] };
+    const asciiJsonLen = JSON.stringify({ ...asciiPayload, tools: [] }).length;
+    expect(estimateModelRequestInputTokens(asciiPayload)).toBe(Math.ceil(asciiJsonLen / 4));
+
+    const cjkPayload = { messages: [{ role: "user", content: "今天晚上一起在阳台上看星星聊天吧".repeat(25) }] };
+    const cjkEstimate = estimateModelRequestInputTokens(cjkPayload);
+    // 400 CJK chars should estimate ~600+ tokens (not 100 tokens as naive length/4 did).
+    expect(cjkEstimate).toBeGreaterThan(550);
+    expect(cjkEstimate).toBeLessThan(800);
+  });
 });

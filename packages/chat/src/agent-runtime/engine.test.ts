@@ -2446,7 +2446,7 @@ describe("Chat embedded companion runtime", () => {
     }
   });
 
-  it("publishes complete ordinary text on a media-capable turn", async () => {
+  it("streams ordinary text live on a media-capable turn without buffering for non-media chat", async () => {
     const base = invocation();
     const value: CompanionInvocation = {
       ...base,
@@ -2474,10 +2474,142 @@ describe("Chat embedded companion runtime", () => {
     try {
       await runtime.run(value, connection.runtimePort);
       const deltas = connection.events.filter(event => event.type === "text_delta").map(event => event.delta);
-      expect(deltas).toEqual([fullReply]);
+      expect(deltas).toEqual([chunk1, chunk2, chunk3]);
       expect(deltas.join("")).toBe(fullReply);
       expect(connection.candidates[0]?.content).toBe(fullReply);
       expect(connection.events.some(event => event.type === "text_reset")).toBe(false);
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("fast-paths pure-media replies without a second LLM extraction call when independentTextRequest is false", async () => {
+    const base = imageInvocation();
+    const value = companionInvocationSchema.parse({
+      ...base,
+      preparedTurn: {
+        ...base.preparedTurn,
+        tools: COMPANION_MEDIA_TOOL_DEFINITIONS,
+      },
+    });
+    value.preparedTurn.messages.at(-1)!.content = "Send me a selfie by the window.";
+    const extraction = vi.fn(async () => response({ content: "NONE" }));
+    const receivedCalls: CompanionToolCall[] = [];
+    const executeTool = vi.fn<CompanionRuntimePort["executeTool"]>(async call => {
+      receivedCalls.push(call);
+      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded", output: acceptedImage("fast-card", "job-fast") };
+    });
+    const adapter = new FixtureAdapter({
+      profile: value.preparedTurn.profile,
+      apiKey: "fixture",
+      fetch: async () => response({
+        tool_calls: [{
+          index: 0,
+          id: "fast-media-call",
+          function: {
+            name: "request_character_media",
+            arguments: JSON.stringify({
+              kind: "image",
+              direction: "Mira taking a selfie by the sunlit window",
+              subject: "companion",
+              independentTextRequest: false,
+            }),
+          },
+        }],
+      }, "tool_calls", { inputTokens: 20, outputTokens: 8 }),
+    }, extraction);
+    const runtime = await engine(adapter);
+    const connection = port({ executeTool });
+    try {
+      await runtime.run(value, connection.runtimePort);
+      expect(extraction).not.toHaveBeenCalled();
+      expect(receivedCalls).toHaveLength(1);
+      expect(receivedCalls[0]?.arguments).not.toHaveProperty("independentTextRequest");
+      expect(connection.candidates[0]).toMatchObject({
+        content: "",
+        mediaResponse: { version: 1, attachmentId: "fast-card" },
+        execution: { steps: 1, toolCalls: 1 },
+      });
+      expect(connection.candidates[0]?.modelRequests).toHaveLength(1);
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("wakes a queued Turn immediately in memory when capacityWaitMs is enabled", async () => {
+    const releaseFirst = Promise.withResolvers<void>();
+    let calls = 0;
+    const adapter = new FixtureAdapter({
+      profile: invocation().preparedTurn.profile,
+      apiKey: "fixture",
+      fetch: async () => {
+        const currentCall = ++calls;
+        if (currentCall === 1) await releaseFirst.promise;
+        return response({ content: `Reply ${currentCall}` }, "stop", { inputTokens: 10, outputTokens: 3 });
+      },
+    });
+    const runtime = await engine(adapter, undefined, {
+      maxConcurrentAgents: { normal: 1, private: 1 },
+      capacityWaitMs: 5_000,
+    });
+    const firstPort = port();
+    const secondPort = port();
+    try {
+      const first = runtime.run(invocation(), firstPort.runtimePort);
+      await waitFor(() => firstPort.events.some(event => event.type === "started"));
+      const second = runtime.run(
+        { ...invocation(), invocationId: "queued-inv", attemptId: "queued-att", userId: "user-2" },
+        secondPort.runtimePort,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(secondPort.events).toEqual([]);
+      releaseFirst.resolve();
+      await Promise.all([first, second]);
+      expect(firstPort.candidates[0]?.content).toBe("Reply 1");
+      expect(secondPort.candidates[0]?.content).toBe("Reply 2");
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("cancels a queued Turn immediately and hands off the freed slot to the next waiter", async () => {
+    const releaseFirst = Promise.withResolvers<void>();
+    let calls = 0;
+    const adapter = new FixtureAdapter({
+      profile: invocation().preparedTurn.profile,
+      apiKey: "fixture",
+      fetch: async () => {
+        const currentCall = ++calls;
+        if (currentCall === 1) await releaseFirst.promise;
+        return response({ content: `Reply ${currentCall}` }, "stop", { inputTokens: 10, outputTokens: 3 });
+      },
+    });
+    const runtime = await engine(adapter, undefined, {
+      maxConcurrentAgents: { normal: 1, private: 1 },
+      capacityWaitMs: 5_000,
+    });
+    const firstPort = port();
+    const cancelledPort = port();
+    const thirdPort = port();
+    try {
+      const first = runtime.run(invocation(), firstPort.runtimePort);
+      await waitFor(() => firstPort.events.some(event => event.type === "started"));
+      const second = runtime.run(
+        { ...invocation(), invocationId: "queued-cancel", attemptId: "att-cancel", userId: "user-2" },
+        cancelledPort.runtimePort,
+      );
+      const third = runtime.run(
+        { ...invocation(), invocationId: "queued-third", attemptId: "att-third", userId: "user-3" },
+        thirdPort.runtimePort,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(runtime.cancel("queued-cancel", "user")).toBe(true);
+      await expect(second).rejects.toThrow(/invocation cancelled: user/);
+      releaseFirst.resolve();
+      await Promise.all([first, third]);
+      expect(firstPort.candidates[0]?.content).toBe("Reply 1");
+      expect(thirdPort.candidates[0]?.content).toBe("Reply 2");
+      expect(cancelledPort.events).toEqual([]);
     } finally {
       await runtime.shutdown();
     }

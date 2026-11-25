@@ -1,3 +1,4 @@
+import { INDEXTTS_VOICE_MODEL_ID } from "@idream/shared/contracts";
 import {
   type ProviderResult,
   type VoiceClipPort,
@@ -8,6 +9,10 @@ import { ownedArrayBuffer, requestVoiceProvider, voiceEndpoint, voiceFailure, vo
 import { VOICE_MAX_INPUT_CHARS, voiceSynthesisTimeoutMs } from "./speech-text";
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+export function fishAudioRuntimeForModel(model: string) {
+  return model === INDEXTTS_VOICE_MODEL_ID ? "mlx_indextts" : "mlx_audio";
+}
 
 export interface FishAudioVoiceModelConfig {
   baseUrl: string;
@@ -168,16 +173,17 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     const raw = (await response.data.json().catch(() => null)) as
       | FishHealthResponse
       | null;
+    const expectedRuntime = fishAudioRuntimeForModel(this.model);
     if (
       !raw ||
       raw.voice_cloning !== true ||
       raw.system_voice_ready !== true ||
-      raw.runtime !== "mlx_audio" ||
+      raw.runtime !== expectedRuntime ||
       typeof raw.runtime_version !== "string" ||
       raw.runtime_version.trim().length === 0 ||
       raw.acceleration !== "mlx" ||
       raw.model_loaded !== true ||
-      typeof raw.model !== "string" ||
+      raw.model !== this.model ||
       !Array.isArray(raw.supported_models) ||
       !raw.supported_models.includes(this.model) ||
       !raw.supported_models.every(model => typeof model === "string" && model.length > 0) ||
@@ -197,7 +203,7 @@ export class FishAudioVoiceModel implements VoiceClipPort, VoiceIdentityPort {
         model: raw.model,
         supportedModels: raw.supported_models as string[],
         languages: raw.languages as string[],
-        runtime: raw.runtime,
+        runtime: expectedRuntime,
         runtimeVersion: raw.runtime_version,
         acceleration: raw.acceleration,
       },

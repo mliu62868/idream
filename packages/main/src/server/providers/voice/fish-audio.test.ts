@@ -86,22 +86,31 @@ describe("FishAudioVoiceModel", () => {
   });
 
   it("keeps the requested model after a default-model cutover and rejects a mismatched receipt", async () => {
-    let receiptModel = "breeze-tts-2-mlx-8bit";
+    const replayOnlyModel = "fish-audio-s2-pro-8bit";
+    let receiptModel = replayOnlyModel;
     const bodies: unknown[] = [];
-    const voice = new FishAudioVoiceModel({ baseUrl: "http://127.0.0.1:8062/v1", model: "ming-3.0-tts-0.5b-8bit", language: "english",
+    const voice = new FishAudioVoiceModel({ baseUrl: "http://127.0.0.1:8062/v1", model: "indextts-2.5-mlx-8bit", language: "english",
       fetchImpl: async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return new Response(wavBytes(1_000), { headers: { "content-type": "audio/wav", "x-idream-voice-model": receiptModel } }); } });
     const input = { requestId: "old-request", attemptNo: 2, idempotencyKey: "old-request", text: "The original reply.", model: receiptModel };
-    expect(await voice.synthesize(input)).toMatchObject({ ok: true, data: { model: "breeze-tts-2-mlx-8bit" } });
-    expect(bodies[0]).toMatchObject({ model: "breeze-tts-2-mlx-8bit" });
-    receiptModel = "ming-3.0-tts-0.5b-8bit";
+    expect(await voice.synthesize(input)).toMatchObject({ ok: true, data: { model: replayOnlyModel } });
+    expect(bodies[0]).toMatchObject({ model: replayOnlyModel });
+    receiptModel = "indextts-2.5-mlx-8bit";
     expect(await voice.synthesize(input)).toMatchObject({ ok: false, error: { code: "voice_model_mismatch", retryable: false } });
   });
 
   it("does not qualify a healthy gateway running a different model", async () => {
-    const voice = new FishAudioVoiceModel({ baseUrl: "http://127.0.0.1:8062/v1", model: "ming-3.0-tts-0.5b-8bit", language: "english",
-      fetchImpl: async () => Response.json({ runtime: "mlx_audio", runtime_version: "0.4.5", acceleration: "mlx", voice_cloning: true,
-        model_loaded: true, system_voice_ready: true, model: "breeze-tts-2-mlx-8bit", supported_models: ["breeze-tts-2-mlx-8bit"], languages: ["en"] }) });
+    const voice = new FishAudioVoiceModel({ baseUrl: "http://127.0.0.1:8062/v1", model: "indextts-2.5-mlx-8bit", language: "english",
+      fetchImpl: async () => Response.json({ runtime: "mlx_indextts", runtime_version: "0.2.0", acceleration: "mlx", voice_cloning: true,
+        model_loaded: true, system_voice_ready: true, model: "breeze-tts-2-mlx-8bit", supported_models: ["indextts-2.5-mlx-8bit"], languages: ["en"] }) });
     expect(await voice.inspectCapabilities()).toMatchObject({ ok: false, error: { code: "invalid_voice_health_response" } });
+  });
+
+  it("uses the resident IndexTTS runtime and its advertised languages", async () => {
+    const model = "indextts-2.5-mlx-8bit";
+    const voice = new FishAudioVoiceModel({ baseUrl: "http://127.0.0.1:8062/v1", model, language: "auto",
+      fetchImpl: async () => Response.json({ runtime: "mlx_indextts", runtime_version: "0.2.0", acceleration: "mlx", voice_cloning: true,
+        model_loaded: true, system_voice_ready: true, model, supported_models: [model], languages: ["en", "zh", "ja", "es", "ar"] }) });
+    expect(await voice.inspectCapabilities()).toMatchObject({ ok: true, data: { model, runtime: "mlx_indextts", languages: ["en", "zh", "ja", "es", "ar"] } });
   });
 
   it("requires the resident MLX Audio Fish runtime", async () => {

@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { mediaAttachmentId, mediaExtractionMessages, parseMediaSearchReply, parseMediaTextRequests } from "./media-response";
+import {
+  canSkipMediaExtractionForPureMedia,
+  extractMediaRoutingHint,
+  mediaAttachmentId,
+  mediaExtractionMessages,
+  parseMediaSearchReply,
+  parseMediaTextRequests,
+  shouldBufferMediaLeadText,
+} from "./media-response";
 
 it.each([false, true])("keeps a completed media resend out of the independent text scope (recovered=%s)", recovered => {
   const source = "把刚才那段原样再发一次。另外用中文告诉我 17 + 25 的结果。";
@@ -96,4 +104,44 @@ it("requires real acknowledged attachment identity", () => {
   expect(mediaAttachmentId({ ...identity, outcome: "succeeded", output: { status: "requesting", attachmentId: "real" } })).toBeUndefined();
   expect(mediaAttachmentId({ ...identity, outcome: "failed", attachmentId: "real", error: { code: "failed", message: "failed", retryable: false } })).toBe("real");
   expect(mediaAttachmentId({ ...identity, outcome: "failed", error: { code: "http", message: "http", retryable: false } })).toBeUndefined();
+});
+
+describe("intent-aware media lead buffering and pure-media fast path", () => {
+  it("streams ordinary text chat immediately while buffering media-intent or paid turns", () => {
+    expect(shouldBufferMediaLeadText({ hasMediaTools: false, currentUserText: "Send me a photo" })).toBe(false);
+    expect(shouldBufferMediaLeadText({ hasMediaTools: true, imageActionMode: "chat", currentUserText: "今天好累，陪我聊聊天吧" })).toBe(false);
+    expect(shouldBufferMediaLeadText({ hasMediaTools: true, imageActionMode: "chat", currentUserText: "Tell me about your favorite book." })).toBe(false);
+    expect(shouldBufferMediaLeadText({ hasMediaTools: true, imageActionMode: "paid", currentUserText: "Tell me about your favorite book." })).toBe(true);
+    expect(shouldBufferMediaLeadText({ hasMediaTools: true, imageActionMode: "chat", currentUserText: "发一张自拍给我看" })).toBe(true);
+    expect(shouldBufferMediaLeadText({ hasMediaTools: true, imageActionMode: "chat", currentUserText: "Edit the green mug to red." })).toBe(true);
+    expect(shouldBufferMediaLeadText({
+      hasMediaTools: true, imageActionMode: "chat", currentUserText: "好呀发吧", previousAssistantText: "要不要我给你发一张海边照片？",
+    })).toBe(true);
+    expect(shouldBufferMediaLeadText({
+      hasMediaTools: true, imageActionMode: "chat", currentUserText: "好呀", previousAssistantText: "我们今晚去吃拉面吧？",
+    })).toBe(false);
+  });
+
+  it("strips independentTextRequest before forwarding tool args to Main", () => {
+    expect(extractMediaRoutingHint({ kind: "image", direction: "selfie", subject: "companion", independentTextRequest: false })).toEqual({
+      independentTextRequest: false,
+      toolArgs: { kind: "image", direction: "selfie", subject: "companion" },
+    });
+    expect(extractMediaRoutingHint({ previousMediaAssetId: "asset-1" })).toEqual({
+      toolArgs: { previousMediaAssetId: "asset-1" },
+    });
+  });
+
+  it("skips secondary extraction only when model declares false and the single-intent guard agrees", () => {
+    expect(canSkipMediaExtractionForPureMedia("发一张海边自拍给我。", false)).toBe(true);
+    expect(canSkipMediaExtractionForPureMedia("Send me a selfie by the window", false)).toBe(true);
+    expect(canSkipMediaExtractionForPureMedia("发一张海边自拍给我。", undefined)).toBe(false);
+    expect(canSkipMediaExtractionForPureMedia("发一张海边自拍给我。", true)).toBe(false);
+    expect(canSkipMediaExtractionForPureMedia("发一张自拍，顺便告诉我明天天气", false)).toBe(false);
+    expect(canSkipMediaExtractionForPureMedia("发一张自拍，夸夸我今天的表现", false)).toBe(false);
+    expect(canSkipMediaExtractionForPureMedia("Send a photo, tell me a joke", false)).toBe(false);
+    expect(canSkipMediaExtractionForPureMedia("Send a photo. Also explain tides.", false)).toBe(false);
+    expect(canSkipMediaExtractionForPureMedia("Can you send a photo?", false)).toBe(false);
+    expect(canSkipMediaExtractionForPureMedia("发一张自拍\n另外讲个故事", false)).toBe(false);
+  });
 });

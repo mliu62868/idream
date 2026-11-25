@@ -46,7 +46,7 @@ async function callTerms(userId: string, sessionId: string, body: Start) {
   const session = await sessionAuthority(userId, sessionId);
   const entitlements = await entitlementMap(userId);
   let identity = await resolveCharacterVoiceAuthority({ characterId: session.characterId, systemDefaultOnly: entitlements.voice_enabled !== true });
-  // A healthy character identity is used directly, including Ming clones.
+  // A healthy Character identity is used directly with its pinned model.
   // If its runtime is down, the quoted fallback remains explicit to the caller.
   const voiceFallback = identity.source === "character_clone" && !await englishVoiceRuntimeReady(identity.providerKey, undefined, identity.model);
   if (voiceFallback) identity = await resolveCharacterVoiceAuthority({ characterId: session.characterId, systemDefaultOnly: true });

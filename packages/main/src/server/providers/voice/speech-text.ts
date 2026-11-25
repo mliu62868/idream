@@ -1,7 +1,7 @@
 // SPEC: the longest reply one clip can voice. The longest catalog reply is the Story
 //   profile's 2048 output tokens, about 8-10k characters of English, so this bound is
 //   reached only by an unusually wordy reply or a future larger profile.
-// INVARIANT: the gateways enforce the same number (`MAX_SPEECH_CHARS`). Ming and Pocket
+// INVARIANT: the gateways enforce the same number (`MAX_SPEECH_CHARS`). IndexTTS and Pocket
 //   split long text into fragments themselves, and Fish splits for Breeze.
 export const VOICE_MAX_INPUT_CHARS = 12_000;
 

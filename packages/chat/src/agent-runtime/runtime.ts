@@ -19,6 +19,7 @@ import {
   probeCompanionBridges,
   type CompanionRuntimePort,
 } from "./engine.js";
+import { sharedInferencePriorityGate } from "./execution-scheduler.js";
 import {
   IgrepMemoryBuilder,
   igrepVersion,
@@ -84,9 +85,12 @@ function createRuntime(): AgentRuntime {
       undefined,
       undefined,
       llmProfileClaimVerifier(config.igrepLlm),
+      sharedInferencePriorityGate,
     ),
     maxSteps: config.maxSteps,
     maxConcurrentAgents: config.maxConcurrentAgents,
+    capacityWaitMs: config.capacityWaitMs,
+    priorityGate: sharedInferencePriorityGate,
   });
   let lastHealth: AgentRuntimeHealth | undefined;
   let healthInFlight: Promise<AgentRuntimeHealth> | undefined;

@@ -47,7 +47,7 @@ const voiceProvider = baseEnv.VOICE_PROVIDER ?? "mock";
 const voiceApiUrl = voiceProvider === "pocket-tts" ? baseEnv.POCKET_TTS_API_URL
   : voiceProvider === "fish-audio" ? baseEnv.FISH_AUDIO_API_URL : undefined;
 const voiceModel = voiceProvider === "pocket-tts" ? baseEnv.POCKET_TTS_MODEL ?? "pocket-tts"
-  : voiceProvider === "fish-audio" ? baseEnv.FISH_AUDIO_MODEL ?? "ming-3.0-tts-0.5b-8bit" : "mock-voice-probe";
+  : voiceProvider === "fish-audio" ? baseEnv.FISH_AUDIO_MODEL ?? "indextts-2.5-mlx-8bit" : "mock-voice-probe";
 const voiceProbeVoiceId = baseEnv.VOICE_MODEL_PROBE_VOICE_ID ?? (voiceProvider === "pocket-tts"
   ? baseEnv.POCKET_TTS_DEFAULT_VOICE_ID ?? "anna" : baseEnv.FISH_AUDIO_DEFAULT_VOICE_ID ?? "fish-female-default");
 

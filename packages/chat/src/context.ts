@@ -115,8 +115,9 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
   });
   // Character/token fitting belongs to PreparedTurn. Never truncate the
   // current user's words; retain omitted history for compaction and recall.
-  const selected = transcript.slice(-policy.maxContextMessages);
-  if (selected[0]?.role === "assistant" && !selected[0].opening && !selected[0].unprompted) selected.shift();
+  // Evict in fixed multi-turn blocks once past the cap so consecutive turns
+  // keep an identical history prefix and hit the model server's KV prefix cache.
+  const selected = selectCacheAlignedTranscriptWindow(transcript, policy.maxContextMessages);
   const scene = snapshot.sceneVersion === 0
     ? emptySceneState()
     : parseSceneState(snapshot.scene);
@@ -145,6 +146,39 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
     dropped: selected.length < transcript.length ? ["transcript"] : [],
     contextRevision: BigInt(snapshot.contextRevision),
   };
+}
+
+/**
+ * Block-aligned sliding window over the ordered transcript.
+ * Dropping 1 exchange every turn invalidates the entire KV prefix cache on
+ * every reply past the window cap. Dropping in fixed strides (4 exchanges = 8
+ * messages) keeps the retained prefix byte-identical for the next 3-4 turns.
+ */
+export const CACHE_WINDOW_EVICTION_STRIDE = 8;
+
+export function selectCacheAlignedTranscriptWindow<
+  T extends { role: "user" | "assistant"; opening?: true; unprompted?: true },
+>(transcript: readonly T[], maxContextMessages: number): T[] {
+  if (transcript.length <= maxContextMessages) return [...transcript];
+  const stride = Math.min(
+    CACHE_WINDOW_EVICTION_STRIDE,
+    Math.max(2, Math.floor(maxContextMessages / 3)),
+  );
+  const excess = transcript.length - maxContextMessages;
+  const start = Math.min(
+    transcript.length - 1,
+    Math.ceil(excess / stride) * stride,
+  );
+  const selected = transcript.slice(start);
+  while (
+    selected.length > 1
+    && selected[0]?.role === "assistant"
+    && !selected[0].opening
+    && !selected[0].unprompted
+  ) {
+    selected.shift();
+  }
+  return selected;
 }
 
 function immutableOpeningMessage(value: unknown): string | null {

@@ -369,29 +369,30 @@ disable these media model routes instead of inheriting live `.env` settings.
 
 ## Default Speech Runtime
 
-Ming 3.0 0.5B MLX 8-bit provides the default speech runtime. Its existing
-`fish-audio` provider name, reference registry and erasure contract stay stable.
+IndexTTS 2.5 MLX 8-bit provides default speech through the `fish-audio` provider
+slot and its existing reference registry and erasure contract.
 Pocket TTS remains available for existing Character catalog identities.
 
 ```bash
-bun run voice:ming:install
-bun run test:voice:ming
+bun run voice:indextts:install
+bun run test:voice:indextts
 ```
 
-Set `VOICE_PROVIDER=fish-audio`, `FISH_AUDIO_MODEL=ming-3.0-tts-0.5b-8bit`,
-`FISH_AUDIO_MODEL_PATH` and `FISH_AUDIO_CAMPLUS_MODEL_PATH` in Main's environment.
+Set `VOICE_PROVIDER=fish-audio`, `FISH_AUDIO_MODEL=indextts-2.5-mlx-8bit`,
+and `FISH_AUDIO_MODEL_PATH` in Main's environment. The installer prepares and
+verifies the pinned model, W2V-BERT and CAMPPlus files in that directory.
 Configure a verified adult reference WAV and exact transcript using
 `FISH_AUDIO_SYSTEM_REFERENCE_AUDIO` / `FISH_AUDIO_SYSTEM_REFERENCE_MANIFEST`, or
 set `FISH_AUDIO_DEFAULT_VOICE_ID` to an existing registry identity. After pending
 voice work has settled, apply the configuration with `bun run pm2:restart` and
 save the matching system voice in Admin. Runtime restarts load only local assets.
 
-Ming uses the full reference for CAM++ speaker conditioning and structured
-emotion/speed/volume captions. A verified short acoustic prompt can be recorded
-as `ming_prompt` in the reference manifest, with `reference_sha256`, `start_s`,
-`end_s` and exact `ref_text`; unverified automatic cropping is not used. The
-sampler is fixed at CFG 2, temperature 0 and 10 steps. Breeze's token sampling
-controls do not apply. Long text is split within Ming's conditioning budget.
+IndexTTS conditions on the reference WAV, using up to 15 seconds. The transcript
+documents the reference identity. Delivery maps to emotion strength and a
+pitch-preserving speaking pace with the engine's fixed sampler. The model splits
+long text by token count and rejects any result that reaches the generation cap.
+`FISH_AUDIO_LANGUAGE=auto` detects the text language. Use `en`, `zh`, `ja`, `es`
+or `ar` to pin it for a deployment.
 
 For reproducible Breeze comparisons, its separate hashed environment remains
 available through `bun run voice:fish:install` and the explicit
@@ -400,10 +401,12 @@ time; old-model idempotency requests may replay exact cached audio but cannot
 silently regenerate with the current model.
 
 Active Character voice versions pin both the reference identity and model.
-When changing the runtime model, prepare a new version from the same reference,
-verify its preview, then activate it. Keep the archived profile, original registry
-reference, cached audio and VoiceClipRequest facts for historical playback.
-Retired Fish S2 Pro requests can only replay their exact completed cache entry.
+Before upgrading an environment from Ming 3.0 0.5B, settle any outstanding
+requests pinned to it and activate verified IndexTTS versions for its active
+profiles. Ming is retired from the gateway. Already delivered clips play from
+their Main assets, and archived profiles and requests retain their original
+model attribution. Fish S2 Pro retains exact replay of completed gateway cache
+entries.
 
 ## Chat Voice Input
 

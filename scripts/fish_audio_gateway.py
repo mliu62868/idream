@@ -1,6 +1,6 @@
 """Resident voice-cloning MLX gateway for iDream (the `fish_audio` provider slot).
 
-SPEC: one configured Ming or Breeze model owns generation; a previous model's
+SPEC: one configured IndexTTS or Breeze model owns generation; a previous model's
 completed result may only be replayed from its exact persistent request cache.
 INTENT: the provider key, environment names and durable voice registry keep the
 `fish_audio` name so existing voice identities survive an engine switch.
@@ -33,39 +33,40 @@ try:
     from scripts.voice_erasure import AccountErasureRequest, VoiceErasureRegistry
     from scripts.voice_gateway_common import atomic_write, read_idempotent_audio, safe_voice_id, validate_wav
     from scripts.voice_render_lane import RenderLane
-    from scripts.ming_voice_runtime import (
-        CAMPLUS_SHA256, MLX_AUDIO_VERSION, MODEL_ID as MING_MODEL_ID,
-        MingGenerationOptions, MingReferenceError, MingSynthesisError, MingVoiceRuntime,
-        control_caption, validate_prompt_metadata,
+    from scripts.indextts_voice_runtime import (
+        DEFAULT_MODEL_PATH as INDEXTTS_MODEL_PATH,
+        MODEL_ID as INDEXTTS_MODEL_ID, MODEL_REVISION as INDEXTTS_MODEL_REVISION,
+        RUNTIME_PACKAGE as INDEXTTS_PACKAGE, IndexTTSTruncated, IndexTTSVoiceRuntime,
+        validate_reference_wav as validate_indextts_reference,
     )
 except ModuleNotFoundError:
     from voice_cache_janitor import CacheJanitor, cache_ttl_seconds
     from voice_erasure import AccountErasureRequest, VoiceErasureRegistry
     from voice_gateway_common import atomic_write, read_idempotent_audio, safe_voice_id, validate_wav
     from voice_render_lane import RenderLane
-    from ming_voice_runtime import (
-        CAMPLUS_SHA256, MLX_AUDIO_VERSION, MODEL_ID as MING_MODEL_ID,
-        MingGenerationOptions, MingReferenceError, MingSynthesisError, MingVoiceRuntime,
-        control_caption, validate_prompt_metadata,
+    from indextts_voice_runtime import (
+        DEFAULT_MODEL_PATH as INDEXTTS_MODEL_PATH,
+        MODEL_ID as INDEXTTS_MODEL_ID, MODEL_REVISION as INDEXTTS_MODEL_REVISION,
+        RUNTIME_PACKAGE as INDEXTTS_PACKAGE, IndexTTSTruncated, IndexTTSVoiceRuntime,
+        validate_reference_wav as validate_indextts_reference,
     )
 
 
 BREEZE_MODEL_ID = "breeze-tts-2-mlx-8bit"
 MODEL_PATHS = {
-    MING_MODEL_ID: "~/.idream/models/mlx-community/Ming-3.0-tts-0.5B-8bit",
+    INDEXTTS_MODEL_ID: INDEXTTS_MODEL_PATH,
     BREEZE_MODEL_ID: "~/.idream/models/mlx-community/Breeze-TTS-2-mlx-8bit",
 }
-# These models have durable cached requests, but no generation runtime remains.
-# Keep their exact-result replay contract without allowing a new synthesis.
-RETIRED_MODEL_IDS = ("fish-audio-s2-pro-8bit",)
-RECOGNIZED_MODEL_IDS = (*MODEL_PATHS, *RETIRED_MODEL_IDS)
-MODEL_ID = os.getenv("FISH_AUDIO_MODEL", MING_MODEL_ID).strip()
+# Fish S2 Pro retains exact cached replay. The gateway rejects every model ID
+# outside the configured engine choices and this replay allowlist.
+REPLAY_ONLY_MODEL_IDS = ("fish-audio-s2-pro-8bit",)
+RECOGNIZED_MODEL_IDS = (*MODEL_PATHS, *REPLAY_ONLY_MODEL_IDS)
+MODEL_ID = os.getenv("FISH_AUDIO_MODEL", INDEXTTS_MODEL_ID).strip()
 if MODEL_ID not in MODEL_PATHS:
     raise RuntimeError(f"Unsupported FISH_AUDIO_MODEL: {MODEL_ID!r}")
 MODEL_PATH = Path(
     os.getenv("FISH_AUDIO_MODEL_PATH", MODEL_PATHS[MODEL_ID])
 ).expanduser().resolve()
-CAMPLUS_MODEL_PATH = os.getenv("FISH_AUDIO_CAMPLUS_MODEL_PATH", "").strip()
 LANGUAGE = os.getenv("FISH_AUDIO_LANGUAGE", "auto").strip()
 DEFAULT_VOICE = os.getenv(
     "FISH_AUDIO_DEFAULT_VOICE_ID",
@@ -102,10 +103,8 @@ SYSTEM_VOICE_IDS = BUILTIN_VOICES | {DEFAULT_VOICE}
 registry_lock = threading.RLock()
 idempotency_lock = threading.RLock()
 generation_lock = threading.Lock()
-# Ming's median render is about 8s and its slowest about 90s against Main's 240s budget.
 render_lane = RenderLane(max_pending=8)
 runtime_model: Any | None = None
-ming_runtime: MingVoiceRuntime | None = None
 
 if not LANGUAGE:
     raise RuntimeError("FISH_AUDIO_LANGUAGE is required")
@@ -144,40 +143,26 @@ def load_runtime_model() -> Any:
         return runtime_model
     if not MODEL_PATH.is_dir():
         raise RuntimeError(f"Voice model directory does not exist: {MODEL_PATH}")
-    if MODEL_ID == MING_MODEL_ID:
-        if version("mlx-audio") != MLX_AUDIO_VERSION:
-            raise RuntimeError(f"Ming requires the pinned mlx-audio {MLX_AUDIO_VERSION} runtime")
-        load_ming_runtime()
+    if MODEL_ID == INDEXTTS_MODEL_ID:
+        runtime_model = IndexTTSVoiceRuntime(MODEL_PATH, LANGUAGE)
+        return runtime_model
     from mlx_audio.tts.utils import load_model
 
+    from mlx_audio.tts.models.breeze_tts import Model as BreezeModel
+
     candidate = load_model(model_path=str(MODEL_PATH))
-    if MODEL_ID == MING_MODEL_ID and (
-        not getattr(candidate, "ming3", False)
-        or getattr(candidate, "patch_size", None) != 1
-        or getattr(candidate, "sample_rate", None) != 44100
-    ):
-        raise RuntimeError("Configured Ming directory does not contain the supported Ming-3.0 dense model")
-    if MODEL_ID == BREEZE_MODEL_ID and getattr(candidate, "ming3", False):
-        raise RuntimeError("Configured Breeze directory contains a Ming model")
+    if not isinstance(candidate, BreezeModel):
+        raise RuntimeError("Configured Breeze directory does not contain a Breeze model")
     runtime_model = candidate
     return runtime_model
-
-
-def load_ming_runtime() -> MingVoiceRuntime:
-    global ming_runtime
-    if ming_runtime is None:
-        if not CAMPLUS_MODEL_PATH:
-            raise RuntimeError("Ming requires an explicit FISH_AUDIO_CAMPLUS_MODEL_PATH")
-        ming_runtime = MingVoiceRuntime(Path(CAMPLUS_MODEL_PATH).expanduser().resolve())
-    return ming_runtime
 
 
 def clear_reference_cache() -> None:
     # Registry mutation/erasure waits for active synthesis before releasing its
     # derived speaker vectors; no embedding cache is written to disk.
     with generation_lock:
-        if ming_runtime is not None:
-            ming_runtime.clear_reference_cache()
+        if MODEL_ID == INDEXTTS_MODEL_ID and runtime_model is not None:
+            runtime_model.clear_reference_cache()
 
 
 @asynccontextmanager
@@ -231,7 +216,6 @@ def load_voice_manifest(voice_id: str) -> dict[str, Any] | None:
         or not isinstance(raw.get("ref_text"), str)
         or not raw["ref_text"].strip()
         or not isinstance(raw.get("language"), str)
-        or ("ming_prompt" in raw and not isinstance(raw["ming_prompt"], dict))
     ):
         raise HTTPException(
             status_code=503,
@@ -240,7 +224,6 @@ def load_voice_manifest(voice_id: str) -> dict[str, Any] | None:
     return {
         "ref_text": raw["ref_text"].strip(),
         "language": raw["language"],
-        **({"ming_prompt": raw["ming_prompt"]} if "ming_prompt" in raw else {}),
     }
 
 
@@ -273,7 +256,6 @@ def load_system_reference() -> tuple[Path, dict[str, Any]]:
         not isinstance(raw, dict)
         or not isinstance(raw.get("ref_text"), str)
         or not raw["ref_text"].strip()
-        or ("ming_prompt" in raw and not isinstance(raw["ming_prompt"], dict))
     ):
         raise HTTPException(
             status_code=503,
@@ -283,7 +265,6 @@ def load_system_reference() -> tuple[Path, dict[str, Any]]:
     return audio_path, {
         "ref_text": raw["ref_text"].strip(),
         "language": language if isinstance(language, str) else LANGUAGE,
-        **({"ming_prompt": raw["ming_prompt"]} if "ming_prompt" in raw else {}),
     }
 
 
@@ -302,12 +283,8 @@ def system_voice_status() -> tuple[bool, str | None]:
     # that lock protects, so a busy lock is no reason to stop reading it.
     locked = registry_lock.acquire(blocking=False)
     try:
-        path, manifest = resolve_reference(safe_voice_id(DEFAULT_VOICE))
-        reference = path.read_bytes()
-        validate_wav(reference)
-        if MODEL_ID == MING_MODEL_ID:
-            validate_prompt_metadata(reference, manifest.get("ming_prompt"))
-            load_ming_runtime().embedding(reference)
+        path, _ = resolve_reference(safe_voice_id(DEFAULT_VOICE))
+        validate_reference_wav(path.read_bytes())
     except HTTPException as error:
         return False, str(error.detail)
     except (OSError, ValueError, RuntimeError, ImportError) as error:
@@ -316,6 +293,13 @@ def system_voice_status() -> tuple[bool, str | None]:
         if locked:
             registry_lock.release()
     return True, None
+
+
+def validate_reference_wav(reference: bytes) -> None:
+    if MODEL_ID == INDEXTTS_MODEL_ID:
+        validate_indextts_reference(reference)
+    else:
+        validate_wav(reference)
 
 
 def stored_voice_count() -> int:
@@ -382,7 +366,7 @@ def normalize_reference_audio(reference: bytes, filename: str) -> bytes:
             )
         normalized = target.read_bytes()
     try:
-        validate_wav(normalized)
+        validate_reference_wav(normalized)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return normalized
@@ -489,18 +473,6 @@ def delivery_instruction(delivery: DeliverySettings) -> str:
     return " ".join(parts)
 
 
-def ming_delivery_caption(delivery: DeliverySettings) -> str:
-    speed = "慢速" if delivery.speed <= 0.97 else "快速" if delivery.speed >= 1.03 else "中速"
-    if delivery.preset in {"intimate", "sensual"}:
-        if speed == "中速":
-            speed = "慢速"
-        return control_caption(speed=speed, volume="中" if delivery.intensity <= 30 else "低")
-    if delivery.preset == "confident":
-        return control_caption(speed=speed, volume="中" if delivery.intensity <= 30 else "高")
-    emotion = "高兴" if delivery.preset == "playful" and delivery.intensity > 30 else "中性"
-    return control_caption(emotion=emotion, speed=speed)
-
-
 def require_generation_model(requested_model: str) -> None:
     if requested_model != MODEL_ID:
         raise HTTPException(
@@ -537,26 +509,28 @@ def render_wav(request: SpeechRequest) -> bytes:
         raise HTTPException(status_code=400, detail="Speech text must contain non-whitespace characters")
     model = load_runtime_model()
     voice_id = safe_voice_id(request.voice)
-    from mlx_audio.utils import load_audio
-
     # Keep the manifest, WAV and derived identity in one registry generation.
     # Erasure persists its barrier first, then waits for this lock to release.
     with registry_lock, generation_lock:
         reference_path, manifest = resolve_reference(voice_id)
-        ref_audio = load_audio(str(reference_path), sample_rate=model.sample_rate)
-        if MODEL_ID == MING_MODEL_ID:
+        if MODEL_ID == INDEXTTS_MODEL_ID:
             try:
-                results = load_ming_runtime().generate(
-                    model, text=request.input.strip(), ref_audio=ref_audio,
-                    reference=reference_path.read_bytes(), ref_text=manifest["ref_text"],
-                    caption=ming_delivery_caption(request.delivery), options=MingGenerationOptions(),
-                    prompt_metadata=manifest.get("ming_prompt"),
-                )
-            except MingReferenceError as error:
+                validate_indextts_reference(reference_path.read_bytes())
+            except (OSError, ValueError) as error:
                 raise HTTPException(status_code=503, detail=str(error)) from error
-            except MingSynthesisError as error:
+            try:
+                audio = model.generate(
+                    request.input.strip(), reference_path,
+                    preset=request.delivery.preset,
+                    intensity=request.delivery.intensity, speed=request.delivery.speed,
+                )
+            except IndexTTSTruncated as error:
                 raise HTTPException(status_code=502, detail=str(error)) from error
+            sample_rate = model.sample_rate
         else:
+            from mlx_audio.utils import load_audio
+
+            ref_audio = load_audio(str(reference_path), sample_rate=model.sample_rate)
             # Preserve Breeze's measured no-CFG conditioning path and sampling.
             results = [
                 result
@@ -574,12 +548,13 @@ def render_wav(request: SpeechRequest) -> bytes:
                     stream=False,
                 )
             ]
-    if not results:
-        raise HTTPException(status_code=502, detail="Voice model returned no audio")
-    audio = np.concatenate(
-        [np.array(result.audio, dtype=np.float32).reshape(-1) for result in results]
-    )
-    if audio.size == 0 or not np.isfinite(audio).all():
+            if not results:
+                raise HTTPException(status_code=502, detail="Voice model returned no audio")
+            audio = np.concatenate(
+                [np.array(result.audio, dtype=np.float32).reshape(-1) for result in results]
+            )
+            sample_rate = results[0].sample_rate
+    if audio.ndim != 1 or audio.size == 0 or not np.isfinite(audio).all():
         raise HTTPException(status_code=502, detail="Voice model returned invalid audio")
     audio = np.clip(audio, -1.0, 1.0)
     pcm = (audio * 32767.0).astype("<i2").tobytes()
@@ -587,7 +562,7 @@ def render_wav(request: SpeechRequest) -> bytes:
     with wave.open(output, "wb") as wav:
         wav.setnchannels(1)
         wav.setsampwidth(2)
-        wav.setframerate(int(results[0].sample_rate))
+        wav.setframerate(int(sample_rate))
         wav.writeframes(pcm)
     return output.getvalue()
 
@@ -602,15 +577,19 @@ async def health() -> JSONResponse:
     except (OSError, ValueError, RuntimeError, ImportError, PackageNotFoundError) as error:
         model_error = str(error)
     system_voice_ready, system_voice_error = system_voice_status()
+    index_tts = MODEL_ID == INDEXTTS_MODEL_ID
+    languages = ("en",)
+    if index_tts:
+        languages = model.languages if model is not None else ()
     try:
-        runtime_version = version("mlx-audio")
+        runtime_version = version(INDEXTTS_PACKAGE if index_tts else "mlx-audio")
     except PackageNotFoundError:
         runtime_version = "unknown"
     ready = model is not None and system_voice_ready
     payload = {
         "status": "healthy" if ready else "degraded",
         "provider": "fish_audio",
-        "runtime": "mlx_audio",
+        "runtime": "mlx_indextts" if index_tts else "mlx_audio",
         "runtime_version": runtime_version,
         "acceleration": "mlx",
         "model": MODEL_ID,
@@ -618,7 +597,7 @@ async def health() -> JSONResponse:
         "supported_models": [MODEL_ID],
         "recognized_models": list(RECOGNIZED_MODEL_IDS),
         "replay_only_models": [value for value in RECOGNIZED_MODEL_IDS if value != MODEL_ID],
-        "languages": ["en"],
+        "languages": list(languages),
         "model_path": str(MODEL_PATH),
         "model_loaded": model is not None,
         "model_error": model_error,
@@ -628,11 +607,8 @@ async def health() -> JSONResponse:
         "system_voice_error": system_voice_error,
         "stored_voice_count": stored_voice_count(),
     }
-    if MODEL_ID == MING_MODEL_ID:
-        payload["speaker_encoder"] = {
-            "model": "campplus", "execution_provider": "CPUExecutionProvider",
-            "sha256": CAMPLUS_SHA256, "loaded": ming_runtime is not None,
-        }
+    if index_tts:
+        payload["model_revision"] = INDEXTTS_MODEL_REVISION
     return JSONResponse(
         content=payload,
         status_code=200 if ready else 503,
@@ -736,7 +712,7 @@ def clone_voice(
     )
     manifest: dict[str, Any] = {
         "format": VOICE_MANIFEST_FORMAT,
-        "runtime": "mlx_audio",
+        "runtime": "mlx_indextts" if MODEL_ID == INDEXTTS_MODEL_ID else "mlx_audio",
         "model": MODEL_ID,
         "language": language,
         "ref_text": normalized_text,

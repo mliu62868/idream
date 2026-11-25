@@ -153,8 +153,8 @@ function pocketWorkspace() {
       provider: "fish_audio",
       cloningAvailable: true,
       runtimeStatus: "ready",
-      runtimeEngine: "mlx_audio",
-      runtimeModel: "ming-3.0-tts-0.5b-8bit",
+      runtimeEngine: "mlx_indextts",
+      runtimeModel: "indextts-2.5-mlx-8bit",
       runtimeVersion: "0.4.3",
       presetRuntime: { provider: "pocket_tts", runtimeStatus: "ready", catalogVoiceIds: ["vera", "anna"] },
       candidateRuntimeStatus: null,
@@ -183,7 +183,7 @@ function mingWorkspace() {
     provider: "fish_audio",
     defaultVoiceId: voiceId,
     genderVoiceIds: { female: voiceId, male: voiceId, trans: voiceId },
-    catalog: [{ id: voiceId, label: "System Anna Reference V1", presentation: "female", description: "Configured Ming voice" }],
+    catalog: [{ id: voiceId, label: "System Anna Reference V1", presentation: "female", description: "Configured IndexTTS voice" }],
   };
   return data;
 }
@@ -335,7 +335,7 @@ describe("CharacterVoicePanel voice identity controls", () => {
     expect(modelRadio("voice-model-clone")?.checked).toBe(false);
     const change = container.querySelector('[data-testid="voice-change"]');
     expect(change?.textContent).toContain("Pocket TTS · Official voices");
-    expect(change?.textContent).toContain("Ming 3.0 TTS · Voice cloning");
+    expect(change?.textContent).toContain("IndexTTS 2.5 · Voice cloning");
     expect(change?.textContent).toContain("2 official English female voices");
     expect(change?.textContent).toContain("Engine MLX 0.4.3");
     expect(container.querySelector('[data-testid="voice-preset-builder"]')).not.toBeNull();
@@ -387,7 +387,7 @@ describe("CharacterVoicePanel voice identity controls", () => {
       .toBe("data:audio/wav;base64,AAAA");
   });
 
-  it("auditions Pocket voices independently of the Ming system default", async () => {
+  it("auditions Pocket voices independently of the IndexTTS system default", async () => {
     adminV2Request.mockResolvedValue({ contentType: "audio/wav", audioBase64: "AAAA" });
     await render(mingWorkspace());
     await act(async () => {
@@ -1063,15 +1063,15 @@ describe("CharacterVoicePanel voice identity controls", () => {
     expect(adminV2Request.mock.calls[0]?.[1]?.body).not.toHaveProperty("reason");
   });
 
-  it("hides unsupported Ming sampling controls while retaining saved values on a delivery edit", async () => {
+  it("hides unsupported IndexTTS sampling controls while retaining saved values on a delivery edit", async () => {
     const data = withCandidate();
-    data.voice.runtimeModel = "ming-3.0-tts-0.5b-8bit";
+    data.voice.runtimeModel = "indextts-2.5-mlx-8bit";
     data.voice.systemDefaults.delivery = { ...data.voice.systemDefaults.delivery,
       temperature: 0.93, topP: 0.84, topK: 63, repetitionPenalty: 1.24 };
     await render(data);
     expect(container.textContent).not.toContain("Advanced Fish sampling");
     expect(container.querySelectorAll('input[type="number"]')).toHaveLength(0);
-    expect(container.textContent).toContain("Ming uses fixed sampling. Saved advanced settings are retained for other models.");
+    expect(container.textContent).toContain("IndexTTS uses fixed sampling. Saved advanced settings are retained for other models.");
     const system = container.querySelector('[data-testid="system-voice-defaults"]')!;
     const natural = [...system.querySelectorAll("button")].find(item => item.textContent?.includes("Natural"))!;
     await act(async () => natural.click());
@@ -1093,7 +1093,7 @@ describe("CharacterVoicePanel voice identity controls", () => {
       data.voice.systemDefaults.delivery.temperature, data.voice.systemDefaults.delivery.topP,
       data.voice.systemDefaults.delivery.topK, data.voice.systemDefaults.delivery.repetitionPenalty,
     ].map(String));
-    expect(container.textContent).not.toContain("Ming uses fixed sampling.");
+    expect(container.textContent).not.toContain("IndexTTS uses fixed sampling.");
   });
 
   it("preserves gender mappings when editing only the global fallback", async () => {

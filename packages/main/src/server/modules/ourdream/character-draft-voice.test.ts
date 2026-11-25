@@ -104,7 +104,7 @@ describe("character draft catalog voice", () => {
     expect(mocks.preview).toHaveBeenCalledWith({ voiceId: "anna", text: "Hello there." });
   });
 
-  it("keeps Pocket creation and preview available when the system default is Ming", async () => {
+  it("keeps Pocket creation and preview available when the system default uses the Fish Audio gateway", async () => {
     mocks.defaults.mockResolvedValue({ provider: "fish_audio", defaultVoiceId: "anna-reference", catalog: [], delivery: DEFAULT_FISH_AUDIO_DELIVERY });
     expect(await getCharacterDraftVoiceCatalog()).toMatchObject({ provider: "pocket_tts", defaultVoiceId: "anna", items: [{ id: "anna" }] });
     expect(await prepareCharacterDraftVoice({ ...selection, userId: "owner", draftId: "draft" })).toMatchObject({ provider: "pocket_tts", model: "pocket-tts" });

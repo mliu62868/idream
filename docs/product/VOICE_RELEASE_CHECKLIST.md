@@ -27,7 +27,7 @@
 
 具体输入、single-flight、接受报价与provider恢复协议由 [Voice Clip实现](../../packages/main/src/server/modules/ourdream/voice-clip.ts) 与 [报价实现](../../packages/main/src/server/modules/ourdream/voice-clip-quote.ts) 承载，本文不维护第二套API字段表。
 
-网关的 `.data/*/idempotency` 只是重试缓存：交付的 MP3 由 Main 持久保存，条目在 `VOICE_CACHE_TTL_DAYS`（默认 7 天，0 关闭）内未被使用即由后台清理，之后的同 key 重试重新渲染且不重复计费；擦除标记不受影响。系统声音不做跨用户内容寻址缓存：缓存里是用户的私人回复文本，共享条目无法按账号擦除，且逐字相同的回复几乎不存在。例外：固定在已退役模型上的请求只能从缓存重放，条目过期后这类尚未持久交付的请求会失败。
+网关的 `.data/*/idempotency` 只是重试缓存。交付的 MP3 由 Main 持久保存。条目在 `VOICE_CACHE_TTL_DAYS`（默认 7 天，0 关闭）内未使用时由后台清理，之后能生成的固定模型可按原键重试且不重复计费。擦除标记保留。系统声音按请求缓存，支持按账号擦除私人回复。仅开放回放的模型（如 Fish S2 Pro）需要精确命中缓存。已退出网关的 Ming 3.0 0.5B 仅随 Main 的历史交付和归档记录保留。
 
 ## 3. 角色声音身份
 
@@ -37,7 +37,7 @@
 - 无角色profile时使用已审定的系统默认声音；不兼容/不可用的精确profile失败明确，不静默换声音。
 - 角色tone与provider实际支持的delivery控制保持一致；不把未应用的情绪/采样控制宣称为已生效。
 
-当前生产模板默认Pocket English，Fish可承担已配置的参考音频身份需求。实际支持、运行配置与固定依赖见 [Main生产模板](../../packages/main/.env.production.example)、[Voice provider实现](../../packages/main/src/server/providers/voice) 和运维入口；模板默认不等于目标环境已运行。
+生产模板通过 `fish-audio` 使用 IndexTTS 2.5 提供默认语音和参考音频克隆。Pocket TTS 提供目录声音及既有 Pocket 角色声音。目标环境以实际运行态为准。 [Main 生产模板](../../packages/main/.env.production.example) · [Voice provider 实现](../../packages/main/src/server/providers/voice)
 
 ## 4. 麦克风草稿输入
 

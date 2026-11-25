@@ -6,7 +6,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const launchers = [
-  ["fish-audio", "scripts/ming-tts-requirements.lock", "ming-3.0-tts-0.5b-8bit"],
+  ["fish-audio", "scripts/indextts-requirements.lock", "indextts-2.5-mlx-8bit"],
   ["fish-audio", "scripts/breeze-tts-requirements.lock", "breeze-tts-2-mlx-8bit"],
   ["asr", "scripts/asr-requirements.lock"],
   ["pocket-tts", "scripts/pocket-tts-requirements.lock"],
@@ -24,7 +24,6 @@ for (const executable of [process.execPath, "bun"]) for (const [name, lock, mode
       HF_HOME: path.join(directory, "model-cache"),
       HTTPS_PROXY: "http://proxy.fixture.invalid:8080",
       FISH_AUDIO_MODEL_PATH: path.join(directory, "breeze-model"),
-      FISH_AUDIO_CAMPLUS_MODEL_PATH: path.join(directory, "campplus.onnx"),
       ...(model ? { FISH_AUDIO_MODEL: model } : {}),
       FISH_AUDIO_API_TOKEN: "fixture-fish-token",
       FISH_AUDIO_PORT: "18062",
@@ -59,9 +58,10 @@ for (const executable of [process.execPath, "bun"]) for (const [name, lock, mode
       assert.equal(child.environment.PYTHONPATH, undefined, "uv inherited foreign Python packages");
       assert.equal(child.environment.PYTHONHOME, undefined, "uv inherited a foreign Python standard library");
       for (const [key, value] of Object.entries(preserved)) assert.equal(child.environment[key], value, key);
-      assert.deepEqual(child.args.slice(0, 7), ["run", "--offline", "--no-project", "--python", "3.12", "--with-requirements", lock]);
-      assert.equal(child.args[7], "uvicorn");
-      if (name === "asr") assert.equal(child.environment.HF_HUB_OFFLINE, "1");
+      const options = ["run", "--offline", "--no-project", ...(name === "fish-audio" ? ["--isolated"] : []), "--python", "3.12", "--with-requirements", lock];
+      assert.deepEqual(child.args.slice(0, options.length), options);
+      assert.equal(child.args[options.length], "uvicorn");
+      if (name === "asr" || name === "fish-audio") assert.equal(child.environment.HF_HUB_OFFLINE, "1");
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

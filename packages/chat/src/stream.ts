@@ -8,7 +8,9 @@ import { chatStreamEventSchema, type ChatStreamEvent } from "@idream/shared/cont
 import { redisConnectionOptions } from "@idream/shared/env";
 import { env } from "./env.js";
 
-const STREAM_MAXLEN = 1000;
+// Coalesced deltas plus generous retention prevent long replies (>1000 tokens)
+// from trimming their opening chunks before a reconnecting client can replay.
+export const STREAM_MAXLEN = 4000;
 const STREAM_TTL_SECONDS = 24 * 60 * 60;
 const SSE_DEADLINE_MS = 60_000;
 const BLOCK_MS = 5_000;

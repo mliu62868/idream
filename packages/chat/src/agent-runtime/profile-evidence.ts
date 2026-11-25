@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { chatThinkingParameters } from "@idream/shared";
 import type { IgrepLlmConfig } from "./config";
 import { profileLineKey, residentProfileFacts } from "./resident-profile";
+import { type InferencePriorityGate } from "./execution-scheduler";
 import { logger } from "../logger";
 
 /**
@@ -163,6 +164,7 @@ export async function verifyProfileEvidence(
   verify: ProfileClaimVerifier,
   signal?: AbortSignal,
   budgetMs = VERIFY_BUDGET_MS,
+  priorityGate?: InferencePriorityGate,
 ): Promise<{ lines: number; supported: number; unverified: number }> {
   const deadline = Date.now() + budgetMs;
   let profile = "";
@@ -189,6 +191,9 @@ export async function verifyProfileEvidence(
     if (cached?.evidence === digest) {
       next[key] = cached;
       continue;
+    }
+    if (Date.now() < deadline && priorityGate) {
+      await priorityGate.waitForBackgroundSlot(signal, Math.max(0, Math.min(15_000, deadline - Date.now())));
     }
     const supported = Date.now() < deadline ? await verify(line, evidence, signal) : null;
     if (supported === null) {

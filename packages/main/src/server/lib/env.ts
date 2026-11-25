@@ -1,6 +1,7 @@
 // Next.js auto-loads .env for web apps; this dotenv import (non-overriding)
 // gives tsx processes and sibling services the same cwd-based env loading.
 import "dotenv/config";
+import { INDEXTTS_VOICE_MODEL_ID } from "@idream/shared/contracts";
 import { z } from "zod";
 import {
   DEFAULT_APP_ENV,
@@ -47,7 +48,7 @@ const EnvSchema = z.object({
   GENERATION_ROUTE_EVALUATOR_VERSION: z.string().min(1).default("identity-match-v1"),
   LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).default("info"),
   CHAT_PROVIDER: z.enum(["mock", "pipeline"]).default("mock"),
-  // Versioned local and production env templates select Ming through the
+  // Versioned local and production env templates select IndexTTS through the
   // fish-audio provider slot; the default itself is shared with the PM2 topology.
   VOICE_PROVIDER: z
     .enum(["mock", "pocket-tts", "fish-audio"])
@@ -113,7 +114,7 @@ const EnvSchema = z.object({
   POCKET_TTS_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
   FISH_AUDIO_API_URL: z.string().url().default("http://127.0.0.1:8062/v1"),
   FISH_AUDIO_API_TOKEN: z.string().optional(),
-  FISH_AUDIO_MODEL: z.string().min(1).default("ming-3.0-tts-0.5b-8bit"),
+  FISH_AUDIO_MODEL: z.string().min(1).default(INDEXTTS_VOICE_MODEL_ID),
   FISH_AUDIO_LANGUAGE: z.string().min(1).default("auto"),
   FISH_AUDIO_DEFAULT_VOICE_ID: z
     .string()

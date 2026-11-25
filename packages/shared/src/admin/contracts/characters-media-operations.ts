@@ -209,6 +209,7 @@ export const characterVoiceWorkspaceSchema = z
       "pocket_tts",
       "omlx",
       "mlx_audio",
+      "mlx_indextts",
       "unknown",
       "inactive",
     ]),

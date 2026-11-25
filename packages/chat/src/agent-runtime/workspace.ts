@@ -37,6 +37,8 @@ export interface MemoryProbe {
 export interface AttemptWorkspace {
   readonly path: string;
   readonly mode: "normal" | "private";
+  /** True when the canonical memory snapshot contains at least one committed dialogue file. */
+  readonly hasCommittedDialogues?: boolean;
   discard(): Promise<void>;
 }
 
@@ -114,6 +116,16 @@ async function exists(path: string): Promise<boolean> {
   try {
     await lstat(path);
     return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function hasDialogueFiles(canonicalMemoryRoot: string): Promise<boolean> {
+  try {
+    const entries = await readdir(join(canonicalMemoryRoot, "mem/memory/dialogues"));
+    return entries.some(name => name.endsWith(".jsonl"));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
@@ -529,6 +541,7 @@ export class AttemptWorkspaceStore {
       await chmod(versionsRoot, 0o700);
       await chmod(attemptsRoot, 0o700);
       const canonicalVersion = await this.ensureCanonicalVersion(canonicalLink, versionsRoot);
+      const hasCommittedDialogues = await hasDialogueFiles(canonicalVersion);
       const ownedAttemptRoot = join(attemptsRoot, `${safeKey(invocation.attemptId)}-${randomUUID()}`);
       attemptRoot = ownedAttemptRoot;
       const workspace = join(ownedAttemptRoot, "workspace");
@@ -549,7 +562,7 @@ export class AttemptWorkspaceStore {
         finished = true;
         await rm(ownedAttemptRoot, { recursive: true, force: true });
       };
-      return { path: workspace, mode: "normal", discard };
+      return { path: workspace, mode: "normal", hasCommittedDialogues, discard };
     } catch (error) {
       if (attemptRoot) {
         await rm(attemptRoot, { recursive: true, force: true }).catch(() => undefined);

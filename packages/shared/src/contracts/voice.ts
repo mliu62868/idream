@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export const INDEXTTS_VOICE_MODEL_ID = "indextts-2.5-mlx-8bit";
+
 export const fishAudioDeliveryPresetSchema = z.enum([
   "sensual",
   "intimate",

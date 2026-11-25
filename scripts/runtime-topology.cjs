@@ -32,7 +32,7 @@ const processSpecs = Object.freeze([
     },
     watchPaths: [
       "scripts/start-fish-audio.cjs", "scripts/fish_audio_gateway.py",
-      "scripts/ming_voice_runtime.py", "scripts/voice_render_lane.py", "scripts/ming-tts-requirements.lock",
+      "scripts/indextts_voice_runtime.py", "scripts/voice_render_lane.py", "scripts/indextts-requirements.lock",
       "scripts/breeze-tts-requirements.lock",
     ],
     // Main allows a clone render 240s; PM2's 1.6s default would kill it mid-render.
@@ -172,7 +172,7 @@ function configuredVoiceRuntimeTargets(environment) {
     environment.VOICE_PROVIDER ?? DEFAULT_VOICE_PROVIDER,
     environment.VOICE_IDENTITY_PROVIDER,
     // Pocket still serves persisted preset profiles and the creator catalog
-    // when Ming/Breeze owns the default speech and cloning route.
+    // when IndexTTS/Breeze owns the default speech and cloning route.
     ...(environment.VOICE_PROVIDER === "fish-audio" ? ["pocket-tts"] : []),
     ...(environment.ASR_PROVIDER === "mlx-whisper" ? ["asr"] : []),
   ];

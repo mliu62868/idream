@@ -86,9 +86,8 @@ The external image/video pipeline adapter and `pipeline`/`mlx`/`external` media 
 | `PIPELINE_TIMEOUT_MS` | Main text/probe and asset-download timeout budget; Gen workflow execution uses its own image/video budgets |
 | `FISH_AUDIO_API_URL` | Fish Audio gateway, normally `http://127.0.0.1:8062/v1` |
 | `FISH_AUDIO_API_TOKEN` | Shared internal token used by Main and the Fish gateway |
-| `FISH_AUDIO_MODEL` | Exact voice model id, currently `ming-3.0-tts-0.5b-8bit` |
-| `FISH_AUDIO_MODEL_PATH` | Deployed Ming 3.0 0.5B MLX 8-bit model directory |
-| `FISH_AUDIO_CAMPLUS_MODEL_PATH` | Pinned CAM++ speaker encoder for the reference identity |
+| `FISH_AUDIO_MODEL` | Exact voice model ID, currently `indextts-2.5-mlx-8bit` |
+| `FISH_AUDIO_MODEL_PATH` | Deployed IndexTTS 2.5 MLX 8-bit directory including W2V-BERT and CAMPPlus |
 | `FISH_AUDIO_SYSTEM_REFERENCE_AUDIO` | Reviewed system-voice reference WAV |
 | `FISH_AUDIO_SYSTEM_REFERENCE_MANIFEST` | Exact transcript/identity manifest for that WAV |
 | `POCKET_TTS_API_URL` / `POCKET_TTS_API_TOKEN` | Official preset-voice runtime URL/token retained for Character catalog identities |

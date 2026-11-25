@@ -20,6 +20,7 @@ import { Errors } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
 import { providers } from "@/server/providers";
 import { createVoicePortsForKey } from "@/server/providers/voice/factory";
+import { fishAudioRuntimeForModel } from "@/server/providers/voice/fish-audio";
 import type {
   VoiceIdentityPort,
   VoiceProviderKey,
@@ -136,7 +137,7 @@ async function inspectVoiceIdentityProviderRuntime(
     const voice = voiceIdentityPortForKey(providerKey);
     const capabilities = await voice.inspectCapabilities();
     const expectedRuntime =
-      providerKey === "pocket_tts" ? "pocket_tts" : "mlx_audio";
+      providerKey === "pocket_tts" ? "pocket_tts" : fishAudioRuntimeForModel(env.FISH_AUDIO_MODEL);
     const expectedAcceleration =
       providerKey === "pocket_tts" ? "cpu" : "mlx";
     const runtimeCompatible =

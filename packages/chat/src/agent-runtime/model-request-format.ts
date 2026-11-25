@@ -33,15 +33,37 @@ export function formatModelRequestInput(input: {
   };
 }
 
-/** Character estimate, not a claim about the provider's tokenizer. */
+/**
+ * Script-aware character estimate, not a claim about the provider's tokenizer.
+ * ASCII stays at ~4 chars/token (matching English BPE density), while CJK and
+ * other non-ASCII scripts are weighted by their real BPE expansion so non-Latin
+ * long conversations do not under-estimate by 4-6x and hit 400 overflow.
+ */
 export function estimateModelRequestInputTokens(input: {
   messages: readonly unknown[];
   tools?: readonly unknown[];
 }): number {
-  return Math.max(1, Math.ceil(JSON.stringify({
+  const serialized = JSON.stringify({
     messages: input.messages,
     tools: input.tools ?? [],
-  }).length / 4));
+  });
+  let quarterTokens = 0;
+  for (let i = 0; i < serialized.length; i += 1) {
+    const code = serialized.charCodeAt(i);
+    if (code <= 0x7f || (code >= 0x2000 && code <= 0x206f)) {
+      quarterTokens += 1; // 0.25 token per ASCII char / common typographic punctuation
+    } else if (
+      (code >= 0x3000 && code <= 0x9fff)
+      || (code >= 0xac00 && code <= 0xd7af)
+      || (code >= 0xf900 && code <= 0xfaff)
+      || (code >= 0xff00 && code <= 0xffef)
+    ) {
+      quarterTokens += 6; // 1.5 tokens per CJK / full-width code unit
+    } else {
+      quarterTokens += 4; // 1.0 token per other non-ASCII code unit
+    }
+  }
+  return Math.max(1, Math.ceil(quarterTokens / 4));
 }
 
 /**

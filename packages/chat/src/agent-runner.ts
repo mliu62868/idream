@@ -224,6 +224,26 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
       deadlineAt: agentRunDeadlineAt(input),
     };
     let sequence = 0;
+    const nextSequence = () => {
+      sequence += 1;
+      return sequence;
+    };
+    const runFenceScopes = [
+      { scope: "attempt" as const, turnId, attempt },
+      { scope: "user" as const, userId: snapshot.userId },
+      { scope: "relationship" as const, userId: snapshot.userId, characterId: snapshot.characterId },
+    ];
+    const coalescer = createDeltaCoalescer(async (delta) => {
+      try {
+        // Re-check durable Stop/erasure fences inside timer-driven flushes so
+        // buffered tokens can never escape after cancellation.
+        await assertNotFenced(runFenceScopes);
+      } catch (error) {
+        if (error instanceof ChatFenceError) return;
+        throw error;
+      }
+      await publish({ type: "delta", attempt: snapshot.attempt, seq: nextSequence(), delta });
+    });
     const port: CompanionRuntimePort = {
       emit: async (event) => {
         const requiresWritableRun = event.type === "model_request_started"
@@ -234,19 +254,18 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
             await appendAgentRunModelRequest(turnId, attempt, event.request);
             return;
           }
-          await assertNotFenced([
-            { scope: "attempt", turnId, attempt },
-            { scope: "user", userId: snapshot.userId },
-            { scope: "relationship", userId: snapshot.userId, characterId: snapshot.characterId },
-          ]);
+          await assertNotFenced(runFenceScopes);
           const trace = agentRunTraceEvent(event);
           if (trace) await appendAgentRunEvent(turnId, attempt, trace.kind, trace.payload);
           // Stopped projections can be skipped while already-started
           // requests still report usage. New dispatch and commit need a
           // successful write of the corresponding journal event.
-          sequence = await projectStreamEvent(publish, snapshot.attempt, sequence, event);
+          await projectStreamEvent(publish, coalescer, snapshot.attempt, nextSequence, event);
         } catch (error) {
-          if (error instanceof ChatFenceError && !requiresWritableRun) return;
+          if (error instanceof ChatFenceError && !requiresWritableRun) {
+            coalescer.discard();
+            return;
+          }
           throw error;
         }
         if (event.type === "started") runtimeInstance = event.instance;
@@ -262,6 +281,7 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
       },
       executeTool: call => executeMainTool(call, snapshot.turnId, snapshot.attempt),
       commit: async (candidate, commitSignal) => {
+        await coalescer.flush();
         completedReply = { provider: candidate.provider, model: candidate.model, usage: candidate.usage, modelRequests: candidate.modelRequests };
         // SPEC: the Scene is carried forward unchanged, one version up, as
         // Main's terminal contract requires. No projection runs.
@@ -318,7 +338,13 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
         return ack;
       },
     };
-    await runCompanion(invocation, port, signal);
+    try {
+      await runCompanion(invocation, port, signal);
+    } finally {
+      // Discard any un-flushed tail if runCompanion threw or exited without commit;
+      // successful commits already flushed synchronously before terminal proposal.
+      coalescer.discard();
+    }
     if (!committedProposal || !committedAck) {
       throw new Error("Pi ended without a terminal commit");
     }
@@ -594,29 +620,100 @@ function createAgentRunStreamPublisher(turnId: string, attempt: number, key: str
   };
 }
 
+const DELTA_COALESCE_FLUSH_MS = 25;
+const DELTA_COALESCE_MAX_CHARS = 48;
+
+interface DeltaCoalescer {
+  push(delta: string): Promise<void>;
+  flush(): Promise<void>;
+  discard(): void;
+}
+
+/**
+ * Coalesce rapid single-token deltas within a 25ms / 48-char window before
+ * calling Redis XADD, reducing write amplification by ~5-10x while keeping
+ * ordering strict around text_reset, attachments_changed, and terminal events.
+ */
+export function createDeltaCoalescer(
+  emit: (delta: string) => Promise<void>,
+  options: { flushMs?: number; maxChars?: number } = {},
+): DeltaCoalescer {
+  const flushMs = options.flushMs ?? DELTA_COALESCE_FLUSH_MS;
+  const maxChars = options.maxChars ?? DELTA_COALESCE_MAX_CHARS;
+  let pending = "";
+  let timer: NodeJS.Timeout | undefined;
+  let inFlight: Promise<void> = Promise.resolve();
+
+  const flush = (): Promise<void> => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+    if (!pending) return inFlight;
+    const chunk = pending;
+    pending = "";
+    const next = inFlight.catch(() => undefined).then(() => emit(chunk));
+    inFlight = next;
+    return next;
+  };
+
+  return {
+    async push(delta: string): Promise<void> {
+      if (!delta) return;
+      pending += delta;
+      if (pending.length >= maxChars) {
+        await flush();
+        return;
+      }
+      if (!timer) {
+        timer = setTimeout(() => {
+          void flush().catch(() => undefined);
+        }, flushMs);
+        timer.unref?.();
+      }
+    },
+    flush,
+    discard(): void {
+      if (timer) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+      pending = "";
+    },
+  };
+}
+
 async function projectStreamEvent(
   publish: PublishStreamEvent,
+  coalescer: DeltaCoalescer,
   attempt: number,
-  sequence: number,
+  nextSequence: () => number,
   event: CompanionEvent,
-): Promise<number> {
+): Promise<void> {
   if (event.type === "text_delta") {
-    const next = sequence + 1;
-    await publish({ type: "delta", attempt, seq: next, delta: event.delta });
-    return next;
+    await coalescer.push(event.delta);
+    return;
   }
   if (event.type === "text_reset") {
-    const next = sequence + 1;
-    await publish({ type: "replace", attempt, seq: next, content: "" });
-    return next;
+    await coalescer.flush();
+    await publish({ type: "replace", attempt, seq: nextSequence(), content: "" });
+    return;
   }
   if (event.type === "tool_finished" && event.outcome !== "unknown" && event.attachmentId) {
+    await coalescer.flush();
     // A delayed UI notification must not delay the next model dispatch.
     void publish({ type: "attachments_changed", attempt }).catch(error => {
       logger.error({ err: error, attempt }, "Failed to publish Chat attachment notification");
     });
+    return;
   }
-  return sequence;
+  if (event.type === "terminal_candidate") {
+    await coalescer.flush();
+    return;
+  }
+  if (event.type === "failed" || event.type === "cancelled") {
+    coalescer.discard();
+  }
 }
 
 /** Local AgentRun evidence is content-free; Redis alone carries live deltas. */

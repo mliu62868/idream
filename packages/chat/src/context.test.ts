@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { compileCharacterSoul } from "@idream/shared";
 import type { ChatExecutionSnapshot } from "@idream/shared/contracts";
-import { buildContext } from "./context.js";
+import { buildContext, selectCacheAlignedTranscriptWindow } from "./context.js";
 
 describe("immutable opening continuity", () => {
   it("places the pinned opening before the first user Turn seen by the Agent", async () => {
@@ -238,10 +238,30 @@ describe("proactive Turn replay", () => {
       createdAt: new Date(1_700_000_000_000 + index).toISOString(),
     }));
     const context = await contextWithRecentTurns(turns, current);
-    expect(context.recentMessages[0]).toMatchObject({ id: "user-2", role: "user" });
+    // Block-aligned eviction drops in fixed 8-message strides past the 24-message cap
+    // so consecutive turns keep an identical prefix for KV cache hits.
+    expect(context.recentMessages[0]).toMatchObject({ id: "user-4", role: "user" });
     expect(context.recentMessages.at(-1)?.content).toBe(current);
     expect(context.replayMessages?.map(message => message.id)).toEqual(turns.flatMap(turn => [turn.userMessageId, turn.assistantMessageId]));
     expect(context.dropped).toContain("transcript");
+  });
+
+  it("keeps the retained transcript prefix identical across consecutive turns past the cap for KV prefix caching", () => {
+    const makeTranscript = (turns: number) => [
+      ...Array.from({ length: turns }, (_, index) => [
+        { id: `user-${index}`, role: "user" as const },
+        { id: `assistant-${index}`, role: "assistant" as const },
+      ]).flat(),
+      { id: "current", role: "user" as const },
+    ];
+    const window13 = selectCacheAlignedTranscriptWindow(makeTranscript(13), 24);
+    const window14 = selectCacheAlignedTranscriptWindow(makeTranscript(14), 24);
+    const window15 = selectCacheAlignedTranscriptWindow(makeTranscript(15), 24);
+    expect(window13[0]?.id).toBe("user-4");
+    expect(window14[0]?.id).toBe("user-4");
+    expect(window15[0]?.id).toBe("user-4");
+    expect(window14.slice(0, window13.length - 1)).toEqual(window13.slice(0, -1));
+    expect(window15.slice(0, window14.length - 1)).toEqual(window14.slice(0, -1));
   });
 
   it("still replays both sides of an ordinary user-led Turn", async () => {
