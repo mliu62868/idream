@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { ArrowRight, X } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -52,41 +51,25 @@ export function PromoToast() {
   if (!visible) return null;
 
   return (
-    <aside className="fixed bottom-6 right-6 z-30 hidden w-[300px] rounded-[20px] bg-[rgb(46,46,46)] p-3 shadow-[2px_2px_8px_3px_rgba(0,0,0,0.25)] lg:block">
-      <div className="relative h-[178px] overflow-hidden rounded-[14px]">
-        <Image
-          src="/images/ourdream/promo-card-female.webp"
-          alt=""
-          fill
-          loading="eager"
-          sizes="276px"
-          className="object-cover"
-          unoptimized
-        />
+    <aside className="fixed bottom-6 right-6 z-30 hidden w-[260px] rounded-[14px] bg-[rgb(46,46,46)] px-3 pb-3 pt-1 shadow-[2px_2px_8px_3px_rgba(0,0,0,0.25)] lg:block">
+      <div className="flex items-center justify-between gap-2">
+        <p className="pl-1 text-[13px] font-medium leading-5 text-white/80">See plan benefits and included dreamcoins.</p>
         <button
           aria-label="Close promotion"
-          className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded-full bg-black/35 text-white"
+          className="grid size-11 shrink-0 place-items-center rounded-full text-white/70 hover:bg-white/10 hover:text-white"
           onClick={dismiss}
           type="button"
         >
-          <X className="h-3 w-3" />
+          <X className="h-4 w-4" />
         </button>
       </div>
-      <div className="px-1 pb-1 pt-3">
-        <h2 className="text-[16px] font-black uppercase italic leading-4 text-white">
-          Upgrade options
-        </h2>
-        <p className="mt-1 text-[12px] font-medium leading-4 text-[rgb(170,170,170)]">
-          Compare the current plans, included Dreamcoins, and generation access.
-        </p>
-        <Link
-          className="mt-4 flex h-9 w-full items-center justify-center gap-2 rounded-full bg-white text-[12px] font-bold leading-4 text-[rgb(13,13,13)]"
-          href="/upgrade"
-        >
-          View plans
-          <ArrowRight className="h-3.5 w-3.5" />
-        </Link>
-      </div>
+      <Link
+        className="flex h-10 w-full items-center justify-center gap-2 rounded-full bg-white text-[12px] font-bold text-black"
+        href="/upgrade"
+      >
+        View plans
+        <ArrowRight className="h-3.5 w-3.5" />
+      </Link>
     </aside>
   );
 }

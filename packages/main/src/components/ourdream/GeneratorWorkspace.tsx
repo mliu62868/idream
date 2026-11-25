@@ -829,6 +829,7 @@ export function GeneratorWorkspace() {
   const videoModeEnabled =
     config?.video.availability.state === "available" &&
     config.video.models.length > 0;
+  const showVideoGallery = videoModeEnabled || config?.video.hasSavedMedia === true || galleryTab === "video";
   const contextReady = generationContext.initialized && (!generationContext.required ||
     Boolean(generationContext.data && appliedContextToken === generationContext.data.token));
   useEffect(() => {
@@ -1041,6 +1042,10 @@ export function GeneratorWorkspace() {
   const formCanSubmit = contextReady && (!generationContext.required || prompt.trim().length > 0) &&
     (canSubmit || (hasSubmissionAuthority && formUnconfirmed)) &&
     (!imageEditMode || prompt.trim().length > 0);
+  let generationAction = "Generate";
+  if (pendingReceipts.length > 0) generationAction = "Generate new";
+  else if (imageEditMode) generationAction = "Create edit";
+  else if (characterImageMode) generationAction = prompt.trim() ? "Generate this moment" : "Generate without a prompt";
   const anonymousViewer = config?.viewer?.authenticated === false;
   const configAuthorityUnavailable = Boolean(configError && !config);
   const upgradeHref = upgradeHrefForTarget(authReturnTarget);
@@ -1261,6 +1266,9 @@ export function GeneratorWorkspace() {
     setPresetEditorType("setup");
     setPresetDescription("");
     setPresetCategory("");
+    galleryTabRef.current = "image";
+    setGalleryTab("image");
+    setManageMode(false);
     setGallerySearch("");
     setGalleryVisibility("");
     setGalleryFilters({ q: "", visibility: "" });
@@ -1444,6 +1452,12 @@ export function GeneratorWorkspace() {
       });
       setConfigError("");
       const nextVideoModeEnabled = data.video.enabled && data.video.models.length > 0;
+      if (!nextVideoModeEnabled && data.video.hasSavedMedia === false && galleryTabRef.current === "video") {
+        galleryTabRef.current = "image";
+        setGalleryTab("image");
+        setManageMode(false);
+        void refreshMedia("image");
+      }
       if (!nextVideoModeEnabled && !unconfirmedFormRef.current) {
         setMode((current) => (current === "video" ? "image" : current));
       }
@@ -1500,6 +1514,7 @@ export function GeneratorWorkspace() {
     failConfigAuthority,
     hasUnconfirmedVariations,
     invalidateViewerRelativeCharacterAuthority,
+    refreshMedia,
     resetPrivateViewerData,
     resetGenerationRequestScope,
     resumeGenerationRequestScope,
@@ -2246,21 +2261,35 @@ export function GeneratorWorkspace() {
       setStatus("Press Confirm delete to remove this media.");
       return;
     }
+    const ticket = beginPrivateViewerRequest();
+    if (!ticket) return;
+    const deletedVideo = media.some((item) => item.id === id && item.type === "video");
     setMedia((current) => current.filter((item) => item.id !== id));
     setDeleteConfirmMediaId(null);
     try {
-      const response = await fetch(`/api/v1/media/${id}`, { method: "DELETE" });
+      const response = await fetch(`/api/v1/media/${id}`, {
+        method: "DELETE",
+        headers: { "x-idream-viewer-scope": ticket.scope },
+        signal: ticket.controller.signal,
+      });
       if (!response.ok) {
-        setStatus(apiPayloadErrorMessage(await response.json().catch(() => null)) ?? "Delete failed.");
-        void refreshMedia(galleryTab);
+        const message = apiPayloadErrorMessage(await response.json().catch(() => null));
+        if (!privateViewerRequestIsCurrent(ticket)) return;
+        setStatus(message ?? "Delete failed.");
+        void refreshMedia(galleryTabRef.current);
         return;
       }
+      if (!privateViewerRequestIsCurrent(ticket)) return;
       setImageEditSources((current) => current.filter((item) => item.id !== id));
       setSelectedEditSource((current) => current?.id === id ? null : current);
       setStatus("Media deleted.");
+      if (deletedVideo && !videoModeEnabled) void refreshConfig();
     } catch {
+      if (!privateViewerRequestIsCurrent(ticket)) return;
       setStatus("Delete failed.");
-      void refreshMedia(galleryTab);
+      void refreshMedia(galleryTabRef.current);
+    } finally {
+      finishPrivateViewerRequest(ticket);
     }
   }
 
@@ -3148,13 +3177,17 @@ export function GeneratorWorkspace() {
       );
       return;
     }
+    const ticket = beginPrivateViewerRequest();
+    if (!ticket) return;
     try {
       const response = await fetch("/api/v1/media/bulk", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-idream-viewer-scope": ticket.scope },
+        signal: ticket.controller.signal,
         body: JSON.stringify({ ids, action, visibility }),
       });
       const payload = (await response.json()) as ApiPayload<{ deleted?: number; updated?: number }>;
+      if (!privateViewerRequestIsCurrent(ticket)) return;
       if (!response.ok || !payload.ok) {
         setStatus(payload.error?.message ?? "Bulk action failed.");
         return;
@@ -3162,6 +3195,9 @@ export function GeneratorWorkspace() {
       if (action === "delete") {
         setImageEditSources((current) => current.filter((item) => !ids.includes(item.id)));
         setSelectedEditSource((current) => current && ids.includes(current.id) ? null : current);
+        if (!videoModeEnabled && media.some((item) => item.type === "video" && ids.includes(item.id))) {
+          void refreshConfig();
+        }
       }
       setStatus(
         action === "delete"
@@ -3170,9 +3206,13 @@ export function GeneratorWorkspace() {
       );
       setSelectedMediaIds(new Set());
       setBulkDeleteConfirmKey(null);
-      void refreshMedia(galleryTab);
+      void refreshMedia(galleryTabRef.current);
     } catch {
-      setStatus("Bulk action failed. Check your connection and try again.");
+      if (privateViewerRequestIsCurrent(ticket)) {
+        setStatus("Bulk action failed. Check your connection and try again.");
+      }
+    } finally {
+      finishPrivateViewerRequest(ticket);
     }
   }
 
@@ -3249,6 +3289,7 @@ export function GeneratorWorkspace() {
         <div className="mb-4 grid grid-cols-3 gap-2 lg:hidden">
           {(["create", "jobs", "gallery"] as const).map((item) => (
             <button
+              aria-pressed={view === item}
               className={`h-10 rounded-full text-[12px] font-bold ${
                 view === item ? "bg-white text-[rgb(13,13,13)]" : "bg-[rgb(36,36,36)] text-white"
               }`}
@@ -3789,7 +3830,7 @@ export function GeneratorWorkspace() {
                 {imageEditMode
                   ? "Edit instructions"
                   : characterImageMode
-                    ? "Describe the moment"
+                    ? "Describe the moment (optional)"
                     : "Scene Prompt"}
                 <textarea
                   aria-label={imageEditMode ? "Edit instructions" : "Prompt"}
@@ -3813,7 +3854,7 @@ export function GeneratorWorkspace() {
 
             {characterImageMode && !generationContext.required && !prompt.trim() && !formUnconfirmed ? (
               <div aria-label="Scene ideas" className="mt-3">
-                <p className="text-[12px] text-[rgb(170,170,170)]">Start with an idea, then make it yours.</p>
+                <p className="text-[12px] text-[rgb(170,170,170)]">Pick an idea to edit, or generate with the current settings.</p>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {[
                     { label: "Quiet morning", prompt: "A quiet morning in a sunlit kitchen, holding a warm mug, relaxed expression." },
@@ -4326,7 +4367,7 @@ export function GeneratorWorkspace() {
                           ? generationQuoteError
                             ? "Exact price unavailable"
                             : "Checking exact price…"
-                          : `${pendingReceipts.length > 0 ? "Generate new" : imageEditMode ? "Create edit" : characterImageMode ? "Generate this moment" : "Generate"} · ${estimatedCost} coins`}
+                          : `${generationAction} · ${estimatedCost} coins`}
               </button>
             )}
             {generationQuoteError && (
@@ -4370,120 +4411,6 @@ export function GeneratorWorkspace() {
           </form>
 
           <div className="grid gap-5">
-            {latestResults.length > 0 && (
-              <section
-                className="rounded-[14px] border border-[rgb(255,48,170)]/30 bg-[rgb(18,18,18)] p-4"
-                data-testid="generator-latest-results"
-              >
-                <div className="mb-4">
-                  <p className="text-[12px] font-bold uppercase text-[rgb(255,95,194)]">
-                    Latest moment
-                  </p>
-                  <h2 className="mt-1 text-[18px] font-black text-white">
-                    Continue the moment
-                  </h2>
-                  <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">
-                    Tell us whether the identity feels right, or continue from this image.
-                  </p>
-                </div>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  {latestResults.map((item, index) => {
-                    const source = item.type === "video" ? item.url : (item.thumbnailUrl ?? item.url);
-                    const previewUnavailable =
-                      failedLatestResultIds.has(item.id) ||
-                      invalidLatestResultIds.has(item.id) ||
-                      isUnusableImagePreview(item) ||
-                      isBuiltInMediaPlaceholderUrl(source);
-                    return (
-                      <article
-                        className="overflow-hidden rounded-[12px] bg-[rgb(36,36,36)]"
-                        data-latest-media-id={item.id}
-                        key={item.id}
-                      >
-                        <div className="relative aspect-[4/5] overflow-hidden bg-black/30">
-                          {previewUnavailable ? (
-                            <div
-                              className="grid h-full place-items-center px-4 text-center text-[13px] font-semibold text-[rgb(170,170,170)]"
-                              data-testid="latest-result-unavailable"
-                            >
-                              <div>
-                                Preview unavailable
-                                {item.type === "video" && failedLatestResultIds.has(item.id) && (
-                                  <button className="mt-3 block rounded-full bg-white px-4 py-2 text-[13px] font-bold text-black"
-                                    onClick={() => setFailedLatestResultIds((current) => { const next = new Set(current); next.delete(item.id); return next; })}
-                                    type="button">Retry preview</button>
-                                )}
-                              </div>
-                            </div>
-                          ) : (
-                            <MediaPreview
-                              item={item}
-                              loading={index === 0 ? "eager" : "lazy"}
-                              onError={() =>
-                                setFailedLatestResultIds((current) => new Set(current).add(item.id))
-                              }
-                              onInvalidPreview={() =>
-                                setInvalidLatestResultIds((current) => new Set(current).add(item.id))
-                              }
-                              source={source}
-                              testIdPrefix="latest-result"
-                            />
-                          )}
-                          <LegacyTestAssetBadge isSynthetic={item.isSynthetic} />
-                        </div>
-                        <div className="grid gap-2 p-3">
-                          {intentButtons(item, "generator")}
-                          {item.type === "image" && item.characterId && (
-                            <div
-                              aria-label="Character identity feedback"
-                              className="grid grid-cols-2 gap-2"
-                            >
-                              <button
-                                className="min-h-10 rounded-full bg-white px-3 text-[11px] font-black text-[rgb(13,13,13)]"
-                                onClick={() =>
-                                  void recordIdentityFeedback(item, "identity_match", "generator")
-                                }
-                                type="button"
-                              >
-                                Looks like them
-                              </button>
-                              <button
-                                className="min-h-10 rounded-full bg-black/40 px-3 text-[11px] font-black text-white"
-                                onClick={() =>
-                                  void recordIdentityFeedback(item, "identity_mismatch", "generator")
-                                }
-                                type="button"
-                              >
-                                Doesn&apos;t look like them
-                              </button>
-                            </div>
-                          )}
-                          {item.type === "image" && (
-                            <button
-                              className="min-h-10 rounded-full bg-[rgb(255,48,170)] px-3 text-[11px] font-black text-white"
-                              disabled={variationPendingIds.has(item.id)}
-                              onClick={() => void createMediaVariation(item)}
-                              type="button"
-                            >
-                              {variationPendingIds.has(item.id)
-                                ? "Checking price…"
-                                : "More like this"}
-                            </button>
-                          )}
-                          <button
-                            className="min-h-10 rounded-full border border-white/15 px-3 text-[11px] font-black text-white"
-                            onClick={() => startNewMomentFromResult(item)}
-                            type="button"
-                          >
-                            Create a new moment
-                          </button>
-                        </div>
-                      </article>
-                    );
-                  })}
-                </div>
-              </section>
-            )}
             <section
               className={`${view === "jobs" ? "block" : "hidden"} rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-4 lg:block`}
             >
@@ -4681,6 +4608,114 @@ export function GeneratorWorkspace() {
               </div>
             </section>
 
+            {latestResults.length > 0 && (
+              <section
+                className={`${view === "jobs" ? "block" : "hidden"} rounded-[14px] border border-[rgb(255,48,170)]/30 bg-[rgb(18,18,18)] p-4 lg:block`}
+                data-testid="generator-latest-results"
+              >
+                <div className="mb-4">
+                  <h2 className="mt-1 text-[18px] font-black text-white">
+                    Latest results
+                  </h2>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {latestResults.map((item, index) => {
+                    const source = item.type === "video" ? item.url : (item.thumbnailUrl ?? item.url);
+                    const previewUnavailable =
+                      failedLatestResultIds.has(item.id) ||
+                      invalidLatestResultIds.has(item.id) ||
+                      isUnusableImagePreview(item) ||
+                      isBuiltInMediaPlaceholderUrl(source);
+                    return (
+                      <article
+                        className="overflow-hidden rounded-[12px] bg-[rgb(36,36,36)]"
+                        data-latest-media-id={item.id}
+                        key={item.id}
+                      >
+                        <div className="relative aspect-[4/5] overflow-hidden bg-black/30">
+                          {previewUnavailable ? (
+                            <div
+                              className="grid h-full place-items-center px-4 text-center text-[13px] font-semibold text-[rgb(170,170,170)]"
+                              data-testid="latest-result-unavailable"
+                            >
+                              <div>
+                                Preview unavailable
+                                {item.type === "video" && failedLatestResultIds.has(item.id) && (
+                                  <button className="mt-3 block rounded-full bg-white px-4 py-2 text-[13px] font-bold text-black"
+                                    onClick={() => setFailedLatestResultIds((current) => { const next = new Set(current); next.delete(item.id); return next; })}
+                                    type="button">Retry preview</button>
+                                )}
+                              </div>
+                            </div>
+                          ) : (
+                            <MediaPreview
+                              item={item}
+                              loading={index === 0 ? "eager" : "lazy"}
+                              onError={() =>
+                                setFailedLatestResultIds((current) => new Set(current).add(item.id))
+                              }
+                              onInvalidPreview={() =>
+                                setInvalidLatestResultIds((current) => new Set(current).add(item.id))
+                              }
+                              source={source}
+                              testIdPrefix="latest-result"
+                            />
+                          )}
+                          <LegacyTestAssetBadge isSynthetic={item.isSynthetic} />
+                        </div>
+                        <div className="grid gap-2 p-3">
+                          {intentButtons(item, "generator")}
+                          {item.type === "image" && item.characterId && (
+                            <div
+                              aria-label="Character identity feedback"
+                              className="grid grid-cols-2 gap-2"
+                            >
+                              <button
+                                className="min-h-10 rounded-full bg-white px-3 text-[11px] font-black text-[rgb(13,13,13)]"
+                                onClick={() =>
+                                  void recordIdentityFeedback(item, "identity_match", "generator")
+                                }
+                                type="button"
+                              >
+                                Looks like them
+                              </button>
+                              <button
+                                className="min-h-10 rounded-full bg-black/40 px-3 text-[11px] font-black text-white"
+                                onClick={() =>
+                                  void recordIdentityFeedback(item, "identity_mismatch", "generator")
+                                }
+                                type="button"
+                              >
+                                Doesn&apos;t look like them
+                              </button>
+                            </div>
+                          )}
+                          {item.type === "image" && (
+                            <button
+                              className="min-h-10 rounded-full bg-[rgb(255,48,170)] px-3 text-[11px] font-black text-white"
+                              disabled={variationPendingIds.has(item.id)}
+                              onClick={() => void createMediaVariation(item)}
+                              type="button"
+                            >
+                              {variationPendingIds.has(item.id)
+                                ? "Checking price…"
+                                : "More like this"}
+                            </button>
+                          )}
+                          <button
+                            className="min-h-10 rounded-full border border-white/15 px-3 text-[11px] font-black text-white"
+                            onClick={() => startNewMomentFromResult(item)}
+                            type="button"
+                          >
+                            Create a new moment
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
             <section
               className={`${view === "gallery" ? "block" : "hidden"} rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-4 lg:block`}
             >
@@ -4696,8 +4731,9 @@ export function GeneratorWorkspace() {
                       {pendingImportKey ? "Continue image import" : "Import image"}
                     </button>
                   )}
-                  {galleryTabs.map((tab) => (
+                  {galleryTabs.filter((tab) => tab !== "video" || showVideoGallery).map((tab) => (
                     <button
+                      aria-pressed={galleryTab === tab}
                       className={`h-9 rounded-full px-4 text-[12px] font-bold ${
                         galleryTab === tab
                           ? "bg-white text-[rgb(13,13,13)]"

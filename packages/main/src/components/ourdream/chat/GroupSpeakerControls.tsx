@@ -42,14 +42,13 @@ export function GroupSpeakerControls({ members, selectedCharacterId, disabled, o
   disabled: boolean;
   onSelect: (characterId: string) => void;
 }>) {
-  return <div className="mt-4 rounded-xl border border-white/15 p-4">
-    <label className="flex flex-wrap items-center gap-3 text-sm font-bold">
+  return <div className="mt-2">
+    <label className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm font-bold">
       Next reply from
-      <select aria-label="Group speaker" className="min-h-11 max-w-full rounded-lg bg-[rgb(36,36,36)] px-3 text-white disabled:opacity-50"
+      <select aria-label="Group speaker" className="min-h-10 max-w-full rounded-lg bg-[rgb(36,36,36)] px-3 text-white disabled:opacity-50"
         value={selectedCharacterId ?? ""} disabled={disabled} onChange={event => onSelect(event.target.value)}>
         {members.map(member => <option key={member.characterId} value={member.characterId}>{member.name}</option>)}
       </select>
     </label>
-    <p className="mt-2 text-xs leading-5 text-white/65">One Character replies to each message. Start with @Name to choose a speaker. Memory and conversation preferences below apply to the selected Character.</p>
   </div>;
 }

@@ -929,6 +929,15 @@ describe("ordered video Requests, ledger settlement and packaging", () => {
       expectError(await api("GET", path, { userId: stranger, ageGate: true, query }), 404);
     }
     await advanceVideoSequences(); expect(native).toHaveBeenCalledTimes(2);
+    const readVideoAvailability = async () => {
+      const response = await api("GET", "generation/config", { userId, ageGate: true });
+      expectOk(response);
+      return response.data.video.hasSavedMedia;
+    };
+    expect(await readVideoAvailability()).toBe(true);
+    expectOk(await api("DELETE", `media/${result.asset!.id}`, { userId, ageGate: true }));
+    expect(await gallery()).toEqual([]);
+    expect(await readVideoAvailability()).toBe(false);
   });
 
   it("stops after the first provider failure and refunds all unexecuted scenes exactly once", async () => {

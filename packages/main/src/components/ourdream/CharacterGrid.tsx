@@ -1,11 +1,13 @@
 import Image from "next/image";
 import Link from "next/link";
 import { ArrowRight, LoaderCircle } from "lucide-react";
+import type { ReactNode } from "react";
 import { CharacterCard } from "./CharacterCard";
 import type { CharacterCardData } from "@/types/ourdream";
 
 export function CharacterGrid({
   cards = [],
+  emptyAction,
   emptyDescription = "Try another search term, clear a category, or switch the gender, style, and age filters.",
   emptyTitle = "No characters found",
   error = null,
@@ -16,6 +18,7 @@ export function CharacterGrid({
   onRetry,
 }: Readonly<{
   cards?: CharacterCardData[];
+  emptyAction?: ReactNode;
   emptyDescription?: string;
   emptyTitle?: string;
   error?: string | null;
@@ -113,6 +116,7 @@ export function CharacterGrid({
           <p className="mt-3 max-w-sm text-[13px] font-medium leading-6 text-[rgb(170,170,170)]">
             {emptyDescription}
           </p>
+          {emptyAction}
         </div>
       )}
 

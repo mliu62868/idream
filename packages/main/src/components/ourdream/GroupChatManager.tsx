@@ -197,7 +197,8 @@ function GroupChats({ viewer }: { viewer: ViewerGate }) {
             </>
           : <>
               <h2 className="text-xl font-bold">Create a group</h2>
-              <label className="mt-4 block text-sm font-bold">Group name<input className="mt-2 block min-h-11 w-full rounded-lg bg-white/10 px-3" value={title} maxLength={120} onChange={event => setTitle(event.target.value)} /></label>
+              <p className="mt-2 text-sm text-white/70">Name your group and choose at least two characters to start.</p>
+              <label className="mt-4 block text-sm font-bold">Group name<input className="mt-2 block min-h-11 w-full rounded-lg bg-white/10 px-3" value={title} maxLength={120} onChange={event => setTitle(event.target.value)} required /></label>
             </>}
         <form className="mt-4 flex gap-2" onSubmit={event => { event.preventDefault(); setSearched(query); }}>
           <input aria-label="Search Characters for group" className="min-h-11 min-w-0 flex-1 rounded-lg bg-white/10 px-3 text-sm" value={query} maxLength={80} onChange={event => setQuery(event.target.value)} placeholder="Find a Character" />

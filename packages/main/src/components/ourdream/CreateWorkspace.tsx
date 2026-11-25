@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, Check, ImageIcon, Loader2, Sparkles, Wand2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Loader2, Sparkles, Wand2 } from "lucide-react";
 import { CHARACTER_VISIBILITY, isCatalogMember } from "@idream/shared/catalog";
 import { characterTemplateDetailsMarkdown, legacySoulDetailsMarkdown, renderCharacterSoulMarkdown } from "@idream/shared/chat/persona-render";
 import {
@@ -169,7 +169,7 @@ export function viewerScopeFromAuthority(input: {
   return null;
 }
 
-const STEPS = ["Identity", "Appearance", "Soul", "Preview", "Publish"] as const;
+const STEPS = ["Identity", "Appearance", "Soul", "Preview", "Save"] as const;
 const VISUAL_FIELDS = [
   { key: "ethnicity", label: "Ethnicity / fantasy race", suggestions: ["East Asian", "South Asian", "Black", "Latina", "Middle Eastern", "White", "Mixed", "Elf", "Vampire"] },
   { key: "skinTone", label: "Skin tone", suggestions: ["Fair", "Light", "Olive", "Tan", "Brown", "Dark"] },
@@ -302,6 +302,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("idle");
   const [restoredPreviewReviewId, setRestoredPreviewReviewId] = useState("");
   const [selectedPreviewJobId, setSelectedPreviewJobId] = useState("");
+  const [preferExistingIdentity, setPreferExistingIdentity] = useState(true);
   const [status, setStatus] = useState("");
   const [showFieldErrors, setShowFieldErrors] = useState(false);
   const [createdCharacterId, setCreatedCharacterId] = useState("");
@@ -567,6 +568,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
       const applied = restored;
       if (!applied) return;
       setState(applied);
+      setPreferExistingIdentity(true);
       const restoredCandidate = applied.previewBatch?.candidates.find(
         (candidate) => candidate.previewJobId === applied.confirmedPreviewJobId,
       ) ?? applied.previewBatch?.candidates[0] ?? applied.restoredPreviewCandidates.find(
@@ -642,9 +644,6 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
             reconciled ? payload.data?.previewJob ?? null : null,
             reconciled ? payload.data?.previewCandidates : null,
           );
-          if (character.imageUrl && !local?.confirmedPreviewJobId && !serverState.confirmedPreviewJobId) {
-            setPreview(character.imageUrl);
-          }
         })
         .catch((error) => {
           if (!controller.signal.aborted) setEditError(messageFrom(error));
@@ -945,6 +944,18 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
   const identityKept = editTarget !== null && (editTarget.published || !state.confirmedPreviewJobId) &&
     editKeepsIdentity(state, editTarget.baseline);
   const identityReady = editTarget?.published ? identityKept : Boolean(state.confirmedPreviewJobId) || identityKept;
+  // An automatically highlighted candidate must not replace a private character's current image.
+  const usingExistingIdentity = identityKept && (preferExistingIdentity || !selectedPreviewJobId);
+  const selectedCandidate = usingExistingIdentity ? undefined : previewCandidates.find(
+    (candidate) => candidate.previewJobId === selectedPreviewJobId,
+  );
+  const candidateToConfirm = !editTarget?.published && previewStatus !== "generating" &&
+    selectedCandidate && !selectedCandidate.isSynthetic && selectedCandidate.previewJobId !== state.confirmedPreviewJobId
+    ? selectedCandidate : undefined;
+  const previewCanContinue = !selectedCandidate?.isSynthetic && (identityReady || candidateToConfirm !== undefined);
+  const displayedPreview = usingExistingIdentity ? editTarget?.imageUrl ?? DEFAULT_PREVIEW : preview;
+  const displayedPreviewConfirmed = Boolean(state.confirmedPreviewJobId) &&
+    (!selectedCandidate || selectedCandidate.previewJobId === state.confirmedPreviewJobId);
   const currentFieldErrors = stepFieldErrors(step, state);
   // Errors appear once Next was refused on this step, then track edits live.
   const shownFieldErrors = new Map(showFieldErrors ? currentFieldErrors : []);
@@ -1002,10 +1013,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
       document.getElementById(currentFieldErrors[0]![0])?.focus();
       return;
     }
-    if (step === 3 && !identityReady) {
-      setStatus("Choose and confirm an identity image before publishing.");
-      return;
-    }
+    if (step === 3 && !previewCanContinue) return;
     setPending(true);
     setStatus("");
     // A save can take long enough for the user to move elsewhere. Do not
@@ -1017,6 +1025,18 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
     nextFocusListenerRef.current = onFocusIn;
     document.addEventListener("focusin", onFocusIn);
     try {
+      if (step === 3 && candidateToConfirm) {
+        const draftId = await ensureDraft();
+        await requestApi(`/api/v1/character-drafts/${draftId}/preview-anchor`, {
+          previewJobId: candidateToConfirm.previewJobId,
+        });
+        // If the step write fails, the next attempt can reuse the saved anchor.
+        setState((current) => ({
+          ...current,
+          confirmedPreviewJobId: candidateToConfirm.previewJobId,
+          confirmedPreviewUrl: candidateToConfirm.url,
+        }));
+      }
       await saveStep(step + 1);
       setShowFieldErrors(false);
       const target = Math.min(step + 1, STEPS.length - 1);
@@ -1164,7 +1184,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
           setSelectedPreviewJobId(candidate.previewJobId);
           setPreviewStatus("complete");
           setRestoredPreviewReviewId("");
-          setStatus("Your saved preview is ready. Confirm this identity to continue.");
+          setStatus("Your saved preview is ready. Choose it to continue.");
         } else if (job.status === "failed") {
           setRestoredPreviewReviewId("");
           setStatus("Preview generation failed. You can retry preview candidates.");
@@ -1192,6 +1212,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
       if (!retrying) {
         setPreview(DEFAULT_PREVIEW);
         setSelectedPreviewJobId("");
+        setPreferExistingIdentity(true);
       }
       setState((current) => ({
         ...current,
@@ -1227,40 +1248,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
     setStatus("");
     setPreview(candidate.url);
     setSelectedPreviewJobId(candidate.previewJobId);
-    set("confirmedPreviewJobId", "");
-    set("confirmedPreviewUrl", "");
-  }
-
-  async function confirmPreviewCandidate() {
-    const candidate = previewCandidates.find(
-      (item) => item.previewJobId === selectedPreviewJobId,
-    );
-    if (!candidate) {
-      setStatus("Choose an identity candidate first.");
-      return;
-    }
-    if (candidate.isSynthetic) {
-      setStatus("Demo previews cannot be used as a published character identity.");
-      return;
-    }
-    setPending(true);
-    setStatus("");
-    try {
-      const draftId = await ensureDraft();
-      await requestApi(`/api/v1/character-drafts/${draftId}/preview-anchor`, {
-        previewJobId: candidate.previewJobId,
-      });
-      setState((current) => ({
-        ...current,
-        confirmedPreviewJobId: candidate.previewJobId,
-        confirmedPreviewUrl: candidate.url,
-      }));
-      setStatus("Identity confirmed. This is how the character will look.");
-    } catch (error) {
-      setStatus(messageFrom(error));
-    } finally {
-      setPending(false);
-    }
+    setPreferExistingIdentity(false);
   }
 
   async function submit() {
@@ -1269,7 +1257,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
     if (pending || createdCharacterId) return;
     if (!identityReady) {
       set("step", 3);
-      setStatus("Choose and confirm an identity image before publishing.");
+      setStatus("Choose an identity image to save your character.");
       return;
     }
     setPending(true);
@@ -1438,15 +1426,15 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
         <div className="mt-8 grid gap-4 lg:grid-cols-[360px_1fr]">
           {/* On phones the empty silhouette filled the first screen and pushed the form below
               the fold; show it only once there is a real preview to look at. */}
-          <div className={cn("relative aspect-[4/5] w-full max-w-[448px] self-start justify-self-center overflow-hidden rounded-[20px] bg-[rgb(18,18,18)]", preview === DEFAULT_PREVIEW && "hidden lg:block")}>
+          <div className={cn("relative aspect-[4/5] w-full max-w-[448px] self-start justify-self-center overflow-hidden rounded-[20px] bg-[rgb(18,18,18)]", displayedPreview === DEFAULT_PREVIEW && "hidden lg:block")}>
             <Image
               alt=""
               className="object-cover object-top"
               fill
               loading="eager"
               sizes="360px"
-              src={preview}
-              unoptimized={isPrivateMediaUrl(preview)}
+              src={displayedPreview}
+              unoptimized={isPrivateMediaUrl(displayedPreview)}
             />
             <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(0,0,0,.82),rgba(0,0,0,.1)_62%,transparent)]" />
             {previewStatus === "generating" && (
@@ -1458,13 +1446,10 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
             )}
             <div className="absolute inset-x-0 bottom-0 p-5">
               <p className="text-[12px] font-black uppercase text-[rgb(253,95,194)]">
-                {state.confirmedPreviewJobId
-                  ? "Identity confirmed"
-                  : previewCandidates.length > 0
-                    ? "Candidate preview"
-                    : "Example preview"}
+                {usingExistingIdentity ? "Current identity image" : displayedPreviewConfirmed ? "Identity confirmed"
+                  : selectedCandidate ? "Candidate preview" : "Example preview"}
               </p>
-              <h2 className="mt-2 text-[26px] font-black leading-7">{state.name}</h2>
+              {state.name && <h2 className="mt-2 text-[26px] font-black leading-7">{state.name}</h2>}
               <p className="mt-2 text-[13px] font-medium leading-5 text-[rgb(170,170,170)]">
                 {state.description}
               </p>
@@ -1518,7 +1503,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
               </form>
             )}
 
-            {step === 0 && !editCharacterId && (
+            {step === 0 && !editCharacterId && (templatesState !== "ready" || templates.length > 0) && (
               <div className="mb-4" data-testid="create-templates">
                 <p className="text-[12px] font-bold uppercase leading-4 text-[rgb(114,113,112)]">
                   Start from a template
@@ -1545,11 +1530,6 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                       Retry
                     </button>
                   </div>
-                ) : null}
-                {templatesState === "ready" && templates.length === 0 ? (
-                  <p className="mt-2 text-[12px] text-[rgb(170,170,170)]">
-                    No curated templates are published right now. Start from scratch.
-                  </p>
                 ) : null}
                 {templatesState === "ready" && templates.length > 0 ? (
                   <div className="mt-2 flex flex-wrap gap-2">
@@ -1838,10 +1818,10 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
 
             {step === 3 && (
               <div className="grid gap-4" data-testid="create-step-preview">
-                <section className="rounded-[14px] bg-[rgb(36,36,36)] p-4 text-left text-white" data-testid="create-soul-preview">
-                  <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-                    Personality preview · what your character will follow
-                  </p>
+                <details className="rounded-[14px] bg-[rgb(36,36,36)] p-4 text-left text-white" data-testid="create-soul-preview">
+                  <summary className="cursor-pointer text-[13px] font-semibold text-white/80">
+                    Personality preview
+                  </summary>
                   <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap rounded-[12px] border border-white/10 bg-[rgb(13,13,13)] p-4 font-mono text-[12px] font-medium leading-6 text-white">
                     {renderCharacterSoulMarkdown({
                       name: state.name,
@@ -1851,8 +1831,8 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                       detailsMarkdown: state.detailsMarkdown,
                     })}
                   </pre>
-                </section>
-                {identityKept && (
+                </details>
+                {usingExistingIdentity && (
                   <p className="text-[13px] font-semibold text-[rgb(120,220,170)]" data-testid="edit-identity-kept">
                     {editTarget?.published
                       ? `Keeping ${state.name}'s current look. Published characters change their Soul and opening here; their look stays fixed.`
@@ -1861,7 +1841,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                 )}
                 {editTarget && !identityKept && !state.confirmedPreviewJobId && !editTarget.published && (
                   <p className="text-[13px] font-semibold text-[rgb(255,184,112)]">
-                    You changed how {state.name} looks. Generate and confirm a new identity image to save.
+                    You changed how {state.name} looks. Generate and choose a new identity image to save.
                   </p>
                 )}
                 {editTarget?.published ? (
@@ -1873,7 +1853,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                 ) : (<>
                 <p className="text-[13px] font-medium text-[rgb(170,170,170)]">
                   {state.restoredPreviewCandidates.length > 0 && !state.previewBatch
-                    ? "Your saved preview is ready. Confirm this identity or generate new candidates."
+                    ? "Use your saved preview or generate new candidates."
                     : `Generate up to four free identity previews (0 DreamCoins) and choose the image that should define how ${state.name} looks.`}
                 </p>
                 {state.previewBatch && (
@@ -1923,7 +1903,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                       if (batch) persistPreviewBatch({ ...batch, phase: "paused", failureReason: "user_paused", errorMessage: "Checking paused. Any queued image keeps running; check its status to continue." });
                       setPending(false);
                       setPreviewStatus("paused");
-                      setStatus("Checking paused. You can confirm an available image or check the saved request again.");
+                      setStatus("Checking paused. You can use a ready image or check the saved request again.");
                     }}>{previewCandidates.length > 0 ? "Choose a ready image" : "Pause checking"}</button>
                     {previewCandidates.length > 0 && (
                       <p className="text-[13px] leading-6 text-neutral-300">
@@ -1935,7 +1915,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                 {previewCandidates.length > 0 && (
                   <div className="grid grid-cols-2 gap-3" data-testid="create-preview-candidates">
                     {previewCandidates.map((candidate, index) => {
-                      const selected = selectedPreviewJobId === candidate.previewJobId;
+                      const selected = selectedCandidate?.previewJobId === candidate.previewJobId;
                       const confirmed = state.confirmedPreviewJobId === candidate.previewJobId;
                       return (
                         <button
@@ -1965,64 +1945,26 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                                   ? "Selected"
                                   : `Option ${index + 1}`}
                           </span>
-                          {selected && (
-                            <span className="absolute bottom-2 left-2 inline-flex items-center gap-1 rounded-full bg-[rgb(253,95,194)] px-2 py-1 text-[11px] font-black text-white">
-                              <Check className="h-3 w-3" />
-                              {confirmed ? "Confirmed" : "Confirm below"}
-                            </span>
-                          )}
                         </button>
                       );
                     })}
                   </div>
                 )}
+                {identityKept && selectedCandidate && (
+                  <button className="min-h-10 w-fit px-1 text-[13px] font-bold underline underline-offset-4" disabled={pending} onClick={() => setPreferExistingIdentity(true)} type="button">
+                    Keep current image
+                  </button>
+                )}
                 {previewStatus !== "generating" && previewCandidates.length > 0 && (
-                  <div className="grid gap-2 rounded-[12px] bg-black/25 p-3">
-                    {state.confirmedPreviewJobId ? (
-                      <p className="flex items-center gap-2 text-[13px] font-semibold text-[rgb(120,220,170)]">
-                        <Check className="h-4 w-4" />
-                        Identity confirmed. This is now the character&apos;s face.
-                      </p>
-                    ) : (
-                      <p className="text-[13px] font-semibold text-white">
-                        Select the face that feels right, then confirm “this is them”.
-                      </p>
-                    )}
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        className="inline-flex h-10 items-center gap-2 rounded-full bg-[rgb(253,95,194)] px-4 text-[12px] font-black text-white disabled:opacity-50"
-                        data-testid="create-confirm-identity"
-                        disabled={
-                          !selectedPreviewJobId ||
-                          pending ||
-                          previewCandidates.some(
-                            (candidate) =>
-                              candidate.previewJobId === selectedPreviewJobId &&
-                              candidate.isSynthetic,
-                          )
-                        }
-                        onClick={() => void confirmPreviewCandidate()}
-                        type="button"
-                      >
-                        <ImageIcon className="h-3.5 w-3.5" />
-                        {state.confirmedPreviewJobId === selectedPreviewJobId
-                          ? "Identity confirmed"
-                          : "Confirm this identity"}
-                      </button>
-                      <button
-                        className="inline-flex h-10 items-center gap-2 rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
-                        disabled={pending}
-                        onClick={() => {
-                          goToStep(1);
-                          setStatus("Adjust appearance traits, then generate a new identity family.");
-                        }}
-                        type="button"
-                      >
-                        <Sparkles className="h-3.5 w-3.5" />
-                        Edit traits
-                      </button>
-                    </div>
-                  </div>
+                  <button
+                    className="inline-flex h-10 w-fit items-center gap-2 rounded-full border border-white/20 px-4 text-[12px] font-bold disabled:opacity-50"
+                    disabled={pending}
+                    onClick={() => goToStep(1)}
+                    type="button"
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    Edit traits
+                  </button>
                 )}
                 {previewStatus === "complete" && (
                   previewCandidates.some((candidate) => candidate.isSynthetic) ? (
@@ -2035,11 +1977,11 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                 )}
                 {previewStatus === "failed" && (
                   <p className="text-[13px] font-semibold text-[rgb(255,140,140)]">
-                    Preview failed. Your draft is saved; retry before saving your character.
+                    {identityKept ? "Preview failed. You can keep the current image or try again." : "Preview failed. Your draft is saved. Try again before saving your character."}
                   </p>
                 )}
                 {previewStatus === "paused" && (
-                  <p className="text-[13px] leading-6 text-neutral-300">Checking is paused. This does not cancel queued work or mean generation failed. Check the saved request again, or confirm an available identity.</p>
+                  <p className="text-[13px] leading-6 text-neutral-300">Checking is paused. Queued images keep generating. Check again later or use a ready image.</p>
                 )}
                 </>)}
               </div>
@@ -2060,6 +2002,7 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                   <div className="mt-2 flex flex-wrap gap-2">
                     {CHARACTER_VISIBILITY.map((item) => (
                       <button
+                        aria-pressed={state.visibility === item}
                         className={`h-10 rounded-full px-4 text-[12px] font-bold ${
                           state.visibility === item
                             ? "bg-white text-[rgb(13,13,13)]"
@@ -2108,20 +2051,20 @@ function CreateWizard({ editCharacterId, draftId }: { editCharacterId: string; d
                 <button
                   className="inline-flex h-11 items-center gap-2 rounded-full bg-white px-5 text-[13px] font-black text-[rgb(13,13,13)] disabled:cursor-not-allowed disabled:bg-[rgb(55,55,55)] disabled:text-[rgb(114,113,112)]"
                   data-testid="create-next"
-                  disabled={pending || draftConflict || (step === 3 && !identityReady)}
+                  disabled={pending || draftConflict || (step === 3 && !previewCanContinue)}
                   onClick={(event) => void next(event.currentTarget)}
                   type="button"
                 >
                   {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                  Next
+                  {step === 3 ? candidateToConfirm || !identityReady ? "Use image and continue" : "Continue to save" : "Next"}
                   <ArrowRight className="h-4 w-4" />
                 </button>
               )}
             </div>
 
-            {step === 3 && !identityReady && (
+            {step === 3 && !previewCanContinue && !editTarget?.published && (
               <p className="mt-3 text-[12px] font-semibold text-[rgb(255,184,112)]">
-                Confirm one identity image to choose visibility and save your character. Your draft stays saved until then.
+                Choose a ready identity image to continue. Your draft is saved.
               </p>
             )}
 

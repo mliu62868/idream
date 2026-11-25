@@ -158,7 +158,7 @@ export async function generateCharacterQuickStart(
   if (input.status === "blocked") throw moderationRefusal(input.policyCode);
   if (!runtime.available) {
     throw Errors.unavailable(
-      "Quick Start is unavailable right now. Start from a template or from scratch.",
+      "Quick Start is unavailable right now. You can enter your character details below.",
     );
   }
 

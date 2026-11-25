@@ -417,16 +417,20 @@ function ExploreViewerWorkspace({ viewer, resume, onRestoreRetry }: { viewer: Vi
     return () => { cancelled = true; window.clearTimeout(timer); controller.abort(); };
   }, [ageGateAccepted, gatedFetch, viewer.identity, viewer.revalidation]);
 
+  const hasSearchFilters = Boolean(query.trim() || activeCategory || gender !== "any" || style !== "any" || age !== "any");
+  const following = sort === "following";
   const emptyState =
-    sort === "following"
+    following
       ? {
-          description:
-            "Follow creators from Community to see their public characters here.",
-          title: "No followed characters yet",
+          description: hasSearchFilters
+            ? "Try clearing your filters, or find more creators to follow in Community."
+            : "Follow creators from Community to see their public characters here.",
+          title: hasSearchFilters ? "No followed characters match" : "No followed characters yet",
         }
       : {
-          description:
-            "Try another search term, clear a category, or switch the gender, style, and age filters.",
+          description: hasSearchFilters
+            ? "Try a different search or clear your filters to see more characters."
+            : "Characters will appear here when they are available.",
           title: "No characters found",
         };
 
@@ -452,8 +456,8 @@ function ExploreViewerWorkspace({ viewer, resume, onRestoreRetry }: { viewer: Vi
         sort={sort}
         style={style}
       />
-      {initialized && <nav aria-label="Explore content types" className="mx-2 mb-2 flex gap-2 overflow-x-auto md:mx-[60px] md:mt-3">
-        <Link aria-current="page" className="inline-flex min-h-9 shrink-0 items-center rounded-full bg-white px-4 text-xs font-bold text-black focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white" href={exploreSearch ? `/?${exploreSearch}` : "/"}>All</Link>
+      {(publicTypes.comics || publicTypes.packs) && <nav aria-label="Explore content types" className="mx-2 mb-2 flex gap-2 overflow-x-auto md:mx-[60px] md:mt-3">
+        <Link aria-current="page" className="inline-flex min-h-9 shrink-0 items-center rounded-full bg-white px-4 text-xs font-bold text-black focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white" href={exploreSearch ? `/?${exploreSearch}` : "/"}>Characters</Link>
         {publicTypes.comics && <Link className="inline-flex min-h-9 shrink-0 items-center rounded-full border border-white/20 px-4 text-xs font-bold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white" href="/comics">Comics</Link>}
         {publicTypes.packs && <Link className="inline-flex min-h-9 shrink-0 items-center rounded-full border border-white/20 px-4 text-xs font-bold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white" href="/packs">Packs</Link>}
       </nav>}
@@ -470,6 +474,31 @@ function ExploreViewerWorkspace({ viewer, resume, onRestoreRetry }: { viewer: Vi
       <div className="pt-2 md:pt-6">
         <CharacterGrid
           cards={cards}
+          emptyAction={(following || hasSearchFilters) ? (
+            <div className="mt-4 flex flex-wrap justify-center gap-2">
+              {following && (
+                <Link className="inline-flex min-h-11 items-center rounded-full bg-white px-5 text-[13px] font-bold text-black" href="/community">
+                  Find creators
+                </Link>
+              )}
+              {hasSearchFilters && (
+                <button
+                  className={`min-h-11 rounded-full px-5 text-[13px] font-bold ${following ? "border border-white/20 text-white" : "bg-white text-black"}`}
+                  onClick={() => {
+                    setQuery("");
+                    setDebouncedQuery("");
+                    setActiveCategory("");
+                    setGender("any");
+                    setStyle("any");
+                    setAge("any");
+                  }}
+                  type="button"
+                >
+                  Clear search and filters
+                </button>
+              )}
+            </div>
+          ) : null}
           emptyDescription={emptyState.description}
           emptyTitle={emptyState.title}
           error={error || viewer.error}

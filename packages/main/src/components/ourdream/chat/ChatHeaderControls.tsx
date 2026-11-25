@@ -25,7 +25,7 @@ export function ChatHeaderControls({
   onOpenMemory: () => void;
 }>) {
   return (
-    <div className="mt-4">
+    <div className="mt-2">
       <div className="flex flex-wrap items-center gap-2">
         <MemoryToggle enabled={memoryEnabled} pending={memoryPending} onToggle={onToggleMemory} />
         {generationUnavailable ? null : generateHref ? (
@@ -71,11 +71,6 @@ export function ChatHeaderControls({
           </button>
         </div>
       </div>
-      <p className="mt-2 text-[12px] leading-4 text-[rgb(114,113,112)]">
-        {memoryEnabled
-          ? "Memory on: this character remembers details across your chats."
-          : "No-memory: this character won't read or write long-term memory. Your current chat history stays until you delete the session."}
-      </p>
     </div>
   );
 }

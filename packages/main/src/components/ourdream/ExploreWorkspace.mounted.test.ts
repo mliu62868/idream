@@ -114,6 +114,17 @@ describe("Explore personalized discovery", () => {
     expect(container.textContent).toContain("owner-b followed character");
     expect(window.location.search).toContain("sort=following");
   });
+  it("offers creator discovery on an empty Following page with the default filter still applied", async () => {
+    const fetcher = vi.mocked(fetch);
+    const normalRead = fetcher.getMockImplementation()!;
+    fetcher.mockImplementation((input, init) => String(input).startsWith("/api/v1/characters?")
+      ? Promise.resolve(Response.json({ ok: true, data: { items: [], nextCursor: null } })) : normalRead(input, init));
+    await act(async () => root.render(createElement(ExploreWorkspace))); await settle();
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes("gender=female"))).toBe(true);
+    const status = container.querySelector('[data-testid="character-grid-status"]')!;
+    expect(status.textContent).toContain("Clear search and filters");
+    expect(status.querySelector('a[href="/community"]')?.textContent).toBe("Find creators");
+  });
   it("replaces the previous account's visible categories after focus", async () => {
     await act(async () => root.render(createElement(ExploreWorkspace))); await settle();
     expect(container.textContent).toContain("owner-a allowed category");
@@ -246,14 +257,14 @@ describe("Explore public content types", () => {
   async function mount() { await act(async () => root.render(createElement(ExploreWorkspace))); await settle(); }
   const nav = () => container.querySelector<HTMLElement>('nav[aria-label="Explore content types"]');
 
-  it("links to existing public catalogs and keeps All on the current Explore filters", async () => {
+  it("links to existing public catalogs and keeps Characters on the current Explore filters", async () => {
     await mount();
     const links = [...nav()!.querySelectorAll("a")];
-    expect(links.map(link => link.textContent)).toEqual(["All", "Comics", "Packs"]);
+    expect(links.map(link => link.textContent)).toEqual(["Characters", "Comics", "Packs"]);
     expect(links[1]!.getAttribute("href")).toBe("/comics"); expect(links[2]!.getAttribute("href")).toBe("/packs");
-    const all = new URL(links[0]!.getAttribute("href")!, "http://localhost");
-    expect(all.pathname).toBe("/"); expect(all.searchParams.get("tags")).toBe("slow-burn");
-    expect(all.searchParams.get("period")).toBe("week"); expect(all.searchParams.get("gender")).toBe("any");
+    const characters = new URL(links[0]!.getAttribute("href")!, "http://localhost");
+    expect(characters.pathname).toBe("/"); expect(characters.searchParams.get("tags")).toBe("slow-burn");
+    expect(characters.searchParams.get("period")).toBe("week"); expect(characters.searchParams.get("gender")).toBe("any");
     expect(nav()!.textContent).not.toContain("Group Chats");
     expect(reads).toHaveLength(2); expect(reads.every(read => read.scope === "user:owner-a")).toBe(true);
     expect(reads.find(read => read.path.endsWith("packs"))!.query.get("scope")).toBe("public");
@@ -266,20 +277,20 @@ describe("Explore public content types", () => {
     if (mode === "malformed") { comicRead = packRead = async () => response([{ id: "unproven" }]); }
     if (mode === "private") { comicRead = async () => response([{ ...comic, visibility: "private", canManage: true }]); packRead = async () => response([{ ...pack, visibility: "private", canManage: true }]); }
     await mount();
-    expect(nav()).not.toBeNull(); expect([...nav()!.querySelectorAll("a")].map(link => link.textContent)).toEqual(["All"]);
+    expect(nav()).toBeNull();
   });
 
   it("finds a published Comic beyond an empty filtered first page", async () => {
     comicRead = async query => query.get("cursor") ? response([comic]) : response([], "after-filtered-row"); packRead = async () => response([]);
     await mount();
-    expect([...nav()!.querySelectorAll("a")].map(link => link.textContent)).toEqual(["All", "Comics"]);
+    expect([...nav()!.querySelectorAll("a")].map(link => link.textContent)).toEqual(["Characters", "Comics"]);
     expect(reads.filter(read => read.path.endsWith("comics")).map(read => read.query.get("cursor"))).toEqual([null, "after-filtered-row"]);
   });
 
   it("stops a repeated empty cursor without exposing a type or issuing an unbounded read", async () => {
     comicRead = async () => response([], "repeated"); packRead = async () => response([]);
     await mount();
-    expect(nav()).not.toBeNull(); expect(nav()!.textContent).not.toContain("Comics");
+    expect(nav()).toBeNull();
     expect(reads.filter(read => read.path.endsWith("comics"))).toHaveLength(2);
   });
 
@@ -291,7 +302,7 @@ describe("Explore public content types", () => {
     viewer = "owner-b"; comicRead = async () => response([]);
     await act(async () => window.dispatchEvent(new Event("focus"))); await settle();
     await act(async () => release({ ok: true, data: { items: [comic], nextCursor: null } })); await settle();
-    expect(nav()).not.toBeNull(); expect([...nav()!.querySelectorAll("a")].map(link => link.textContent)).toEqual(["All"]);
+    expect(nav()).toBeNull();
     expect(reads.filter(read => read.scope === "user:owner-b")).toHaveLength(2);
   });
 
@@ -299,7 +310,7 @@ describe("Explore public content types", () => {
     await mount(); expect(nav()!.textContent).toContain("Comics");
     comicRead = async () => Response.json({ ok: false }, { status: 503 }); packRead = async () => response([]);
     await act(async () => window.dispatchEvent(new Event("focus"))); await settle();
-    expect([...nav()!.querySelectorAll("a")].map(link => link.textContent)).toEqual(["All"]);
+    expect(nav()).toBeNull();
   });
 });
 

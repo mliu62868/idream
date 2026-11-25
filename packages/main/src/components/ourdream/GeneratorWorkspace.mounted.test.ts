@@ -41,7 +41,7 @@ const config = {
   },
   video: {
     enabled: false, availability: { state: "unavailable", reason: "feature_disabled" },
-    models: [], requiredEntitlement: "video_generation",
+    models: [], requiredEntitlement: "video_generation", hasSavedMedia: true,
   },
 };
 
@@ -2427,6 +2427,43 @@ describe("GeneratorWorkspace media journeys", () => {
     await settle();
     expect(container.querySelector('[data-media-id="video-1"]')).not.toBeNull();
     expect(container.querySelector('[data-media-id="image-1"]')).toBeNull();
+  });
+
+  it.each(["delete", "switch account"])("returns to Images when there are no accessible videos after %s", async (action) => {
+    const originalFetch = fetch;
+    let scope = config.viewer.scope;
+    let hasSavedMedia = true;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config") {
+        return Response.json({ ok: true, data: { ...config, viewer: { ...config.viewer, scope }, video: { ...config.video, hasSavedMedia } } });
+      }
+      if (path === "/api/v1/media/video-1" && init?.method === "DELETE") {
+        hasSavedMedia = false;
+        return Response.json({ ok: true, data: { deleted: true } });
+      }
+      if (path === "/api/v1/media?type=video" && !hasSavedMedia) {
+        return Response.json({ ok: true, data: { items: [], nextCursor: null } });
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Videos"));
+    expect(container.querySelector('[data-testid="gallery-media-card"][data-media-id="video-1"]')).not.toBeNull();
+    if (action === "delete") {
+      await click(button("Delete"));
+      await click(button("Confirm delete media"));
+      expect(container.textContent).toContain("Media deleted.");
+    } else {
+      scope = "user:next-viewer";
+      hasSavedMedia = false;
+      await act(async () => window.dispatchEvent(new Event("focus")));
+      await settle();
+    }
+    expect(button("Images").getAttribute("aria-pressed")).toBe("true");
+    expect([...container.querySelectorAll("button")].some((item) => item.textContent?.trim() === "Videos")).toBe(false);
+    expect(container.querySelector('[data-testid="gallery-media-card"][data-media-id="image-1"]')).not.toBeNull();
+    expect(container.querySelector('[data-media-id="video-1"]')).toBeNull();
   });
 
   it("edits an older page image and preserves that source when Gallery filters change", async () => {

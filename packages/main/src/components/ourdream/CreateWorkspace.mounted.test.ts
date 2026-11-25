@@ -292,11 +292,11 @@ describe("CreateWorkspace identity confirmation", () => {
     await act(async () => root.render(createElement(CreateWorkspace)));
     await waitUntil(() => [...container.querySelectorAll("button")].some(button => button.textContent === "Pause checking"));
     expect(container.textContent).not.toContain("Choose a ready image");
-    expect(container.querySelector('[data-testid="create-confirm-identity"]')).toBeNull();
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="create-next"]')?.disabled).toBe(true);
     await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Pause checking")?.click());
     await act(async () => finishRead(completedPreviewResponse()));
     expect(container.textContent).toContain("Checking is paused");
-    expect(container.querySelector('[data-testid="create-confirm-identity"]')).toBeNull();
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="create-next"]')?.disabled).toBe(true);
     expect(JSON.parse(window.localStorage.getItem(key)!).previewBatch.candidates).toHaveLength(0);
     expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
@@ -312,11 +312,11 @@ describe("CreateWorkspace identity confirmation", () => {
     expect(choose).toBeDefined();
     expect(container.textContent).toContain("This pauses checking and prevents further image requests. Images already requested will keep generating.");
     await act(async () => choose?.click());
-    expect(container.querySelector<HTMLButtonElement>('[data-testid="create-confirm-identity"]')?.disabled).toBe(false);
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="create-confirm-identity"]')?.click());
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="create-next"]')?.disabled).toBe(false);
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="create-next"]')?.click());
     await act(async () => releaseConfirmation?.(Response.json({ ok: true, data: {} })));
     await act(async () => finishRead(completedPreviewResponse()));
-    expect(container.textContent).toContain("Identity confirmed");
+    expect(container.querySelector('[data-testid="create-step-publish"]')).not.toBeNull();
     const saved = JSON.parse(window.localStorage.getItem(key)!);
     expect(saved.previewBatch.phase).toBe("paused");
     expect(saved.previewBatch.failureReason).toBe("user_paused");
@@ -325,9 +325,10 @@ describe("CreateWorkspace identity confirmation", () => {
     expect(vi.mocked(fetch).mock.calls.filter(([input, init]) => String(input).endsWith("/preview") && init?.method === "POST")).toHaveLength(0);
     await act(async () => root.render(null));
     await act(async () => root.render(createElement(CreateWorkspace)));
-    await waitUntil(() => container.textContent?.includes("Identity confirmed") === true);
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-step-publish"]')));
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent?.trim() === "Preview")?.click());
     expect(container.textContent).toContain("checking paused");
-    expect([...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Next")?.disabled).toBe(false);
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="create-next"]')?.disabled).toBe(false);
   });
 
   it("explains that unlisted sharing starts after publication", async () => {
@@ -397,8 +398,8 @@ describe("CreateWorkspace identity confirmation", () => {
 
   it("hides private fields on focus after a viewer switch and discards a late confirmation", async () => {
     await act(async () => root.render(createElement(CreateWorkspace)));
-    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-confirm-identity"]')));
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="create-confirm-identity"]')?.click());
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-next"]')));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="create-next"]')?.click());
     const originalFetch = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation((input, init) => String(input) === "/api/v1/me"
       ? Promise.resolve(Response.json({ ok: true, data: { user: { id: "creator-2" }, anonymousId: null } }))
@@ -412,7 +413,7 @@ describe("CreateWorkspace identity confirmation", () => {
 
   it("holds the selected identity and traits steady until confirmation finishes", async () => {
     await act(async () => root.render(createElement(CreateWorkspace)));
-    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-confirm-identity"]')));
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-next"]')));
     const candidates = () => [...container.querySelectorAll<HTMLButtonElement>(
       '[data-testid="create-preview-candidates"] button',
     )];
@@ -420,17 +421,60 @@ describe("CreateWorkspace identity confirmation", () => {
       .find((button) => button.textContent?.includes("Edit traits"));
 
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-testid="create-confirm-identity"]')?.click();
+      container.querySelector<HTMLButtonElement>('[data-testid="create-next"]')?.click();
     });
     expect(candidates()[1]?.disabled).toBe(true);
     expect(editTraits()?.disabled).toBe(true);
     await act(async () => candidates()[1]?.click());
     await act(async () => releaseConfirmation?.(Response.json({ ok: true, data: {} })));
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-step-publish"]')));
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent?.trim() === "Preview")?.click());
 
     expect(candidates()[0]?.getAttribute("aria-pressed")).toBe("true");
     expect(candidates()[0]?.textContent).toContain("Identity confirmed");
     expect(candidates()[1]?.getAttribute("aria-pressed")).toBe("false");
     expect(candidates()[1]?.disabled).toBe(false);
+  });
+
+  it.each([false, true])("saves the intended private character portrait (replace=%s)", async (replace) => {
+    window.history.replaceState(null, "", "/create?edit=private-character");
+    const storageKey = draftStorageKeyForScope("user:creator-1");
+    window.localStorage.setItem(`${storageKey}:edit:private-character`, window.localStorage.getItem(storageKey)!);
+    const draft = {
+      id: "draft-1", step: 3, name: "Avery", gender: "female", style: "realistic",
+      appearance: {}, hair: {}, body: {}, tags: [], previewJobId: null,
+      advancedDetails: { age: 21, description: "Warm and direct", firstMessage: "Hello there" },
+    };
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/characters/private-character/edit-draft") {
+        return Response.json({ ok: true, data: { draft, character: {
+          id: "private-character", name: draft.name, visibility: "private", published: false,
+          imageUrl: "/api/v1/media/original-portrait/content",
+          visual: { age: 21, gender: "female", style: "realistic", appearance: {}, hair: {}, body: {} },
+        } } });
+      }
+      return originalFetch(input, init);
+    });
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-preview-candidates"]')));
+    const next = container.querySelector<HTMLButtonElement>('[data-testid="create-next"]')!;
+    const candidate = container.querySelector<HTMLImageElement>('[alt="Identity candidate 2"]')!.closest("button")!;
+    expect(next.textContent).toContain("Continue to save");
+    if (replace) {
+      await act(async () => candidate.click());
+      expect(next.textContent).toContain("Use image and continue");
+    }
+    await act(async () => next.click());
+    const writes = vi.mocked(fetch).mock.calls.filter(([input]) => String(input).endsWith("/preview-anchor"));
+    if (replace) {
+      expect(writes).toHaveLength(1);
+      expect(JSON.parse(String(writes[0]![1]?.body))).toMatchObject({ previewJobId: "preview-2" });
+      await act(async () => releaseConfirmation!(Response.json({ ok: true, data: {} })));
+    } else {
+      expect(writes).toHaveLength(0);
+    }
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-step-publish"]')));
   });
 
   it("restores a completed unconfirmed preview from the server on another device", async () => {
@@ -456,7 +500,7 @@ describe("CreateWorkspace identity confirmation", () => {
     await waitUntil(() => Boolean(container.querySelector('[data-testid="create-step-preview"]')));
 
     expect(container.querySelector('img[src="/api/v1/media/saved-asset/content"]')).not.toBeNull();
-    expect(container.querySelector<HTMLButtonElement>('[data-testid="create-confirm-identity"]')?.disabled)
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="create-next"]')?.disabled)
       .toBe(false);
     expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
 
@@ -464,7 +508,7 @@ describe("CreateWorkspace identity confirmation", () => {
     await act(async () => root.render(createElement(CreateWorkspace)));
     await waitUntil(() => Boolean(container.querySelector('[data-testid="create-step-preview"]')));
     expect(container.querySelector('img[src="/api/v1/media/saved-asset/content"]')).not.toBeNull();
-    expect(container.querySelector<HTMLButtonElement>('[data-testid="create-confirm-identity"]')?.disabled)
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="create-next"]')?.disabled)
       .toBe(false);
   });
 
@@ -497,7 +541,7 @@ describe("CreateWorkspace identity confirmation", () => {
     expect(candidates?.querySelector('img[src="/api/v1/media/asset-a/content"]')).not.toBeNull();
     expect(candidates?.querySelector('img[src="/api/v1/media/asset-b/content"]')).not.toBeNull();
     expect(container.textContent).not.toContain("Preview generation failed");
-    expect(container.querySelector<HTMLButtonElement>('[data-testid="create-confirm-identity"]')?.disabled)
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="create-next"]')?.disabled)
       .toBe(false);
     expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
@@ -832,11 +876,10 @@ describe("CreateWorkspace identity confirmation", () => {
       return originalFetch(input, init);
     });
     await act(async () => root.render(createElement(CreateWorkspace)));
-    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-confirm-identity"]')));
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="create-confirm-identity"]')!.click());
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-next"]')));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="create-next"]')!.click());
     expect(JSON.parse(String(vi.mocked(fetch).mock.calls.find(([input]) => String(input).endsWith("/preview-anchor"))![1]?.body)).expectedUpdatedAt).toBe(initialRevision);
     await act(async () => releaseConfirmation!(Response.json({ ok: true, data: { draft: { ...server, previewJobId: "preview-1", updatedAt: confirmationRevision } } })));
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="create-next"]')!.click());
     await waitUntil(() => Boolean(container.querySelector('[data-testid="create-step-publish"]')));
     expect(container.querySelector('[data-testid="create-draft-conflict"]')).toBeNull();
   });

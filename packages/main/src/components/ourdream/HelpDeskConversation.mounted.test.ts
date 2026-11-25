@@ -1,8 +1,10 @@
 // @vitest-environment happy-dom
-import { act, createElement, useState } from "react";
+import { act, createElement, useState, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HelpDeskHistoryPanel } from "./HelpDeskWorkspace";
+vi.mock("next/link", () => ({ default: ({ href, children, prefetch: _prefetch, ...props }: ComponentProps<"a"> & { prefetch?: boolean }) => createElement("a", { ...props, href: String(href) }, children) }));
+vi.mock("./AgeGateBoundary", () => ({ useAgeGateAccess: () => ({ accepted: true }) }));
+import { HelpDeskHistoryPanel, HelpDeskWorkspace } from "./HelpDeskWorkspace";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const ticket = { id: "ticket-row", ticketId: "SUP-REPLY", category: "bug", subject: "Cannot save image", status: "waiting_on_user", createdAt: "2026-09-02T12:00:00.000Z", updatedAt: "2026-09-02T12:00:00.000Z", resolution: null };
@@ -46,6 +48,43 @@ describe("Help Desk support conversation", () => {
     expect(textarea).not.toBeNull();
     await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, value); textarea.dispatchEvent(new Event("input", { bubbles: true })); });
   }
+  it("keeps the submitted request accessible when older history arrives late", async () => {
+    const originalFetch = fetch;
+    let releaseOldHistory!: (response: Response) => void;
+    const oldHistory = new Promise<Response>((resolve) => { releaseOldHistory = resolve; });
+    const history = { supportRequests: [], reports: [], appeals: [] };
+    let historyReads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/support/history") {
+        historyReads += 1;
+        return historyReads === 1 ? oldHistory : envelope({ ...history, supportRequests: [ticket] });
+      }
+      if (path === "/api/v1/support/requests" && init?.method === "POST") return envelope({ request: ticket });
+      if (path.startsWith("/api/v1/feedback/items")) return envelope({ items: [], viewerId: viewer, nextCursor: null });
+      return originalFetch(input, init);
+    }));
+    await act(async () => root.render(createElement(HelpDeskWorkspace)));
+    await settle();
+    expect(historyReads).toBe(1);
+    const form = container.querySelector<HTMLFormElement>('[data-testid="helpdesk-form"]')!;
+    const subject = form.querySelector<HTMLInputElement>('[name="subject"]')!;
+    const details = form.querySelector<HTMLTextAreaElement>('[name="description"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(subject, ticket.subject);
+      subject.dispatchEvent(new Event("input", { bubbles: true }));
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(details, conversation.description);
+      details.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click("Submit request");
+    const requestLink = () => form.querySelector(`a[href="#helpdesk-${ticket.ticketId}"]`);
+    expect(requestLink()?.textContent).toBe("View request");
+    releaseOldHistory(envelope(history));
+    await settle();
+    expect(requestLink()?.textContent).toBe("View request");
+    expect(container.querySelector(`#helpdesk-${ticket.ticketId}`)?.textContent).toContain(ticket.subject);
+  });
+
   it("reads the support question, retains a failed draft and retries with the same message identity", async () => {
     await mount(); await click("View conversation");
     expect(container.textContent).toContain("Which image failed?");

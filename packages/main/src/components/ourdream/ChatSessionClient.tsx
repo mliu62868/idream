@@ -1256,28 +1256,26 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
       <div className="flex min-h-screen w-full">
         <AppSidebar activeHref="/chat" />
         <section className="flex min-w-0 flex-1 flex-col px-4 py-6 pb-24 md:px-[60px]">
-          <Link
-            className="mb-5 inline-flex items-center gap-2 text-[13px] font-bold text-[rgb(170,170,170)] hover:text-white"
-            href={groupMode ? "/chat/groups" : "/"}
-          >
-            <ArrowLeft className="h-4 w-4" />
-            {groupMode ? "Your group chats" : "Explore"}
-          </Link>
-          <div className="flex min-w-0 items-center gap-3">
-            <ChatHeaderAvatars
-              className={group ? undefined : "xl:hidden"}
-              images={group
-                ? group.members.flatMap(member => memberImages[member.characterId] ? [{ id: member.characterId, name: member.name, url: memberImages[member.characterId] }] : [])
-                : characterImage ? [{ id: characterId || "character", name: title, url: characterImage }] : []}
-            />
-            <h1 className="min-w-0 break-words text-[32px] font-black uppercase leading-9">{title}</h1>
-          </div>
-          <ChatSceneLine messages={messages} characterId={group ? characterId ?? undefined : undefined} />
-          {loadState === "ready" ? (
-            <>
+          {/* On short screens the group controls and expanded composer can overlap. Let the header scroll away. */}
+          <header className="sticky top-0 z-20 -mx-4 border-b border-white/10 bg-[rgb(13,13,13)] px-4 pb-2 pt-2 md:mx-0 md:px-0 [@media(max-height:480px)]:static [@media(max-height:480px)]:z-auto">
+            <Link
+              className="mb-2 inline-flex items-center gap-2 text-[13px] font-bold text-[rgb(170,170,170)] hover:text-white"
+              href={groupMode ? "/chat/groups" : "/"}
+            >
+              <ArrowLeft className="h-4 w-4" />
+              {groupMode ? "Your group chats" : "Explore"}
+            </Link>
+            <div className="flex min-w-0 items-center gap-3">
+              <ChatHeaderAvatars
+                className={group ? undefined : "xl:hidden"}
+                images={group
+                  ? group.members.flatMap(member => memberImages[member.characterId] ? [{ id: member.characterId, name: member.name, url: memberImages[member.characterId] }] : [])
+                  : characterImage ? [{ id: characterId || "character", name: title, url: characterImage }] : []}
+              />
+              <h1 className="line-clamp-2 min-w-0 break-words text-[22px] font-black leading-tight md:text-[28px]">{title}</h1>
+            </div>
+            {loadState === "ready" && (<>
               {group ? <GroupSpeakerControls members={group.members} selectedCharacterId={characterId} disabled={pending || hasGeneratingReply || speakerPending || conversationArchived || sendOutcomeUnknown} onSelect={next => void changeSpeaker(next)} /> : null}
-              {group && sendOutcomeUnknown ? <p role="status" className="mt-3 text-sm text-white/80">The last request is unconfirmed. Retry the same message to check it before choosing another speaker.</p> : null}
-              {conversationArchived ? <p className="mt-3 text-sm text-white/80">This conversation is archived. Its history stays readable.{!group && characterId ? <> <Link className="font-bold underline" href={`/characters/${encodeURIComponent(characterId)}`}>Start a new chat</Link></> : group ? <> <Link className="font-bold underline" href="/chat/groups">Start a new group</Link></> : null}</p> : null}
               <ChatHeaderControls
                 generateHref={chatGenerationHref({ characterId, sessionId: executionSessionId, message: latestCompletedReply })}
                 generationUnavailable={continuation !== "available"}
@@ -1287,6 +1285,23 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
                 onOpenSessions={() => groupMode ? window.location.assign("/chat/groups") : setSessionsOpen(true)}
                 onOpenMemory={() => setMemoryOpen(true)}
               />
+            </>)}
+          </header>
+          <ChatSceneLine messages={messages} characterId={group ? characterId ?? undefined : undefined} />
+          {loadState === "ready" ? (
+            <>
+              <p className="mt-2 text-xs leading-4 text-[rgb(170,170,170)]">
+                {memoryEnabled
+                  ? "Memory on: this character remembers details across your chats."
+                  : "No-memory: this character won't read or write long-term memory. Your current chat history stays until you delete the session."}
+              </p>
+              {group ? (
+                <p className="mt-1 text-xs leading-5 text-[rgb(170,170,170)]">
+                  @mention a character to choose who replies. Memory and preferences follow the selected character.
+                </p>
+              ) : null}
+              {group && sendOutcomeUnknown ? <p role="status" className="mt-3 text-sm text-white/80">The last request is unconfirmed. Retry the same message to check it before choosing another speaker.</p> : null}
+              {conversationArchived ? <p className="mt-3 text-sm text-white/80">This conversation is archived. Its history stays readable.{!group && characterId ? <> <Link className="font-bold underline" href={`/characters/${encodeURIComponent(characterId)}`}>Start a new chat</Link></> : group ? <> <Link className="font-bold underline" href="/chat/groups">Start a new group</Link></> : null}</p> : null}
               <ConversationPreferences key={executionSessionId} sessionId={executionSessionId} />
               {videoEnabled ? (
                 <button type="button" className="mt-3 inline-flex min-h-11 items-center gap-2 self-start rounded-full border border-white/20 px-4 py-2 text-sm font-bold disabled:opacity-50" disabled={!receiptOwnerScope} onClick={() => openVideoRequest()}>
@@ -1641,7 +1656,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
                     if (mentioned) void changeSpeaker(mentioned);
                   }}
                   name="message"
-                  placeholder={group ? "Message, or @ a Character…" : "Message..."}
+                  placeholder={group ? "Message or @name…" : "Message..."}
                   disabled={conversationReadOnly}
                   // Preserve one draft until its admission result is known.
                   // Reply generation does not hold pending, so the next draft stays editable.
@@ -1891,7 +1906,7 @@ function ChatImageAttachmentCard({
 
   if (attachment.status === "completed" && attachment.mediaUrl && source && !invalidPreview) {
     return (
-      // 宽度约束必须在 figure 上：过去只有 <img> 带 max-w，figure 仍撑满气泡宽度，
+      // 宽度约束必须在 figure 上：过去只有图片元素带 max-w，figure 仍撑满气泡宽度，
       // 于是图片右侧露出一大片深色底，操作条也跟着拉宽。同组件的等待/失败分支
       // 本来就是 `w-full max-w-[260px]`，这里只是漏了。
       <figure className="relative w-full max-w-[260px] overflow-hidden rounded-[12px] border border-white/10 bg-black/20">

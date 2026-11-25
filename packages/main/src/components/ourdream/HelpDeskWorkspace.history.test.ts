@@ -11,7 +11,7 @@ describe("HelpDeskHistoryPanel", () => {
     expect(helpDeskHistoryFailure(403, {
       error: { message: "Customer history is unavailable for this account" },
     })).toEqual({
-      message: "Help Desk history is available to customer accounts. This signed-in account is not a customer account.",
+      message: "Sign in with a customer account to see its Help Desk history. If you sent a request here, keep its reference number for follow-up.",
       retryable: false,
     });
     const html = renderToStaticMarkup(createElement(HelpDeskHistoryPanel, {

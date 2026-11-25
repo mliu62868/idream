@@ -241,6 +241,7 @@ export function HelpDeskWorkspace() {
   const [appealStatus, setAppealStatus] = useState("");
   const [appealSubmitting, setAppealSubmitting] = useState(false);
   const [history, setHistory] = useState<HelpDeskHistory>(EMPTY_HELP_DESK_HISTORY);
+  const historyRequestRef = useRef<AbortController | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
   const [historyErrorRetryable, setHistoryErrorRetryable] = useState(true);
@@ -377,15 +378,21 @@ export function HelpDeskWorkspace() {
   const loadHelpDeskHistory = useCallback(async () => {
     const requestedScope = viewerScopeRef.current;
     if (!requestedScope?.startsWith("user:")) return;
+    historyRequestRef.current?.abort();
+    const controller = new AbortController();
+    historyRequestRef.current = controller;
+    const isCurrent = () => historyRequestRef.current === controller && !controller.signal.aborted &&
+      viewerScopeRef.current === requestedScope;
     setHistoryLoading(true);
     setHistoryError("");
     setHistoryErrorRetryable(true);
     try {
       const response = await fetchForViewer("/api/v1/support/history", {
         cache: "no-store",
+        signal: controller.signal,
       });
       const raw = await response.json();
-      if (viewerScopeRef.current !== requestedScope) return;
+      if (!isCurrent()) return;
       if (!response.ok) {
         const failure = helpDeskHistoryFailure(response.status, raw);
         setHistory(EMPTY_HELP_DESK_HISTORY);
@@ -395,12 +402,15 @@ export function HelpDeskWorkspace() {
       }
       setHistory(parseHelpDeskHistoryResponse(raw));
     } catch {
-      if (viewerScopeRef.current !== requestedScope) return;
+      if (!isCurrent()) return;
       setHistory(EMPTY_HELP_DESK_HISTORY);
       setHistoryError("Could not load your Help Desk history.");
       setHistoryErrorRetryable(true);
     } finally {
-      if (viewerScopeRef.current === requestedScope) setHistoryLoading(false);
+      if (isCurrent()) {
+        historyRequestRef.current = null;
+        setHistoryLoading(false);
+      }
     }
   }, [fetchForViewer]);
 
@@ -552,7 +562,10 @@ export function HelpDeskWorkspace() {
       setHistoryError("");
       setHistoryErrorRetryable(true);
     }, 0);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      historyRequestRef.current?.abort();
+    };
   }, [loadHelpDeskHistory, viewerScope]);
 
   useEffect(() => {
@@ -962,6 +975,11 @@ export function HelpDeskWorkspace() {
             >
               {ticketId && <CheckCircle2 className="mr-2 inline h-4 w-4 text-[rgb(96,220,154)]" />}
               {status}
+              {ticketId && !historyError && history.supportRequests.some((item) => item.ticketId === ticketId) && (
+                <a className="mt-2 block w-fit underline underline-offset-4" href={`#helpdesk-${ticketId}`}>
+                  View request
+                </a>
+              )}
             </p>
           )}
         </form>
@@ -1477,6 +1495,7 @@ export function HelpDeskHistoryPanel({
             <HistoryGroup title="Support requests">
               {history.supportRequests.map((item) => (
                 <HistoryCard
+                  id={`helpdesk-${item.ticketId}`}
                   key={item.id}
                   status={item.status}
                   subtitle={`${supportCategoryLabel(item.category)} · ${formatHelpDeskTimestamp(item.createdAt)}`}
@@ -1575,19 +1594,21 @@ function HistoryGroup({ children, title }: Readonly<{ children: ReactNode; title
 
 function HistoryCard({
   children,
+  id,
   reference,
   status,
   subtitle,
   title,
 }: Readonly<{
   children: ReactNode;
+  id?: string;
   reference?: string;
   status: string;
   subtitle: string;
   title: string;
 }>) {
   return (
-    <article className="rounded-[10px] border border-white/10 bg-[rgb(28,28,28)] p-3">
+    <article className="scroll-mt-20 rounded-[10px] border border-white/10 bg-[rgb(28,28,28)] p-3" id={id} tabIndex={id ? -1 : undefined}>
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <h4 className="break-all text-[13px] font-black leading-5 text-white">{title}</h4>
@@ -1996,7 +2017,7 @@ export function helpDeskHistoryFailure(status: number, payload: unknown) {
     message === "Customer history is unavailable for this account"
   ) {
     return {
-      message: "Help Desk history is available to customer accounts. This signed-in account is not a customer account.",
+      message: "Sign in with a customer account to see its Help Desk history. If you sent a request here, keep its reference number for follow-up.",
       retryable: false,
     } as const;
   }

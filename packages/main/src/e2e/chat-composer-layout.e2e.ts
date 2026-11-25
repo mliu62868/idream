@@ -45,6 +45,8 @@ for (const viewport of [{ width: 1291, height: 745 }, { width: 390, height: 844 
     await page.getByRole("textbox", { name: "Message", exact: true }).fill("Another quiet moment?");
     await page.getByRole("button", { name: "Send message" }).click();
     await expect(page.getByText("Only the soft patter of rain.", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Layout proof", exact: true })).toBeInViewport();
+    await expect(page.getByRole("button", { name: "Open your chats" })).toBeInViewport();
     const regenerate = page.getByRole("button", { name: "Regenerate reply" }).last();
     // DOM visibility alone misses an enabled button hidden beneath sticky UI.
     await expect.poll(() => regenerate.evaluate((button) => {
@@ -61,3 +63,41 @@ for (const viewport of [{ width: 1291, height: 745 }, { width: 390, height: 844 
     expect(regeneratePosts).toBe(1);
   });
 }
+
+test("short group chat leaves the first line of an expanded draft reachable", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 360 });
+  await page.route("**/api/**", async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    let data: unknown = {};
+    if (pathname === "/api/v1/me") {
+      data = { user: { id: "layout-user" }, ageGate: { accepted: true } };
+    }
+    if (pathname === "/api/v1/chat/groups/layout-group") {
+      data = { session: {
+        id: "layout-group", ownerScope: "user:layout-user", title: "Trail room", characterId: "mira",
+        character: { name: "Mira" }, memoryEnabled: false,
+        group: {
+          selectedSessionId: "mira-session",
+          members: [
+            { characterId: "mira", sessionId: "mira-session", name: "Mira, keeper of the trail maps" },
+            { characterId: "avery", sessionId: "avery-session", name: "Avery" },
+          ],
+        },
+        messages: [{ id: "opening:layout", role: "assistant", content: "Which trail should we walk today?", opening: true, status: "sent" }],
+      } };
+    }
+    if (pathname.endsWith("/experience")) {
+      data = { settings: { responseLength: "short", interactionIntensity: "gentle", sceneGeneration: "follow", version: 1 }, editable: true, catalog: CONVERSATION_PROFILE_CATALOG };
+    }
+    await route.fulfill({ json: { ok: true, data } });
+  });
+  await page.goto("/chat/groups/layout-group");
+  const input = page.getByRole("textbox", { name: "Message", exact: true });
+  await input.fill(Array.from({ length: 7 }, (_, index) => `Trail planning note ${index + 1} about the water and the route.`).join("\n"));
+  await input.press("End");
+  await expect.poll(() => input.evaluate((field) => {
+    const bounds = field.getBoundingClientRect();
+    return field.contains(document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + 12));
+  })).toBe(true);
+  await expect(page.getByRole("button", { name: "Send message" })).toBeEnabled();
+});

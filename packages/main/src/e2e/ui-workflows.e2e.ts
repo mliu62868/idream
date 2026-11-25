@@ -6,7 +6,7 @@ import { deflateSync } from "node:zlib";
 import path from "node:path";
 import {
   MAIN_TO_CHAT_EVENTS,
-  characterVideoProductionRecipe,
+  redgraftLtx25VideoProductionRecipe,
   compileCharacterSoul,
   mockVideoMp4Bytes,
 } from "@idream/shared";
@@ -1265,6 +1265,7 @@ async function cleanupChatDatabaseFixtures(userIds: string[]) {
 test("help desk submits a tracked support request", async ({ page }) => {
   const { email } = await startSignedInAdultSession(page, "helpdesk");
   const user = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } });
+  await prisma.user.update({ where: { id: user.id }, data: { dataClass: "customer" } });
 
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
@@ -1314,6 +1315,11 @@ test("help desk submits a tracked support request", async ({ page }) => {
   await expect(page.getByTestId("helpdesk-status")).toContainText(/received/i);
   await expect(page.getByTestId("helpdesk-status")).toHaveAttribute("role", "status");
   await expect(page.getByTestId("helpdesk-status")).toHaveAttribute("aria-live", "polite");
+  await page.getByRole("link", { name: "View request", exact: true }).click();
+  const ticket = page.getByTestId("helpdesk-history").locator("article").filter({ hasText: "Generation job stuck" });
+  await expect(ticket).toBeInViewport();
+  await ticket.getByRole("button", { name: "View conversation" }).click();
+  await expect(ticket.getByText("The image generation job stayed queued after I refreshed the generator.")).toBeVisible();
 
   const featureTitle = uniqueName("Feature voting");
   await expect(page.getByRole("heading", { name: /vote on what should ship next/i })).toBeVisible();
@@ -2457,7 +2463,7 @@ async function expectGenerationAccepted(page: Page, timeout = 10_000) {
   await expect(status).toHaveText(/Generation (?:queued|complete)\./, { timeout });
 }
 
-async function generateAndConfirmCharacterIdentity(page: Page, resume = false) {
+async function generateAndChooseCharacterIdentity(page: Page, resume = false) {
   const deadline = Date.now() + 90_000;
   await page
     .getByRole("button", { name: resume ? "Check preview status" : /^(Generate|Retry) preview candidates$/ })
@@ -2487,11 +2493,8 @@ async function generateAndConfirmCharacterIdentity(page: Page, resume = false) {
   }
   await expect(candidates).toHaveCount(4, { timeout: Math.max(1, deadline - Date.now()) });
   await expect(progress).toHaveText("Candidate 4 of 4 · completed · 4 completed");
-  await page.getByTestId("create-confirm-identity").click();
-  await expect(page.getByText("Identity confirmed. This is how the character will look.")).toBeVisible({
-    timeout: 10_000,
-  });
-  await expect(page.getByTestId("create-next")).toBeEnabled();
+  await page.getByRole("button", { name: "Use image and continue" }).click();
+  await expect(page.getByTestId("create-step-publish")).toBeVisible({ timeout: 10_000 });
 }
 
 async function expectAssistantReplyVisible(page: Page) {
@@ -2646,9 +2649,10 @@ test("explore character grid exposes retryable load errors and empty results", a
   await expect(status).toContainText("No characters found", { timeout: 10_000 });
   await expect(status).toHaveAttribute("role", "status");
   await expect(status).toHaveAttribute("aria-live", "polite");
-  await expect(status).toContainText(
-    "Try another search term, clear a category, or switch the gender, style, and age filters.",
-  );
+  const clearFilters = status.getByRole("button", { name: "Clear search and filters" });
+  await expect(clearFilters).toBeVisible();
+  await clearFilters.click();
+  await expect(page.getByRole("combobox", { name: "Gender filter" })).toHaveValue("any");
 
   const staleToken = `E2E Stale ${Date.now()} ${Math.floor(Math.random() * 1e6)}`;
   const seeded = await seedExploreCharacters(staleToken);
@@ -3269,12 +3273,11 @@ test("create UI walks the multi-step builder and shows the character in My AI", 
     "A complete E2E-created companion used to verify the creator and My AI loop.",
   );
   await page.getByTestId("create-next").click();
-  // Step 4 — Preview requires an explicit identity confirmation before Publish unlocks.
+  // Step 4 — a ready identity image is needed before saving.
   await expect(page.getByTestId("create-step-preview")).toBeVisible();
   await expect(page.getByTestId("create-next")).toBeDisabled();
-  await generateAndConfirmCharacterIdentity(page);
-  await page.getByTestId("create-next").click();
-  // Step 5 — Publish (private => approved, saved to My AI)
+  await generateAndChooseCharacterIdentity(page);
+  // Step 5 — private save to My AI.
   await expect(page.getByTestId("create-step-publish")).toBeVisible();
   await page.getByTestId("create-submit").click();
 
@@ -3453,7 +3456,7 @@ test("create UI resumes a draft and prepares public characters for publication",
     });
   });
   await page.getByRole("button", { name: "Generate preview candidates", exact: true }).click();
-  await expect(page.getByText("Checking is paused. This does not cancel queued work or mean generation failed. Check the saved request again, or confirm an available identity.")).toBeVisible({
+  await expect(page.getByText("Checking is paused. Queued images keep generating. Check again later or use a ready image.")).toBeVisible({
     timeout: 10_000,
   });
   await expect(page.getByText("Preview service unavailable.")).toBeVisible();
@@ -3461,8 +3464,7 @@ test("create UI resumes a draft and prepares public characters for publication",
   await expect(page.getByTestId("create-step-publish")).toHaveCount(0);
 
   await page.unroute("**/api/v1/character-drafts/**/preview");
-  await generateAndConfirmCharacterIdentity(page, true);
-  await page.getByTestId("create-next").click();
+  await generateAndChooseCharacterIdentity(page, true);
   const publishStep = page.getByTestId("create-step-publish");
   await expect(publishStep).toBeVisible({ timeout: 10_000 });
   await publishStep.getByRole("button", { name: "Public", exact: true }).click();
@@ -4589,8 +4591,12 @@ test("mobile generator keeps queued job feedback in view after submit", async ({
   await page.setViewportSize({ width: 390, height: 812 });
 
   await page.goto("/generate?characterId=melissa-burke");
-  const generate = page.getByRole("button", { name: "Generate" });
+  const generate = page.getByRole("button", { name: "Generate without a prompt · 5 coins" });
   await expect(generate).toBeEnabled({ timeout: 45_000 });
+  await page.getByRole("button", { name: "Gallery", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Images", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Videos", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Create", exact: true }).click();
   await generate.scrollIntoViewIfNeeded();
   await generate.click();
 
@@ -4912,14 +4918,15 @@ test("generator UI quotes one video scene and delivers its completed sequence an
   try {
     await page.goto(`/generate?characterId=${characterId}`);
     await page.getByRole("button", { name: "Video", exact: true }).click();
+    await page.getByRole("combobox", { name: "Video model" }).selectOption({ label: "RedGraft · multi-scene" });
     await expect(page.getByRole("combobox", { name: "Character", exact: true })).toHaveValue(characterId);
     const sequenceControls = page.getByRole("region", { name: "Video sequence", exact: true });
     const review = sequenceControls.getByRole("button", { name: "Review video price", exact: true });
     await expect(review).toBeEnabled({ timeout: 45_000 });
-    await expect(sequenceControls.getByRole("combobox", { name: "Video aspect ratio" })).toHaveValue(characterVideoProductionRecipe.orientation);
+    await expect(sequenceControls.getByRole("combobox", { name: "Video aspect ratio" })).toHaveValue(redgraftLtx25VideoProductionRecipe.orientation);
     await expect(sequenceControls.getByRole("combobox", { name: "Video resolution" })).toHaveValue("preview");
     await expect(sequenceControls.getByRole("combobox", { name: "Video sound" })).toHaveValue("generated");
-    await expect(sequenceControls.getByRole("combobox", { name: "Scene 1 duration" })).toHaveValue(String(characterVideoProductionRecipe.durationSeconds));
+    await expect(sequenceControls.getByRole("combobox", { name: "Scene 1 duration" })).toHaveValue(String(redgraftLtx25VideoProductionRecipe.durationSeconds));
     const motion = "The character slowly waves toward the camera in this controlled video scene.";
     await sequenceControls.getByRole("textbox", { name: "Scene 1 prompt" }).fill(motion);
     const quoted = page.waitForResponse((response) => response.request().method() === "POST" && new URL(response.url()).pathname === "/api/v1/generation/video-sequences/quote");
@@ -4930,9 +4937,9 @@ test("generator UI quotes one video scene and delivers its completed sequence an
     expect(price.costDreamcoins).toBe(100);
     expect(price.costs).toEqual([{ ordinal: 0, costDreamcoins: 100 }]);
     expect(price.scenes).toEqual([{ ordinal: 0, video: {
-      durationSeconds: characterVideoProductionRecipe.expectedDurationSeconds,
-      width: characterVideoProductionRecipe.width,
-      height: characterVideoProductionRecipe.height,
+      durationSeconds: redgraftLtx25VideoProductionRecipe.expectedDurationSeconds,
+      width: redgraftLtx25VideoProductionRecipe.width,
+      height: redgraftLtx25VideoProductionRecipe.height,
       audio: "generated",
     } }]);
     const pricePanel = sequenceControls.locator('[aria-label="Video price"]');
@@ -4945,7 +4952,7 @@ test("generator UI quotes one video scene and delivers its completed sequence an
     expect(acceptedResponse.status()).toBe(202);
     expect(acceptedResponse.request().postDataJSON()).toMatchObject({
       characterId, quoteFingerprint: price.fingerprint, audio: "generated",
-      scenes: [{ prompt: motion, seconds: characterVideoProductionRecipe.durationSeconds }],
+      scenes: [{ prompt: motion, seconds: redgraftLtx25VideoProductionRecipe.durationSeconds }],
     });
     expect(acceptedResponse.request().headers()["idempotency-key"]).toBeTruthy();
     const sequence = videoSequenceDtoSchema.parse((await acceptedResponse.json()).data?.sequence);
@@ -4961,16 +4968,16 @@ test("generator UI quotes one video scene and delivers its completed sequence an
     });
     await expect(prisma.generationJob.findUniqueOrThrow({ where: { id: job.id } })).resolves.toMatchObject({
       characterId,
-      provider: characterVideoProductionRecipe.runner,
-      profileId: characterVideoProductionRecipe.profileKey,
-      profileVersion: characterVideoProductionRecipe.recipeVersion,
-      orientation: characterVideoProductionRecipe.orientation,
+      provider: redgraftLtx25VideoProductionRecipe.runner,
+      profileId: redgraftLtx25VideoProductionRecipe.profileKey,
+      profileVersion: redgraftLtx25VideoProductionRecipe.recipeVersion,
+      orientation: redgraftLtx25VideoProductionRecipe.orientation,
       outputCount: 1,
       controls: expect.objectContaining({
-        seconds: characterVideoProductionRecipe.durationSeconds,
+        seconds: redgraftLtx25VideoProductionRecipe.durationSeconds,
         sourceImageAssetId: characterAuthority.avatarAssetId,
-        workflowKey: characterVideoProductionRecipe.workflowKey,
-        workflowVersion: characterVideoProductionRecipe.workflowVersion,
+        workflowKey: redgraftLtx25VideoProductionRecipe.workflowKey,
+        workflowVersion: redgraftLtx25VideoProductionRecipe.workflowVersion,
       }),
     });
     await drainWorker(page.request, job.id);
@@ -4986,7 +4993,7 @@ test("generator UI quotes one video scene and delivers its completed sequence an
     expect(sequenceAsset).not.toBeNull();
     if (!sequenceAsset) throw new Error("A completed sequence must deliver its packaged video");
     expect(sequenceAsset.id).not.toBe(sceneAsset.id);
-    expect(sequenceAsset).toMatchObject({ width: characterVideoProductionRecipe.width, height: characterVideoProductionRecipe.height, metadata: {
+    expect(sequenceAsset).toMatchObject({ width: redgraftLtx25VideoProductionRecipe.width, height: redgraftLtx25VideoProductionRecipe.height, metadata: {
       source: "video_sequence", sequenceId: sequence.id, audio: "generated", sceneGenerationJobIds: [job.id],
     } });
     await expect(sequenceStatus.locator("video")).toHaveAttribute("src", sequenceAsset.url);
@@ -5108,6 +5115,7 @@ test("cancelled video sequences keep observing an active scene until its downloa
   try {
     await page.goto("/generate");
     await page.getByRole("button", { name: "Video", exact: true }).click();
+    await page.getByRole("combobox", { name: "Video model" }).selectOption({ label: "RedGraft · multi-scene" });
     const controls = page.getByRole("region", { name: "Video sequence", exact: true });
     const status = controls.locator('[aria-label="Video sequence status"]');
     await expect(status).toContainText("Scene 2: running");

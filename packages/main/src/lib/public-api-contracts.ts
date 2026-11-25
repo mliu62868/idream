@@ -957,6 +957,7 @@ const generationConfigSchema = z
     video: z
       .object({
         enabled: z.boolean(),
+        hasSavedMedia: z.boolean().optional(),
         availability: generationModeAvailabilitySchema,
         requiredEntitlement: z.string(),
         models: z.array(generationModelSchema),

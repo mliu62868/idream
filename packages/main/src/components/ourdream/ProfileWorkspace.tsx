@@ -1422,6 +1422,13 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
             Upgrade
           </Link></div>
         </div>
+        {!isMyAiRoute && (
+          <nav aria-label="Account sections" className="mt-5 flex flex-wrap gap-x-5 gap-y-2 text-sm font-semibold text-white/80">
+            <a className="py-2 underline underline-offset-4 hover:text-white" href="#billing">Billing &amp; access</a>
+            <a className="py-2 underline underline-offset-4 hover:text-white" href="#account-settings">Account settings</a>
+            <a className="py-2 underline underline-offset-4 hover:text-white" href="#account-management">Security &amp; recovery</a>
+          </nav>
+        )}
         {/* Surface only entitlements returned by the account authority. */}
         <div className="mt-6 rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-4">
           <p className="text-[12px] font-bold uppercase tracking-wide text-[rgb(114,113,112)]">
@@ -1794,11 +1801,11 @@ function ProfileOwnerWorkspace({ routePath, profile, authState, profileAuthority
             </p>
           )}
           <div className="mt-6 grid gap-3 md:grid-cols-2">
-            <div className="rounded-[14px] bg-[rgb(18,18,18)] p-4">
-              <p className="flex items-center gap-2 text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+            <div className="scroll-mt-20 rounded-[14px] bg-[rgb(18,18,18)] p-4" id="account-settings">
+              <h2 className="flex items-center gap-2 text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                 <UserCog className="h-4 w-4" />
                 Account settings
-              </p>
+              </h2>
               <label className="mt-3 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                 Display name
                 <div className="mt-2 flex gap-2">

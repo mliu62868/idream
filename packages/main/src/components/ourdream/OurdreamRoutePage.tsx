@@ -77,6 +77,7 @@ function activeHrefForPath(path: string) {
     return "/resources-hub";
   }
   if (path.startsWith("/upgrade")) return "/upgrade";
+  if (path === "/coins") return "/coins";
   return "/";
 }
 
