@@ -22,7 +22,7 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
-import { settleChatTurnUsage } from "./turn-ledger";
+import { settleChatTurnUsage } from "./turn-usage";
 import { hasChatMediaResponseAttachment } from "./tool-effect-attachment";
 
 const DESTRUCTIVE_MEMORY_EVENT_TYPES = [
