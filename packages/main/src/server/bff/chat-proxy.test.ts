@@ -445,6 +445,39 @@ describe("Main-owned Chat façade", () => {
     expect(cancelBody).toHaveBeenCalledTimes(1);
   });
 
+  it("forwards only allowlisted stream headers and passes SSE retry fields through", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const done = await sendAndCommit(proxyChatRequest, sessionId, "First", "First reply");
+    fetchMock.mockImplementation(async () => new Response("retry: 1000\ndata: committed reply\n\n", { headers: {
+      "content-type": "text/event-stream", "x-accel-buffering": "no", "set-cookie": "chat=internal", server: "chat-runtime", "x-chat-debug": "1",
+    } }));
+    const response = await proxyChatRequest(authRequest(`/api/v1/chat/messages/${done.assistantMessageId}/stream?attempt=1`), ["chat", "messages", done.assistantMessageId, "stream"]);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("retry: 1000\ndata: committed reply\n\n");
+    expect(response.headers.get("content-type")).toBe("text/event-stream");
+    expect(response.headers.get("x-accel-buffering")).toBe("no");
+    for (const name of ["set-cookie", "server", "x-chat-debug"]) expect(response.headers.get(name)).toBeNull();
+  });
+
+  it.each([
+    { upstream: 409, expected: 409 },
+    { upstream: 404, expected: 404 },
+    { upstream: 500, expected: 503 },
+    { upstream: 401, expected: 503 },
+  ])("maps an upstream stream refusal $upstream to a uniform $expected", async ({ upstream, expected }) => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const done = await sendAndCommit(proxyChatRequest, sessionId, "First", "First reply");
+    fetchMock.mockImplementation(async () => new Response("internal stack trace", { status: upstream, headers: { "x-chat-debug": "1" } }));
+    const response = await proxyChatRequest(authRequest(`/api/v1/chat/messages/${done.assistantMessageId}/stream?attempt=1`), ["chat", "messages", done.assistantMessageId, "stream"]);
+    expect(response.status).toBe(expected);
+    expect(response.headers.get("x-chat-debug")).toBeNull();
+    const body = await response.json() as { error: string; message: string };
+    expect(body.message).toBe("The reply stream is not available");
+    expect(JSON.stringify(body)).not.toContain("stack");
+  });
+
   it("pins a legacy SSE caller to the Main attempt and preserves reconnect transport", async () => {
     const { proxyChatRequest } = await import("./chat-proxy");
     const sessionId = await ensureSession(proxyChatRequest);
@@ -469,7 +502,7 @@ describe("Main-owned Chat façade", () => {
     const begun = await beginChatTurn({ sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION, userId: USER_ID, sessionId, content: "Deliver the confirmed reply.", idempotencyKey: randomUUID() });
     const snapshot = begun.snapshot!;
     if (confirmation === "admitted") {
-      await expect(attemptChatAgentRunAdmission(snapshot)).resolves.toMatchObject({ admitted: true });
+      await expect(attemptChatAgentRunAdmission(snapshot, fetch, { mode: "inline" })).resolves.toMatchObject({ admitted: true });
     } else {
       await commitChatTerminal({
         version: 1, turnId: snapshot.turnId, sessionId, assistantMessageId: snapshot.assistantMessageId,
@@ -1235,7 +1268,7 @@ describe("Main-owned Chat façade", () => {
     await expect(differentAuthorization.json()).resolves.toMatchObject({ details: { reason: "edit_key_conflict" } });
     const staleObservedAttempt = await request({ content: body.content, attempt: 1 });
     expect(staleObservedAttempt.status).toBe(409);
-    await expect(staleObservedAttempt.json()).resolves.toMatchObject({ details: { reason: "edit_attempt_changed", attempt: 2 } });
+    await expect(staleObservedAttempt.json()).resolves.toMatchObject({ details: { reason: "version_mismatch", cause: "edit_attempt_changed", attempt: 2 } });
     expect((await request({ ...body, attempt: "2" })).status).toBe(400);
     expect((await request({ ...body, allowPaidImage: "true" })).status).toBe(400);
     expect(fetchMock).not.toHaveBeenCalled();

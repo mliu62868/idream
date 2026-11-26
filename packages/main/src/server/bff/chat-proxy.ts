@@ -1,13 +1,7 @@
 // Main owns Companion Chat product state. This module is now a façade over the
 // Main Turn Ledger; only AgentRun admission, cancellation and SSE cross to Chat.
 import { prisma } from "@/server/lib/db";
-import {
-  BFF_HEADER,
-  BFF_USER_HEADER,
-  signBffContext,
-} from "@idream/shared/bff";
 import { getAuthCtx } from "@/server/lib/auth";
-import { env } from "@/server/lib/env";
 import { AppError, Errors } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
 import {
@@ -31,6 +25,7 @@ import {
 } from "@/server/modules/chat/agent-run-admission";
 import { clearCompanionMemory } from "@/server/modules/chat/companion-memory-authority";
 import { parseChatTranscriptPage } from "@/server/modules/chat/chat-read-model";
+import { requireChatAgentRuntime, signedChatBffHeaders } from "@/server/modules/chat/chat-runtime-endpoint";
 import { createChatContextDirective, deleteChatContextDirective, listChatContextDirectives, updateChatContextDirective } from "@/server/modules/chat/context-directives";
 import { getChatExperiencePreference, updateChatExperiencePreference } from "@/server/modules/chat/experience-preferences";
 import { getProactiveSettings, updateProactiveSettings } from "@/server/modules/chat/proactive-messages";
@@ -43,10 +38,6 @@ const PRIVATE_HEADERS = {
   pragma: "no-cache",
   vary: "Cookie, Authorization",
 };
-
-export function chatServiceEnabled(): boolean {
-  return Boolean(env.CHAT_SERVICE_URL);
-}
 
 /** Public `/api/v1/chat|messages/*` façade. Product reads/writes stay in Main. */
 export async function proxyChatRequest(request: Request, segments: string[]): Promise<Response> {
@@ -75,7 +66,7 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
     if (path.length === 1) {
       if (method === "GET") return json({ ownerScope: `user:${userId}`, groups: await listGroupConversations(userId) });
       if (method === "POST") {
-        if (request.headers.get("x-idream-viewer-scope") !== `user:${userId}`) throw Errors.conflict("Your account changed. Reload before creating a group");
+        if (request.headers.get("x-idream-viewer-scope") !== `user:${userId}`) throw Errors.conflict("Your account changed. Reload before creating a group", { reason: "viewer_changed" });
         return envelope({ group: await createGroupConversation(userId, body) }, 201);
       }
     }
@@ -91,7 +82,7 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
       }
       if (method === "PATCH") {
         // Same guard as creation: new members are bound to the account the picker was loaded for.
-        if ("addCharacterIds" in body && request.headers.get("x-idream-viewer-scope") !== `user:${userId}`) throw Errors.conflict("Your account changed. Reload before adding Characters");
+        if ("addCharacterIds" in body && request.headers.get("x-idream-viewer-scope") !== `user:${userId}`) throw Errors.conflict("Your account changed. Reload before adding Characters", { reason: "viewer_changed" });
         return json(await updateGroupConversation(userId, groupId, body));
       }
       if (method === "DELETE") {
@@ -111,7 +102,7 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
 
   if (root === "chat" && path[0] === "memory" && path[1] && path.length === 2) {
     if (method === "DELETE") {
-      requireAgentRuntime();
+      requireChatAgentRuntime();
       return json(await clearCompanionMemory(userId, path[1]));
     }
   }
@@ -122,7 +113,7 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
       // Optional guard: a caller that states which account it is acting for (e.g. the
       // Release hand-off carrying an unsent draft) must not land in another account.
       const scope = request.headers.get("x-idream-viewer-scope");
-      if (scope !== null && scope !== `user:${userId}`) throw Errors.conflict("Your account changed. Reload to continue.");
+      if (scope !== null && scope !== `user:${userId}`) throw Errors.conflict("Your account changed. Reload to continue.", { reason: "viewer_changed" });
       const session = await createChatSession(userId, {
         characterId: text(body.characterId),
         title: optionalText(body.title),
@@ -162,7 +153,7 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
       const idempotencyKey = request.headers.get("idempotency-key")?.trim();
       if (!idempotencyKey) throw Errors.badRequest("Idempotency-Key is required");
       const target = await prisma.recentChat.findFirst({ where: { sessionId, userId }, select: { groupId: true } });
-      if (target?.groupId) throw Errors.conflict("Open this conversation from its group chat");
+      if (target?.groupId) throw Errors.conflict("Open this conversation from its group chat", { reason: "group_conversation" });
       return envelope(await beginAdmittedChatTurn({
         userId,
         sessionId,
@@ -218,8 +209,18 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
   throw Errors.notFound("Chat route not found");
 }
 
+// INTENT: the handshake (response headers) is bounded so a hung Chat releases
+// the browser's request; the body is a long-lived SSE stream and is bounded
+// only by the browser closing it.
+const STREAM_HEADERS_TIMEOUT_MS = 10_000;
+// Only transport-neutral headers cross the façade; Chat's internal headers
+// (server, set-cookie, debug ids, content-encoding) never reach the browser.
+const FORWARDED_STREAM_HEADERS = ["content-type", "x-accel-buffering", "retry-after"] as const;
+// Statuses a page can act on keep their meaning; anything else is "unavailable".
+const FORWARDED_STREAM_STATUSES = new Set([404, 409, 410, 429]);
+
 async function proxyAgentStream(request: Request, userId: string, messageId: string): Promise<Response> {
-  const base = requireAgentRuntime();
+  const base = requireChatAgentRuntime();
   const incoming = new URL(request.url);
   const requestedAttempt = incoming.searchParams.get("attempt");
   if (requestedAttempt !== null && !/^[1-9]\d*$/u.test(requestedAttempt)) {
@@ -232,10 +233,29 @@ async function proxyAgentStream(request: Request, userId: string, messageId: str
   incoming.searchParams.set("attempt", String(authority.attempt));
   const path = `/api/v1/messages/${encodeURIComponent(messageId)}/stream`;
   const target = `${base}${path}${incoming.search}`;
-  const headers = signedAgentHeaders(userId, "GET", path, "");
+  const headers = signedChatBffHeaders({ userId, method: "GET", path, body: "" });
   const lastEventId = request.headers.get("last-event-id");
   if (lastEventId) headers.set("last-event-id", lastEventId);
-  const response = await fetch(target, { method: "GET", headers, signal: request.signal });
+  const handshake = new AbortController();
+  const handshakeTimer = setTimeout(() => {
+    handshake.abort(new DOMException("Chat stream handshake timed out", "TimeoutError"));
+  }, STREAM_HEADERS_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(target, { method: "GET", headers, signal: AbortSignal.any([request.signal, handshake.signal]) });
+  } catch (error) {
+    if (request.signal.aborted) throw error;
+    logger.warn({ err: error, messageId, attempt: authority.attempt }, "Chat stream handshake failed");
+    throw Errors.unavailable("The reply stream is temporarily unavailable");
+  } finally {
+    clearTimeout(handshakeTimer);
+  }
+  if (!response.ok) {
+    void response.body?.cancel().catch(() => undefined);
+    logger.warn({ status: response.status, messageId, attempt: authority.attempt }, "Chat stream handshake was refused");
+    const status = FORWARDED_STREAM_STATUSES.has(response.status) ? response.status : 503;
+    return json({ error: status === 503 ? "chat_stream_unavailable" : "chat_stream_refused", message: "The reply stream is not available" }, status);
+  }
   try {
     // The handshake can outlive deletion or revision. Do not expose a body from
     // an identity that lost product authority while we waited for Chat.
@@ -244,53 +264,21 @@ async function proxyAgentStream(request: Request, userId: string, messageId: str
     void response.body?.cancel().catch(() => undefined);
     throw error;
   }
-  const responseHeaders = new Headers(response.headers);
-  responseHeaders.delete("content-encoding");
+  // The body passes through byte for byte, including SSE `retry:` fields.
+  const responseHeaders = new Headers();
+  for (const name of FORWARDED_STREAM_HEADERS) {
+    const value = response.headers.get(name);
+    if (value !== null) responseHeaders.set(name, value);
+  }
   responseHeaders.set("cache-control", "private, no-cache, no-store, no-transform");
   responseHeaders.set("vary", "Cookie, Authorization");
   return new Response(response.body, { status: response.status, headers: responseHeaders });
-}
-
-function signedAgentHeaders(
-  userId: string,
-  method: string,
-  path: string,
-  body: string,
-): Headers {
-  const headers = new Headers();
-  const secret = env.CHAT_BFF_SIGNING_SECRET;
-  if (!secret) {
-    if (env.APP_ENV !== "test") throw Errors.unavailable("CHAT_BFF_SIGNING_SECRET not configured");
-    headers.set("x-idream-user-id", userId);
-    return headers;
-  }
-  const signed = signBffContext({ secret, userId, method, path, body });
-  headers.set(BFF_HEADER, signed.signature);
-  // HTTP header values are ByteStrings in Undici. Escaping non-ASCII keeps the
-  // JSON semantic value intact while making the transport representation valid.
-  headers.set(BFF_USER_HEADER, asciiJson(signed.context));
-  return headers;
-}
-
-function requireAgentRuntime(): string {
-  if (!env.CHAT_SERVICE_URL) throw Errors.unavailable("CHAT_SERVICE_URL not configured");
-  if (!env.INTERNAL_TOKEN) throw Errors.unavailable("INTERNAL_TOKEN not configured");
-  if (!env.CHAT_BFF_SIGNING_SECRET && env.APP_ENV !== "test") {
-    throw Errors.unavailable("CHAT_BFF_SIGNING_SECRET not configured");
-  }
-  return env.CHAT_SERVICE_URL.replace(/\/$/u, "");
 }
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
-}
-
-function asciiJson(value: unknown): string {
-  return JSON.stringify(value).replace(/[\u007f-\uffff]/gu, (character) =>
-    `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
-  );
 }
 
 async function jsonBody(request: Request): Promise<Record<string, unknown>> {

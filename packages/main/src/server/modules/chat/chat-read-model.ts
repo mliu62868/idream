@@ -119,7 +119,7 @@ export async function getChatSession(userId: string, sessionId: string, transcri
   if (!session) throw Errors.notFound("Chat session not found");
   // A group member's session is one voice of the group; read as a one-to-one
   // chat it would hide the other speakers and let a send bypass the group.
-  if (session.groupId) throw Errors.conflict("Open this conversation from its group chat");
+  if (session.groupId) throw Errors.conflict("Open this conversation from its group chat", { reason: "group_conversation" });
   const { turns, page } = await directTranscriptPage(session.sessionId, transcriptPage);
   // The greeting precedes every Turn, so it belongs to the earliest page only.
   const messages = await enrichAttachmentMedia(publicMessages({
@@ -186,7 +186,7 @@ export async function chatStreamAuthority(userId: string, assistantMessageId: st
   });
   if (!turn) throw Errors.notFound("Chat message not found");
   if (expectedAttempt !== undefined && turn.attempt !== expectedAttempt) {
-    throw Errors.conflict("Stream belongs to a superseded Chat attempt");
+    throw Errors.conflict("Stream belongs to a superseded Chat attempt", { reason: "version_mismatch" });
   }
   // A lost admission ACK leaves Main pending and cancellation can still release
   // its unused quota. No local text may escape in that state. A committed sent
@@ -251,6 +251,7 @@ export function begunResult(
     assistantMessageId: string;
     attempt: number;
     userContent: string;
+    idempotencyKey?: string;
     userStatus: string;
     assistantContent: string;
     assistantStatus: string;
@@ -311,6 +312,7 @@ function publicMessages(session: {
     assistantMessageId: string;
     userContent: string;
     userStatus: string;
+    idempotencyKey?: string;
     origin?: string | null;
     assistantContent: string;
     assistantStatus: string;
@@ -369,6 +371,7 @@ function publicUserMessage(turn: {
   userStatus: string;
   createdAt: Date;
   memoryEnabled: boolean;
+  idempotencyKey?: string;
 }) {
   return {
     id: turn.userMessageId,
@@ -377,6 +380,9 @@ function publicUserMessage(turn: {
     status: turn.userStatus,
     createdAt: turn.createdAt.toISOString(),
     memoryEnabled: turn.memoryEnabled,
+    // The send's own request key lets the page replace its optimistic bubble
+    // exactly (group messages already carry it).
+    ...(turn.idempotencyKey ? { requestKey: turn.idempotencyKey } : {}),
     attachments: [],
   };
 }
@@ -467,7 +473,11 @@ function publicAssistantMessage(turn: {
 
 // SPEC: the failure codes a page may explain. Everything else in the terminal
 // evidence (provider names, model errors, timings) stays internal.
-const PUBLIC_FAILURE_CODES = new Set(["admission_expired", "agent_run_interrupted"]);
+const PUBLIC_FAILURE_CODES = new Set([
+  "admission_expired", "agent_run_interrupted", "agent_run_deadline_timeout", "agent_run_failed",
+  "provider_first_token_timeout", "provider_idle_timeout", "rate_limited", "context_length_exceeded",
+  "input_budget_exceeded", "image_paid_authorization_required", "media_library_only", "reply_cancelled",
+]);
 
 function publicFailureCode(evidence: Prisma.JsonValue | null): { failureCode?: string } {
   const code = jsonRecord(evidence).failureCode;

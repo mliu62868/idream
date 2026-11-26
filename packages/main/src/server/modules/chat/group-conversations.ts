@@ -151,7 +151,7 @@ export async function updateGroupConversation(userId: string, groupId: string, i
     const group = await tx.groupConversation.findFirst({ where: { id: groupId, userId } });
     if (!group) throw Errors.notFound("Group conversation not found");
     if (values.status && await tx.chatTurn.count({ where: { groupTurn: { groupId }, assistantStatus: { in: ["pending", "generating"] } } })) {
-      throw Errors.conflict("Cancel the active reply before changing this group");
+      throw Errors.conflict("Cancel the active reply before changing this group", { reason: "reply_in_progress" });
     }
     if (addCharacterIds) {
       if (group.status !== "active") throw Errors.gone("Group conversation is unavailable or archived");

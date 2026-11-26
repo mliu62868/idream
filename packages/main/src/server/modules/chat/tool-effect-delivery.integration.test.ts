@@ -269,7 +269,7 @@ describe("initial Chat image delivery", () => {
     admit.mockClear();
     const late = await patch(paid, paidKey);
     expect(late.status).toBe(409);
-    expect(late.json).toMatchObject({ details: { reason: "edit_attempt_changed", attempt: newer.attempt } });
+    expect(late.json).toMatchObject({ details: { reason: "version_mismatch", cause: "edit_attempt_changed", attempt: newer.attempt } });
     for (const [body, key] of [
       [paid, undefined],
       [paid, randomUUID()],
@@ -278,7 +278,7 @@ describe("initial Chat image delivery", () => {
     ] as const) {
       const refused = await patch(body, key);
       expect(refused.status).toBe(409);
-      expect(refused.json).toMatchObject({ details: { reason: "edit_attempt_required", attempt: newer.attempt } });
+      expect(refused.json).toMatchObject({ details: { reason: "version_mismatch", cause: "edit_attempt_required", attempt: newer.attempt } });
     }
     expect(admit).not.toHaveBeenCalled();
     expect(await load()).toEqual(newer);

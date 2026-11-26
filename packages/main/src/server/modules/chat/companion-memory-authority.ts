@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { recordAgentRunCancelIntent, recordAgentRunPurgeIntent } from "./agent-run-intents";
+import { agentRunCancelPath, agentRunPurgePath, chatRuntimeUrl } from "./chat-runtime-endpoint";
 import {
   COMPANION_MEMORY_PURGE_PATH,
   COMPANION_MEMORY_REBUILD_PREPARE_PATH,
@@ -58,7 +59,7 @@ export async function assertNoPendingCompanionMemoryRebuild(
   characterId: string,
 ): Promise<void> {
   if (await hasPendingCompanionMemoryMutation(tx, userId, characterId)) {
-    throw Errors.conflict("Still updating this Character's memory — try again in a few seconds");
+    throw Errors.conflict("Still updating this Character's memory — try again in a few seconds", { reason: "memory_updating" });
   }
 }
 
@@ -309,7 +310,7 @@ export async function syncCompanionMemoryFromMain(
     claimToken: payload.claimToken,
     authorityVersion: payload.authorityVersion,
   };
-  const preparedResponse = await fetch(chatUrl(COMPANION_MEMORY_REBUILD_PREPARE_PATH), {
+  const preparedResponse = await fetch(chatRuntimeUrl(COMPANION_MEMORY_REBUILD_PREPARE_PATH), {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -352,7 +353,7 @@ export async function syncCompanionMemoryFromMain(
       select: { status: true },
     });
     if (!current || !["pending", "processing"].includes(current.status)) return;
-    const response = await fetch(chatUrl(COMPANION_MEMORY_REBUILD_PROMOTE_PATH), {
+    const response = await fetch(chatRuntimeUrl(COMPANION_MEMORY_REBUILD_PROMOTE_PATH), {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -390,7 +391,7 @@ export async function purgeCompanionMemoryFromMain(event: DurableEventEnvelope):
   ) {
     throw new Error("companion memory purge event identity is invalid");
   }
-  const response = await fetch(chatUrl(COMPANION_MEMORY_PURGE_PATH), {
+  const response = await fetch(chatRuntimeUrl(COMPANION_MEMORY_PURGE_PATH), {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -541,7 +542,7 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
   // Best effort only: the durable cancel events above guarantee delivery, so a
   // slow or hung Chat must not hold the user's "clear memory" response.
   await Promise.allSettled(result.active.map((turn) => fetch(
-    chatUrl(`/internal/agent-runs/${encodeURIComponent(turn.id)}/${turn.attempt}/cancel`),
+    chatRuntimeUrl(agentRunCancelPath(turn.id, turn.attempt)),
     { method: "POST", headers: { "x-internal-token": env.INTERNAL_TOKEN }, signal: AbortSignal.timeout(3_000) },
   )));
   return {
@@ -674,9 +675,7 @@ async function* memorySourceMessages(
 
 /** Removes local AgentRun evidence for a Turn (all attempts, or through one). */
 export async function purgeChatAgentRun(turnId: string, throughAttempt?: number): Promise<void> {
-  const response = await fetch(chatUrl(
-    `/internal/agent-runs/${encodeURIComponent(turnId)}/purge`,
-  ), {
+  const response = await fetch(chatRuntimeUrl(agentRunPurgePath(turnId)), {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -688,10 +687,6 @@ export async function purgeChatAgentRun(turnId: string, throughAttempt?: number)
   if (!response.ok) throw new Error(`AgentRun purge returned ${response.status}`);
 }
 
-function chatUrl(path: string): string {
-  if (!env.CHAT_SERVICE_URL) throw new Error("CHAT_SERVICE_URL is required");
-  return `${env.CHAT_SERVICE_URL.replace(/\/$/u, "")}${path}`;
-}
 
 function memoryRebuildPayload(event: DurableEventEnvelope): {
   userId: string;

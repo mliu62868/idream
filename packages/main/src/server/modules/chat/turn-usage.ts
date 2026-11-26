@@ -21,13 +21,16 @@ export async function assertUserReplyCapacity(tx: Prisma.TransactionClient, user
   if (activeForUser >= MAX_ACTIVE_TURNS_PER_USER) {
     throw Errors.conflict(
       `A reply is already generating in ${activeForUser} of your chats. Wait for one to finish, then send again.`,
+      { reason: "reply_in_progress", scope: "account" },
     );
   }
 }
 
 async function assertChatQuota(tx: Prisma.TransactionClient, userId: string, day: Date) {
+  // The map read under the user lock is returned so inline admission can reuse it.
   const now = new Date();
-  if ((await entitlementMap(userId, tx, now)).unlimited_messages === true) return;
+  const entitlements = await entitlementMap(userId, tx, now);
+  if (entitlements.unlimited_messages === true) return entitlements;
   // SPEC: the free allowance counts the user's own messages for the UTC day.
   // INTENT: every admitted Turn still writes a usage fact, because a proactive
   // reply costs the same generation capacity and daily operational usage must
@@ -47,6 +50,7 @@ async function assertChatQuota(tx: Prisma.TransactionClient, userId: string, day
   if (Number(row?.used ?? 0) >= FREE_DAILY_MESSAGES) {
     throw Errors.paymentRequired("Daily free message limit reached");
   }
+  return entitlements;
 }
 
 /** Caller holds the user and conversation locks from lockLatestTurn. */
@@ -64,7 +68,7 @@ export async function reserveRevisedChatTurn(
     },
     select: { id: true },
   });
-  if (active) throw Errors.conflict("A reply is already generating");
+  if (active) throw Errors.conflict("A reply is already generating", { reason: "reply_in_progress" });
   await assertUserReplyCapacity(tx, userId);
   await reserveChatTurnUsage(tx, userId, turn);
 }
@@ -81,12 +85,12 @@ export async function reserveChatTurnUsage(
   turn: { id: string; createdAt: Date; origin: string },
 ) {
   const fact = await tx.chatTurnUsageFact.findUnique({ where: { turnId: turn.id } });
-  if (fact && fact.voidedAt === null) return;
+  if (fact && fact.voidedAt === null) return undefined;
   // Scheduled Character messages retain operational usage without spending
   // the allowance for messages the user chose to send.
   // A revision restores its original Turn-day fact, even across midnight.
   const day = fact?.productDay ?? productDay(turn.createdAt);
-  if (turn.origin !== "proactive") await assertChatQuota(tx, userId, day);
+  const entitlements = turn.origin !== "proactive" ? await assertChatQuota(tx, userId, day) : undefined;
   if (fact) {
     await tx.chatTurnUsageFact.update({ where: { turnId: turn.id }, data: { voidedAt: null } });
   } else {
@@ -94,6 +98,7 @@ export async function reserveChatTurnUsage(
       data: { turnId: turn.id, userId, productDay: day, origin: turn.origin },
     });
   }
+  return entitlements;
 }
 
 /**

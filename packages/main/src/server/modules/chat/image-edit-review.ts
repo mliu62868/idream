@@ -294,7 +294,7 @@ export async function dispatchChatImageEditReview(request: Request, segments: st
   if (!(request.method === "GET" && (!action || action === "source")) && !(request.method === "POST" && (action === "confirm" || action === "cancel"))) return null;
   const ctx = await getAuthCtx(request); const user = requireUser(ctx); requireAgeGate(ctx); requireAgeVerified(ctx);
   const viewer = request.headers.get("x-idream-viewer-scope");
-  if ((request.method === "POST" || viewer !== null) && viewer !== `user:${user.id}`) throw Errors.conflict("Your account changed. Reopen this edit in the original account.");
+  if ((request.method === "POST" || viewer !== null) && viewer !== `user:${user.id}`) throw Errors.conflict("Your account changed. Reopen this edit in the original account.", { reason: "viewer_changed" });
   if (request.method === "GET") {
     if (action === "source") return new Response(await readChatImageEditSource(user.id, attachmentId), { headers: { "Content-Type": "image/png", "Cache-Control": "private, no-store", "Vary": "Cookie, x-idream-viewer-scope" } });
     return ok({ review: await reviewChatImageEdit(user.id, attachmentId) });

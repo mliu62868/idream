@@ -176,13 +176,13 @@ async function deleteSessionTranscript(tx: Prisma.TransactionClient, userId: str
     await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${sessionId} FOR UPDATE`;
     const session = await tx.recentChat.findFirst({ where: { sessionId, userId } });
     if (!session) throw Errors.notFound("Chat session not found");
-    if (session.groupId !== groupId) throw Errors.conflict("Delete this conversation from its group chat");
+    if (session.groupId !== groupId) throw Errors.conflict("Delete this conversation from its group chat", { reason: "group_conversation" });
     await assertNoPendingCompanionMemoryRebuild(tx, userId, session.characterId);
     const active = await tx.chatTurn.findFirst({
       where: { sessionId, assistantStatus: { in: ACTIVE_ASSISTANT_STATES } },
       select: { id: true },
     });
-    if (active) throw Errors.conflict("Cancel the active reply before deleting this chat");
+    if (active) throw Errors.conflict("Cancel the active reply before deleting this chat", { reason: "reply_in_progress" });
     const turnIds = await tx.chatTurn.findMany({
       where: { sessionId },
       select: { id: true, attempt: true, origin: true, statsCountedAt: true, characterContentVersionId: true, userMessageId: true, assistantMessageId: true },
@@ -219,7 +219,7 @@ async function deleteSessionTranscript(tx: Prisma.TransactionClient, userId: str
 export async function archiveChatSession(userId: string, sessionId: string) {
   return prisma.$transaction(async (tx) => {
     const { session } = await lockChatScope(tx, { userId, at: { session: sessionId } });
-    if (session.groupId) throw Errors.conflict("Archive this conversation from its group chat");
+    if (session.groupId) throw Errors.conflict("Archive this conversation from its group chat", { reason: "group_conversation" });
     const call = await tx.voiceCall.findFirst({
       where: { userId, sessionId: session.sessionId, status: { not: "ended" } },
       select: { id: true },
@@ -232,7 +232,7 @@ export async function archiveChatSession(userId: string, sessionId: string) {
       where: { sessionId: session.sessionId, assistantStatus: { in: ACTIVE_ASSISTANT_STATES } },
       select: { id: true },
     });
-    if (active) throw Errors.conflict("Cancel the active reply before archiving this chat");
+    if (active) throw Errors.conflict("Cancel the active reply before archiving this chat", { reason: "reply_in_progress" });
     const archived = await tx.recentChat.update({
       where: { sessionId: session.sessionId },
       data: { status: "archived", activeKey: null },
@@ -244,7 +244,7 @@ export async function archiveChatSession(userId: string, sessionId: string) {
 
 export async function renameChatSession(userId: string, sessionId: string, title: string) {
   const session = await requireSession(userId, sessionId);
-  if (session.groupId) throw Errors.conflict("Rename this conversation from its group chat");
+  if (session.groupId) throw Errors.conflict("Rename this conversation from its group chat", { reason: "group_conversation" });
   const renamed = await prisma.recentChat.update({
     where: { sessionId: session.sessionId },
     data: { title: requiredText(title, "title", 120) },

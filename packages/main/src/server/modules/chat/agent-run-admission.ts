@@ -1,20 +1,13 @@
 import { randomUUID } from "node:crypto";
 import {
-  BFF_HEADER,
-  BFF_USER_HEADER,
-  signBffContext,
-} from "@idream/shared/bff";
-import {
   CHAT_SEND_PROTOCOL_VERSION,
   chatAgentRunAdmissionAckSchema,
-  chatExecutionSnapshotSchema,
   type ChatExecutionSnapshot,
 } from "@idream/shared/contracts";
-import { incrementCounter } from "@idream/shared";
+import { incrementCounter, observeHistogram } from "@idream/shared";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
-import { Errors } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
 import {
   beginChatTurn,
@@ -26,10 +19,20 @@ import {
   type ChatTurnEditOptions,
 } from "./turn-ledger";
 import { ADMISSION_EXPIRED_FAILURE_CODE, expirePendingChatTurn, type PendingAdmissionExpiry } from "./turn-terminal";
-import { loadChatAuthoritySnapshot } from "./chat-authority-snapshot";
+import { loadChatAuthoritySnapshot, type ChatEntitlements } from "./chat-authority-snapshot";
+import {
+  agentRunCancelPath,
+  internalChatHeaders,
+  requireChatAgentRuntime,
+  signedChatBffHeaders,
+} from "./chat-runtime-endpoint";
 
 const ADMISSION_PATH = "/internal/agent-runs";
-const ADMISSION_TIMEOUT_MS = 5_000;
+// INTENT: the request path waits for inline admission only as a latency
+// optimization; the Turn is already durable and pending. A degraded Chat must
+// not cost every send the dispatcher's full budget.
+const INLINE_ADMISSION_TIMEOUT_MS = 2_000;
+const DISPATCH_ADMISSION_TIMEOUT_MS = 5_000;
 const ADMISSION_LEASE_MS = 15_000;
 const TERMINAL_COMMIT_GRACE_MS = 60_000;
 // Historical generating rows have no recorded Chat commitment. Retain the
@@ -38,11 +41,56 @@ const LEGACY_STALLED_ATTEMPT_MS = 6 * 60_000;
 // A frozen snapshot that cannot be read is not repaired by waiting. Bound the
 // passes before the Turn takes the expired-admission exit.
 const MAX_SNAPSHOT_FAILURES = 3;
+// Inline circuit: after this many consecutive timeouts / transport failures the
+// request path stops waiting on Chat for a while; the dispatcher keeps trying.
+const INLINE_CIRCUIT_FAILURES = 3;
+const INLINE_CIRCUIT_OPEN_MS = 15_000;
+const ADMISSION_LATENCY_BUCKETS = [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10] as const;
+const PENDING_AGE_BUCKETS = [0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 180, 300] as const;
 
 export interface AgentRunAdmissionResult {
   admitted: boolean;
   reason?: string;
 }
+
+export type AgentRunAdmissionMode = "inline" | "dispatch";
+
+type AdmissionOutcome =
+  | "admitted" | "not_due" | "converged" | "changed" | "circuit_open"
+  | "transport_error" | "rejected";
+
+/**
+ * SPEC: the request-path admission circuit. Only timeouts and transport
+ * failures count — a fast HTTP error costs the request nothing worth skipping.
+ * Any successful admission (inline or dispatcher) closes it; after the open
+ * window one inline attempt probes again and a failure reopens it at once.
+ */
+const inlineCircuit = { failures: 0, openUntil: 0 };
+
+function inlineCircuitOpen(now = Date.now()): boolean {
+  return inlineCircuit.openUntil > now;
+}
+
+function recordAdmissionTransport(ok: boolean) {
+  if (ok) {
+    inlineCircuit.failures = 0;
+    inlineCircuit.openUntil = 0;
+    return;
+  }
+  inlineCircuit.failures += 1;
+  if (inlineCircuit.failures >= INLINE_CIRCUIT_FAILURES) {
+    inlineCircuit.openUntil = Date.now() + INLINE_CIRCUIT_OPEN_MS;
+    inlineCircuit.failures = INLINE_CIRCUIT_FAILURES - 1;
+  }
+}
+
+/** Test seam: forget circuit state between isolated cases. */
+export function resetInlineAdmissionCircuit() {
+  inlineCircuit.failures = 0;
+  inlineCircuit.openUntil = 0;
+}
+
+class AdmissionTransportError extends Error {}
 
 /**
  * Product Turn commands own their durable mutation -> best-effort admission
@@ -61,10 +109,10 @@ export async function beginAdmittedChatTurn(input: {
 }) {
   // A legacy external POST can only read its existing receipt. It must remain
   // readable without making the execution service a prerequisite for the read.
-  if (input.origin === "proactive" || input.voiceCall || input.sendProtocolVersion === CHAT_SEND_PROTOCOL_VERSION) assertAgentRuntimeConfigured();
+  if (input.origin === "proactive" || input.voiceCall || input.sendProtocolVersion === CHAT_SEND_PROTOCOL_VERSION) requireChatAgentRuntime();
   const begun = await beginChatTurn(input);
   const admission = begun.snapshot
-    ? await attemptChatAgentRunAdmission(begun.snapshot)
+    ? await attemptChatAgentRunAdmission(begun.snapshot, fetch, { mode: "inline", entitlements: begun.entitlements })
     : null;
   const assistant = admission?.admitted
     ? { ...begun.assistant, status: "generating" as const }
@@ -84,18 +132,18 @@ export async function editAndAdmitChatTurn(
   content: string,
   options?: ChatTurnEditOptions,
 ) {
-  assertAgentRuntimeConfigured();
+  requireChatAgentRuntime();
   const result = await editChatTurn(userId, messageId, content, options);
   const admission = result.snapshot
-    ? await attemptChatAgentRunAdmission(result.snapshot)
+    ? await attemptChatAgentRunAdmission(result.snapshot, fetch, { mode: "inline" })
     : null;
   return publicRetry(result, admission?.admitted === true);
 }
 
 export async function regenerateAndAdmitChatTurn(userId: string, messageId: string) {
-  assertAgentRuntimeConfigured();
+  requireChatAgentRuntime();
   const result = await regenerateChatTurn(userId, messageId);
-  const admission = await attemptChatAgentRunAdmission(result.snapshot);
+  const admission = await attemptChatAgentRunAdmission(result.snapshot, fetch, { mode: "inline" });
   return publicRetry(result, admission.admitted);
 }
 
@@ -119,39 +167,74 @@ export async function cancelAdmittedChatTurn(
  * TurnExecution is a durable intent with an immutable input snapshot. A lease
  * makes concurrent reconcilers harmless; backoff moves a failing row behind
  * other due Turns instead of starving the queue.
+ *
+ * `inline` is the creating request itself: it may claim before the Turn's
+ * first dispatcher due time (new attempts start `admissionNextRunAt` a few
+ * seconds out so the dispatcher does not race it), waits less, and honors the
+ * inline circuit. `dispatch` is the durable reconciler.
+ *
+ * INVARIANT: `expected` is the attempt's frozen snapshot. It is written exactly
+ * once per (turnId, attempt) — in the transaction that created the attempt, or
+ * lazily by executionSnapshot() for a legacy row — and is only rewritten by a
+ * revision (which increments attempt in the same statement) or by a terminal
+ * transition (which leaves `pending`). The claim's attempt + pending CAS
+ * therefore proves `expected` equals the persisted snapshot without reading it
+ * back.
  */
 export async function attemptChatAgentRunAdmission(
   expected: ChatExecutionSnapshot,
   fetchImpl: typeof fetch = fetch,
+  options: { mode?: AgentRunAdmissionMode; entitlements?: ChatEntitlements } = {},
 ): Promise<AgentRunAdmissionResult> {
+  const mode = options.mode ?? "dispatch";
+  const startedAt = performance.now();
+  const finish = (outcome: AdmissionOutcome, result: AgentRunAdmissionResult) => {
+    observeHistogram(
+      "chat_admission_duration_seconds",
+      "Main to Chat AgentRun admission latency by caller and outcome",
+      { mode, outcome },
+      (performance.now() - startedAt) / 1_000,
+      ADMISSION_LATENCY_BUCKETS,
+    );
+    return result;
+  };
+  if (mode === "inline" && inlineCircuitOpen()) {
+    // The Turn stays pending; the dispatcher admits it on its next pass.
+    return finish("circuit_open", { admitted: false, reason: "Inline admission skipped while Chat is degraded" });
+  }
   const leaseToken = randomUUID();
-  let snapshot = expected;
+  const snapshot = expected;
   let claimedAttempts = 0;
   try {
     const claim = await prisma.$transaction(async (tx) => {
       const now = new Date();
       const turn = await tx.chatTurn.findUnique({
         where: { id: expected.turnId },
-        include: { session: { select: { status: true, characterId: true } } },
+        select: {
+          id: true, attempt: true, assistantMessageId: true, assistantStatus: true,
+          admissionNextRunAt: true, admissionLeaseUntil: true, admissionAttempts: true,
+          attemptStartedAt: true, session: { select: { status: true } },
+        },
       });
+      if (!turn) return null;
+      // Only the creating request's first claim skips the due time. A replayed
+      // POST after a failed admission honors the dispatcher's backoff.
+      const firstInlineClaim = mode === "inline" && turn.admissionAttempts === 0;
       if (
-        !turn || turn.assistantStatus !== "pending" || turn.attempt !== expected.attempt ||
-        turn.session.status !== "active" || turn.admissionNextRunAt > now ||
+        turn.assistantStatus !== "pending" || turn.attempt !== expected.attempt ||
+        turn.assistantMessageId !== expected.assistantMessageId ||
+        turn.session.status !== "active" ||
+        (!firstInlineClaim && turn.admissionNextRunAt > now) ||
         (turn.admissionLeaseUntil !== null && turn.admissionLeaseUntil > now) ||
         // Past its TTL the attempt belongs to expiry, never to a late admission.
         turn.attemptStartedAt < pendingAdmissionCutoff(now)
       ) return null;
-      const persisted = chatExecutionSnapshotSchema.safeParse(turn.executionSnapshot);
-      if (!persisted.success) throw new Error("Chat Turn has no valid frozen execution snapshot");
-      if (JSON.stringify(persisted.data) !== JSON.stringify(expected)) {
-        throw new Error("Chat Turn execution snapshot changed after creation");
-      }
       const changed = await tx.chatTurn.updateMany({
         where: {
           id: turn.id,
           attempt: turn.attempt,
           assistantStatus: "pending",
-          admissionNextRunAt: { lte: now },
+          ...(firstInlineClaim ? { admissionAttempts: 0 } : { admissionNextRunAt: { lte: now } }),
           OR: [{ admissionLeaseUntil: null }, { admissionLeaseUntil: { lte: now } }],
         },
         data: {
@@ -162,28 +245,38 @@ export async function attemptChatAgentRunAdmission(
         },
       });
       return changed.count === 1
-        ? { snapshot: persisted.data, attempts: turn.admissionAttempts + 1 }
+        ? { attempts: turn.admissionAttempts + 1, attemptStartedAt: turn.attemptStartedAt }
         : null;
     });
-    if (!claim) return { admitted: false, reason: "Turn is not due or no longer eligible" };
-    snapshot = claim.snapshot;
+    if (!claim) return finish("not_due", { admitted: false, reason: "Turn is not due or no longer eligible" });
     claimedAttempts = claim.attempts;
 
-    const base = configuredChatBase();
+    const base = requireChatAgentRuntime();
     const authority = await loadChatAuthoritySnapshot(snapshot.userId, {
       characterId: snapshot.characterId,
       contentVersionId: snapshot.characterContentVersionId,
       releaseId: snapshot.characterReleaseId,
       visualProfileId: snapshot.characterVisualProfileId,
       visualProfileVersion: snapshot.characterVisualProfileVersion,
-    });
+    }, { entitlements: options.entitlements });
     const body = JSON.stringify(snapshot);
-    const response = await fetchImpl(`${base}${ADMISSION_PATH}`, {
-      method: "POST",
-      headers: signedAdmissionHeaders(snapshot.userId, body, authority),
-      body,
-      signal: AbortSignal.timeout(ADMISSION_TIMEOUT_MS),
-    });
+    let response: Response;
+    try {
+      response = await fetchImpl(`${base}${ADMISSION_PATH}`, {
+        method: "POST",
+        headers: signedChatBffHeaders({
+          userId: snapshot.userId, method: "POST", path: ADMISSION_PATH, body, authority,
+          headers: internalChatHeaders({ "content-type": "application/json" }),
+        }),
+        body,
+        signal: AbortSignal.timeout(mode === "inline" ? INLINE_ADMISSION_TIMEOUT_MS : DISPATCH_ADMISSION_TIMEOUT_MS),
+      });
+    } catch (error) {
+      recordAdmissionTransport(false);
+      throw new AdmissionTransportError(error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name)
+        ? "Chat AgentRun admission timed out"
+        : `Chat AgentRun admission transport failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
     if (!response.ok) {
       throw new Error(`Chat AgentRun admission failed with HTTP ${response.status}`);
     }
@@ -196,6 +289,8 @@ export async function attemptChatAgentRunAdmission(
       // cannot manufacture a fresh generating state in the product ledger.
       throw new Error("Chat AgentRun already terminal; product state must reconcile");
     }
+    recordAdmissionTransport(true);
+    const admittedAt = new Date();
     const changed = await prisma.chatTurn.updateMany({
       where: {
         id: snapshot.turnId,
@@ -206,7 +301,7 @@ export async function attemptChatAgentRunAdmission(
       },
       data: {
         assistantStatus: "generating",
-        admittedAt: new Date(),
+        admittedAt,
         executionDeadlineAt: new Date(ack.deadlineAt!),
         admissionLeaseToken: null,
         admissionLeaseUntil: null,
@@ -226,21 +321,28 @@ export async function attemptChatAgentRunAdmission(
         // A previous lease may have expired after Chat accepted this same
         // idempotent AgentRun. Its stale owner must not cancel the newer
         // owner's valid run merely because it lost the Main CAS.
-        return {
+        return finish("converged", {
           admitted: current.assistantStatus === "generating",
           reason: current.assistantStatus === "generating"
             ? undefined
             : `AgentRun already converged to ${current.assistantStatus}`,
-        };
+        });
       }
       // Main invalidated the exact attempt while Chat admitted it. Persisting
       // a cancel fence prevents that late request from recreating erased files.
       await cancelAdmittedAttempt(snapshot.turnId, snapshot.attempt, fetchImpl).catch((error) => {
         logger.error({ err: error, turnId: snapshot.turnId, attempt: snapshot.attempt }, "late AgentRun cancellation failed");
       });
-      return { admitted: false, reason: "Turn changed while admission was in flight" };
+      return finish("changed", { admitted: false, reason: "Turn changed while admission was in flight" });
     }
-    return { admitted: true };
+    observeHistogram(
+      "chat_admission_pending_age_seconds",
+      "Time a Chat attempt waited in pending before Chat admitted it",
+      { mode },
+      Math.max(0, admittedAt.getTime() - claim.attemptStartedAt.getTime()) / 1_000,
+      PENDING_AGE_BUCKETS,
+    );
+    return finish("admitted", { admitted: true });
   } catch (error) {
     const reason = error instanceof Error ? error.message : "AgentRun admission failed";
     if (claimedAttempts > 0) {
@@ -259,8 +361,8 @@ export async function attemptChatAgentRunAdmission(
         },
       }).catch(() => undefined);
     }
-    logger.warn({ turnId: snapshot.turnId, attempt: snapshot.attempt, reason }, "AgentRun admission remains pending");
-    return { admitted: false, reason };
+    logger.warn({ turnId: snapshot.turnId, attempt: snapshot.attempt, mode, reason }, "AgentRun admission remains pending");
+    return finish(error instanceof AdmissionTransportError ? "transport_error" : "rejected", { admitted: false, reason });
   }
 }
 
@@ -453,39 +555,6 @@ function admissionBackoffMs(attempts: number): number {
   return Math.min(5 * 60_000, 1_000 * 2 ** Math.min(8, Math.max(0, attempts - 1)));
 }
 
-async function cancelAdmittedAttempt(
-  turnId: string,
-  attempt: number,
-  fetchImpl: typeof fetch,
-): Promise<void> {
-  const response = await fetchImpl(
-    `${configuredChatBase()}/internal/agent-runs/${encodeURIComponent(turnId)}/${attempt}/cancel`,
-    {
-      method: "POST",
-      headers: { "x-internal-token": env.INTERNAL_TOKEN ?? "" },
-      signal: AbortSignal.timeout(ADMISSION_TIMEOUT_MS),
-    },
-  );
-  if (!response.ok) throw new Error(`late AgentRun cancellation returned ${response.status}`);
-}
-
-function configuredChatBase(): string {
-  if (!env.CHAT_SERVICE_URL) throw new Error("CHAT_SERVICE_URL not configured");
-  if (!env.INTERNAL_TOKEN) throw new Error("INTERNAL_TOKEN not configured");
-  if (!env.CHAT_BFF_SIGNING_SECRET && env.APP_ENV !== "test") {
-    throw new Error("CHAT_BFF_SIGNING_SECRET not configured");
-  }
-  return env.CHAT_SERVICE_URL.replace(/\/$/u, "");
-}
-
-function assertAgentRuntimeConfigured(): void {
-  try {
-    configuredChatBase();
-  } catch (error) {
-    throw Errors.unavailable(error instanceof Error ? error.message : "Chat runtime not configured");
-  }
-}
-
 function publicRetry(result: {
   assistantMessageId: string;
   attempt: number;
@@ -502,35 +571,15 @@ function publicRetry(result: {
   };
 }
 
-function signedAdmissionHeaders(
-  userId: string,
-  body: string,
-  authority: Parameters<typeof signBffContext>[0]["authority"],
-): Headers {
-  const headers = new Headers({
-    "content-type": "application/json",
-    "x-internal-token": env.INTERNAL_TOKEN ?? "",
-  });
-  const secret = env.CHAT_BFF_SIGNING_SECRET;
-  if (!secret) {
-    headers.set("x-idream-user-id", userId);
-    return headers;
-  }
-  const signed = signBffContext({
-    secret,
-    userId,
+async function cancelAdmittedAttempt(
+  turnId: string,
+  attempt: number,
+  fetchImpl: typeof fetch,
+): Promise<void> {
+  const response = await fetchImpl(`${requireChatAgentRuntime()}${agentRunCancelPath(turnId, attempt)}`, {
     method: "POST",
-    path: ADMISSION_PATH,
-    body,
-    authority,
+    headers: internalChatHeaders(),
+    signal: AbortSignal.timeout(DISPATCH_ADMISSION_TIMEOUT_MS),
   });
-  headers.set(BFF_HEADER, signed.signature);
-  headers.set(BFF_USER_HEADER, asciiJson(signed.context));
-  return headers;
-}
-
-function asciiJson(value: unknown): string {
-  return JSON.stringify(value).replace(/[\u007f-\uffff]/gu, (character) =>
-    `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
-  );
+  if (!response.ok) throw new Error(`late AgentRun cancellation returned ${response.status}`);
 }

@@ -16,6 +16,12 @@ import { assertChatSessionServingAuthority, repinOwnerSessionToServingRelease, r
 import { type BegunChatTurn, begunResult } from "./chat-read-model";
 import { rebindDurableTurnMedia, redactChatImageSourceText, refundPendingDelayedAttachments } from "./turn-media-rebind";
 import { frozenExecutionSnapshot } from "./execution-snapshot";
+import type { ChatEntitlements } from "./chat-authority-snapshot";
+
+// INTENT: the creating request admits its own Turn inline. Starting the first
+// dispatcher due time a little later keeps the reconciler from claiming the
+// same fresh attempt in parallel (see attemptChatAgentRunAdmission).
+export const INLINE_ADMISSION_HEAD_START_MS = 3_000;
 
 export async function beginChatTurn(input: {
   userId: string;
@@ -26,7 +32,7 @@ export async function beginChatTurn(input: {
   allowPaidImage?: boolean;
   origin?: "user" | "proactive";
   voiceCall?: { id: string; leaseToken: string; utteranceId: string };
-}): Promise<BegunChatTurn> {
+}): Promise<BegunChatTurn & { entitlements?: ChatEntitlements }> {
   const content = requiredText(input.content, "content", 20_000);
   const idempotencyKey = requiredText(input.idempotencyKey, "Idempotency-Key", 160);
   const userSend = input.origin !== "proactive" && !input.voiceCall;
@@ -35,25 +41,19 @@ export async function beginChatTurn(input: {
     ...(input.sendProtocolVersion !== undefined ? { sendProtocolVersion: input.sendProtocolVersion } : {}) }));
   const session = await requireActiveSession(input.userId, input.sessionId);
   const turnId = randomUUID();
-  const moderation = await moderateText("chat_turn", turnId, content, "input");
-  const blocked = moderation.status === "blocked";
+  // A replayed key (or a conflicting reuse of one) is answered from its receipt
+  // and needs no new moderation decision, so no orphan audit event is written.
+  // The locked re-read below stays authoritative.
+  const priorReceipt = await findSendReceipt(prisma, session, idempotencyKey);
+  const moderation = priorReceipt ? null : await moderateText("chat_turn", turnId, content, "input");
+  const blocked = moderation?.status === "blocked";
 
   const created = await prisma.$transaction(async (tx) => {
     // INVARIANT: the user lock serializes the daily quota across all of their
     // sessions; the session lock serializes product ordering inside one chat.
-    if (!blocked || session.groupId || input.voiceCall) {
-      await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${input.userId} FOR UPDATE`;
-    }
-    if (session.groupId) {
-      await tx.$queryRaw`SELECT id FROM "group_conversations" WHERE id = ${session.groupId} FOR UPDATE`;
-      const group = await tx.groupConversation.findFirst({ where: { id: session.groupId, userId: input.userId, status: "active" } });
-      if (!group) throw Errors.gone("Group conversation is unavailable or archived");
-    }
-    await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${session.sessionId} FOR UPDATE`;
-    const lockedSession = await tx.recentChat.findFirst({
-      where: { sessionId: session.sessionId, userId: input.userId },
-    });
-    if (!lockedSession) throw Errors.notFound("Chat session not found");
+    const scope = await lockChatScope(tx, { userId: input.userId, at: { session: session.sessionId } });
+    const lockedSession = scope.session;
+    if (scope.group && scope.group.status !== "active") throw Errors.gone("Group conversation is unavailable or archived");
     if (lockedSession.status !== "active") throw Errors.gone("Chat session is archived");
     await assertChatSessionServingAuthority(tx, input.userId, lockedSession);
     if (input.voiceCall) {
@@ -65,38 +65,28 @@ export async function beginChatTurn(input: {
         callId: input.voiceCall.id, status: { in: ["transcribing", "linked"] } } });
       if (!call || !utterance) throw Errors.gone("Call stopped before this spoken turn could be accepted");
     }
-    const duplicate = lockedSession.groupId
-      ? await tx.chatTurn.findFirst({ where: { groupTurn: { groupId: lockedSession.groupId }, idempotencyKey } })
-      : await tx.chatTurn.findUnique({ where: { sessionId_idempotencyKey: { sessionId: session.sessionId, idempotencyKey } } });
+    const duplicate = await findSendReceipt(tx, lockedSession, idempotencyKey);
     if (!duplicate && await tx.deletedChatTurnSend.findUnique({
       where: { userId_conversationKey_keyHash: deletedChatTurnSendKey(input.userId, lockedSession, idempotencyKey) },
       select: { keyHash: true },
     })) {
       throw Errors.conflict("This message was deleted. Send again to make a new request.", { reason: "chat_send_deleted" });
     }
-    const memoryIsolated = await hasPendingCompanionMemoryMutation(
-      tx,
-      input.userId,
-      lockedSession.characterId,
-    );
     if (duplicate) {
       if (duplicate.requestHash !== requestHash) {
         throw Errors.conflict("Idempotency-Key was already used for another message");
       }
-      return {
-        turn: duplicate,
-        // An old, exact receipt is readable, but replaying its POST must not
-        // restart execution or upgrade its original authorization protocol.
-        snapshot: !userSend || input.sendProtocolVersion === CHAT_SEND_PROTOCOL_VERSION ? await frozenExecutionSnapshot(
-          tx,
-          duplicate.id,
-          duplicate.memoryEnabled && !memoryIsolated,
-          duplicate.executionSnapshot ? undefined : [],
-          duplicate.executionSnapshot ? undefined : null,
-          duplicate.executionSnapshot ? undefined : null,
-          { preservedImageEditSourceAssetId: null },
-        ) : null,
-      };
+      // An old, exact receipt is readable, but replaying its POST must not
+      // restart execution or upgrade its original authorization protocol. Only
+      // a still-pending attempt can be (re)admitted; anything else is a read
+      // and freezes nothing.
+      const replayable = duplicate.assistantStatus === "pending"
+        && (!userSend || input.sendProtocolVersion === CHAT_SEND_PROTOCOL_VERSION);
+      return { turn: duplicate, snapshot: replayable ? await pendingReplaySnapshot(tx, input.userId, lockedSession.characterId, duplicate) : null };
+    }
+    if (!moderation) {
+      // The receipt seen before the lock is gone (deleted together with its tombstone check above).
+      throw Errors.conflict("This chat changed while sending. Send the message again.");
     }
     if (userSend && input.sendProtocolVersion !== CHAT_SEND_PROTOCOL_VERSION) {
       // Deleted pre-cutover keys cannot be reconstructed. A first write from an
@@ -111,12 +101,13 @@ export async function beginChatTurn(input: {
         },
         select: { id: true },
       });
-      if (active) throw Errors.conflict("A reply is already generating");
+      if (active) throw Errors.conflict("A reply is already generating", { reason: "reply_in_progress" });
       // INVARIANT: counted under the user lock taken above, so concurrent sends
       // from different sessions cannot all slip past the limit. A scheduled
       // proactive Turn neither counts nor is refused here.
       if (input.origin !== "proactive") await assertUserReplyCapacity(tx, input.userId);
     }
+    const memoryIsolated = await hasPendingCompanionMemoryMutation(tx, input.userId, lockedSession.characterId);
     const previous = await tx.chatTurn.findFirst({
       where: { ...(lockedSession.groupId ? { groupTurn: { groupId: lockedSession.groupId } } : { sessionId: session.sessionId }), assistantStatus: "sent" },
       orderBy: lockedSession.groupId ? { groupTurn: { ordinal: "desc" } } : [{ createdAt: "desc" }, { id: "desc" }],
@@ -149,6 +140,8 @@ export async function beginChatTurn(input: {
         memoryEnabled: lockedSession.memoryEnabled,
         sceneVersion: previous?.sceneVersion ?? 0,
         scene: previous?.scene ?? undefined,
+        attemptStartedAt: now,
+        admissionNextRunAt: new Date(now.getTime() + INLINE_ADMISSION_HEAD_START_MS),
         // INVARIANT: 溯源和它描述的行同事务提交。先写 user 再补一条 UPDATE 的话，
         //            进程在两者之间退出会把主动消息永久标成用户发起。
         origin: input.origin ?? "user",
@@ -167,22 +160,53 @@ export async function beginChatTurn(input: {
       });
       await tx.groupChatTurn.create({ data: { groupId: lockedSession.groupId, ordinal: group.nextOrdinal - 1, turnId: turn.id } });
     }
-    if (!blocked) {
-      await reserveChatTurnUsage(tx, input.userId, turn);
-    }
+    const entitlements = blocked ? undefined : await reserveChatTurnUsage(tx, input.userId, turn);
     return {
       turn,
+      entitlements,
       snapshot: blocked
         ? null
         : await frozenExecutionSnapshot(tx, turn.id, turn.memoryEnabled && !memoryIsolated),
     };
   });
-  return begunResult(
-    created.turn,
-    created.turn.id !== turnId,
-    created.snapshot,
-    blocked ? moderation.policyCode : undefined,
-  );
+  return {
+    ...begunResult(
+      created.turn,
+      created.turn.id !== turnId,
+      created.snapshot,
+      blocked ? moderation?.policyCode : undefined,
+    ),
+    ...("entitlements" in created && created.entitlements ? { entitlements: created.entitlements } : {}),
+  };
+}
+
+function findSendReceipt(
+  db: Prisma.TransactionClient,
+  session: Pick<RecentChat, "sessionId" | "groupId">,
+  idempotencyKey: string,
+) {
+  return session.groupId
+    ? db.chatTurn.findFirst({ where: { groupTurn: { groupId: session.groupId }, idempotencyKey } })
+    : db.chatTurn.findUnique({ where: { sessionId_idempotencyKey: { sessionId: session.sessionId, idempotencyKey } } });
+}
+
+/** The frozen snapshot of a still-pending replayed send; a legacy row without one freezes it now. */
+async function pendingReplaySnapshot(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  characterId: string,
+  duplicate: ChatTurn,
+) {
+  if (duplicate.executionSnapshot) {
+    const persisted = chatExecutionSnapshotSchema.safeParse(duplicate.executionSnapshot);
+    if (!persisted.success) throw new Error("Chat Turn has an invalid frozen execution snapshot");
+    return persisted.data;
+  }
+  // A legacy missing snapshot must not acquire today's settings during recovery.
+  const memoryIsolated = await hasPendingCompanionMemoryMutation(tx, userId, characterId);
+  return frozenExecutionSnapshot(tx, duplicate.id, duplicate.memoryEnabled && !memoryIsolated, [], null, null, {
+    preservedImageEditSourceAssetId: null,
+  });
 }
 
 export async function regenerateChatTurn(userId: string, messageId: string) {
@@ -207,7 +231,7 @@ async function regenerateLockedChatTurn(tx: Prisma.TransactionClient, userId: st
     throw Errors.conflict("A blocked user message cannot be regenerated");
   }
   if (ACTIVE_ASSISTANT_STATES.includes(turn.assistantStatus)) {
-    throw Errors.conflict("A reply is already generating");
+    throw Errors.conflict("A reply is already generating", { reason: "reply_in_progress" });
   }
   await reserveRevisedChatTurn(tx, userId, turn);
   const previousAttempt = turn.attempt;
@@ -232,7 +256,7 @@ async function regenerateLockedChatTurn(tx: Prisma.TransactionClient, userId: st
       sceneVersion: sceneAnchor?.sceneVersion ?? 0,
       scene: sceneAnchor?.scene == null ? Prisma.JsonNull : toJson(sceneAnchor.scene),
       admissionAttempts: 0,
-      admissionNextRunAt: new Date(),
+      admissionNextRunAt: new Date(Date.now() + INLINE_ADMISSION_HEAD_START_MS),
       attemptStartedAt: new Date(),
       admissionLeaseToken: null,
       admissionLeaseUntil: null,
@@ -291,14 +315,14 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
     // identify what the caller saw before preparing the edit.
     if (expectedAttempt === undefined) {
       throw Errors.versionConflict("This edit requires the observed reply attempt. Reopen the editor and try again.", {
-        reason: "edit_attempt_required", attempt: current.attempt,
+        reason: "version_mismatch", cause: "edit_attempt_required", attempt: current.attempt,
       });
     }
     if (current.attempt !== turn.attempt || current.attempt !== expectedAttempt) {
       throw staleChatEdit(current.attempt);
     }
     if (activeWhenRead || ACTIVE_ASSISTANT_STATES.includes(current.assistantStatus)) {
-      throw Errors.conflict("A reply is already generating");
+      throw Errors.conflict("A reply is already generating", { reason: "reply_in_progress" });
     }
     if (!moderation && content !== current.userContent) throw Errors.internal("Missing moderation decision for chat edit");
     const result = moderation
@@ -322,7 +346,7 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
 }
 
 function staleChatEdit(attempt: number) {
-  return Errors.versionConflict("This reply changed elsewhere. Reopen the editor to use the latest message.", { reason: "edit_attempt_changed", attempt });
+  return Errors.versionConflict("This reply changed elsewhere. Reopen the editor to use the latest message.", { reason: "version_mismatch", cause: "edit_attempt_changed", attempt });
 }
 
 async function replaceLockedChatTurn(tx: Prisma.TransactionClient, input: {
@@ -386,7 +410,7 @@ async function replaceLockedChatTurn(tx: Prisma.TransactionClient, input: {
       sceneVersion: sceneAnchor?.sceneVersion ?? 0,
       scene: sceneAnchor?.scene == null ? Prisma.JsonNull : toJson(sceneAnchor.scene),
       admissionAttempts: 0,
-      admissionNextRunAt: now,
+      admissionNextRunAt: new Date(now.getTime() + INLINE_ADMISSION_HEAD_START_MS),
       attemptStartedAt: now,
       admissionLeaseToken: null,
       admissionLeaseUntil: null,
@@ -408,7 +432,7 @@ export async function deleteChatMessage(userId: string, messageId: string) {
   await prisma.$transaction(async (tx) => {
     const current = await lockLatestTurn(tx, userId, turn, "delete");
     if (ACTIVE_ASSISTANT_STATES.includes(current.assistantStatus)) {
-      throw Errors.conflict("Cancel the active reply before deleting this chat turn");
+      throw Errors.conflict("Cancel the active reply before deleting this chat turn", { reason: "reply_in_progress" });
     }
     await appendChatExchangeCorrected(tx, current, {
       userId,
@@ -507,7 +531,7 @@ export async function lockLatestTurn(
     select: { id: true },
   });
   if (latest?.id !== current.id) {
-    throw Errors.conflict("Only the latest chat turn can be changed");
+    throw Errors.conflict("Only the latest chat turn can be changed", { reason: "version_mismatch" });
   }
   return current;
 }

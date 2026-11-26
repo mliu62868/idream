@@ -345,7 +345,7 @@ describe("chat lock ladder inventory", () => {
   const REMAINING_BARE_LOCKS: Readonly<Record<string, number>> = {
     // 阶梯权威本体。
     "modules/chat/turn-scope.ts": 4,
-    "modules/chat/turn-commands.ts": 5,
+    "modules/chat/turn-commands.ts": 3,
     "modules/chat/chat-session-service.ts": 2,
     "modules/chat/execution-snapshot.ts": 1,
     "modules/chat/group-conversations.ts": 1,

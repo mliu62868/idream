@@ -207,7 +207,7 @@ export async function cancelChatTurn(userId: string, messageId: string, expected
   return prisma.$transaction(async (tx) => {
     const scope = await lockChatScope(tx, { userId, at: { turn: turn.id }, allowDeletedSession: true });
     const current = scope.turn!;
-    if (current.attempt !== expectedAttempt) throw Errors.conflict("Stop belongs to a superseded Chat attempt");
+    if (current.attempt !== expectedAttempt) throw Errors.conflict("Stop belongs to a superseded Chat attempt", { reason: "version_mismatch" });
     if (!ACTIVE_ASSISTANT_STATES.includes(current.assistantStatus)) {
       return {
         ok: true,

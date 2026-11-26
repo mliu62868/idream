@@ -20,6 +20,7 @@ import {
   purgeCompanionMemoryFromMain,
   syncCompanionMemoryFromMain,
 } from "@/server/modules/chat/companion-memory-authority";
+import { agentRunCancelPath, chatRuntimeUrl, internalChatHeaders } from "@/server/modules/chat/chat-runtime-endpoint";
 
 type Db = PrismaClient | Prisma.TransactionClient;
 export type MainToChatEventType =
@@ -244,16 +245,11 @@ export function resolveChatDurableIngestUrl(
 async function deliverToChat(event: DurableEventEnvelope): Promise<void> {
   if (event.eventType === MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1) {
     const payload = agentRunCancelRequestedV1PayloadSchema.parse(event.payload);
-    const base = env.CHAT_SERVICE_URL?.trim();
-    if (!base) throw new Error("CHAT_SERVICE_URL is required for AgentRun cancellation");
-    const response = await fetch(
-      `${base.replace(/\/$/, "")}/internal/agent-runs/${encodeURIComponent(payload.turnId)}/${payload.attempt}/cancel`,
-      {
-        method: "POST",
-        headers: { "x-internal-token": env.INTERNAL_TOKEN },
-        signal: AbortSignal.timeout(CHAT_LIFECYCLE_DELIVERY_TIMEOUT_MS),
-      },
-    );
+    const response = await fetch(chatRuntimeUrl(agentRunCancelPath(payload.turnId, payload.attempt)), {
+      method: "POST",
+      headers: internalChatHeaders(),
+      signal: AbortSignal.timeout(CHAT_LIFECYCLE_DELIVERY_TIMEOUT_MS),
+    });
     if (!response.ok) throw new ChatDeliveryError(`Chat AgentRun cancel returned ${response.status}`);
     const acknowledged = await response.json() as { ok?: unknown };
     if (acknowledged.ok !== true) throw new ChatDeliveryError("Chat did not durably fence the AgentRun");

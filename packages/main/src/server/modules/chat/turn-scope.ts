@@ -100,8 +100,8 @@ export async function lockChatScope(
   tx: Prisma.TransactionClient,
   request: ChatScopeRequest,
 ): Promise<LockedChatScope> {
-  const conflict = (detail: string) =>
-    Errors.conflict(request.expect?.conflictMessage ?? detail);
+  const conflict = (detail: string, reason?: string) =>
+    Errors.conflict(request.expect?.conflictMessage ?? detail, reason ? { reason } : undefined);
   const identity = await resolveScopeIdentity(tx, request);
 
   await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${request.userId} FOR UPDATE`;
@@ -143,7 +143,7 @@ export async function lockChatScope(
     });
     if (!row) throw Errors.notFound("Chat turn not found");
     if (expect?.attempt !== undefined && row.attempt !== expect.attempt) {
-      throw conflict("This chat reply advanced to another attempt");
+      throw conflict("This chat reply advanced to another attempt", "version_mismatch");
     }
     if (expect?.assistantStatus && !expect.assistantStatus.includes(row.assistantStatus)) {
       throw conflict("This chat reply is no longer in the expected state");
