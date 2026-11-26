@@ -45,6 +45,7 @@ import {
   mediaExtractionMessages,
   parseMediaSearchReply,
   parseMediaTextRequests,
+  verifyMediaTextExcerpts,
   type MediaSearchObservation,
   type MediaTextRequests,
 } from "./media-response";
@@ -138,6 +139,11 @@ async function timed<T>(run: () => Promise<T>): Promise<
   } catch (error) {
     return { ok: false, error, durationMs: Math.max(0, Date.now() - startedAt) };
   }
+}
+
+/** A non-empty excerpt array means the model claims independent text exists. */
+function hasExcerpts(value: unknown): boolean {
+  return Array.isArray(value) && value.length > 0;
 }
 
 function wireUsage(usage?: TokenUsage) {
@@ -484,6 +490,8 @@ interface AttemptState {
   currentText: string;
   /** Chat-local routing hint the model attached to its media call. */
   independentTextRequestHint?: boolean;
+  /** Unverified Chat-local excerpts the model attached to its media call. */
+  independentTextExcerpts?: unknown;
   /** Verified availability receipt from a read-only media search. */
   searchReply?: MediaSearchObservation;
 }
@@ -904,8 +912,9 @@ class CompanionAttempt {
           ...stage.invocation.preparedTurn.tools.map(tool => ({ ...tool, parameters: tool.parameters as ToolRegistration["parameters"], replay: "unsafe" as const, executionMode: "sequential" as const,
             async execute(args, api, context) {
               if (bridge.callCount > 0) throw new Error("only one media action may execute per Turn");
-              const { independentTextRequest, toolArgs } = extractMediaRoutingHint(args as Record<string, unknown>);
+              const { independentTextRequest, independentTextExcerpts, toolArgs } = extractMediaRoutingHint(args as Record<string, unknown>);
               if (independentTextRequest !== undefined) state.independentTextRequestHint = independentTextRequest;
+              if (independentTextExcerpts !== undefined) state.independentTextExcerpts = independentTextExcerpts;
               const call = companionToolCallSchema.parse({ attemptId: invocation.attemptId, callId: api.callId, name: tool.name, effectScope: "turn_action",
                 intent: { requestedNudity: toolArgs.requestedNudity ?? "unspecified" }, arguments: toolArgs });
               let result: CompanionToolResult;
@@ -961,15 +970,25 @@ class CompanionAttempt {
       evidence = action;
       reply.mediaResponse = { version: 1, attachmentId: confirmedId };
     }
+    const actionPath = !recovered && !searchReply && Boolean(reply.mediaResponse);
+    // The model may copy independent text requests into its media call. Only
+    // excerpts that verify verbatim and in order against the current message
+    // replace the separate extraction request; anything else falls back to it.
+    const excerpts = actionPath && state.independentTextRequestHint !== false && state.independentTextExcerpts !== undefined
+      ? verifyMediaTextExcerpts(state.independentTextExcerpts, current.content)
+      : undefined;
     // Fast-path pure-media replies when both the model and the deterministic
     // single-intent guard prove no independent text request exists, saving
     // an entire serial LLM round-trip and eliminating blockquote failure risk.
-    const skipExtraction = !recovered
-      && !searchReply
-      && Boolean(reply.mediaResponse)
+    const skipExtraction = actionPath
+      && !hasExcerpts(state.independentTextExcerpts)
       && cues.canSkipMediaExtractionForPureMedia(current.content, state.independentTextRequestHint);
     if (skipExtraction) {
+      void event({ type: "runtime_observation", operation: "media_extraction", outcome: "pure_media_skip", durationMs: 0 });
       reply.bodyText = "";
+    } else if (excerpts) {
+      void event({ type: "runtime_observation", operation: "media_extraction", outcome: "verified_excerpts", durationMs: 0 });
+      await this.answerIndependentText(native, reply, excerpts, undefined);
     } else {
       state.executionStage = "media_extraction";
       state.modelStopReason = undefined;
@@ -979,11 +998,15 @@ class CompanionAttempt {
         ...requestPolicy, samplingTemperature: 0,
         maxInputTokens: invocation.preparedTurn.budget.maxInputTokens + invocation.preparedTurn.profile.maxOutputTokens - outputLimit,
       });
-      const extracted = await priorityGate.withForeground(() =>
+      const extracting = await timed(() => priorityGate.withForeground(() =>
         extractor.stream(mediaExtractionMessages(current.content, evidence), {
           purpose: "media_extraction", signal: this.signal,
         }).result(),
-      );
+      ));
+      if (!extracting.ok) throw extracting.error;
+      const extracted = extracting.value;
+      void event({ type: "runtime_observation", operation: "media_extraction",
+        outcome: extracted.stopReason === "stop" ? "model" : "failure", durationMs: extracting.durationMs });
       state.modelStopReason = extracted.stopReason;
       this.signal.throwIfAborted();
       if (extracted.stopReason !== "stop") throw extractor.getError(extracted) ?? new Error("media text extraction was incomplete");
@@ -992,36 +1015,42 @@ class CompanionAttempt {
         ? parseMediaSearchReply(extractedText, current.content, searchReply.outcome)
         : { requests: parseMediaTextRequests(extractedText, current.content), feedback: undefined };
       if (requests.excerptCount === 0) reply.bodyText = feedback ?? "";
-      else {
-        state.executionStage = "media_body";
-        state.modelStopReason = undefined;
-        if (reply.steps >= maxSteps) throw new Error("media body exceeds the invocation step budget");
-        const body = this.projectStage(native, requests);
-        // The separate native loop retains Soul, history and real lookup pairs;
-        // only this turn's media instruction, calls and receipts are absent.
-        const executionEvidence = [...retrievalEvidence];
-        // Earlier source cursors bind the original file revision. Keep it
-        // intact while searches in this loop use only its own text scope.
-        const bodySource = join(knowledgePath, "media-body.jsonl");
-        await writeFile(bodySource, [...body.seed, ...executionEvidence, body.current]
-          .map(message => JSON.stringify(message)).join("\n") + "\n", { mode: 0o600 });
-        reply.replyAdapter = options.adapter(invocation.preparedTurn.profile, {
-          ...requestPolicy,
-          ...(cues.needsFactualSampling(body.current.content) ? { samplingTemperature: Math.min(invocation.preparedTurn.profile.sampling.temperature, 0.2) } : {}),
-        });
-        const replied = await this.runConversation(native, { ...body, executionEvidence, adapter: reply.replyAdapter,
-          purpose: "media_body", maxSteps: maxSteps - reply.steps, searchPath: bodySource, streamText: feedback === undefined });
-        state.modelStopReason = replied.message.stopReason;
-        reply.steps += replied.steps;
-        reply.latestAssistant = replied.message;
-        // A truncated or empty independent answer cannot become card-only success.
-        const text = messageText(reply.latestAssistant);
-        if (replied.selectedMediaCalls.length > 0 || reply.latestAssistant.stopReason !== "stop" || !text.trim()) throw new Error("independent media body was incomplete");
-        if (feedback !== undefined) reply.bodyText = `${feedback}\n\n${text}`;
-      }
+      else await this.answerIndependentText(native, reply, requests, feedback);
     }
     state.terminalValidationCode = undefined;
     return reply;
+  }
+
+  /** Answer the verified independent text request in a native loop without media tools. */
+  private async answerIndependentText(native: NativeContext, reply: ResolvedReply, requests: MediaTextRequests, feedback: string | undefined): Promise<void> {
+    const { invocation, state } = this;
+    const { options, cues } = this.deps;
+    const { requestPolicy, maxSteps, retrievalEvidence } = native;
+    state.executionStage = "media_body";
+    state.modelStopReason = undefined;
+    if (reply.steps >= maxSteps) throw new Error("media body exceeds the invocation step budget");
+    const body = this.projectStage(native, requests);
+    // The separate native loop retains Soul, history and real lookup pairs;
+    // only this turn's media instruction, calls and receipts are absent.
+    const executionEvidence = [...retrievalEvidence];
+    // Earlier source cursors bind the original file revision. Keep it
+    // intact while searches in this loop use only its own text scope.
+    const bodySource = join(native.prepared.knowledgePath, "media-body.jsonl");
+    await writeFile(bodySource, [...body.seed, ...executionEvidence, body.current]
+      .map(message => JSON.stringify(message)).join("\n") + "\n", { mode: 0o600 });
+    reply.replyAdapter = options.adapter(invocation.preparedTurn.profile, {
+      ...requestPolicy,
+      ...(cues.needsFactualSampling(body.current.content) ? { samplingTemperature: Math.min(invocation.preparedTurn.profile.sampling.temperature, 0.2) } : {}),
+    });
+    const replied = await this.runConversation(native, { ...body, executionEvidence, adapter: reply.replyAdapter,
+      purpose: "media_body", maxSteps: maxSteps - reply.steps, searchPath: bodySource, streamText: feedback === undefined });
+    state.modelStopReason = replied.message.stopReason;
+    reply.steps += replied.steps;
+    reply.latestAssistant = replied.message;
+    // A truncated or empty independent answer cannot become card-only success.
+    const text = messageText(reply.latestAssistant);
+    if (replied.selectedMediaCalls.length > 0 || reply.latestAssistant.stopReason !== "stop" || !text.trim()) throw new Error("independent media body was incomplete");
+    if (feedback !== undefined) reply.bodyText = `${feedback}\n\n${text}`;
   }
 
   /** Validate the terminal candidate, publish it, and commit it to Main. */

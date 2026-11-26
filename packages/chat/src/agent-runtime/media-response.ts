@@ -206,17 +206,44 @@ export function mediaAttachmentId(result: CompanionToolResult): string | undefin
 /**
  * Strip Chat-local routing hints before forwarding pure media arguments to Main
  * so Main's strict tool-effect schemas and persisted receipts stay untouched.
+ * `independentTextExcerpts` is returned raw; only `verifyMediaTextExcerpts`
+ * may turn it into a text request.
  */
 export function extractMediaRoutingHint(args: Record<string, unknown>): {
   independentTextRequest?: boolean;
+  independentTextExcerpts?: unknown;
   toolArgs: Record<string, unknown>;
 } {
-  if (!("independentTextRequest" in args)) {
+  if (!("independentTextRequest" in args) && !("independentTextExcerpts" in args)) {
     return { toolArgs: args };
   }
-  const { independentTextRequest, ...rest } = args;
+  const { independentTextRequest, independentTextExcerpts, ...rest } = args;
   return {
     ...(typeof independentTextRequest === "boolean" ? { independentTextRequest } : {}),
+    ...(independentTextExcerpts !== undefined ? { independentTextExcerpts } : {}),
     toolArgs: rest,
   };
+}
+
+/**
+ * Accept the model's tool-call excerpts as the independent text request only
+ * when they pass the same ordered, verbatim source check as the extraction
+ * reply (`parseMediaTextRequests`) and leave part of the message to the media
+ * request itself. Anything else returns undefined, and the caller falls back
+ * to the separate extraction request.
+ */
+export function verifyMediaTextExcerpts(excerpts: unknown, source: string): MediaTextRequests | undefined {
+  const parsed = excerptsSchema.safeParse(excerpts);
+  if (!parsed.success || parsed.data.length === 0) return undefined;
+  let requests: MediaTextRequests;
+  try {
+    requests = requireSourceExcerpts(parsed.data, source);
+  } catch {
+    return undefined;
+  }
+  // An excerpt set covering the whole message would hand the media request
+  // itself to the text body; the extraction prompt is built to exclude it.
+  const visibleLength = (value: string) => value.replace(/\s+/gu, "").length;
+  if (visibleLength(parsed.data.join("")) >= visibleLength(source)) return undefined;
+  return requests;
 }

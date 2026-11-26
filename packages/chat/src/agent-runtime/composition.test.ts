@@ -35,7 +35,7 @@ describe("companion composition identity", () => {
         inkling: { mediaToolEffort: "minimal", mediaExtraction: false, mediaBody: false } },
       execution: { version: 80, maxSteps: 8, maxParallelToolCalls: 1, toolExecution: "sequential",
         retry: { provider: "once-before-stream-progress", transient: ["TRANSPORT", "MODEL_FIRST_TOKEN_TIMEOUT", "HTTP_429", "HTTP_5XX_GATEWAY"] },
-        mediaReply: { bufferCapableSteps: "intent-aware", pureFastPath: "explicit-hint-with-single-intent-guard", afterAttachment: "terminate-native-round", afterUnfulfilledSearch: "verified-status-and-independent-body", pureBody: "empty-with-main-attachment", extraction: "ordered-verbatim-blockquotes", extractionMaxOutputTokens: 1024, history: "answered-card-only-replay", sharedStepBudget: true },
+        mediaReply: { bufferCapableSteps: "intent-aware", pureFastPath: "explicit-hint-with-single-intent-guard", toolExcerpts: "verified-ordered-source-excerpts-skip-extraction", afterAttachment: "terminate-native-round", afterUnfulfilledSearch: "verified-status-and-independent-body", pureBody: "empty-with-main-attachment", extraction: "ordered-verbatim-blockquotes", extractionMaxOutputTokens: 1024, history: "answered-card-only-replay", sharedStepBudget: true },
         kvCache: { blockAlignedEvictionStride: 8, scriptAwareTokenEstimate: true },
         deadlineSource: "invocation.deadlineAt", commitBeforeProjection: true },
     });

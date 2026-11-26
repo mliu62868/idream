@@ -2652,6 +2652,78 @@ describe("Chat embedded companion runtime", () => {
     }
   });
 
+  it.each([
+    { label: "verified", excerpts: ["Also tell me one fact about rain."], extracts: false },
+    { label: "paraphrased", excerpts: ["Tell me a rain fact."], extracts: true },
+    { label: "whole-message", excerpts: ["Send me a selfie by the window. Also tell me one fact about rain."], extracts: true },
+    { label: "absent", excerpts: undefined, extracts: true },
+  ])("answers media-turn text from $label tool excerpts only when they verify against the message", async ({ excerpts, extracts }) => {
+    const base = imageInvocation();
+    const value = companionInvocationSchema.parse({ ...base, preparedTurn: { ...base.preparedTurn, tools: COMPANION_MEDIA_TOOL_DEFINITIONS } });
+    value.preparedTurn.messages.at(-1)!.content = "Send me a selfie by the window. Also tell me one fact about rain.";
+    const extraction = vi.fn(async () => response({ content: "> Also tell me one fact about rain." }, "stop", { inputTokens: 5, outputTokens: 3 }));
+    const receivedCalls: CompanionToolCall[] = [];
+    const bodies: WireRequest[] = [];
+    let generation = 0;
+    const adapter = new FixtureAdapter({
+      profile: value.preparedTurn.profile,
+      apiKey: "fixture",
+      fetch: async (_url, init) => {
+        if (++generation === 1) return response({ tool_calls: [{ index: 0, id: "excerpt-media-call", function: {
+          name: "request_character_media",
+          arguments: JSON.stringify({ kind: "image", direction: "Mira taking a selfie by the window", subject: "companion",
+            independentTextRequest: true, ...(excerpts ? { independentTextExcerpts: excerpts } : {}) }),
+        } }] }, "tool_calls", { inputTokens: 20, outputTokens: 8 });
+        bodies.push(JSON.parse(String(init?.body)));
+        return response({ content: "Rain can fall at about twenty miles an hour." }, "stop", { inputTokens: 30, outputTokens: 9 });
+      },
+    }, extraction);
+    const runtime = await engine(adapter);
+    const connection = port({ executeTool: async call => {
+      receivedCalls.push(call);
+      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded", output: acceptedImage("excerpt-card", "job-excerpt") };
+    } });
+    try {
+      await runtime.run(value, connection.runtimePort);
+      expect(extraction).toHaveBeenCalledTimes(extracts ? 1 : 0);
+      // Main receives exactly the media effect arguments, never routing hints.
+      expect(receivedCalls).toHaveLength(1);
+      expect(receivedCalls[0]!.arguments).not.toHaveProperty("independentTextExcerpts");
+      expect(receivedCalls[0]!.arguments).not.toHaveProperty("independentTextRequest");
+      // Both paths answer the same verified excerpt in the media body.
+      expect(bodies).toHaveLength(1);
+      expect(bodies[0]!.messages).toContainEqual(expect.objectContaining({ role: "user", content: "Also tell me one fact about rain." }));
+      expect(bodies[0]!.tools ?? []).not.toContainEqual(expect.objectContaining({ function: expect.objectContaining({ name: "request_character_media" }) }));
+      expect(connection.candidates[0]).toMatchObject({ content: "Rain can fall at about twenty miles an hour.",
+        mediaResponse: { version: 1, attachmentId: "excerpt-card" } });
+      expect(connection.candidates[0]!.modelRequests!.map(request => request.purpose)).toEqual(
+        extracts ? [undefined, "media_extraction", "media_body"] : [undefined, "media_body"]);
+      expect(connection.events.filter(event => event.type === "runtime_observation" && event.operation === "media_extraction"))
+        .toEqual([expect.objectContaining({ outcome: extracts ? "model" : "verified_excerpts" })]);
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("counts the pure-media fast path in content-free evidence", async () => {
+    const base = imageInvocation();
+    const value = companionInvocationSchema.parse({ ...base, preparedTurn: { ...base.preparedTurn, tools: COMPANION_MEDIA_TOOL_DEFINITIONS } });
+    value.preparedTurn.messages.at(-1)!.content = "Send me a selfie by the window.";
+    const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: async () => response({
+      tool_calls: [{ index: 0, id: "pure-call", function: { name: "request_character_media",
+        arguments: JSON.stringify({ kind: "image", direction: "Mira by the window", subject: "companion", independentTextRequest: false, independentTextExcerpts: [] }) } }],
+    }, "tool_calls") });
+    const runtime = await engine(adapter);
+    const connection = port();
+    try {
+      await runtime.run(value, connection.runtimePort);
+      expect(connection.candidates[0]).toMatchObject({ content: "", mediaResponse: { attachmentId: "attachment-1" } });
+      expect(connection.events).toContainEqual(expect.objectContaining({ type: "runtime_observation", operation: "media_extraction", outcome: "pure_media_skip", durationMs: 0 }));
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
   it("wakes a queued Turn immediately in memory when capacityWaitMs is enabled", async () => {
     const releaseFirst = Promise.withResolvers<void>();
     let calls = 0;

@@ -251,7 +251,7 @@ describe("Pi execution boundaries", () => {
       },
     });
     const output = await executePiConversation({ invocation: value, seed: buildReplaySeed(value), pinned: pinned(value),
-      systemPrompt: `You are Mara. ${"s".repeat(11_100)}`, adapter, signal: AbortSignal.timeout(2_000), maxSteps: 8,
+      systemPrompt: `You are Mara. ${"s".repeat(10_700)}`, adapter, signal: AbortSignal.timeout(2_000), maxSteps: 8,
       afterRetrievalContext: { content: `Reply scope: ${"r".repeat(660)}`, available: () => recalled },
       assertContinuation() {}, text() {}, reset() {}, compaction() {},
       tools: conversation => {

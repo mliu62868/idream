@@ -47,7 +47,7 @@ export function companionCompositionManifest(mode: CompanionCompositionMode, igr
     reasoning: { generation: true, compaction: false, structured: false, totalLimit: "profile",
       inkling: { mediaToolEffort: "minimal", mediaExtraction: false, mediaBody: false } },
     execution: { version: 80, maxSteps: authority.maxSteps, toolExecution: "sequential", maxParallelToolCalls: 1,
-      mediaReply: { bufferCapableSteps: "intent-aware", pureFastPath: "explicit-hint-with-single-intent-guard", afterAttachment: "terminate-native-round", afterUnfulfilledSearch: "verified-status-and-independent-body", pureBody: "empty-with-main-attachment", extraction: "ordered-verbatim-blockquotes", extractionMaxOutputTokens: 1024, body: "native-loop-without-media-tools", history: "answered-card-only-replay", sharedStepBudget: true },
+      mediaReply: { bufferCapableSteps: "intent-aware", pureFastPath: "explicit-hint-with-single-intent-guard", toolExcerpts: "verified-ordered-source-excerpts-skip-extraction", afterAttachment: "terminate-native-round", afterUnfulfilledSearch: "verified-status-and-independent-body", pureBody: "empty-with-main-attachment", extraction: "ordered-verbatim-blockquotes", extractionMaxOutputTokens: 1024, body: "native-loop-without-media-tools", history: "answered-card-only-replay", sharedStepBudget: true },
       kvCache: { blockAlignedEvictionStride: 8, scriptAwareTokenEstimate: true },
       retry: { provider: "once-before-stream-progress", transient: ["TRANSPORT", "MODEL_FIRST_TOKEN_TIMEOUT", "HTTP_429", "HTTP_5XX_GATEWAY"] }, backgroundCompaction: false, deadlineSource: "invocation.deadlineAt", commitBeforeProjection: true,
       recovery: "Main snapshot and immutable local proposal" },

@@ -89,6 +89,7 @@ export const LOCAL_IMAGE_EDIT_TOOL_DEFINITION = {
       },
       requestedNudity: { type: "string", enum: ["unspecified", "none", "full"], description: "Wardrobe intent in the current user request; preserve all concrete edit and clothing constraints in instruction." },
       independentTextRequest: { type: "boolean", description: "Set false only when the entire user message is solely this edit request with no separate question, story, or writing task; set true otherwise." },
+      independentTextExcerpts: { type: "array", items: { type: "string" }, description: "Each separate text request in the user's message, copied verbatim in order. Omit if none." },
     },
     required: ["instruction", "editScope"],
   },
