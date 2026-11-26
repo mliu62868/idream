@@ -86,7 +86,8 @@ test("short group chat leaves the first line of an expanded draft reachable", as
         messages: [{ id: "opening:layout", role: "assistant", content: "Which trail should we walk today?", opening: true, status: "sent" }],
       } };
     }
-    if (pathname.endsWith("/experience")) {
+    // Route-mock matching, not endpoint parsing (see shared env.test HAND_ROLLED_PARSES).
+    if (/\/experience$/.test(pathname)) {
       data = { settings: { responseLength: "short", interactionIntensity: "gentle", sceneGeneration: "follow", version: 1 }, editable: true, catalog: CONVERSATION_PROFILE_CATALOG };
     }
     await route.fulfill({ json: { ok: true, data } });
