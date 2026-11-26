@@ -47,11 +47,25 @@ describe("chatFailureCopy", () => {
     expect(chatFailureCopy({}, FALLBACK)).toBe(FALLBACK);
   });
 
-  it("shows Main conflicts written for the reader, never internal invariants", () => {
-    expect(chatFailureCopy({ error: { code: "conflict", message: "Cancel the active reply before deleting this chat" } }, FALLBACK))
-      .toBe("Cancel the active reply before deleting this chat.");
-    expect(chatFailureCopy({ error: { code: "conflict", message: "Conversation preferences changed elsewhere. Reload before saving" } }, FALLBACK))
-      .toBe("Conversation preferences changed elsewhere. Reload before saving.");
-    expect(chatFailureCopy({ error: { code: "conflict", message: "Terminal commit lost the active attempt CAS" } }, FALLBACK)).toBe(FALLBACK);
+  it("explains Main conflicts by their reason code, never by their message text", () => {
+    expect(chatFailureCopy({ error: { code: "conflict", message: "anything", details: { reason: "reply_in_progress" } } }, FALLBACK))
+      .toBe("Wait for the current reply to finish, then send again.");
+    expect(chatFailureCode({ error: { code: "conflict", details: { reason: "voice_quote_stale" } } })).toBe("voice_quote_stale");
+    expect(chatFailureCopy({ error: { code: "conflict", details: { reason: "edit_attempt_changed", blocker: "version_mismatch" } } }, FALLBACK))
+      .toBe("This reply changed elsewhere. Reopen the editor to use the latest message.");
+    expect(chatFailureCopy({ error: { code: "conflict", details: { blocker: "version_mismatch" } } }, FALLBACK))
+      .toBe("This changed elsewhere. Reload and try again.");
+    // The chat façade's flat envelope carries the same reasons.
+    expect(chatFailureCopy({ error: "conflict", details: { reason: "chat_send_deleted" } }, FALLBACK))
+      .toBe("That message was deleted. Send again to make a new request.");
+    // Reader-sounding text without a reason is still not a contract.
+    expect(chatFailureCopy({ error: { code: "conflict", message: "Cancel the active reply before deleting this chat" } }, FALLBACK)).toBe(FALLBACK);
+    expect(chatFailureCopy({ error: { code: "conflict", message: "Terminal commit lost the active attempt CAS", details: { reason: "terminal_cas_lost" } } }, FALLBACK)).toBe(FALLBACK);
+  });
+
+  it("keeps a pending reply that Chat never started", () => {
+    const copy = chatFailureCopy({ error: "admission_expired" }, FALLBACK);
+    expect(copy).toContain("Your message is saved");
+    expect(copy.toLowerCase()).toContain("regenerate");
   });
 });

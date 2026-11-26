@@ -50,6 +50,9 @@ export function chatStreamTerminalErrorMessage(payload: unknown): string {
   if (record.code === "igrep_memory_failed") {
     return "Memory is temporarily unavailable. Please try again.";
   }
+  if (record.code === "admission_expired") {
+    return "This reply didn't start in time. Your message is saved — regenerate to try again.";
+  }
   return record.code === "provider_output_limit"
     ? "Reply was cut short. Regenerate to try again."
     : "Reply failed to load. Please try again.";

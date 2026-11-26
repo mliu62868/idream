@@ -215,7 +215,7 @@ function MemoryPanelContent({
               : "Memory is off: new messages do not read or save long-term memories. This chat stays in your history."}
           </p>
 
-          {sessionId ? <ChatContextSettings key={sessionId} sessionId={sessionId} memoryEnabled={memoryEnabled} /> : null}
+          {sessionId ? <ChatContextSettings key={sessionId} sessionId={sessionId} memoryEnabled={memoryEnabled} fetchForViewer={fetchForViewer} /> : null}
           {sessionId && !groupConversation ? <ProactiveSettings key={`proactive-${sessionId}`} sessionId={sessionId} onEnabledChange={onProactiveChange} /> : null}
 
           <div className="my-4 h-px bg-[rgb(36,36,36)]" />

@@ -182,9 +182,11 @@ export const ChatMessageItem = memo(function ChatMessageItem({
         <span aria-label="Assistant reply unavailable" role="status">
           {message.status === "cancelled"
             ? "Reply stopped."
-            : message.status === "failed" && message.replyInterrupted
-              ? "Reply interrupted. Your message is saved. Regenerate to try again."
-              : "Reply unavailable."}
+            : message.status === "failed" && replyFailureCode(message) === "admission_expired"
+              ? "This reply didn't start in time. Your message is saved — regenerate to try again."
+              : message.status === "failed" && message.replyInterrupted
+                ? "Reply interrupted. Your message is saved. Regenerate to try again."
+                : "Reply unavailable."}
         </span>
       ) : (
         <MessageText text={message.content} />
@@ -233,6 +235,12 @@ export const ChatMessageItem = memo(function ChatMessageItem({
     </div>
   );
 });
+
+// Main may name why a reply failed; only known codes change the copy.
+function replyFailureCode(message: ChatMessage): string | null {
+  const code = (message as { failureCode?: unknown }).failureCode;
+  return typeof code === "string" ? code : null;
+}
 
 // Paragraphs and line breaks the character wrote are part of the reply.
 function MessageText({ text }: Readonly<{ text: string }>) {

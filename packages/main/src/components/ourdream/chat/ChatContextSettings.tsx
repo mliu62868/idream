@@ -13,8 +13,17 @@ import {
 const inputClass = "mt-2 w-full rounded-xl border border-white/10 bg-[rgb(28,28,28)] p-3 text-[13px] text-white disabled:opacity-50";
 const buttonClass = "rounded-full border border-white/10 px-3 py-1.5 text-[12px] font-semibold disabled:opacity-40";
 
+type ViewerFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
 // Settings are explicit user context. They never masquerade as automatically learned memory.
-export function ChatContextSettings({ sessionId, memoryEnabled }: Readonly<{ sessionId: string; memoryEnabled: boolean }>) {
+// INVARIANT: every read and write goes through the conversation owner's gated
+//            fetch, so a settings panel left open across an account switch can
+//            neither show nor change the next account's context.
+export function ChatContextSettings({ sessionId, memoryEnabled, fetchForViewer }: Readonly<{
+  sessionId: string;
+  memoryEnabled: boolean;
+  fetchForViewer: ViewerFetch;
+}>) {
   const [items, setItems] = useState<ChatContextDirective[]>([]);
   const [pinText, setPinText] = useState("");
   const [editingPin, setEditingPin] = useState<ChatContextDirective | null>(null);
@@ -36,7 +45,7 @@ export function ChatContextSettings({ sessionId, memoryEnabled }: Readonly<{ ses
       setLoading(true);
       setError(null);
       try {
-        const raw = await readResponse(await fetch(base, { cache: "no-store", signal: controller.signal }));
+        const raw = await readResponse(await fetchForViewer(base, { cache: "no-store", signal: controller.signal }));
         const next = chatContextDirectivesSchema.parse(raw.items);
         if (scope.current !== epoch) return;
         setItems(next);
@@ -51,7 +60,7 @@ export function ChatContextSettings({ sessionId, memoryEnabled }: Readonly<{ ses
       }
     })();
     return () => { scope.current += 1; controller.abort(); };
-  }, [base, reload]);
+  }, [base, reload, fetchForViewer]);
 
   const custom = items.find((item) => item.kind === "custom_instruction");
   const pins = items.filter((item) => item.kind === "pinned_memory");
@@ -66,7 +75,7 @@ export function ChatContextSettings({ sessionId, memoryEnabled }: Readonly<{ ses
     setError(null);
     setNotice(null);
     try {
-      const raw = await readResponse(await fetch(prior ? `${base}/${encodeURIComponent(prior.id)}` : base, {
+      const raw = await readResponse(await fetchForViewer(prior ? `${base}/${encodeURIComponent(prior.id)}` : base, {
         method: prior ? "PATCH" : "POST",
         headers: { "content-type": "application/json", "idempotency-key": key },
         body: JSON.stringify(prior ? { content, version: prior.version } : { kind, content }),
@@ -93,7 +102,7 @@ export function ChatContextSettings({ sessionId, memoryEnabled }: Readonly<{ ses
     setError(null);
     setNotice(null);
     try {
-      await readResponse(await fetch(`${base}/${encodeURIComponent(item.id)}`, {
+      await readResponse(await fetchForViewer(`${base}/${encodeURIComponent(item.id)}`, {
         method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ version: item.version }),
       }));
       if (scope.current !== epoch) return;
