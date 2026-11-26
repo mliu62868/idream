@@ -600,6 +600,16 @@ async function memorySourceMetrics(userId: string, characterId: string): Promise
   };
 }
 
+/**
+ * INTENT: every projection exports the whole relationship, not only Turns after
+ * a cursor. Chat's builder (agent-runtime/igrep.ts) requires it: each igrep
+ * `mem ingest` must see a session's complete transcript (events ==
+ * messageCount; a rewritten published prefix is refused), the candidate's
+ * dialogue count must equal the number of exported sessions, and both the
+ * project→rebuild fallback and source-only recovery wipe the seeded `.igrep`
+ * and re-ingest only what Main sent. A partial export would publish a
+ * canonical missing every unsent session.
+ */
 async function* memorySourceMessages(
   userId: string,
   characterId: string,
