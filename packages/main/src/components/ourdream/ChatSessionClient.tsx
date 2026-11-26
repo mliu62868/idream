@@ -709,7 +709,9 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
 
   function applySessionMetadata(session: ChatSession) {
     const intent = sendIntentRef.current;
-    if (session.group && intent && session.messages.some(message => message.requestKey === intent.idempotencyKey)) {
+    // Both 1:1 and group user messages carry their send idempotency key, so a
+    // committed request settles an unknown send outcome in either mode.
+    if (intent && session.messages.some(message => message.requestKey === intent.idempotencyKey)) {
       sendIntentRef.current = null;
       setSendOutcomeUnknown(false);
       setContent(current => current.trim() === intent.content ? "" : current);

@@ -285,8 +285,7 @@ function ChatEditTextarea({ id, editing, handlers }: Readonly<{
 
 // Main may name why a reply failed; only known codes change the copy.
 function replyFailureCode(message: ChatMessage): string | null {
-  const code = (message as { failureCode?: unknown }).failureCode;
-  return typeof code === "string" ? code : null;
+  return message.failureCode ?? null;
 }
 
 // Paragraphs and line breaks the character wrote are part of the reply.

@@ -1471,6 +1471,8 @@ const chatMessageSchema = z
     status: z.string().optional(),
     replyLimitReached: z.boolean().optional(),
     replyInterrupted: z.boolean().optional(),
+    /** Allowlisted terminal failure code for a failed reply; never free text. */
+    failureCode: nonEmptyString.optional(),
     replyToMessageId: nonEmptyString.nullable().optional(),
     attachments: z.array(chatAttachmentSchema).optional(),
     sceneVersion: z.number().int().nonnegative().optional(),
@@ -1506,6 +1508,8 @@ const chatSessionDetailSchema = z
     group: z.object({ members: z.array(groupChatMemberSchema).min(2).max(12), selectedSessionId: nonEmptyString }).strict().optional(),
     memberImages: z.record(z.string(), z.string()).optional(),
     messages: z.array(chatMessageSchema),
+    /** Latest-first paging window; absent from older servers means the full session. */
+    page: z.object({ hasEarlier: z.boolean(), earliestTurnId: nonEmptyString.nullable() }).optional(),
     character: z
       .object({
         canUpdateIdentity: z.boolean().optional(),
