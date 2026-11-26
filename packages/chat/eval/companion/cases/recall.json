@@ -21,7 +21,7 @@
         { "user": "Okay, I'll take the road.", "assistant": "Good." }
       ],
       "user": "Wait, what was the locker number again?",
-      "checks": { "language": "en", "required": [["417"]] }
+      "checks": { "language": "en", "required": [["417", "four-one-seven", "four one seven", "four hundred seventeen", "four hundred and seventeen"]] }
     },
     {
       "id": "recall-03-zh-dog",

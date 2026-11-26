@@ -53,7 +53,10 @@ bun eval/companion/run.ts --samples 1               # 完整真实运行
 bun eval/companion/run.ts --only media,recall-01    # 按类别或 id 前缀筛选
 bun eval/companion/run.ts --no-judge                # 只跑确定性检查
 bun eval/companion/run.ts --reply-cues off          # cue A/B 的 off 组
+bun eval/companion/run.ts --rescore path/results.jsonl  # 用当前确定性检查和已存的 judge 标签重算，不调用模型
 ```
+
+`--rescore` 会在输入文件旁写出 `rescored-summary.json`，其中列出判定发生变化的用例。原始结果文件不会被改动。
 
 参数说明：
 

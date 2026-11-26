@@ -125,7 +125,7 @@ const sourceRevision = (() => {
 
 let config: AgentRuntimeConfig | undefined;
 try { config = loadAgentRuntimeConfig(process.env); } catch (error) {
-  if (!dryRun) { console.error(`runtime config: ${(error as Error).message}`); process.exit(2); }
+  if (!dryRun && !args.has("rescore")) { console.error(`runtime config: ${(error as Error).message}`); process.exit(2); }
 }
 const cli = config ? { command: config.igrepCommand, env: config.igrepEnvironment } : { command: "igrep", env: {} };
 const igrepRoutes = config ? companionIgrepRoutes(config.igrepEnvironment) : undefined;
@@ -367,6 +367,43 @@ function scoreScene(expect: SceneExpect, previous: ChatSceneState, next: ChatSce
   if (expect.threadsInclude) fields.threadsInclude = expect.threadsInclude.every(group => next.unresolvedThreads.some(thread => includesAny(thread, group)));
   if (expect.threadsExclude) fields.threadsExclude = expect.threadsExclude.every(needle => !next.unresolvedThreads.some(thread => includesAny(thread, [needle])));
   return fields;
+}
+
+// ---------------------------------------------------------------- rescore
+// INTENT: deterministic checks evolve (a checker false negative, a new
+// required fact). Re-scoring a recorded run with the current checks and the
+// stored judge labels costs no model calls and keeps the original evidence.
+if (args.has("rescore")) {
+  const input = resolve(args.get("rescore")!);
+  const byId = new Map(companionCases.map(item => [item.id, item]));
+  const rescored: Array<{ id: string; category: string; pass: boolean; why: string[]; before: boolean }> = [];
+  for (const line of readFileSync(input, "utf8").split("\n").filter(Boolean)) {
+    const row = JSON.parse(line) as Record<string, unknown>;
+    const item = byId.get(String(row.id));
+    if (!item || row.kind === "scene" || row.category === "scene") continue;
+    const committed = row.committed === true;
+    const deterministic = committed
+      ? runChecks(item.checks ?? {}, { text: String(row.reply ?? ""), toolCalls: (row.toolCalls ?? []) as Array<{ name: string; arguments: unknown }> })
+      : (row.why as string[]).filter(reason => !reason.startsWith("judge"));
+    const labels = row.labels as Record<string, unknown> | undefined;
+    const judged = labels ? judgeVerdict(item, labels) : (row.why as string[]).filter(reason => reason.startsWith("judge"));
+    const why = [...deterministic, ...judged];
+    rescored.push({ id: item.id, category: item.category, pass: why.length === 0, why, before: row.pass === true });
+  }
+  const groups = [...new Set(rescored.map(row => row.category))];
+  const share = (items: typeof rescored) => `${items.filter(row => row.pass).length}/${items.length}`;
+  const output = {
+    input, rescoredAt: new Date().toISOString(), sourceRevision,
+    pass: rescored.filter(row => row.pass).length / Math.max(1, rescored.length), total: share(rescored),
+    byCategory: Object.fromEntries(groups.map(category => [category, share(rescored.filter(row => row.category === category))])),
+    changed: rescored.filter(row => row.pass !== row.before).map(row => ({ id: row.id, pass: row.pass, why: row.why })),
+    failures: rescored.filter(row => !row.pass).map(row => ({ id: row.id, why: row.why })),
+  };
+  writeFileSync(join(dirname(input), "rescored-summary.json"), JSON.stringify(output, null, 2));
+  console.log(JSON.stringify(output, null, 2));
+  await engine.shutdown();
+  rmSync(scratchRoot, { recursive: true, force: true });
+  process.exit(0);
 }
 
 // ---------------------------------------------------------------- run

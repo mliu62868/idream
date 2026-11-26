@@ -63,7 +63,8 @@ export function detectLanguage(text: string): Language | "unknown" {
   if (profile.han + profile.kana + profile.latin === 0) return "unknown";
   if (profile.cjkRatio >= 0.5) return profile.kana >= Math.max(3, (profile.han + profile.kana) * 0.1) ? "ja" : "zh";
   const vote = latinLanguageVote(text);
-  if (vote.en === 0 && vote.es === 0) return "unknown";
+  // Terse Latin-script replies ("Locker 417. Bottom row.") carry no stopword;
+  // without Spanish evidence they are English, the prompt's own register.
   return vote.es > vote.en ? "es" : "en";
 }
 
