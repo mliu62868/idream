@@ -30,6 +30,7 @@ import {
   regenerateAndAdmitChatTurn,
 } from "@/server/modules/chat/agent-run-admission";
 import { clearCompanionMemory } from "@/server/modules/chat/companion-memory-authority";
+import { parseChatTranscriptPage } from "@/server/modules/chat/chat-read-model";
 import { createChatContextDirective, deleteChatContextDirective, listChatContextDirectives, updateChatContextDirective } from "@/server/modules/chat/context-directives";
 import { getChatExperiencePreference, updateChatExperiencePreference } from "@/server/modules/chat/experience-preferences";
 import { getProactiveSettings, updateProactiveSettings } from "@/server/modules/chat/proactive-messages";
@@ -84,7 +85,10 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
     }
     const groupId = path[1];
     if (groupId && path.length === 2) {
-      if (method === "GET") return envelope({ session: await getGroupConversation(userId, groupId, new URL(request.url).searchParams.get("speaker") ?? undefined) });
+      if (method === "GET") {
+        const query = new URL(request.url).searchParams;
+        return envelope({ session: await getGroupConversation(userId, groupId, query.get("speaker") ?? undefined, parseChatTranscriptPage(query)) });
+      }
       if (method === "PATCH") {
         // Same guard as creation: new members are bound to the account the picker was loaded for.
         if ("addCharacterIds" in body && request.headers.get("x-idream-viewer-scope") !== `user:${userId}`) throw Errors.conflict("Your account changed. Reload before adding Characters");
@@ -147,7 +151,7 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
       if (path.length === 4 && method === "DELETE") return json(await deleteChatContextDirective(userId, sessionId, path[3], body));
     }
     if (path.length === 2) {
-      if (method === "GET") return envelope({ session: await getChatSession(userId, sessionId) });
+      if (method === "GET") return envelope({ session: await getChatSession(userId, sessionId, parseChatTranscriptPage(new URL(request.url).searchParams)) });
       if (method === "PATCH") return json(await renameChatSession(userId, sessionId, text(body.title)));
       if (method === "DELETE") {
         await deleteChatSession(userId, sessionId);

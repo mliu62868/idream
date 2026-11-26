@@ -24,22 +24,109 @@ export interface BegunChatTurn {
   safety?: { layer: "input"; policyCode?: string };
 }
 
-export async function getChatSession(userId: string, sessionId: string) {
+/**
+ * SPEC: transcript reads are paged by Turn. `limit` defaults to
+ * {@link DEFAULT_CHAT_PAGE_TURNS} and is capped at {@link MAX_CHAT_PAGE_TURNS};
+ * without `beforeTurnId` the latest page is returned, otherwise the Turns
+ * strictly before that Turn. Messages within a page stay in ascending order and
+ * the response carries `page: { hasEarlier, earliestTurnId }`.
+ */
+export const DEFAULT_CHAT_PAGE_TURNS = 50;
+export const MAX_CHAT_PAGE_TURNS = 200;
+
+export type ChatTranscriptPage = { limit?: number; beforeTurnId?: string };
+
+export function parseChatTranscriptPage(query: URLSearchParams): ChatTranscriptPage {
+  const rawLimit = query.get("limit");
+  const beforeTurnId = query.get("beforeTurnId")?.trim() || undefined;
+  if (rawLimit === null) return { beforeTurnId };
+  if (!/^[1-9]\d{0,3}$/u.test(rawLimit) || Number(rawLimit) > MAX_CHAT_PAGE_TURNS) {
+    throw Errors.badRequest(`limit must be an integer between 1 and ${MAX_CHAT_PAGE_TURNS}`);
+  }
+  return { limit: Number(rawLimit), beforeTurnId };
+}
+
+function pageLimit(page: ChatTranscriptPage | undefined): number {
+  const limit = page?.limit ?? DEFAULT_CHAT_PAGE_TURNS;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_CHAT_PAGE_TURNS) {
+    throw Errors.badRequest(`limit must be an integer between 1 and ${MAX_CHAT_PAGE_TURNS}`);
+  }
+  return limit;
+}
+
+/** Exactly what the public projection reads. Never the execution snapshot. */
+export const PUBLIC_TURN_SELECT = {
+  id: true,
+  sessionId: true,
+  idempotencyKey: true,
+  userMessageId: true,
+  assistantMessageId: true,
+  userContent: true,
+  userStatus: true,
+  origin: true,
+  assistantContent: true,
+  assistantStatus: true,
+  terminalEvidence: true,
+  attempt: true,
+  sceneVersion: true,
+  scene: true,
+  createdAt: true,
+  memoryEnabled: true,
+  attachments: {
+    orderBy: { createdAt: "asc" },
+    select: {
+      id: true, kind: true, status: true, generationJobId: true, mediaAssetId: true,
+      promptHint: true, width: true, height: true, errorCode: true, metadata: true,
+    },
+  },
+} satisfies Prisma.ChatTurnSelect;
+
+async function directTranscriptPage(sessionId: string, page: ChatTranscriptPage | undefined) {
+  const limit = pageLimit(page);
+  let before: Prisma.ChatTurnWhereInput = {};
+  if (page?.beforeTurnId) {
+    const anchor = await prisma.chatTurn.findFirst({
+      where: { id: page.beforeTurnId, sessionId },
+      select: { id: true, createdAt: true },
+    });
+    if (!anchor) throw Errors.badRequest("beforeTurnId does not belong to this chat");
+    before = { OR: [
+      { createdAt: { lt: anchor.createdAt } },
+      { createdAt: anchor.createdAt, id: { lt: anchor.id } },
+    ] };
+  }
+  const rows = await prisma.chatTurn.findMany({
+    where: { sessionId, ...before },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: limit + 1,
+    select: PUBLIC_TURN_SELECT,
+  });
+  const hasEarlier = rows.length > limit;
+  const turns = rows.slice(0, limit).reverse();
+  return { turns, page: { hasEarlier, earliestTurnId: turns[0]?.id ?? null } };
+}
+
+export async function getChatSession(userId: string, sessionId: string, transcriptPage?: ChatTranscriptPage) {
   const session = await prisma.recentChat.findFirst({
     where: { sessionId, userId },
-    include: {
+    select: {
+      sessionId: true, characterId: true, title: true, status: true, memoryEnabled: true,
+      lastMessageAt: true, proactiveUnreadAt: true, proactiveEnabled: true, createdAt: true,
+      groupId: true, openingMessage: true, characterReleaseId: true,
       character: { select: { name: true, creatorId: true, imageAsset: { select: { url: true, thumbnailUrl: true } } } },
-      turns: {
-        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-        include: { attachments: { orderBy: { createdAt: "asc" } } },
-      },
     },
   });
   if (!session) throw Errors.notFound("Chat session not found");
   // A group member's session is one voice of the group; read as a one-to-one
   // chat it would hide the other speakers and let a send bypass the group.
   if (session.groupId) throw Errors.conflict("Open this conversation from its group chat");
-  const messages = await enrichAttachmentMedia(publicMessages(session), userId);
+  const { turns, page } = await directTranscriptPage(session.sessionId, transcriptPage);
+  // The greeting precedes every Turn, so it belongs to the earliest page only.
+  const messages = await enrichAttachmentMedia(publicMessages({
+    ...session,
+    openingMessage: page.hasEarlier ? null : session.openingMessage,
+    turns,
+  }), userId);
   if (session.proactiveUnreadAt) {
     // Opening the session is reading it. Scoped by the timestamp we just read so
     // a proactive reply that lands during this request stays unread.
@@ -61,7 +148,31 @@ export async function getChatSession(userId: string, sessionId: string) {
       image: session.character.imageAsset?.thumbnailUrl ?? session.character.imageAsset?.url ?? null,
     },
     messages,
+    page,
   };
+}
+
+/** Group transcript page: same contract, ordered by the group's ordinal. */
+export async function groupTranscriptPage(groupId: string, transcriptPage: ChatTranscriptPage | undefined) {
+  const limit = pageLimit(transcriptPage);
+  let beforeOrdinal: number | undefined;
+  if (transcriptPage?.beforeTurnId) {
+    const anchor = await prisma.groupChatTurn.findFirst({
+      where: { groupId, turnId: transcriptPage.beforeTurnId },
+      select: { ordinal: true },
+    });
+    if (!anchor) throw Errors.badRequest("beforeTurnId does not belong to this group chat");
+    beforeOrdinal = anchor.ordinal;
+  }
+  const rows = await prisma.groupChatTurn.findMany({
+    where: { groupId, ...(beforeOrdinal === undefined ? {} : { ordinal: { lt: beforeOrdinal } }) },
+    orderBy: { ordinal: "desc" },
+    take: limit + 1,
+    select: { turn: { select: PUBLIC_TURN_SELECT } },
+  });
+  const hasEarlier = rows.length > limit;
+  const turns = rows.slice(0, limit).reverse().map((row) => row.turn);
+  return { turns, page: { hasEarlier, earliestTurnId: turns[0]?.id ?? null } };
 }
 
 /** Local stream existence is execution evidence; Main decides whether it may be delivered. */

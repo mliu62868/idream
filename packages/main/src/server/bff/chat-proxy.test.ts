@@ -840,7 +840,7 @@ describe("Main-owned Chat façade", () => {
       where: { sessionId, idempotencyKey: key },
       data: { admissionNextRunAt: new Date(0) },
     });
-    await expect(dispatchPendingChatAgentRuns()).resolves.toEqual({ admitted: 1, pending: 0 });
+    await expect(dispatchPendingChatAgentRuns()).resolves.toEqual({ admitted: 1, pending: 0, expired: 0 });
     await expect(prisma.chatTurn.findUniqueOrThrow({
       where: { sessionId_idempotencyKey: { sessionId, idempotencyKey: key } },
     })).resolves.toMatchObject({ assistantStatus: "generating" });
@@ -895,7 +895,7 @@ describe("Main-owned Chat façade", () => {
     fetchMock.mockClear();
     fetchMock.mockImplementation(async (_url, init) => admissionResponse(init));
 
-    await expect(dispatchPendingChatAgentRuns()).resolves.toEqual({ admitted: 1, pending: 1 });
+    await expect(dispatchPendingChatAgentRuns()).resolves.toEqual({ admitted: 1, pending: 1, expired: 0 });
     expect(fetchMock).toHaveBeenCalledOnce();
     await expect(prisma.chatTurn.findUniqueOrThrow({ where: { id: corruptTurnId } }))
       .resolves.toMatchObject({
@@ -1498,7 +1498,12 @@ describe("Main-owned Chat façade", () => {
       archived: true,
       purgeQueued: true,
     });
-    await expect(dispatchPendingChatEvents({ lane: "lifecycle" })).resolves.toEqual({ delivered: 1, failed: 0 });
+    // Earlier cases in this file may leave AgentRun purge intents on the same lane.
+    await expect(dispatchPendingChatEvents({ lane: "lifecycle" })).resolves.toMatchObject({ failed: 0 });
+    await expect(prisma.mainOutboxEvent.findFirst({
+      where: { aggregateId: `${USER_ID}:${CHARACTER_ID}`, eventType: MAIN_TO_CHAT_EVENTS.companionMemoryPurgeRequestedV1 },
+      orderBy: { createdAt: "desc" },
+    })).resolves.toMatchObject({ status: "delivered" });
     await expect(prisma.recentChat.findUniqueOrThrow({ where: { sessionId } }))
       .resolves.toMatchObject({ status: "archived", activeKey: null, memoryEnabled: false });
     await expect(prisma.chatTurn.findUniqueOrThrow({ where: { id: turn.id } }))

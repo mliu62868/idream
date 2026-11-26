@@ -1,9 +1,11 @@
 // Turn terminal transitions: Chat commit, user Stop, stalled reclaim and admission expiry.
 import type { ChatTerminalCommit } from "@idream/shared/contracts";
 import { chatExecutionSnapshotSchema, chatTerminalCommitSchema } from "@idream/shared/contracts";
+import { observeHistogram } from "@idream/shared";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
+import { logger } from "@/server/lib/logger";
 import { recordAgentRunCancelIntent } from "./agent-run-intents";
 import { scheduleCompanionMemoryProjection } from "./companion-memory-authority";
 import { lockChatScope } from "./turn-scope";
@@ -13,129 +15,188 @@ import { settleChatTurnUsage } from "./turn-usage";
 import { appendChatExchangeCompleted } from "./exchange-metrics";
 import { requireTurn } from "./turn-commands";
 
+/** Every Turn field the terminal commit and its exact replay compare or write. */
+const TERMINAL_TURN_SELECT = {
+  id: true, sessionId: true, userMessageId: true, assistantMessageId: true, attempt: true,
+  assistantStatus: true, assistantContent: true, model: true, promptTokens: true, completionTokens: true,
+  sceneVersion: true, scene: true, terminalEvidence: true, terminalAt: true, origin: true,
+  memoryEnabled: true, statsCountedAt: true, admittedAt: true, createdAt: true,
+  characterContentVersionId: true, characterReleaseId: true,
+} satisfies Prisma.ChatTurnSelect;
+
+/**
+ * SPEC: once an attempt is terminal its execution snapshot keeps everything a
+ * later revision, tool-effect replay or chat-to-generator handoff reads
+ * (identity pins, directives, experience, persona, userMessageRevision,
+ * imageEditSourceAssetId, recentMedia, group, scene anchor) and drops the
+ * copied transcript (`recentTurns`, up to 24 raw exchanges).
+ *
+ * INTENT: no Main reader uses `recentTurns` after admission (a revision freezes
+ * a fresh snapshot), and keeping it duplicates user text that a later edit or
+ * delete of those older Turns would otherwise leave behind here.
+ */
+export function terminalExecutionSnapshot(value: Prisma.JsonValue | null): Prisma.InputJsonValue | undefined {
+  const parsed = chatExecutionSnapshotSchema.safeParse(value);
+  if (!parsed.success || parsed.data.recentTurns.length === 0) return undefined;
+  return toJson({ ...parsed.data, recentTurns: [] });
+}
+
+function trimmedSnapshot(value: Prisma.JsonValue | null): { executionSnapshot?: Prisma.InputJsonValue } {
+  const trimmed = terminalExecutionSnapshot(value);
+  return trimmed ? { executionSnapshot: trimmed } : {};
+}
+
 export async function commitChatTerminal(input: ChatTerminalCommit) {
   // The service is also called in-process; HTTP decoding is not its authority boundary.
   const parsed = chatTerminalCommitSchema.safeParse(input);
   if (!parsed.success) throw Errors.badRequest("Invalid Chat terminal contract");
   input = parsed.data;
+  const startedAt = performance.now();
   const now = new Date();
-  const updated = await prisma.$transaction(async (tx) => {
-    const owner = await tx.recentChat.findUnique({
-      where: { sessionId: input.sessionId },
-      select: { userId: true },
-    });
-    if (!owner) throw Errors.notFound("Chat session not found");
-    // Use the same user -> session -> Turn order as cancel/edit/delete. Taking
-    // the Turn first deadlocks with a user-first mutation during memory commit.
-    await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${owner.userId} FOR UPDATE`;
-    await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${input.sessionId} FOR UPDATE`;
-    const accepted = await tx.chatTurn.findUnique({ where: { id: input.turnId } });
-    if (!accepted) throw Errors.notFound("Chat turn not found");
-    if (
-      accepted.sessionId === input.sessionId && accepted.assistantMessageId === input.assistantMessageId &&
-      accepted.attempt === input.attempt && ACTIVE_ASSISTANT_STATES.includes(accepted.assistantStatus)
-    ) {
-      // A completed terminal is replayed below without advancing again. A new
-      // selection must derive from this attempt's immutable, pre-Turn anchor,
-      // including edits/regenerations which discarded a previously sent Scene.
-      const anchor = chatExecutionSnapshotSchema.safeParse(accepted.executionSnapshot);
-      if (!anchor.success || anchor.data.turnId !== input.turnId || anchor.data.sessionId !== input.sessionId ||
-        anchor.data.assistantMessageId !== input.assistantMessageId || anchor.data.attempt !== input.attempt) {
-        throw Errors.conflict("Chat terminal has no matching frozen Scene anchor");
-      }
-      if (input.status === "sent") {
-        if (!input.content.trim() && !hasChatMediaResponseAttachment({
-          id: accepted.id, attempt: accepted.attempt, terminalEvidence: input.terminalEvidence,
-        }, await tx.chatTurnAttachment.findMany({ where: { turnId: accepted.id } }))) {
-          throw Errors.conflict("An empty Chat reply requires a current durable media attachment");
-        }
-        if (input.sceneVersion !== anchor.data.sceneVersion + 1) {
-          throw Errors.conflict("A sent Scene must advance exactly once from its frozen anchor");
-        }
-      } else if (input.sceneVersion !== anchor.data.sceneVersion || !jsonEqual(input.scene, anchor.data.scene)) {
-        throw Errors.conflict("An unsuccessful terminal must preserve its complete frozen Scene");
-      }
-    }
-    const changed = await tx.chatTurn.updateMany({
-      where: {
-        id: input.turnId,
-        sessionId: input.sessionId,
-        assistantMessageId: input.assistantMessageId,
-        attempt: input.attempt,
-        assistantStatus: { in: ACTIVE_ASSISTANT_STATES },
-      },
-      data: {
-        assistantContent: input.content,
-        assistantStatus: input.status,
-        model: input.model,
-        promptTokens: input.promptTokens,
-        completionTokens: input.completionTokens,
-        sceneVersion: input.sceneVersion,
-        scene: input.scene === null ? Prisma.JsonNull : toJson(input.scene),
-        terminalEvidence: toJson(input.terminalEvidence),
-        terminalAt: now,
-        // A terminal attempt has no lookup consumer. The attachment and the
-        // immutable terminal proposal each have their own durable receipt.
-      },
-    });
-    const current = await tx.chatTurn.findUnique({ where: { id: input.turnId } });
-    if (!current) throw Errors.notFound("Chat turn not found");
-    if (changed.count === 1) {
-      const session = await tx.recentChat.update({
+  let outcome: "committed" | "duplicate" | "rejected" = "rejected";
+  try {
+    const updated = await prisma.$transaction(async (tx) => {
+      const owner = await tx.recentChat.findUnique({
         where: { sessionId: input.sessionId },
-        data: {
-          contextRevision: { increment: 1 },
-          lastMessageAt: now,
-          // A proactive reply arrives with nobody watching — the session list is
-          // the only place it can announce itself. A failed or cancelled
-          // proactive attempt has nothing to show, so it marks nothing.
-          ...(current.origin === "proactive" && input.status === "sent"
-            ? { proactiveUnreadAt: now }
-            : {}),
-        },
-        select: { userId: true, characterId: true, entryExposureId: true, entryJourneyId: true, entryPlacementId: true },
+        select: { userId: true },
       });
-      await settleChatTurnUsage(tx, current, input.status, now);
-      if (input.status === "sent") {
-        const firstSelectedReply = await tx.chatTurn.updateMany({
-          where: { id: input.turnId, statsCountedAt: null },
-          data: { statsCountedAt: now },
-        });
-        if (firstSelectedReply.count === 1) {
-          await tx.characterStats.updateMany({
-            where: { characterId: session.characterId },
-            data: { chatsCount: { increment: 1 }, lastActivityAt: now },
-          });
+      if (!owner) throw Errors.notFound("Chat session not found");
+      // Same ladder as cancel/edit/delete. Taking the Turn first deadlocks with
+      // a user-first mutation during memory commit.
+      await lockChatScope(tx, { userId: owner.userId, at: { session: input.sessionId }, allowDeletedSession: true });
+      const accepted = await tx.chatTurn.findUnique({
+        where: { id: input.turnId },
+        select: { ...TERMINAL_TURN_SELECT, executionSnapshot: true },
+      });
+      if (!accepted) throw Errors.notFound("Chat turn not found");
+      let terminalSnapshot: Prisma.InputJsonValue | undefined;
+      if (
+        accepted.sessionId === input.sessionId && accepted.assistantMessageId === input.assistantMessageId &&
+        accepted.attempt === input.attempt && ACTIVE_ASSISTANT_STATES.includes(accepted.assistantStatus)
+      ) {
+        // A completed terminal is replayed below without advancing again. A new
+        // selection must derive from this attempt's immutable, pre-Turn anchor,
+        // including edits/regenerations which discarded a previously sent Scene.
+        const anchor = chatExecutionSnapshotSchema.safeParse(accepted.executionSnapshot);
+        if (!anchor.success || anchor.data.turnId !== input.turnId || anchor.data.sessionId !== input.sessionId ||
+          anchor.data.assistantMessageId !== input.assistantMessageId || anchor.data.attempt !== input.attempt) {
+          throw Errors.conflict("Chat terminal has no matching frozen Scene anchor");
         }
-        if (current.memoryEnabled) {
-          await scheduleCompanionMemoryProjection(tx, { userId: session.userId, characterId: session.characterId });
+        if (input.status === "sent") {
+          if (!input.content.trim() && !hasChatMediaResponseAttachment({
+            id: accepted.id, attempt: accepted.attempt, terminalEvidence: input.terminalEvidence,
+          }, await tx.chatTurnAttachment.findMany({ where: { turnId: accepted.id } }))) {
+            throw Errors.conflict("An empty Chat reply requires a current durable media attachment");
+          }
+          if (input.sceneVersion !== anchor.data.sceneVersion + 1) {
+            throw Errors.conflict("A sent Scene must advance exactly once from its frozen anchor");
+          }
+        } else if (input.sceneVersion !== anchor.data.sceneVersion || !jsonEqual(input.scene, anchor.data.scene)) {
+          throw Errors.conflict("An unsuccessful terminal must preserve its complete frozen Scene");
         }
-        if (current.origin === "user") await appendChatExchangeCompleted(tx, current, session, now);
+        terminalSnapshot = terminalExecutionSnapshot(accepted.executionSnapshot);
       }
-      return { turn: current, duplicate: false };
+      const changed = await tx.chatTurn.updateMany({
+        where: {
+          id: input.turnId,
+          sessionId: input.sessionId,
+          assistantMessageId: input.assistantMessageId,
+          attempt: input.attempt,
+          assistantStatus: { in: ACTIVE_ASSISTANT_STATES },
+        },
+        data: {
+          assistantContent: input.content,
+          assistantStatus: input.status,
+          model: input.model,
+          promptTokens: input.promptTokens,
+          completionTokens: input.completionTokens,
+          sceneVersion: input.sceneVersion,
+          scene: input.scene === null ? Prisma.JsonNull : toJson(input.scene),
+          terminalEvidence: toJson(input.terminalEvidence),
+          terminalAt: now,
+          ...(terminalSnapshot ? { executionSnapshot: terminalSnapshot } : {}),
+          // A terminal attempt has no lookup consumer. The attachment and the
+          // immutable terminal proposal each have their own durable receipt.
+        },
+      });
+      if (changed.count === 1) {
+        // The CAS row is `accepted` plus the fields just written; no re-read.
+        const current = { ...accepted, terminalAt: now };
+        const session = await tx.recentChat.update({
+          where: { sessionId: input.sessionId },
+          data: {
+            contextRevision: { increment: 1 },
+            lastMessageAt: now,
+            // A proactive reply arrives with nobody watching — the session list is
+            // the only place it can announce itself. A failed or cancelled
+            // proactive attempt has nothing to show, so it marks nothing.
+            ...(current.origin === "proactive" && input.status === "sent"
+              ? { proactiveUnreadAt: now }
+              : {}),
+          },
+          select: { userId: true, characterId: true, entryExposureId: true, entryJourneyId: true, entryPlacementId: true },
+        });
+        await settleChatTurnUsage(tx, current, input.status, now);
+        let countCharacterChat = false;
+        if (input.status === "sent") {
+          const firstSelectedReply = await tx.chatTurn.updateMany({
+            where: { id: input.turnId, statsCountedAt: null },
+            data: { statsCountedAt: now },
+          });
+          countCharacterChat = firstSelectedReply.count === 1;
+          if (current.memoryEnabled) {
+            await scheduleCompanionMemoryProjection(tx, { userId: session.userId, characterId: session.characterId });
+          }
+          if (current.origin === "user") await appendChatExchangeCompleted(tx, current, session, now);
+        }
+        return { turn: current, duplicate: false, countCharacterChat, characterId: session.characterId };
+      }
+      const current = await tx.chatTurn.findUnique({ where: { id: input.turnId }, select: TERMINAL_TURN_SELECT });
+      if (!current) throw Errors.notFound("Chat turn not found");
+      const sameTerminal = current.attempt === input.attempt
+        && current.sessionId === input.sessionId
+        && current.assistantMessageId === input.assistantMessageId
+        && current.assistantStatus === input.status
+        && current.assistantContent === input.content
+        && current.model === input.model
+        && current.promptTokens === input.promptTokens
+        && current.completionTokens === input.completionTokens
+        && current.sceneVersion === input.sceneVersion
+        && jsonEqual(current.scene, input.scene)
+        && jsonEqual(current.terminalEvidence, input.terminalEvidence);
+      if (!sameTerminal) throw Errors.conflict("Terminal commit lost the active attempt CAS");
+      // The original commit atomically scheduled projection. Its outbox owns
+      // delivery and retry even if the terminal ACK was lost after commit.
+      return { turn: current, duplicate: true, countCharacterChat: false, characterId: null };
+    });
+    outcome = updated.duplicate ? "duplicate" : "committed";
+    if (updated.countCharacterChat && updated.characterId) {
+      // INTENT: characterStats is one hot row per Character shared by every user;
+      // incrementing it inside the user/session-locked terminal transaction
+      // serialized all of that Character's terminal commits on it. The Turn's
+      // statsCountedAt (committed above) is the authoritative "counted once"
+      // fact; this display counter is a best-effort post-commit projection.
+      await prisma.characterStats.updateMany({
+        where: { characterId: updated.characterId },
+        data: { chatsCount: { increment: 1 }, lastActivityAt: now },
+      }).catch((err: unknown) => {
+        logger.warn({ err, turnId: input.turnId, characterId: updated.characterId }, "character chat counter increment failed after terminal commit");
+      });
     }
-    const sameTerminal = current.attempt === input.attempt
-      && current.sessionId === input.sessionId
-      && current.assistantMessageId === input.assistantMessageId
-      && current.assistantStatus === input.status
-      && current.assistantContent === input.content
-      && current.model === input.model
-      && current.promptTokens === input.promptTokens
-      && current.completionTokens === input.completionTokens
-      && current.sceneVersion === input.sceneVersion
-      && jsonEqual(current.scene, input.scene)
-      && jsonEqual(current.terminalEvidence, input.terminalEvidence);
-    if (!sameTerminal) throw Errors.conflict("Terminal commit lost the active attempt CAS");
-    // The original commit atomically scheduled projection. Its outbox owns
-    // delivery and retry even if the terminal ACK was lost after commit.
-    return { turn: current, duplicate: true };
-  });
-  return {
-    accepted: true as const,
-    duplicate: updated.duplicate,
-    terminalMessageId: updated.turn.assistantMessageId,
-    committedAt: updated.turn.terminalAt?.toISOString() ?? now.toISOString(),
-  };
+    return {
+      accepted: true as const,
+      duplicate: updated.duplicate,
+      terminalMessageId: updated.turn.assistantMessageId,
+      committedAt: updated.turn.terminalAt?.toISOString() ?? now.toISOString(),
+    };
+  } finally {
+    observeHistogram(
+      "chat_terminal_commit_duration_seconds",
+      "Main terminal commit transaction latency for a Chat attempt",
+      { status: input.status, outcome },
+      (performance.now() - startedAt) / 1_000,
+    );
+  }
 }
 
 export async function cancelChatTurn(userId: string, messageId: string, expectedAttempt: number) {
@@ -162,6 +223,7 @@ export async function cancelChatTurn(userId: string, messageId: string, expected
         assistantStatus: "cancelled",
         terminalAt: now,
         terminalEvidence: toJson({ authority: "main_user_cancel" }),
+        ...trimmedSnapshot(current.executionSnapshot),
       },
     });
     await settleChatTurnUsage(tx, current, "cancelled", now);
@@ -223,6 +285,7 @@ export async function failStalledChatTurn(turnId: string, cutoff: {
         assistantStatus: "failed",
         terminalAt: now,
         terminalEvidence: toJson({ authority: "main_stalled_attempt_reclaim" }),
+        ...trimmedSnapshot(turn.executionSnapshot),
       },
     });
     await settleChatTurnUsage(tx, turn, "failed", now);
@@ -303,6 +366,7 @@ export async function expirePendingChatTurn(turnId: string, input: {
         }),
         admissionLeaseToken: null,
         admissionLeaseUntil: null,
+        ...trimmedSnapshot(turn.executionSnapshot),
       },
     });
     await settleChatTurnUsage(tx, turn, "failed", now);
