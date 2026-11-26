@@ -6,6 +6,8 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { publicCharacterAudienceWhere } from "@/server/modules/ourdream/public-content-audience";
 import { chatSessionCharacterPin, chatSessionContinuation, chatTurnMessagesForOwner } from "./turn-ledger";
+import { groupTranscriptPage, type ChatTranscriptPage } from "./chat-read-model";
+import { ACTIVE_ASSISTANT_STATES } from "./turn-ledger-support";
 
 const createSchema = z.object({
   title: z.string().trim().min(1).max(120),
@@ -87,27 +89,24 @@ export async function groupSpeakerSession(userId: string, groupId: string, chara
   return { sessionId: member.sessionId, characterId: member.characterId, speakerName: member.title ?? "Character" };
 }
 
-export async function getGroupConversation(userId: string, groupId: string, selectedCharacterId?: string) {
+export async function getGroupConversation(userId: string, groupId: string, selectedCharacterId?: string, transcriptPage?: ChatTranscriptPage) {
   const group = await prisma.groupConversation.findFirst({
     where: { id: groupId, userId },
     include: {
       members: { orderBy: { groupPosition: "asc" }, include: { character: { select: { creatorId: true, imageAsset: { select: { url: true, thumbnailUrl: true } } } } } },
-      turns: {
-        orderBy: { ordinal: "asc" },
-        include: { turn: { include: { attachments: { orderBy: { createdAt: "asc" } } } } },
-      },
     },
   });
   if (!group) throw Errors.notFound("Group conversation not found");
   const selected = selectedCharacterId ? group.members.find(member => member.characterId === selectedCharacterId) : group.members[0];
   if (!selected || group.members.length < GROUP_CHAT_MIN_MEMBERS) throw Errors.gone("This group no longer has enough available Characters");
   const memberBySession = new Map(group.members.map(member => [member.sessionId, member]));
-  const raw = await chatTurnMessagesForOwner(userId, group.turns.map(entry => entry.turn));
-  const messageSpeakers = new Map(group.turns.flatMap(entry => {
-    const member = memberBySession.get(entry.turn.sessionId);
+  const { turns, page } = await groupTranscriptPage(group.id, transcriptPage);
+  const raw = await chatTurnMessagesForOwner(userId, turns);
+  const messageSpeakers = new Map(turns.flatMap(turn => {
+    const member = memberBySession.get(turn.sessionId);
     if (!member) throw Errors.gone("Group transcript identity is unavailable");
-    const speaker = { sessionId: member.sessionId, characterId: member.characterId, speakerName: member.title ?? "Character", requestKey: entry.turn.idempotencyKey };
-    return [[entry.turn.userMessageId, speaker], [entry.turn.assistantMessageId, speaker]] as const;
+    const speaker = { sessionId: member.sessionId, characterId: member.characterId, speakerName: member.title ?? "Character", requestKey: turn.idempotencyKey };
+    return [[turn.userMessageId, speaker], [turn.assistantMessageId, speaker]] as const;
   }));
   return {
     id: group.id, ownerScope: `user:${userId}`, title: group.title, status: group.status,
@@ -124,6 +123,7 @@ export async function getGroupConversation(userId: string, groupId: string, sele
       selectedSessionId: selected.sessionId,
     },
     messages: raw.map((message): Record<string, unknown> => ({ ...message, ...messageSpeakers.get(String(message.id)) })),
+    page,
   };
 }
 
@@ -151,8 +151,8 @@ export async function updateGroupConversation(userId: string, groupId: string, i
     await tx.$queryRaw`SELECT id FROM "group_conversations" WHERE id = ${groupId} FOR UPDATE`;
     const group = await tx.groupConversation.findFirst({ where: { id: groupId, userId } });
     if (!group) throw Errors.notFound("Group conversation not found");
-    if (values.status && await tx.chatTurn.count({ where: { groupTurn: { groupId }, assistantStatus: { in: ["pending", "generating"] } } })) {
-      throw Errors.conflict("Cancel the active reply before changing this group");
+    if (values.status && await tx.chatTurn.count({ where: { groupTurn: { groupId }, assistantStatus: { in: ACTIVE_ASSISTANT_STATES } } })) {
+      throw Errors.conflict("Cancel the active reply before changing this group", { reason: "reply_in_progress" });
     }
     if (addCharacterIds) {
       if (group.status !== "active") throw Errors.gone("Group conversation is unavailable or archived");

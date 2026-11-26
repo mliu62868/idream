@@ -57,9 +57,13 @@ async function fixture() {
 /** Reproduce a Chat process that died after admission: generating, then silence. */
 async function abandonInGenerating(turnId: string, ageMs: number) {
   const stalledAt = new Date(Date.now() - ageMs);
+  // Every admission pins Chat's deadline; model a five-minute commitment made
+  // when the attempt was admitted unless the case pinned its own.
+  const deadline = new Date(stalledAt.getTime() + 5 * 60_000);
   await prisma.$executeRaw`
     UPDATE "chat_turns"
-       SET "assistantStatus" = 'generating', "updatedAt" = ${stalledAt}
+       SET "assistantStatus" = 'generating', "updatedAt" = ${stalledAt},
+           "executionDeadlineAt" = COALESCE("executionDeadlineAt", ${deadline})
      WHERE id = ${turnId}
   `;
 }

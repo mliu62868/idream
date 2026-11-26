@@ -132,6 +132,9 @@ const EnvSchema = z.object({
   // and stream transport. Unset means execution is unavailable outside injected tests.
   CHAT_SERVICE_URL: z.string().url().optional(),
   CHAT_BFF_SIGNING_SECRET: z.string().optional(),
+  // A Turn still `pending` this long after its attempt started was never admitted
+  // by Chat; Main fails it (`admission_expired`) instead of answering hours later.
+  CHAT_PENDING_ADMISSION_TTL_MS: z.coerce.number().int().positive().default(180_000),
   ADMIN_BFF_SIGNING_SECRET: z.string().min(32).optional(),
 }).superRefine((value, ctx) => {
   if (value.VIDEO_JOB_STALE_TIMEOUT_MS <= value.GEN_VIDEO_TIMEOUT_MS) {

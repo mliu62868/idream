@@ -185,7 +185,7 @@ describe("initial Chat image delivery", () => {
     expect(await dreamcoinBalance(userId)).toBe(outcome === "failed" ? 40 : 40 - finalCost);
   });
 
-  it("replays a recorded legacy edit without permitting versionless writes or another debit", async () => {
+  it("refuses a recorded legacy edit key without permitting versionless writes or another debit", async () => {
     const userId = `${prefix}${randomUUID()}`;
     await createUser({ id: userId });
     await grantCoins(userId, 40);
@@ -255,8 +255,9 @@ describe("initial Chat image delivery", () => {
     });
     admit.mockClear();
     const legacyReplay = await patch(paid, paidKey);
-    expect(legacyReplay.status).toBe(202);
-    expect(legacyReplay.json).toMatchObject({ attempt: revised.attempt, status: "sent", streamUrl: null });
+    // Attempt-less receipts had no remaining rows; the key no longer reopens a versionless path.
+    expect(legacyReplay.status).toBe(409);
+    expect(legacyReplay.json).toMatchObject({ details: { reason: "version_mismatch", cause: "edit_attempt_required", attempt: revised.attempt } });
     expect(admit).not.toHaveBeenCalled();
 
     const replacement = { content: "Only say hello.", attempt: revised.attempt };
@@ -269,7 +270,7 @@ describe("initial Chat image delivery", () => {
     admit.mockClear();
     const late = await patch(paid, paidKey);
     expect(late.status).toBe(409);
-    expect(late.json).toMatchObject({ details: { reason: "edit_attempt_changed", attempt: newer.attempt } });
+    expect(late.json).toMatchObject({ details: { reason: "version_mismatch", cause: "edit_attempt_required", attempt: newer.attempt } });
     for (const [body, key] of [
       [paid, undefined],
       [paid, randomUUID()],
@@ -278,7 +279,7 @@ describe("initial Chat image delivery", () => {
     ] as const) {
       const refused = await patch(body, key);
       expect(refused.status).toBe(409);
-      expect(refused.json).toMatchObject({ details: { reason: "edit_attempt_required", attempt: newer.attempt } });
+      expect(refused.json).toMatchObject({ details: { reason: "version_mismatch", cause: "edit_attempt_required", attempt: newer.attempt } });
     }
     expect(admit).not.toHaveBeenCalled();
     expect(await load()).toEqual(newer);

@@ -32,6 +32,7 @@ import { CuratedMediaUnavailable, schedulePaidCuratedMediaDelivery, type MediaFu
 import { assertToolEffectRequest, createToolEffectAttachment, failedToolEffectReceipt, transitionToolEffectAttachment } from "./tool-effect-attachment";
 import { assertChatSessionServingAuthority } from "./turn-ledger";
 import { attachmentAttempt, lockChatScope } from "./turn-scope";
+import { ACTIVE_ASSISTANT_STATES } from "./turn-ledger-support";
 
 type Turn = ChatTurn & { session: RecentChat };
 const imageOrientation = { portrait: "4:5", square: "1:1", landscape: "16:9" } as const;
@@ -360,7 +361,7 @@ export async function fulfillCharacterMediaRequest(input: {
         assertToolEffectRequest(raced, effect.name, requestDigest);
         return requestMediaReceipt(raced, true);
       }
-      if (!["pending", "generating"].includes(scope.turn!.assistantStatus)) {
+      if (!ACTIVE_ASSISTANT_STATES.includes(scope.turn!.assistantStatus)) {
         throw Errors.conflict("Media quote does not belong to an active Chat attempt");
       }
       if (scope.session.status !== "active") throw Errors.gone("Chat session is archived");
@@ -477,7 +478,7 @@ async function fulfillAuthorizedMedia(
       const scope = await lockChatScope(tx, {
         userId,
         at: { turn: turn.id },
-        expect: { attempt, assistantStatus: ["pending", "generating"] },
+        expect: { attempt, assistantStatus: ACTIVE_ASSISTANT_STATES },
       });
       if (scope.session.status !== "active") throw Errors.gone("Chat session is archived");
       const existing = await tx.chatTurnAttachment.findUnique({ where: { id: attachmentId } });
@@ -569,7 +570,7 @@ export async function resendSessionMediaRequest(input: {
       assertToolEffectRequest(raced, effect.name, requestDigest);
       return resendMediaReceipt(raced, true);
     }
-    if (!["pending", "generating"].includes(scope.turn!.assistantStatus)) {
+    if (!ACTIVE_ASSISTANT_STATES.includes(scope.turn!.assistantStatus)) {
       throw Errors.conflict("Media resend does not belong to an active Chat attempt");
     }
     if (scope.session.status !== "active") throw Errors.gone("Chat session is archived");

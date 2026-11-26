@@ -212,6 +212,14 @@ export const agentRunCancelRequestedV1PayloadSchema = z.object({
   attempt: z.number().int().positive(),
 }).strict();
 
+/** Omitted `throughAttempt` purges every attempt of a Turn that no longer exists. */
+export const agentRunPurgeRequestedV1PayloadSchema = z.object({
+  version: z.literal(1),
+  userId: z.string().min(1),
+  turnId: z.string().min(1),
+  throughAttempt: z.number().int().positive().optional(),
+}).strict();
+
 export const companionMemoryRebuildRequestedV1PayloadSchema = z.object({
   version: z.literal(1),
   userId: z.string().min(1),
@@ -453,5 +461,8 @@ export type AccountDeletionRequestedV2Payload = z.infer<
 >;
 export type AgentRunCancelRequestedV1Payload = z.infer<
   typeof agentRunCancelRequestedV1PayloadSchema
+>;
+export type AgentRunPurgeRequestedV1Payload = z.infer<
+  typeof agentRunPurgeRequestedV1PayloadSchema
 >;
 export type AiFinalizePayload = z.infer<typeof aiFinalizePayloadSchema>;

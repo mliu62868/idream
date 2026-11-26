@@ -288,7 +288,7 @@ export async function routeVoiceCall(request: Request, path: string[], userId: s
   const auth = await getAuthCtx(request);
   requireAgeGate(auth); requireAgeVerified(auth);
   if (auth.userId !== userId) throw Errors.unauthorized("Sign in required");
-  if (request.headers.get("x-idream-viewer-scope") !== `user:${userId}`) throw Errors.conflict("Your account changed; reload before calling");
+  if (request.headers.get("x-idream-viewer-scope") !== `user:${userId}`) throw Errors.conflict("Your account changed; reload before calling", { reason: "viewer_changed" });
   const sessionId = path[1];
   await sessionAuthority(userId, sessionId);
   const reply = (data: unknown) => Response.json(data, { headers: { "cache-control": "private, no-store", vary: "Cookie, Authorization" } });

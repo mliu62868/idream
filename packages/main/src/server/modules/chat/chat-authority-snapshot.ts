@@ -4,7 +4,13 @@ import { Errors } from "@/server/lib/errors";
 import { entitlementMap } from "@/server/modules/ourdream/subscription-lifecycle";
 import { availableCharacterMediaLibraryKinds } from "@/server/modules/character-media-library/service";
 
-/** Main is the sole reader and compiler of facts admitted into one Agent run. */
+export type ChatEntitlements = Awaited<ReturnType<typeof entitlementMap>>;
+
+/**
+ * Main is the sole reader and compiler of facts admitted into one Agent run.
+ * `entitlements` may carry the map the creating transaction already read under
+ * the user lock (the quota check), so inline admission does not recompute it.
+ */
 export async function loadChatAuthoritySnapshot(
   userId: string,
   pin: {
@@ -14,13 +20,14 @@ export async function loadChatAuthoritySnapshot(
     visualProfileId: string | null;
     visualProfileVersion: number | null;
   },
+  options: { entitlements?: ChatEntitlements } = {},
 ): Promise<ChatAuthoritySnapshot> {
   const now = new Date();
   const [user, ageGate, ageVerification, entitlementValues, character, contentVersion, release] = await Promise.all([
     prisma.user.findUnique({ where: { id: userId }, include: { preferences: true } }),
     prisma.ageGateAcceptance.findFirst({ where: { userId }, orderBy: { acceptedAt: "desc" } }),
     prisma.ageVerification.findFirst({ where: { userId }, orderBy: { createdAt: "desc" } }),
-    entitlementMap(userId, prisma, now),
+    options.entitlements ?? entitlementMap(userId, prisma, now),
     prisma.character.findUnique({
       where: { id: pin.characterId },
       include: {

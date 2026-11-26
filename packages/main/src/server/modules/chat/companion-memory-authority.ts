@@ -1,5 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
-import { recordMainToChatEvent } from "@/processes/chat-outbox";
+import { randomUUID } from "node:crypto";
+import { recordAgentRunCancelIntent, recordAgentRunPurgeIntent } from "./agent-run-intents";
+import { agentRunCancelPath, agentRunPurgePath, chatRuntimeUrl } from "./chat-runtime-endpoint";
 import {
   COMPANION_MEMORY_PURGE_PATH,
   COMPANION_MEMORY_REBUILD_PREPARE_PATH,
@@ -22,8 +23,9 @@ import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
-import { settleChatTurnUsage } from "./turn-ledger";
+import { settleChatTurnUsage } from "./turn-usage";
 import { hasChatMediaResponseAttachment } from "./tool-effect-attachment";
+import { ACTIVE_ASSISTANT_STATES } from "./turn-ledger-support";
 
 const DESTRUCTIVE_MEMORY_EVENT_TYPES = [
   MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1,
@@ -58,8 +60,67 @@ export async function assertNoPendingCompanionMemoryRebuild(
   characterId: string,
 ): Promise<void> {
   if (await hasPendingCompanionMemoryMutation(tx, userId, characterId)) {
-    throw Errors.conflict("Still updating this Character's memory — try again in a few seconds");
+    throw Errors.conflict("Still updating this Character's memory — try again in a few seconds", { reason: "memory_updating" });
   }
+}
+
+/**
+ * SPEC: whether a Turn's current attempt can already be part of canonical
+ * memory. Mirrors the export filter in {@link memorySourceMessages}: only a
+ * sent user message with a sent reply on a memory-enabled Turn is exported.
+ * Earlier attempts were already removed by the rebuild scheduled when they
+ * were superseded while sent.
+ */
+export function companionMemoryMayContain(turn: {
+  userStatus: string;
+  assistantStatus: string;
+  memoryEnabled: boolean;
+}): boolean {
+  return turn.userStatus === "sent" && turn.assistantStatus === "sent" && turn.memoryEnabled;
+}
+
+/**
+ * SPEC: retire one attempt (or a deleted Turn) from relationship memory.
+ *
+ * INTENT: a revision used to rebuild the whole relationship and freeze the new
+ * attempt as private, even when the superseded attempt had failed and could
+ * never have been projected — "the Character forgets after Retry", plus a 409
+ * for a quick second Retry while that rebuild ran. Only an attempt memory may
+ * contain needs the destructive rebuild; anything else only needs its local
+ * AgentRun evidence purged.
+ *
+ * Returns whether the next attempt of this relationship must run memory-isolated
+ * (a destructive mutation is now, or was already, pending).
+ */
+export async function retireCompanionMemoryAttempt(
+  tx: Prisma.TransactionClient,
+  input: {
+    userId: string;
+    characterId: string;
+    turn: { id: string; attempt: number; userStatus: string; assistantStatus: string; memoryEnabled: boolean };
+    /** "attempt": a revision supersedes the current attempt; "turn": the Turn is deleted. */
+    scope: "attempt" | "turn";
+  },
+): Promise<{ rebuilt: boolean; memoryIsolated: boolean }> {
+  const { userId, characterId, turn } = input;
+  if (companionMemoryMayContain(turn)) {
+    await assertNoPendingCompanionMemoryRebuild(tx, userId, characterId);
+    await scheduleCompanionMemoryRebuild(tx, {
+      userId,
+      characterId,
+      ...(input.scope === "turn"
+        ? { purgeTurnIds: [turn.id] }
+        : { purgeRunAttempts: [{ turnId: turn.id, throughAttempt: turn.attempt }] }),
+    });
+    return { rebuilt: true, memoryIsolated: true };
+  }
+  await recordAgentRunPurgeIntent(tx, {
+    userId,
+    turnId: turn.id,
+    ...(input.scope === "attempt" ? { throughAttempt: turn.attempt } : {}),
+    occurredAt: new Date(),
+  });
+  return { rebuilt: false, memoryIsolated: await hasPendingCompanionMemoryMutation(tx, userId, characterId) };
 }
 
 export async function scheduleCompanionMemoryProjection(
@@ -92,12 +153,7 @@ export async function scheduleCompanionMemoryProjection(
     });
     if (coalesced.count === 1) return existing.id;
   }
-  const authority = await tx.companionMemoryAuthority.upsert({
-    where: { aggregateId },
-    create: { aggregateId, version: BigInt(1) },
-    update: { version: { increment: 1 } },
-    select: { version: true },
-  });
+  const authority = await bumpCompanionMemoryAuthority(tx, aggregateId);
   const eventId = randomUUID();
   const envelope = durableEventEnvelopeSchema.parse({
     sourceService: "main",
@@ -137,15 +193,13 @@ export async function scheduleCompanionMemoryRebuild(
   },
 ): Promise<string> {
   const aggregateId = companionRelationshipAggregateId(input.userId, input.characterId);
+  // INVARIANT: bump (and so row-lock) the relationship authority before revoking
+  // projections. The promotion fence takes this same row, so a promote either
+  // finishes before this transaction or observes the revocation after it.
+  const authority = await bumpCompanionMemoryAuthority(tx, aggregateId);
   // INVARIANT: every destructive mutation carries its own exact purge fence.
   // A pending rebuild may already be processing and cannot be safely widened.
   await supersedeMemoryProjections(tx, aggregateId, "destructive_memory_rebuild");
-  const authority = await tx.companionMemoryAuthority.upsert({
-    where: { aggregateId },
-    create: { aggregateId, version: BigInt(1) },
-    update: { version: { increment: 1 } },
-    select: { version: true },
-  });
   const eventId = randomUUID();
   const envelope = durableEventEnvelopeSchema.parse({
     sourceService: "main",
@@ -177,6 +231,54 @@ export async function scheduleCompanionMemoryRebuild(
   return eventId;
 }
 
+/**
+ * SPEC: the relationship authority row is the single promotion fence.
+ *
+ * INTENT: promotion used to hold `users FOR UPDATE` across the remote promote
+ * HTTP call, stalling every send, terminal commit and Stop of that user for up
+ * to the promote timeout. Only mutations of *this relationship's* memory need
+ * to exclude a promote, and each of them writes this row in its own
+ * transaction: rebuild and projection scheduling bump it, clear bumps it, and
+ * account hard-delete removes it.
+ *
+ * INVARIANT: the caller holds this row (`FOR UPDATE`) while it re-reads the
+ * outbox event, so a revocation committed first is always observed, and a
+ * revocation that starts later waits for the promote to finish. Lock order is
+ * users → … → companion_memory_authorities; a promote takes only this row.
+ */
+async function lockCompanionMemoryAuthority(
+  tx: Prisma.TransactionClient,
+  aggregateId: string,
+): Promise<bigint | null> {
+  const rows = await tx.$queryRaw<Array<{ version: bigint }>>`
+    SELECT "version" FROM "companion_memory_authorities"
+     WHERE "aggregateId" = ${aggregateId}
+       FOR UPDATE`;
+  return rows[0]?.version ?? null;
+}
+
+async function bumpCompanionMemoryAuthority(tx: Prisma.TransactionClient, aggregateId: string) {
+  return tx.companionMemoryAuthority.upsert({
+    where: { aggregateId },
+    create: { aggregateId, version: BigInt(1) },
+    update: { version: { increment: 1 } },
+    select: { version: true },
+  });
+}
+
+/**
+ * A projection is a complete export of the relationship. Once a newer authority
+ * exists, a newer event (projection, rebuild, or clear's purge) owns
+ * publication, so the older projection may stop. A rebuild may not: a later
+ * projection seeds from canonical memory and cannot carry the rebuild's
+ * deletions, so a rebuild stops only once revoked (clear, account deletion).
+ */
+function memoryEventSuperseded(event: DurableEventEnvelope, payloadVersion: string, currentVersion: bigint | null) {
+  if (currentVersion === null) return true;
+  return event.eventType === MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1
+    && currentVersion !== BigInt(payloadVersion);
+}
+
 export async function syncCompanionMemoryFromMain(
   event: DurableEventEnvelope,
 ): Promise<void> {
@@ -189,11 +291,18 @@ export async function syncCompanionMemoryFromMain(
   ) {
     throw new Error("companion memory sync event identity is invalid");
   }
+  // Unlocked pre-check: a projection already superseded by a newer authority
+  // skips the whole export. The locked check before promote stays authoritative.
+  const observed = await prisma.companionMemoryAuthority.findUnique({
+    where: { aggregateId: event.aggregateId },
+    select: { version: true },
+  });
+  if (memoryEventSuperseded(event, payload.authorityVersion, observed?.version ?? null)) return;
   for (const turnId of payload.purgeTurnIds) {
-    await purgeAgentRun(turnId);
+    await purgeChatAgentRun(turnId);
   }
   for (const fence of payload.purgeRunAttempts) {
-    await purgeAgentRun(fence.turnId, fence.throughAttempt);
+    await purgeChatAgentRun(fence.turnId, fence.throughAttempt);
   }
 
   const metrics = await memorySourceMetrics(payload.userId, payload.characterId);
@@ -202,7 +311,7 @@ export async function syncCompanionMemoryFromMain(
     claimToken: payload.claimToken,
     authorityVersion: payload.authorityVersion,
   };
-  const preparedResponse = await fetch(chatUrl(COMPANION_MEMORY_REBUILD_PREPARE_PATH), {
+  const preparedResponse = await fetch(chatRuntimeUrl(COMPANION_MEMORY_REBUILD_PREPARE_PATH), {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -235,16 +344,17 @@ export async function syncCompanionMemoryFromMain(
     : null;
   if (!rebuildId) throw new Error("companion memory rebuild prepare returned invalid evidence");
 
-  // The user lock is the final Main authority fence. It serializes promotion
-  // with clear-memory, new Turns, and every destructive relationship mutation.
+  // The relationship authority row is the final Main fence (see
+  // lockCompanionMemoryAuthority). The user's row is never held across HTTP.
   await prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${payload.userId} FOR UPDATE`;
+    const version = await lockCompanionMemoryAuthority(tx, event.aggregateId);
+    if (memoryEventSuperseded(event, payload.authorityVersion, version)) return;
     const current = await tx.mainOutboxEvent.findUnique({
       where: { id: event.sourceEventId },
       select: { status: true },
     });
     if (!current || !["pending", "processing"].includes(current.status)) return;
-    const response = await fetch(chatUrl(COMPANION_MEMORY_REBUILD_PROMOTE_PATH), {
+    const response = await fetch(chatRuntimeUrl(COMPANION_MEMORY_REBUILD_PROMOTE_PATH), {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -282,7 +392,7 @@ export async function purgeCompanionMemoryFromMain(event: DurableEventEnvelope):
   ) {
     throw new Error("companion memory purge event identity is invalid");
   }
-  const response = await fetch(chatUrl(COMPANION_MEMORY_PURGE_PATH), {
+  const response = await fetch(chatRuntimeUrl(COMPANION_MEMORY_PURGE_PATH), {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -334,7 +444,7 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
     const active = await tx.chatTurn.findMany({
       where: {
         sessionId: { in: endingSessionIds },
-        assistantStatus: { in: ["pending", "generating"] },
+        assistantStatus: { in: ACTIVE_ASSISTANT_STATES },
       },
       select: { id: true, attempt: true, statsCountedAt: true, admittedAt: true },
     });
@@ -354,14 +464,7 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
     // Same durable cancel as a user's Stop, so a run keeps no GPU slot when the
     // best-effort HTTP cancel below is lost and the purge has not landed yet.
     for (const turn of active) {
-      await recordMainToChatEvent({
-        eventId: `chat_agent_run_cancel_${createHash("sha256").update(`${turn.id}:${turn.attempt}`).digest("hex").slice(0, 40)}`,
-        eventType: MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1,
-        aggregateType: "chat_turn",
-        aggregateId: turn.id,
-        payload: { version: 1, userId, turnId: turn.id, attempt: turn.attempt },
-        occurredAt: now,
-      }, tx);
+      await recordAgentRunCancelIntent(tx, { userId, turnId: turn.id, attempt: turn.attempt, occurredAt: now });
     }
     // Turn.memoryEnabled is the immutable projection pin used by every later
     // canonical rebuild. Clearing only the mutable Session flag would let a
@@ -384,6 +487,9 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
       await tx.recentChat.updateMany({ where: { userId, groupId: { in: groupIds } }, data: { status: "archived", contextRevision: { increment: 1 } } });
     }
     const aggregateId = companionRelationshipAggregateId(userId, characterId);
+    // Same promotion fence as a destructive rebuild: revoke only while holding
+    // (and advancing) the relationship authority row.
+    await bumpCompanionMemoryAuthority(tx, aggregateId);
     await supersedeMemoryProjections(tx, aggregateId, "durable_memory_purge");
     await tx.mainOutboxEvent.updateMany({
       where: {
@@ -437,7 +543,7 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
   // Best effort only: the durable cancel events above guarantee delivery, so a
   // slow or hung Chat must not hold the user's "clear memory" response.
   await Promise.allSettled(result.active.map((turn) => fetch(
-    chatUrl(`/internal/agent-runs/${encodeURIComponent(turn.id)}/${turn.attempt}/cancel`),
+    chatRuntimeUrl(agentRunCancelPath(turn.id, turn.attempt)),
     { method: "POST", headers: { "x-internal-token": env.INTERNAL_TOKEN }, signal: AbortSignal.timeout(3_000) },
   )));
   return {
@@ -495,6 +601,16 @@ async function memorySourceMetrics(userId: string, characterId: string): Promise
   };
 }
 
+/**
+ * INTENT: every projection exports the whole relationship, not only Turns after
+ * a cursor. Chat's builder (agent-runtime/igrep.ts) requires it: each igrep
+ * `mem ingest` must see a session's complete transcript (events ==
+ * messageCount; a rewritten published prefix is refused), the candidate's
+ * dialogue count must equal the number of exported sessions, and both the
+ * project→rebuild fallback and source-only recovery wipe the seeded `.igrep`
+ * and re-ingest only what Main sent. A partial export would publish a
+ * canonical missing every unsent session.
+ */
 async function* memorySourceMessages(
   userId: string,
   characterId: string,
@@ -568,10 +684,9 @@ async function* memorySourceMessages(
   }
 }
 
-async function purgeAgentRun(turnId: string, throughAttempt?: number): Promise<void> {
-  const response = await fetch(chatUrl(
-    `/internal/agent-runs/${encodeURIComponent(turnId)}/purge`,
-  ), {
+/** Removes local AgentRun evidence for a Turn (all attempts, or through one). */
+export async function purgeChatAgentRun(turnId: string, throughAttempt?: number): Promise<void> {
+  const response = await fetch(chatRuntimeUrl(agentRunPurgePath(turnId)), {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -583,10 +698,6 @@ async function purgeAgentRun(turnId: string, throughAttempt?: number): Promise<v
   if (!response.ok) throw new Error(`AgentRun purge returned ${response.status}`);
 }
 
-function chatUrl(path: string): string {
-  if (!env.CHAT_SERVICE_URL) throw new Error("CHAT_SERVICE_URL is required");
-  return `${env.CHAT_SERVICE_URL.replace(/\/$/u, "")}${path}`;
-}
 
 function memoryRebuildPayload(event: DurableEventEnvelope): {
   userId: string;
@@ -630,7 +741,7 @@ async function supersedeMemoryProjections(
       aggregateId,
       // A processing projection may already have exported the pre-deletion
       // transcript. Revoke its live lease too: the final promotion check under
-      // the same user lock must reject it after a destructive mutation.
+      // the relationship authority row must reject it after this mutation.
       status: { in: ["pending", "processing"] },
     },
     data: {

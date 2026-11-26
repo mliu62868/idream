@@ -14,11 +14,11 @@ async function authorize(request: Request, userId: string, conversation: Convers
   if (auth.userId !== userId) throw Errors.unauthorized("Sign in required");
   requireAgeGate(auth);
   requireAgeVerified(auth);
-  if (request.headers.get("x-idream-viewer-scope") !== `user:${userId}`) throw Errors.conflict("Your account changed. Reload before using voice input");
+  if (request.headers.get("x-idream-viewer-scope") !== `user:${userId}`) throw Errors.conflict("Your account changed. Reload before using voice input", { reason: "viewer_changed" });
   if (conversation.kind === "session") {
     const session = await prisma.recentChat.findFirst({ where: { userId, sessionId: conversation.id }, select: { status: true, groupId: true, characterId: true, characterReleaseId: true } });
     if (!session) throw Errors.notFound("Chat session not found");
-    if (session.groupId) throw Errors.conflict("Open this conversation from its group chat");
+    if (session.groupId) throw Errors.conflict("Open this conversation from its group chat", { reason: "group_conversation" });
     if (session.status !== "active") throw Errors.gone("Chat session is archived");
     await assertChatSessionServingAuthority(prisma, userId, session);
   } else {

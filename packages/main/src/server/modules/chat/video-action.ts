@@ -84,7 +84,7 @@ export async function dispatchChatVideo(
     requireAgeGate(ctx);
     requireAgeVerified(ctx);
     const expected = request.headers.get("x-idream-viewer-scope");
-    if (expected !== null && expected !== `user:${user.id}`) throw Errors.conflict("Your account changed. Sign in to the original account before cancelling this request.");
+    if (expected !== null && expected !== `user:${user.id}`) throw Errors.conflict("Your account changed. Sign in to the original account before cancelling this request.", { reason: "viewer_changed" });
     return ok(await cancelGenerationBeforeProviderEntry(user.id, action));
   }
   if (!(request.method === "GET" && !child) && !(request.method === "POST" && (!child || child === "quote"))) return null;
@@ -93,7 +93,7 @@ export async function dispatchChatVideo(
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const expected = request.headers.get("x-idream-viewer-scope");
-  if (expected !== null && expected !== `user:${user.id}`) throw Errors.conflict("Your account changed. Sign in to the original account before checking this request.");
+  if (expected !== null && expected !== `user:${user.id}`) throw Errors.conflict("Your account changed. Sign in to the original account before checking this request.", { reason: "viewer_changed" });
   if (request.method === "GET") {
     const session = await prisma.recentChat.findFirst({ where: { sessionId, userId: user.id, status: { not: "deleted" } }, select: { sessionId: true } });
     if (!session) throw Errors.notFound("Chat session not found");

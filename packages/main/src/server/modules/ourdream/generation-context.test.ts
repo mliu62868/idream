@@ -157,9 +157,8 @@ describe("Chat to Generate authority", () => {
   });
 
   it.each([
-    { label: "nested legacy identity", metadata: { effect: { attempt: 2 } }, attempt: 2 },
-    { label: "non-numeric root with nested identity", metadata: { attempt: "2", effect: { attempt: 2 } }, attempt: 2 },
-    { label: "null root with nested identity", metadata: { attempt: null, effect: { attempt: 2 } }, attempt: 2 },
+    // The nested-only attempt shape has no remaining rows; it means attempt 1.
+    { label: "retired nested-only identity", metadata: { effect: { attempt: 2 } }, attempt: 1 },
     { label: "legacy identity without an attempt", metadata: {}, attempt: 1 },
     { label: "unsafe numeric root", metadata: { attempt: Number.MAX_SAFE_INTEGER + 1 }, attempt: 1 },
   ])("keeps the delivered attachment available to Generate: $label", async ({ metadata, attempt }) => {

@@ -244,7 +244,7 @@ describe("proactive cadence without a reply", () => {
       userId: f.userId, sessionId: f.sessionId, content: "Take the lead.", idempotencyKey: randomUUID(), origin: "proactive",
     });
     if (status === "sent") await commitSent(proactive.snapshot!, "The kiln's still warm.");
-    if (status === "generating") await agentRunAdmission.attemptChatAgentRunAdmission(proactive.snapshot!);
+    if (status === "generating") await agentRunAdmission.attemptChatAgentRunAdmission(proactive.snapshot!, fetch, { mode: "inline" });
     expect(await prisma.chatTurn.findUniqueOrThrow({ where: { id: proactive.snapshot!.turnId } }))
       .toMatchObject({ assistantStatus: status });
     await makeDue(f.sessionId);

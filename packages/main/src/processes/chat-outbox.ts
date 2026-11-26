@@ -3,6 +3,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   ACCOUNT_DELETION_V2_INGEST_PATH,
   agentRunCancelRequestedV1PayloadSchema,
+  agentRunPurgeRequestedV1PayloadSchema,
   durableAckSchema,
   durableEventEnvelopeSchema,
   MAIN_TO_CHAT_EVENTS,
@@ -15,9 +16,11 @@ import { AppError } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import {
+  purgeChatAgentRun,
   purgeCompanionMemoryFromMain,
   syncCompanionMemoryFromMain,
 } from "@/server/modules/chat/companion-memory-authority";
+import { agentRunCancelPath, chatRuntimeUrl, internalChatHeaders } from "@/server/modules/chat/chat-runtime-endpoint";
 
 type Db = PrismaClient | Prisma.TransactionClient;
 export type MainToChatEventType =
@@ -27,6 +30,10 @@ export type ChatEventLane = "memory" | "lifecycle";
 // Bound headers and ACK body alike: one hung receiver must release its lease
 // through the existing retry path so other lifecycle aggregates can advance.
 const CHAT_LIFECYCLE_DELIVERY_TIMEOUT_MS = 30_000;
+// Memory projection is the slow lane (whole-relationship export + igrep
+// maintain on Chat); a few relationships progress side by side. Lifecycle
+// intents are short and keep their serial order.
+const CHAT_LANE_CONCURRENCY: Record<ChatEventLane, number> = { memory: 4, lifecycle: 1 };
 const CHAT_EVENT_TYPES_BY_LANE = {
   memory: [
     MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1,
@@ -34,6 +41,7 @@ const CHAT_EVENT_TYPES_BY_LANE = {
   ],
   lifecycle: [
     MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1,
+    MAIN_TO_CHAT_EVENTS.agentRunPurgeRequestedV1,
     MAIN_TO_CHAT_EVENTS.companionMemoryPurgeRequestedV1,
     MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2,
   ],
@@ -92,8 +100,11 @@ export async function dispatchPendingChatEvents(input: {
   readonly batch?: number;
   readonly deliver?: (event: DurableEventEnvelope) => Promise<void>;
   readonly signal?: AbortSignal;
+  /** Distinct aggregates delivered in parallel; defaults per lane. */
+  readonly concurrency?: number;
 }): Promise<{ delivered: number; failed: number }> {
   const { lane, batch = 100, deliver = deliverToChat, signal } = input;
+  const concurrency = Math.max(1, input.concurrency ?? CHAT_LANE_CONCURRENCY[lane]);
   if (signal?.aborted) return { delivered: 0, failed: 0 };
   const now = new Date();
   const eventTypes = CHAT_EVENT_TYPES_BY_LANE[lane];
@@ -124,8 +135,8 @@ export async function dispatchPendingChatEvents(input: {
   );
   let delivered = 0;
   let failed = 0;
-  for (const row of rows) {
-    if (signal?.aborted) break;
+  const processRow = async (row: (typeof rows)[number]): Promise<void> => {
+    if (signal?.aborted) return;
     const leaseToken = randomUUID();
     const leaseExpiresAt = new Date(Date.now() + 30_000);
     const claimed = await prisma.$transaction(async (tx) => {
@@ -165,7 +176,7 @@ export async function dispatchPendingChatEvents(input: {
         },
       });
     });
-    if (claimed.count !== 1) continue;
+    if (claimed.count !== 1) return;
     const attempts = row.attempts + 1;
     const heartbeat = setInterval(() => {
       void prisma.mainOutboxEvent.updateMany({
@@ -205,7 +216,7 @@ export async function dispatchPendingChatEvents(input: {
         },
       });
       failed += transition.count;
-      continue;
+      return;
     }
 
     // Receiver ACK can complete only the exact live lease. An expired owner can
@@ -221,7 +232,28 @@ export async function dispatchPendingChatEvents(input: {
       },
     });
     delivered += transition.count;
+  };
+  // INVARIANT: one aggregate's events stay strictly ordered (sequential here,
+  // and the claim refuses any row with a live predecessor). Distinct aggregates
+  // are independent, so one large relationship rebuild cannot hold back every
+  // other user's projection.
+  const byAggregate = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const key = JSON.stringify([row.aggregateType, row.aggregateId]);
+    const queue = byAggregate.get(key);
+    if (queue) queue.push(row);
+    else byAggregate.set(key, [row]);
   }
+  const queues = [...byAggregate.values()];
+  const workers = Array.from({ length: Math.min(concurrency, queues.length) }, async () => {
+    for (let queue = queues.shift(); queue; queue = queues.shift()) {
+      for (const row of queue) {
+        if (signal?.aborted) return;
+        await processRow(row);
+      }
+    }
+  });
+  await Promise.all(workers);
   return { delivered, failed };
 }
 
@@ -241,19 +273,19 @@ export function resolveChatDurableIngestUrl(
 async function deliverToChat(event: DurableEventEnvelope): Promise<void> {
   if (event.eventType === MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1) {
     const payload = agentRunCancelRequestedV1PayloadSchema.parse(event.payload);
-    const base = env.CHAT_SERVICE_URL?.trim();
-    if (!base) throw new Error("CHAT_SERVICE_URL is required for AgentRun cancellation");
-    const response = await fetch(
-      `${base.replace(/\/$/, "")}/internal/agent-runs/${encodeURIComponent(payload.turnId)}/${payload.attempt}/cancel`,
-      {
-        method: "POST",
-        headers: { "x-internal-token": env.INTERNAL_TOKEN },
-        signal: AbortSignal.timeout(CHAT_LIFECYCLE_DELIVERY_TIMEOUT_MS),
-      },
-    );
+    const response = await fetch(chatRuntimeUrl(agentRunCancelPath(payload.turnId, payload.attempt)), {
+      method: "POST",
+      headers: internalChatHeaders(),
+      signal: AbortSignal.timeout(CHAT_LIFECYCLE_DELIVERY_TIMEOUT_MS),
+    });
     if (!response.ok) throw new ChatDeliveryError(`Chat AgentRun cancel returned ${response.status}`);
     const acknowledged = await response.json() as { ok?: unknown };
     if (acknowledged.ok !== true) throw new ChatDeliveryError("Chat did not durably fence the AgentRun");
+    return;
+  }
+  if (event.eventType === MAIN_TO_CHAT_EVENTS.agentRunPurgeRequestedV1) {
+    const payload = agentRunPurgeRequestedV1PayloadSchema.parse(event.payload);
+    await purgeChatAgentRun(payload.turnId, payload.throughAttempt);
     return;
   }
   if (

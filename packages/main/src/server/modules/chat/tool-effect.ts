@@ -37,6 +37,7 @@ import { fulfillCharacterMediaRequest, requestMediaReceipt, resendMediaReceipt, 
 import { frozenChatImageEditSource, isReadableChatMedia, readableDeliveredChatMediaWhere } from "./chat-media-history";
 import { lockCharacterGenerationAuthority, lockMediaAssetAuthority } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { createChatImageEditDraft } from "./image-edit-review";
+import { ACTIVE_ASSISTANT_STATES } from "./turn-ledger-support";
 
 export type ChatToolEffectResult =
   | {
@@ -125,7 +126,7 @@ export async function applyChatToolEffect(raw: unknown, requestSignal?: AbortSig
     if (attachmentAttempt(prior.metadata) !== effect.attempt) {
       if (
         turn.attempt !== effect.attempt ||
-        !["pending", "generating"].includes(turn.assistantStatus)
+        !ACTIVE_ASSISTANT_STATES.includes(turn.assistantStatus)
       ) {
         throw Errors.conflict("Required effect replay does not belong to the active Chat attempt");
       }
@@ -136,7 +137,7 @@ export async function applyChatToolEffect(raw: unknown, requestSignal?: AbortSig
     if (prior.status !== "requesting") return existingEffect(prior, effect.name);
   }
 
-  if (turn.attempt !== effect.attempt || !["pending", "generating"].includes(turn.assistantStatus)) {
+  if (turn.attempt !== effect.attempt || !ACTIVE_ASSISTANT_STATES.includes(turn.assistantStatus)) {
     throw Errors.conflict("Tool effect does not belong to the active Chat attempt");
   }
   if (effect.name === REQUEST_CHARACTER_MEDIA_TOOL) {
@@ -195,7 +196,7 @@ export async function applyChatToolEffect(raw: unknown, requestSignal?: AbortSig
     try {
       await prisma.$transaction(async tx => {
         const scope = await lockChatScope(tx, { userId: turn.session.userId, at: { turn: effect.turnId },
-          expect: { attempt: effect.attempt, assistantStatus: ["pending", "generating"] } });
+          expect: { attempt: effect.attempt, assistantStatus: ACTIVE_ASSISTANT_STATES } });
         if (scope.session.status !== "active") throw Errors.gone("Chat session is archived");
         assertChatImageActionAllowed(scope.turn!, localEdit);
         await createToolEffectAttachment(tx, {
@@ -359,7 +360,7 @@ async function rebindTurnActionAttempt(
       at: { attachment: attachment.id },
       expect: {
         attempt,
-        assistantStatus: ["pending", "generating"],
+        assistantStatus: ACTIVE_ASSISTANT_STATES,
         conflictMessage: "Required effect replay does not belong to the active Chat attempt",
       },
     });
@@ -374,7 +375,7 @@ async function rebindTurnActionAttempt(
     if (!bound || bound.attempt !== judged.attempt || bound.userContent !== judged.userContent) {
       throw Errors.forbidden("Image action requires the current frozen Chat attempt");
     }
-    if (current.attempt !== attempt || !["pending", "generating"].includes(current.assistantStatus)) {
+    if (current.attempt !== attempt || !ACTIVE_ASSISTANT_STATES.includes(current.assistantStatus)) {
       throw Errors.conflict("Required effect replay does not belong to the active Chat attempt");
     }
     assertTurnActionIntent(lockedAttachment, effect, replayRequestDigest);

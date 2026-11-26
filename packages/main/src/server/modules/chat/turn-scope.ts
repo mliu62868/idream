@@ -1,4 +1,4 @@
-import type { ChatTurn, ChatTurnAttachment, GroupConversation, Prisma, RecentChat } from "@prisma/client";
+import { Prisma, type ChatTurn, type ChatTurnAttachment, type GroupConversation, type RecentChat } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
 
 // SPEC: 产品 Turn 变更范围的唯一取锁入口。调用方交出的是**身份**
@@ -73,6 +73,11 @@ export type ChatScopeRequest = {
   /** 默认拒绝已删除会话。删除/清理链路显式放行。 */
   readonly allowDeletedSession?: boolean;
   readonly expect?: ChatScopeExpectation;
+  /**
+   * 批量附件锁：`"all"` 锁锚点 Turn 的全部附件（需 turn 锚点）；id 列表锁本会话内
+   * 这些附件。单条语句按 id 升序取锁，替代逐条 lockChatScope 循环。
+   */
+  readonly attachments?: "all" | readonly string[];
 };
 
 export type LockedChatScope = {
@@ -81,6 +86,8 @@ export type LockedChatScope = {
   readonly session: RecentChat;
   readonly turn: LockedChatTurn | null;
   readonly attachment: LockedChatTurnAttachment | null;
+  /** Present when the request asked for a batch; ordered by id. */
+  readonly attachments: readonly LockedChatTurnAttachment[];
 };
 
 type ScopeIdentity = {
@@ -100,8 +107,8 @@ export async function lockChatScope(
   tx: Prisma.TransactionClient,
   request: ChatScopeRequest,
 ): Promise<LockedChatScope> {
-  const conflict = (detail: string) =>
-    Errors.conflict(request.expect?.conflictMessage ?? detail);
+  const conflict = (detail: string, reason?: string) =>
+    Errors.conflict(request.expect?.conflictMessage ?? detail, reason ? { reason } : undefined);
   const identity = await resolveScopeIdentity(tx, request);
 
   await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${request.userId} FOR UPDATE`;
@@ -143,7 +150,7 @@ export async function lockChatScope(
     });
     if (!row) throw Errors.notFound("Chat turn not found");
     if (expect?.attempt !== undefined && row.attempt !== expect.attempt) {
-      throw conflict("This chat reply advanced to another attempt");
+      throw conflict("This chat reply advanced to another attempt", "version_mismatch");
     }
     if (expect?.assistantStatus && !expect.assistantStatus.includes(row.assistantStatus)) {
       throw conflict("This chat reply is no longer in the expected state");
@@ -163,7 +170,29 @@ export async function lockChatScope(
     attachment = row as LockedChatTurnAttachment;
   }
 
-  return { userId: request.userId, group, session, turn, attachment };
+  let attachments: LockedChatTurnAttachment[] = [];
+  if (request.attachments) {
+    if (request.attachments === "all" && !identity.turnId) {
+      throw new Error("lockChatScope attachments: \"all\" requires a turn anchor");
+    }
+    // Attachments are the last rung; one statement locks the whole set in id order.
+    const locked = request.attachments === "all"
+      ? await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT id FROM "chat_turn_attachments" WHERE "turnId" = ${identity.turnId} ORDER BY id FOR UPDATE`
+      : request.attachments.length === 0 ? [] : await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT a.id FROM "chat_turn_attachments" AS a
+            JOIN "chat_turns" AS t ON t.id = a."turnId"
+           WHERE a.id IN (${Prisma.join([...new Set(request.attachments)])}) AND t."sessionId" = ${session.sessionId}
+           ORDER BY a.id
+             FOR UPDATE OF a`;
+    const rows = locked.length === 0 ? [] : await tx.chatTurnAttachment.findMany({
+      where: { id: { in: locked.map((row) => row.id) } },
+      orderBy: { id: "asc" },
+    });
+    attachments = rows as LockedChatTurnAttachment[];
+  }
+
+  return { userId: request.userId, group, session, turn, attachment, attachments };
 }
 
 // 未上锁读，只回答「阶梯有哪几级」。任何被它读出的业务事实都在上锁后重读。
@@ -202,14 +231,13 @@ async function resolveScopeIdentity(
 }
 
 /**
- * 历史上附件把 attempt 写在根上或 effect 下，两处都要认。
- * 数值根字段优先；其它根字段沿用旧读取规则回退到 effect，不做字符串转数值。
- * 无有效身份的历史附件属于 attempt 1。展示、工具重放、取锁与生成引用共用此判定。
+ * 附件的 attempt 身份写在 metadata 根上（唯一创建入口 createToolEffectAttachment
+ * 与重绑都写根字段）。曾经只写在 effect 下的历史形状已无存量（2026-11-26 dev 库
+ * 计数为 0），不再回退读取。无有效身份的附件属于 attempt 1。展示、工具重放、
+ * 取锁与生成引用共用此判定。
  */
 export function attachmentAttempt(metadata: Prisma.JsonValue): number {
-  const root = record(metadata);
-  const direct = root?.attempt;
-  const value = typeof direct === "number" ? direct : record(root?.effect)?.attempt;
+  const value = record(metadata)?.attempt;
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 1;
 }
 

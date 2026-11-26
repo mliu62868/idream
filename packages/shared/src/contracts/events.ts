@@ -18,6 +18,10 @@ export const MAIN_TO_CHAT_EVENTS = {
   // User cancellation is authoritative in Main. Chat durably fences the exact
   // local attempt so restart recovery cannot execute work the user stopped.
   agentRunCancelRequestedV1: "chat.agent_run.cancel_requested.v1",
+  // A superseded attempt that never reached companion memory (failed,
+  // cancelled, blocked or memory-off) only needs its local AgentRun evidence
+  // removed; no relationship rebuild is involved.
+  agentRunPurgeRequestedV1: "chat.agent_run.purge_requested.v1",
   // A destructive Turn/Session correction makes Main's remaining committed
   // transcript the only legal source for the relationship workspace.
   companionMemoryRebuildRequestedV1: "chat.companion_memory.rebuild_requested.v1",

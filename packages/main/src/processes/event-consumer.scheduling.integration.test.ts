@@ -129,6 +129,8 @@ describe("durable event consumer time isolation", () => {
       content: "A new reply waiting for a slow admission receiver.", idempotencyKey: randomUUID(),
     });
     expect(pending.snapshot).not.toBeNull();
+    // The creating request owns the first seconds of admission; this case is the dispatcher's.
+    await prisma.chatTurn.update({ where: { id: pending.snapshot!.turnId }, data: { admissionNextRunAt: new Date(0) } });
     let releaseAdmission!: () => void;
     const blocked = new Promise<void>((resolve) => { releaseAdmission = resolve; });
     let admissionStarted = false;
@@ -229,6 +231,7 @@ describe("durable event consumer time isolation", () => {
         content: "Keep talking while memory catches up.", idempotencyKey: randomUUID(),
       });
       expect(begun.snapshot).not.toBeNull();
+      await prisma.chatTurn.update({ where: { id: begun.snapshot!.turnId }, data: { admissionNextRunAt: new Date(0) } });
       await recordMainToChatEvent({
         eventId: `${prefix}later-cancel`,
         eventType: MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1,

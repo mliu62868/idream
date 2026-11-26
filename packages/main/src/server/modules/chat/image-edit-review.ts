@@ -17,6 +17,7 @@ import { chatImageGenerationRequest } from "@/server/modules/ourdream/service";
 import { assertChatImageActionAllowed, attachmentAttempt, lockChatScope, type LockedChatScope } from "./turn-scope";
 import { transitionToolEffectAttachment } from "./tool-effect-attachment";
 import { isReadableChatMedia, readableOwnedChatMediaWhere } from "./chat-media-history";
+import { ACTIVE_ASSISTANT_STATES } from "./turn-ledger-support";
 
 export const CHAT_EDIT_MASK_MAX_BYTES = 512 * 1024;
 export const CHAT_EDIT_MAX_PIXELS = 4_194_304;
@@ -64,7 +65,7 @@ export async function createChatImageEditDraft(payload: ChatImageRequestedPayloa
   if (scope?.mode !== "local" || !sourceMediaAssetId || !payload.exchangeId) throw Errors.badRequest("A local edit requires its original delivered image and Turn.");
   return prisma.$transaction(async tx => {
     const locked = await lockChatScope(tx, { userId: payload.userId, at: { attachment: payload.attachmentId }, expect: {
-      attempt, assistantStatus: ["pending", "generating"], attachmentAttemptMatchesTurn: true,
+      attempt, assistantStatus: ACTIVE_ASSISTANT_STATES, attachmentAttemptMatchesTurn: true,
     } });
     const attachment = locked.attachment;
     if (!attachment || !locked.turn || locked.turn.id !== payload.exchangeId || locked.session.sessionId !== payload.sessionId) throw Errors.conflict("The image edit changed before its source could be frozen.");
@@ -294,7 +295,7 @@ export async function dispatchChatImageEditReview(request: Request, segments: st
   if (!(request.method === "GET" && (!action || action === "source")) && !(request.method === "POST" && (action === "confirm" || action === "cancel"))) return null;
   const ctx = await getAuthCtx(request); const user = requireUser(ctx); requireAgeGate(ctx); requireAgeVerified(ctx);
   const viewer = request.headers.get("x-idream-viewer-scope");
-  if ((request.method === "POST" || viewer !== null) && viewer !== `user:${user.id}`) throw Errors.conflict("Your account changed. Reopen this edit in the original account.");
+  if ((request.method === "POST" || viewer !== null) && viewer !== `user:${user.id}`) throw Errors.conflict("Your account changed. Reopen this edit in the original account.", { reason: "viewer_changed" });
   if (request.method === "GET") {
     if (action === "source") return new Response(await readChatImageEditSource(user.id, attachmentId), { headers: { "Content-Type": "image/png", "Cache-Control": "private, no-store", "Vary": "Cookie, x-idream-viewer-scope" } });
     return ok({ review: await reviewChatImageEdit(user.id, attachmentId) });
