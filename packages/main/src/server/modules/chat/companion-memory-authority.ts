@@ -92,12 +92,7 @@ export async function scheduleCompanionMemoryProjection(
     });
     if (coalesced.count === 1) return existing.id;
   }
-  const authority = await tx.companionMemoryAuthority.upsert({
-    where: { aggregateId },
-    create: { aggregateId, version: BigInt(1) },
-    update: { version: { increment: 1 } },
-    select: { version: true },
-  });
+  const authority = await bumpCompanionMemoryAuthority(tx, aggregateId);
   const eventId = randomUUID();
   const envelope = durableEventEnvelopeSchema.parse({
     sourceService: "main",
@@ -137,15 +132,13 @@ export async function scheduleCompanionMemoryRebuild(
   },
 ): Promise<string> {
   const aggregateId = companionRelationshipAggregateId(input.userId, input.characterId);
+  // INVARIANT: bump (and so row-lock) the relationship authority before revoking
+  // projections. The promotion fence takes this same row, so a promote either
+  // finishes before this transaction or observes the revocation after it.
+  const authority = await bumpCompanionMemoryAuthority(tx, aggregateId);
   // INVARIANT: every destructive mutation carries its own exact purge fence.
   // A pending rebuild may already be processing and cannot be safely widened.
   await supersedeMemoryProjections(tx, aggregateId, "destructive_memory_rebuild");
-  const authority = await tx.companionMemoryAuthority.upsert({
-    where: { aggregateId },
-    create: { aggregateId, version: BigInt(1) },
-    update: { version: { increment: 1 } },
-    select: { version: true },
-  });
   const eventId = randomUUID();
   const envelope = durableEventEnvelopeSchema.parse({
     sourceService: "main",
@@ -177,6 +170,54 @@ export async function scheduleCompanionMemoryRebuild(
   return eventId;
 }
 
+/**
+ * SPEC: the relationship authority row is the single promotion fence.
+ *
+ * INTENT: promotion used to hold `users FOR UPDATE` across the remote promote
+ * HTTP call, stalling every send, terminal commit and Stop of that user for up
+ * to the promote timeout. Only mutations of *this relationship's* memory need
+ * to exclude a promote, and each of them writes this row in its own
+ * transaction: rebuild and projection scheduling bump it, clear bumps it, and
+ * account hard-delete removes it.
+ *
+ * INVARIANT: the caller holds this row (`FOR UPDATE`) while it re-reads the
+ * outbox event, so a revocation committed first is always observed, and a
+ * revocation that starts later waits for the promote to finish. Lock order is
+ * users → … → companion_memory_authorities; a promote takes only this row.
+ */
+async function lockCompanionMemoryAuthority(
+  tx: Prisma.TransactionClient,
+  aggregateId: string,
+): Promise<bigint | null> {
+  const rows = await tx.$queryRaw<Array<{ version: bigint }>>`
+    SELECT "version" FROM "companion_memory_authorities"
+     WHERE "aggregateId" = ${aggregateId}
+       FOR UPDATE`;
+  return rows[0]?.version ?? null;
+}
+
+async function bumpCompanionMemoryAuthority(tx: Prisma.TransactionClient, aggregateId: string) {
+  return tx.companionMemoryAuthority.upsert({
+    where: { aggregateId },
+    create: { aggregateId, version: BigInt(1) },
+    update: { version: { increment: 1 } },
+    select: { version: true },
+  });
+}
+
+/**
+ * A projection is a complete export of the relationship. Once a newer authority
+ * exists, a newer event (projection, rebuild, or clear's purge) owns
+ * publication, so the older projection may stop. A rebuild may not: a later
+ * projection seeds from canonical memory and cannot carry the rebuild's
+ * deletions, so a rebuild stops only once revoked (clear, account deletion).
+ */
+function memoryEventSuperseded(event: DurableEventEnvelope, payloadVersion: string, currentVersion: bigint | null) {
+  if (currentVersion === null) return true;
+  return event.eventType === MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1
+    && currentVersion !== BigInt(payloadVersion);
+}
+
 export async function syncCompanionMemoryFromMain(
   event: DurableEventEnvelope,
 ): Promise<void> {
@@ -189,6 +230,13 @@ export async function syncCompanionMemoryFromMain(
   ) {
     throw new Error("companion memory sync event identity is invalid");
   }
+  // Unlocked pre-check: a projection already superseded by a newer authority
+  // skips the whole export. The locked check before promote stays authoritative.
+  const observed = await prisma.companionMemoryAuthority.findUnique({
+    where: { aggregateId: event.aggregateId },
+    select: { version: true },
+  });
+  if (memoryEventSuperseded(event, payload.authorityVersion, observed?.version ?? null)) return;
   for (const turnId of payload.purgeTurnIds) {
     await purgeAgentRun(turnId);
   }
@@ -235,10 +283,11 @@ export async function syncCompanionMemoryFromMain(
     : null;
   if (!rebuildId) throw new Error("companion memory rebuild prepare returned invalid evidence");
 
-  // The user lock is the final Main authority fence. It serializes promotion
-  // with clear-memory, new Turns, and every destructive relationship mutation.
+  // The relationship authority row is the final Main fence (see
+  // lockCompanionMemoryAuthority). The user's row is never held across HTTP.
   await prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${payload.userId} FOR UPDATE`;
+    const version = await lockCompanionMemoryAuthority(tx, event.aggregateId);
+    if (memoryEventSuperseded(event, payload.authorityVersion, version)) return;
     const current = await tx.mainOutboxEvent.findUnique({
       where: { id: event.sourceEventId },
       select: { status: true },
@@ -384,6 +433,9 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
       await tx.recentChat.updateMany({ where: { userId, groupId: { in: groupIds } }, data: { status: "archived", contextRevision: { increment: 1 } } });
     }
     const aggregateId = companionRelationshipAggregateId(userId, characterId);
+    // Same promotion fence as a destructive rebuild: revoke only while holding
+    // (and advancing) the relationship authority row.
+    await bumpCompanionMemoryAuthority(tx, aggregateId);
     await supersedeMemoryProjections(tx, aggregateId, "durable_memory_purge");
     await tx.mainOutboxEvent.updateMany({
       where: {
@@ -630,7 +682,7 @@ async function supersedeMemoryProjections(
       aggregateId,
       // A processing projection may already have exported the pre-deletion
       // transcript. Revoke its live lease too: the final promotion check under
-      // the same user lock must reject it after a destructive mutation.
+      // the relationship authority row must reject it after this mutation.
       status: { in: ["pending", "processing"] },
     },
     data: {
