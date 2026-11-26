@@ -15,6 +15,7 @@ import { mediaLibraryPosterViewUrl, mediaViewUrl } from "@/server/modules/ourdre
 import { assertToolEffectRequest, createToolEffectAttachment, transitionToolEffectAttachment } from "./tool-effect-attachment";
 import { assertChatSessionServingAuthority } from "./turn-ledger";
 import { attachmentAttempt, lockChatScope } from "./turn-scope";
+import { ACTIVE_ASSISTANT_STATES } from "./turn-ledger-support";
 
 // Controlled server-side reveal windows: fast enough to delight (10x-30x faster
 // than live GPU generation) while preserving authentic companion pacing.
@@ -110,7 +111,7 @@ export async function schedulePaidCuratedMediaDelivery(
       throw Errors.notFound("Media quote not found");
     }
 
-    if (input.confirmedQuoteCost === undefined && !["pending", "generating"].includes(turn.assistantStatus)) {
+    if (input.confirmedQuoteCost === undefined && !ACTIVE_ASSISTANT_STATES.includes(turn.assistantStatus)) {
       throw Errors.conflict("Media delivery does not belong to an active Chat attempt");
     }
 

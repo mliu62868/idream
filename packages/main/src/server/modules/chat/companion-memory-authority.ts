@@ -25,6 +25,7 @@ import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { settleChatTurnUsage } from "./turn-usage";
 import { hasChatMediaResponseAttachment } from "./tool-effect-attachment";
+import { ACTIVE_ASSISTANT_STATES } from "./turn-ledger-support";
 
 const DESTRUCTIVE_MEMORY_EVENT_TYPES = [
   MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1,
@@ -443,7 +444,7 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
     const active = await tx.chatTurn.findMany({
       where: {
         sessionId: { in: endingSessionIds },
-        assistantStatus: { in: ["pending", "generating"] },
+        assistantStatus: { in: ACTIVE_ASSISTANT_STATES },
       },
       select: { id: true, attempt: true, statsCountedAt: true, admittedAt: true },
     });

@@ -215,9 +215,9 @@ describe("chat scope lock ladder", () => {
   });
 
   it.each([
-    { label: "nested legacy identity", metadata: { effect: { attempt: 2 } }, attempt: 2 },
-    { label: "non-numeric root with nested identity", metadata: { attempt: "2", effect: { attempt: 2 } }, attempt: 2 },
-    { label: "null root with nested identity", metadata: { attempt: null, effect: { attempt: 2 } }, attempt: 2 },
+    // The nested-only shape has no rows left; it no longer names an attempt.
+    { label: "retired nested-only identity", metadata: { effect: { attempt: 2 } }, attempt: 1 },
+    { label: "non-numeric root", metadata: { attempt: "2", effect: { attempt: 2 } }, attempt: 1 },
     { label: "legacy identity without an attempt", metadata: {}, attempt: 1 },
     { label: "unsafe numeric root", metadata: { attempt: Number.MAX_SAFE_INTEGER + 1 }, attempt: 1 },
   ])("locks the same attachment identity used by delivery: $label", async ({ metadata, attempt }) => {
@@ -344,9 +344,8 @@ describe("chat lock ladder inventory", () => {
   const CHAT_LOCK_TABLES = ["recent_chats", "chat_turns", "chat_turn_attachments", "group_conversations"];
   const REMAINING_BARE_LOCKS: Readonly<Record<string, number>> = {
     // 阶梯权威本体。
-    "modules/chat/turn-scope.ts": 4,
-    "modules/chat/turn-commands.ts": 3,
-    "modules/chat/chat-session-service.ts": 2,
+    "modules/chat/turn-scope.ts": 5,
+    "modules/chat/chat-session-service.ts": 1,
     "modules/chat/execution-snapshot.ts": 1,
     "modules/chat/group-conversations.ts": 1,
   };

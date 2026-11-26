@@ -1286,7 +1286,7 @@ describe("Main-owned Chat façade", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("returns a legacy edit's pending receipt without requesting admission again", async () => {
+  it("refuses an attempt-less edit even with a recorded legacy key, without admission", async () => {
     const { proxyChatRequest } = await import("./chat-proxy");
     const sessionId = await ensureSession(proxyChatRequest);
     const original = await sendAndCommit(proxyChatRequest, sessionId, "First", "First reply");
@@ -1303,8 +1303,8 @@ describe("Main-owned Chat façade", () => {
     const replay = await proxyChatRequest(authRequest(`/api/v1/messages/${original.userMessageId}`, {
       method: "PATCH", headers: { "idempotency-key": key }, body: JSON.stringify({ content }),
     }), ["messages", original.userMessageId]);
-    expect(replay.status).toBe(202);
-    await expect(replay.json()).resolves.toMatchObject({ attempt: edit.attempt, status: "pending", streamUrl: edit.streamUrl });
+    expect(replay.status).toBe(409);
+    await expect(replay.json()).resolves.toMatchObject({ details: { reason: "version_mismatch", cause: "edit_attempt_required", attempt: edit.attempt } });
     expect(fetchMock).not.toHaveBeenCalled();
     await expect(prisma.chatTurn.findUniqueOrThrow({ where: { id: original.id } })).resolves.toMatchObject({
       attempt: edit.attempt, assistantStatus: "pending", admissionAttempts: 0,

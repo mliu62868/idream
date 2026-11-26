@@ -4,7 +4,8 @@ import { Prisma } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
 
 export const BLOCKED_NOTICE = "I can’t help with that request.";
-export const ACTIVE_ASSISTANT_STATES = ["pending", "generating"];
+/** A reply that still occupies its conversation (and the user's concurrency slot). */
+export const ACTIVE_ASSISTANT_STATES: string[] = ["pending", "generating"];
 
 export function attachmentCost(metadata: Prisma.JsonValue): number | null {
   const value = jsonRecord(metadata).costDreamcoins;

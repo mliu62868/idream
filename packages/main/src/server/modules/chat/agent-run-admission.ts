@@ -35,9 +35,6 @@ const INLINE_ADMISSION_TIMEOUT_MS = 2_000;
 const DISPATCH_ADMISSION_TIMEOUT_MS = 5_000;
 const ADMISSION_LEASE_MS = 15_000;
 const TERMINAL_COMMIT_GRACE_MS = 60_000;
-// Historical generating rows have no recorded Chat commitment. Retain the
-// previous watchdog only for those rows; every new admission pins its deadline.
-const LEGACY_STALLED_ATTEMPT_MS = 6 * 60_000;
 // A frozen snapshot that cannot be read is not repaired by waiting. Bound the
 // passes before the Turn takes the expired-admission exit.
 const MAX_SNAPSHOT_FAILURES = 3;
@@ -481,16 +478,14 @@ export async function reclaimStalledChatAgentRuns(
   const now = Date.now();
   const cutoff = {
     deadlineBefore: new Date(now - TERMINAL_COMMIT_GRACE_MS),
-    legacyStalledBefore: new Date(now - LEGACY_STALLED_ATTEMPT_MS),
   };
   const rows = await prisma.chatTurn.findMany({
     where: {
       assistantStatus: "generating",
       terminalAt: null,
-      OR: [
-        { executionDeadlineAt: { lt: cutoff.deadlineBefore } },
-        { executionDeadlineAt: null, updatedAt: { lt: cutoff.legacyStalledBefore } },
-      ],
+      // Every admission pins Chat's deadline (the legacy null-deadline watchdog
+      // had no remaining rows and was removed).
+      executionDeadlineAt: { lt: cutoff.deadlineBefore },
     },
     orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
     select: { id: true },

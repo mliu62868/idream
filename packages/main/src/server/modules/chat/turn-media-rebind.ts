@@ -18,11 +18,19 @@ export async function rebindDurableTurnMedia(
   previousAttempt: number,
 ): Promise<RecoveredMediaAction | undefined> {
   const contentDigest = sha256(turn.userContent);
-  const candidates = await tx.chatTurnAttachment.findMany({ where: { turnId: turn.id, kind: { in: ["generated_image", "generated_video"] } }, orderBy: { createdAt: "desc" } });
-  for (const candidate of candidates) {
-    if (attachmentAttempt(candidate.metadata) !== previousAttempt) continue;
-    const scope = await lockChatScope(tx, { userId, at: { attachment: candidate.id }, expect: { attempt: turn.attempt } });
-    const attachment = scope.attachment!;
+  const candidates = await tx.chatTurnAttachment.findMany({
+    where: { turnId: turn.id, kind: { in: ["generated_image", "generated_video"] } },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, metadata: true },
+  });
+  const ids = candidates.filter((candidate) => attachmentAttempt(candidate.metadata) === previousAttempt).map((candidate) => candidate.id);
+  if (ids.length === 0) return undefined;
+  // One batch lock, then the newest-first walk over the locked rows.
+  const scope = await lockChatScope(tx, { userId, at: { turn: turn.id }, expect: { attempt: turn.attempt }, attachments: ids });
+  const lockedById = new Map(scope.attachments.map((row) => [row.id, row]));
+  for (const id of ids) {
+    const attachment = lockedById.get(id);
+    if (!attachment || attachmentAttempt(attachment.metadata) !== previousAttempt) continue;
     const metadata = jsonRecord(attachment.metadata);
     const effect = jsonRecord(metadata.effect ?? null);
     if (metadata.turnActionInvalidatedByEdit === true || effect.effectScope !== "turn_action") continue;
@@ -90,6 +98,7 @@ export async function rebindDurableTurnMedia(
 export async function refundPendingDelayedAttachments(
   tx: Prisma.TransactionClient,
   userId: string,
+  sessionId: string,
   turnIds: readonly string[],
 ) {
   if (turnIds.length === 0) return;
@@ -104,13 +113,14 @@ export async function refundPendingDelayedAttachments(
     select: { id: true },
     orderBy: { id: "asc" },
   });
-  for (const { id } of candidates) {
-    const scope = await lockChatScope(tx, {
-      userId,
-      at: { attachment: id },
-      allowDeletedSession: true,
-    });
-    const current = scope.attachment!;
+  if (candidates.length === 0) return;
+  const scope = await lockChatScope(tx, {
+    userId,
+    at: { session: sessionId },
+    allowDeletedSession: true,
+    attachments: candidates.map((candidate) => candidate.id),
+  });
+  for (const current of scope.attachments) {
     if (current.status !== "accepted" || current.mediaAssetId !== null || current.generationJobId !== null) {
       continue;
     }

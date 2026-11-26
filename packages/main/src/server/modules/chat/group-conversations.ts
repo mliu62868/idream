@@ -7,6 +7,7 @@ import { Errors } from "@/server/lib/errors";
 import { publicCharacterAudienceWhere } from "@/server/modules/ourdream/public-content-audience";
 import { chatSessionCharacterPin, chatSessionContinuation, chatTurnMessagesForOwner } from "./turn-ledger";
 import { groupTranscriptPage, type ChatTranscriptPage } from "./chat-read-model";
+import { ACTIVE_ASSISTANT_STATES } from "./turn-ledger-support";
 
 const createSchema = z.object({
   title: z.string().trim().min(1).max(120),
@@ -150,7 +151,7 @@ export async function updateGroupConversation(userId: string, groupId: string, i
     await tx.$queryRaw`SELECT id FROM "group_conversations" WHERE id = ${groupId} FOR UPDATE`;
     const group = await tx.groupConversation.findFirst({ where: { id: groupId, userId } });
     if (!group) throw Errors.notFound("Group conversation not found");
-    if (values.status && await tx.chatTurn.count({ where: { groupTurn: { groupId }, assistantStatus: { in: ["pending", "generating"] } } })) {
+    if (values.status && await tx.chatTurn.count({ where: { groupTurn: { groupId }, assistantStatus: { in: ACTIVE_ASSISTANT_STATES } } })) {
       throw Errors.conflict("Cancel the active reply before changing this group", { reason: "reply_in_progress" });
     }
     if (addCharacterIds) {

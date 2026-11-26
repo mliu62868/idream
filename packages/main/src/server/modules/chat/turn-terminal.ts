@@ -249,7 +249,6 @@ export async function cancelChatTurn(userId: string, messageId: string, expected
  */
 export async function failStalledChatTurn(turnId: string, cutoff: {
   deadlineBefore: Date;
-  legacyStalledBefore: Date;
 }) {
   const owner = await prisma.chatTurn.findFirst({
     where: { id: turnId },
@@ -272,9 +271,8 @@ export async function failStalledChatTurn(turnId: string, cutoff: {
       !turn ||
       turn.assistantStatus !== "generating" ||
       turn.terminalAt !== null ||
-      (turn.executionDeadlineAt
-        ? turn.executionDeadlineAt >= cutoff.deadlineBefore
-        : turn.updatedAt >= cutoff.legacyStalledBefore)
+      // Every admission pins Chat's deadline; no generating row lacks one.
+      !turn.executionDeadlineAt || turn.executionDeadlineAt >= cutoff.deadlineBefore
     ) {
       return { reclaimed: false as const };
     }

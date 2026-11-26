@@ -287,6 +287,13 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
   const idempotencyKey = options.idempotencyKey === undefined ? undefined : requiredText(options.idempotencyKey, "Idempotency-Key", 160);
   const turn = await requireTurn(userId, messageId);
   if (turn.userMessageId !== messageId) throw Errors.badRequest("Only user messages can be edited");
+  // Every edit identifies the reply attempt the caller saw. (Attempt-less
+  // legacy receipts had no remaining rows; their replay path was removed.)
+  if (expectedAttempt === undefined) {
+    throw Errors.versionConflict("This edit requires the observed reply attempt. Reopen the editor and try again.", {
+      reason: "version_mismatch", cause: "edit_attempt_required", attempt: turn.attempt,
+    });
+  }
   const receiptKey = idempotencyKey === undefined ? null : { turnId: turn.id, idempotencyKey };
   const requestHash = sha256(JSON.stringify({ content, expectedAttempt: expectedAttempt ?? null, allowPaidImage }));
   const whereReceipt = receiptKey ? { turnId_idempotencyKey: receiptKey } : null;
@@ -307,16 +314,9 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
       if (receipt.attempt !== current.attempt) throw staleChatEdit(current.attempt);
       return {
         turn: current,
-        snapshot: expectedAttempt !== undefined && current.assistantStatus === "pending" && current.executionSnapshot
+        snapshot: current.assistantStatus === "pending" && current.executionSnapshot
           ? chatExecutionSnapshotSchema.parse(current.executionSnapshot) : null,
       };
-    }
-    // A known legacy key can read its original receipt. A new revision must
-    // identify what the caller saw before preparing the edit.
-    if (expectedAttempt === undefined) {
-      throw Errors.versionConflict("This edit requires the observed reply attempt. Reopen the editor and try again.", {
-        reason: "version_mismatch", cause: "edit_attempt_required", attempt: current.attempt,
-      });
     }
     if (current.attempt !== turn.attempt || current.attempt !== expectedAttempt) {
       throw staleChatEdit(current.attempt);
@@ -366,12 +366,11 @@ async function replaceLockedChatTurn(tx: Prisma.TransactionClient, input: {
   const sceneAnchor = await previousCommittedScene(tx, turn);
   // Edited user words invalidate every old action, including unpaid drafts.
   // The old source remains a private snapshot, but no surviving card grants access.
-  const actions = await tx.chatTurnAttachment.findMany({ where: { turnId: turn.id, kind: { in: ["generated_image", "generated_video"] } }, select: { id: true } });
-  for (const action of actions) {
-    const scope = await lockChatScope(tx, { userId, at: { attachment: action.id } });
-    const attachment = scope.attachment!;
+  const { attachments } = await lockChatScope(tx, { userId, at: { turn: turn.id }, attachments: "all" });
+  for (const attachment of attachments) {
+    if (!["generated_image", "generated_video"].includes(attachment.kind)) continue;
     if (attachment.status === "awaiting_confirmation") await transitionToolEffectAttachment(tx, attachment, { to: "cancelled", errorCode: "logical_turn_edited" });
-    await tx.chatTurnAttachment.update({ where: { id: action.id }, data: {
+    await tx.chatTurnAttachment.update({ where: { id: attachment.id }, data: {
       promptHint: null,
       metadata: toJson({ ...jsonRecord(attachment.metadata), editDraft: null, turnActionInvalidatedByEdit: true }),
     } });
@@ -455,7 +454,7 @@ export async function deleteChatMessage(userId: string, messageId: string) {
       data: [deletedChatTurnSendKey(userId, { sessionId: current.sessionId, groupId: groupTurn?.groupId ?? null }, current.idempotencyKey)],
       skipDuplicates: true,
     });
-    await refundPendingDelayedAttachments(tx, userId, [turn.id]);
+    await refundPendingDelayedAttachments(tx, userId, current.sessionId, [turn.id]);
     await tx.chatTurn.delete({ where: { id: turn.id } });
     await retireCompanionMemoryAttempt(tx, { userId, characterId: turn.session.characterId, turn: current, scope: "turn" });
   });
@@ -500,33 +499,23 @@ export async function lockLatestTurn(
   turn: { id: string; sessionId: string },
   operation: "revise" | "delete",
 ) {
-  await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
-  const session = await tx.recentChat.findFirst({
-    where: { sessionId: turn.sessionId, userId },
-    select: { groupId: true },
-  });
-  if (!session) throw Errors.notFound("Chat session not found");
-  if (session.groupId) await tx.$queryRaw`SELECT id FROM "group_conversations" WHERE id = ${session.groupId} FOR UPDATE`;
-  await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${turn.sessionId} FOR UPDATE`;
+  // Archived (and, for delete, deleted) history stays reachable here; the
+  // revise-only gates below run under the same full ladder.
+  const scope = await lockChatScope(tx, { userId, at: { turn: turn.id }, allowDeletedSession: true });
+  const { session, group } = scope;
   if (operation === "revise") {
-    const lockedSession = await tx.recentChat.findUnique({
-      where: { sessionId: turn.sessionId },
-      select: { status: true, characterId: true, characterReleaseId: true, group: { select: { status: true } } },
-    });
     // Archived history can be deleted, but admission cannot execute a new
     // attempt there. Reject before replacing its saved reply or memory state.
-    if (lockedSession?.status !== "active" || (lockedSession.group && lockedSession.group.status !== "active")) {
+    if (session.status !== "active" || (group && group.status !== "active")) {
       throw Errors.gone("This conversation is archived. Its replies cannot be edited or regenerated");
     }
     // A revision starts a new attempt on the same Turn. Its immutable pin does
     // not preserve permission to execute after public Serving is revoked.
-    await assertChatSessionServingAuthority(tx, userId, lockedSession);
+    await assertChatSessionServingAuthority(tx, userId, session);
   }
-  await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${turn.id} FOR UPDATE`;
-  const current = await tx.chatTurn.findUnique({ where: { id: turn.id } });
-  if (!current) throw Errors.notFound("Chat message not found");
+  const current: ChatTurn = scope.turn!;
   const latest = await tx.chatTurn.findFirst({
-    where: session.groupId ? { groupTurn: { groupId: session.groupId } } : { sessionId: turn.sessionId },
+    where: session.groupId ? { groupTurn: { groupId: session.groupId } } : { sessionId: session.sessionId },
     orderBy: session.groupId ? { groupTurn: { ordinal: "desc" } } : [{ createdAt: "desc" }, { id: "desc" }],
     select: { id: true },
   });

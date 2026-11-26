@@ -154,7 +154,6 @@ export async function createChatSession(
 
 export async function deleteChatSession(userId: string, sessionId: string) {
   await prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
     await deleteSessionTranscript(tx, userId, sessionId, null);
     await tx.deletedChatTurnSend.deleteMany({ where: { userId, conversationKey: `session:${sessionId}` } });
   });
@@ -173,9 +172,7 @@ export async function deleteGroupChatConversation(userId: string, groupId: strin
 }
 
 async function deleteSessionTranscript(tx: Prisma.TransactionClient, userId: string, sessionId: string, groupId: string | null) {
-    await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${sessionId} FOR UPDATE`;
-    const session = await tx.recentChat.findFirst({ where: { sessionId, userId } });
-    if (!session) throw Errors.notFound("Chat session not found");
+    const { session } = await lockChatScope(tx, { userId, at: { session: sessionId }, allowDeletedSession: true });
     if (session.groupId !== groupId) throw Errors.conflict("Delete this conversation from its group chat", { reason: "group_conversation" });
     await assertNoPendingCompanionMemoryRebuild(tx, userId, session.characterId);
     const active = await tx.chatTurn.findFirst({
@@ -206,7 +203,7 @@ async function deleteSessionTranscript(tx: Prisma.TransactionClient, userId: str
       sessionId,
     });
     if (turnIds.length > 0) {
-      await refundPendingDelayedAttachments(tx, userId, turnIds.map((turn) => turn.id));
+      await refundPendingDelayedAttachments(tx, userId, sessionId, turnIds.map((turn) => turn.id));
     }
     await tx.recentChat.delete({ where: { sessionId } });
     await scheduleCompanionMemoryRebuild(tx, {
