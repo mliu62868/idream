@@ -82,6 +82,32 @@ const MAX_PROVIDER_EVENT_BYTES = 1_048_576;
 const MAX_PROVIDER_OUTPUT_BYTES = 2_097_152;
 const MEDIA_TOOL_NAMES = new Set(COMPANION_MEDIA_TOOL_DEFINITIONS.map(tool => tool.name));
 
+const TRANSIENT_RETRY_DELAY_MS = 400;
+const RATE_LIMIT_RETRY_DELAY_MS = 1_000;
+const RETRYABLE_HTTP_STATUSES = new Set([429, 500, 502, 503, 504]);
+
+/** A provider failure that a second identical physical request may cure. */
+function isTransientProviderFailure(error: unknown): error is ProviderError {
+  if (!(error instanceof ProviderError)) return false;
+  if (error.code === "TRANSPORT" || error.code === "MODEL_FIRST_TOKEN_TIMEOUT") return true;
+  return error.code === "PROVIDER_HTTP_ERROR" && error.status !== undefined && RETRYABLE_HTTP_STATUSES.has(error.status);
+}
+
+function abortableDelay(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  if (signal?.aborted) return Promise.reject(modelAbortReason(signal));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(modelAbortReason(signal!));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 function chatCompletionsUrl(baseUrl: string): string {
   const url = new URL(baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`);
   url.pathname = `${url.pathname.replace(/\/$/, "")}/chat/completions`;
@@ -342,9 +368,39 @@ export class OpenAiCompatibleAdapter {
     return stream;
   }
 
+  /**
+   * One logical model request: a physical request plus at most one in-process
+   * retry of a transient failure that produced no stream progress.
+   *
+   * INTENT: decided 2026-11-26 (amends ADR-21 "关闭自动模型重试"). Local
+   * oMLX stalls, connection resets and 429/5xx used to fail the Turn and
+   * leave the user to press regenerate. A retry is allowed only when the
+   * failure is TRANSPORT, MODEL_FIRST_TOKEN_TIMEOUT or HTTP 429/500/502/503/504,
+   * Pi has seen no event of the failed request (no start, text, thinking or
+   * tool call), and the caller has not aborted. Each physical request is
+   * still journaled before dispatch (observeRequest) and receipted after it
+   * (observeUsage, unknown usage stays null), so recovery sees both.
+   */
   private async perform(messages: readonly Message[], options: InvocationOptions,
     stream: AssistantMessageEventStream, output: AssistantMessage): Promise<void> {
-    const { profile, maxInputTokens, responseFormat, observeRequest, observeUsage } = this.config;
+    const request = this.prepareRequest(messages, options);
+    const progress = { started: false };
+    try {
+      await this.dispatch(request, options, stream, output, progress);
+    } catch (error) {
+      if (progress.started || options.signal?.aborted || !isTransientProviderFailure(error)) throw error;
+      // The failed request published nothing to Pi; start the retry from the
+      // same pristine message so no receipt of the failed attempt leaks into it.
+      this.receipts.delete(output);
+      output.usage = this.emptyMessage().usage;
+      await abortableDelay(error.status === 429 ? RATE_LIMIT_RETRY_DELAY_MS : TRANSIENT_RETRY_DELAY_MS, options.signal);
+      await this.dispatch(request, options, stream, output, { started: false });
+    }
+  }
+
+  /** Deterministic request body and budget check, shared by every physical request. */
+  private prepareRequest(messages: readonly Message[], options: InvocationOptions) {
+    const { profile, maxInputTokens, responseFormat } = this.config;
     const compacting = options.purpose === "compaction";
     const mediaBody = options.purpose === "media_body";
     const inkling = profile.model === INKLING_2_MINI_OQ8_MODEL;
@@ -373,26 +429,41 @@ export class OpenAiCompatibleAdapter {
       ...(input.tools.length ? { tools: input.tools, tool_choice: compacting ? "none" : "auto" } : {}),
       ...(this.openRouter ? { provider: { only: [...this.providerOnly!], allow_fallbacks: false } } : {}),
     };
+    const estimatedInputTokens = estimateModelRequestInputTokens(body)
+      + (responseFormat ? Math.ceil(JSON.stringify(responseFormat).length / 4) : 0);
+    if (!compacting && maxInputTokens !== undefined && estimatedInputTokens > maxInputTokens) {
+      throw new ProviderError("assembled model request exceeds the prepared input budget",
+        responseFormat ? "INPUT_BUDGET_EXCEEDED" : CONTEXT_WINDOW_EXCEEDED_CODE);
+    }
+    const serializedBody = JSON.stringify(body);
+    const requestEvidence: CompanionModelRequestEvidence = { bodyDigest: createHash("sha256").update(serializedBody).digest("hex"),
+      systemPromptDigest: createHash("sha256").update(getCurrentSystemPrompt(messages)).digest("hex"),
+      estimatedInputTokens,
+      ...(options.purpose && options.purpose !== "warmup" ? { purpose: options.purpose } : {}),
+      ...(!compacting && maxInputTokens !== undefined ? { maxInputTokens } : {}),
+    };
+    return { serializedBody, requestEvidence };
+  }
+
+  /** Exactly one physical provider request, journaled before and receipted after. */
+  private async dispatch(request: { serializedBody: string; requestEvidence: CompanionModelRequestEvidence },
+    options: InvocationOptions, stream: AssistantMessageEventStream, output: AssistantMessage,
+    progress: { started: boolean }): Promise<void> {
+    const { profile, observeRequest, observeUsage } = this.config;
+    const { serializedBody, requestEvidence } = request;
     const timeout = linkedSignal(options.signal);
     let firstToken = true;
     let firstTokenTimer: NodeJS.Timeout | undefined;
     let requestStarted = false;
-    let requestEvidence: CompanionModelRequestEvidence | undefined;
     let usage: TokenUsage | undefined;
+    // Pi sees the message only once the provider produced content (or a
+    // complete empty answer), so a retryable failure leaves no half message.
+    const start = () => {
+      if (progress.started) return;
+      progress.started = true;
+      stream.push({ type: "start", partial: output });
+    };
     try {
-      const estimatedInputTokens = estimateModelRequestInputTokens(body)
-        + (responseFormat ? Math.ceil(JSON.stringify(responseFormat).length / 4) : 0);
-      if (!compacting && maxInputTokens !== undefined && estimatedInputTokens > maxInputTokens) {
-        throw new ProviderError("assembled model request exceeds the prepared input budget",
-          responseFormat ? "INPUT_BUDGET_EXCEEDED" : CONTEXT_WINDOW_EXCEEDED_CODE);
-      }
-      const serializedBody = JSON.stringify(body);
-      requestEvidence = { bodyDigest: createHash("sha256").update(serializedBody).digest("hex"),
-        systemPromptDigest: createHash("sha256").update(getCurrentSystemPrompt(messages)).digest("hex"),
-        estimatedInputTokens,
-        ...(options.purpose && options.purpose !== "warmup" ? { purpose: options.purpose } : {}),
-        ...(!compacting && maxInputTokens !== undefined ? { maxInputTokens } : {}),
-      };
       // Persist dispatch intent before crossing the external request boundary.
       // A process crash after this point must never silently resend it.
       await observeRequest?.(requestEvidence);
@@ -417,7 +488,6 @@ export class OpenAiCompatibleAdapter {
         throw new ProviderError(`OpenAI-compatible provider returned HTTP ${response.status}`, code, { status: response.status });
       }
       if (!response.body) throw new ProviderError("provider response body is missing", "EMPTY_RESPONSE");
-      stream.push({ type: "start", partial: output });
       const blocks = new Map<string, BlockState>();
       let buffer = "", nativeFinish: string | undefined, responseId: string | undefined, actualProvider: string | undefined;
       let responseBytes = 0, outputBytes = 0;
@@ -436,6 +506,7 @@ export class OpenAiCompatibleAdapter {
         if (existing) return existing;
         const block: AssistantMessage["content"][number] = type === "text" ? { type, text: "" }
           : type === "thinking" ? { type, thinking: "" } : { type, id: id ?? "", name: "", arguments: {} };
+        start();
         const state = { index: output.content.length, text: "", block };
         output.content.push(block);
         blocks.set(key, state);
@@ -522,6 +593,7 @@ export class OpenAiCompatibleAdapter {
         ...(responseId ? { requestId: responseId } : {}), ...(actualProvider ? { actualProvider } : {}),
       });
       output.rawStopReason = nativeFinish;
+      start();
       for (const state of blocks.values()) {
         const block = state.block;
         if (block.type === "text") stream.push({ type: "text_end", contentIndex: state.index, content: block.text, partial: output });
@@ -541,7 +613,7 @@ export class OpenAiCompatibleAdapter {
           reasoning: usage.reasoningTokens, totalTokens: usage.inputTokens + usage.outputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0),
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
       }
-      if (requestStarted && requestEvidence) observeUsage?.(usage, requestEvidence);
+      if (requestStarted) observeUsage?.(usage, requestEvidence);
     }
   }
 }

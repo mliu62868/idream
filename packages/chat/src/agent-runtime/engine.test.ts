@@ -2352,6 +2352,30 @@ describe("Chat embedded companion runtime", () => {
     });
   });
 
+  it("commits after one in-process retry of a transient provider failure, journaling both physical requests", async () => {
+    let calls = 0;
+    const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
+      if (++calls === 1) return new Response("overloaded", { status: 503 });
+      return response({ content: "Back with you." }, "stop", { inputTokens: 11, outputTokens: 4 });
+    } });
+    const runtime = await engine(adapter);
+    const connection = port();
+    try {
+      await runtime.run(invocation(), connection.runtimePort);
+      expect(calls).toBe(2);
+      expect(connection.candidates).toHaveLength(1);
+      expect(connection.candidates[0]!.content).toBe("Back with you.");
+      const started = connection.events.filter(event => event.type === "model_request_started");
+      const receipts = connection.events.filter(event => event.type === "model_request");
+      expect(started).toHaveLength(2);
+      expect(receipts.map(event => event.type === "model_request" && event.request.usage)).toEqual([null, expect.objectContaining({ inputTokens: 11, outputTokens: 4 })]);
+      // One unknown physical receipt keeps the Turn's aggregate usage unknown.
+      expect(connection.candidates[0]!.modelRequests).toHaveLength(2);
+      expect(connection.candidates[0]!.usage).toBeNull();
+      expect(connection.events.filter(event => event.type === "text_reset")).toHaveLength(0);
+    } finally { await runtime.shutdown(); }
+  });
+
   it("does not return before an asynchronous failed event is delivered", async () => {
     const runtime = await engine(new FirstTokenTimeoutAdapter());
     const connection = port();
