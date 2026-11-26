@@ -13,6 +13,7 @@ import type { ChatExecutionSnapshot } from "@idream/shared/contracts";
 import { buildContext, type BuiltContext } from "./context.js";
 import { buildTurnPreferencesBlock, buildTurnStateBlock, captureCompanionSystemSource, renderCompanionReplyPrompt } from "./prompt.js";
 import { dropOldestReplayExchange, estimateModelRequestInputTokens, formatModelRequestInput } from "./agent-runtime/model-request-format.js";
+import type { ReplyCueOptions } from "./reply-cues.js";
 import {
   preparedTurnSchema,
   type PreparedReplyPrompt,
@@ -37,13 +38,18 @@ export async function prepareCompanionTurn(
   return compilePreparedTurn(context, input.snapshot.userMessageId);
 }
 
-/** Compile a pure, pinned generation snapshot from an already-authoritative context. */
+/**
+ * Compile a pure, pinned generation snapshot from an already-authoritative context.
+ * `options.replyCues: false` exists for offline evaluation only (see reply-cues.ts);
+ * production callers omit it.
+ */
 export function compilePreparedTurn(
   context: BuiltContext,
   currentUserMessageId: string,
   now: Date = new Date(),
+  options: ReplyCueOptions = {},
 ): PreparedTurn {
-  const fitted = fitPreparedTurnBudget(context, currentUserMessageId, now);
+  const fitted = fitPreparedTurnBudget(context, currentUserMessageId, now, options);
   const modelProfile = fitted.context.policy.modelProfile;
   const profile: PreparedTurnInput["profile"] = {
     tier: fitted.context.policy.tier,
@@ -110,11 +116,12 @@ export function projectPreparedBody(
   original: Extract<PreparedTurnMessage, { role: "user" }>,
   independentText: string,
   multipleRequests: boolean,
+  options: ReplyCueOptions = {},
 ) {
   const tools: PreparedTurnInput["tools"] = [];
   const prompt = prepared.replyPrompt && renderCompanionReplyPrompt({
     source: prepared.replyPrompt, characterName: prepared.characterName, tools, userText: independentText,
-    multipleRequests,
+    multipleRequests, ...(options.replyCues === false ? { replyCues: false } : {}),
   });
   const current = { ...original, content: independentText };
   const messages = prepared.messages.map((message, index) => {
@@ -185,6 +192,7 @@ export function fitPreparedTurnBudget(
   context: BuiltContext,
   currentUserMessageId: string,
   now: Date = new Date(),
+  options: ReplyCueOptions = {},
 ): {
   context: BuiltContext;
   messages: PreparedTurnInput["messages"];
@@ -242,6 +250,7 @@ export function fitPreparedTurnBudget(
     const replyPrompt = { system, turnFacts, recentOpenings: recentOpeningsLines(fitted, currentUserMessageId) };
     const prompt = renderCompanionReplyPrompt({
       source: replyPrompt, characterName: fitted.persona.name, tools, imageActionMode, userText: currentUser.content,
+      ...(options.replyCues === false ? { replyCues: false } : {}),
     });
     const messages = buildPreparedMessages(fitted, currentUserMessageId, prompt.system, prompt.state, turnPreferences);
     const usedInputTokens = estimateModelRequestInputTokens(formatModelRequestInput({ messages, tools, respondingCharacterId: fitted.persona.characterId }));

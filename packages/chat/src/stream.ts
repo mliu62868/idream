@@ -14,6 +14,12 @@ export const STREAM_MAXLEN = 4000;
 const STREAM_TTL_SECONDS = 24 * 60 * 60;
 const SSE_DEADLINE_MS = 60_000;
 const BLOCK_MS = 5_000;
+// INTENT: each SSE response closes at SSE_DEADLINE_MS while a long reply may
+// still be streaming. Browsers otherwise wait their default reconnection delay
+// (about 3 s in Chromium/Firefox) before resuming from Last-Event-ID; tell
+// EventSource to come back after one second instead.
+const SSE_RECONNECT_MS = 1_000;
+const SSE_PREAMBLE = `: connected\nretry: ${SSE_RECONNECT_MS}\n\n`;
 
 function createRedis(): IORedis {
   return new IORedis({
@@ -141,7 +147,7 @@ export function createSseResponse(
 
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
-      controller.enqueue(encoder.encode(": connected\n\n"));
+      controller.enqueue(encoder.encode(SSE_PREAMBLE));
       // INTENT: start must return immediately so Web Streams can deliver
       // consumer cancellation while Redis is blocked in XREAD.
       void pump(controller);

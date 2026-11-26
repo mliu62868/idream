@@ -1534,7 +1534,8 @@ describe("bounded source-bound Scene projection", () => {
   });
 
   it("makes one request on provider failure and exposes unknown usage instead of inventing zero", async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ error: "unavailable" }, { status: 503 }));
+    // A non-transient status: 429/5xx would earn one in-process adapter retry.
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ error: "rejected" }, { status: 400 }));
     const result = await projectSceneForReply(input, { profile, apiKey: "secret", maxInputTokens: 4_000, signal: new AbortController().signal, fetch });
     expect(result.scene).toEqual({ ...input.previous, version: 5 });
     expect(result.evidence).toMatchObject({ status: "failed", requests: [expect.any(Object)], usage: null });

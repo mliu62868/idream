@@ -771,7 +771,7 @@ describe("PreparedTurn budget", () => {
     // tools, recall notes) leaves room for some prior exchanges, depending on their
     // size; the provider must receive the bounded suffix.
     // Leave room for the per-turn image authorization alongside the tool schema.
-    { priorChars: 3_010, retainedStart: 4 },
+    { priorChars: 2_900, retainedStart: 4 },
     { priorChars: 2_650, retainedStart: 4 },
     { priorChars: 800, retainedStart: 0 },
   ])("fits a full free-tier image conversation through the native adapter ($priorChars history chars)", async ({ priorChars, retainedStart }) => {

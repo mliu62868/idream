@@ -54,7 +54,20 @@ describe("Chat Redis transport deadlines", () => {
     const response = createSseResponse("chat:stream:blackhole", null, 1);
     const reader = response.body!.getReader();
     const connected = await reader.read();
-    expect(new TextDecoder().decode(connected.value)).toBe(": connected\n\n");
+    expect(new TextDecoder().decode(connected.value)).toBe(": connected\nretry: 1000\n\n");
     await expect(reader.read()).rejects.toThrow(/Command timed out/iu);
+  }, 8_000);
+
+  it("tells EventSource to reconnect after one second, before any stream event", async () => {
+    const response = createSseResponse("chat:stream:blackhole", null, 1);
+    const reader = response.body!.getReader();
+    const first = new TextDecoder().decode((await reader.read()).value);
+    // One complete SSE block: a comment plus the retry field, and no data line,
+    // so it dispatches no message event in browsers or in Main's SSE probe.
+    const [block, rest] = first.split("\n\n");
+    expect(rest).toBe("");
+    expect(block!.split("\n")).toEqual([": connected", "retry: 1000"]);
+    expect(block).not.toMatch(/^data:/mu);
+    await reader.cancel();
   }, 8_000);
 });

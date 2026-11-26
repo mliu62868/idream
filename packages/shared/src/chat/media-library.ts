@@ -132,6 +132,7 @@ export const COMPANION_MEDIA_TOOL_DEFINITIONS: readonly ChatToolDefinition[] = [
         maxDurationSeconds: { type: "number", description: "Explicit numeric upper bound for video only. Keep qualitative length in direction." },
         hasAudio: { type: "boolean", description: "Explicit video audio-track requirement. A track cannot prove a specific sound or speech." },
         independentTextRequest: { type: "boolean", description: "Set false only when the entire user message is solely this media request with no separate question, story, or writing task; set true otherwise." },
+        independentTextExcerpts: { type: "array", items: { type: "string" }, description: "Each separate text request in the user's message, copied verbatim in order. Omit if none." },
       },
       required: ["kind", "direction", "subject"],
       additionalProperties: false,
@@ -145,6 +146,7 @@ export const COMPANION_MEDIA_TOOL_DEFINITIONS: readonly ChatToolDefinition[] = [
       properties: {
         previousMediaAssetId: { type: "string", description: "Exact mediaAssetId from recentMedia in this session." },
         independentTextRequest: { type: "boolean", description: "Set false only when the entire user message is solely this resend request with no separate question, story, or writing task; set true otherwise." },
+        independentTextExcerpts: { type: "array", items: { type: "string" }, description: "Each separate text request in the user's message, copied verbatim in order. Omit if none." },
       },
       required: ["previousMediaAssetId"],
       additionalProperties: false,

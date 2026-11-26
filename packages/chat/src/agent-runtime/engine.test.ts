@@ -24,7 +24,7 @@ import { profileLineKey } from "./resident-profile";
 import { PROFILE_EVIDENCE_FILE } from "./profile-evidence";
 import { OpenAiCompatibleAdapter, ProviderError, type OpenAiCompatibleAdapterOptions, type TokenUsage } from "./openai-adapter";
 import { compilePreparedTurn } from "../prepared-turn";
-import { describeRequestedReplyConstraints } from "../prompt";
+import { describeRequestedReplyConstraints } from "../reply-cues";
 import { resolvePolicy } from "../policy";
 import type { BuiltContext } from "../context";
 import { COMPANION_MEDIA_REQUEST_GUIDANCE, COMPANION_MEDIA_TOOL_DEFINITIONS } from "@idream/shared/chat/media-library";
@@ -237,6 +237,19 @@ it.each([
     await runtime.run(value, target.runtimePort);
     expect(target.candidates).toHaveLength(1);
     expect(adapter.requests[0]).toHaveProperty("temperature", temperature);
+  } finally { await runtime.shutdown(); }
+});
+
+it("runs a Turn without wording cues only when the offline switch is off", async () => {
+  const value = invocation();
+  value.preparedTurn.messages.at(-1)!.content = "What exact access code did I tell you earlier?";
+  const adapter = new MemoryReplyAdapter("Your earlier code is unavailable here.");
+  const runtime = await engine(adapter, undefined, { replyCues: false });
+  const target = port();
+  try {
+    await runtime.run(value, target.runtimePort);
+    expect(target.candidates).toHaveLength(1);
+    expect(adapter.requests[0]).toHaveProperty("temperature", 0.9);
   } finally { await runtime.shutdown(); }
 });
 
@@ -1253,6 +1266,85 @@ describe("Chat embedded companion runtime", () => {
     expect(connection.candidates).toHaveLength(1);
   });
 
+  it.each([true, false])("gates phatic pre-recall only through reply cues (cues=%s)", async (cues) => {
+    const operations: string[] = [];
+    const runtime = await engine(new MemoryReplyAdapter("Hi."), undefined, {
+      ...(cues ? {} : { replyCues: false }),
+      runIgrep: async (options) => {
+        operations.push(options.args[1]!);
+        return options.args[1] === "reproject"
+          ? { schema: "igrep.mem/1", provider: "igrep", action: "reproject", migrated: false }
+          : options.args[1] === "wake" ? { schema: "igrep.mem/1", provider: "igrep", action: "wake", workspaceRoot: options.args[options.args.indexOf("--workspace") + 1], markdownContext: "", warnings: [] } : { schema: "igrep.mem/1", provider: "igrep", action: "memory-search", workspaceRoot: JSON.parse(options.stdin!).workspace, warnings: [], results: [] };
+      },
+    });
+    const value = normalInvocation();
+    value.preparedTurn.messages.at(-1)!.content = "hi";
+    try {
+      await runtime.run(value, port().runtimePort);
+      expect(operations).toEqual(cues ? ["reproject", "wake"] : ["reproject", "wake", "memory-search"]);
+    } finally { await runtime.shutdown(); }
+  });
+
+  it("serves wake from the per-version cache until purge or promotion invalidates it", async () => {
+    const operations: string[] = [];
+    const store = new AttemptWorkspaceStore({ canonicalRoot: join(await mkdtemp(join(tmpdir(), "chat-wake-cache-")), "canonical") });
+    temporary.push(dirname(store["options"].canonicalRoot));
+    vi.spyOn(store, "promoteRelationshipRebuild").mockResolvedValue({ sessions: 0, messages: 0 });
+    const runtime = await engine(new MemoryReplyAdapter("Ready."), undefined, {
+      workspaces: store,
+      runIgrep: async (options) => {
+        operations.push(options.args[1]!);
+        return options.args[1] === "reproject"
+          ? { schema: "igrep.mem/1", provider: "igrep", action: "reproject", migrated: false }
+          : options.args[1] === "wake" ? { schema: "igrep.mem/1", provider: "igrep", action: "wake", workspaceRoot: options.args[options.args.indexOf("--workspace") + 1], markdownContext: "", warnings: [] } : { schema: "igrep.mem/1", provider: "igrep", action: "memory-search", workspaceRoot: JSON.parse(options.stdin!).workspace, warnings: [], results: [] };
+      },
+    });
+    const run = async (attempt: string) => {
+      const connection = port();
+      operations.length = 0;
+      await runtime.run({ ...normalInvocation(), invocationId: `invocation-${attempt}`, attemptId: `attempt-${attempt}` }, connection.runtimePort);
+      expect(connection.candidates).toHaveLength(1);
+      return connection.events;
+    };
+    try {
+      const first = await run("1");
+      expect(operations).toEqual(["reproject", "wake", "memory-search"]);
+      expect(first.find(event => event.type === "igrep_observation" && event.operation === "wake")).not.toHaveProperty("cache");
+      // Content-free first-token decomposition for a normal attempt.
+      expect(first.filter(event => event.type === "runtime_observation").map(event => event.type === "runtime_observation" && [event.operation, event.outcome]))
+        .toEqual([["workspace_prepare", "success"], ["workspace_copy", "success"], ["memory_reproject", "success"]]);
+
+      const second = await run("2");
+      expect(operations).toEqual(["reproject", "memory-search"]);
+      expect(second).toContainEqual(expect.objectContaining({ type: "igrep_observation", operation: "wake", outcome: "empty", resultCount: 0, cache: "hit" }));
+
+      expect(runtime["wakeCache"].size).toBe(1);
+      await runtime.purge({ scope: "relationship", userId: "user-1", characterId: "character-1" });
+      expect(runtime["wakeCache"].size).toBe(0);
+      await run("3");
+      expect(operations).toEqual(["reproject", "wake", "memory-search"]);
+
+      await run("4");
+      expect(operations).toEqual(["reproject", "memory-search"]);
+      await runtime.promoteRebuild({ scope: "relationship", userId: "user-1", characterId: "character-1", rebuildId: "00000000-0000-4000-8000-000000000000",
+        fence: { mutationId: "mutation-2", claimToken: "22222222-2222-4222-8222-222222222222", authorityVersion: "2" } });
+      await run("5");
+      expect(operations).toEqual(["reproject", "wake", "memory-search"]);
+      await runtime.purge({ scope: "user", userId: "user-1" });
+      expect(runtime["wakeCache"].size).toBe(0);
+    } finally { await runtime.shutdown(); }
+  });
+
+  it("records only the prepare timing for private attempts", async () => {
+    const runtime = await engine(new MemoryReplyAdapter("Ready."));
+    const connection = port();
+    try {
+      await runtime.run(invocation(), connection.runtimePort);
+      expect(connection.events.filter(event => event.type === "runtime_observation"))
+        .toEqual([expect.objectContaining({ operation: "workspace_prepare", outcome: "success" })]);
+    } finally { await runtime.shutdown(); }
+  });
+
   it.each(["length", "empty", "oversize"].flatMap(rejection => [true, false].map(withUsage => ({ rejection, withUsage }))))(
     "fails closed on a rejected $rejection summary while retaining its physical receipt (receipt=$withUsage)",
     async ({ rejection, withUsage }) => {
@@ -2260,6 +2352,30 @@ describe("Chat embedded companion runtime", () => {
     });
   });
 
+  it("commits after one in-process retry of a transient provider failure, journaling both physical requests", async () => {
+    let calls = 0;
+    const adapter = new FixtureAdapter({ profile: invocation().preparedTurn.profile, apiKey: "fixture", fetch: async () => {
+      if (++calls === 1) return new Response("overloaded", { status: 503 });
+      return response({ content: "Back with you." }, "stop", { inputTokens: 11, outputTokens: 4 });
+    } });
+    const runtime = await engine(adapter);
+    const connection = port();
+    try {
+      await runtime.run(invocation(), connection.runtimePort);
+      expect(calls).toBe(2);
+      expect(connection.candidates).toHaveLength(1);
+      expect(connection.candidates[0]!.content).toBe("Back with you.");
+      const started = connection.events.filter(event => event.type === "model_request_started");
+      const receipts = connection.events.filter(event => event.type === "model_request");
+      expect(started).toHaveLength(2);
+      expect(receipts.map(event => event.type === "model_request" && event.request.usage)).toEqual([null, expect.objectContaining({ inputTokens: 11, outputTokens: 4 })]);
+      // One unknown physical receipt keeps the Turn's aggregate usage unknown.
+      expect(connection.candidates[0]!.modelRequests).toHaveLength(2);
+      expect(connection.candidates[0]!.usage).toBeNull();
+      expect(connection.events.filter(event => event.type === "text_reset")).toHaveLength(0);
+    } finally { await runtime.shutdown(); }
+  });
+
   it("does not return before an asynchronous failed event is delivered", async () => {
     const runtime = await engine(new FirstTokenTimeoutAdapter());
     const connection = port();
@@ -2531,6 +2647,78 @@ describe("Chat embedded companion runtime", () => {
         execution: { steps: 1, toolCalls: 1 },
       });
       expect(connection.candidates[0]?.modelRequests).toHaveLength(1);
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it.each([
+    { label: "verified", excerpts: ["Also tell me one fact about rain."], extracts: false },
+    { label: "paraphrased", excerpts: ["Tell me a rain fact."], extracts: true },
+    { label: "whole-message", excerpts: ["Send me a selfie by the window. Also tell me one fact about rain."], extracts: true },
+    { label: "absent", excerpts: undefined, extracts: true },
+  ])("answers media-turn text from $label tool excerpts only when they verify against the message", async ({ excerpts, extracts }) => {
+    const base = imageInvocation();
+    const value = companionInvocationSchema.parse({ ...base, preparedTurn: { ...base.preparedTurn, tools: COMPANION_MEDIA_TOOL_DEFINITIONS } });
+    value.preparedTurn.messages.at(-1)!.content = "Send me a selfie by the window. Also tell me one fact about rain.";
+    const extraction = vi.fn(async () => response({ content: "> Also tell me one fact about rain." }, "stop", { inputTokens: 5, outputTokens: 3 }));
+    const receivedCalls: CompanionToolCall[] = [];
+    const bodies: WireRequest[] = [];
+    let generation = 0;
+    const adapter = new FixtureAdapter({
+      profile: value.preparedTurn.profile,
+      apiKey: "fixture",
+      fetch: async (_url, init) => {
+        if (++generation === 1) return response({ tool_calls: [{ index: 0, id: "excerpt-media-call", function: {
+          name: "request_character_media",
+          arguments: JSON.stringify({ kind: "image", direction: "Mira taking a selfie by the window", subject: "companion",
+            independentTextRequest: true, ...(excerpts ? { independentTextExcerpts: excerpts } : {}) }),
+        } }] }, "tool_calls", { inputTokens: 20, outputTokens: 8 });
+        bodies.push(JSON.parse(String(init?.body)));
+        return response({ content: "Rain can fall at about twenty miles an hour." }, "stop", { inputTokens: 30, outputTokens: 9 });
+      },
+    }, extraction);
+    const runtime = await engine(adapter);
+    const connection = port({ executeTool: async call => {
+      receivedCalls.push(call);
+      return { attemptId: call.attemptId, callId: call.callId, name: call.name, outcome: "succeeded", output: acceptedImage("excerpt-card", "job-excerpt") };
+    } });
+    try {
+      await runtime.run(value, connection.runtimePort);
+      expect(extraction).toHaveBeenCalledTimes(extracts ? 1 : 0);
+      // Main receives exactly the media effect arguments, never routing hints.
+      expect(receivedCalls).toHaveLength(1);
+      expect(receivedCalls[0]!.arguments).not.toHaveProperty("independentTextExcerpts");
+      expect(receivedCalls[0]!.arguments).not.toHaveProperty("independentTextRequest");
+      // Both paths answer the same verified excerpt in the media body.
+      expect(bodies).toHaveLength(1);
+      expect(bodies[0]!.messages).toContainEqual(expect.objectContaining({ role: "user", content: "Also tell me one fact about rain." }));
+      expect(bodies[0]!.tools ?? []).not.toContainEqual(expect.objectContaining({ function: expect.objectContaining({ name: "request_character_media" }) }));
+      expect(connection.candidates[0]).toMatchObject({ content: "Rain can fall at about twenty miles an hour.",
+        mediaResponse: { version: 1, attachmentId: "excerpt-card" } });
+      expect(connection.candidates[0]!.modelRequests!.map(request => request.purpose)).toEqual(
+        extracts ? [undefined, "media_extraction", "media_body"] : [undefined, "media_body"]);
+      expect(connection.events.filter(event => event.type === "runtime_observation" && event.operation === "media_extraction"))
+        .toEqual([expect.objectContaining({ outcome: extracts ? "model" : "verified_excerpts" })]);
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("counts the pure-media fast path in content-free evidence", async () => {
+    const base = imageInvocation();
+    const value = companionInvocationSchema.parse({ ...base, preparedTurn: { ...base.preparedTurn, tools: COMPANION_MEDIA_TOOL_DEFINITIONS } });
+    value.preparedTurn.messages.at(-1)!.content = "Send me a selfie by the window.";
+    const adapter = new FixtureAdapter({ profile: value.preparedTurn.profile, apiKey: "fixture", fetch: async () => response({
+      tool_calls: [{ index: 0, id: "pure-call", function: { name: "request_character_media",
+        arguments: JSON.stringify({ kind: "image", direction: "Mira by the window", subject: "companion", independentTextRequest: false, independentTextExcerpts: [] }) } }],
+    }, "tool_calls") });
+    const runtime = await engine(adapter);
+    const connection = port();
+    try {
+      await runtime.run(value, connection.runtimePort);
+      expect(connection.candidates[0]).toMatchObject({ content: "", mediaResponse: { attachmentId: "attachment-1" } });
+      expect(connection.events).toContainEqual(expect.objectContaining({ type: "runtime_observation", operation: "media_extraction", outcome: "pure_media_skip", durationMs: 0 }));
     } finally {
       await runtime.shutdown();
     }

@@ -123,6 +123,22 @@ describe("embedded companion runtime contracts", () => {
     expect(companionEventSchema.safeParse({ ...identity, type: "assistant/chunk" }).success).toBe(false);
   });
 
+  it("keeps runtime timings and wake cache evidence content-free and well-formed", () => {
+    const identity = { invocationId: "invocation-1", attemptId: "attempt-1", sequence: 1, occurredAt: "2026-08-28T12:00:00.000Z" };
+    const runtime = (operation: string, outcome: string) => companionEventSchema.safeParse({ ...identity, type: "runtime_observation", operation, outcome, durationMs: 3 }).success;
+    expect(runtime("workspace_prepare", "success")).toBe(true);
+    expect(runtime("memory_reproject", "failure")).toBe(true);
+    expect(runtime("media_extraction", "verified_excerpts")).toBe(true);
+    expect(runtime("media_extraction", "pure_media_skip")).toBe(true);
+    expect(runtime("workspace_copy", "verified_excerpts")).toBe(false);
+    expect(runtime("media_extraction", "success")).toBe(false);
+    expect(companionEventSchema.safeParse({ ...identity, type: "runtime_observation", operation: "workspace_prepare", outcome: "success", durationMs: 3, path: "/secret" }).success).toBe(false);
+    const wake = (extra: Record<string, unknown>) => companionEventSchema.safeParse({ ...identity, type: "igrep_observation", durationMs: 0, ...extra }).success;
+    expect(wake({ operation: "wake", outcome: "hit", resultCount: 1, cache: "hit" })).toBe(true);
+    expect(wake({ operation: "wake", outcome: "failure", cache: "hit" })).toBe(false);
+    expect(wake({ operation: "memory", outcome: "hit", resultCount: 1, cache: "hit" })).toBe(false);
+  });
+
   it("requires terminal tool counts and an explicit Main commit ACK", () => {
     const candidate = {
       attemptId: "attempt-1",

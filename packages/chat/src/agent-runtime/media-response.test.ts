@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
-  canSkipMediaExtractionForPureMedia,
   extractMediaRoutingHint,
   mediaAttachmentId,
   mediaExtractionMessages,
   parseMediaSearchReply,
   parseMediaTextRequests,
-  shouldBufferMediaLeadText,
+  verifyMediaTextExcerpts,
 } from "./media-response";
+import { canSkipMediaExtractionForPureMedia, shouldBufferMediaLeadText } from "../reply-cues";
 
 it.each([false, true])("keeps a completed media resend out of the independent text scope (recovered=%s)", recovered => {
   const source = "把刚才那段原样再发一次。另外用中文告诉我 17 + 25 的结果。";
@@ -130,6 +130,30 @@ describe("intent-aware media lead buffering and pure-media fast path", () => {
     expect(extractMediaRoutingHint({ previousMediaAssetId: "asset-1" })).toEqual({
       toolArgs: { previousMediaAssetId: "asset-1" },
     });
+    expect(extractMediaRoutingHint({ previousMediaAssetId: "asset-1", independentTextExcerpts: ["Also explain tides."] })).toEqual({
+      independentTextExcerpts: ["Also explain tides."],
+      toolArgs: { previousMediaAssetId: "asset-1" },
+    });
+  });
+
+  it("verifies tool-call excerpts with the extraction reply's ordered source check", () => {
+    const source = "Show that photo again. Also explain tides in one sentence.\r\nThen name a star.";
+    expect(verifyMediaTextExcerpts(["Also explain tides in one sentence."], source))
+      .toEqual(parseMediaTextRequests("> Also explain tides in one sentence.", source));
+    expect(verifyMediaTextExcerpts(["Also explain tides in one sentence.", "Then name a star."], source))
+      .toEqual({ content: "Also explain tides in one sentence.\r\nThen name a star.", excerptCount: 2 });
+    expect(verifyMediaTextExcerpts(["再用一句话解释潮汐。"], "再给我看一次那张照片。再用一句话解释潮汐。"))
+      .toEqual({ content: "再用一句话解释潮汐。", excerptCount: 1 });
+    for (const rejected of [
+      ["Explain tides briefly."], // paraphrase
+      ["Then name a star.", "Also explain tides in one sentence."], // out of order
+      [source], // the whole message, including the media request
+      ["   "],
+      [],
+      "Also explain tides in one sentence.",
+      [42],
+      Array.from({ length: 13 }, () => "Also"),
+    ]) expect(verifyMediaTextExcerpts(rejected, source)).toBeUndefined();
   });
 
   it("skips secondary extraction only when model declares false and the single-intent guard agrees", () => {

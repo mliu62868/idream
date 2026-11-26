@@ -812,12 +812,14 @@ describe("OpenAI-compatible Pi adapter", () => {
         parameters: { type: "object", properties: {} },
       }] };
 
-    await expect((async () => {
-      for await (const _chunk of streamRequest(adapter, options)) { /* drain */ }
-    })()).rejects.toMatchObject({ code: "TRANSPORT" });
+    // The reset before any response is retried in process with the same body.
+    for await (const _chunk of streamRequest(adapter, options)) { /* drain */ }
+    expect(choices).toEqual(["auto", "auto"]);
+    // An explicit later request also keeps automatic tool choice.
     for await (const _chunk of streamRequest(adapter, options)) { /* drain */ }
 
     expect(choices).toEqual([
+      "auto",
       "auto",
       "auto",
     ]);
@@ -1149,9 +1151,10 @@ describe("OpenAI-compatible Pi adapter", () => {
     try {
       // Even the request's first-token deadline cannot settle a transport's
       // cleanup promise. The HTTP status must already have reached the caller.
+      // One in-process retry follows the first 503 after a short backoff.
       await vi.advanceTimersByTimeAsync(1_100);
       expect(outcome).toMatchObject({ code: "PROVIDER_HTTP_ERROR", status: 503 });
-      expect(cancel).toHaveBeenCalledOnce();
+      expect(cancel).toHaveBeenCalledTimes(2);
     } finally {
       cancellation.resolve();
       await finished;
@@ -1402,5 +1405,123 @@ describe("OpenAI-compatible Pi adapter", () => {
       code: "PROVIDER_STREAM_LIMIT",
       message: "provider output exceeded the configured byte limit",
     });
+  });
+});
+
+describe("transient provider retry", () => {
+  const ok = (text = "Recovered.") => new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: "stop" }],
+    usage: { prompt_tokens: 7, completion_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
+  function observed(fetchImpl: typeof fetch, firstTokenMs = 1_000) {
+    const requests: CompanionModelRequestEvidence[] = [];
+    const receipts: Array<unknown> = [];
+    const adapter = new OpenAiCompatibleAdapter({
+      profile: { tier: "test", adapter: "openai-compatible-v1", provider: "openai", baseUrl: "https://provider.example/v1",
+        model: "deepseek/test", supportsTools: true, maxOutputTokens: 16, timeout: { firstTokenMs, idleMs: 1_000 },
+        sampling: { temperature: 0.9, topP: 0.95, repetitionPenalty: 1.05 } },
+      apiKey: "provider-secret", fetch: fetchImpl,
+      observeRequest: evidence => { requests.push(evidence); },
+      observeUsage: usage => { receipts.push(usage ?? null); },
+    });
+    return { adapter, requests, receipts };
+  }
+  async function collect(adapter: OpenAiCompatibleAdapter, signal?: AbortSignal) {
+    const events: AssistantMessageEvent[] = [];
+    for await (const event of streamRequest(adapter, { messages: [], ...(signal ? { signal } : {}) })) events.push(event);
+    return events;
+  }
+
+  afterEach(() => { vi.useRealTimers(); });
+
+  it.each([
+    ["transport reset", () => { throw new TypeError("fetch failed"); }],
+    ["HTTP 503", () => new Response("busy", { status: 503 })],
+    ["HTTP 502", () => new Response("bad gateway", { status: 502 })],
+  ] as const)("retries a %s once before any stream progress and journals both requests", async (_label, fail) => {
+    let calls = 0;
+    const { adapter, requests, receipts } = observed((async () => (++calls === 1 ? fail() : ok())) as unknown as typeof fetch);
+    const events = await collect(adapter);
+    expect(calls).toBe(2);
+    expect(terminal(events).content).toEqual([{ type: "text", text: "Recovered." }]);
+    // Pi sees exactly one message: one start, no error from the failed request.
+    expect(events.filter(event => event.type === "start")).toHaveLength(1);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toEqual(requests[0]);
+    expect(receipts).toEqual([null, { inputTokens: 7, outputTokens: 2 }]);
+  });
+
+  it("retries a first-token timeout that produced no content", async () => {
+    let calls = 0;
+    const { adapter, requests, receipts } = observed((async (_url: unknown, init?: RequestInit) => {
+      if (++calls > 1) return ok();
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) { init?.signal?.addEventListener("abort", () => controller.error(init.signal!.reason), { once: true }); },
+      }));
+    }) as typeof fetch, 30);
+    const events = await collect(adapter);
+    expect(calls).toBe(2);
+    expect(terminal(events).stopReason).toBe("stop");
+    expect(requests).toHaveLength(2);
+    expect(receipts).toEqual([null, { inputTokens: 7, outputTokens: 2 }]);
+  });
+
+  it("retries at most once", async () => {
+    let calls = 0;
+    const { adapter, requests, receipts } = observed((async () => { calls++; return new Response("busy", { status: 503 }); }) as typeof fetch);
+    await expect(collect(adapter)).rejects.toMatchObject({ code: "PROVIDER_HTTP_ERROR", status: 503 });
+    expect(calls).toBe(2);
+    expect(requests).toHaveLength(2);
+    expect(receipts).toEqual([null, null]);
+  });
+
+  it.each([400, 401, 404, 422])("does not retry a non-transient HTTP %s", async status => {
+    let calls = 0;
+    const { adapter, requests } = observed((async () => { calls++; return new Response("{}", { status }); }) as typeof fetch);
+    await expect(collect(adapter)).rejects.toMatchObject({ code: "PROVIDER_HTTP_ERROR", status });
+    expect(calls).toBe(1);
+    expect(requests).toHaveLength(1);
+  });
+
+  it("waits at least one second before retrying a rate limit", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const { adapter } = observed((async () => (++calls === 1 ? new Response("slow down", { status: 429 }) : ok())) as typeof fetch);
+    const done = collect(adapter);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(calls).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(done).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ type: "done" })]));
+    expect(calls).toBe(2);
+  });
+
+  it("does not retry once the failed request published stream progress", async () => {
+    let calls = 0;
+    const { adapter, requests } = observed((async (_url: unknown, init?: RequestInit) => {
+      calls++;
+      // A bare tool-call id opens a Pi block without counting as a first token;
+      // the later first-token timeout must not replay a half message.
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call-1" }] }, finish_reason: null }] })}\n\n`));
+          init?.signal?.addEventListener("abort", () => controller.error(init.signal!.reason), { once: true });
+        },
+      }));
+    }) as typeof fetch, 30);
+    await expect(collect(adapter)).rejects.toMatchObject({ code: "MODEL_FIRST_TOKEN_TIMEOUT" });
+    expect(calls).toBe(1);
+    expect(requests).toHaveLength(1);
+  });
+
+  it("stops during the backoff when the caller aborts", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const controller = new AbortController();
+    const { adapter, requests } = observed((async () => { calls++; return new Response("busy", { status: 503 }); }) as typeof fetch);
+    const done = collect(adapter, controller.signal).then(() => "resolved", (error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(100);
+    controller.abort(new Error("caller cancelled"));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(await done).not.toBe("resolved");
+    expect(calls).toBe(1);
+    expect(requests).toHaveLength(1);
   });
 });

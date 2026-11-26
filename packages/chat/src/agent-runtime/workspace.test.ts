@@ -1,4 +1,4 @@
-import { lstat, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -176,6 +176,34 @@ describe("Chat companion workspace", () => {
     expect(canonical.isSymbolicLink()).toBe(true);
     await expect(readFile(join(relationship, ".igrep", "attempt-only.txt"), "utf8"))
       .rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("names the immutable version an attempt copied and keeps private modes on the clone", async () => {
+    const { store, canonicalRoot } = await fixture();
+    const identity = { userId: "user-1", characterId: "character-1" };
+    await rebuildRelationship(store, identity, async (workspace) => {
+      await writeFile(join(workspace, ".igrep", "memory.txt"), "canonical-memory", { mode: 0o600 });
+    });
+    const relationship = relationshipWorkspacePath(canonicalRoot, "user-1", "character-1");
+    const first = await store.prepare(invocation("normal"));
+    const second = await store.prepare({ ...invocation("normal"), attemptId: "attempt-2" });
+    try {
+      expect(first.memoryVersion).toBe(await realpath(join(relationship, ".igrep")));
+      expect(second.memoryVersion).toBe(first.memoryVersion);
+      expect(first.copyDurationMs).toEqual(expect.any(Number));
+      expect((await stat(join(first.path, ".igrep"))).mode & 0o777).toBe(0o700);
+      expect((await stat(join(first.path, ".igrep", "memory.txt"))).mode & 0o777).toBe(0o600);
+      // A write into one attempt copy never reaches the version or a sibling.
+      await writeFile(join(first.path, ".igrep", "memory.txt"), "attempt-local");
+      expect(await readFile(join(second.path, ".igrep", "memory.txt"), "utf8")).toBe("canonical-memory");
+      expect(await readFile(join(first.memoryVersion!, "memory.txt"), "utf8")).toBe("canonical-memory");
+    } finally {
+      await first.discard();
+      await second.discard();
+    }
+    const privateAttempt = await store.prepare(invocation("private"));
+    expect(privateAttempt.memoryVersion).toBeUndefined();
+    await privateAttempt.discard();
   });
 
   it("seeds ordinary projections from canonical memory", async () => {

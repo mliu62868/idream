@@ -203,83 +203,47 @@ export function mediaAttachmentId(result: CompanionToolResult): string | undefin
   return typeof output.attachmentId === "string" && output.attachmentId.trim() ? output.attachmentId : undefined;
 }
 
-const MEDIA_INTENT_SIGNAL = new RegExp([
-  "\\b(?:photos?|pics?|pictures?|images?|selfies?|videos?|clips?|snapshots?|portraits?|draw(?:ing)?|paint(?:ing)?|edit|recolor|redraw|restyle|regenerate|redo|resend|visuals?|camera|shoot|pose|wearing|outfit|dress|undress|naked|nude|lingerie|bikini|show\\s+me|send\\s+(?:me\\s+)?(?:a|an|one|that|the|another|your|it))\\b",
-  "(?:照片|图片|自拍|图|照|视频|影片|片段|短片|镜头|画面|重发|再发|再看|发我|发一张|来一张|拍一张|发个|换装|改图|修改|重画|重绘|换成|改成|穿上|脱|裸|比基尼|内衣)",
-  "(?:写真|画像|自撮り|動画|クリップ|送って|見せて|編集|書き直|作り直)",
-  "(?:사진|이미지|셀카|영상|동영상|클립|보내줘|보여줘|수정|편집)",
-].join("|"), "iu");
-
-const SHORT_CONFIRMATION = /^(?:yes|yeah|yep|yup|sure|ok|okay|please|go ahead|do it|send it|show me|yes please|好|好的|好呀|好呀发吧|行|行呀|可以|发吧|要|嗯|嗯嗯|是的|可以呀|来吧|はい|うん|お願い|네|응|좋아|보내)[!！.。~～\s]*$/iu;
-
-/**
- * Decide whether to buffer text during the native tool-selection round.
- * Buffering prevents provisional media promises from leaking before a tool
- * call, while allowing ordinary text-only chat turns (~85-90% of traffic) to
- * stream live tokens immediately for low TTFT. If an unbuffered turn still
- * unexpectedly emits a media tool call, `text_reset` clears the live stream.
- */
-export function shouldBufferMediaLeadText(input: {
-  hasMediaTools: boolean;
-  imageActionMode?: string;
-  currentUserText: string;
-  previousAssistantText?: string;
-}): boolean {
-  if (!input.hasMediaTools) return false;
-  if (input.imageActionMode === "paid") return true;
-  const text = input.currentUserText.trim();
-  if (!text) return false;
-  if (MEDIA_INTENT_SIGNAL.test(text)) return true;
-  if (
-    text.length <= 40
-    && SHORT_CONFIRMATION.test(text)
-    && Boolean(input.previousAssistantText && MEDIA_INTENT_SIGNAL.test(input.previousAssistantText))
-  ) {
-    return true;
-  }
-  return false;
-}
-
-const MULTI_TASK_CONJUNCTION = /\b(?:also|and\s+(?:also|tell|explain|write|answer|name|give|describe|say|list|summarize)|plus|besides|by\s+the\s+way|btw)\b|(?:顺便|另外|还有|顺带|同时|并且|再帮我|再告诉我|再写|顺手|另外再|還有|順便|再幫我)/iu;
-
 /**
  * Strip Chat-local routing hints before forwarding pure media arguments to Main
  * so Main's strict tool-effect schemas and persisted receipts stay untouched.
+ * `independentTextExcerpts` is returned raw; only `verifyMediaTextExcerpts`
+ * may turn it into a text request.
  */
 export function extractMediaRoutingHint(args: Record<string, unknown>): {
   independentTextRequest?: boolean;
+  independentTextExcerpts?: unknown;
   toolArgs: Record<string, unknown>;
 } {
-  if (!("independentTextRequest" in args)) {
+  if (!("independentTextRequest" in args) && !("independentTextExcerpts" in args)) {
     return { toolArgs: args };
   }
-  const { independentTextRequest, ...rest } = args;
+  const { independentTextRequest, independentTextExcerpts, ...rest } = args;
   return {
     ...(typeof independentTextRequest === "boolean" ? { independentTextRequest } : {}),
+    ...(independentTextExcerpts !== undefined ? { independentTextExcerpts } : {}),
     toolArgs: rest,
   };
 }
 
 /**
- * Fast-path pure-media replies without paying a second LLM extraction call.
- * Requires both an explicit `independentTextRequest: false` signal from the
- * model AND a conservative deterministic guard proving the user message is a
- * single short non-question request without multi-task conjunctions.
+ * Accept the model's tool-call excerpts as the independent text request only
+ * when they pass the same ordered, verbatim source check as the extraction
+ * reply (`parseMediaTextRequests`) and leave part of the message to the media
+ * request itself. Anything else returns undefined, and the caller falls back
+ * to the separate extraction request.
  */
-export function canSkipMediaExtractionForPureMedia(
-  userText: string,
-  independentTextRequestHint: boolean | undefined,
-): boolean {
-  if (independentTextRequestHint !== false) return false;
-  const trimmed = userText.trim();
-  if (!trimmed || trimmed.length > 160) return false;
-  if (/[\r\n]/u.test(trimmed)) return false;
-  if (/[?？]/u.test(trimmed)) return false;
-  if (MULTI_TASK_CONJUNCTION.test(trimmed)) return false;
-  // Conservatively route comma-separated clauses (e.g. "发张自拍，夸夸我") and
-  // multi-sentence messages through full extraction so no second task is missed.
-  if (/[,，]/u.test(trimmed)) return false;
-  const withoutTrailingPunct = trimmed.replace(/[.!。！~～]+$/u, "").trim();
-  if (/[.!;。！？；]/u.test(withoutTrailingPunct)) return false;
-  return true;
+export function verifyMediaTextExcerpts(excerpts: unknown, source: string): MediaTextRequests | undefined {
+  const parsed = excerptsSchema.safeParse(excerpts);
+  if (!parsed.success || parsed.data.length === 0) return undefined;
+  let requests: MediaTextRequests;
+  try {
+    requests = requireSourceExcerpts(parsed.data, source);
+  } catch {
+    return undefined;
+  }
+  // An excerpt set covering the whole message would hand the media request
+  // itself to the text body; the extraction prompt is built to exclude it.
+  const visibleLength = (value: string) => value.replace(/\s+/gu, "").length;
+  if (visibleLength(parsed.data.join("")) >= visibleLength(source)) return undefined;
+  return requests;
 }

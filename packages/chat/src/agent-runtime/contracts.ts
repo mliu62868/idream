@@ -277,6 +277,16 @@ export const companionCommitAckSchema = z.discriminatedUnion("accepted", [
   }).strict(),
 ]);
 
+/**
+ * workspace_prepare: relationship lock + immutable memory copy (or private mkdtemp).
+ * workspace_copy: the clone/copy of the canonical memory version alone.
+ * memory_reproject: igrep `mem reproject` on the attempt copy.
+ * media_extraction: how the independent text of a media Turn was found.
+ */
+export const runtimeObservationOperations = ["workspace_prepare", "workspace_copy", "memory_reproject", "media_extraction"] as const;
+export const runtimeObservationOutcomes = ["success", "failure", "pure_media_skip", "verified_excerpts", "model"] as const;
+const mediaExtractionOutcomes = new Set<string>(["pure_media_skip", "verified_excerpts", "model", "failure"]);
+
 const eventIdentity = {
   invocationId: nonEmptyString,
   attemptId: nonEmptyString,
@@ -293,7 +303,13 @@ export const companionEventSchema = z.discriminatedUnion("type", [
   z.object({ ...eventIdentity, type: z.literal("usage"), usage: companionUsage }).strict(),
   z.object({ ...eventIdentity, type: z.literal("model_request"), request: companionModelRequestEvidenceSchema.required({ provider: true, model: true, usage: true }) }).strict(),
   z.object({ ...eventIdentity, type: z.literal("model_request_started"), request: companionModelRequestEvidenceSchema.required({ provider: true, model: true }).extend({ usage: z.null() }) }).strict(),
-  z.object({ ...eventIdentity, type: z.literal("igrep_observation"), operation: z.enum(["wake", "search", "memory", "web", "session", "compaction"]), outcome: z.enum(["hit", "empty", "failure"]), resultCount: nonNegativeInteger.optional(), evidenceMatches: nonNegativeInteger.max(8).optional(), durationMs: nonNegativeInteger }).strict(),
+  z.object({ ...eventIdentity, type: z.literal("igrep_observation"), operation: z.enum(["wake", "search", "memory", "web", "session", "compaction"]), outcome: z.enum(["hit", "empty", "failure"]), resultCount: nonNegativeInteger.optional(), evidenceMatches: nonNegativeInteger.max(8).optional(), durationMs: nonNegativeInteger,
+    /** A resident profile served from the per-version wake cache instead of a subprocess. */
+    cache: z.literal("hit").optional() }).strict(),
+  // Content-free Chat-local timing and routing evidence for first-token
+  // latency analysis. It is journaled with the AgentRun and never sent to Main.
+  z.object({ ...eventIdentity, type: z.literal("runtime_observation"), operation: z.enum(runtimeObservationOperations),
+    outcome: z.enum(runtimeObservationOutcomes), durationMs: nonNegativeInteger }).strict(),
   z.object({ ...eventIdentity, type: z.literal("heartbeat") }).strict(),
   z.object({ ...eventIdentity, type: z.literal("terminal_candidate"), candidate: companionTerminalCandidateSchema }).strict(),
   z.object({ ...eventIdentity, type: z.literal("failed"), error: companionError }).strict(),
@@ -310,6 +326,15 @@ export const companionEventSchema = z.discriminatedUnion("type", [
     if (event.evidenceMatches !== undefined && (event.operation !== "memory" || event.outcome !== "hit")) {
       context.addIssue({ code: "custom", path: ["evidenceMatches"], message: "evidence matches require a memory hit" });
     }
+    if (event.cache !== undefined && (event.operation !== "wake" || event.outcome === "failure")) {
+      context.addIssue({ code: "custom", path: ["cache"], message: "only a successful wake can be served from cache" });
+    }
+  }
+  if (event.type === "runtime_observation") {
+    const valid = event.operation === "media_extraction"
+      ? mediaExtractionOutcomes.has(event.outcome)
+      : event.outcome === "success" || event.outcome === "failure";
+    if (!valid) context.addIssue({ code: "custom", path: ["outcome"], message: "outcome does not belong to this runtime operation" });
   }
 });
 

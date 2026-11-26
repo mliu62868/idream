@@ -11,7 +11,7 @@ import {
   REQUEST_CHARACTER_MEDIA_TOOL,
   requestCharacterMediaResultSchema,
 } from "@idream/shared/chat/media-library";
-import { companionEventSchema, companionToolCallSchema, companionToolReservationSchema, companionToolResultSchema,
+import { companionCommitAckSchema, companionEventSchema, companionToolCallSchema, companionToolReservationSchema, companionToolResultSchema,
   type CompanionCommitAck, type CompanionEvent, type CompanionInvocation, type CompanionModelRequestEvidence,
   type CompanionTerminalCandidate, type CompanionToolCall, type CompanionToolResult, type PreparedTurnProfile, type PreparedTurnMessage } from "./contracts";
 import { evaluateTerminalCandidate, type TerminalValidationCode } from "./terminal-candidate";
@@ -23,9 +23,10 @@ import type { AttemptWorkspace, AttemptWorkspaceStore, WorkspacePurgeRequest } f
 import { observeIgrepWake, igrepFailureCategory, recallIgrepMemory, reprojectIgrepMemory, createIgrepTools,
   type IgrepCommand, type RunJsonCommand } from "./igrep";
 import type { CompanionWorkspaceRebuildPromotion, CompanionWorkspaceRebuildSource } from "./rebuild-source";
+import { WakeProfileCache } from "./wake-cache";
 import { assertNotFenced, withDrainFence, type FenceScope } from "../fence.js";
 import { stableJson } from "../stable-json";
-import { describeRequestedReplyConstraints } from "../prompt.js";
+import { replyCues, type ReplyCues } from "../reply-cues.js";
 import { projectPreparedBody } from "../prepared-turn.js";
 import { ProviderError, type OpenAiCompatibleAdapter, type OpenAiCompatibleAdapterOptions, type TokenUsage } from "./openai-adapter";
 import { aggregateModelRequestUsage } from "./model-request-evidence";
@@ -39,13 +40,12 @@ import {
 } from "./execution-scheduler";
 import {
   MEDIA_EXTRACTION_MAX_TOKENS,
-  canSkipMediaExtractionForPureMedia,
   extractMediaRoutingHint,
   mediaAttachmentId,
   mediaExtractionMessages,
   parseMediaSearchReply,
   parseMediaTextRequests,
-  shouldBufferMediaLeadText,
+  verifyMediaTextExcerpts,
   type MediaSearchObservation,
   type MediaTextRequests,
 } from "./media-response";
@@ -74,6 +74,11 @@ export interface CompanionEngineOptions {
   capacityWaitMs?: number;
   /** Shared foreground/background gate so background memory maintenance yields to live Turns. */
   priorityGate?: InferencePriorityGate;
+  /**
+   * Offline evaluation only: false runs Turns without wording cues (see
+   * reply-cues.ts). Production composition never sets it; default true.
+   */
+  replyCues?: boolean;
 }
 export interface CompanionRuntimePort {
   emit(event: CompanionEvent): Promise<void> | void;
@@ -116,35 +121,12 @@ const COMPANION_REPLY_GUIDANCE = "Give only the reply requested, in character. P
 const MAX_RECALL_NOTES = 6;
 const PRE_RECALL_TIMEOUT_MS = 10_000;
 
-const TRIVIAL_PHATIC_UTTERANCE = /^(?:hi|hey|hello|yo|sup|good\s+(?:morning|afternoon|evening|night)|gm|gn|ok(?:ay)?|yes|yeah|yep|yup|no|nope|sure|thanks?|thank\s+you|ty|thx|lol|haha+|hehe+|nice|cool|wow|aww+|hmm+|uhh*|bye|goodbye|see\s+ya|你好|您好|早安|晚安|早上好|晚上好|下午好|嗯+|哦+|好+|好的|行|可以|谢谢|多谢|哈哈+|呵呵+|嘻嘻+|拜拜|再见|抱抱|亲亲|摸摸)[!！?？.。~～\s]*$/iu;
-
-export function shouldPreRecall(query: string): boolean {
-  const text = query.trim();
-  if (!text) return false;
-  if (/(?:remember|recall|earlier|before|last time|记得|还记得|上次|之前|曾经)/iu.test(text)) {
-    return true;
-  }
-  if (TRIVIAL_PHATIC_UTTERANCE.test(text)) return false;
-  const hanCharacters = text.match(/\p{Script=Han}/gu)?.length ?? 0;
-  return hanCharacters >= 2 || text.length >= 8;
-}
-
 function renderRecallContext(notes: readonly string[]): string | undefined {
   if (notes.length === 0) return undefined;
   return [
     "Moments from earlier conversations that may matter right now:",
     ...notes.slice(0, MAX_RECALL_NOTES).map((note) => `- ${note}`),
   ].join("\n");
-}
-
-// Factual questions benefit from the model profile's structured temperature;
-// ordinary roleplay keeps the configured expressive sampling. This classifier
-// is deliberately narrow so a generic conversational turn never silently
-// changes personality or cadence.
-function needsFactualSampling(text: string): boolean {
-  // Short noun modifiers still name a precise identifier (for example an
-  // access code or booking reference code), not an expressive story request.
-  return /\b(?:what\s+(?:have|did)\s+i|what\s+did\s+you|exact(?:\s+[\p{L}\p{N}-]+){0,2}\s+(?:label|name|identifier|code)|copy\s+it\s+verbatim|verbatim|identifier|code\s+word|recall)\b|(?:做了什么|我做过什么|完整标签|原样|逐字|标识符|暗号)/iu.test(text);
 }
 
 async function timed<T>(run: () => Promise<T>): Promise<
@@ -157,6 +139,11 @@ async function timed<T>(run: () => Promise<T>): Promise<
   } catch (error) {
     return { ok: false, error, durationMs: Math.max(0, Date.now() - startedAt) };
   }
+}
+
+/** A non-empty excerpt array means the model claims independent text exists. */
+function hasExcerpts(value: unknown): boolean {
+  return Array.isArray(value) && value.length > 0;
 }
 
 function wireUsage(usage?: TokenUsage) {
@@ -396,6 +383,11 @@ class ActiveInvocation {
 
 }
 
+/** The single acceptance gate for Main's answer to a terminal candidate. */
+function assertCommitAccepted(attemptId: string, ack: CompanionCommitAck): void {
+  if (ack.attemptId !== attemptId || !ack.accepted) throw new Error("Main rejected the terminal candidate");
+}
+
 /** Exercise the same direct ports used by live invocations. */
 export async function probeCompanionBridges(invocation: CompanionInvocation): Promise<void> {
   const events: EventPayload[] = [];
@@ -420,16 +412,706 @@ export async function probeCompanionBridges(invocation: CompanionInvocation): Pr
   if ((await bridge.execute(call, controller.signal)).outcome !== "succeeded") {
     throw new Error("tool bridge readiness probe did not round-trip");
   }
-  const ack: CompanionCommitAck = {
-    attemptId: invocation.attemptId,
-    accepted: true,
-    status: "committed",
-    terminalMessageId: "readiness-terminal",
-    committedAt: new Date().toISOString(),
+  // There is no Main commit port during readiness. Prove instead that the
+  // live acceptance gate admits this attempt's committed ack and refuses a
+  // foreign attempt or an explicit rejection, so a broken gate cannot pass.
+  const committedAt = new Date().toISOString();
+  const accepted = companionCommitAckSchema.parse({ attemptId: invocation.attemptId, accepted: true,
+    status: "committed", terminalMessageId: "readiness-terminal", committedAt });
+  assertCommitAccepted(invocation.attemptId, accepted);
+  const refused = [
+    { ...accepted, attemptId: `${invocation.attemptId}:foreign` },
+    companionCommitAckSchema.parse({ attemptId: invocation.attemptId, accepted: false, status: "rejected",
+      error: { code: "readiness_rejected", message: "readiness rejection" } }),
+  ].filter((ack) => {
+    try { assertCommitAccepted(invocation.attemptId, ack); return false; } catch { return true; }
+  });
+  if (refused.length !== 2) throw new Error("commit bridge readiness probe accepted a foreign or rejected ack");
+}
+
+/** Ordered, schema-checked publication of one attempt's events. */
+class AttemptEvents {
+  private sequence = 0;
+  private tail = Promise.resolve();
+  private failure: Error | undefined;
+
+  constructor(
+    private readonly invocation: CompanionInvocation,
+    private readonly port: CompanionRuntimePort,
+  ) {}
+
+  assertDelivery(): void {
+    if (this.failure) throw this.failure;
+  }
+
+  /** Wait until every event published so far has settled. */
+  drain(): Promise<void> {
+    return this.tail;
+  }
+
+  readonly emit = (payload: EventPayload): Promise<void> => {
+    const value = companionEventSchema.parse({ ...payload, invocationId: this.invocation.invocationId,
+      attemptId: this.invocation.attemptId, sequence: ++this.sequence, occurredAt: new Date().toISOString() });
+    const delivery = this.tail.then(async () => {
+      // A physical request can finish after stream or journal publication
+      // fails. Preserve that receipt while fencing new execution.
+      if (value.type !== "model_request") this.assertDelivery();
+      await this.port.emit(value);
+    });
+    this.tail = delivery.catch(error => {
+      this.failure ??= error instanceof Error ? error : new Error("companion event publication failed", { cause: error });
+    });
+    return delivery;
   };
-  const accepted = await Promise.resolve(ack);
-  if (!accepted.accepted || accepted.terminalMessageId !== ack.terminalMessageId) {
-    throw new Error("commit bridge readiness probe did not round-trip");
+}
+
+type ExecutionStage = "reply" | "tool_selection" | "media_extraction" | "media_body" | "terminal_commit";
+type RequestPolicy = Parameters<CompanionEngineOptions["adapter"]>[1];
+
+/**
+ * Every mutable fact one attempt accumulates. Stage methods of
+ * `CompanionAttempt` share only this object (plus their explicit return
+ * values), so failure classification reads exactly what the stages recorded.
+ */
+interface AttemptState {
+  workspace?: AttemptWorkspace;
+  terminalCommitted: boolean;
+  failurePhase: "composition" | "workspace" | "agent";
+  executionStage?: ExecutionStage;
+  modelStopReason?: AssistantMessage["stopReason"];
+  readonly modelRequests: CompanionModelRequestEvidence[];
+  turnFailure?: ProviderError;
+  igrepFailure?: "wake" | "search" | "memory";
+  retrievalCompleted: boolean;
+  preflightCode?: string;
+  terminalValidationCode?: TerminalValidationCode;
+  unconfirmedImageEffect: boolean;
+  /** Assistant text already published to the live stream. */
+  currentText: string;
+  /** Chat-local routing hint the model attached to its media call. */
+  independentTextRequestHint?: boolean;
+  /** Unverified Chat-local excerpts the model attached to its media call. */
+  independentTextExcerpts?: unknown;
+  /** Verified availability receipt from a read-only media search. */
+  searchReply?: MediaSearchObservation;
+}
+
+/** Output of workspace preparation. */
+interface PreparedAttempt {
+  workspacePath: string;
+  knowledgePath: string;
+  knowledgeSource: string;
+  current: Extract<PreparedTurnMessage, { role: "user" }>;
+  recovered: CompanionInvocation["preparedTurn"]["recoveredMediaAction"];
+  bufferText: boolean;
+}
+
+/** Output of the memory preflight: background context for the model. */
+interface MemoryContext {
+  recallContext?: string;
+  profileContext: string;
+}
+
+interface ConversationStage {
+  invocation: CompanionInvocation;
+  seed: readonly PreparedTurnMessage[];
+  pinned: readonly PreparedTurnMessage[];
+  systemPrompt: string;
+  adapter: OpenAiCompatibleAdapter;
+  maxSteps: number;
+  searchPath: string;
+  purpose?: "media_body";
+  executionEvidence?: readonly PreparedTurnMessage[];
+  streamText?: boolean;
+}
+
+/** Shared by the native loop and the media body loop. */
+interface NativeContext {
+  prepared: PreparedAttempt;
+  memory: MemoryContext;
+  bridge: ToolBridge;
+  requestPolicy: RequestPolicy;
+  adapter: OpenAiCompatibleAdapter;
+  maxSteps: number;
+  retrievalEvidence: PreparedTurnMessage[];
+  toolCallIds: Set<string>;
+  completed?: Awaited<ReturnType<typeof executePiConversation>>;
+}
+
+/** The terminal reply after any media resolution. */
+interface ResolvedReply {
+  latestAssistant?: AssistantMessage;
+  replyAdapter: OpenAiCompatibleAdapter;
+  steps: number;
+  mediaResponse?: CompanionTerminalCandidate["mediaResponse"];
+  bodyText?: string;
+}
+
+interface AttemptDependencies {
+  options: CompanionEngineOptions;
+  cues: ReplyCues;
+  instance: CompanionReadiness["instance"];
+  priorityGate: InferencePriorityGate;
+  wakeCache: WakeProfileCache;
+  /** Native execution finished; let a queued Turn take the agent slot. */
+  releaseAgentSlot(): void;
+}
+
+/**
+ * One admitted attempt, run as explicit stages:
+ * preflight → prepareWorkspace → memoryPreflight → nativeLoop →
+ * resolveMedia → commitTerminal, with `fail` classifying any error.
+ */
+class CompanionAttempt {
+  private readonly state: AttemptState = {
+    terminalCommitted: false,
+    failurePhase: "composition",
+    modelRequests: [],
+    retrievalCompleted: false,
+    unconfirmedImageEffect: false,
+    currentText: "",
+  };
+  private readonly events: AttemptEvents;
+  private readonly event: (payload: EventPayload) => Promise<void>;
+  private readonly deadlineAt: number;
+
+  constructor(
+    private readonly deps: AttemptDependencies,
+    private readonly invocation: CompanionInvocation,
+    private readonly mode: "normal" | "private",
+    private readonly active: ActiveInvocation,
+    private readonly port: CompanionRuntimePort,
+  ) {
+    this.events = new AttemptEvents(invocation, port);
+    this.event = this.events.emit;
+    this.deadlineAt = Date.parse(invocation.deadlineAt);
+  }
+
+  private get signal(): AbortSignal {
+    return this.active.cancellation.signal;
+  }
+
+  async execute(signal?: AbortSignal): Promise<void> {
+    const { active, state } = this;
+    let deadlineTimer: NodeJS.Timeout | undefined;
+    const onAbort = () => active.cancel("transport");
+    if (signal?.aborted) onAbort(); else signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      const deadlineMs = this.deadlineAt - Date.now();
+      if (!Number.isFinite(deadlineMs) || deadlineMs <= 0) { await this.event({ type: "cancelled", reason: "timeout" }); return; }
+      deadlineTimer = setTimeout(() => active.cancel("timeout"), deadlineMs);
+      await this.preflight();
+      const prepared = await this.prepareWorkspace();
+      const memory = await this.memoryPreflight(prepared);
+      const native = await this.nativeLoop(prepared, memory);
+      const reply = await this.resolveMedia(native);
+      await this.commitTerminal(native, reply);
+    } catch (error) {
+      await this.fail(error);
+    } finally {
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+      signal?.removeEventListener("abort", onAbort);
+      if (state.workspace) await state.workspace.discard();
+    }
+  }
+
+  /** Bind the attempt to the composition Main admitted. */
+  private async preflight(): Promise<void> {
+    const { options, instance } = this.deps;
+    const plan = createCompanionCompositionPlan(this.mode, companionIgrepConfig(this.mode, options.igrep.command, options.igrep.env), {
+      maxSteps: options.maxSteps ?? 8, igrepLlm: options.igrepLlm, igrepRoutes: options.igrepRoutes,
+    });
+    if (plan.digest !== this.invocation.expectedProfileDigest) {
+      this.state.preflightCode = "profile_digest_mismatch";
+      throw new Error("companion profile differs from admitted Turn");
+    }
+    await this.event({ type: "started", instance, profileDigest: plan.digest });
+  }
+
+  /** Copy the immutable memory version and write this attempt's knowledge source. */
+  private async prepareWorkspace(): Promise<PreparedAttempt> {
+    const { invocation, state } = this;
+    const { options, cues } = this.deps;
+    state.failurePhase = "workspace";
+    // Content-free timings decompose the latency before the first model
+    // request (relationship lock + copy, copy alone, reproject).
+    const preparing = await timed(() => options.workspaces.prepare(invocation, this.signal));
+    void this.event({ type: "runtime_observation", operation: "workspace_prepare",
+      outcome: preparing.ok ? "success" : "failure", durationMs: preparing.durationMs });
+    if (!preparing.ok) throw preparing.error;
+    const workspace = preparing.value;
+    state.workspace = workspace;
+    if (workspace.copyDurationMs !== undefined) {
+      void this.event({ type: "runtime_observation", operation: "workspace_copy", outcome: "success", durationMs: workspace.copyDurationMs });
+    }
+    const knowledgePath = join(workspace.path, "knowledge");
+    await mkdir(knowledgePath, { mode: 0o700 });
+    const knowledgeSource = join(knowledgePath, "conversation.jsonl");
+    const recovered = invocation.preparedTurn.recoveredMediaAction;
+    const current = invocation.preparedTurn.messages.find(message => message.sourceKind === "current_user");
+    if (!current || current.role !== "user") throw new Error("current user message is missing");
+    const previousAssistant = invocation.preparedTurn.messages.findLast(
+      message => message.sourceKind === "replay" && message.role === "assistant",
+    );
+    // Buffer provisional text when the current Turn carries media intent or
+    // explicit paid authorization so media promises never leak before a tool
+    // call. Ordinary text-only chat turns stream tokens immediately; if an
+    // unbuffered turn still invokes a media tool, text_reset clears the stream.
+    const bufferText = cues.shouldBufferMediaLeadText({
+      hasMediaTools: invocation.preparedTurn.tools.length > 0,
+      imageActionMode: invocation.preparedTurn.imageActionMode,
+      currentUserText: current.content,
+      previousAssistantText: previousAssistant?.content,
+    });
+    const historyOnly = invocation.preparedTurn.tools.length > 0 || Boolean(recovered);
+    // The complete Soul and product contract remain pinned in system context.
+    // Search results must not turn runtime instructions into remembered facts,
+    // or bypass session_recall's source-bound access to omitted originals.
+    // The original file can supply continuations during a media body. Keep
+    // this Turn's command and live context in the first loop's pinned input.
+    await writeFile(knowledgeSource, invocation.preparedTurn.messages
+      .filter(message => message.role !== "system" && (!historyOnly || message.sourceKind === "replay"))
+      .map(message => JSON.stringify(message)).join("\n") + "\n", { mode: 0o600 });
+    // INTENT: reproject stays per attempt. igrep binds each dialogue view to
+    // the physical stamp (inode/ctime) of its file, so every copy or clone is
+    // unbound until reprojected; a clone of an already reprojected tree is
+    // unbound again (verified 2026-11-26 against igrep 0.1.169). Sharing one
+    // reprojected tree would require attempts to run inside it, but each
+    // attempt writes its own knowledge/ next to .igrep and igrep rejects
+    // symlinked sources. Clone-on-copy keeps the per-attempt cost low.
+    if (this.mode === "normal") {
+      const reprojecting = await timed(() => reprojectIgrepMemory(options.igrep, workspace.path, this.signal, options.runIgrep));
+      void this.event({ type: "runtime_observation", operation: "memory_reproject",
+        outcome: reprojecting.ok ? "success" : "failure", durationMs: reprojecting.durationMs });
+      if (!reprojecting.ok) throw reprojecting.error;
+    }
+    state.failurePhase = "agent";
+    return { workspacePath: workspace.path, knowledgePath, knowledgeSource, current, recovered, bufferText };
+  }
+
+  /** Resident profile (wake) and advisory pre-recall for normal memory. */
+  private async memoryPreflight(prepared: PreparedAttempt): Promise<MemoryContext> {
+    if (this.mode !== "normal") return { profileContext: "" };
+    const { invocation, state, event } = this;
+    const { options, cues } = this.deps;
+    const workspacePath = prepared.workspacePath;
+    const signal = this.signal;
+    const recallQuery = prepared.current.content.trim();
+    // The resident profile depends only on the immutable version this attempt
+    // copied; a validated profile for that exact version skips the subprocess.
+    const memoryVersion = state.workspace?.memoryVersion;
+    const cacheScope = { userId: invocation.userId, characterId: invocation.characterId };
+    const cached = memoryVersion ? this.deps.wakeCache.lookup(memoryVersion, cacheScope) : undefined;
+    const cachedWake = cached?.wake;
+    // Skip spawning a CLI memory-search subprocess when the canonical
+    // relationship workspace has no committed dialogue files yet.
+    const hasSearchableMemory = Boolean(options.runIgrep) || state.workspace?.hasCommittedDialogues !== false;
+    // Wake (resident profile) and pre-recall (episodic notes for this
+    // message) are independent igrep processes; run them side by side so
+    // the turn pays for the slower one, not the sum.
+    const [wake, recall] = await Promise.all([
+      timed(async () => cachedWake ?? observeIgrepWake(
+        options.igrep,
+        workspacePath,
+        signal,
+        options.runIgrep,
+      )),
+      hasSearchableMemory && cues.shouldPreRecall(recallQuery)
+        ? timed(() => recallIgrepMemory(
+            options.igrep,
+            workspacePath,
+            recallQuery,
+            // Fast recall is sub-second when healthy (p90 1.8 s measured);
+            // past this the reply goes out without it rather than waiting
+            // on a loaded maintenance model.
+            { signal: AbortSignal.any([signal, AbortSignal.timeout(PRE_RECALL_TIMEOUT_MS)]) },
+            options.runIgrep,
+          ))
+        : Promise.resolve(null),
+    ]);
+    if (!wake.ok) {
+      state.igrepFailure = "wake";
+      event({ type: "igrep_observation", operation: "wake", outcome: "failure", durationMs: wake.durationMs });
+      throw wake.error;
+    }
+    if (!cachedWake && memoryVersion && cached) this.deps.wakeCache.store(cached.token, memoryVersion, cacheScope, wake.value);
+    event({
+      type: "igrep_observation",
+      operation: "wake",
+      outcome: wake.value.outcome,
+      resultCount: wake.value.resultCount,
+      durationMs: wake.durationMs,
+      ...(cachedWake ? { cache: "hit" as const } : {}),
+    });
+    const residentProfile = wake.value.profile;
+    const supportedProfileLines = await readSupportedProfileLines(join(workspacePath, ".igrep"));
+    let recallContext: string | undefined;
+    if (recall?.ok) {
+      const evidenceMatches = auditRecallEvidenceMatches(recall.value.results);
+      event({
+        type: "igrep_observation",
+        operation: "memory",
+        outcome: recall.value.outcome,
+        resultCount: recall.value.resultCount,
+        ...(evidenceMatches > 0 ? { evidenceMatches } : {}),
+        durationMs: recall.durationMs,
+      });
+      const transcript = invocation.preparedTurn.messages
+        .filter((message) => message.sourceKind === "replay" || message.sourceKind === "current_user")
+        .map((message) => message.content);
+      // Fast pre-recall is an advisory search, not an exhaustive statement
+      // about memory or the session archive. A miss stays in observations;
+      // only retrieved evidence enters the model's background context.
+      recallContext = renderRecallContext(selectRecallNotes(recall.value.notes, transcript, MAX_RECALL_NOTES));
+    } else if (recall) {
+      // SPEC: a failed or slow pre-recall degrades to a reply without
+      // recalled moments. The failure is recorded in the Turn's igrep
+      // evidence (memory.failures) and in the log; the reply still happens.
+      // INTENT: decided 2026-10-04. This used to fail the whole Turn so a
+      // memory-enabled reply could never silently be memory-blind; in
+      // practice the two failures in 14 days were both the 30 s timeout
+      // under model-server load, and the user got "Reply unavailable"
+      // instead of an answer. The resident profile from wake still
+      // reaches the model, and the next Turn recalls again.
+      event({ type: "igrep_observation", operation: "memory", outcome: "failure", durationMs: recall.durationMs });
+      process.stderr.write(`${JSON.stringify({
+        level: "warn", component: "chat", event: "companion_recall_degraded",
+        attemptId: invocation.attemptId, durationMs: recall.durationMs, errorType: describeInvocationCause(recall.error),
+        memoryFailure: igrepFailureCategory(recall.error),
+      })}\n`);
+    }
+    return { recallContext, profileContext: renderResidentProfile(residentProfile, supportedProfileLines) };
+  }
+
+  private assertContinuation = (): void => {
+    this.events.assertDelivery();
+    if (this.state.igrepFailure) throw new Error("companion memory evidence is unavailable");
+    if (this.state.unconfirmedImageEffect) throw new Error("image action acceptance is unknown");
+  };
+
+  /** The first native Pi loop: reply, retrieval tools and media selection. */
+  private async nativeLoop(prepared: PreparedAttempt, memory: MemoryContext): Promise<NativeContext> {
+    const { invocation, state, event } = this;
+    const { options, cues } = this.deps;
+    const bridge = new ToolBridge(this.port.executeTool, event, invocation.preparedTurn.imageActionMode);
+    const requestPolicy: RequestPolicy = {
+      maxInputTokens: invocation.preparedTurn.budget.maxInputTokens,
+      observeRequest: evidence => event({ type: "model_request_started", request: {
+        ...evidence, provider: invocation.preparedTurn.profile.provider,
+        model: invocation.preparedTurn.profile.model, usage: null,
+      } }),
+      observeUsage: (receipt, evidence) => {
+        const request = { ...evidence, provider: invocation.preparedTurn.profile.provider,
+          model: invocation.preparedTurn.profile.model, usage: receipt ?? null };
+        state.modelRequests.push(request);
+        void event({ type: "model_request", request });
+        const usage = wireUsage(receipt);
+        if (usage) { void event({ type: "usage", usage }); if (usage.reasoningTokens !== null && usage.reasoningTokens > 0) void event({ type: "reasoning_usage", reasoningTokens: usage.reasoningTokens }); }
+      },
+    };
+    const adapter = options.adapter(invocation.preparedTurn.profile, { ...requestPolicy,
+      ...(cues.needsFactualSampling(prepared.current.content) ? { samplingTemperature: Math.min(invocation.preparedTurn.profile.sampling.temperature, 0.2) } : {}),
+    });
+    const native: NativeContext = {
+      prepared, memory, bridge, requestPolicy, adapter, maxSteps: options.maxSteps ?? 8,
+      retrievalEvidence: [], toolCallIds: new Set<string>(),
+    };
+    // Main already rebound this durable action to the current attempt. A
+    // reply retry must not ask the model to select or buy it again.
+    if (!prepared.recovered) state.executionStage = prepared.bufferText ? "tool_selection" : "reply";
+    native.completed = prepared.recovered ? undefined : await this.runConversation(native, {
+      ...this.projectStage(native), adapter, maxSteps: native.maxSteps, searchPath: prepared.knowledgeSource,
+    });
+    state.modelStopReason = native.completed?.message.stopReason;
+    this.assertContinuation();
+    return native;
+  }
+
+  /** Project the prepared Turn (or an independent media body) into a Pi stage. */
+  private projectStage(native: NativeContext, independentRequests?: MediaTextRequests) {
+    const { invocation, mode } = this;
+    const { cues } = this.deps;
+    const current = native.prepared.current;
+    const multipleRequests = (independentRequests?.excerptCount ?? 0) > 1;
+    const { preparedTurn, current: stageCurrent } = independentRequests === undefined
+      ? { preparedTurn: invocation.preparedTurn, current }
+      : projectPreparedBody(invocation.preparedTurn, current, independentRequests.content, multipleRequests,
+          cues.enabled ? {} : { replyCues: false });
+    const staged = { ...invocation, preparedTurn };
+    const seed = buildReplaySeed(staged, native.memory.recallContext);
+    // The compiler already budgets these cues. Literal callers such as
+    // the probes can supply an advisory reply-form context of their own.
+    if (!preparedTurn.replyPrompt) {
+      const constraints = cues.describeRequestedReplyConstraints(stageCurrent.content, multipleRequests);
+      if (constraints && !seed.some(message => message.sourceKind === "plugin" && message.content.includes(constraints))) {
+        seed.push({ id: `reply-form:${invocation.attemptId}`, sourceKind: "plugin", role: "user", content: constraints });
+      }
+    }
+    // Verified memories remain context even if they quote instructions.
+    const profileContext = native.memory.profileContext;
+    if (profileContext) seed.push({ id: `resident-profile:${invocation.attemptId}`, sourceKind: "plugin", role: "user", content: profileContext });
+    const systemPrompt = [
+      ...staged.preparedTurn.messages.filter(message => message.role === "system").map(message => message.content),
+      COMPANION_SEARCH_GUIDANCE, COMPANION_SESSION_GUIDANCE,
+      ...(mode === "normal" ? [COMPANION_MEMORY_GUIDANCE] : []),
+      COMPANION_REPLY_GUIDANCE,
+    ].join("\n\n");
+    return { invocation: staged, seed, pinned: [...seed.filter(message => message.sourceKind === "plugin"), stageCurrent], current: stageCurrent, systemPrompt };
+  }
+
+  private runConversation(native: NativeContext, stage: ConversationStage) {
+    const { invocation, mode, state, event } = this;
+    const { options } = this.deps;
+    const signal = this.signal;
+    const { bridge, retrievalEvidence, toolCallIds } = native;
+    const { knowledgePath, workspacePath: memoryWorkspacePath, bufferText } = native.prepared;
+    return this.deps.priorityGate.withForeground(() => executePiConversation({ ...stage, toolCallIds,
+      afterRetrievalContext: {
+        content: COMPANION_RETRIEVAL_REPLY_CONTEXT + (mode === "private" ? PRIVATE_RETRIEVAL_UNCERTAINTY : ""),
+        available: () => state.retrievalCompleted,
+      },
+      signal, assertContinuation: this.assertContinuation,
+      text: delta => {
+        if (stage.streamText ?? !bufferText) { state.currentText += delta; void event({ type: "text_delta", delta }); }
+      },
+      reset: () => { if (state.currentText) { state.currentText = ""; void event({ type: "text_reset" }); } },
+      compaction: (outcome, durationMs) => { void event({ type: "igrep_observation", operation: "compaction", outcome, durationMs, ...(outcome === "hit" ? { resultCount: 1 } : {}) }); },
+      tools: conversation => {
+        const retrieval = createIgrepTools({ cli: options.igrep, workspace: memoryWorkspacePath, knowledgePath, searchPath: stage.searchPath, mode, run: options.runIgrep,
+          recall: () => projectRecall(conversation(), BACKGROUND_CONTEXT, {
+            attemptId: invocation.attemptId, conversationId: conversation().id,
+            assistant: { name: invocation.preparedTurn.characterName, characterId: invocation.characterId, sessionId: invocation.sessionId },
+            seed: stage.invocation.preparedTurn.messages, omitted: stage.invocation.preparedTurn.omittedMessages ?? [], execution: stage.executionEvidence,
+            includeVisibleToolResults: true,
+          }),
+          observe: observation => { void event({ type: "igrep_observation", ...observation }); },
+        });
+        return [
+          ...retrieval.map(tool => ({ ...tool, parameters: tool.parameters as ToolRegistration["parameters"], replay: "safe" as const, executionMode: "sequential" as const,
+            async execute(args, api, context) {
+              try {
+                const value = await withToolCancellation(tool.execute(args as Record<string, unknown>, toolSignal(signal, context)), signal);
+                const text = JSON.stringify(value);
+                state.retrievalCompleted = true;
+                // Keep exactly executed non-media evidence across the body boundary,
+                // including calls made before Pi compacted its first conversation.
+                retrievalEvidence.push(
+                  { id: `lookup-call:${api.callId}`, sourceKind: "plugin", role: "assistant", content: "", tool_calls: [
+                    { id: api.callId, type: "function", function: { name: tool.name, arguments: JSON.stringify(args) } },
+                  ] },
+                  { id: `lookup-result:${api.callId}`, sourceKind: "plugin", role: "tool", tool_call_id: api.callId, content: text },
+                );
+                return { output: [{ type: "text" as const, text }] };
+              } catch (error) {
+                state.igrepFailure = tool.name === "memory_search" ? "memory" : "search";
+                process.stderr.write(`${JSON.stringify({ level: "warn", component: "chat", event: "companion_memory_tool_failed", attemptId: invocation.attemptId, memoryFailure: igrepFailureCategory(error) })}\n`);
+                throw new Error("companion lookup returned incomplete or unverifiable evidence");
+              }
+            },
+          } satisfies ToolRegistration)),
+          ...stage.invocation.preparedTurn.tools.map(tool => ({ ...tool, parameters: tool.parameters as ToolRegistration["parameters"], replay: "unsafe" as const, executionMode: "sequential" as const,
+            async execute(args, api, context) {
+              if (bridge.callCount > 0) throw new Error("only one media action may execute per Turn");
+              const { independentTextRequest, independentTextExcerpts, toolArgs } = extractMediaRoutingHint(args as Record<string, unknown>);
+              if (independentTextRequest !== undefined) state.independentTextRequestHint = independentTextRequest;
+              if (independentTextExcerpts !== undefined) state.independentTextExcerpts = independentTextExcerpts;
+              const call = companionToolCallSchema.parse({ attemptId: invocation.attemptId, callId: api.callId, name: tool.name, effectScope: "turn_action",
+                intent: { requestedNudity: toolArgs.requestedNudity ?? "unspecified" }, arguments: toolArgs });
+              let result: CompanionToolResult;
+              try { result = await bridge.execute(call, toolSignal(signal, context)); }
+              catch (error) { state.unconfirmedImageEffect = true; throw error; }
+              state.unconfirmedImageEffect = result.outcome === "unknown";
+              if (call.name === REQUEST_CHARACTER_MEDIA_TOOL && result.outcome === "succeeded") {
+                const receipt = requestCharacterMediaResultSchema.parse(result.output);
+                if (receipt.status === "available" || receipt.status === "no_match" || receipt.status === "unavailable") {
+                  state.searchReply = { kind: receipt.kind, outcome: receipt.status };
+                }
+              }
+              return { ...(result.outcome !== "succeeded" ? { isError: true } : {}),
+                // The durable card or availability receipt settles the media request.
+                // Extraction handles only the outstanding text request.
+                ...(mediaAttachmentId(result) || state.searchReply ? { control: { terminate: true } } : {}),
+                output: [{ type: "text" as const, text: JSON.stringify(result) }] };
+            },
+          } satisfies ToolRegistration)),
+        ];
+      },
+    }));
+  }
+
+  /**
+   * Settle a selected, recovered or searched media action: confirm Main's
+   * attachment, then answer only the independent text request (if any).
+   */
+  private async resolveMedia(native: NativeContext): Promise<ResolvedReply> {
+    const { invocation, state, event } = this;
+    const { options, cues, priorityGate } = this.deps;
+    const { bridge, completed, requestPolicy, maxSteps, retrievalEvidence } = native;
+    const { recovered, current, knowledgePath } = native.prepared;
+    const reply: ResolvedReply = {
+      latestAssistant: completed?.message,
+      replyAdapter: native.adapter,
+      steps: completed?.steps ?? 0,
+    };
+    if (!(recovered || bridge.callCount > 0 || completed?.selectedMediaCalls.length)) return reply;
+    if (state.currentText) { state.currentText = ""; await event({ type: "text_reset" }); }
+    state.terminalValidationCode = "media_response_incomplete";
+    const searchReply = state.searchReply;
+    let evidence: Parameters<typeof mediaExtractionMessages>[1];
+    if (recovered) {
+      evidence = { recoveredMediaAction: recovered };
+      reply.mediaResponse = { version: 1, attachmentId: recovered.attachmentId };
+    } else if (searchReply) {
+      evidence = { searchedExistingMedia: searchReply };
+    } else {
+      const [action] = await bridge.mediaActions(this.signal);
+      const confirmedId = action && mediaAttachmentId(action.result);
+      if (!action || !confirmedId) throw new Error("media action has no confirmed Main attachment");
+      evidence = action;
+      reply.mediaResponse = { version: 1, attachmentId: confirmedId };
+    }
+    const actionPath = !recovered && !searchReply && Boolean(reply.mediaResponse);
+    // The model may copy independent text requests into its media call. Only
+    // excerpts that verify verbatim and in order against the current message
+    // replace the separate extraction request; anything else falls back to it.
+    const excerpts = actionPath && state.independentTextRequestHint !== false && state.independentTextExcerpts !== undefined
+      ? verifyMediaTextExcerpts(state.independentTextExcerpts, current.content)
+      : undefined;
+    // Fast-path pure-media replies when both the model and the deterministic
+    // single-intent guard prove no independent text request exists, saving
+    // an entire serial LLM round-trip and eliminating blockquote failure risk.
+    const skipExtraction = actionPath
+      && !hasExcerpts(state.independentTextExcerpts)
+      && cues.canSkipMediaExtractionForPureMedia(current.content, state.independentTextRequestHint);
+    if (skipExtraction) {
+      void event({ type: "runtime_observation", operation: "media_extraction", outcome: "pure_media_skip", durationMs: 0 });
+      reply.bodyText = "";
+    } else if (excerpts) {
+      void event({ type: "runtime_observation", operation: "media_extraction", outcome: "verified_excerpts", durationMs: 0 });
+      await this.answerIndependentText(native, reply, excerpts, undefined);
+    } else {
+      state.executionStage = "media_extraction";
+      state.modelStopReason = undefined;
+      if (++reply.steps > maxSteps) throw new Error("media extraction exceeds the invocation step budget");
+      const outputLimit = Math.min(invocation.preparedTurn.profile.maxOutputTokens, MEDIA_EXTRACTION_MAX_TOKENS);
+      const extractor = options.adapter({ ...invocation.preparedTurn.profile, maxOutputTokens: outputLimit, answerMaxOutputTokens: outputLimit }, {
+        ...requestPolicy, samplingTemperature: 0,
+        maxInputTokens: invocation.preparedTurn.budget.maxInputTokens + invocation.preparedTurn.profile.maxOutputTokens - outputLimit,
+      });
+      const extracting = await timed(() => priorityGate.withForeground(() =>
+        extractor.stream(mediaExtractionMessages(current.content, evidence), {
+          purpose: "media_extraction", signal: this.signal,
+        }).result(),
+      ));
+      if (!extracting.ok) throw extracting.error;
+      const extracted = extracting.value;
+      void event({ type: "runtime_observation", operation: "media_extraction",
+        outcome: extracted.stopReason === "stop" ? "model" : "failure", durationMs: extracting.durationMs });
+      state.modelStopReason = extracted.stopReason;
+      this.signal.throwIfAborted();
+      if (extracted.stopReason !== "stop") throw extractor.getError(extracted) ?? new Error("media text extraction was incomplete");
+      const extractedText = messageText(extracted);
+      const { requests, feedback } = searchReply
+        ? parseMediaSearchReply(extractedText, current.content, searchReply.outcome)
+        : { requests: parseMediaTextRequests(extractedText, current.content), feedback: undefined };
+      if (requests.excerptCount === 0) reply.bodyText = feedback ?? "";
+      else await this.answerIndependentText(native, reply, requests, feedback);
+    }
+    state.terminalValidationCode = undefined;
+    return reply;
+  }
+
+  /** Answer the verified independent text request in a native loop without media tools. */
+  private async answerIndependentText(native: NativeContext, reply: ResolvedReply, requests: MediaTextRequests, feedback: string | undefined): Promise<void> {
+    const { invocation, state } = this;
+    const { options, cues } = this.deps;
+    const { requestPolicy, maxSteps, retrievalEvidence } = native;
+    state.executionStage = "media_body";
+    state.modelStopReason = undefined;
+    if (reply.steps >= maxSteps) throw new Error("media body exceeds the invocation step budget");
+    const body = this.projectStage(native, requests);
+    // The separate native loop retains Soul, history and real lookup pairs;
+    // only this turn's media instruction, calls and receipts are absent.
+    const executionEvidence = [...retrievalEvidence];
+    // Earlier source cursors bind the original file revision. Keep it
+    // intact while searches in this loop use only its own text scope.
+    const bodySource = join(native.prepared.knowledgePath, "media-body.jsonl");
+    await writeFile(bodySource, [...body.seed, ...executionEvidence, body.current]
+      .map(message => JSON.stringify(message)).join("\n") + "\n", { mode: 0o600 });
+    reply.replyAdapter = options.adapter(invocation.preparedTurn.profile, {
+      ...requestPolicy,
+      ...(cues.needsFactualSampling(body.current.content) ? { samplingTemperature: Math.min(invocation.preparedTurn.profile.sampling.temperature, 0.2) } : {}),
+    });
+    const replied = await this.runConversation(native, { ...body, executionEvidence, adapter: reply.replyAdapter,
+      purpose: "media_body", maxSteps: maxSteps - reply.steps, searchPath: bodySource, streamText: feedback === undefined });
+    state.modelStopReason = replied.message.stopReason;
+    reply.steps += replied.steps;
+    reply.latestAssistant = replied.message;
+    // A truncated or empty independent answer cannot become card-only success.
+    const text = messageText(reply.latestAssistant);
+    if (replied.selectedMediaCalls.length > 0 || reply.latestAssistant.stopReason !== "stop" || !text.trim()) throw new Error("independent media body was incomplete");
+    if (feedback !== undefined) reply.bodyText = `${feedback}\n\n${text}`;
+  }
+
+  /** Validate the terminal candidate, publish it, and commit it to Main. */
+  private async commitTerminal(native: NativeContext, reply: ResolvedReply): Promise<void> {
+    const { invocation, state, event } = this;
+    const { latestAssistant, replyAdapter, steps, mediaResponse, bodyText } = reply;
+    const decision = evaluateTerminalCandidate({ attemptId: invocation.attemptId,
+      assistantContent: bodyText ?? (latestAssistant ? messageText(latestAssistant) : undefined),
+      finishReasonKind: bodyText !== undefined ? "stop" : latestAssistant ? finishReason(latestAssistant) : undefined,
+      currentUserText: native.prepared.current.content, tools: invocation.preparedTurn.tools, toolCalls: native.bridge.callCount, reservations: native.bridge.reservations,
+      profile: invocation.preparedTurn.profile, usage: aggregateModelRequestUsage(state.modelRequests),
+      steps, completedAt: new Date().toISOString(), modelRequests: state.modelRequests, ...(mediaResponse ? { mediaResponse } : {}),
+      mediaAvailabilityFeedback: Boolean(state.searchReply),
+      ...(latestAssistant && replyAdapter.getAttribution(latestAssistant) ? { attribution: replyAdapter.getAttribution(latestAssistant) } : {}),
+    });
+    if (!decision.accepted) {
+      state.terminalValidationCode = decision.code;
+      if (decision.code === "unexecuted_tool_payload" && state.currentText) { state.currentText = ""; await event({ type: "text_reset" }); }
+      throw new Error(decision.message);
+    }
+    this.active.agentDisposed = true;
+    this.deps.releaseAgentSlot();
+    const candidate = decision.candidate;
+    if (!state.currentText && candidate.content) { state.currentText = candidate.content; await event({ type: "text_delta", delta: state.currentText }); }
+    else if (state.currentText !== candidate.content) throw new Error("streamed assistant text differs from terminal message");
+    this.signal.throwIfAborted();
+    state.executionStage = "terminal_commit";
+    await event({ type: "terminal_candidate", candidate });
+    const ack = await this.port.commit(candidate, this.signal);
+    assertCommitAccepted(invocation.attemptId, ack);
+    state.terminalCommitted = true;
+    await this.events.drain();
+    this.events.assertDelivery();
+  }
+
+  /** Publish cancellation or a classified, content-free failure. */
+  private async fail(error: unknown): Promise<void> {
+    const { invocation, state, active, event } = this;
+    await this.events.drain();
+    this.events.assertDelivery();
+    const lastRequest = state.modelRequests.at(-1);
+    const failureEvidence = { component: "chat", invocationId: invocation.invocationId, attemptId: invocation.attemptId,
+      phase: state.failurePhase, executionStage: state.executionStage, modelStopReason: state.modelStopReason,
+      remainingMs: Math.max(0, this.deadlineAt - Date.now()),
+      lastModelRequest: lastRequest && { purpose: lastRequest.purpose ?? "reply", usage: lastRequest.usage } };
+    if (active.cancelReason) {
+      if (active.cancelReason === "timeout") {
+        process.stderr.write(`${JSON.stringify({ level: "warn", event: "companion_invocation_timed_out", ...failureEvidence })}\n`);
+      }
+      await event({ type: "cancelled", reason: active.cancelReason });
+      return;
+    }
+    if (error instanceof ProviderError) state.turnFailure = error;
+    const { turnFailure, igrepFailure, preflightCode } = state;
+    const failure = invocationFailure({ terminalCommitted: state.terminalCommitted, phase: state.failurePhase, turnFailure, igrepFailure,
+      preflightCode, terminalValidationCode: state.terminalValidationCode, unconfirmedImageEffect: state.unconfirmedImageEffect });
+    process.stderr.write(`${JSON.stringify({ level: "error", event: "companion_invocation_failed", ...failureEvidence,
+      code: failure.code, retryable: failure.retryable, errorType: describeInvocationCause(error),
+      ...(turnFailure ? { providerCode: turnFailure.code, ...(turnFailure.status !== undefined ? { providerStatus: turnFailure.status } : {}) } : {}),
+      ...(igrepFailure ? { igrepFailure } : {}), ...(preflightCode ? { preflightCode } : {}) })}\n`);
+    await event({ type: "failed", error: failure });
   }
 }
 
@@ -438,12 +1120,18 @@ export class CompanionEngine {
   private readonly queued = new Map<string, { invocation: CompanionInvocation; controller: AbortController }>();
   private readonly waitQueue = new ConcurrencyWaitQueue<"normal" | "private">();
   private readonly priorityGate: InferencePriorityGate;
+  /** Resolvers waiting for an active or queued invocation to leave. */
+  private readonly departureWaiters = new Set<() => void>();
+  /** Validated resident profiles keyed by immutable memory version. */
+  private readonly wakeCache = new WakeProfileCache(256);
   private maintenanceTail = Promise.resolve();
   private closing = false;
 
   private readonly instance: CompanionReadiness["instance"];
+  private readonly cues: ReplyCues;
 
   constructor(private readonly options: CompanionEngineOptions) {
+    this.cues = replyCues({ replyCues: options.replyCues });
     this.instance = options.instance ?? {
       id: randomUUID(),
       startedAt: new Date().toISOString(),
@@ -452,6 +1140,27 @@ export class CompanionEngine {
   }
 
   async run(invocation: CompanionInvocation, port: CompanionRuntimePort, signal?: AbortSignal): Promise<void> {
+    const mode = invocation.memoryMode === "private" ? "private" : "normal";
+    const active = await this.admit(invocation, mode, signal);
+    const attempt = new CompanionAttempt({
+      options: this.options,
+      cues: this.cues,
+      instance: this.instance,
+      priorityGate: this.priorityGate,
+      wakeCache: this.wakeCache,
+      releaseAgentSlot: () => this.waitQueue.notify(mode),
+    }, invocation, mode, active, port);
+    try {
+      await attempt.execute(signal);
+    } finally {
+      this.active.delete(invocation.invocationId);
+      this.waitQueue.notify(mode);
+      this.notifyDeparture();
+    }
+  }
+
+  /** Fence and capacity admission; waits in the FIFO queue when configured. */
+  private async admit(invocation: CompanionInvocation, mode: "normal" | "private", signal?: AbortSignal): Promise<ActiveInvocation> {
     const scopeFences: FenceScope[] = [
       { scope: "user", userId: invocation.userId },
       { scope: "relationship", userId: invocation.userId, characterId: invocation.characterId },
@@ -461,478 +1170,54 @@ export class CompanionEngine {
     if (this.active.has(invocation.invocationId) || this.queued.has(invocation.invocationId)) {
       throw new Error("invocation id is already active");
     }
-    const mode = invocation.memoryMode === "private" ? "private" : "normal";
     const limit = this.options.maxConcurrentAgents?.[mode] ?? Number.POSITIVE_INFINITY;
     const hasCapacity = () => !this.closing
       && [...this.active.values()].filter(active => !active.agentDisposed && active.invocation.memoryMode === mode).length < limit;
-    if (!hasCapacity()) {
-      const remainingDeadlineMs = Math.max(0, Date.parse(invocation.deadlineAt) - Date.now());
-      const waitMs = Math.min(this.options.capacityWaitMs ?? 0, remainingDeadlineMs);
-      if (waitMs <= 0) throw new CompanionCapacityError(mode);
-      const queueController = new AbortController();
-      const waitSignal = signal
-        ? AbortSignal.any([signal, queueController.signal])
-        : queueController.signal;
-      this.queued.set(invocation.invocationId, { invocation, controller: queueController });
-      let promoted = false;
-      try {
-        const acquired = await this.waitQueue.waitForSlot(mode, hasCapacity, waitMs, waitSignal);
-        if (this.closing) throw new Error("Agent runtime is shutting down");
-        if (!acquired) throw new CompanionCapacityError(mode);
-        await assertNotFenced(scopeFences);
-        if (this.closing) throw new Error("Agent runtime is shutting down");
-        if (!hasCapacity()) throw new CompanionCapacityError(mode);
-        if (this.active.has(invocation.invocationId)) throw new Error("invocation id is already active");
-        const active = new ActiveInvocation(invocation);
-        this.active.set(invocation.invocationId, active);
-        promoted = true;
-      } finally {
-        this.queued.delete(invocation.invocationId);
-        // If we woke up with capacity available but exited without taking the
-        // slot (cancelled/fenced/closing), pass the wakeup to the next waiter.
-        if (!promoted && hasCapacity()) this.waitQueue.notify(mode);
-      }
-    } else {
+    if (hasCapacity()) {
       const active = new ActiveInvocation(invocation);
       this.active.set(invocation.invocationId, active);
+      return active;
     }
-    const active = this.active.get(invocation.invocationId)!;
-    let workspace: AttemptWorkspace | undefined;
-    let sequence = 0;
-    let terminalCommitted = false;
-    let deadlineTimer: NodeJS.Timeout | undefined;
-    const deadlineAt = Date.parse(invocation.deadlineAt);
-    let failurePhase: "composition" | "workspace" | "agent" = "composition";
-    let executionStage: "reply" | "tool_selection" | "media_extraction" | "media_body" | "terminal_commit" | undefined;
-    let modelStopReason: AssistantMessage["stopReason"] | undefined;
-    const modelRequests: CompanionModelRequestEvidence[] = [];
-    let turnFailure: ProviderError | undefined;
-    let igrepFailure: "wake" | "search" | "memory" | undefined;
-    let retrievalCompleted = false;
-    let preflightCode: string | undefined;
-    let terminalValidationCode: TerminalValidationCode | undefined;
-    let unconfirmedImageEffect = false;
-    let eventTail = Promise.resolve();
-    let eventFailure: Error | undefined;
-    const assertEventDelivery = () => { if (eventFailure) throw eventFailure; };
-    const event = (payload: EventPayload): Promise<void> => {
-      const value = companionEventSchema.parse({ ...payload, invocationId: invocation.invocationId, attemptId: invocation.attemptId,
-        sequence: ++sequence, occurredAt: new Date().toISOString() });
-      const delivery = eventTail.then(async () => {
-        // A physical request can finish after stream or journal publication
-        // fails. Preserve that receipt while fencing new execution.
-        if (value.type !== "model_request") assertEventDelivery();
-        await port.emit(value);
-      });
-      eventTail = delivery.catch(error => {
-        eventFailure ??= error instanceof Error ? error : new Error("companion event publication failed", { cause: error });
-      });
-      return delivery;
-    };
-    const onAbort = () => active.cancel("transport");
-    if (signal?.aborted) onAbort(); else signal?.addEventListener("abort", onAbort, { once: true });
+    const remainingDeadlineMs = Math.max(0, Date.parse(invocation.deadlineAt) - Date.now());
+    const waitMs = Math.min(this.options.capacityWaitMs ?? 0, remainingDeadlineMs);
+    if (waitMs <= 0) throw new CompanionCapacityError(mode);
+    const queueController = new AbortController();
+    const waitSignal = signal
+      ? AbortSignal.any([signal, queueController.signal])
+      : queueController.signal;
+    this.queued.set(invocation.invocationId, { invocation, controller: queueController });
+    let promoted = false;
     try {
-      const deadlineMs = deadlineAt - Date.now();
-      if (!Number.isFinite(deadlineMs) || deadlineMs <= 0) { await event({ type: "cancelled", reason: "timeout" }); return; }
-      deadlineTimer = setTimeout(() => active.cancel("timeout"), deadlineMs);
-      const plan = createCompanionCompositionPlan(mode, companionIgrepConfig(mode, this.options.igrep.command, this.options.igrep.env), {
-        maxSteps: this.options.maxSteps ?? 8, igrepLlm: this.options.igrepLlm, igrepRoutes: this.options.igrepRoutes,
-      });
-      if (plan.digest !== invocation.expectedProfileDigest) { preflightCode = "profile_digest_mismatch"; throw new Error("companion profile differs from admitted Turn"); }
-      await event({ type: "started", instance: this.instance, profileDigest: plan.digest });
-      failurePhase = "workspace";
-      workspace = await this.options.workspaces.prepare(invocation, active.cancellation.signal);
-      const knowledgePath = join(workspace.path, "knowledge");
-      await mkdir(knowledgePath, { mode: 0o700 });
-      const knowledgeSource = join(knowledgePath, "conversation.jsonl");
-      const recovered = invocation.preparedTurn.recoveredMediaAction;
-      const current = invocation.preparedTurn.messages.find(message => message.sourceKind === "current_user");
-      if (!current || current.role !== "user") throw new Error("current user message is missing");
-      const previousAssistant = invocation.preparedTurn.messages.findLast(
-        message => message.sourceKind === "replay" && message.role === "assistant",
-      );
-      // Buffer provisional text when the current Turn carries media intent or
-      // explicit paid authorization so media promises never leak before a tool
-      // call. Ordinary text-only chat turns stream tokens immediately; if an
-      // unbuffered turn still invokes a media tool, text_reset clears the stream.
-      const bufferText = shouldBufferMediaLeadText({
-        hasMediaTools: invocation.preparedTurn.tools.length > 0,
-        imageActionMode: invocation.preparedTurn.imageActionMode,
-        currentUserText: current.content,
-        previousAssistantText: previousAssistant?.content,
-      });
-      const historyOnly = invocation.preparedTurn.tools.length > 0 || Boolean(recovered);
-      // The complete Soul and product contract remain pinned in system context.
-      // Search results must not turn runtime instructions into remembered facts,
-      // or bypass session_recall's source-bound access to omitted originals.
-      // The original file can supply continuations during a media body. Keep
-      // this Turn's command and live context in the first loop's pinned input.
-      await writeFile(knowledgeSource, invocation.preparedTurn.messages
-        .filter(message => message.role !== "system" && (!historyOnly || message.sourceKind === "replay"))
-        .map(message => JSON.stringify(message)).join("\n") + "\n", { mode: 0o600 });
-      if (mode === "normal") await reprojectIgrepMemory(this.options.igrep, workspace.path, active.cancellation.signal, this.options.runIgrep);
-      failurePhase = "agent";
-      let residentProfile = "";
-      let supportedProfileLines: ReadonlySet<string> = new Set();
-      let recallContext: string | undefined;
-      if (mode === "normal") {
-        const workspacePath = workspace.path;
-        const signal = active.cancellation.signal;
-        const recallQuery = current.content.trim();
-        // Skip spawning a CLI memory-search subprocess when the canonical
-        // relationship workspace has no committed dialogue files yet.
-        const hasSearchableMemory = Boolean(this.options.runIgrep) || workspace.hasCommittedDialogues !== false;
-        // Wake (resident profile) and pre-recall (episodic notes for this
-        // message) are independent igrep processes; run them side by side so
-        // the turn pays for the slower one, not the sum.
-        const [wake, recall] = await Promise.all([
-          timed(() => observeIgrepWake(
-            this.options.igrep,
-            workspacePath,
-            signal,
-            this.options.runIgrep,
-          )),
-          hasSearchableMemory && shouldPreRecall(recallQuery)
-            ? timed(() => recallIgrepMemory(
-                this.options.igrep,
-                workspacePath,
-                recallQuery,
-                // Fast recall is sub-second when healthy (p90 1.8 s measured);
-                // past this the reply goes out without it rather than waiting
-                // on a loaded maintenance model.
-                { signal: AbortSignal.any([signal, AbortSignal.timeout(PRE_RECALL_TIMEOUT_MS)]) },
-                this.options.runIgrep,
-              ))
-            : Promise.resolve(null),
-        ]);
-        if (!wake.ok) {
-          igrepFailure = "wake";
-          event({ type: "igrep_observation", operation: "wake", outcome: "failure", durationMs: wake.durationMs });
-          throw wake.error;
-        }
-        event({
-          type: "igrep_observation",
-          operation: "wake",
-          outcome: wake.value.outcome,
-          resultCount: wake.value.resultCount,
-          durationMs: wake.durationMs,
-        });
-        residentProfile = wake.value.profile;
-        supportedProfileLines = await readSupportedProfileLines(join(workspacePath, ".igrep"));
-        if (recall?.ok) {
-          const evidenceMatches = auditRecallEvidenceMatches(recall.value.results);
-          event({
-            type: "igrep_observation",
-            operation: "memory",
-            outcome: recall.value.outcome,
-            resultCount: recall.value.resultCount,
-            ...(evidenceMatches > 0 ? { evidenceMatches } : {}),
-            durationMs: recall.durationMs,
-          });
-          const transcript = invocation.preparedTurn.messages
-            .filter((message) => message.sourceKind === "replay" || message.sourceKind === "current_user")
-            .map((message) => message.content);
-          // Fast pre-recall is an advisory search, not an exhaustive statement
-          // about memory or the session archive. A miss stays in observations;
-          // only retrieved evidence enters the model's background context.
-          recallContext = renderRecallContext(selectRecallNotes(recall.value.notes, transcript, MAX_RECALL_NOTES));
-        } else if (recall) {
-          // SPEC: a failed or slow pre-recall degrades to a reply without
-          // recalled moments. The failure is recorded in the Turn's igrep
-          // evidence (memory.failures) and in the log; the reply still happens.
-          // INTENT: decided 2026-10-04. This used to fail the whole Turn so a
-          // memory-enabled reply could never silently be memory-blind; in
-          // practice the two failures in 14 days were both the 30 s timeout
-          // under model-server load, and the user got "Reply unavailable"
-          // instead of an answer. The resident profile from wake still
-          // reaches the model, and the next Turn recalls again.
-          event({ type: "igrep_observation", operation: "memory", outcome: "failure", durationMs: recall.durationMs });
-          process.stderr.write(`${JSON.stringify({
-            level: "warn", component: "chat", event: "companion_recall_degraded",
-            attemptId: invocation.attemptId, durationMs: recall.durationMs, errorType: describeInvocationCause(recall.error),
-            memoryFailure: igrepFailureCategory(recall.error),
-          })}\n`);
-        }
-      }
-
-      let currentText = "";
-      const bridge = new ToolBridge(port.executeTool, event, invocation.preparedTurn.imageActionMode);
-      const requestPolicy: Parameters<CompanionEngineOptions["adapter"]>[1] = {
-        maxInputTokens: invocation.preparedTurn.budget.maxInputTokens,
-        observeRequest: evidence => event({ type: "model_request_started", request: {
-          ...evidence, provider: invocation.preparedTurn.profile.provider,
-          model: invocation.preparedTurn.profile.model, usage: null,
-        } }),
-        observeUsage: (receipt, evidence) => {
-          const request = { ...evidence, provider: invocation.preparedTurn.profile.provider,
-            model: invocation.preparedTurn.profile.model, usage: receipt ?? null };
-          modelRequests.push(request);
-          void event({ type: "model_request", request });
-          const usage = wireUsage(receipt);
-          if (usage) { void event({ type: "usage", usage }); if (usage.reasoningTokens !== null && usage.reasoningTokens > 0) void event({ type: "reasoning_usage", reasoningTokens: usage.reasoningTokens }); }
-        },
-      };
-      const adapter = this.options.adapter(invocation.preparedTurn.profile, { ...requestPolicy,
-        ...(needsFactualSampling(current.content) ? { samplingTemperature: Math.min(invocation.preparedTurn.profile.sampling.temperature, 0.2) } : {}),
-      });
-      const profileContext = mode === "normal" ? renderResidentProfile(residentProfile, supportedProfileLines) : "";
-      const projectStage = (independentRequests?: MediaTextRequests) => {
-        const multipleRequests = (independentRequests?.excerptCount ?? 0) > 1;
-        const { preparedTurn, current: stageCurrent } = independentRequests === undefined
-          ? { preparedTurn: invocation.preparedTurn, current }
-          : projectPreparedBody(invocation.preparedTurn, current, independentRequests.content, multipleRequests);
-        const staged = { ...invocation, preparedTurn };
-        const seed = buildReplaySeed(staged, recallContext);
-        // The compiler already budgets these cues. Literal callers such as
-        // the probes can supply an advisory reply-form context of their own.
-        if (!preparedTurn.replyPrompt) {
-          const constraints = describeRequestedReplyConstraints(stageCurrent.content, multipleRequests);
-          if (constraints && !seed.some(message => message.sourceKind === "plugin" && message.content.includes(constraints))) {
-            seed.push({ id: `reply-form:${invocation.attemptId}`, sourceKind: "plugin", role: "user", content: constraints });
-          }
-        }
-        // Verified memories remain context even if they quote instructions.
-        if (profileContext) seed.push({ id: `resident-profile:${invocation.attemptId}`, sourceKind: "plugin", role: "user", content: profileContext });
-        const systemPrompt = [
-          ...staged.preparedTurn.messages.filter(message => message.role === "system").map(message => message.content),
-          COMPANION_SEARCH_GUIDANCE, COMPANION_SESSION_GUIDANCE,
-          ...(mode === "normal" ? [COMPANION_MEMORY_GUIDANCE] : []),
-          COMPANION_REPLY_GUIDANCE,
-        ].join("\n\n");
-        return { invocation: staged, seed, pinned: [...seed.filter(message => message.sourceKind === "plugin"), stageCurrent], current: stageCurrent, systemPrompt };
-      };
-      const memoryWorkspacePath = workspace.path;
-      const assertContinuation = () => {
-        assertEventDelivery();
-        if (igrepFailure) throw new Error("companion memory evidence is unavailable");
-        if (unconfirmedImageEffect) throw new Error("image action acceptance is unknown");
-      };
-      const retrievalEvidence: PreparedTurnMessage[] = [];
-      const toolCallIds = new Set<string>();
-      let searchReply: MediaSearchObservation | undefined;
-      let independentTextRequestHint: boolean | undefined;
-      const runConversation = (stage: {
-        invocation: CompanionInvocation; seed: readonly PreparedTurnMessage[]; pinned: readonly PreparedTurnMessage[];
-        systemPrompt: string; adapter: OpenAiCompatibleAdapter; maxSteps: number; searchPath: string; purpose?: "media_body";
-        executionEvidence?: readonly PreparedTurnMessage[];
-        streamText?: boolean;
-      }) => this.priorityGate.withForeground(() => executePiConversation({ ...stage, toolCallIds,
-        afterRetrievalContext: {
-          content: COMPANION_RETRIEVAL_REPLY_CONTEXT + (mode === "private" ? PRIVATE_RETRIEVAL_UNCERTAINTY : ""),
-          available: () => retrievalCompleted,
-        },
-        signal: active.cancellation.signal, assertContinuation,
-        text: delta => {
-          if (stage.streamText ?? !bufferText) { currentText += delta; void event({ type: "text_delta", delta }); }
-        },
-        reset: () => { if (currentText) { currentText = ""; void event({ type: "text_reset" }); } },
-        compaction: (outcome, durationMs) => { void event({ type: "igrep_observation", operation: "compaction", outcome, durationMs, ...(outcome === "hit" ? { resultCount: 1 } : {}) }); },
-        tools: conversation => {
-          const retrieval = createIgrepTools({ cli: this.options.igrep, workspace: memoryWorkspacePath, knowledgePath, searchPath: stage.searchPath, mode, run: this.options.runIgrep,
-            recall: () => projectRecall(conversation(), BACKGROUND_CONTEXT, {
-              attemptId: invocation.attemptId, conversationId: conversation().id,
-              assistant: { name: invocation.preparedTurn.characterName, characterId: invocation.characterId, sessionId: invocation.sessionId },
-              seed: stage.invocation.preparedTurn.messages, omitted: stage.invocation.preparedTurn.omittedMessages ?? [], execution: stage.executionEvidence,
-              includeVisibleToolResults: true,
-            }),
-            observe: observation => { void event({ type: "igrep_observation", ...observation }); },
-          });
-          return [
-            ...retrieval.map(tool => ({ ...tool, parameters: tool.parameters as ToolRegistration["parameters"], replay: "safe" as const, executionMode: "sequential" as const,
-              async execute(args, api, context) {
-                try {
-                  const value = await withToolCancellation(tool.execute(args as Record<string, unknown>, toolSignal(active.cancellation.signal, context)), active.cancellation.signal);
-                  const text = JSON.stringify(value);
-                  retrievalCompleted = true;
-                  // Keep exactly executed non-media evidence across the body boundary,
-                  // including calls made before Pi compacted its first conversation.
-                  retrievalEvidence.push(
-                    { id: `lookup-call:${api.callId}`, sourceKind: "plugin", role: "assistant", content: "", tool_calls: [
-                      { id: api.callId, type: "function", function: { name: tool.name, arguments: JSON.stringify(args) } },
-                    ] },
-                    { id: `lookup-result:${api.callId}`, sourceKind: "plugin", role: "tool", tool_call_id: api.callId, content: text },
-                  );
-                  return { output: [{ type: "text" as const, text }] };
-                } catch (error) {
-                  igrepFailure = tool.name === "memory_search" ? "memory" : "search";
-                  process.stderr.write(`${JSON.stringify({ level: "warn", component: "chat", event: "companion_memory_tool_failed", attemptId: invocation.attemptId, memoryFailure: igrepFailureCategory(error) })}\n`);
-                  throw new Error("companion lookup returned incomplete or unverifiable evidence");
-                }
-              },
-            } satisfies ToolRegistration)),
-            ...stage.invocation.preparedTurn.tools.map(tool => ({ ...tool, parameters: tool.parameters as ToolRegistration["parameters"], replay: "unsafe" as const, executionMode: "sequential" as const,
-              async execute(args, api, context) {
-                if (bridge.callCount > 0) throw new Error("only one media action may execute per Turn");
-                const { independentTextRequest, toolArgs } = extractMediaRoutingHint(args as Record<string, unknown>);
-                if (independentTextRequest !== undefined) independentTextRequestHint = independentTextRequest;
-                const call = companionToolCallSchema.parse({ attemptId: invocation.attemptId, callId: api.callId, name: tool.name, effectScope: "turn_action",
-                  intent: { requestedNudity: toolArgs.requestedNudity ?? "unspecified" }, arguments: toolArgs });
-                let result: CompanionToolResult;
-                try { result = await bridge.execute(call, toolSignal(active.cancellation.signal, context)); }
-                catch (error) { unconfirmedImageEffect = true; throw error; }
-                unconfirmedImageEffect = result.outcome === "unknown";
-                if (call.name === REQUEST_CHARACTER_MEDIA_TOOL && result.outcome === "succeeded") {
-                  const receipt = requestCharacterMediaResultSchema.parse(result.output);
-                  if (receipt.status === "available" || receipt.status === "no_match" || receipt.status === "unavailable") {
-                    searchReply = { kind: receipt.kind, outcome: receipt.status };
-                  }
-                }
-                return { ...(result.outcome !== "succeeded" ? { isError: true } : {}),
-                  // The durable card or availability receipt settles the media request.
-                  // Extraction handles only the outstanding text request.
-                  ...(mediaAttachmentId(result) || searchReply ? { control: { terminate: true } } : {}),
-                  output: [{ type: "text" as const, text: JSON.stringify(result) }] };
-              },
-            } satisfies ToolRegistration)),
-          ];
-        },
-      }));
-      const maxSteps = this.options.maxSteps ?? 8;
-      // Main already rebound this durable action to the current attempt. A
-      // reply retry must not ask the model to select or buy it again.
-      if (!recovered) executionStage = bufferText ? "tool_selection" : "reply";
-      const completed = recovered ? undefined : await runConversation({ ...projectStage(), adapter, maxSteps, searchPath: knowledgeSource });
-      modelStopReason = completed?.message.stopReason;
-      assertContinuation();
-      let latestAssistant = completed?.message;
-      let replyAdapter = adapter;
-      let steps = completed?.steps ?? 0;
-      let mediaResponse: CompanionTerminalCandidate["mediaResponse"];
-      let bodyText: string | undefined;
-      if (recovered || bridge.callCount > 0 || completed?.selectedMediaCalls.length) {
-        if (currentText) { currentText = ""; await event({ type: "text_reset" }); }
-        terminalValidationCode = "media_response_incomplete";
-        let evidence: Parameters<typeof mediaExtractionMessages>[1];
-        if (recovered) {
-          evidence = { recoveredMediaAction: recovered };
-          mediaResponse = { version: 1, attachmentId: recovered.attachmentId };
-        } else if (searchReply) {
-          evidence = { searchedExistingMedia: searchReply };
-        } else {
-          const [action] = await bridge.mediaActions(active.cancellation.signal);
-          const confirmedId = action && mediaAttachmentId(action.result);
-          if (!action || !confirmedId) throw new Error("media action has no confirmed Main attachment");
-          evidence = action;
-          mediaResponse = { version: 1, attachmentId: confirmedId };
-        }
-        // Fast-path pure-media replies when both the model and the deterministic
-        // single-intent guard prove no independent text request exists, saving
-        // an entire serial LLM round-trip and eliminating blockquote failure risk.
-        const skipExtraction = !recovered
-          && !searchReply
-          && Boolean(mediaResponse)
-          && canSkipMediaExtractionForPureMedia(current.content, independentTextRequestHint);
-        if (skipExtraction) {
-          bodyText = "";
-        } else {
-          executionStage = "media_extraction";
-          modelStopReason = undefined;
-          if (++steps > maxSteps) throw new Error("media extraction exceeds the invocation step budget");
-          const outputLimit = Math.min(invocation.preparedTurn.profile.maxOutputTokens, MEDIA_EXTRACTION_MAX_TOKENS);
-          const extractor = this.options.adapter({ ...invocation.preparedTurn.profile, maxOutputTokens: outputLimit, answerMaxOutputTokens: outputLimit }, {
-            ...requestPolicy, samplingTemperature: 0,
-            maxInputTokens: invocation.preparedTurn.budget.maxInputTokens + invocation.preparedTurn.profile.maxOutputTokens - outputLimit,
-          });
-          const extracted = await this.priorityGate.withForeground(() =>
-            extractor.stream(mediaExtractionMessages(current.content, evidence), {
-              purpose: "media_extraction", signal: active.cancellation.signal,
-            }).result(),
-          );
-          modelStopReason = extracted.stopReason;
-          active.cancellation.signal.throwIfAborted();
-          if (extracted.stopReason !== "stop") throw extractor.getError(extracted) ?? new Error("media text extraction was incomplete");
-          const extractedText = messageText(extracted);
-          const { requests, feedback } = searchReply
-            ? parseMediaSearchReply(extractedText, current.content, searchReply.outcome)
-            : { requests: parseMediaTextRequests(extractedText, current.content), feedback: undefined };
-          if (requests.excerptCount === 0) bodyText = feedback ?? "";
-          else {
-            executionStage = "media_body";
-            modelStopReason = undefined;
-            if (steps >= maxSteps) throw new Error("media body exceeds the invocation step budget");
-            const body = projectStage(requests);
-            // The separate native loop retains Soul, history and real lookup pairs;
-            // only this turn's media instruction, calls and receipts are absent.
-            const executionEvidence = [...retrievalEvidence];
-            // Earlier source cursors bind the original file revision. Keep it
-            // intact while searches in this loop use only its own text scope.
-            const bodySource = join(knowledgePath, "media-body.jsonl");
-            await writeFile(bodySource, [...body.seed, ...executionEvidence, body.current]
-              .map(message => JSON.stringify(message)).join("\n") + "\n", { mode: 0o600 });
-            replyAdapter = this.options.adapter(invocation.preparedTurn.profile, {
-              ...requestPolicy,
-              ...(needsFactualSampling(body.current.content) ? { samplingTemperature: Math.min(invocation.preparedTurn.profile.sampling.temperature, 0.2) } : {}),
-            });
-            const replied = await runConversation({ ...body, executionEvidence, adapter: replyAdapter,
-              purpose: "media_body", maxSteps: maxSteps - steps, searchPath: bodySource, streamText: feedback === undefined });
-            modelStopReason = replied.message.stopReason;
-            steps += replied.steps;
-            latestAssistant = replied.message;
-            // A truncated or empty independent answer cannot become card-only success.
-            const reply = messageText(latestAssistant);
-            if (replied.selectedMediaCalls.length > 0 || latestAssistant.stopReason !== "stop" || !reply.trim()) throw new Error("independent media body was incomplete");
-            if (feedback !== undefined) bodyText = `${feedback}\n\n${reply}`;
-          }
-        }
-        terminalValidationCode = undefined;
-      }
-      const decision = evaluateTerminalCandidate({ attemptId: invocation.attemptId,
-        assistantContent: bodyText ?? (latestAssistant ? messageText(latestAssistant) : undefined),
-        finishReasonKind: bodyText !== undefined ? "stop" : latestAssistant ? finishReason(latestAssistant) : undefined,
-        currentUserText: current.content, tools: invocation.preparedTurn.tools, toolCalls: bridge.callCount, reservations: bridge.reservations,
-        profile: invocation.preparedTurn.profile, usage: aggregateModelRequestUsage(modelRequests),
-        steps, completedAt: new Date().toISOString(), modelRequests, ...(mediaResponse ? { mediaResponse } : {}),
-        mediaAvailabilityFeedback: Boolean(searchReply),
-        ...(latestAssistant && replyAdapter.getAttribution(latestAssistant) ? { attribution: replyAdapter.getAttribution(latestAssistant) } : {}),
-      });
-      if (!decision.accepted) {
-        terminalValidationCode = decision.code;
-        if (decision.code === "unexecuted_tool_payload" && currentText) { currentText = ""; await event({ type: "text_reset" }); }
-        throw new Error(decision.message);
-      }
-      active.agentDisposed = true;
-      this.waitQueue.notify(mode);
-      const candidate = decision.candidate;
-      if (!currentText && candidate.content) { currentText = candidate.content; await event({ type: "text_delta", delta: currentText }); }
-      else if (currentText !== candidate.content) throw new Error("streamed assistant text differs from terminal message");
-      active.cancellation.signal.throwIfAborted();
-      executionStage = "terminal_commit";
-      await event({ type: "terminal_candidate", candidate });
-      const ack = await port.commit(candidate, active.cancellation.signal);
-      if (ack.attemptId !== invocation.attemptId || !ack.accepted) throw new Error("Main rejected the terminal candidate");
-      terminalCommitted = true;
-      await eventTail;
-      assertEventDelivery();
-    } catch (error) {
-      await eventTail;
-      assertEventDelivery();
-      const lastRequest = modelRequests.at(-1);
-      const failureEvidence = { component: "chat", invocationId: invocation.invocationId, attemptId: invocation.attemptId,
-        phase: failurePhase, executionStage, modelStopReason, remainingMs: Math.max(0, deadlineAt - Date.now()),
-        lastModelRequest: lastRequest && { purpose: lastRequest.purpose ?? "reply", usage: lastRequest.usage } };
-      if (active.cancelReason) {
-        if (active.cancelReason === "timeout") {
-          process.stderr.write(`${JSON.stringify({ level: "warn", event: "companion_invocation_timed_out", ...failureEvidence })}\n`);
-        }
-        await event({ type: "cancelled", reason: active.cancelReason });
-      }
-      else {
-        if (error instanceof ProviderError) turnFailure = error;
-        const failure = invocationFailure({ terminalCommitted, phase: failurePhase, turnFailure, igrepFailure, preflightCode, terminalValidationCode, unconfirmedImageEffect });
-        process.stderr.write(`${JSON.stringify({ level: "error", event: "companion_invocation_failed", ...failureEvidence,
-          code: failure.code, retryable: failure.retryable, errorType: describeInvocationCause(error),
-          ...(turnFailure ? { providerCode: turnFailure.code, ...(turnFailure.status !== undefined ? { providerStatus: turnFailure.status } : {}) } : {}),
-          ...(igrepFailure ? { igrepFailure } : {}), ...(preflightCode ? { preflightCode } : {}) })}\n`);
-        await event({ type: "failed", error: failure });
-      }
+      const acquired = await this.waitQueue.waitForSlot(mode, hasCapacity, waitMs, waitSignal);
+      if (this.closing) throw new Error("Agent runtime is shutting down");
+      if (!acquired) throw new CompanionCapacityError(mode);
+      await assertNotFenced(scopeFences);
+      if (this.closing) throw new Error("Agent runtime is shutting down");
+      if (!hasCapacity()) throw new CompanionCapacityError(mode);
+      if (this.active.has(invocation.invocationId)) throw new Error("invocation id is already active");
+      const active = new ActiveInvocation(invocation);
+      this.active.set(invocation.invocationId, active);
+      promoted = true;
+      return active;
     } finally {
-      if (deadlineTimer) clearTimeout(deadlineTimer);
-      signal?.removeEventListener("abort", onAbort);
-      try { if (workspace) await workspace.discard(); }
-      finally {
-        this.active.delete(invocation.invocationId);
-        this.waitQueue.notify(mode);
-      }
+      this.queued.delete(invocation.invocationId);
+      // If we woke up with capacity available but exited without taking the
+      // slot (cancelled/fenced/closing), pass the wakeup to the next waiter.
+      if (!promoted && hasCapacity()) this.waitQueue.notify(mode);
+      this.notifyDeparture();
+    }
+  }
+
+  private notifyDeparture(): void {
+    const waiters = [...this.departureWaiters];
+    this.departureWaiters.clear();
+    for (const resolve of waiters) resolve();
+  }
+
+  /** Resolve once `settled` holds, re-checking only when an invocation leaves. */
+  private async waitForDepartures(settled: () => boolean): Promise<void> {
+    while (!settled()) {
+      await new Promise<void>((resolve) => this.departureWaiters.add(resolve));
     }
   }
 
@@ -971,10 +1256,15 @@ export class CompanionEngine {
         && (request.scope === "user" || invocation.characterId === request.characterId));
       for (const entry of matchesQueued()) entry.controller.abort(new Error("invocation cancelled: user"));
       for (const active of matchesActive()) active.cancel("user");
-      while (matchesQueued().length > 0 || matchesActive().length > 0) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
+      await this.waitForDepartures(() => matchesQueued().length === 0 && matchesActive().length === 0);
+      // No matching attempt is running; drop cached profile text before and
+      // after the bytes go, even if removal fails part-way.
+      this.wakeCache.invalidate(request);
+      try {
+        return await this.options.workspaces.purge(request);
+      } finally {
+        this.wakeCache.invalidate(request);
       }
-      return this.options.workspaces.purge(request);
     }));
   }
 
@@ -1002,7 +1292,13 @@ export class CompanionEngine {
     signal?.throwIfAborted();
     // Attempt workspaces are immutable copies. The canonical pointer may
     // advance underneath a normal turn; private turns never read it.
-    return this.options.workspaces.promoteRelationshipRebuild(request, signal);
+    // A promotion may be a privacy rebuild: superseded profile text must not
+    // stay cached, and in-flight lookups must not re-store it.
+    try {
+      return await this.options.workspaces.promoteRelationshipRebuild(request, signal);
+    } finally {
+      this.wakeCache.invalidate({ scope: "relationship", userId: request.userId, characterId: request.characterId });
+    }
   }
 
   async discardRebuild(request: CompanionWorkspaceRebuildPromotion): Promise<void> {
@@ -1028,9 +1324,8 @@ export class CompanionEngine {
     for (const queued of this.queued.values()) queued.controller.abort(new Error("invocation cancelled: shutdown"));
     this.waitQueue.notifyAll();
     for (const active of this.active.values()) active.cancel("shutdown");
-    while (this.active.size > 0 || this.queued.size > 0) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await this.waitForDepartures(() => this.active.size === 0 && this.queued.size === 0);
+    this.wakeCache.clear();
     await this.maintenanceTail;
   }
 }
