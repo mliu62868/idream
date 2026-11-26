@@ -6,6 +6,7 @@ import {
   chatSessionReleaseMigrationRequestedPayloadSchema,
   accountDeletionRequestedV2PayloadSchema,
   agentRunCancelRequestedV1PayloadSchema,
+  agentRunPurgeRequestedV1PayloadSchema,
   companionMemoryRebuildRequestedV1PayloadSchema,
   companionMemoryProjectRequestedV1PayloadSchema,
   companionMemoryPurgeRequestedV1PayloadSchema,
@@ -120,6 +121,10 @@ export function resolveMainToChatTarget(
         : { valid: false, target: null };
     case MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1:
       return agentRunCancelRequestedV1PayloadSchema.safeParse(envelope.payload).success
+        ? { valid: true, target: null }
+        : { valid: false, target: null };
+    case MAIN_TO_CHAT_EVENTS.agentRunPurgeRequestedV1:
+      return agentRunPurgeRequestedV1PayloadSchema.safeParse(envelope.payload).success
         ? { valid: true, target: null }
         : { valid: false, target: null };
     case MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1:

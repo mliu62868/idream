@@ -5,7 +5,7 @@ import { Prisma, type ChatTurn, type RecentChat } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { moderateText } from "@/server/moderation/text-authority";
-import { assertNoPendingCompanionMemoryRebuild, hasPendingCompanionMemoryMutation, scheduleCompanionMemoryRebuild } from "./companion-memory-authority";
+import { hasPendingCompanionMemoryMutation, retireCompanionMemoryAttempt } from "./companion-memory-authority";
 import { lockChatScope } from "./turn-scope";
 import { transitionToolEffectAttachment } from "./tool-effect-attachment";
 import { frozenChatImageEditSource } from "./chat-media-history";
@@ -189,7 +189,8 @@ export async function regenerateChatTurn(userId: string, messageId: string) {
   const turn = await requireTurn(userId, messageId);
   const updated = await prisma.$transaction(async (tx) => {
     const current = await lockLatestTurn(tx, userId, turn, "revise");
-    await assertNoPendingCompanionMemoryRebuild(tx, userId, turn.session.characterId);
+    // A pending memory rebuild refuses only a revision that needs another one
+    // (see retireCompanionMemoryAttempt).
     return regenerateLockedChatTurn(tx, userId, current, turn.session.characterId);
   });
   return {
@@ -210,6 +211,7 @@ async function regenerateLockedChatTurn(tx: Prisma.TransactionClient, userId: st
   }
   await reserveRevisedChatTurn(tx, userId, turn);
   const previousAttempt = turn.attempt;
+  const memory = await retireCompanionMemoryAttempt(tx, { userId, characterId, turn, scope: "attempt" });
   const originalSnapshot = turn.executionSnapshot ? chatExecutionSnapshotSchema.parse(turn.executionSnapshot) : null;
   const contextDirectives = originalSnapshot?.contextDirectives ?? [];
   const experience = originalSnapshot?.experience ?? null;
@@ -239,13 +241,8 @@ async function regenerateLockedChatTurn(tx: Prisma.TransactionClient, userId: st
       executionDeadlineAt: null,
     },
   });
-  await scheduleCompanionMemoryRebuild(tx, {
-    userId,
-    characterId,
-    purgeRunAttempts: [{ turnId: turn.id, throughAttempt: previousAttempt }],
-  });
   const recoveredMediaAction = await rebindDurableTurnMedia(tx, userId, regenerated, previousAttempt);
-  return { turn: regenerated, snapshot: await frozenExecutionSnapshot(tx, regenerated.id, false, contextDirectives, experience, userPersona, {
+  return { turn: regenerated, snapshot: await frozenExecutionSnapshot(tx, regenerated.id, !memory.memoryIsolated, contextDirectives, experience, userPersona, {
     recoveredMediaAction, userMessageRevision: originalSnapshot?.userMessageRevision,
     preservedImageEditSourceAssetId: originalSnapshot ? frozenChatImageEditSource(originalSnapshot) : null,
   }) };
@@ -303,7 +300,6 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
     if (activeWhenRead || ACTIVE_ASSISTANT_STATES.includes(current.assistantStatus)) {
       throw Errors.conflict("A reply is already generating");
     }
-    await assertNoPendingCompanionMemoryRebuild(tx, userId, turn.session.characterId);
     if (!moderation && content !== current.userContent) throw Errors.internal("Missing moderation decision for chat edit");
     const result = moderation
       ? await replaceLockedChatTurn(tx, { userId, turn: current, characterId: turn.session.characterId, content, moderation, allowPaidImage })
@@ -341,6 +337,8 @@ async function replaceLockedChatTurn(tx: Prisma.TransactionClient, input: {
   const blocked = moderation.status === "blocked";
   const now = new Date();
   if (!blocked) await reserveRevisedChatTurn(tx, userId, turn);
+  // The old user words leave memory exactly when they could have entered it.
+  const memory = await retireCompanionMemoryAttempt(tx, { userId, characterId, turn, scope: "attempt" });
   const sceneAnchor = await previousCommittedScene(tx, turn);
   // Edited user words invalidate every old action, including unpaid drafts.
   // The old source remains a private snapshot, but no surviving card grants access.
@@ -397,14 +395,9 @@ async function replaceLockedChatTurn(tx: Prisma.TransactionClient, input: {
       executionDeadlineAt: null,
     },
   });
-  await scheduleCompanionMemoryRebuild(tx, {
-    userId,
-    characterId,
-    purgeRunAttempts: [{ turnId: turn.id, throughAttempt: previousAttempt }],
-  });
   return {
     turn: edited,
-    snapshot: blocked ? null : await frozenExecutionSnapshot(tx, edited.id, false, contextDirectives, experience, userPersona, {
+    snapshot: blocked ? null : await frozenExecutionSnapshot(tx, edited.id, !memory.memoryIsolated, contextDirectives, experience, userPersona, {
       userMessageRevision: edited.attempt,
     }),
   };
@@ -414,7 +407,6 @@ export async function deleteChatMessage(userId: string, messageId: string) {
   const turn = await requireTurn(userId, messageId);
   await prisma.$transaction(async (tx) => {
     const current = await lockLatestTurn(tx, userId, turn, "delete");
-    await assertNoPendingCompanionMemoryRebuild(tx, userId, turn.session.characterId);
     if (ACTIVE_ASSISTANT_STATES.includes(current.assistantStatus)) {
       throw Errors.conflict("Cancel the active reply before deleting this chat turn");
     }
@@ -441,11 +433,7 @@ export async function deleteChatMessage(userId: string, messageId: string) {
     });
     await refundPendingDelayedAttachments(tx, userId, [turn.id]);
     await tx.chatTurn.delete({ where: { id: turn.id } });
-    await scheduleCompanionMemoryRebuild(tx, {
-      userId,
-      characterId: turn.session.characterId,
-      purgeTurnIds: [turn.id],
-    });
+    await retireCompanionMemoryAttempt(tx, { userId, characterId: turn.session.characterId, turn: current, scope: "turn" });
   });
 }
 

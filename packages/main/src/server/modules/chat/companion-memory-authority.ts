@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { recordAgentRunCancelIntent } from "./agent-run-cancel-intent";
+import { recordAgentRunCancelIntent, recordAgentRunPurgeIntent } from "./agent-run-intents";
 import {
   COMPANION_MEMORY_PURGE_PATH,
   COMPANION_MEMORY_REBUILD_PREPARE_PATH,
@@ -60,6 +60,65 @@ export async function assertNoPendingCompanionMemoryRebuild(
   if (await hasPendingCompanionMemoryMutation(tx, userId, characterId)) {
     throw Errors.conflict("Still updating this Character's memory — try again in a few seconds");
   }
+}
+
+/**
+ * SPEC: whether a Turn's current attempt can already be part of canonical
+ * memory. Mirrors the export filter in {@link memorySourceMessages}: only a
+ * sent user message with a sent reply on a memory-enabled Turn is exported.
+ * Earlier attempts were already removed by the rebuild scheduled when they
+ * were superseded while sent.
+ */
+export function companionMemoryMayContain(turn: {
+  userStatus: string;
+  assistantStatus: string;
+  memoryEnabled: boolean;
+}): boolean {
+  return turn.userStatus === "sent" && turn.assistantStatus === "sent" && turn.memoryEnabled;
+}
+
+/**
+ * SPEC: retire one attempt (or a deleted Turn) from relationship memory.
+ *
+ * INTENT: a revision used to rebuild the whole relationship and freeze the new
+ * attempt as private, even when the superseded attempt had failed and could
+ * never have been projected — "the Character forgets after Retry", plus a 409
+ * for a quick second Retry while that rebuild ran. Only an attempt memory may
+ * contain needs the destructive rebuild; anything else only needs its local
+ * AgentRun evidence purged.
+ *
+ * Returns whether the next attempt of this relationship must run memory-isolated
+ * (a destructive mutation is now, or was already, pending).
+ */
+export async function retireCompanionMemoryAttempt(
+  tx: Prisma.TransactionClient,
+  input: {
+    userId: string;
+    characterId: string;
+    turn: { id: string; attempt: number; userStatus: string; assistantStatus: string; memoryEnabled: boolean };
+    /** "attempt": a revision supersedes the current attempt; "turn": the Turn is deleted. */
+    scope: "attempt" | "turn";
+  },
+): Promise<{ rebuilt: boolean; memoryIsolated: boolean }> {
+  const { userId, characterId, turn } = input;
+  if (companionMemoryMayContain(turn)) {
+    await assertNoPendingCompanionMemoryRebuild(tx, userId, characterId);
+    await scheduleCompanionMemoryRebuild(tx, {
+      userId,
+      characterId,
+      ...(input.scope === "turn"
+        ? { purgeTurnIds: [turn.id] }
+        : { purgeRunAttempts: [{ turnId: turn.id, throughAttempt: turn.attempt }] }),
+    });
+    return { rebuilt: true, memoryIsolated: true };
+  }
+  await recordAgentRunPurgeIntent(tx, {
+    userId,
+    turnId: turn.id,
+    ...(input.scope === "attempt" ? { throughAttempt: turn.attempt } : {}),
+    occurredAt: new Date(),
+  });
+  return { rebuilt: false, memoryIsolated: await hasPendingCompanionMemoryMutation(tx, userId, characterId) };
 }
 
 export async function scheduleCompanionMemoryProjection(
@@ -238,10 +297,10 @@ export async function syncCompanionMemoryFromMain(
   });
   if (memoryEventSuperseded(event, payload.authorityVersion, observed?.version ?? null)) return;
   for (const turnId of payload.purgeTurnIds) {
-    await purgeAgentRun(turnId);
+    await purgeChatAgentRun(turnId);
   }
   for (const fence of payload.purgeRunAttempts) {
-    await purgeAgentRun(fence.turnId, fence.throughAttempt);
+    await purgeChatAgentRun(fence.turnId, fence.throughAttempt);
   }
 
   const metrics = await memorySourceMetrics(payload.userId, payload.characterId);
@@ -613,7 +672,8 @@ async function* memorySourceMessages(
   }
 }
 
-async function purgeAgentRun(turnId: string, throughAttempt?: number): Promise<void> {
+/** Removes local AgentRun evidence for a Turn (all attempts, or through one). */
+export async function purgeChatAgentRun(turnId: string, throughAttempt?: number): Promise<void> {
   const response = await fetch(chatUrl(
     `/internal/agent-runs/${encodeURIComponent(turnId)}/purge`,
   ), {

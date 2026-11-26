@@ -4,7 +4,7 @@ import { chatExecutionSnapshotSchema, chatTerminalCommitSchema } from "@idream/s
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import { recordAgentRunCancelIntent } from "./agent-run-cancel-intent";
+import { recordAgentRunCancelIntent } from "./agent-run-intents";
 import { scheduleCompanionMemoryProjection } from "./companion-memory-authority";
 import { lockChatScope } from "./turn-scope";
 import { hasChatMediaResponseAttachment } from "./tool-effect-attachment";

@@ -3,6 +3,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   ACCOUNT_DELETION_V2_INGEST_PATH,
   agentRunCancelRequestedV1PayloadSchema,
+  agentRunPurgeRequestedV1PayloadSchema,
   durableAckSchema,
   durableEventEnvelopeSchema,
   MAIN_TO_CHAT_EVENTS,
@@ -15,6 +16,7 @@ import { AppError } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import {
+  purgeChatAgentRun,
   purgeCompanionMemoryFromMain,
   syncCompanionMemoryFromMain,
 } from "@/server/modules/chat/companion-memory-authority";
@@ -34,6 +36,7 @@ const CHAT_EVENT_TYPES_BY_LANE = {
   ],
   lifecycle: [
     MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1,
+    MAIN_TO_CHAT_EVENTS.agentRunPurgeRequestedV1,
     MAIN_TO_CHAT_EVENTS.companionMemoryPurgeRequestedV1,
     MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2,
   ],
@@ -254,6 +257,11 @@ async function deliverToChat(event: DurableEventEnvelope): Promise<void> {
     if (!response.ok) throw new ChatDeliveryError(`Chat AgentRun cancel returned ${response.status}`);
     const acknowledged = await response.json() as { ok?: unknown };
     if (acknowledged.ok !== true) throw new ChatDeliveryError("Chat did not durably fence the AgentRun");
+    return;
+  }
+  if (event.eventType === MAIN_TO_CHAT_EVENTS.agentRunPurgeRequestedV1) {
+    const payload = agentRunPurgeRequestedV1PayloadSchema.parse(event.payload);
+    await purgeChatAgentRun(payload.turnId, payload.throughAttempt);
     return;
   }
   if (
