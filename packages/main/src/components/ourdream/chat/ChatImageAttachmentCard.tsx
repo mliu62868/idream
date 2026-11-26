@@ -7,6 +7,7 @@ import type { RuntimeChatAttachment as ChatAttachment } from "@/lib/public-api-c
 import { generationQueueCopy } from "@/lib/generation-queue-copy";
 import { unknownOutcomeCopy } from "@/lib/generation-failure-copy";
 import { LegacyTestAssetBadge } from "../LegacyTestAssetBadge";
+import { MediaLightbox } from "../MediaLightbox";
 import { chatAttachmentCostLabel, chatAttachmentIsActive } from "./chat-attachments";
 
 export function ChatImageAttachmentCard({
@@ -41,6 +42,7 @@ export function ChatImageAttachmentCard({
   const source = attachment.thumbnailUrl ?? attachment.mediaUrl;
   const previewKey = `${attachment.id}:${source ?? ""}`;
   const [invalidPreviewKey, setInvalidPreviewKey] = useState<string | null>(null);
+  const [viewerOpen, setViewerOpen] = useState(false);
   const invalidPreview = invalidPreviewKey === previewKey;
   const isLegacyTestAsset = attachment.isSynthetic === true;
   const costLabel = chatAttachmentCostLabel(attachment);
@@ -52,20 +54,36 @@ export function ChatImageAttachmentCard({
       // 于是图片右侧露出一大片深色底，操作条也跟着拉宽。同组件的等待/失败分支
       // 本来就是 `w-full max-w-[260px]`，这里只是漏了。
       <figure className="relative w-full max-w-[260px] overflow-hidden rounded-[12px] border border-white/10 bg-black/20">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          alt={isSceneImage ? "Scene image from this chat" : "Character image from this chat"}
-          className="aspect-[4/5] w-full object-cover"
-          data-asset-id={attachment.mediaAssetId ?? undefined}
-          data-testid="chat-image-attachment"
-          height={attachment.height ?? 640}
-          onError={() => setInvalidPreviewKey(previewKey)}
-          onLoad={(event) => {
-            if (isInvalidChatImagePreview(event.currentTarget)) setInvalidPreviewKey(previewKey);
-          }}
-          src={source}
-          width={attachment.width ?? 512}
-        />
+        <button
+          aria-label="Open image full size"
+          className="block w-full cursor-zoom-in focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#ff7ac8]"
+          data-testid="chat-image-open"
+          onClick={() => setViewerOpen(true)}
+          type="button"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            alt={isSceneImage ? "Scene image from this chat" : "Character image from this chat"}
+            className="aspect-[4/5] w-full object-cover"
+            data-asset-id={attachment.mediaAssetId ?? undefined}
+            data-testid="chat-image-attachment"
+            decoding="async"
+            height={attachment.height ?? 640}
+            loading="lazy"
+            onError={() => setInvalidPreviewKey(previewKey)}
+            onLoad={(event) => {
+              if (isInvalidChatImagePreview(event.currentTarget)) setInvalidPreviewKey(previewKey);
+            }}
+            src={source}
+            width={attachment.width ?? 512}
+          />
+        </button>
+        {viewerOpen ? (
+          <MediaLightbox
+            media={{ type: "image", url: attachment.mediaUrl, alt: isSceneImage ? "Scene image from this chat" : "Character image from this chat" }}
+            onClose={() => setViewerOpen(false)}
+          />
+        ) : null}
         <LegacyTestAssetBadge isSynthetic={isLegacyTestAsset} />
         {costLabel ? (
           <figcaption
@@ -299,9 +317,32 @@ function isInvalidChatImagePreview(image: HTMLImageElement) {
   return isBlankChatImagePreview(image);
 }
 
+// SPEC: Hide a preview only when it carries no picture at all: every sampled
+//       pixel has the same colour (a failed decode, an empty canvas, a solid
+//       placeholder), give or take one level of compression noise.
+// INTENT: the old luminance test also hid low-key images — a night scene or a
+//         candle-lit room sampled at 16px is "almost black" yet a real picture.
+//         Colour is compared per channel, so a dark image with any hue or
+//         highlight variation is shown.
+export function chatImagePixelsAreBlank(rgba: ArrayLike<number>): boolean {
+  if (rgba.length < 4) return false;
+  const min = [255, 255, 255];
+  const max = [0, 0, 0];
+  for (let index = 0; index + 3 < rgba.length; index += 4) {
+    // Fully transparent pixels are empty canvas regardless of their RGB.
+    const alpha = rgba[index + 3] ?? 255;
+    for (let channel = 0; channel < 3; channel += 1) {
+      const value = alpha === 0 ? 0 : rgba[index + channel] ?? 0;
+      min[channel] = Math.min(min[channel]!, value);
+      max[channel] = Math.max(max[channel]!, value);
+    }
+  }
+  return max.every((value, channel) => value - min[channel]! <= 1);
+}
+
 function isBlankChatImagePreview(image: HTMLImageElement) {
-  const width = Math.min(16, image.naturalWidth);
-  const height = Math.min(16, image.naturalHeight);
+  const width = Math.min(32, image.naturalWidth);
+  const height = Math.min(32, image.naturalHeight);
   if (width <= 0 || height <= 0) return false;
 
   try {
@@ -312,20 +353,7 @@ function isBlankChatImagePreview(image: HTMLImageElement) {
     if (!context) return false;
 
     context.drawImage(image, 0, 0, width, height);
-    const data = context.getImageData(0, 0, width, height).data;
-    let min = 255;
-    let max = 0;
-    for (let index = 0; index < data.length; index += 4) {
-      const red = data[index] ?? 0;
-      const green = data[index + 1] ?? 0;
-      const blue = data[index + 2] ?? 0;
-      const luminance = Math.round(red * 0.2126 + green * 0.7152 + blue * 0.0722);
-      min = Math.min(min, luminance);
-      max = Math.max(max, luminance);
-    }
-
-    const range = max - min;
-    return range <= 1 || (range <= 4 && (min >= 250 || max <= 5));
+    return chatImagePixelsAreBlank(context.getImageData(0, 0, width, height).data);
   } catch {
     return false;
   }

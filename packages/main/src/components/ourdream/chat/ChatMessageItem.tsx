@@ -13,6 +13,7 @@ import { ChatMediaQuoteCard } from "./ChatMediaQuoteCard";
 import { ChatVideoAttachmentCard } from "./ChatVideoAttachmentCard";
 import { MessageActions } from "./MessageActions";
 import type { VoiceConfirmation } from "./useVoicePlayback";
+import { ChatMessageText } from "./chat-message-text";
 
 const BLOCKED_ASSISTANT_NOTICE = "I can’t help with that request.";
 
@@ -166,7 +167,7 @@ export const ChatMessageItem = memo(function ChatMessageItem({
         BLOCKED_ASSISTANT_NOTICE
       ) : !isUser && replyInProgress ? (
         <>
-          {message.content}
+          {message.content ? <MessageText text={message.content} /> : null}
           <span
             aria-label="Assistant is typing"
             className={`inline-flex items-center gap-1 py-0.5 ${message.content.trim() ? "ml-2" : ""}`}
@@ -186,7 +187,7 @@ export const ChatMessageItem = memo(function ChatMessageItem({
               : "Reply unavailable."}
         </span>
       ) : (
-        message.content
+        <MessageText text={message.content} />
       )}
       {!isUser && message.memoryEnabled === false ? (
         <p className="mt-2 text-[11px] leading-4 text-white/60" data-testid="chat-private-turn">
@@ -233,6 +234,15 @@ export const ChatMessageItem = memo(function ChatMessageItem({
   );
 });
 
+// Paragraphs and line breaks the character wrote are part of the reply.
+function MessageText({ text }: Readonly<{ text: string }>) {
+  return (
+    <span className="whitespace-pre-wrap [overflow-wrap:anywhere]" data-chat-text="">
+      <ChatMessageText text={text} />
+    </span>
+  );
+}
+
 function ChatMessageAttachments({ message, context, handlers }: Readonly<{
   message: ChatMessage;
   context: ChatAttachmentContext;
@@ -247,7 +257,7 @@ function ChatMessageAttachments({ message, context, handlers }: Readonly<{
             key={attachment.id}
             attachmentId={attachment.id}
             kind={attachment.kind === "generated_video" ? "generated_video" : "generated_image"}
-            costDreamcoins={typeof attachment.costDreamcoins === "number" && attachment.costDreamcoins > 0 ? attachment.costDreamcoins : attachment.kind === "generated_video" ? 30 : 5}
+            costDreamcoins={typeof attachment.costDreamcoins === "number" && attachment.costDreamcoins > 0 ? attachment.costDreamcoins : null}
             ownerScope={context.receiptOwnerScope}
             paymentHref={context.paymentHref}
             fetchForViewer={context.fetchForViewer}

@@ -2590,6 +2590,35 @@ describe("ChatSessionClient streaming composer", () => {
     expect(empty).toContain("@mention Avery, Briar");
   });
 
+  it("never invents a price for a media quote whose cost is missing", async () => {
+    sessionMessages = [{
+      ...opening,
+      attachments: [{ id: "unpriced-quote", kind: "generated_image", status: "awaiting_confirmation", confirmationKind: "paid_media_quote", costDreamcoins: null }],
+    }];
+    await mountSession();
+    const card = container.querySelector('[data-testid="chat-media-quote-card"]');
+    expect(card?.textContent).toContain("price unavailable");
+    expect(card?.textContent).not.toMatch(/\d+ DreamCoins/);
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="chat-media-quote-confirm"]')?.disabled).toBe(true);
+    const readsBefore = sessionReads;
+    sessionMessages = [{ ...opening, attachments: [{ id: "unpriced-quote", kind: "generated_image", status: "awaiting_confirmation", confirmationKind: "paid_media_quote", costDreamcoins: 7 }] }];
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="chat-media-quote-refresh"]')!.click());
+    await waitUntil(() => sessionReads > readsBefore && (container.textContent?.includes("Photo · 7 DreamCoins") ?? false));
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="chat-media-quote-confirm"]')?.disabled).toBe(false);
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).endsWith("/media-quote/confirm"))).toBe(false);
+  });
+
+  it("keeps paragraphs and renders roleplay actions as emphasis without HTML", async () => {
+    sessionMessages = [{ ...opening, content: '*smiles* "Hi."\n\nSecond <b>paragraph</b>' }];
+    await mountSession();
+    const bubble = container.querySelector('[data-message-id="assistant-0"]')!;
+    const text = bubble.querySelector("[data-chat-text]")!;
+    expect(text.className).toContain("whitespace-pre-wrap");
+    expect(text.querySelector('em[data-roleplay="action"]')?.textContent).toBe("smiles");
+    expect(text.textContent).toBe('smiles "Hi."\n\nSecond <b>paragraph</b>');
+    expect(text.querySelector("b")).toBeNull();
+  });
+
   it("renders a paid media quote card for awaiting_confirmation photo/video quotes and confirms or cancels cleanly", async () => {
     const quoteCalls: string[] = [];
     const originalFetch = vi.mocked(fetch).getMockImplementation()!;
