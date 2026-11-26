@@ -546,6 +546,32 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
     }
   }
 
+  // Selecting an earlier version is a Main revision with no model execution:
+  // nothing streams, so the authoritative session read replaces the bubble.
+  async function selectVersion(messageId: string, ordinal: number, attempt: number): Promise<boolean> {
+    const isActive = currentLifecycle();
+    context({ invalidate: true });
+    try {
+      const response = await fetchForSession(`/api/v1/messages/${encodeURIComponent(messageId)}/versions/select`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ordinal, attempt }),
+      });
+      if (!response.ok) {
+        const failure = await response.json().catch(() => null);
+        if (isActive()) setStatus(chatFailureCopy(failure, "Couldn't switch to that reply. Please try again."));
+        await refresh().catch(() => undefined);
+        return false;
+      }
+      invalidateReplies([messageId]);
+      await refresh();
+      return true;
+    } catch {
+      if (isActive()) setStatus("Couldn't switch to that reply. Please try again.");
+      return false;
+    }
+  }
+
   function removeTurn(messageId: string) {
     if (!mountedRef.current) return;
     context({ invalidate: true });
@@ -819,7 +845,7 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
     return "in_progress";
   }
 
-  return { stopping, refresh, context, receiveTurn, edit, regenerate, removeTurn, reset, stop, streamHealthy };
+  return { stopping, refresh, context, receiveTurn, edit, regenerate, selectVersion, removeTurn, reset, stop, streamHealthy };
 }
 
 function parseStreamEvent(event: Event): Record<string, unknown> {

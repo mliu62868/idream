@@ -16,6 +16,7 @@ import { assertChatSessionServingAuthority, repinOwnerSessionToServingRelease, r
 import { type BegunChatTurn, begunResult } from "./chat-read-model";
 import { rebindDurableTurnMedia, redactChatImageSourceText, refundPendingDelayedAttachments } from "./turn-media-rebind";
 import { frozenExecutionSnapshot } from "./execution-snapshot";
+import { discardReplyVersions, preserveReplyVersion, selectLockedReplyVersion } from "./turn-alternatives";
 import type { ChatEntitlements } from "./chat-authority-snapshot";
 
 // INTENT: the creating request admits its own Turn inline. Starting the first
@@ -115,6 +116,10 @@ export async function beginChatTurn(input: {
     });
     // After the idempotent-replay return: a replay must not re-pin or bump contextRevision.
     const pinnedSession = await repinOwnerSessionToServingRelease(tx, input.userId, lockedSession);
+    // Only the latest Turn's reply versions are selectable; a new Turn retires them.
+    await discardReplyVersions(tx, lockedSession.groupId
+      ? { turn: { groupTurn: { groupId: lockedSession.groupId } } }
+      : { turn: { sessionId: session.sessionId } });
     const now = new Date();
     const turn = await tx.chatTurn.create({
       data: {
@@ -236,6 +241,8 @@ async function regenerateLockedChatTurn(tx: Prisma.TransactionClient, userId: st
   await reserveRevisedChatTurn(tx, userId, turn);
   const previousAttempt = turn.attempt;
   const memory = await retireCompanionMemoryAttempt(tx, { userId, characterId, turn, scope: "attempt" });
+  // The replaced text reply stays selectable as an earlier version.
+  await preserveReplyVersion(tx, turn);
   const originalSnapshot = turn.executionSnapshot ? chatExecutionSnapshotSchema.parse(turn.executionSnapshot) : null;
   const contextDirectives = originalSnapshot?.contextDirectives ?? [];
   const experience = originalSnapshot?.experience ?? null;
@@ -270,6 +277,20 @@ async function regenerateLockedChatTurn(tx: Prisma.TransactionClient, userId: st
     recoveredMediaAction, userMessageRevision: originalSnapshot?.userMessageRevision,
     preservedImageEditSourceAssetId: originalSnapshot ? frozenChatImageEditSource(originalSnapshot) : null,
   }) };
+}
+
+export async function selectChatReplyVersion(userId: string, messageId: string, input: { ordinal: number; expectedAttempt: number }) {
+  if (!Number.isSafeInteger(input.ordinal) || input.ordinal <= 0) throw Errors.badRequest("A reply version needs a positive ordinal");
+  if (!Number.isSafeInteger(input.expectedAttempt) || input.expectedAttempt <= 0) throw Errors.badRequest("Selecting a version requires the observed attempt");
+  const turn = await requireTurn(userId, messageId);
+  if (turn.assistantMessageId !== messageId) throw Errors.badRequest("Only replies have versions");
+  const selected = await prisma.$transaction(async (tx) => {
+    const current = await lockLatestTurn(tx, userId, turn, "revise");
+    return selectLockedReplyVersion(tx, {
+      userId, characterId: turn.session.characterId, turn: current, ordinal: input.ordinal, expectedAttempt: input.expectedAttempt,
+    });
+  });
+  return { assistantMessageId: selected.assistantMessageId, attempt: selected.attempt, status: selected.assistantStatus };
 }
 
 export type ChatTurnEditOptions = {
@@ -363,6 +384,8 @@ async function replaceLockedChatTurn(tx: Prisma.TransactionClient, input: {
   if (!blocked) await reserveRevisedChatTurn(tx, userId, turn);
   // The old user words leave memory exactly when they could have entered it.
   const memory = await retireCompanionMemoryAttempt(tx, { userId, characterId, turn, scope: "attempt" });
+  // Earlier reply versions answered the old words.
+  await discardReplyVersions(tx, { turnId: turn.id });
   const sceneAnchor = await previousCommittedScene(tx, turn);
   // Edited user words invalidate every old action, including unpaid drafts.
   // The old source remains a private snapshot, but no surviving card grants access.

@@ -15,6 +15,7 @@ import {
   getChatSession,
   listChatSessions,
   renameChatSession,
+  selectChatReplyVersion,
   setChatMemory,
 } from "@/server/modules/chat/turn-ledger";
 import {
@@ -193,6 +194,12 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
         idempotencyKey: request.headers.get("idempotency-key") ?? undefined,
         allowPaidImage: paidImageRequest(body),
       }), 202);
+    }
+    if (path.length === 4 && path[2] === "versions" && path[3] === "select" && method === "POST") {
+      if (typeof body.ordinal !== "number" || typeof body.attempt !== "number") {
+        throw Errors.badRequest("Selecting a reply version requires its ordinal and the observed attempt");
+      }
+      return json(await selectChatReplyVersion(userId, messageId, { ordinal: body.ordinal, expectedAttempt: body.attempt }));
     }
     if (path.length === 3 && path[2] === "regenerate" && method === "POST") {
       return json(await regenerateAndAdmitChatTurn(userId, messageId), 202);

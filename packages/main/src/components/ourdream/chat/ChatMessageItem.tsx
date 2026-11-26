@@ -1,7 +1,7 @@
 "use client";
 
-import { Check, Loader2, X } from "lucide-react";
-import { memo, useEffect, useRef } from "react";
+import { Check, ChevronLeft, ChevronRight, Loader2, X } from "lucide-react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { RuntimeChatAttachment as ChatAttachment, RuntimeChatMessage as ChatMessage } from "@/lib/public-api-contracts";
 import type { GenerationQuoteAuthority } from "@/lib/generation-write-client";
 import { chatGenerationHref } from "@/lib/chat-generation-link";
@@ -28,6 +28,8 @@ export type ChatMessageHandlers = {
   readonly report: (messageId: string) => void;
   readonly remove: (messageId: string) => void;
   readonly regenerate: (messageId: string) => void;
+  /** Make an earlier version of the latest reply current (observed attempt fences it). */
+  readonly selectVersion: (messageId: string, ordinal: number, attempt: number) => void;
   readonly play: (messageId: string, text: string) => void;
   readonly confirmVoice: (confirmation: VoiceConfirmation) => void;
   readonly dismissVoice: () => void;
@@ -96,7 +98,15 @@ export const ChatMessageItem = memo(function ChatMessageItem({
   const replyInProgress = chatStreamMessageIsInProgress(message);
   const isEditing = editing !== null;
   const showMessageActions = !isEditing && !replyInProgress && !isLocalChatMessageId(message.id);
-  const canPlayMessage = !isUser && message.status === "sent" && Boolean(message.content.trim());
+  const versions = !isUser && canRegenerate && !replyInProgress && !isEditing ? message.replyVersions ?? [] : [];
+  // Browsing versions is local; only "Use this reply" changes the conversation.
+  // The preview belongs to the attempt it was opened on.
+  const [preview, setPreview] = useState<{ attempt: number | undefined; ordinal: number } | null>(null);
+  const previewVersion = preview && preview.attempt === message.attempt
+    ? versions.find((version) => version.ordinal === preview.ordinal && !version.current) ?? null
+    : null;
+  const shownContent = previewVersion?.content ?? message.content;
+  const canPlayMessage = !isUser && message.status === "sent" && !previewVersion && Boolean(message.content.trim());
   return (
     <div
       aria-busy={!isUser && replyInProgress}
@@ -175,7 +185,7 @@ export const ChatMessageItem = memo(function ChatMessageItem({
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white/60 [animation-timing-function:cubic-bezier(0.16,1,0.3,1)] motion-reduce:animate-none" />
           </span>
         </>
-      ) : !isUser && !message.content.trim() && !(message.attachments ?? []).length ? (
+      ) : !isUser && !previewVersion && !message.content.trim() && !(message.attachments ?? []).length ? (
         <span aria-label="Assistant reply unavailable" role="status">
           {message.status === "cancelled"
             ? "Reply stopped."
@@ -186,8 +196,19 @@ export const ChatMessageItem = memo(function ChatMessageItem({
                 : "Reply unavailable."}
         </span>
       ) : (
-        <MessageText text={message.content} />
+        <MessageText text={shownContent} />
       )}
+      {versions.length + (versions.some((version) => version.current) ? 0 : 1) > 1 ? (
+        <ReplyVersionSwitcher
+          versions={versions}
+          shownOrdinal={previewVersion?.ordinal ?? versions.find((version) => version.current)?.ordinal ?? null}
+          pending={actionsPending}
+          onShow={(ordinal) => setPreview(ordinal === null ? null : { attempt: message.attempt, ordinal })}
+          onUse={previewVersion && typeof message.attempt === "number"
+            ? () => handlers.selectVersion(message.id, previewVersion.ordinal, message.attempt!)
+            : undefined}
+        />
+      ) : null}
       {!isUser && message.memoryEnabled === false ? (
         <p className="mt-2 text-[11px] leading-4 text-white/60" data-testid="chat-private-turn">
           Not saved to long-term memory. This turn stays in chat history.
@@ -280,6 +301,52 @@ function ChatEditTextarea({ id, editing, handlers }: Readonly<{
       ref={ref}
       value={editing.content}
     />
+  );
+}
+
+// SPEC: browse the latest reply's versions (oldest first) and adopt one.
+function ReplyVersionSwitcher({ versions, shownOrdinal, pending, onShow, onUse }: Readonly<{
+  versions: ReadonlyArray<{ ordinal: number; content: string; current: boolean }>;
+  /** null: the current reply has no text version (it failed or was stopped). */
+  shownOrdinal: number | null;
+  pending: boolean;
+  onShow: (ordinal: number | null) => void;
+  onUse?: () => void;
+}>) {
+  // A reply that failed after a regenerate is the last, text-less slot.
+  const slots: Array<number | null> = versions.some((version) => version.current)
+    ? versions.map((version) => version.ordinal)
+    : [...versions.map((version) => version.ordinal), null];
+  const index = Math.max(0, slots.indexOf(shownOrdinal));
+  const go = (step: number) => {
+    const next = Math.min(slots.length - 1, Math.max(0, index + step));
+    const ordinal = slots[next] ?? null;
+    const current = versions.find((version) => version.current)?.ordinal ?? null;
+    onShow(ordinal === current ? null : ordinal);
+  };
+  const position = index + 1;
+  const button = "inline-flex h-9 w-9 items-center justify-center rounded-full text-white/80 hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white disabled:opacity-40";
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1 text-[12px] text-white/70" data-testid="chat-reply-versions" role="group" aria-label="Reply versions">
+      <button aria-label="Previous version" className={button} disabled={pending || position <= 1} onClick={() => go(-1)} type="button">
+        <ChevronLeft aria-hidden className="h-4 w-4" />
+      </button>
+      <span aria-live="polite" className="min-w-10 text-center tabular-nums">{position} / {slots.length}</span>
+      <button aria-label="Next version" className={button} disabled={pending || position >= slots.length} onClick={() => go(1)} type="button">
+        <ChevronRight aria-hidden className="h-4 w-4" />
+      </button>
+      {onUse ? (
+        <button
+          className="ml-1 inline-flex min-h-9 items-center rounded-full bg-white px-3 text-[12px] font-bold text-[rgb(13,13,13)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#ff7ac8] disabled:opacity-50"
+          data-testid="chat-use-reply-version"
+          disabled={pending}
+          onClick={onUse}
+          type="button"
+        >
+          Use this reply
+        </button>
+      ) : null}
+    </div>
   );
 }
 

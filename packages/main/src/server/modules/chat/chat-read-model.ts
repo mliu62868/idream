@@ -1,4 +1,5 @@
 // Public projections of sessions, messages and attachments.
+import { publicReplyVersions } from "./turn-alternatives";
 import type { ChatExecutionSnapshot } from "@idream/shared/contracts";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
@@ -79,6 +80,8 @@ export const PUBLIC_TURN_SELECT = {
       promptHint: true, width: true, height: true, errorCode: true, metadata: true,
     },
   },
+  // Only the latest Turn keeps versions (a newer Turn or an edit retires them).
+  alternatives: { orderBy: { ordinal: "asc" }, select: { ordinal: true, assistantContent: true } },
 } satisfies Prisma.ChatTurnSelect;
 
 async function directTranscriptPage(sessionId: string, page: ChatTranscriptPage | undefined) {
@@ -394,6 +397,7 @@ function publicAssistantMessage(turn: {
   assistantContent: string;
   assistantStatus: string;
   terminalEvidence?: Prisma.JsonValue;
+  alternatives?: Array<{ ordinal: number; assistantContent: string }>;
   attempt: number;
   sceneVersion: number;
   scene: Prisma.JsonValue | null;
@@ -423,6 +427,10 @@ function publicAssistantMessage(turn: {
     ...(turn.assistantStatus === "failed" && jsonRecord(turn.terminalEvidence ?? null).failureCode === "agent_run_interrupted"
       ? { replyInterrupted: true } : {}),
     ...(turn.assistantStatus === "failed" ? publicFailureCode(turn.terminalEvidence ?? null) : {}),
+    ...(() => {
+      const versions = publicReplyVersions({ ...turn, terminalEvidence: turn.terminalEvidence ?? null });
+      return versions ? { replyVersions: versions.versions } : {};
+    })(),
     attempt: turn.attempt,
     replyToMessageId: turn.userMessageId,
     sceneVersion: turn.sceneVersion,

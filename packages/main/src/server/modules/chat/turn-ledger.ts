@@ -7,6 +7,6 @@ export { chatStreamAuthority, chatTurnForEffect, chatTurnMessagesForOwner, chatV
 export type { BegunChatTurn } from "./chat-read-model";
 export { archiveChatSession, createChatSession, deleteChatSession, deleteGroupChatConversation, listChatSessions, renameChatSession, setChatMemory } from "./chat-session-service";
 export { executionSnapshot } from "./execution-snapshot";
-export { beginChatTurn, deleteChatMessage, editChatTurn, regenerateChatTurn } from "./turn-commands";
+export { beginChatTurn, deleteChatMessage, editChatTurn, regenerateChatTurn, selectChatReplyVersion } from "./turn-commands";
 export type { ChatTurnEditOptions } from "./turn-commands";
 export { cancelChatTurn, commitChatTerminal, failStalledChatTurn } from "./turn-terminal";

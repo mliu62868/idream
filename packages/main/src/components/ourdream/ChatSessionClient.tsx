@@ -831,6 +831,19 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     }
   }
 
+  async function selectReplyVersion(messageId: string, ordinal: number, attempt: number) {
+    if (pending || hasGeneratingReply) return;
+    setPending(true);
+    stopVoice();
+    setStatus(null);
+    setDeleteConfirmMessageId(null);
+    try {
+      await delivery.selectVersion(messageId, ordinal, attempt);
+    } finally {
+      setPending(false);
+    }
+  }
+
   function jumpToLatest() {
     pinnedToBottomRef.current = true;
     setJumpToLatestVisible(false);
@@ -845,6 +858,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     report: reportMessage,
     remove: (messageId) => void deleteMessage(messageId),
     regenerate: (messageId) => void regenerate(messageId),
+    selectVersion: (messageId, ordinal, attempt) => void selectReplyVersion(messageId, ordinal, attempt),
     play: (messageId, text) => void voice.play(messageId, text),
     confirmVoice: (confirmation) => void voice.play(confirmation.messageId, confirmation.text, confirmation.quote.quoteToken!),
     dismissVoice: voice.dismissConfirmation,

@@ -1473,6 +1473,8 @@ const chatMessageSchema = z
     replyInterrupted: z.boolean().optional(),
     /** Allowlisted terminal failure code for a failed reply; never free text. */
     failureCode: nonEmptyString.optional(),
+    /** Every version of the latest reply in generation order (only when more than one exists). */
+    replyVersions: z.array(z.object({ ordinal: z.number().int().positive(), content: z.string(), current: z.boolean() })).optional(),
     replyToMessageId: nonEmptyString.nullable().optional(),
     attachments: z.array(chatAttachmentSchema).optional(),
     sceneVersion: z.number().int().nonnegative().optional(),
