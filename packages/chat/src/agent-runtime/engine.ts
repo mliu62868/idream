@@ -25,7 +25,7 @@ import { observeIgrepWake, igrepFailureCategory, recallIgrepMemory, reprojectIgr
 import type { CompanionWorkspaceRebuildPromotion, CompanionWorkspaceRebuildSource } from "./rebuild-source";
 import { assertNotFenced, withDrainFence, type FenceScope } from "../fence.js";
 import { stableJson } from "../stable-json";
-import { describeRequestedReplyConstraints } from "../prompt.js";
+import { replyCues, type ReplyCues } from "../reply-cues.js";
 import { projectPreparedBody } from "../prepared-turn.js";
 import { ProviderError, type OpenAiCompatibleAdapter, type OpenAiCompatibleAdapterOptions, type TokenUsage } from "./openai-adapter";
 import { aggregateModelRequestUsage } from "./model-request-evidence";
@@ -39,13 +39,11 @@ import {
 } from "./execution-scheduler";
 import {
   MEDIA_EXTRACTION_MAX_TOKENS,
-  canSkipMediaExtractionForPureMedia,
   extractMediaRoutingHint,
   mediaAttachmentId,
   mediaExtractionMessages,
   parseMediaSearchReply,
   parseMediaTextRequests,
-  shouldBufferMediaLeadText,
   type MediaSearchObservation,
   type MediaTextRequests,
 } from "./media-response";
@@ -74,6 +72,11 @@ export interface CompanionEngineOptions {
   capacityWaitMs?: number;
   /** Shared foreground/background gate so background memory maintenance yields to live Turns. */
   priorityGate?: InferencePriorityGate;
+  /**
+   * Offline evaluation only: false runs Turns without wording cues (see
+   * reply-cues.ts). Production composition never sets it; default true.
+   */
+  replyCues?: boolean;
 }
 export interface CompanionRuntimePort {
   emit(event: CompanionEvent): Promise<void> | void;
@@ -116,35 +119,12 @@ const COMPANION_REPLY_GUIDANCE = "Give only the reply requested, in character. P
 const MAX_RECALL_NOTES = 6;
 const PRE_RECALL_TIMEOUT_MS = 10_000;
 
-const TRIVIAL_PHATIC_UTTERANCE = /^(?:hi|hey|hello|yo|sup|good\s+(?:morning|afternoon|evening|night)|gm|gn|ok(?:ay)?|yes|yeah|yep|yup|no|nope|sure|thanks?|thank\s+you|ty|thx|lol|haha+|hehe+|nice|cool|wow|aww+|hmm+|uhh*|bye|goodbye|see\s+ya|你好|您好|早安|晚安|早上好|晚上好|下午好|嗯+|哦+|好+|好的|行|可以|谢谢|多谢|哈哈+|呵呵+|嘻嘻+|拜拜|再见|抱抱|亲亲|摸摸)[!！?？.。~～\s]*$/iu;
-
-export function shouldPreRecall(query: string): boolean {
-  const text = query.trim();
-  if (!text) return false;
-  if (/(?:remember|recall|earlier|before|last time|记得|还记得|上次|之前|曾经)/iu.test(text)) {
-    return true;
-  }
-  if (TRIVIAL_PHATIC_UTTERANCE.test(text)) return false;
-  const hanCharacters = text.match(/\p{Script=Han}/gu)?.length ?? 0;
-  return hanCharacters >= 2 || text.length >= 8;
-}
-
 function renderRecallContext(notes: readonly string[]): string | undefined {
   if (notes.length === 0) return undefined;
   return [
     "Moments from earlier conversations that may matter right now:",
     ...notes.slice(0, MAX_RECALL_NOTES).map((note) => `- ${note}`),
   ].join("\n");
-}
-
-// Factual questions benefit from the model profile's structured temperature;
-// ordinary roleplay keeps the configured expressive sampling. This classifier
-// is deliberately narrow so a generic conversational turn never silently
-// changes personality or cadence.
-function needsFactualSampling(text: string): boolean {
-  // Short noun modifiers still name a precise identifier (for example an
-  // access code or booking reference code), not an expressive story request.
-  return /\b(?:what\s+(?:have|did)\s+i|what\s+did\s+you|exact(?:\s+[\p{L}\p{N}-]+){0,2}\s+(?:label|name|identifier|code)|copy\s+it\s+verbatim|verbatim|identifier|code\s+word|recall)\b|(?:做了什么|我做过什么|完整标签|原样|逐字|标识符|暗号)/iu.test(text);
 }
 
 async function timed<T>(run: () => Promise<T>): Promise<
@@ -442,8 +422,10 @@ export class CompanionEngine {
   private closing = false;
 
   private readonly instance: CompanionReadiness["instance"];
+  private readonly cues: ReplyCues;
 
   constructor(private readonly options: CompanionEngineOptions) {
+    this.cues = replyCues({ replyCues: options.replyCues });
     this.instance = options.instance ?? {
       id: randomUUID(),
       startedAt: new Date().toISOString(),
@@ -555,7 +537,7 @@ export class CompanionEngine {
       // explicit paid authorization so media promises never leak before a tool
       // call. Ordinary text-only chat turns stream tokens immediately; if an
       // unbuffered turn still invokes a media tool, text_reset clears the stream.
-      const bufferText = shouldBufferMediaLeadText({
+      const bufferText = this.cues.shouldBufferMediaLeadText({
         hasMediaTools: invocation.preparedTurn.tools.length > 0,
         imageActionMode: invocation.preparedTurn.imageActionMode,
         currentUserText: current.content,
@@ -592,7 +574,7 @@ export class CompanionEngine {
             signal,
             this.options.runIgrep,
           )),
-          hasSearchableMemory && shouldPreRecall(recallQuery)
+          hasSearchableMemory && this.cues.shouldPreRecall(recallQuery)
             ? timed(() => recallIgrepMemory(
                 this.options.igrep,
                 workspacePath,
@@ -673,20 +655,21 @@ export class CompanionEngine {
         },
       };
       const adapter = this.options.adapter(invocation.preparedTurn.profile, { ...requestPolicy,
-        ...(needsFactualSampling(current.content) ? { samplingTemperature: Math.min(invocation.preparedTurn.profile.sampling.temperature, 0.2) } : {}),
+        ...(this.cues.needsFactualSampling(current.content) ? { samplingTemperature: Math.min(invocation.preparedTurn.profile.sampling.temperature, 0.2) } : {}),
       });
       const profileContext = mode === "normal" ? renderResidentProfile(residentProfile, supportedProfileLines) : "";
       const projectStage = (independentRequests?: MediaTextRequests) => {
         const multipleRequests = (independentRequests?.excerptCount ?? 0) > 1;
         const { preparedTurn, current: stageCurrent } = independentRequests === undefined
           ? { preparedTurn: invocation.preparedTurn, current }
-          : projectPreparedBody(invocation.preparedTurn, current, independentRequests.content, multipleRequests);
+          : projectPreparedBody(invocation.preparedTurn, current, independentRequests.content, multipleRequests,
+            this.cues.enabled ? {} : { replyCues: false });
         const staged = { ...invocation, preparedTurn };
         const seed = buildReplaySeed(staged, recallContext);
         // The compiler already budgets these cues. Literal callers such as
         // the probes can supply an advisory reply-form context of their own.
         if (!preparedTurn.replyPrompt) {
-          const constraints = describeRequestedReplyConstraints(stageCurrent.content, multipleRequests);
+          const constraints = this.cues.describeRequestedReplyConstraints(stageCurrent.content, multipleRequests);
           if (constraints && !seed.some(message => message.sourceKind === "plugin" && message.content.includes(constraints))) {
             seed.push({ id: `reply-form:${invocation.attemptId}`, sourceKind: "plugin", role: "user", content: constraints });
           }
@@ -821,7 +804,7 @@ export class CompanionEngine {
         const skipExtraction = !recovered
           && !searchReply
           && Boolean(mediaResponse)
-          && canSkipMediaExtractionForPureMedia(current.content, independentTextRequestHint);
+          && this.cues.canSkipMediaExtractionForPureMedia(current.content, independentTextRequestHint);
         if (skipExtraction) {
           bodyText = "";
         } else {
@@ -861,7 +844,7 @@ export class CompanionEngine {
               .map(message => JSON.stringify(message)).join("\n") + "\n", { mode: 0o600 });
             replyAdapter = this.options.adapter(invocation.preparedTurn.profile, {
               ...requestPolicy,
-              ...(needsFactualSampling(body.current.content) ? { samplingTemperature: Math.min(invocation.preparedTurn.profile.sampling.temperature, 0.2) } : {}),
+              ...(this.cues.needsFactualSampling(body.current.content) ? { samplingTemperature: Math.min(invocation.preparedTurn.profile.sampling.temperature, 0.2) } : {}),
             });
             const replied = await runConversation({ ...body, executionEvidence, adapter: replyAdapter,
               purpose: "media_body", maxSteps: maxSteps - steps, searchPath: bodySource, streamText: feedback === undefined });

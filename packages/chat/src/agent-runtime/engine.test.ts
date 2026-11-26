@@ -24,7 +24,7 @@ import { profileLineKey } from "./resident-profile";
 import { PROFILE_EVIDENCE_FILE } from "./profile-evidence";
 import { OpenAiCompatibleAdapter, ProviderError, type OpenAiCompatibleAdapterOptions, type TokenUsage } from "./openai-adapter";
 import { compilePreparedTurn } from "../prepared-turn";
-import { describeRequestedReplyConstraints } from "../prompt";
+import { describeRequestedReplyConstraints } from "../reply-cues";
 import { resolvePolicy } from "../policy";
 import type { BuiltContext } from "../context";
 import { COMPANION_MEDIA_REQUEST_GUIDANCE, COMPANION_MEDIA_TOOL_DEFINITIONS } from "@idream/shared/chat/media-library";
@@ -237,6 +237,19 @@ it.each([
     await runtime.run(value, target.runtimePort);
     expect(target.candidates).toHaveLength(1);
     expect(adapter.requests[0]).toHaveProperty("temperature", temperature);
+  } finally { await runtime.shutdown(); }
+});
+
+it("runs a Turn without wording cues only when the offline switch is off", async () => {
+  const value = invocation();
+  value.preparedTurn.messages.at(-1)!.content = "What exact access code did I tell you earlier?";
+  const adapter = new MemoryReplyAdapter("Your earlier code is unavailable here.");
+  const runtime = await engine(adapter, undefined, { replyCues: false });
+  const target = port();
+  try {
+    await runtime.run(value, target.runtimePort);
+    expect(target.candidates).toHaveLength(1);
+    expect(adapter.requests[0]).toHaveProperty("temperature", 0.9);
   } finally { await runtime.shutdown(); }
 });
 
@@ -1251,6 +1264,25 @@ describe("Chat embedded companion runtime", () => {
     await runtime.run(mode === "normal" ? normalInvocation() : invocation(), connection.runtimePort);
     expect(operations).toEqual(mode === "normal" ? ["reproject", "wake", "memory-search"] : []);
     expect(connection.candidates).toHaveLength(1);
+  });
+
+  it.each([true, false])("gates phatic pre-recall only through reply cues (cues=%s)", async (cues) => {
+    const operations: string[] = [];
+    const runtime = await engine(new MemoryReplyAdapter("Hi."), undefined, {
+      ...(cues ? {} : { replyCues: false }),
+      runIgrep: async (options) => {
+        operations.push(options.args[1]!);
+        return options.args[1] === "reproject"
+          ? { schema: "igrep.mem/1", provider: "igrep", action: "reproject", migrated: false }
+          : options.args[1] === "wake" ? { schema: "igrep.mem/1", provider: "igrep", action: "wake", workspaceRoot: options.args[options.args.indexOf("--workspace") + 1], markdownContext: "", warnings: [] } : { schema: "igrep.mem/1", provider: "igrep", action: "memory-search", workspaceRoot: JSON.parse(options.stdin!).workspace, warnings: [], results: [] };
+      },
+    });
+    const value = normalInvocation();
+    value.preparedTurn.messages.at(-1)!.content = "hi";
+    try {
+      await runtime.run(value, port().runtimePort);
+      expect(operations).toEqual(cues ? ["reproject", "wake"] : ["reproject", "wake", "memory-search"]);
+    } finally { await runtime.shutdown(); }
   });
 
   it.each(["length", "empty", "oversize"].flatMap(rejection => [true, false].map(withUsage => ({ rejection, withUsage }))))(

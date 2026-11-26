@@ -1,7 +1,8 @@
 import { COMPANION_MEDIA_REQUEST_GUIDANCE, COMPANION_MEDIA_TOOL_DEFINITIONS } from "@idream/shared/chat/media-library";
 import { describe, expect, it } from "vitest";
 import type { BuiltContext } from "./context.js";
-import { buildCompanionSystemPrompt as renderSystemPrompt, buildTurnPreferencesBlock, buildTurnStateBlock, captureCompanionSystemSource, describeRequestedReplyConstraints, describeUserLanguage, renderCompanionReplyPrompt } from "./prompt.js";
+import { buildCompanionSystemPrompt as renderSystemPrompt, buildTurnPreferencesBlock, buildTurnStateBlock, captureCompanionSystemSource, renderCompanionReplyPrompt } from "./prompt.js";
+import { describeRequestedReplyConstraints, describeUserLanguage } from "./reply-cues.js";
 
 const persona = {
   name: "Mira",

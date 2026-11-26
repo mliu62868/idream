@@ -1,13 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-  canSkipMediaExtractionForPureMedia,
   extractMediaRoutingHint,
   mediaAttachmentId,
   mediaExtractionMessages,
   parseMediaSearchReply,
   parseMediaTextRequests,
-  shouldBufferMediaLeadText,
 } from "./media-response";
+import { canSkipMediaExtractionForPureMedia, shouldBufferMediaLeadText } from "../reply-cues";
 
 it.each([false, true])("keeps a completed media resend out of the independent text scope (recovered=%s)", recovered => {
   const source = "把刚才那段原样再发一次。另外用中文告诉我 17 + 25 的结果。";
