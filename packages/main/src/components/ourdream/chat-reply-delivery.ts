@@ -4,6 +4,7 @@ import { useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction }
 import type { RuntimeChatMessage as ChatMessage, RuntimeChatSession as ChatSession } from "@/lib/public-api-contracts";
 import { chatFailureCopy } from "@/lib/chat-failure-copy";
 import { isLocalChatMessageId } from "./chat-message-actions";
+import { chatSessionPage, mergeChatSessionSnapshot } from "./chat/chat-session-page";
 
 type ChatStreamMessage = {
   readonly content: string;
@@ -13,6 +14,13 @@ type ChatStreamMessage = {
 type ChatStreamAuthorityOutcome = "in_progress" | "terminal_content" | "terminal_empty";
 type LocalStreamState = { readonly attempt?: number; readonly content: string; readonly stopped: boolean };
 const STOPPED_REPLY_STATUS = "cancelled";
+export const CHAT_STREAM_RECONNECT_NOTICE = "Reply interrupted. Reconnecting…";
+// SPEC: EventSource reconnects by itself (Chat closes each SSE response after
+//       60s and asks for a 1s retry). Only a gap longer than this is news.
+export const CHAT_STREAM_RECONNECT_NOTICE_DELAY_MS = 3_000;
+// Done is downstream of Main's durable commit, so the first read is normally
+// terminal; the retries only cover a read that raced an older one.
+const TERMINAL_RECOVERY_DELAYS_MS = [0, 500, 1_000] as const;
 
 export function chatStreamErrorDisposition(
   payload: unknown,
@@ -42,6 +50,9 @@ export function chatStreamTerminalErrorMessage(payload: unknown): string {
   if (record.code === "igrep_memory_failed") {
     return "Memory is temporarily unavailable. Please try again.";
   }
+  if (record.code === "admission_expired") {
+    return "This reply didn't start in time. Your message is saved — regenerate to try again.";
+  }
   return record.code === "provider_output_limit"
     ? "Reply was cut short. Regenerate to try again."
     : "Reply failed to load. Please try again.";
@@ -63,9 +74,20 @@ export function chatStreamMessageIsInProgress(message: ChatStreamMessage) {
 }
 
 export function chatStreamMessagesNeedReconciliation(
-  messages: readonly ChatStreamMessage[],
+  messages: readonly (ChatStreamMessage & { readonly id?: string })[],
 ) {
-  return messages.some(chatStreamMessageIsInProgress);
+  // A local typing placeholder is not a reply Main is generating.
+  return messages.some((message) => chatStreamMessageIsInProgress(message)
+    && !(message.id && isLocalChatMessageId(message.id)));
+}
+
+// SPEC: A stream reopened from its start replays text the reader has already
+//       seen. Until the replay catches up, keep showing the longer text so the
+//       bubble never visibly shrinks. A `replace` event is an explicit rewrite
+//       and is applied as is by the caller.
+export function chatStreamVisibleText(streamed: string, floor: string): string {
+  if (!floor || streamed.length >= floor.length || !floor.startsWith(streamed)) return streamed;
+  return floor;
 }
 
 /**
@@ -135,6 +157,10 @@ type DeliveryOptions = {
   onSessionReadError: (error: unknown) => void;
   onRepliesInvalidated: (messageIds: readonly string[]) => void;
   onStatus: (status: string | null) => void;
+  /** Clears `status` only if it is still the visible status. */
+  onStatusClear?: (status: string) => void;
+  /** A generating reply lost its live stream; the authority poll should hurry. */
+  onStreamUnhealthy?: () => void;
 };
 
 // Main owns durable replies. This module owns only their browser delivery:
@@ -153,6 +179,12 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
   const stoppingRef = useRef(false);
   const stoppingAttemptsRef = useRef(new Map<string, number>());
   const [stopping, setStopping] = useState(false);
+  // Stream health: a disconnect becomes visible only after a grace period.
+  const disconnectTimersRef = useRef(new Map<string, number>());
+  const reconnectNoticesRef = useRef(new Set<string>());
+  // Deltas are coalesced so a fast stream renders at most once per frame.
+  const pendingStreamTextRef = useRef(new Map<string, string>());
+  const streamFlushRef = useRef<{ scheduled: boolean; cancel: (() => void) | null }>({ scheduled: false, cancel: null });
 
   useLayoutEffect(() => {
     mountedRef.current = true;
@@ -160,6 +192,10 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
     const local = localStreamStateRef.current;
     const replies = observedRepliesRef.current;
     const cancellations = stoppingAttemptsRef.current;
+    const disconnects = disconnectTimersRef.current;
+    const notices = reconnectNoticesRef.current;
+    const pendingText = pendingStreamTextRef.current;
+    const flush = streamFlushRef.current;
     return () => {
       mountedRef.current = false;
       lifecycleRef.current += 1;
@@ -169,6 +205,13 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
       local.clear();
       replies.clear();
       cancellations.clear();
+      for (const timer of disconnects.values()) window.clearTimeout(timer);
+      disconnects.clear();
+      notices.clear();
+      pendingText.clear();
+      flush.cancel?.();
+      flush.scheduled = false;
+      flush.cancel = null;
     };
   }, []);
 
@@ -179,6 +222,86 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
     if (mountedRef.current) latest.current.onStatus(value);
   };
   const fetchForSession: DeliveryOptions["request"] = (...args) => latest.current.request(...args);
+
+  function clearReconnectNotice(assistantId: string) {
+    const timer = disconnectTimersRef.current.get(assistantId);
+    if (timer !== undefined) window.clearTimeout(timer);
+    disconnectTimersRef.current.delete(assistantId);
+    if (!reconnectNoticesRef.current.delete(assistantId) || reconnectNoticesRef.current.size > 0) return;
+    if (mountedRef.current) latest.current.onStatusClear?.(CHAT_STREAM_RECONNECT_NOTICE);
+  }
+
+  function clearAllReconnectNotices() {
+    for (const timer of disconnectTimersRef.current.values()) window.clearTimeout(timer);
+    disconnectTimersRef.current.clear();
+    reconnectNoticesRef.current.clear();
+  }
+
+  // SPEC: A dropped stream says so only after the grace period, and only while
+  //       its reply is still generating; an `open` or the next delta clears it.
+  function noteStreamDisconnected(assistantId: string, attempt: number, dead: boolean) {
+    if (dead) latest.current.onStreamUnhealthy?.();
+    if (disconnectTimersRef.current.has(assistantId) || reconnectNoticesRef.current.has(assistantId)) return;
+    const timer = window.setTimeout(() => {
+      disconnectTimersRef.current.delete(assistantId);
+      const observed = observedRepliesRef.current.get(assistantId);
+      if (!mountedRef.current || observed?.attempt !== attempt || observed.terminal) return;
+      reconnectNoticesRef.current.add(assistantId);
+      setStatus(CHAT_STREAM_RECONNECT_NOTICE);
+      latest.current.onStreamUnhealthy?.();
+    }, CHAT_STREAM_RECONNECT_NOTICE_DELAY_MS);
+    disconnectTimersRef.current.set(assistantId, timer);
+  }
+
+  /** True while every generating reply has a live (or freshly opening) stream. */
+  function streamHealthy(): boolean {
+    const generating = latest.current.messages.filter((message) =>
+      chatStreamMessageIsInProgress(message) && !isLocalChatMessageId(message.id));
+    if (generating.length === 0) return false;
+    return generating.every((message) => {
+      const source = streamSources.current.get(message.id);
+      return source !== undefined && source.readyState !== EventSource.CLOSED
+        && !disconnectTimersRef.current.has(message.id) && !reconnectNoticesRef.current.has(message.id);
+    });
+  }
+
+  function flushStreamText() {
+    const flush = streamFlushRef.current;
+    flush.cancel?.();
+    flush.scheduled = false;
+    flush.cancel = null;
+    if (pendingStreamTextRef.current.size === 0) return;
+    const pending = new Map(pendingStreamTextRef.current);
+    pendingStreamTextRef.current.clear();
+    // A terminal snapshot that landed in between always wins over buffered text.
+    setMessages((current) => current.map((message) => {
+      const text = pending.get(message.id);
+      return text !== undefined && text !== message.content && chatStreamMessageIsInProgress(message)
+        ? { ...message, content: text }
+        : message;
+    }));
+  }
+
+  function queueStreamText(assistantId: string, text: string) {
+    pendingStreamTextRef.current.set(assistantId, text);
+    const flush = streamFlushRef.current;
+    if (flush.scheduled) return;
+    flush.scheduled = true;
+    const run = () => { if (streamFlushRef.current.scheduled) flushStreamText(); };
+    // A hidden tab never paints, so animation frames pause; a timer keeps
+    // the buffered text (and its memory) bounded.
+    if (typeof window.requestAnimationFrame === "function" && !document.hidden) {
+      const handle = window.requestAnimationFrame(run);
+      if (flush.scheduled) flush.cancel = () => window.cancelAnimationFrame(handle);
+    } else {
+      const handle = window.setTimeout(run, 100);
+      if (flush.scheduled) flush.cancel = () => window.clearTimeout(handle);
+    }
+  }
+
+  function dropStreamText(assistantId: string) {
+    pendingStreamTextRef.current.delete(assistantId);
+  }
 
   // A successful write may outlive an ordinary focus read, but never access
   // revocation or unmount. Read ordering and owner lifetime are distinct.
@@ -235,6 +358,8 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
     sessionMutationEpochRef.current += 1;
     for (const source of streamSources.current.values()) source.close();
     streamSources.current.clear();
+    clearAllReconnectNotices();
+    pendingStreamTextRef.current.clear();
     localStreamStateRef.current.clear();
     observedRepliesRef.current.clear();
     stoppingAttemptsRef.current.clear();
@@ -247,6 +372,8 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
       localStreamStateRef.current.delete(messageId);
       streamSources.current.get(messageId)?.close();
       streamSources.current.delete(messageId);
+      dropStreamText(messageId);
+      clearReconnectNotice(messageId);
     }
     latest.current.onRepliesInvalidated(messageIds);
   }
@@ -269,10 +396,8 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
     }
     if (recoveredStream) setStatus(null);
     const delivered = applyLocalStreamState(session.messages, localStreamStateRef.current);
-    setMessages(current => [
-      ...delivered,
-      ...current.filter(message => isLocalChatMessageId(message.id)),
-    ]);
+    const page = chatSessionPage(session);
+    setMessages(current => mergeChatSessionSnapshot(current, delivered, page));
     latest.current.onSession(session);
     return true;
   }
@@ -294,6 +419,8 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
     if (typeof message.attempt === "number") observedRepliesRef.current.set(message.id, { attempt: message.attempt, terminal });
     if (!terminal) return false;
     if (message.status !== STOPPED_REPLY_STATUS) localStreamStateRef.current.delete(message.id);
+    dropStreamText(message.id);
+    clearReconnectNotice(message.id);
     const source = streamSources.current.get(message.id);
     if (!source) return false;
     source.close();
@@ -308,9 +435,12 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
     if (!mountedRef.current) return;
     context({ invalidate: true });
     const observed = observedRepliesRef.current.get(assistant.id);
+    // The optimistic turn is the local user bubble plus its typing placeholder.
+    const isOptimistic = (message: ChatMessage) => optimisticMessageId !== undefined
+      && (message.id === optimisticMessageId || message.replyToMessageId === optimisticMessageId);
     if (typeof assistant.attempt === "number") {
       if (replyHasRegressed(assistant)) {
-        setMessages(current => current.filter(message => message.id !== optimisticMessageId));
+        setMessages(current => current.filter(message => !isOptimistic(message)));
         return;
       }
       if (observed !== undefined && observed.attempt < assistant.attempt) invalidateReplies([assistant.id]);
@@ -324,7 +454,7 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
       localStreamStateRef.current,
     );
     setMessages(current => mergeCanonicalMessages(
-      current.filter(message => message.id !== optimisticMessageId),
+      current.filter(message => !isOptimistic(message)),
       delivered,
     ));
     if (assistant.status === "blocked") {
@@ -429,19 +559,27 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
     setMessages(current => current.filter(message => !belongsToTurn(message)));
   }
 
+  // SPEC: Every generating reply without a live stream gets one, whether or not
+  //       it already shows text (a dead source, a reload mid-reply, a focus
+  //       re-check). The replay starts from the beginning, so the text already
+  //       on screen is its floor.
   function resumePendingStreams(loadedMessages: ChatMessage[]) {
     for (const message of loadedMessages) {
       if (
         message.role === "assistant" &&
-        !message.content.trim() &&
         message.status === "generating" &&
         typeof message.attempt === "number" && Number.isSafeInteger(message.attempt) && message.attempt > 0 &&
-        observedRepliesRef.current.get(message.id)?.attempt === message.attempt
+        observedRepliesRef.current.get(message.id)?.attempt === message.attempt &&
+        !streamSources.current.has(message.id)
       ) {
+        const local = localStreamStateRef.current.get(message.id);
+        const shown = local?.attempt === message.attempt && local.content.length > message.content.length
+          ? local.content
+          : message.content;
         streamAssistant(
           `/api/v1/chat/messages/${encodeURIComponent(message.id)}/stream?attempt=${message.attempt}`,
           message.id,
-          "",
+          shown,
         );
       }
     }
@@ -461,10 +599,17 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
       || streamSources.current.has(assistantId)) return;
     observedRepliesRef.current.set(assistantId, { attempt, terminal: false });
     let streamed = "";
+    // Text already shown before this source opened; a replay never undercuts it.
+    let floor = fallback;
     let finished = false;
     const source = new EventSource(streamUrl);
     streamSources.current.set(assistantId, source);
-    localStreamStateRef.current.set(assistantId, { attempt, content: "", stopped: false });
+    localStreamStateRef.current.set(assistantId, { attempt, content: fallback, stopped: false });
+    const isCurrentSource = () => !finished && streamSources.current.get(assistantId) === source;
+    const showStreamText = (text: string) => {
+      localStreamStateRef.current.set(assistantId, { attempt, content: text, stopped: false });
+      queueStreamText(assistantId, text);
+    };
 
     const close = () => {
       source.close();
@@ -472,6 +617,7 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
       // EventSource registered under the same durable assistant message id.
       if (streamSources.current.get(assistantId) !== source) return;
       streamSources.current.delete(assistantId);
+      dropStreamText(assistantId);
       if (!localStreamStateRef.current.get(assistantId)?.stopped) {
         localStreamStateRef.current.delete(assistantId);
       }
@@ -496,37 +642,28 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
       }
     };
 
+    source.addEventListener("open", () => {
+      if (isCurrentSource()) clearReconnectNotice(assistantId);
+    });
+
     source.addEventListener("delta", (event) => {
-      if (finished || streamSources.current.get(assistantId) !== source) return;
+      if (!isCurrentSource()) return;
+      clearReconnectNotice(assistantId);
       const data = parseStreamEvent(event);
       const delta = typeof data.delta === "string" ? data.delta : "";
       streamed += delta;
-      localStreamStateRef.current.set(assistantId, {
-        attempt,
-        content: streamed,
-        stopped: false,
-      });
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === assistantId ? { ...message, content: streamed } : message,
-        ),
-      );
+      const visible = chatStreamVisibleText(streamed, floor);
+      if (visible === streamed) floor = "";
+      showStreamText(visible);
     });
 
     source.addEventListener("replace", (event) => {
-      if (finished || streamSources.current.get(assistantId) !== source) return;
+      if (!isCurrentSource()) return;
+      clearReconnectNotice(assistantId);
       const data = parseStreamEvent(event);
       streamed = typeof data.content === "string" ? data.content : "";
-      localStreamStateRef.current.set(assistantId, {
-        attempt,
-        content: streamed,
-        stopped: false,
-      });
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === assistantId ? { ...message, content: streamed } : message,
-        ),
-      );
+      floor = "";
+      showStreamText(streamed);
     });
 
     source.addEventListener("attachments_changed", (event) => {
@@ -538,22 +675,33 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
     });
 
     source.addEventListener("done", () => {
-      if (finished || streamSources.current.get(assistantId) !== source) return;
+      if (!isCurrentSource()) return;
+      flushStreamText();
+      clearReconnectNotice(assistantId);
       setStatus(null);
       void finish().finally(close);
     });
 
     source.addEventListener("error", (event) => {
-      if (finished || streamSources.current.get(assistantId) !== source) return;
+      if (!isCurrentSource()) return;
       const payload = parseStreamEvent(event);
       if (chatStreamErrorDisposition(payload) === "reconnect") {
         // HTTP/auth/protocol failures can leave EventSource CLOSED, where it
         // will never reconnect itself. Let the authority poll reopen this same
         // attempt instead of retaining a dead source in the registry.
-        if (source.readyState === EventSource.CLOSED) close();
-        setStatus("Reply interrupted. Reconnecting…");
+        // Its text stays as the floor for the replacement stream and for
+        // lagging snapshots until Main reports the reply terminal.
+        const dead = source.readyState === EventSource.CLOSED;
+        if (dead) {
+          finished = true;
+          source.close();
+          if (streamSources.current.get(assistantId) === source) streamSources.current.delete(assistantId);
+        }
+        noteStreamDisconnected(assistantId, attempt, dead);
         return;
       }
+      flushStreamText();
+      clearReconnectNotice(assistantId);
       finished = true;
       const recovery = context();
       const terminalMessage = chatStreamTerminalErrorMessage(payload);
@@ -584,6 +732,7 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
       if (observedRepliesRef.current.get(messageId)?.attempt !== attempt) continue;
       streamSources.current.get(messageId)?.close();
       streamSources.current.delete(messageId);
+      clearReconnectNotice(messageId);
     }
     stoppingRef.current = true;
     setStopping(true);
@@ -652,8 +801,8 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
 
   async function recoverAssistantFromSession(assistantId: string): Promise<ChatStreamAuthorityOutcome> {
     const recovery = context();
-    for (let attempt = 0; attempt < 6; attempt += 1) {
-      if (attempt > 0) await new Promise(resolve => window.setTimeout(resolve, 500));
+    for (const delay of TERMINAL_RECOVERY_DELAYS_MS) {
+      if (delay > 0) await new Promise(resolve => window.setTimeout(resolve, delay));
       if (!recovery.isCurrent()) return "in_progress";
       try {
         // Terminal recovery must not reopen the stream it is about to close.
@@ -670,7 +819,7 @@ export function useChatReplyDelivery(options: DeliveryOptions) {
     return "in_progress";
   }
 
-  return { stopping, refresh, context, receiveTurn, edit, regenerate, removeTurn, reset, stop };
+  return { stopping, refresh, context, receiveTurn, edit, regenerate, removeTurn, reset, stop, streamHealthy };
 }
 
 function parseStreamEvent(event: Event): Record<string, unknown> {

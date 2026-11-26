@@ -17,23 +17,40 @@ export function ChatMediaQuoteCard({
 }: {
   attachmentId: string;
   kind: "generated_image" | "generated_video";
-  costDreamcoins: number;
+  /** Main's stored quote; null when the read did not carry a usable price. */
+  costDreamcoins: number | null;
   ownerScope: string | null;
   paymentHref: string;
   fetchForViewer: ViewerFetch;
   onChanged: () => Promise<void>;
 }) {
   const endpoint = `/api/v1/chat/attachments/${encodeURIComponent(attachmentId)}/media-quote`;
-  const [busy, setBusy] = useState<"confirm" | "cancel" | null>(null);
+  const [busy, setBusy] = useState<"confirm" | "cancel" | "refresh" | null>(null);
   const [error, setError] = useState("");
   const [insufficientCoins, setInsufficientCoins] = useState(false);
   const idempotencyKeyRef = useRef<string | null>(null);
 
   const isVideo = kind === "generated_video";
   const label = isVideo ? "Video" : "Photo";
+  // SPEC: Never show or confirm a price the server did not quote. A missing
+  //       price is shown as missing and only a refresh can bring it back.
+  const priced = typeof costDreamcoins === "number" && Number.isSafeInteger(costDreamcoins) && costDreamcoins > 0;
+
+  async function refreshQuote() {
+    if (busy) return;
+    setBusy("refresh");
+    setError("");
+    try {
+      await onChanged();
+    } catch {
+      setError("Couldn't refresh the price. Try again.");
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function confirmQuote() {
-    if (!ownerScope || busy) return;
+    if (!ownerScope || busy || !priced) return;
     setBusy("confirm");
     setError("");
     setInsufficientCoins(false);
@@ -108,10 +125,12 @@ export function ChatMediaQuoteCard({
     >
       <div className="flex items-center gap-2 text-sm font-bold text-white">
         {isVideo ? <Film className="size-4 text-[#f472b6]" /> : <Camera className="size-4 text-[#f472b6]" />}
-        <span>{label} · {costDreamcoins} DreamCoins</span>
+        <span>{priced ? `${label} · ${costDreamcoins} DreamCoins` : `${label} · price unavailable`}</span>
       </div>
-      <p className="mt-1 text-xs leading-5 text-white/75">
-        Confirm to send this {label.toLowerCase()}. Coins are charged only after you confirm.
+      <p className="mt-1 text-xs leading-5 text-white/75" data-testid={priced ? undefined : "chat-media-quote-price-unavailable"}>
+        {priced
+          ? `Confirm to send this ${label.toLowerCase()}. Coins are charged only after you confirm.`
+          : `The price for this ${label.toLowerCase()} couldn't be loaded. Refresh to check the current price; nothing has been charged.`}
       </p>
       {error ? (
         <p role="alert" className="mt-2 text-xs leading-5 text-rose-200">
@@ -131,12 +150,24 @@ export function ChatMediaQuoteCard({
           type="button"
           data-testid="chat-media-quote-confirm"
           className="inline-flex min-h-10 flex-1 items-center justify-center gap-1.5 rounded-lg bg-[#c52e79] px-3 text-xs font-bold text-white hover:bg-[#b12369] disabled:cursor-not-allowed disabled:opacity-40"
-          disabled={!ownerScope || busy !== null}
+          disabled={!ownerScope || busy !== null || !priced}
           onClick={() => void confirmQuote()}
         >
           {busy === "confirm" ? <Loader2 className="size-3.5 animate-spin" /> : null}
-          Send · {costDreamcoins} coins
+          {priced ? `Send · ${costDreamcoins} coins` : "Send"}
         </button>
+        {!priced ? (
+          <button
+            type="button"
+            data-testid="chat-media-quote-refresh"
+            className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-white/20 px-3 text-xs font-semibold text-white/85 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={busy !== null}
+            onClick={() => void refreshQuote()}
+          >
+            {busy === "refresh" ? <Loader2 className="size-3.5 animate-spin" /> : null}
+            Refresh
+          </button>
+        ) : null}
         <button
           type="button"
           data-testid="chat-media-quote-cancel"

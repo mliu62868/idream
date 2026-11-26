@@ -2512,17 +2512,17 @@ async function expectAssistantReplyVisible(page: Page) {
 
 async function expectMessageActionsBelowContent(bubble: Locator) {
   const geometry = await bubble.evaluate((element) => {
-    const contentRects = Array.from(element.childNodes).flatMap((node) => {
-      if (node.nodeType !== Node.TEXT_NODE || !node.textContent?.trim()) return [];
+    // Message text lives in its own pre-wrap span; collapsed actions take no box.
+    const contentRects = Array.from(element.querySelectorAll("[data-chat-text]")).flatMap((node) => {
+      if (!node.textContent?.trim()) return [];
       const range = document.createRange();
       range.selectNodeContents(node);
       return Array.from(range.getClientRects(), (rect) => ({ bottom: rect.bottom }));
     });
     const bounds = element.getBoundingClientRect();
-    const actions = Array.from(element.querySelectorAll("button"), (button) => {
-      const rect = button.getBoundingClientRect();
-      return { top: rect.top, left: rect.left, right: rect.right, bottom: rect.bottom };
-    });
+    const actions = Array.from(element.querySelectorAll("button"), (button) => button.getBoundingClientRect())
+      .filter((rect) => rect.width > 0 && rect.height > 0)
+      .map((rect) => ({ top: rect.top, left: rect.left, right: rect.right, bottom: rect.bottom }));
     return { contentRects, actions, bounds: { left: bounds.left, right: bounds.right, bottom: bounds.bottom } };
   });
   expect(geometry.contentRects.length).toBeGreaterThan(0);
@@ -3659,9 +3659,13 @@ test("chat UI starts from character detail, sends a message, and persists histor
     .toBeGreaterThan(0);
   await expect(openingBubble.getByTestId("chat-regenerate")).toHaveCount(0);
   await expect(openingBubble.getByTestId("chat-play-voice")).toBeVisible();
-  await expect(openingBubble.getByRole("button", { name: "Report message" })).toBeVisible();
+  // Report sits behind the per-message "More actions" toggle.
+  await expect(openingBubble.getByRole("button", { name: "More actions" })).toBeVisible();
   await expect(openingBubble.getByRole("button")).toHaveCount(2);
   await expectMessageActionsBelowContent(openingBubble);
+  await openingBubble.getByRole("button", { name: "More actions" }).click();
+  await expect(openingBubble.getByRole("button", { name: "Report message" })).toBeVisible();
+  await openingBubble.getByRole("button", { name: "Fewer actions" }).click();
 
   const messageInput = page.getByRole("textbox", { name: "Message", exact: true });
   const sendButton = page.getByRole("button", { name: "Send message" });
@@ -3676,6 +3680,7 @@ test("chat UI starts from character detail, sends a message, and persists histor
     timeout: 10_000,
   });
   const reportedMessage = page.getByTestId("chat-message-user").filter({ hasText: message });
+  await reportedMessage.getByRole("button", { name: "More actions" }).click();
   await expect(reportedMessage.getByRole("button", { name: "Report message" })).toBeVisible();
   const reportedMessageId = await reportedMessage.getAttribute("data-message-id");
   expect(reportedMessageId).toBeTruthy();
@@ -4305,6 +4310,7 @@ test("chat UI exposes edit, regenerate, delete, memory toggle, and the session l
 
   // Edit the latest user turn; the paired assistant bubble regenerates in place.
   const userBubble = page.getByTestId("chat-message-user").filter({ hasText: message });
+  await userBubble.getByRole("button", { name: "More actions" }).click();
   await userBubble.getByTestId("chat-edit-message").click();
   await page.getByTestId("chat-edit-input").fill(editedMessage);
   const edited = page.waitForResponse((response) =>
@@ -4363,6 +4369,7 @@ test("chat UI exposes edit, regenerate, delete, memory toggle, and the session l
   const editedBubbleBeforeConfirm = page
     .getByTestId("chat-message-user")
     .filter({ hasText: editedMessage });
+  await editedBubbleBeforeConfirm.getByRole("button", { name: "More actions" }).click();
   await editedBubbleBeforeConfirm.getByTestId("chat-delete-message").click();
   await expectMessageActionsBelowContent(editedBubbleBeforeConfirm);
   await expect(page.getByText("Press Confirm delete to remove your message and the reply.")).toBeVisible({
@@ -4376,6 +4383,7 @@ test("chat UI exposes edit, regenerate, delete, memory toggle, and the session l
     .getByTestId("chat-message-user")
     .filter({ hasText: editedMessage });
   await expect(editedBubbleAfterFirstClick).toBeVisible({ timeout: 10_000 });
+  await editedBubbleAfterFirstClick.getByRole("button", { name: "More actions" }).click();
   await editedBubbleAfterFirstClick.getByTestId("chat-delete-message").click();
   const deletedMessagePath = new URL(editResponse.url()).pathname;
   const deleted = page.waitForResponse((response) =>

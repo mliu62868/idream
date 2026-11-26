@@ -26,6 +26,9 @@ const CHAT_FAILURE_COPY: Readonly<Record<string, string>> = {
   rate_limited: "You're sending a bit fast. Wait a moment and try again.",
   reply_in_progress: "Wait for the current reply to finish, then send again.",
   service_not_ready: "Chat is still starting up. Try again in a few seconds.",
+  memory_updating: "Still updating this Character's memory. Try again in a few seconds.",
+  // Chat never picked up the pending reply; the turn is kept for a new attempt.
+  admission_expired: "This reply didn't start in time. Your message is saved — regenerate to try again.",
 
   // —— 用户可以自己改的 ——
   message_too_long: "That message is too long. Shorten it and send again.",
@@ -42,6 +45,16 @@ const CHAT_FAILURE_COPY: Readonly<Record<string, string>> = {
   message_version_ambiguous: "This chat moved on while you were editing. Reload and try again.",
   missing_user_turn: "That reply has no message to regenerate from.",
 
+  // —— Main `conflict` reasons (details.reason / details.blocker) ——
+  chat_send_deleted: "That message was deleted. Send again to make a new request.",
+  chat_send_protocol_required: "This send request expired. Review your draft and send it again.",
+  edit_attempt_changed: "This reply changed elsewhere. Reopen the editor to use the latest message.",
+  edit_attempt_required: "This reply changed elsewhere. Reopen the editor to use the latest message.",
+  edit_key_conflict: "This edit changed while it was being saved. Reopen the editor and save again.",
+  version_mismatch: "This changed elsewhere. Reload and try again.",
+  viewer_changed: "Your account changed. Reload to continue.",
+  group_conversation: "Open this conversation from its group chat.",
+
   // —— 图片附件 ——
   attachment_not_found: "That image request no longer exists.",
   attachment_not_confirmable: "That image request can't be confirmed any more.",
@@ -54,36 +67,34 @@ const CHAT_FAILURE_COPY: Readonly<Record<string, string>> = {
  * 从 chat 的错误响应体里取出可展示的一句话。
  * `fallback` 是各调用点原有的通用文案，认不出的码一律用它。
  */
+// INVARIANT: a `conflict` is shown only through its machine-readable reason.
+//   Main's conflict *messages* mix reader guidance with internal invariants and
+//   change wording freely, so matching their text is never a contract; an
+//   unrecognised conflict gets the caller's own sentence.
 export function chatFailureCopy(payload: unknown, fallback: string): string {
   const code = chatFailureCode(payload);
-  if (!code) return fallback;
-  if (code === "conflict") return userFacingConflict(payload) ?? fallback;
+  if (!code || code === "conflict") return fallback;
   return CHAT_FAILURE_COPY[code] ?? fallback;
-}
-
-// Main's `conflict` messages mix reader guidance with internal invariants, so
-// only the ones written for the reader (what to do next) are shown verbatim.
-const USER_FACING_CONFLICT = /^(A reply is already generating|Cancel the active reply before |Still updating this Character's memory|[^.]* changed elsewhere\.|Your account changed\.|Your chat persona changed|(Archive|Delete|Rename|Open) this conversation from its group chat|The selected image belongs to a different chat|There is no delivered Chat image to edit)/u;
-
-function userFacingConflict(payload: unknown): string | null {
-  const error = (payload as { error?: unknown }).error;
-  const message = error && typeof error === "object" ? (error as { message?: unknown }).message : (payload as { message?: unknown }).message;
-  if (typeof message !== "string" || !USER_FACING_CONFLICT.test(message)) return null;
-  return /[.!?]$/u.test(message) ? message : `${message}.`;
 }
 
 /** Main's product errors and Chat's stream errors use distinct envelopes. */
 export function chatFailureCode(payload: unknown): string | null {
   if (!payload || typeof payload !== "object") return null;
   const error = (payload as { error?: unknown }).error;
-  if (typeof error === "string" && error.trim()) return error.trim();
+  if (typeof error === "string" && error.trim()) {
+    return error.trim() === "conflict" ? conflictReason((payload as { details?: unknown }).details) : error.trim();
+  }
   if (error && typeof error === "object") {
     const code = (error as { code?: unknown }).code;
-    if (code === "conflict") {
-      const reason = (error as { details?: { reason?: unknown } }).details?.reason;
-      if (typeof reason === "string" && reason.startsWith("voice_quote_") && reason in CHAT_FAILURE_COPY) return reason;
-    }
+    if (code === "conflict") return conflictReason((error as { details?: unknown }).details);
     if (typeof code === "string" && code.trim()) return code.trim();
   }
   return null;
+}
+
+function conflictReason(details: unknown): string {
+  const record = details && typeof details === "object" ? details as { reason?: unknown; blocker?: unknown } : {};
+  if (typeof record.reason === "string" && Object.hasOwn(CHAT_FAILURE_COPY, record.reason)) return record.reason;
+  if (record.blocker === "version_mismatch") return "version_mismatch";
+  return "conflict";
 }
