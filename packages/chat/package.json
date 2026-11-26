@@ -14,6 +14,7 @@
     "test:pure": "vitest run --config vitest.config.ts src/agent-run-store.test.ts",
     "build": "bun ../../scripts/build-bun-service.mjs src/main.ts",
     "probe:sentry": "bun src/probe-sentry.ts",
+    "eval:companion": "bun eval/companion/run.ts",
     "dev": "bun src/main.ts",
     "start": "bun dist/main.js"
   },
