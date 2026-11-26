@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, Loader2, X } from "lucide-react";
-import { memo } from "react";
+import { memo, useEffect, useRef } from "react";
 import type { RuntimeChatAttachment as ChatAttachment, RuntimeChatMessage as ChatMessage } from "@/lib/public-api-contracts";
 import type { GenerationQuoteAuthority } from "@/lib/generation-write-client";
 import { chatGenerationHref } from "@/lib/chat-generation-link";
@@ -37,6 +37,7 @@ export type ChatMessageHandlers = {
   readonly identityFeedback: (mediaAssetId: string, feedback: "identity_match" | "identity_mismatch") => void;
   readonly moreLikeThis: (mediaAssetId: string) => void;
   readonly animate: (mediaAssetId: string, characterId: string | null) => void;
+  readonly continueReply: () => void;
 };
 
 // Conversation-wide inputs of attachment cards; memoized by the list.
@@ -65,6 +66,8 @@ export type ChatMessageItemProps = {
   readonly canEdit: boolean;
   readonly canRegenerate: boolean;
   readonly canDelete: boolean;
+  /** The reply hit the length limit and a plain "Continue" can be sent now. */
+  readonly canContinue: boolean;
   readonly deleteConfirm: boolean;
   readonly actionsPending: boolean;
   readonly voiceState?: "loading" | "playing";
@@ -80,6 +83,7 @@ export const ChatMessageItem = memo(function ChatMessageItem({
   canEdit,
   canRegenerate,
   canDelete,
+  canContinue,
   deleteConfirm,
   actionsPending,
   voiceState,
@@ -117,14 +121,7 @@ export const ChatMessageItem = memo(function ChatMessageItem({
           <label className="sr-only" htmlFor={`edit-${message.id}`}>
             Edit message
           </label>
-          <textarea
-            className="min-h-24 w-full resize-y rounded-[12px] border border-black/10 bg-white/80 p-3 text-[14px] font-medium text-[rgb(13,13,13)] outline-none focus:border-[rgb(253,95,194)]"
-            data-testid="chat-edit-input"
-            disabled={editing.pending}
-            id={`edit-${message.id}`}
-            onChange={(event) => handlers.changeEdit(event.target.value)}
-            value={editing.content}
-          />
+          <ChatEditTextarea id={`edit-${message.id}`} editing={editing} handlers={handlers} />
           <div className="flex flex-wrap gap-2">
             <button
               className="inline-flex h-9 items-center gap-2 rounded-full bg-[rgb(13,13,13)] px-3 text-[12px] font-black uppercase text-white disabled:opacity-50"
@@ -197,8 +194,19 @@ export const ChatMessageItem = memo(function ChatMessageItem({
         </p>
       ) : null}
       {!isUser && message.status === "sent" && message.replyLimitReached === true ? (
-        <p className="mt-2 text-[11px] leading-4 text-white/60" data-testid="chat-reply-limit" role="status">
-          Reply reached the length limit. Ask the character to continue.
+        <p className="mt-2 flex flex-wrap items-center gap-2 text-[11px] leading-4 text-white/60" data-testid="chat-reply-limit" role="status">
+          {canContinue ? "Reply reached the length limit." : "Reply reached the length limit. Ask the character to continue."}
+          {canContinue ? (
+            <button
+              className="inline-flex min-h-9 items-center rounded-full bg-white px-3 text-[12px] font-bold text-[rgb(13,13,13)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#ff7ac8] disabled:opacity-50"
+              data-testid="chat-continue-reply"
+              disabled={actionsPending}
+              onClick={handlers.continueReply}
+              type="button"
+            >
+              Continue
+            </button>
+          ) : null}
         </p>
       ) : null}
       {(message.attachments ?? []).length > 0 ? (
@@ -208,6 +216,7 @@ export const ChatMessageItem = memo(function ChatMessageItem({
         <MessageActions
           isUser={isUser}
           pending={actionsPending}
+          prominent={canEdit || canRegenerate || canDelete}
           voiceState={voiceState}
           onEdit={canEdit ? () => handlers.beginEdit(message.id) : undefined}
           onReport={() => handlers.report(message.id)}
@@ -235,6 +244,44 @@ export const ChatMessageItem = memo(function ChatMessageItem({
     </div>
   );
 });
+
+// SPEC: The edit box takes focus with the caret at the end. Enter saves,
+//       Shift+Enter adds a line, Escape cancels; IME composition is left alone.
+function ChatEditTextarea({ id, editing, handlers }: Readonly<{
+  id: string;
+  editing: ChatMessageEditing;
+  handlers: ChatMessageHandlers;
+}>) {
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    const input = ref.current;
+    if (!input) return;
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(input.value.length, input.value.length);
+  }, []);
+  return (
+    <textarea
+      className="min-h-24 w-full resize-y rounded-[12px] border border-black/10 bg-white/80 p-3 text-[14px] font-medium text-[rgb(13,13,13)] outline-none focus:border-[rgb(253,95,194)]"
+      data-testid="chat-edit-input"
+      disabled={editing.pending}
+      id={id}
+      onChange={(event) => handlers.changeEdit(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+        if (event.key === "Escape") {
+          event.preventDefault();
+          handlers.cancelEdit();
+          return;
+        }
+        if (event.key !== "Enter" || event.shiftKey) return;
+        event.preventDefault();
+        if (editing.content.trim() && !editing.pending) handlers.saveEdit(false);
+      }}
+      ref={ref}
+      value={editing.content}
+    />
+  );
+}
 
 // Main may name why a reply failed; only known codes change the copy.
 function replyFailureCode(message: ChatMessage): string | null {

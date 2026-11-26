@@ -25,6 +25,8 @@ export type ChatMessageListProps = {
   readonly editingPending: boolean;
   readonly deleteConfirmMessageId: string | null;
   readonly actionsPending: boolean;
+  /** A new message could be sent right now (no reply, write or call in the way). */
+  readonly canSendNow: boolean;
   readonly voicePreparingIds: ReadonlySet<string>;
   readonly voicePlayingId: string | null;
   readonly voiceConfirmation: VoiceConfirmation | null;
@@ -53,6 +55,7 @@ export function ChatMessageList({
   editingPending,
   deleteConfirmMessageId,
   actionsPending,
+  canSendNow,
   voicePreparingIds,
   voicePlayingId,
   voiceConfirmation,
@@ -79,6 +82,9 @@ export function ChatMessageList({
           {earlier.failed ? <p className="text-[12px] text-white/65" role="status">Couldn&apos;t load earlier messages. Try again.</p> : null}
         </div>
       ) : null}
+      {/* SPEC: The conversation is a log: assistive tech announces new messages
+          politely; a streaming bubble is aria-busy until its reply settles. */}
+      <div aria-label="Conversation" aria-live="polite" aria-relevant="additions" className="flex flex-1 flex-col gap-3" role="log">
       {/* 群聊没有开场白：说清楚怎么开始，而不是替角色编一句。 */}
       {group && messages.length === 0 ? (
         <p className="m-auto max-w-md text-center text-sm leading-6 text-white/65" data-testid="group-chat-empty">
@@ -103,6 +109,9 @@ export function ChatMessageList({
             canRegenerate={!readOnly && !immutableOpening && message.replyToMessageId === latestUserMessageId
               && canRegenerateChatMessage(message, hasGeneratingReply)}
             canDelete={canDelete}
+            canContinue={canSendNow && !readOnly && !isUser && message.status === "sent" && message.replyLimitReached === true
+              && Boolean(message.replyToMessageId) && message.replyToMessageId === latestUserMessageId
+              && (!group || message.characterId === characterId)}
             deleteConfirm={deleteConfirmMessageId === message.id}
             actionsPending={actionsPending}
             voiceState={voicePreparingIds.has(message.id) ? "loading" : voicePlayingId === message.id ? "playing" : undefined}
@@ -116,6 +125,7 @@ export function ChatMessageList({
         );
       })}
       <div ref={endRef} />
+      </div>
     </div>
   );
 }

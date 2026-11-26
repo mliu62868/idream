@@ -20,16 +20,15 @@ import { useGenerationReceipts } from "@/hooks/useGenerationReceipts";
 import { useVoiceInput } from "@/hooks/useVoiceInput";
 import { useVoiceCall } from "@/hooks/useVoiceCall";
 import { VoiceInputButton, VoiceInputStatus } from "./chat/VoiceInputControls";
-import { VoiceCallButton, VoiceCallControls } from "./chat/VoiceCallControls";
+import { VoiceCallButton, VoiceCallControls, voiceCallPanelForced } from "./chat/VoiceCallControls";
 import { AppSidebar } from "./AppSidebar";
-import { MobileBottomNav } from "./MobileBottomNav";
 import { ChatHeaderControls } from "./chat/ChatHeaderControls";
 import { ChatSessionListDrawer } from "./chat/ChatSessionListDrawer";
 import { MemoryPanel } from "./chat/MemoryPanel";
 import { ConversationPreferences } from "./chat/ConversationPreferences";
 import { authHrefForTarget } from "./authRedirect";
 import { useReportDialog } from "./ReportDialog";
-import { chatFailureCopy } from "@/lib/chat-failure-copy";
+import { chatFailureCode, chatFailureCopy } from "@/lib/chat-failure-copy";
 import { chatReleaseChangedCharacterId, stashChatReleaseHandoff, takeChatReleaseHandoff } from "@/lib/chat-release-handoff";
 import { chatGenerationHref } from "@/lib/chat-generation-link";
 import { chatVideoSources, isExplicitChatVideoRequest } from "@/lib/chat-video";
@@ -62,12 +61,22 @@ import type { ChatAttachmentContext, ChatMessageHandlers } from "./chat/ChatMess
 import { ChatComposer } from "./chat/ChatComposer";
 import { useStableHandlers } from "./chat/useStableHandlers";
 import { prependEarlierMessages } from "./chat/chat-session-page";
+import {
+  clearChatSessionStorage,
+  readCachedChatMessages,
+  readChatDraft,
+  writeCachedChatMessages,
+  writeChatDraft,
+} from "./chat/chat-session-storage";
+import { ChatSessionLoading } from "./chat/ChatSessionLoading";
 
 export { chatAttachmentCostLabel, chatAttachmentIsActive } from "./chat/chat-attachments";
 
 type ChatUpgradeReason = "dreamcoins" | "messages";
 
 const SPEAKER_SELECT_FAILED = "Couldn't select that Character. Try again.";
+// The app is English-only today; this is the message a "Continue" press sends.
+const CONTINUE_MESSAGE = "Continue";
 const CHAT_RELEASE_HANDOFF_NOTICE =
   "This Character was updated, so we opened a new chat. Your unsent message is ready below. The earlier conversation stays in your chats.";
 // A reply is only auto-followed while the reader is parked within this many
@@ -182,6 +191,11 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
   const [speakerPending, setSpeakerPending] = useState(false);
   const [sendOutcomeUnknown, setSendOutcomeUnknown] = useState(false);
   const selectedSpeakerRef = useRef<string | null>(null);
+  const speakerChangeRef = useRef<Promise<boolean> | null>(null);
+  // This subtree is keyed by owner, so its storage scope never changes.
+  const storageScope = useMemo(() => ({ ownerScope: viewer.scope, groupMode, id }), [viewer.scope, groupMode, id]);
+  const [cachedMessages] = useState(() => readCachedChatMessages(storageScope));
+  const storedDraftRef = useRef<string | null>(null);
   const executionSessionId = group?.selectedSessionId ?? id;
   const sessionPath = `/api/v1/chat/${groupMode ? "groups" : "sessions"}/${encodeURIComponent(id)}`;
   // SPEC: 只在这段会话真的能出视频时才给 Video / Animate 入口。
@@ -312,6 +326,9 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
         setContent((current) => current || handedOver);
         setStatus(CHAT_RELEASE_HANDOFF_NOTICE);
       }
+      storedDraftRef.current ??= readChatDraft(storageScope);
+      const draft = storedDraftRef.current;
+      if (draft) setContent((current) => current || draft);
     },
     suspendReceipts: suspendGenerationReceipts,
     resumeReceipts: resumeGenerationReceipts,
@@ -344,11 +361,26 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
       suspendGenerationReceipts(true);
     };
   }, [suspendGenerationReceipts]);
-  const canSend = canSubmitChatMessage(
-    content,
-    pending || stoppingReply || speakerPending || conversationReadOnly || voiceInput.blocksSend || voiceCall.active,
-    hasGeneratingReply,
-  );
+  // A pending @speaker switch does not block Send: the send waits for it.
+  const sendBlocked = pending || stoppingReply || conversationReadOnly || voiceInput.blocksSend || voiceCall.active;
+  const canSend = canSubmitChatMessage(content, sendBlocked, hasGeneratingReply);
+
+  // SPEC: The unsent draft survives a reload of this tab; a confirmed send or an
+  //       emptied composer forgets it. A draft in flight is not rewritten.
+  useEffect(() => {
+    if (loadState !== "ready" || pending) return;
+    writeChatDraft(storageScope, content);
+  }, [content, loadState, pending, storageScope]);
+  function clearStoredDraft() {
+    storedDraftRef.current = "";
+    writeChatDraft(storageScope, "");
+  }
+
+  // Settled messages are kept for the next first paint of this conversation.
+  useEffect(() => {
+    if (loadState !== "ready" || hasGeneratingReply) return;
+    writeCachedChatMessages(storageScope, messages);
+  }, [hasGeneratingReply, loadState, messages, storageScope]);
 
   useEffect(() => {
     const input = composerRef.current;
@@ -447,19 +479,23 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     if (voiceInput.blocksSend || voiceCall.active) return;
     const text = content.trim();
     const allowPaidImage = (event.nativeEvent as SubmitEvent).submitter?.dataset.paidImage === "true";
-    // SPEC: 输入 @Name 时说话人切换是异步的；切换期间的回车必须有回执。
-    // INTENT: 静默 return 会让用户以为消息发出去了 —— 实测第一次回车既不发消息也不报错。
-    if (text && speakerPending) {
-      setStatus("Selecting that Character… send again once the recipient is ready.");
-      return;
+    if (!canSubmitChatMessage(text, pending || conversationReadOnly, hasGeneratingReply)) return;
+    // SPEC: Choosing who replies with @Name is part of sending, not a second
+    //       step: the message goes to that Character as soon as the switch lands.
+    // INTENT: the old flow stopped after the switch and asked for another Send,
+    //         so the first Enter looked like a dropped message.
+    if (group) {
+      if (speakerChangeRef.current) {
+        setStatus("Selecting that Character… your message will send when they're ready.");
+        if (!await speakerChangeRef.current) return;
+      }
+      const mentioned = mentionedGroupCharacter(text, group.members);
+      if (mentioned && mentioned !== selectedSpeakerRef.current) {
+        setStatus("Selecting that Character… your message will send when they're ready.");
+        if (!await changeSpeaker(mentioned)) return;
+      }
     }
-    if (!canSubmitChatMessage(text, pending || speakerPending || conversationReadOnly, hasGeneratingReply)) return;
     const mentioned = group ? mentionedGroupCharacter(text, group.members) : null;
-    if (mentioned && mentioned !== characterId) {
-      await changeSpeaker(mentioned);
-      setStatus("Speaker selected. Review the recipient, then send your message.");
-      return;
-    }
     const mentionedName = group?.members.find(member => member.characterId === mentioned)?.name;
     const videoText = mentionedName ? text.slice(mentionedName.length + 1).replace(/^[,:]\s*/, "").trim() : text;
     // With video unavailable here the words are just roleplay and go to the character.
@@ -467,7 +503,20 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
       media.openVideoRequest(undefined, videoText);
       return;
     }
-    const prepared = prepareChatSendIntent(sendIntentRef.current, { sessionId: id, content: text, characterId, allowPaidImage }, sendOutcomeUnknown);
+    await sendMessage(text, { allowPaidImage, fromComposer: true });
+  }
+
+  // SPEC: One-click "Continue" after a reply hit the length limit is an ordinary
+  //       user message through the ordinary send path; the composer draft is
+  //       left alone.
+  function continueReply() {
+    if (pending || hasGeneratingReply || conversationReadOnly || voiceInput.blocksSend || voiceCall.active) return;
+    void sendMessage(CONTINUE_MESSAGE, { allowPaidImage: false, fromComposer: false });
+  }
+
+  async function sendMessage(text: string, { allowPaidImage, fromComposer }: { allowPaidImage: boolean; fromComposer: boolean }) {
+    const recipientId = group ? selectedSpeakerRef.current : characterId;
+    const prepared = prepareChatSendIntent(sendIntentRef.current, { sessionId: id, content: text, characterId: recipientId, allowPaidImage }, sendOutcomeUnknown);
     if (prepared.kind !== "ready") {
       if (prepared.kind === "protocol_expired") {
         sendIntentRef.current = null;
@@ -479,9 +528,12 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
       return;
     }
     const intent = prepared.intent;
+    // Only the composer's own text moves into the conversation; a draft typed
+    // while a speaker switch was pending stays.
+    const restoreDraft = () => { if (fromComposer) setContent(text); };
     setStatus(null);
     setUpgradeReason(null);
-    setContent("");
+    if (fromComposer) setContent((current) => (current.trim() === text ? "" : current));
     setPending(true);
     const sendDelivery = delivery.context({ invalidate: true });
     // SPEC: Render the reader's own turn before the round-trip resolves — on a
@@ -492,12 +544,14 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     const localMessageId = `${LOCAL_CHAT_MESSAGE_ID_PREFIX}${crypto.randomUUID()}`;
     const dropOptimisticMessage = (current: ChatMessage[]) =>
       current.filter((message) => message.id !== localMessageId && message.replyToMessageId !== localMessageId);
+    const recipientName = group?.members.find(member => member.characterId === recipientId)?.name;
     setMessages((current) => [
       ...current,
-      { id: localMessageId, role: "user", content: text, requestKey: intent.idempotencyKey },
+      { id: localMessageId, role: "user", content: text, requestKey: intent.idempotencyKey,
+        ...(group && recipientName ? { speakerName: recipientName } : {}) },
       { id: `${localMessageId}:reply`, role: "assistant", content: "", status: "pending",
         replyToMessageId: localMessageId, requestKey: intent.idempotencyKey,
-        ...(group ? { characterId: characterId ?? undefined, speakerName: group.members.find(member => member.characterId === characterId)?.name } : {}) },
+        ...(group ? { characterId: recipientId ?? undefined, speakerName: recipientName } : {}) },
     ]);
     sendIntentRef.current = intent;
     try {
@@ -515,27 +569,24 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
         setSendOutcomeUnknown(false);
         setUpgradeReason("messages");
         setStatus("Daily free message limit reached.");
-        setContent(text);
+        restoreDraft();
         setMessages(dropOptimisticMessage);
         return;
       }
       if (!response.ok) {
         const failure = await response.json().catch(() => null);
-        const deletedSend = response.status === 409 && failure?.details?.reason === "chat_send_deleted";
-        const expiredProtocol = response.status === 409 && failure?.details?.reason === "chat_send_protocol_required";
+        const reason = chatFailureCode(failure);
+        const deletedSend = response.status === 409 && reason === "chat_send_deleted";
+        const expiredProtocol = response.status === 409 && reason === "chat_send_protocol_required";
         if ((deletedSend || expiredProtocol) && sendIntentRef.current === intent) sendIntentRef.current = null;
         const updatedCharacterId = response.status === 410 && !groupMode ? chatReleaseChangedCharacterId(failure) : null;
-        if (updatedCharacterId && await openUpdatedCharacterChat(updatedCharacterId, text)) return;
+        if (updatedCharacterId && await openUpdatedCharacterChat(updatedCharacterId, fromComposer ? text : content)) return;
         if (response.status === 410) dispatchMetadata({ type: "continuation", continuation: updatedCharacterId ? "character_release_changed" : "character_unavailable" });
         setSendOutcomeUnknown(response.status >= 500);
         setStatus(updatedCharacterId
           ? "This Character was updated, so this chat is now read-only. Your message is still below. Open the Character again to continue in a new chat."
-          : deletedSend
-            ? "That message was deleted. Send again to make a new request."
-            : expiredProtocol
-              ? "This send request expired. Review your draft and send it again."
-              : chatFailureCopy(failure, "Message failed to send. Please try again."));
-        setContent(text);
+          : chatFailureCopy(failure, "Message failed to send. Please try again."));
+        restoreDraft();
         setMessages(dropOptimisticMessage);
         // A reply the page has not seen yet (a proactive check-in) can be the
         // one generating; show it now instead of on the next minute's poll.
@@ -548,12 +599,13 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
       sendIntentRef.current = null;
       setSendOutcomeUnknown(false);
       sendDelivery.receiveTurn(payload, localMessageId);
+      if (fromComposer) clearStoredDraft();
     } catch {
       // Network/parse failure: surface the error and restore the typed text so the
       // user's message is never silently lost (P0 — silent message loss).
       setStatus("Message failed to send. Please try again.");
       setSendOutcomeUnknown(true);
-      setContent(text);
+      restoreDraft();
       setMessages(dropOptimisticMessage);
     } finally {
       setPending(false);
@@ -642,6 +694,8 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     // Header, Scene, and drawers can outlive the ready-state branch.
     receiptOwnerScopeRef.current = null;
     sendIntentRef.current = null;
+    clearChatSessionStorage(storageScope);
+    storedDraftRef.current = "";
     setMessages([]);
     setContent("");
     dispatchMetadata({ type: "reset" });
@@ -669,24 +723,40 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     if (session.status === "archived" || (session.continuation && session.continuation !== "available")) cancelEdit();
   }
 
-  async function changeSpeaker(nextCharacterId: string) {
-    if (!group || !group.members.some(member => member.characterId === nextCharacterId) || nextCharacterId === characterId
-      || pending || hasGeneratingReply || speakerPending || sendOutcomeUnknown) return;
+  // Resolves true once `nextCharacterId` is the selected speaker. A switch in
+  // flight is shared, so a send can wait for the one its @mention started.
+  function changeSpeaker(nextCharacterId: string): Promise<boolean> {
+    if (!group || !group.members.some(member => member.characterId === nextCharacterId)) return Promise.resolve(false);
+    const inFlight = speakerChangeRef.current;
+    if (inFlight) return inFlight.then((ok) => ok && selectedSpeakerRef.current === nextCharacterId);
+    if (nextCharacterId === selectedSpeakerRef.current) return Promise.resolve(true);
+    if (pending || hasGeneratingReply || sendOutcomeUnknown) return Promise.resolve(false);
     const prior = selectedSpeakerRef.current;
     const read = delivery.context({ invalidate: true });
     selectedSpeakerRef.current = nextCharacterId;
     setSpeakerPending(true);
     stopVoice();
-    try {
-      if (!await read.refresh()) return;
-      // INVARIANT: 只收回自己上一次的失败提示。无差别清空会吞掉切换期间提交给用户的回执。
-      setStatus((current) => (current === SPEAKER_SELECT_FAILED ? null : current));
-    } catch {
-      if (read.isCurrent()) {
-        selectedSpeakerRef.current = prior;
-        setStatus(SPEAKER_SELECT_FAILED);
+    let change: Promise<boolean> | null = null;
+    change = (async () => {
+      try {
+        await read.refresh();
+        // INVARIANT: 只收回自己上一次的失败提示。无差别清空会吞掉切换期间提交给用户的回执。
+        setStatus((current) => (current === SPEAKER_SELECT_FAILED ? null : current));
+        // A newer read may have applied the switch instead of this one.
+        return selectedSpeakerRef.current === nextCharacterId;
+      } catch {
+        if (read.isCurrent()) {
+          selectedSpeakerRef.current = prior;
+          setStatus(SPEAKER_SELECT_FAILED);
+        }
+        return false;
+      } finally {
+        if (speakerChangeRef.current === change) speakerChangeRef.current = null;
+        setSpeakerPending(false);
       }
-    } finally { setSpeakerPending(false); }
+    })();
+    speakerChangeRef.current = change;
+    return change;
   }
 
   // SPEC: Flip long-term memory for this session; optimistic, reconciled from the
@@ -782,6 +852,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     identityFeedback: (mediaAssetId, feedback) => void media.recordAttachmentIdentityFeedback(mediaAssetId, feedback),
     moreLikeThis: (mediaAssetId) => void media.createAttachmentVariation(mediaAssetId),
     animate: (mediaAssetId, sourceCharacterId) => media.openVideoRequest(mediaAssetId, undefined, sourceCharacterId),
+    continueReply,
   });
   const paymentHref = upgradeHrefForChatSession(id, groupMode);
   const attachmentContext = useMemo<ChatAttachmentContext>(() => ({
@@ -806,7 +877,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     <main className="min-h-screen bg-[rgb(13,13,13)] text-white">
       <div className="flex min-h-screen w-full">
         <AppSidebar activeHref="/chat" />
-        <section className="flex min-w-0 flex-1 flex-col px-4 py-6 pb-24 md:px-[60px]">
+        <section className="flex min-w-0 flex-1 flex-col px-4 py-6 pb-4 md:px-[60px] md:pb-6">
           {/* On short screens the group controls and expanded composer can overlap. Let the header scroll away. */}
           <header className="sticky top-0 z-20 -mx-4 border-b border-white/10 bg-[rgb(13,13,13)] px-4 pb-2 pt-2 md:mx-0 md:px-0 [@media(max-height:480px)]:static [@media(max-height:480px)]:z-auto">
             <Link
@@ -897,6 +968,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
                 editingPending={editingPending}
                 deleteConfirmMessageId={deleteConfirmMessageId}
                 actionsPending={pending || editingPending || voiceCall.active}
+                canSendNow={!sendBlocked && !speakerPending && !hasGeneratingReply && !editingPending}
                 voicePreparingIds={voice.preparingIds}
                 voicePlayingId={voice.playingId}
                 voiceConfirmation={voice.confirmation}
@@ -908,7 +980,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
               />
               {jumpToLatestVisible ? (
                 <button
-                  className="sticky bottom-36 z-10 self-center rounded-full bg-white px-3 py-2 text-[12px] font-bold text-[rgb(13,13,13)] shadow-[0_2px_12px_rgba(0,0,0,0.45)] md:bottom-16"
+                  className="sticky bottom-24 z-10 self-center rounded-full bg-white px-3 py-2 text-[12px] font-bold text-[rgb(13,13,13)] shadow-[0_2px_12px_rgba(0,0,0,0.45)] md:bottom-16"
                   data-testid="chat-jump-to-latest"
                   onClick={jumpToLatest}
                   type="button"
@@ -921,7 +993,8 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
                   INTENT: 输入框是 sticky，状态段落原本跟在它后面的普通流里，长会话时会被顶到
                   文档底部、永远在视口外——点「Play voice」被套餐拦下、日额度用尽、安全策略拦截、
                   发送失败这些提示用户一条都看不到，表现得像按钮没反应。 */}
-              <div ref={composerDockRef} className="sticky bottom-20 z-10 mt-4 bg-[rgb(13,13,13)] md:bottom-0">
+              {/* The chat page has no bottom tab bar: the composer owns the bottom edge. */}
+              <div ref={composerDockRef} className="sticky bottom-0 z-10 mt-4 bg-[rgb(13,13,13)] pb-[env(safe-area-inset-bottom)]">
                 {status ? (
                   <p
                     aria-live="polite"
@@ -969,6 +1042,12 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
                 stopping={stoppingReply}
                 composerRef={composerRef}
                 callButton={!groupMode ? <VoiceCallButton voice={voiceCall} open={voiceCallOpen} onToggle={() => setVoiceCallOpen(value => !value)} /> : null}
+                extras={{
+                  call: !groupMode && (voiceCall.available || voiceCall.call)
+                    ? { open: voiceCallOpen || voiceCallPanelForced(voiceCall), disabled: voiceCallPanelForced(voiceCall), onToggle: () => setVoiceCallOpen(value => !value) }
+                    : undefined,
+                  video: videoEnabled ? { disabled: !receiptOwnerScope, onOpen: () => media.openVideoRequest() } : undefined,
+                }}
                 voiceInputButton={<VoiceInputButton voice={voiceInput} disabled={voiceCall.active || pending || speakerPending || conversationReadOnly || (groupMode && sendOutcomeUnknown)} />}
                 onChange={(next) => {
                   setContent(next);
@@ -980,6 +1059,8 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
               />
               </div>
             </>
+          ) : loadState === "loading" && !viewer.error ? (
+            <ChatSessionLoading cached={cachedMessages} />
           ) : (
             <ChatSessionUnavailablePanel loadState={viewer.error ? "error" : loadState} sessionId={id} groupMode={groupMode}
               accountError={viewer.error} onRetryAccount={() => void viewer.revalidate()} />
@@ -993,7 +1074,6 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
           />
         ) : null}
       </div>
-      <MobileBottomNav activeHref="/chat" />
       <ChatSessionListDrawer
         fetchForViewer={fetchForSession}
         open={sessionsOpen}

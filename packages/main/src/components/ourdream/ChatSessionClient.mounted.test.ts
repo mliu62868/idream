@@ -305,7 +305,7 @@ describe("ChatSessionClient streaming composer", () => {
       { ...streamingReply, id: "cancelled-reply", content: "", status: "cancelled", replyLimitReached: true },
     ];
     await mountSession();
-    const notice = "Reply reached the length limit. Ask the character to continue.";
+    const notice = "Reply reached the length limit.";
     expect(replyBubble()?.textContent).toContain(notice);
     expect(container.querySelectorAll('[data-testid="chat-reply-limit"]')).toHaveLength(1);
     expect(container.querySelector('[data-message-id="legacy-reply"]')?.textContent).toContain("Legacy ending without punctuation");
@@ -416,6 +416,8 @@ describe("ChatSessionClient streaming composer", () => {
   beforeEach(() => {
     invalidateViewerAuthority();
     viewerId = "viewer-a";
+    // Drafts and recent messages are kept per tab; every test starts in a fresh one.
+    try { window.sessionStorage.clear(); } catch { /* storage unavailable */ }
     // Use run-owned browser storage, never Node's ambient localStorage shim.
     // It survives component remounts in a test, just like a real browser tab.
     const stored = new Map<string, string>();
@@ -1136,6 +1138,119 @@ describe("ChatSessionClient streaming composer", () => {
     expect(replyBubble()?.textContent).not.toContain("Old answer");
   });
 
+  it("edits from the keyboard: focus lands in the box, Escape cancels and Enter saves", async () => {
+    sessionMessages = [opening, userTurn, { ...streamingReply, status: "sent", content: "Original answer" }];
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    const patches: unknown[] = [];
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) !== "/api/v1/messages/user-1" || init?.method !== "PATCH") return originalFetch(input, init);
+      patches.push(JSON.parse(String(init.body)));
+      return Response.json({ assistantMessageId: "assistant-1", attempt: 2, status: "sent", streamUrl: null }, { status: 202 });
+    });
+    await mountSession();
+    const edit = () => container.querySelector<HTMLTextAreaElement>('[data-testid="chat-edit-input"]');
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="chat-edit-message"]')!.click());
+    expect(document.activeElement).toBe(edit());
+    await act(async () => edit()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    expect(edit()).toBeNull();
+    expect(patches).toHaveLength(0);
+
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="chat-edit-message"]')!.click());
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(edit(), "hello again");
+      edit()!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const newline = new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true });
+    await act(async () => edit()!.dispatchEvent(newline));
+    expect(newline.defaultPrevented).toBe(false);
+    expect(patches).toHaveLength(0);
+    await act(async () => edit()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    await waitUntil(() => patches.length === 1);
+    expect(patches[0]).toMatchObject({ content: "hello again", attempt: 1 });
+  });
+
+  it("offers a one-click Continue after a length-limited reply and sends it like any message", async () => {
+    sessionMessages = [opening, userTurn, { ...streamingReply, status: "sent", content: "The story goes on and", replyLimitReached: true }];
+    await mountSession();
+    await act(async () => typeMessage("my own draft"));
+    const continueButton = () => replyBubble()?.querySelector<HTMLButtonElement>('[data-testid="chat-continue-reply"]');
+    expect(continueButton()?.textContent).toBe("Continue");
+    await act(async () => continueButton()!.click());
+    const sends = vi.mocked(fetch).mock.calls.filter(([url, init]) => String(url).endsWith("/messages") && init?.method === "POST");
+    expect(sends).toHaveLength(1);
+    expect(JSON.parse(String(sends[0]?.[1]?.body))).toEqual({ content: "Continue", sendProtocolVersion: CHAT_SEND_PROTOCOL_VERSION });
+    expect(messageInput()?.value).toBe("my own draft");
+    expect(container.querySelector('[data-message-id^="local:"][data-testid="chat-message-user"]')?.textContent).toContain("Continue");
+    await act(async () => releaseSend?.(sendPayload()));
+  });
+
+  it("hides Continue when the length-limited reply is not the latest turn", async () => {
+    sessionMessages = [opening, userTurn, { ...streamingReply, status: "sent", content: "Cut", replyLimitReached: true },
+      { id: "user-2", role: "user", content: "next", status: "sent" },
+      { id: "assistant-2", role: "assistant", content: "Done.", status: "sent", attempt: 1, replyToMessageId: "user-2" }];
+    await mountSession();
+    expect(container.querySelector('[data-testid="chat-continue-reply"]')).toBeNull();
+    expect(replyBubble()?.textContent).toContain("Ask the character to continue.");
+  });
+
+  it("keeps the unsent draft across a reload of the tab and forgets it after sending", async () => {
+    await mountSession();
+    await act(async () => typeMessage("half-written thought"));
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await mountSession();
+    await waitUntil(() => messageInput()?.value === "half-written thought");
+    await act(async () => submitComposer());
+    await act(async () => releaseSend?.(sendPayload()));
+    await waitUntil(() => !container.querySelector('[data-message-id^="local:"]'));
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await mountSession();
+    expect(messageInput()?.value).toBe("");
+  });
+
+  it("paints this tab's last messages while the conversation loads", async () => {
+    sessionMessages = [opening, { ...userTurn, status: "sent" }, { ...streamingReply, status: "sent", content: "*waves* See you soon." }];
+    await mountSession();
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    const read = Promise.withResolvers<Response>();
+    vi.mocked(fetch).mockImplementation(async (input, init) => String(input) === "/api/v1/chat/sessions/session-1" ? read.promise : originalFetch(input, init));
+    await act(async () => {
+      root.render(createElement(Fragment, null, createElement(ViewerProbe), createElement(ChatSessionClient, { id: "session-1" })));
+    });
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="chat-session-loading"]')?.querySelector("[data-cached-message-id]")));
+    const loading = container.querySelector('[data-testid="chat-session-loading"]')!;
+    expect(loading.getAttribute("aria-busy")).toBe("true");
+    expect(loading.textContent).toContain("See you soon.");
+    expect(loading.querySelector("button")).toBeNull();
+    await act(async () => read.resolve(await originalFetch("/api/v1/chat/sessions/session-1")));
+    await waitUntil(() => Boolean(messageInput()));
+    expect(container.querySelector('[data-testid="chat-session-loading"]')).toBeNull();
+    expect(container.querySelector('[role="log"]')?.getAttribute("aria-live")).toBe("polite");
+  });
+
+  it("keeps Edit, Delete and Report behind a keyboard-operable More actions toggle", async () => {
+    sessionMessages = [opening, userTurn, { ...streamingReply, status: "sent", content: "Answer" }];
+    await mountSession();
+    const bubble = container.querySelector('[data-message-id="user-1"]')!;
+    const more = bubble.querySelector<HTMLButtonElement>('[data-testid="chat-message-more"]')!;
+    const report = bubble.querySelector<HTMLButtonElement>('[aria-label="Report message"]')!;
+    expect(more.getAttribute("aria-expanded")).toBe("false");
+    expect(report.closest("[hidden]")).not.toBeNull();
+    await act(async () => more.click());
+    expect(more.getAttribute("aria-expanded")).toBe("true");
+    expect(report.closest("[hidden]")).toBeNull();
+    report.focus();
+    await act(async () => report.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(more.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(more);
+    // An armed delete keeps its Confirm in view.
+    await act(async () => bubble.querySelector<HTMLButtonElement>('[data-testid="chat-delete-message"]')!.click());
+    expect(bubble.querySelector('[aria-label="Confirm delete message"]')?.closest("[hidden]")).toBeNull();
+  });
+
   it.each([{ paid: false }, { paid: true }])("retries an uncertain edit with its original key and observed attempt after a newer session read (paid=$paid)", async ({ paid }) => {
     sessionMessages = [opening, userTurn, { ...streamingReply, status: "sent", content: "Original answer" }];
     const originalFetch = vi.mocked(fetch).getMockImplementation()!;
@@ -1245,7 +1360,8 @@ describe("ChatSessionClient streaming composer", () => {
     await act(async () => submitComposer());
     await waitUntil(() => assign.mock.calls.length > 0);
     expect(assign).toHaveBeenCalledWith("/chat/session-2");
-    expect([...handoff.values()]).toEqual(["are you still there?"]);
+    const handoffs = () => [...handoff.keys()].filter(key => key.startsWith("idream:chat-release-handoff:"));
+    expect(handoffs().map(key => handoff.get(key))).toEqual(["are you still there?"]);
 
     // Arriving in the new chat: the message waits in the box, sent by nobody yet.
     await act(async () => root.unmount());
@@ -1258,7 +1374,7 @@ describe("ChatSessionClient streaming composer", () => {
     await waitUntil(() => messageInput()?.value === "are you still there?");
     expect(container.querySelector('[data-testid="chat-session-status"]')?.textContent)
       .toContain("This Character was updated, so we opened a new chat.");
-    expect(handoff.size).toBe(1);
+    expect(handoffs()).toHaveLength(1);
     expect(handoff.has("idream:chat-release-handoff:session-1")).toBe(false);
     assign.mockRestore();
   });
@@ -2476,16 +2592,25 @@ describe("ChatSessionClient streaming composer", () => {
       return groupFetch(input, init);
     });
     await act(async () => typeMessage("@Briar Hello from the garden"));
-    await act(async () => submitComposer());
+    await act(async () => { submitComposer(); });
 
-    expect(vi.mocked(fetch).mock.calls.some(([input, init]) =>
-      String(input) === "/api/v1/chat/groups/group-1/messages" && init?.method === "POST")).toBe(false);
+    const groupSends = () => vi.mocked(fetch).mock.calls.filter(([input, init]) =>
+      String(input) === "/api/v1/chat/groups/group-1/messages" && init?.method === "POST");
+    expect(groupSends()).toHaveLength(0);
     expect(messageInput()?.value).toBe("@Briar Hello from the garden");
     expect(container.querySelector('[data-testid="chat-session-status"]')?.textContent)
       .toContain("Selecting that Character");
 
+    // The switch lands and the same Enter sends — no second Send needed.
     await act(async () => releaseSpeaker?.());
-    await waitUntil(() => container.querySelector<HTMLSelectElement>('[aria-label="Group speaker"]')?.value === "character-2");
+    await waitUntil(() => groupSends().length === 1);
+    expect(JSON.parse(String(groupSends()[0]?.[1]?.body))).toMatchObject({ content: "@Briar Hello from the garden", characterId: "character-2" });
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="Group speaker"]')?.value).toBe("character-2");
+    await act(async () => releaseSend?.(Response.json({ ok: true, data: {
+      userMessage: { ...userTurn, content: "@Briar Hello from the garden", characterId: "character-2", sessionId: "member-2", speakerName: "Briar" },
+      assistant: { ...streamingReply, characterId: "character-2", sessionId: "member-2", speakerName: "Briar" },
+      streamUrl: "/api/v1/messages/assistant-1/stream?attempt=1",
+    } })));
   });
 
   it("quotes an old group reply's voice using its original Character and session after the selected speaker changes", async () => {
