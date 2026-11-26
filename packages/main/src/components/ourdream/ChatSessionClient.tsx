@@ -4,27 +4,14 @@ import Link from "next/link";
 import {
   ArrowDown,
   ArrowLeft,
-  Check,
-  ExternalLink,
-  ImageIcon,
-  ListChecks,
   Loader2,
   MessageCircle,
-  RefreshCw,
-  Send,
-  Square,
-  WandSparkles,
   Video,
-  X,
 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { voiceClipQuoteSchema, type VoiceClipQuote } from "@idream/shared/contracts";
+import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
   parseChatSendResponse,
   parseChatSessionCreateResponse,
-  parseChatSessionDetailResponse,
-  parseGenerationRetryQuoteResponse,
-  type RuntimeChatAttachment as ChatAttachment,
   type RuntimeChatMessage as ChatMessage,
   type RuntimeChatSession as ChatSession,
 } from "@/lib/public-api-contracts";
@@ -40,75 +27,51 @@ import { ChatHeaderControls } from "./chat/ChatHeaderControls";
 import { ChatSessionListDrawer } from "./chat/ChatSessionListDrawer";
 import { MemoryPanel } from "./chat/MemoryPanel";
 import { ConversationPreferences } from "./chat/ConversationPreferences";
-import { MessageActions } from "./chat/MessageActions";
 import { authHrefForTarget } from "./authRedirect";
-import { LegacyTestAssetBadge } from "./LegacyTestAssetBadge";
 import { useReportDialog } from "./ReportDialog";
 import { chatFailureCopy } from "@/lib/chat-failure-copy";
 import { chatReleaseChangedCharacterId, stashChatReleaseHandoff, takeChatReleaseHandoff } from "@/lib/chat-release-handoff";
 import { chatGenerationHref } from "@/lib/chat-generation-link";
 import { chatVideoSources, isExplicitChatVideoRequest } from "@/lib/chat-video";
-import { ChatVideoComposer, type ChatVideoSubmission } from "./chat/ChatVideoComposer";
-import { ChatVideoAttachmentCard } from "./chat/ChatVideoAttachmentCard";
-import { generationQueueCopy } from "@/lib/generation-queue-copy";
-import { ChatImageEditReviewCard } from "./chat/ChatImageEditReviewCard";
-import { ChatMediaQuoteCard } from "./chat/ChatMediaQuoteCard";
+import { ChatVideoComposer } from "./chat/ChatVideoComposer";
 import {
-  chatStreamLatestReplyFailed,
-  chatStreamMessageIsInProgress,
   chatStreamMessagesNeedReconciliation,
   useChatReplyDelivery,
 } from "./chat-reply-delivery";
 import {
-  canRegenerateChatMessage,
   canSubmitChatMessage,
-  isImmutableOpeningMessage,
-  isLocalChatMessageId,
   latestTurnUserMessageId,
   LOCAL_CHAT_MESSAGE_ID_PREFIX,
   prepareChatSendIntent,
   type ChatSendIntent,
 } from "./chat-message-actions";
-import {
-  GenerationRequestError,
-  apiPayloadErrorMessage,
-  hasUnconfirmedGenerationRetry,
-  requestGenerationRetryWithExactAuthority,
-  requestChatVideoWithExactAuthority,
-  requestMediaVariationWithExactQuote,
-  type GenerationReceipt,
-  type GenerationQuoteAuthority,
-} from "@/lib/generation-write-client";
+import type { GenerationQuoteAuthority } from "@/lib/generation-write-client";
 import { GroupSpeakerControls, mentionedGroupCharacter } from "./chat/GroupSpeakerControls";
-import { UNCONFIRMED_GENERATION_POLL_MS, unknownOutcomeCopy } from "@/lib/generation-failure-copy";
 import { useViewerGate, type ViewerGate } from "@/hooks/useViewerGate";
+import { chatAttachmentIsActive, chatAttachmentIsUnconfirmed } from "./chat/chat-attachments";
+import {
+  chatSessionIsReadOnly,
+  chatSessionMetadataReducer,
+  INITIAL_CHAT_SESSION_METADATA,
+} from "./chat/chat-session-metadata";
+import { useVoicePlayback } from "./chat/useVoicePlayback";
+import { useChatMediaActions } from "./chat/useChatMediaActions";
+import { isChatAuthError, useChatSessionSync, type ChatLoadState } from "./chat/useChatSessionSync";
+import { ChatMessageList, type ChatEditingTarget } from "./chat/ChatMessageList";
+import type { ChatAttachmentContext, ChatMessageHandlers } from "./chat/ChatMessageItem";
+import { ChatComposer } from "./chat/ChatComposer";
+import { useStableHandlers } from "./chat/useStableHandlers";
 
-type ChatLoadState = "loading" | "ready" | "signed-out" | "error";
+export { chatAttachmentCostLabel, chatAttachmentIsActive } from "./chat/chat-attachments";
+
 type ChatUpgradeReason = "dreamcoins" | "messages";
 
-type VoiceClipRequestResult = {
-  url: string | null;
-  quote?: VoiceClipQuote;
-  errorMessage?: string;
-  reason:
-    | "allowance_exhausted"
-    | "disabled"
-    | "failed"
-    | "insufficient_balance"
-    | "confirmation_required"
-    | null;
-};
-
-const BLOCKED_ASSISTANT_NOTICE = "I can’t help with that request.";
 const SPEAKER_SELECT_FAILED = "Couldn't select that Character. Try again.";
 const CHAT_RELEASE_HANDOFF_NOTICE =
   "This Character was updated, so we opened a new chat. Your unsent message is ready below. The earlier conversation stays in your chats.";
 // A reply is only auto-followed while the reader is parked within this many
 // pixels of the bottom; above that the viewport belongs to the reader.
 const STICK_TO_BOTTOM_SLACK_PX = 120;
-const PROACTIVE_POLL_MS = 60_000;
-const COMPOSER_BUTTON_CLASS =
-  "inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] text-white disabled:opacity-70";
 
 export function chatUpgradeLinkLabel(reason: ChatUpgradeReason) {
   if (reason === "dreamcoins") return "Get more dreamcoins";
@@ -143,31 +106,46 @@ function scrollChatToEnd(behavior: ScrollBehavior) {
   window.scrollTo({ top: document.documentElement.scrollHeight, behavior });
 }
 
-const ACTIVE_CHAT_ATTACHMENT_STATUSES = new Set([
-  "requesting",
-  "accepted",
-  "queued",
-  "running",
-]);
-
-export function chatAttachmentIsActive(status: string, errorCode?: string | null): boolean {
-  return ACTIVE_CHAT_ATTACHMENT_STATUSES.has(status) && errorCode !== "provider_outcome_unknown";
-}
-
-// SPEC: 聊天里出的图，在它还在跑和交付之后都要能看到扣了多少币。
-// INTENT: 语音有一张完整的报价确认卡，图片是模型按用户的话直接下单的，用户此前
-//   在聊天里看不到任何金额，只能事后去 Profile 对账。失败/退款态不报这个数——
-//   这里拿不到实际退回多少，说「8 coins」会变成谎话。
-export function chatAttachmentCostLabel(attachment: {
-  costDreamcoins?: number | null;
-  status: string;
-}): string | null {
-  const cost = attachment.costDreamcoins;
-  if (typeof cost !== "number" || cost <= 0) return null;
-  if (!chatAttachmentIsActive(attachment.status) && attachment.status !== "completed") {
-    return null;
+// SPEC: Everything the page derives from the message list, computed in one pass
+//       per change instead of one scan (or copy) per question per render.
+export function chatMessagesSummary(messages: readonly ChatMessage[], options: { groupCharacterId?: string | null } = {}) {
+  let hasActiveAttachment = false;
+  let hasUnconfirmedAttachment = false;
+  for (const message of messages) {
+    for (const attachment of message.attachments ?? []) {
+      if (chatAttachmentIsActive(attachment.status, attachment.errorCode)) hasActiveAttachment = true;
+      if (chatAttachmentIsUnconfirmed(attachment.status, attachment.errorCode)) hasUnconfirmedAttachment = true;
+    }
   }
-  return `${cost} ${cost === 1 ? "coin" : "coins"}`;
+  let latestUserIndex = -1;
+  let latestCompletedReply: ChatMessage | undefined;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]!;
+    if (latestUserIndex < 0 && message.role === "user") latestUserIndex = index;
+    if (!latestCompletedReply && message.role === "assistant" && message.status === "sent" && message.turnId
+      && (options.groupCharacterId === undefined || message.characterId === options.groupCharacterId)) {
+      latestCompletedReply = message;
+    }
+    if (latestUserIndex >= 0 && latestCompletedReply) break;
+  }
+  let latestReplyInProgress = false;
+  if (latestUserIndex >= 0) {
+    for (let index = latestUserIndex + 1; index < messages.length; index += 1) {
+      const message = messages[index]!;
+      if (message.role === "assistant" && (message.status === "generating" || message.status === "pending")) {
+        latestReplyInProgress = true;
+        break;
+      }
+    }
+  }
+  return {
+    hasActiveAttachment,
+    hasUnconfirmedAttachment,
+    hasGeneratingReply: chatStreamMessagesNeedReconciliation(messages),
+    latestUserMessageId: latestTurnUserMessageId(messages),
+    latestReplyInProgress,
+    latestCompletedReply,
+  };
 }
 
 export function ChatSessionClient({ id, groupMode = false }: Readonly<{ id: string; groupMode?: boolean }>) {
@@ -189,7 +167,10 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     if (!mountedRef.current) throw new DOMException("Conversation owner changed", "AbortError");
     return response;
   }, [gatedFetch]);
-  const [title, setTitle] = useState("Chat");
+  const [metadata, dispatchMetadata] = useReducer(chatSessionMetadataReducer, INITIAL_CHAT_SESSION_METADATA);
+  const { title, characterId, group, canUpdateIdentity, characterImage, memberImages, memoryEnabled, proactiveEnabled, continuation } = metadata;
+  const conversationArchived = metadata.archived;
+  const conversationReadOnly = chatSessionIsReadOnly(metadata);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loadState, setLoadState] = useState<ChatLoadState>("loading");
   const [content, setContent] = useState("");
@@ -197,19 +178,11 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
   const [status, setStatus] = useState<string | null>(null);
   const { openReport, reportDialog } = useReportDialog(setStatus);
   const [upgradeReason, setUpgradeReason] = useState<ChatUpgradeReason | null>(null);
-  const [characterId, setCharacterId] = useState<string | null>(null);
-  const [group, setGroup] = useState<ChatSession["group"]>(undefined);
-  const [conversationArchived, setConversationArchived] = useState(false);
-  const [continuation, setContinuation] = useState<NonNullable<ChatSession["continuation"]>>("available");
-  const conversationReadOnly = conversationArchived || continuation !== "available";
   const [speakerPending, setSpeakerPending] = useState(false);
   const [sendOutcomeUnknown, setSendOutcomeUnknown] = useState(false);
   const selectedSpeakerRef = useRef<string | null>(null);
   const executionSessionId = group?.selectedSessionId ?? id;
   const sessionPath = `/api/v1/chat/${groupMode ? "groups" : "sessions"}/${encodeURIComponent(id)}`;
-  const [canUpdateIdentity, setCanUpdateIdentity] = useState(false);
-  const [characterImage, setCharacterImage] = useState<string | null>(null);
-  const [memberImages, setMemberImages] = useState<Record<string, string>>({});
   // SPEC: 只在这段会话真的能出视频时才给 Video / Animate 入口。
   // INTENT: 后端 GET /api/v1/chat/:id/video 早就返回 capability，前台却一处都没读，
   //   于是 chat_video 关着时按钮照样在、点开才看到「currently unavailable」；群聊更糟，
@@ -217,36 +190,21 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
   //   直接不给入口；entitled=false 用户能自己升级，保留入口走付费墙。
   const [videoCapability, setVideoCapability] = useState<{ sessionId: string; enabled: boolean } | null>(null);
   const videoEnabled = ageGateAccepted && !conversationReadOnly && !groupMode && videoCapability?.sessionId === id && videoCapability.enabled;
-  const [memoryEnabled, setMemoryEnabled] = useState(true);
-  const [proactiveEnabled, setProactiveEnabled] = useState(false);
   const [memoryPending, setMemoryPending] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [voiceCallOpen, setVoiceCallOpen] = useState(false);
-  const [voicePreparingIds, setVoicePreparingIds] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
-  const [voicePlayingId, setVoicePlayingId] = useState<string | null>(null);
-  const [voiceConfirmation, setVoiceConfirmation] = useState<{
-    messageId: string;
-    text: string;
-    quote: VoiceClipQuote;
-  } | null>(null);
-  const [editingTarget, setEditingTarget] = useState<{ messageId: string; attempt: number; originalContent: string } | null>(null);
+  const [editingTarget, setEditingTarget] = useState<ChatEditingTarget | null>(null);
   const [editingContent, setEditingContent] = useState("");
   const [editingPending, setEditingPending] = useState(false);
   const editIntentRef = useRef<{ content: string; allowPaidImage: boolean; idempotencyKey: string } | null>(null);
   const [deleteConfirmMessageId, setDeleteConfirmMessageId] = useState<string | null>(null);
-  const [variationPendingMediaId, setVariationPendingMediaId] =
-    useState<string | null>(null);
-  const [retryingImageIds, setRetryingImageIds] = useState<ReadonlySet<string>>(() => new Set());
   const [receiptOwnerScope, setReceiptOwnerScope] = useState<string | null>(null);
   // The focus re-check clears the scope while it asks; this keeps the last one
   // so a network blip can hand it back instead of hiding pending receipts.
   const receiptOwnerScopeRef = useRef<string | null>(null);
   useEffect(() => { if (receiptOwnerScope) receiptOwnerScopeRef.current = receiptOwnerScope; }, [receiptOwnerScope]);
   const [receiptWarning, setReceiptWarning] = useState("");
-  const [videoForm, setVideoForm] = useState<{ conversationId: string; ownerScope: string; sourceId?: string; prompt?: string; characterId: string | null } | null>(null);
   const {
     receipts: generationReceipts,
     checkingKeys: checkingReceiptKeys,
@@ -259,29 +217,28 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
   const [jumpToLatestVisible, setJumpToLatestVisible] = useState(false);
   const pinnedToBottomRef = useRef(true);
   const sendIntentRef = useRef<ChatSendIntent | null>(null);
-  const imageRetryPendingRef = useRef(new Set<string>());
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const voicePlaybackIntentRef = useRef(0);
-  const voicePlaybackMessageIdRef = useRef<string | null>(null);
-  const voiceClipRequestsRef =
-    useRef<Map<string, { key: string; promise: Promise<VoiceClipRequestResult> }>>(new Map());
-  const voiceClipUrlsRef = useRef<Map<string, { key: string; url: string }>>(new Map());
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const composerDockRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
-  function stopVoice() {
-    voicePlaybackIntentRef.current += 1;
-    voicePlaybackMessageIdRef.current = null;
-    const audio = audioRef.current;
-    if (audio) {
-      audio.pause();
-      audio.src = "";
-    }
-    audioRef.current = null;
-    setVoicePlayingId(null);
-    setVoiceConfirmation(null);
-  }
+  const summary = useMemo(
+    () => chatMessagesSummary(messages, { groupCharacterId: group ? characterId : undefined }),
+    [messages, group, characterId],
+  );
+  const { hasActiveAttachment, hasUnconfirmedAttachment, hasGeneratingReply } = summary;
+  const voiceInputReadOnlyRef = useRef(false);
+  const voice = useVoicePlayback({
+    fetchForSession,
+    receiptContext: generationReceiptContext,
+    messages,
+    executionSessionId,
+    characterId,
+    isRecording: () => voiceInputReadOnlyRef.current,
+    onStatus: setStatus,
+    onInsufficientBalance: () => setUpgradeReason("dreamcoins"),
+    onPlaybackStart: () => { setStatus(null); setUpgradeReason(null); },
+  });
+  const stopVoice = voice.stop;
   const voiceInput = useVoiceInput({
     sessionPath,
     ownerScope: receiptOwnerScope,
@@ -297,17 +254,18 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
         });
       }
     },
-    beforeRecording: stopVoice,
+    beforeRecording: () => stopVoice(),
   });
+  useLayoutEffect(() => { voiceInputReadOnlyRef.current = voiceInput.readOnly; });
   const delivery = useChatReplyDelivery({
     conversationId: id,
     messages,
     setMessages,
-    readSession: fetchSession,
+    readSession: (signal) => sync.fetchSession(signal),
     request: fetchForSession,
     onSession: applySessionMetadata,
     onSessionReadError: revokeUnavailableSession,
-    onRepliesInvalidated: invalidateReplyVoices,
+    onRepliesInvalidated: (messageIds) => voice.invalidate(messageIds),
     onStatus: setStatus,
   });
   const stoppingReply = delivery.stopping;
@@ -317,28 +275,59 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     beforeConnect: () => { stopVoice(); voiceInput.cancel(); },
     onTurn: (turn) => delivery.receiveTurn(turn),
   });
+  const media = useChatMediaActions({
+    conversationId: id,
+    characterId,
+    receiptOwnerScope,
+    delivery,
+    fetchForSession,
+    receiptContext: generationReceiptContext,
+    refreshReceipts: refreshGenerationReceipts,
+    recoverReceipt: recoverGenerationReceipt,
+    setMessages,
+    onStatus: setStatus,
+    onInsufficientBalance: () => setUpgradeReason("dreamcoins"),
+    onClearDeleteConfirm: () => setDeleteConfirmMessageId(null),
+    onVideoRequested: () => setContent(""),
+  });
+  const sync = useChatSessionSync({
+    id,
+    groupMode,
+    sessionPath,
+    viewer,
+    ageGateAccepted,
+    delivery,
+    fetchForSession,
+    selectedSpeakerRef,
+    receiptOwnerScopeRef,
+    setLoadState,
+    onStatus: setStatus,
+    onReset: resetConversation,
+    onLoaded: () => {
+      const handedOver = groupMode ? null : takeChatReleaseHandoff(id);
+      if (handedOver !== null) {
+        setContent((current) => current || handedOver);
+        setStatus(CHAT_RELEASE_HANDOFF_NOTICE);
+      }
+    },
+    suspendReceipts: suspendGenerationReceipts,
+    resumeReceipts: resumeGenerationReceipts,
+    setReceiptOwnerScope,
+    reconciliation: {
+      hasActiveAttachment,
+      hasUnconfirmedAttachment,
+      hasGeneratingReply,
+      proactiveEnabled,
+      writing: pending || editingPending || memoryPending,
+    },
+  });
   useLayoutEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
       suspendGenerationReceipts(true);
-      audioRef.current?.pause();
-      if (audioRef.current) audioRef.current.src = "";
-      audioRef.current = null;
-      voicePlaybackIntentRef.current += 1;
     };
   }, [suspendGenerationReceipts]);
-  const hasActiveAttachment = messages.some((message) =>
-    (message.attachments ?? []).some((attachment) =>
-      chatAttachmentIsActive(attachment.status, attachment.errorCode),
-    ),
-  );
-  // The sweeper can settle an unconfirmed result while nobody is sending anything.
-  const hasUnconfirmedAttachment = messages.some((message) =>
-    (message.attachments ?? []).some((attachment) => attachment.errorCode === "provider_outcome_unknown" &&
-      ACTIVE_CHAT_ATTACHMENT_STATUSES.has(attachment.status)),
-  );
-  const hasGeneratingReply = chatStreamMessagesNeedReconciliation(messages);
   const canSend = canSubmitChatMessage(
     content,
     pending || stoppingReply || speakerPending || conversationReadOnly || voiceInput.blocksSend || voiceCall.active,
@@ -399,70 +388,21 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     if (!pinnedToBottomRef.current) setJumpToLatestVisible(true);
   }, [messages]);
 
-  useEffect(() => {
-    if (!ageGateAccepted || !viewer.identity) return;
-    let cancelled = false;
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      delivery.reset();
-      pinnedToBottomRef.current = true;
-      setJumpToLatestVisible(false);
-      setVoiceCallOpen(false);
-      audioRef.current?.pause();
-      audioRef.current = null;
-      voicePlaybackIntentRef.current += 1;
-      voiceClipRequestsRef.current.clear();
-      voiceClipUrlsRef.current.clear();
-      setVoicePreparingIds(new Set());
-      setVoicePlayingId(null);
-      setReceiptOwnerScope(null);
-      suspendGenerationReceipts(true);
-      setReceiptWarning("");
-      imageRetryPendingRef.current.clear();
-      setRetryingImageIds(new Set());
-      setVariationPendingMediaId(null);
-      setTitle("Chat");
-      setMessages([]);
-      setLoadState("loading");
-      setStatus(null);
-      setCharacterId(null);
-      setGroup(undefined);
-      selectedSpeakerRef.current = null;
-      setConversationArchived(false);
-      setContinuation("available");
-      setSendOutcomeUnknown(false);
-      setCanUpdateIdentity(false);
-      if (viewer.identity?.kind === "anonymous") {
-        setLoadState("signed-out");
-        return;
-      }
-      const read = delivery.context();
-      read.refresh(controller.signal)
-        .then((session) => {
-          if (cancelled || !session) return;
-          setLoadState("ready");
-          const handedOver = groupMode ? null : takeChatReleaseHandoff(id);
-          if (handedOver !== null) {
-            setContent((current) => current || handedOver);
-            setStatus(CHAT_RELEASE_HANDOFF_NOTICE);
-          }
-        })
-        .catch((error: unknown) => {
-          if (cancelled || !read.isCurrent()) return;
-          setLoadState(isChatAuthError(error) ? "signed-out" : "error");
-          setStatus(null);
-        });
-    }, 0);
-    return () => {
-      cancelled = true;
-      delivery.context({ invalidate: true });
-      controller.abort();
-      window.clearTimeout(timer);
-    };
-    // Same-owner refreshes use the background focus check; a confirmed owner
-    // or route change gets a new private subtree and this initial loader.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ageGateAccepted, id, groupMode, viewer.identity]);
+  function resetConversation() {
+    pinnedToBottomRef.current = true;
+    setJumpToLatestVisible(false);
+    setVoiceCallOpen(false);
+    voice.reset();
+    setReceiptOwnerScope(null);
+    suspendGenerationReceipts(true);
+    setReceiptWarning("");
+    media.reset();
+    dispatchMetadata({ type: "reset" });
+    setMessages([]);
+    setStatus(null);
+    selectedSpeakerRef.current = null;
+    setSendOutcomeUnknown(false);
+  }
 
   useEffect(() => {
     if (groupMode || !ageGateAccepted || viewer.identity?.kind !== "user") return;
@@ -486,265 +426,6 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     return () => controller.abort();
   }, [ageGateAccepted, groupMode, id, viewer.identity, fetchForSession]);
 
-  useEffect(() => {
-    if (!ageGateAccepted || viewer.identity?.kind !== "user") return;
-    let controller: AbortController | null = null;
-    const focus = () => {
-      controller?.abort();
-      controller = new AbortController();
-      const signal = controller.signal;
-      const read = delivery.context({ invalidate: true });
-      const scopeBefore = receiptOwnerScopeRef.current;
-      suspendGenerationReceipts(true);
-      setReceiptOwnerScope(null);
-      // INTENT: re-validate in the background. Swapping the conversation for a
-      // spinner on every window focus dropped the scroll position, the composer
-      // and any playing voice; the page only changes when the owner check fails.
-      void read.refresh(signal).then((session) => {
-        if (!session) return;
-        setLoadState("ready");
-      }).catch(() => {
-        if (signal.aborted || !read.isCurrent() || !scopeBefore) return;
-        resumeGenerationReceipts(scopeBefore);
-        setReceiptOwnerScope(scopeBefore);
-      });
-    };
-    window.addEventListener("focus", focus);
-    return () => { controller?.abort(); window.removeEventListener("focus", focus); };
-    // Revalidate the same session's owner, never the cached viewer from /me.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ageGateAccepted, id, suspendGenerationReceipts, viewer.identity]);
-
-  useEffect(() => {
-    if (!ageGateAccepted) return;
-    const reconciling = hasActiveAttachment || hasGeneratingReply;
-    if (
-      // INTENT: a proactive check-in lands while nobody is sending anything, so
-      // without this the open page only saw it after a refocus. A slow read is
-      // enough — check-ins are hours apart; the list marker covers other pages.
-      (!reconciling && !hasUnconfirmedAttachment && !proactiveEnabled) ||
-      pending ||
-      editingPending ||
-      memoryPending
-    ) {
-      return;
-    }
-    let cancelled = false;
-    let timer: number | undefined;
-    let controller: AbortController | null = null;
-    let failureCount = 0;
-    const settledPollMs = hasUnconfirmedAttachment ? UNCONFIRMED_GENERATION_POLL_MS : PROACTIVE_POLL_MS;
-
-    const schedule = (delay: number) => {
-      if (cancelled) return;
-      timer = window.setTimeout(() => void poll(), delay);
-    };
-    const poll = async () => {
-      // A visibility wake-up must not replace the in-flight read's abort handle.
-      if (cancelled || controller) return;
-      if (document.hidden) {
-        schedule(2_000);
-        return;
-      }
-      controller = new AbortController();
-      try {
-        const session = await delivery.refresh(controller.signal);
-        if (cancelled || !session) return;
-        failureCount = 0;
-        if (reconciling && chatStreamLatestReplyFailed(session.messages)) {
-          setStatus("Reply failed to load. Please try again.");
-        }
-      } catch (error) {
-        if (
-          !(error instanceof DOMException && error.name === "AbortError")
-        ) {
-          failureCount += 1;
-        }
-      } finally {
-        controller = null;
-        if (!cancelled) {
-          schedule(reconciling ? Math.min(12_000, 1_500 * 2 ** failureCount) : settledPollMs);
-        }
-      }
-    };
-    const onVisibilityChange = () => {
-      if (document.hidden || cancelled) return;
-      if (timer !== undefined) window.clearTimeout(timer);
-      schedule(0);
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    schedule(reconciling ? 1_500 : settledPollMs);
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
-      controller?.abort();
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-    // The serialized poller is keyed by session and whether reconciliation is needed.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    ageGateAccepted,
-    editingPending,
-    hasActiveAttachment,
-    hasUnconfirmedAttachment,
-    hasGeneratingReply,
-    id,
-    memoryPending,
-    pending,
-    proactiveEnabled,
-  ]);
-
-  function invalidateReplyVoices(messageIds: readonly string[]) {
-    for (const messageId of messageIds) {
-      if (voicePlaybackMessageIdRef.current === messageId) stopVoice();
-      voiceClipRequestsRef.current.delete(messageId);
-      voiceClipUrlsRef.current.delete(messageId);
-    }
-    setVoicePreparingIds(current => new Set([...current].filter(id => !messageIds.includes(id))));
-  }
-
-  async function requestVoiceClip(
-    messageId: string,
-    text: string,
-    acceptedQuoteToken?: string,
-  ): Promise<VoiceClipRequestResult> {
-    const receiptContext = generationReceiptContext();
-    const playbackIntent = voicePlaybackIntentRef.current;
-    // INVARIANT: a regenerated Turn keeps its message id but changes its text
-    // and attempt. Its audio must never come from the discarded reply.
-    const message = messages.find((message) => message.id === messageId);
-    const sourceSessionId = message?.sessionId ?? executionSessionId;
-    const sourceCharacterId = message?.characterId ?? characterId;
-    const key = JSON.stringify([sourceSessionId, message?.attempt, text]);
-    const cachedClip = voiceClipUrlsRef.current.get(messageId);
-    if (cachedClip?.key === key) return { url: cachedClip.url, reason: null };
-    const existingRequest = voiceClipRequestsRef.current.get(messageId);
-    if (existingRequest?.key === key) return existingRequest.promise;
-
-    setVoicePreparingIds((current) => new Set(current).add(messageId));
-    const request = (async (): Promise<VoiceClipRequestResult> => {
-      try {
-        const body = { characterId: sourceCharacterId, messageId, sessionId: sourceSessionId, intent: "play" };
-        const headers = { "content-type": "application/json", "x-idream-viewer-scope": receiptContext.persistence.ownerScope };
-        if (!acceptedQuoteToken) {
-          const quoted = await fetchForSession("/api/v1/generation/voice/quote", {
-            method: "POST", headers, cache: "no-store", body: JSON.stringify(body),
-          });
-          const payload = await quoted.json().catch(() => null);
-          if (!receiptContext.isCurrent() || playbackIntent !== voicePlaybackIntentRef.current) return { url: null, reason: "failed" };
-          if (quoted.status === 402) return { url: null, reason: "insufficient_balance" };
-          if (!quoted.ok) return { url: null, reason: "failed", errorMessage: chatFailureCopy(payload, "Voice price could not load. Press Play to check again.") };
-          const quote = voiceClipQuoteSchema.parse(payload?.data?.quote);
-          if (!quote.accepted && !quote.alreadyDelivered) {
-            if (!quote.quoteToken) return { url: null, reason: "failed", errorMessage: "Voice price could not be confirmed. Press Play to check again." };
-            return { url: null, reason: "confirmation_required", quote };
-          }
-          acceptedQuoteToken = quote.quoteToken ?? undefined;
-        }
-        // Stopping playback or starting dictation revokes permission to spend
-        // on a quote that completed after the reader changed their intent.
-        if (!receiptContext.isCurrent() || playbackIntent !== voicePlaybackIntentRef.current) return { url: null, reason: "failed" };
-        const response = await fetchForSession("/api/v1/generation/voice", {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ ...body, quoteToken: acceptedQuoteToken }),
-        });
-        if (response.status === 402) return { url: null, reason: "insufficient_balance" };
-        if (!response.ok) return { url: null, reason: "failed", errorMessage: chatFailureCopy(await response.json().catch(() => null), "Voice playback could not be confirmed. Press Play to check the original request.") };
-        const payload = (await response.json()) as {
-          data?: {
-            contentUrl?: string;
-            reason?: "allowance_exhausted" | "disabled";
-          };
-        };
-        if (!receiptContext.isCurrent()) return { url: null, reason: "failed" };
-        const url = payload.data?.contentUrl;
-        if (url) {
-          if (voiceClipRequestsRef.current.get(messageId)?.key === key) {
-            voiceClipUrlsRef.current.set(messageId, { key, url });
-          }
-          return { url, reason: null };
-        }
-        return {
-          url: null,
-          reason: payload.data?.reason ?? "failed",
-        };
-      } catch {
-        return { url: null, reason: "failed" };
-      }
-    })().finally(() => {
-      if (voiceClipRequestsRef.current.get(messageId)?.key !== key) return;
-      voiceClipRequestsRef.current.delete(messageId);
-      setVoicePreparingIds((current) => {
-        const next = new Set(current);
-        next.delete(messageId);
-        return next;
-      });
-    });
-    voiceClipRequestsRef.current.set(messageId, { key, promise: request });
-    return request;
-  }
-
-  // SPEC: Voice synthesis starts only after the reader presses Play. Repeated
-  // plays of the same selected reply reuse its clip.
-  async function playMessage(messageId: string, text: string, acceptedQuoteToken?: string) {
-    if (voiceInput.readOnly) {
-      setStatus("Finish recording before playing voice.");
-      return;
-    }
-    if (!characterId || !text.trim()) return;
-    if (voicePlayingId === messageId) {
-      stopVoice();
-      return;
-    }
-    stopVoice();
-    voicePlaybackMessageIdRef.current = messageId;
-    const playbackIntent = voicePlaybackIntentRef.current;
-    setStatus(null);
-    setUpgradeReason(null);
-    try {
-      const result = await requestVoiceClip(messageId, text, acceptedQuoteToken);
-      if (playbackIntent !== voicePlaybackIntentRef.current) return;
-      if (result.reason === "confirmation_required" && result.quote) {
-        setVoiceConfirmation({ messageId, text, quote: result.quote });
-        return;
-      }
-      if (result.reason === "insufficient_balance") {
-        setUpgradeReason("dreamcoins");
-        setStatus("Voice playback needs more dreamcoins.");
-        return;
-      }
-      if (!result.url) {
-        setStatus(result.errorMessage ?? "Voice playback failed. Please try again.");
-        return;
-      }
-      const clipKey = voiceClipUrlsRef.current.get(messageId)?.key;
-      const audio = new Audio(result.url);
-      audioRef.current = audio;
-      audio.onended = () => {
-        if (playbackIntent !== voicePlaybackIntentRef.current) return;
-        setVoicePlayingId((current) => (current === messageId ? null : current));
-      };
-      audio.onerror = () => {
-        if (playbackIntent !== voicePlaybackIntentRef.current) return;
-        const cached = voiceClipUrlsRef.current.get(messageId);
-        // A deleted/unreadable clip must be revalidated on the next explicit
-        // Play. An old player's error must never evict a replacement clip.
-        if (cached?.key === clipKey && cached?.url === result.url) {
-          voiceClipUrlsRef.current.delete(messageId);
-        }
-        setStatus("Voice playback failed. Please try again.");
-        setVoicePlayingId((current) => (current === messageId ? null : current));
-      };
-      await audio.play();
-      if (playbackIntent !== voicePlaybackIntentRef.current) return;
-      setVoicePlayingId(messageId);
-    } catch {
-      if (playbackIntent !== voicePlaybackIntentRef.current) return;
-      setStatus("Voice playback failed. Please try again.");
-    }
-  }
-
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (voiceInput.blocksSend || voiceCall.active) return;
@@ -767,7 +448,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     const videoText = mentionedName ? text.slice(mentionedName.length + 1).replace(/^[,:]\s*/, "").trim() : text;
     // With video unavailable here the words are just roleplay and go to the character.
     if (!allowPaidImage && videoEnabled && isExplicitChatVideoRequest(videoText) && receiptOwnerScope) {
-      openVideoRequest(undefined, videoText);
+      media.openVideoRequest(undefined, videoText);
       return;
     }
     const prepared = prepareChatSendIntent(sendIntentRef.current, { sessionId: id, content: text, characterId, allowPaidImage }, sendOutcomeUnknown);
@@ -824,7 +505,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
         if ((deletedSend || expiredProtocol) && sendIntentRef.current === intent) sendIntentRef.current = null;
         const updatedCharacterId = response.status === 410 && !groupMode ? chatReleaseChangedCharacterId(failure) : null;
         if (updatedCharacterId && await openUpdatedCharacterChat(updatedCharacterId, text)) return;
-        if (response.status === 410) setContinuation(updatedCharacterId ? "character_release_changed" : "character_unavailable");
+        if (response.status === 410) dispatchMetadata({ type: "continuation", continuation: updatedCharacterId ? "character_release_changed" : "character_unavailable" });
         setSendOutcomeUnknown(response.status >= 500);
         setStatus(updatedCharacterId
           ? "This Character was updated, so this chat is now read-only. Your message is still below. Open the Character again to continue in a new chat."
@@ -886,7 +567,9 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     openReport({ kind: "record", targetType: "chat_message", targetId: messageId });
   }
 
-  function beginEdit(message: ChatMessage) {
+  function beginEdit(messageId: string) {
+    const message = messages.find(item => item.id === messageId);
+    if (!message) return;
     const attempt = messages.find(reply => reply.role === "assistant" && reply.replyToMessageId === message.id)?.attempt;
     if (typeof attempt !== "number") {
       setStatus("Reload this chat before editing the message.");
@@ -927,48 +610,24 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     }
   }
 
-  async function fetchSession(signal?: AbortSignal): Promise<ChatSession> {
-    const response = await fetchForSession(`${sessionPath}${groupMode && selectedSpeakerRef.current ? `?speaker=${encodeURIComponent(selectedSpeakerRef.current)}` : ""}`, {
-      cache: "no-store",
-      signal,
-    });
-    if (!response.ok) throw chatSessionFetchError(response.status);
-    const session = parseChatSessionDetailResponse(
-      await response.json(),
-    ).session;
-    if (session.id !== id) throw new Error("Chat unavailable");
-    if (groupMode !== Boolean(session.group)) throw new Error("Chat unavailable");
-    if (viewer.scope && session.ownerScope !== viewer.scope) throw chatSessionFetchError(403);
-    if (viewer.identity?.kind === "anonymous" && session.ownerScope.startsWith("user:")) throw chatSessionFetchError(403);
-    return session;
-  }
-
   function revokeUnavailableSession(error: unknown) {
     const signedOut = isChatAuthError(error);
     const status = (error as { status?: unknown } | null)?.status;
     if (!signedOut && status !== 403 && status !== 404) return;
-    stopVoice();
+    voice.reset();
     delivery.reset();
     suspendGenerationReceipts(true);
     setReceiptOwnerScope(null);
     // Header, Scene, and drawers can outlive the ready-state branch.
-    voiceClipRequestsRef.current.clear();
-    voiceClipUrlsRef.current.clear();
     receiptOwnerScopeRef.current = null;
     sendIntentRef.current = null;
     setMessages([]);
     setContent("");
-    setCharacterId(null);
-    setCharacterImage(null);
-    setMemberImages({});
-    setGroup(undefined);
+    dispatchMetadata({ type: "reset" });
     selectedSpeakerRef.current = null;
-    setProactiveEnabled(false);
-    setVoicePreparingIds(new Set());
     setSessionsOpen(false);
     setMemoryOpen(false);
-    setVideoForm(null);
-    setTitle("Chat");
+    media.closeVideoForm();
     setStatus(null);
     setLoadState(signedOut ? "signed-out" : "error");
   }
@@ -982,21 +641,10 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     }
     resumeGenerationReceipts(session.ownerScope);
     setReceiptOwnerScope(session.ownerScope);
-    // 角色行可能已经不存在了（创作者注销会硬删他的角色，且不通知 chat）。
-    // BFF 在那种情况下把 name 兜成空串，直接用会渲染出一个无名会话头。
-    setTitle(session.title || session.character.name || "Unavailable character");
     setDeleteConfirmMessageId(null);
-    if (session.characterId) setCharacterId(session.characterId);
     selectedSpeakerRef.current = session.characterId ?? null;
-    setGroup(session.group);
-    setConversationArchived(session.status === "archived");
-    setContinuation(session.continuation ?? "available");
+    dispatchMetadata({ type: "session", session });
     if (session.status === "archived" || (session.continuation && session.continuation !== "available")) cancelEdit();
-    setCanUpdateIdentity(Boolean(session.character.canUpdateIdentity));
-    setCharacterImage(session.character.image ?? null);
-    setMemberImages(session.memberImages ?? {});
-    if (typeof session.memoryEnabled === "boolean") setMemoryEnabled(session.memoryEnabled);
-    setProactiveEnabled(session.proactiveEnabled === true);
   }
 
   async function changeSpeaker(nextCharacterId: string) {
@@ -1039,7 +687,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
         return;
       }
       const row = (await response.json()) as { memoryEnabled?: boolean };
-      setMemoryEnabled(typeof row.memoryEnabled === "boolean" ? row.memoryEnabled : next);
+      dispatchMetadata({ type: "memory", enabled: typeof row.memoryEnabled === "boolean" ? row.memoryEnabled : next });
     } catch {
       setStatus("Couldn't update memory. Please try again.");
     } finally {
@@ -1076,157 +724,6 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     }
   }
 
-  async function retryImageAttachment(attachment: ChatAttachment, confirmedQuote?: GenerationQuoteAuthority) {
-    const jobId = attachment.generationJobId;
-    if (!jobId || imageRetryPendingRef.current.has(attachment.id)) return;
-    imageRetryPendingRef.current.add(attachment.id);
-    setRetryingImageIds(new Set(imageRetryPendingRef.current));
-    setStatus(null);
-    setDeleteConfirmMessageId(null);
-    const read = delivery.context({ invalidate: true });
-    let receiptContext: ReturnType<typeof generationReceiptContext> | undefined;
-    try {
-      receiptContext = generationReceiptContext();
-      const current = () => read.isCurrent() && receiptContext!.isCurrent();
-      let quoteAuthority = confirmedQuote;
-      if (!quoteAuthority && !hasUnconfirmedGenerationRetry(jobId, receiptContext.keys.retry)) {
-        const response = await fetchForSession(`/api/v1/generation/jobs/${encodeURIComponent(jobId)}/retry/quote`, { method: "POST", cache: "no-store", headers: { "x-idream-viewer-scope": receiptContext.persistence.ownerScope } });
-        const payload: unknown = await response.json().catch(() => null);
-        if (!response.ok) throw new GenerationRequestError(apiPayloadErrorMessage(payload) ?? "Couldn't check the media retry price.", response.status);
-        const { quote } = parseGenerationRetryQuoteResponse(payload);
-        quoteAuthority = { profileId: quote.profileId, profileVersion: quote.profileVersion, routeFingerprint: quote.routeFingerprint, pricingFingerprint: quote.pricing.fingerprint, outputCount: quote.outputCount, costDreamcoins: quote.costDreamcoins };
-      }
-      if (!current()) return;
-      const job = await requestGenerationRetryWithExactAuthority({ jobId, quoteAuthority, idempotencyKeys: receiptContext.keys.retry, persistence: receiptContext.persistence, isCurrent: current });
-      if (!current()) return;
-      setMessages(current => current.map(message => ({ ...message, attachments: message.attachments?.map(item => item.id === attachment.id
-        ? { ...item, generationJobId: job.id, status: "accepted", errorCode: null, costDreamcoins: job.costDreamcoins }
-        : item) })));
-      await delivery.context({ isCurrent: current }).refresh();
-    } catch (error) {
-      if (!read.isCurrent()) return;
-      if (error instanceof GenerationRequestError && error.status === 402) setUpgradeReason("dreamcoins");
-      setStatus(error instanceof GenerationRequestError ? error.message : "Couldn't confirm the media request. Try again to check the same request.");
-    } finally {
-      if (receiptContext?.isCurrent()) refreshGenerationReceipts();
-      imageRetryPendingRef.current.delete(attachment.id);
-      setRetryingImageIds(new Set(imageRetryPendingRef.current));
-    }
-  }
-
-  function openVideoRequest(sourceId?: string, prompt?: string, sourceCharacterId = characterId) {
-    if (!receiptOwnerScope) return;
-    setVideoForm({ conversationId: id, ownerScope: receiptOwnerScope, sourceId, prompt, characterId: sourceCharacterId });
-    setStatus(null);
-  }
-
-  async function submitVideoRequest(submission: ChatVideoSubmission) {
-    const context = generationReceiptContext();
-    const read = delivery.context({ isCurrent: context.isCurrent });
-    const current = read.isCurrent;
-    try {
-      await requestChatVideoWithExactAuthority({ ...submission, idempotencyKeys: context.keys.generation, persistence: context.persistence, isCurrent: current });
-      if (!current()) return false;
-      if (!await read.refresh()) return false;
-      setContent("");
-      setStatus("Video requested. You can keep chatting while it finishes.");
-      return true;
-    } catch (error) {
-      if (!current()) return false;
-      setStatus(error instanceof GenerationRequestError ? error.message : "The video request is unconfirmed. Check the original request below before creating another.");
-      return false;
-    } finally { if (context.isCurrent()) refreshGenerationReceipts(); }
-  }
-
-  async function refreshAfterAttachmentChange() {
-    const context = generationReceiptContext();
-    await delivery.context({ isCurrent: context.isCurrent }).refresh();
-  }
-
-  async function addAttachmentToIdentity(mediaAssetId: string, sourceCharacterId = characterId) {
-    setStatus(null);
-    setDeleteConfirmMessageId(null);
-    try {
-      const response = await fetchForSession(`/api/v1/media/${encodeURIComponent(mediaAssetId)}/add-to-identity`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(sourceCharacterId ? { characterId: sourceCharacterId } : {}),
-      });
-      setStatus(response.ok ? "Added image to this character's identity." : "Couldn't update identity.");
-    } catch {
-      setStatus("Couldn't update identity.");
-    }
-  }
-
-  async function recordAttachmentIdentityFeedback(
-    mediaAssetId: string,
-    feedbackType: "identity_match" | "identity_mismatch",
-  ) {
-    setStatus(null);
-    try {
-      const response = await fetchForSession(`/api/v1/media/${encodeURIComponent(mediaAssetId)}/feedback`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ feedbackType, sourceSurface: "chat" }),
-      });
-      setStatus(
-        response.ok
-          ? feedbackType === "identity_match"
-            ? "Thanks — this image looks like the character."
-            : "Identity mismatch recorded. Use More like this for a corrected retry."
-          : "Couldn't save image feedback.",
-      );
-    } catch {
-      setStatus("Couldn't save image feedback.");
-    }
-  }
-
-  async function createAttachmentVariation(mediaAssetId: string) {
-    if (variationPendingMediaId === mediaAssetId) return;
-    setVariationPendingMediaId(mediaAssetId);
-    setStatus("Checking the exact variation price…");
-    setDeleteConfirmMessageId(null);
-    let receiptContext: ReturnType<typeof generationReceiptContext> | undefined;
-    try {
-      receiptContext = generationReceiptContext();
-      await requestMediaVariationWithExactQuote({
-        mediaId: mediaAssetId,
-        outputCount: 1,
-        consistencyMode: "balanced",
-        idempotencyKeys: receiptContext.keys.variation,
-        persistence: receiptContext.persistence,
-        isCurrent: receiptContext.isCurrent,
-      });
-      if (!receiptContext.isCurrent()) return;
-      setStatus("Variation queued. It will appear in Generate and Gallery.");
-    } catch (error) {
-      if (receiptContext && !receiptContext.isCurrent()) return;
-      setStatus(
-        error instanceof GenerationRequestError
-          ? error.message
-          : "Couldn't queue variation. Check your connection and try again.",
-      );
-    } finally {
-      if (receiptContext?.isCurrent()) refreshGenerationReceipts();
-      setVariationPendingMediaId((current) =>
-        current === mediaAssetId ? null : current,
-      );
-    }
-  }
-
-  async function checkGenerationReceipt(receipt: GenerationReceipt) {
-    const read = delivery.context();
-    try {
-      const result = await recoverGenerationReceipt(receipt);
-      if (!result || !read.isCurrent()) return;
-      setStatus("Original request confirmed. Its progress is available in Generate and Gallery.");
-      await read.refresh();
-    } catch (error) {
-      if (!read.isCurrent()) return;
-      setStatus(`${error instanceof Error ? error.message : "The request could not be confirmed."} Your original request is kept; check again or contact support.`);
-    }
-  }
-
   async function regenerate(messageId: string) {
     if (pending || hasGeneratingReply) return;
     setPending(true);
@@ -1246,10 +743,42 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     scrollChatToEnd("smooth");
   }
 
-  const latestUserMessageId = latestTurnUserMessageId(messages);
-  const latestReplyInProgress = replyAfterLatestUserInProgress(messages);
-  const latestCompletedReply = [...messages].reverse().find(message => message.role === "assistant" && message.status === "sent" && message.turnId && (!group || message.characterId === characterId));
+  const handlers = useStableHandlers<ChatMessageHandlers>({
+    beginEdit,
+    cancelEdit,
+    saveEdit: (allowPaidImage) => void saveEditedMessage(allowPaidImage),
+    changeEdit: setEditingContent,
+    report: reportMessage,
+    remove: (messageId) => void deleteMessage(messageId),
+    regenerate: (messageId) => void regenerate(messageId),
+    play: (messageId, text) => void voice.play(messageId, text),
+    confirmVoice: (confirmation) => void voice.play(confirmation.messageId, confirmation.text, confirmation.quote.quoteToken!),
+    dismissVoice: voice.dismissConfirmation,
+    retryAttachment: (attachment, authority?: GenerationQuoteAuthority) => media.retryImageAttachment(attachment, authority),
+    refreshAttachments: media.refreshAfterAttachmentChange,
+    addToIdentity: (mediaAssetId, sourceCharacterId) => void media.addAttachmentToIdentity(mediaAssetId, sourceCharacterId),
+    identityFeedback: (mediaAssetId, feedback) => void media.recordAttachmentIdentityFeedback(mediaAssetId, feedback),
+    moreLikeThis: (mediaAssetId) => void media.createAttachmentVariation(mediaAssetId),
+    animate: (mediaAssetId, sourceCharacterId) => media.openVideoRequest(mediaAssetId, undefined, sourceCharacterId),
+  });
+  const paymentHref = upgradeHrefForChatSession(id, groupMode);
+  const attachmentContext = useMemo<ChatAttachmentContext>(() => ({
+    conversationId: id,
+    executionSessionId,
+    characterId,
+    canUpdateIdentity,
+    receiptOwnerScope,
+    retryingImageIds: media.retryingImageIds,
+    variationPendingMediaId: media.variationPendingMediaId,
+    videoEnabled,
+    paymentHref,
+    fetchForViewer: fetchForSession,
+  }), [id, executionSessionId, characterId, canUpdateIdentity, receiptOwnerScope, media.retryingImageIds,
+    media.variationPendingMediaId, videoEnabled, paymentHref, fetchForSession]);
+
+  const { latestUserMessageId, latestReplyInProgress, latestCompletedReply } = summary;
   const videoSources = chatVideoSources(messages, { sessionId: executionSessionId, characterId });
+  const videoForm = media.videoForm;
 
   return (
     <main className="min-h-screen bg-[rgb(13,13,13)] text-white">
@@ -1304,14 +833,14 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
               {conversationArchived ? <p className="mt-3 text-sm text-white/80">This conversation is archived. Its history stays readable.{!group && characterId ? <> <Link className="font-bold underline" href={`/characters/${encodeURIComponent(characterId)}`}>Start a new chat</Link></> : group ? <> <Link className="font-bold underline" href="/chat/groups">Start a new group</Link></> : null}</p> : null}
               <ConversationPreferences key={executionSessionId} sessionId={executionSessionId} />
               {videoEnabled ? (
-                <button type="button" className="mt-3 inline-flex min-h-11 items-center gap-2 self-start rounded-full border border-white/20 px-4 py-2 text-sm font-bold disabled:opacity-50" disabled={!receiptOwnerScope} onClick={() => openVideoRequest()}>
+                <button type="button" className="mt-3 inline-flex min-h-11 items-center gap-2 self-start rounded-full border border-white/20 px-4 py-2 text-sm font-bold disabled:opacity-50" disabled={!receiptOwnerScope} onClick={() => media.openVideoRequest()}>
                   <Video className="size-4" />Video
                 </button>
               ) : null}
               {videoForm && videoForm.conversationId === id && videoForm.ownerScope === receiptOwnerScope ? <ChatVideoComposer
                 key={`${videoForm.ownerScope}:${videoForm.characterId}:${videoForm.sourceId ?? ""}:${videoForm.prompt ?? ""}`}
                 sources={videoSources.filter(source => source.characterId === videoForm.characterId)} initialSourceId={videoForm.sourceId} initialPrompt={videoForm.prompt}
-                ownerScope={videoForm.ownerScope} onClose={() => setVideoForm(null)} onSubmit={submitVideoRequest}
+                ownerScope={videoForm.ownerScope} onClose={media.closeVideoForm} onSubmit={media.submitVideoRequest}
               /> : null}
               {receiptWarning ? <p role="status" className="mt-3 text-sm text-white/80">{receiptWarning}</p> : null}
               {generationReceipts.length > 0 ? (
@@ -1327,266 +856,33 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
                           <p className="text-sm font-semibold">{receipt.kind === "generation_retry" ? "Media retry" : receipt.kind === "chat_video" ? "Chat video" : receipt.kind === "media_variation" ? "Image variation" : receipt.kind === "media_enhancement" ? "Image enhancement" : "Generation"} · {quote.costDreamcoins} coins</p>
                         </div>
                         <button type="button" className="min-h-11 rounded-full bg-white px-4 py-2 text-sm font-bold text-[rgb(13,13,13)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white disabled:opacity-50"
-                          disabled={checking} onClick={() => void checkGenerationReceipt(receipt)}>{checking ? "Checking…" : "Check original request"}</button>
+                          disabled={checking} onClick={() => void media.checkGenerationReceipt(receipt)}>{checking ? "Checking…" : "Check original request"}</button>
                       </li>;
                     })}
                   </ul>
                 </section>
               ) : null}
-              <div ref={messageListRef} className="mt-6 flex min-h-[55vh] flex-1 flex-col gap-3 rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4">
-                {/* 群聊没有开场白：说清楚怎么开始，而不是替角色编一句。 */}
-                {group && messages.length === 0 ? (
-                  <p className="m-auto max-w-md text-center text-sm leading-6 text-white/65" data-testid="group-chat-empty">
-                    No messages yet. Send a message to {group.members.find(member => member.characterId === characterId)?.name ?? group.members[0].name}, or @mention {group.members.map(member => member.name).join(", ")} to choose who replies.
-                  </p>
-                ) : null}
-                {messages.map((message) => {
-                  const isUser = message.role === "user";
-                  const immutableOpening = isImmutableOpeningMessage(message);
-                  const replyInProgress = chatStreamMessageIsInProgress(message);
-                  const isEditing = editingTarget?.messageId === message.id;
-                  const messageDeleteConfirm = deleteConfirmMessageId === message.id;
-                  const showMessageActions =
-                    !isEditing &&
-                    !replyInProgress &&
-                    !isLocalChatMessageId(message.id);
-                  const canEditMessage =
-                    !conversationReadOnly &&
-                    isUser &&
-                    message.id === latestUserMessageId &&
-                    !latestReplyInProgress;
-                  const canRegenerateMessage =
-                    !conversationReadOnly &&
-                    !immutableOpening &&
-                    message.replyToMessageId === latestUserMessageId &&
-                    canRegenerateChatMessage(message, hasGeneratingReply);
-                  const canDeleteMessage =
-                    !immutableOpening &&
-                    !latestReplyInProgress &&
-                    (message.id === latestUserMessageId ||
-                      message.replyToMessageId === latestUserMessageId);
-                  const canPlayMessage = !isUser && message.status === "sent" && Boolean(message.content.trim());
-                  return (
-                    <div
-                      aria-busy={!isUser && replyInProgress}
-                      aria-label={isUser ? "Your message" : "Assistant message"}
-                      className={`group relative min-w-0 max-w-full break-words rounded-[16px] px-4 py-3 text-[15px] leading-6 md:max-w-[78%] md:text-[14px] ${
-                        isUser
-                          ? "ml-auto bg-white text-[rgb(13,13,13)]"
-                          : "bg-[rgb(36,36,36)] text-white"
-                      }`}
-                      data-message-id={message.id}
-                      data-testid={`chat-message-${message.role}`}
-                      key={message.id}
-                    >
-                      {group && message.speakerName ? <p className="mb-1 text-xs font-bold opacity-75">{isUser ? `You → ${message.speakerName}` : message.speakerName}</p> : null}
-                      {isEditing ? (
-                        <form
-                          className="space-y-2"
-                          onSubmit={(event) => {
-                            event.preventDefault();
-                            void saveEditedMessage();
-                          }}
-                        >
-                          <label className="sr-only" htmlFor={`edit-${message.id}`}>
-                            Edit message
-                          </label>
-                          <textarea
-                            className="min-h-24 w-full resize-y rounded-[12px] border border-black/10 bg-white/80 p-3 text-[14px] font-medium text-[rgb(13,13,13)] outline-none focus:border-[rgb(253,95,194)]"
-                            data-testid="chat-edit-input"
-                            disabled={editingPending}
-                            id={`edit-${message.id}`}
-                            onChange={(event) => setEditingContent(event.target.value)}
-                            value={editingContent}
-                          />
-                          <div className="flex flex-wrap gap-2">
-                            <button
-                              className="inline-flex h-9 items-center gap-2 rounded-full bg-[rgb(13,13,13)] px-3 text-[12px] font-black uppercase text-white disabled:opacity-50"
-                              data-testid="chat-save-edit"
-                              disabled={editingPending || !editingContent.trim()}
-                              type="submit"
-                            >
-                              {editingPending ? (
-                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              ) : (
-                                <Check className="h-3.5 w-3.5" />
-                              )}
-                              Save
-                            </button>
-                            {editingContent.trim() && editingContent.trim() !== editingTarget?.originalContent ? (
-                              <button
-                                aria-label="Save edit as paid image request"
-                                className="inline-flex h-9 items-center gap-2 rounded-full bg-black/10 px-3 text-[12px] font-black text-[rgb(13,13,13)] disabled:opacity-50"
-                                disabled={editingPending}
-                                onClick={() => void saveEditedMessage(true)}
-                                title="Save edit as paid image request (uses Dreamcoins)"
-                                type="button"
-                              >
-                                Paid image
-                              </button>
-                            ) : null}
-                            <button
-                              className="inline-flex h-9 items-center gap-2 rounded-full bg-black/10 px-3 text-[12px] font-black uppercase text-[rgb(13,13,13)]"
-                              data-testid="chat-cancel-edit"
-                              disabled={editingPending}
-                              onClick={cancelEdit}
-                              type="button"
-                            >
-                              <X className="h-3.5 w-3.5" />
-                              Cancel
-                            </button>
-                          </div>
-                        </form>
-                      ) : !isUser && message.status === "blocked" && !message.content.trim() ? (
-                        BLOCKED_ASSISTANT_NOTICE
-                      ) : !isUser && replyInProgress ? (
-                        <>
-                          {message.content}
-                          <span
-                            aria-label="Assistant is typing"
-                            className={`inline-flex items-center gap-1 py-0.5 ${message.content.trim() ? "ml-2" : ""}`}
-                            role="status"
-                          >
-                            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white/60 [animation-delay:-0.3s] [animation-timing-function:cubic-bezier(0.16,1,0.3,1)] motion-reduce:animate-none" />
-                            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white/60 [animation-delay:-0.15s] [animation-timing-function:cubic-bezier(0.16,1,0.3,1)] motion-reduce:animate-none" />
-                            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white/60 [animation-timing-function:cubic-bezier(0.16,1,0.3,1)] motion-reduce:animate-none" />
-                          </span>
-                        </>
-                      ) : !isUser && !message.content.trim() && !(message.attachments ?? []).length ? (
-                        <span aria-label="Assistant reply unavailable" role="status">
-                          {message.status === "cancelled"
-                            ? "Reply stopped."
-                            : message.status === "failed" && message.replyInterrupted
-                              ? "Reply interrupted. Your message is saved. Regenerate to try again."
-                              : "Reply unavailable."}
-                        </span>
-                      ) : (
-                        message.content
-                      )}
-                      {!isUser && message.memoryEnabled === false ? (
-                        <p className="mt-2 text-[11px] leading-4 text-white/60" data-testid="chat-private-turn">
-                          Not saved to long-term memory. This turn stays in chat history.
-                        </p>
-                      ) : null}
-                      {!isUser && message.status === "sent" && message.replyLimitReached === true ? (
-                        <p className="mt-2 text-[11px] leading-4 text-white/60" data-testid="chat-reply-limit" role="status">
-                          Reply reached the length limit. Ask the character to continue.
-                        </p>
-                      ) : null}
-                      {(message.attachments ?? []).length > 0 ? (
-                        <div className="mt-3 space-y-2">
-                          {message.attachments?.map((attachment) => attachment.status === "awaiting_confirmation" ? (
-                            attachment.confirmationKind === "paid_media_quote" ? (
-                              <ChatMediaQuoteCard
-                                key={attachment.id}
-                                attachmentId={attachment.id}
-                                kind={attachment.kind === "generated_video" ? "generated_video" : "generated_image"}
-                                costDreamcoins={typeof attachment.costDreamcoins === "number" && attachment.costDreamcoins > 0 ? attachment.costDreamcoins : attachment.kind === "generated_video" ? 30 : 5}
-                                ownerScope={receiptOwnerScope}
-                                paymentHref={upgradeHrefForChatSession(id, groupMode)}
-                                fetchForViewer={fetchForSession}
-                                onChanged={refreshAfterAttachmentChange}
-                              />
-                            ) : (
-                              <ChatImageEditReviewCard
-                                key={attachment.id} attachmentId={attachment.id} ownerScope={receiptOwnerScope}
-                                fetchForViewer={fetchForSession} onChanged={refreshAfterAttachmentChange}
-                              />
-                            )
-                          ) : attachment.kind === "generated_video" ? <ChatVideoAttachmentCard
-                              attachment={attachment} key={attachment.id} ownerScope={receiptOwnerScope}
-                              retryPending={retryingImageIds.has(attachment.id)} onRetry={authority => retryImageAttachment(attachment, authority)} onCancelled={refreshAfterAttachmentChange}
-                            /> : (
-                            <ChatImageAttachmentCard
-                              attachment={attachment}
-                              canAddToIdentity={canUpdateIdentity}
-                              characterId={message.characterId ?? characterId}
-                              generateHref={chatGenerationHref({ characterId: message.characterId ?? characterId, sessionId: message.sessionId ?? executionSessionId, message, mediaAssetId: attachment.mediaAssetId })}
-                              key={attachment.id}
-                              paymentHref={upgradeHrefForChatSession(id, groupMode)}
-                              onAddToIdentity={
-                                attachment.mediaAssetId
-                                  ? () => addAttachmentToIdentity(attachment.mediaAssetId as string, message.characterId ?? characterId)
-                                  : undefined
-                              }
-                              onRetry={() => retryImageAttachment(attachment)}
-                              onAnimate={videoEnabled && attachment.status === "completed" && attachment.mediaAssetId && receiptOwnerScope
-                                ? () => openVideoRequest(attachment.mediaAssetId!, undefined, message.characterId ?? characterId) : undefined}
-                              retryPending={retryingImageIds.has(attachment.id)}
-                              onIdentityMatch={
-                                attachment.mediaAssetId
-                                  ? () => recordAttachmentIdentityFeedback(attachment.mediaAssetId as string, "identity_match")
-                                  : undefined
-                              }
-                              onIdentityMismatch={
-                                attachment.mediaAssetId
-                                  ? () => recordAttachmentIdentityFeedback(attachment.mediaAssetId as string, "identity_mismatch")
-                                  : undefined
-                              }
-                              onMoreLikeThis={
-                                attachment.mediaAssetId
-                                  ? () => createAttachmentVariation(attachment.mediaAssetId as string)
-                                  : undefined
-                              }
-                              moreLikeThisPending={
-                                attachment.mediaAssetId ===
-                                variationPendingMediaId
-                              }
-                            />
-                          ))}
-                        </div>
-                      ) : null}
-                      {showMessageActions ? (
-                        <MessageActions
-                          isUser={isUser}
-                          pending={pending || editingPending || voiceCall.active}
-                          voiceState={
-                            voicePreparingIds.has(message.id)
-                              ? "loading"
-                              : voicePlayingId === message.id
-                                ? "playing"
-                                : undefined
-                          }
-                          onEdit={
-                            canEditMessage
-                              ? () => beginEdit(message)
-                              : undefined
-                          }
-                          onReport={() => reportMessage(message.id)}
-                          onDelete={canDeleteMessage ? () => deleteMessage(message.id) : undefined}
-                          deleteConfirm={canDeleteMessage && messageDeleteConfirm}
-                          onRegenerate={
-                            canRegenerateMessage
-                              ? () => regenerate(message.id)
-                              : undefined
-                          }
-                          onPlay={
-                            canPlayMessage
-                              ? () => playMessage(message.id, message.content)
-                              : undefined
-                          }
-                        />
-                      ) : null}
-                      {voiceConfirmation?.messageId === message.id ? (
-                        <div role="group" aria-label="Voice playback price" className="mt-3 border-t border-white/15 pt-3 text-sm leading-6">
-                          <p className="font-semibold">{voiceConfirmation.quote.maxCostDreamcoins === 0
-                            ? "Play using your included voice minutes · no coin charge"
-                            : `Play voice · up to ${voiceConfirmation.quote.maxCostDreamcoins} Dreamcoins`}</p>
-                          <p className="mt-1 text-white/80">{voiceConfirmation.quote.allowanceMinutes > 0
-                            ? "Included minutes are used first. If they do not cover this clip, the charge will not exceed this amount."
-                            : "Paid per clip with the standard voice. Premium adds monthly voice minutes and the Character's own voice."} Your balance: {voiceConfirmation.quote.balance} coins.</p>
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            <button type="button" data-testid="chat-confirm-voice" className="min-h-11 rounded-full bg-white px-4 py-2 font-bold text-[rgb(13,13,13)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
-                              onClick={() => void playMessage(voiceConfirmation.messageId, voiceConfirmation.text, voiceConfirmation.quote.quoteToken!)}>Confirm and play</button>
-                            <button type="button" className="min-h-11 rounded-full bg-white/10 px-4 py-2 font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white" onClick={() => setVoiceConfirmation(null)}>Cancel</button>
-                          </div>
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                })}
-                <div ref={messagesEndRef} />
-              </div>
+              <ChatMessageList
+                messages={messages}
+                group={group}
+                characterId={characterId}
+                readOnly={conversationReadOnly}
+                hasGeneratingReply={hasGeneratingReply}
+                latestUserMessageId={latestUserMessageId}
+                latestReplyInProgress={latestReplyInProgress}
+                editingTarget={editingTarget}
+                editingContent={editingContent}
+                editingPending={editingPending}
+                deleteConfirmMessageId={deleteConfirmMessageId}
+                actionsPending={pending || editingPending || voiceCall.active}
+                voicePreparingIds={voice.preparingIds}
+                voicePlayingId={voice.playingId}
+                voiceConfirmation={voice.confirmation}
+                attachmentContext={attachmentContext}
+                handlers={handlers}
+                listRef={messageListRef}
+                endRef={messagesEndRef}
+              />
               {jumpToLatestVisible ? (
                 <button
                   className="sticky bottom-36 z-10 self-center rounded-full bg-white px-3 py-2 text-[12px] font-bold text-[rgb(13,13,13)] shadow-[0_2px_12px_rgba(0,0,0,0.45)] md:bottom-16"
@@ -1614,7 +910,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
                     {upgradeReason ? (
                       <>
                         {" "}
-                        <Link className="underline hover:text-white" href={upgradeHrefForChatSession(id, groupMode)}>
+                        <Link className="underline hover:text-white" href={paymentHref}>
                           {chatUpgradeLinkLabel(upgradeReason)}
                         </Link>
                         .
@@ -1639,74 +935,26 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
                 </p>
               ) : null}
               {!groupMode ? <VoiceCallControls voice={voiceCall} open={voiceCallOpen} onClose={() => setVoiceCallOpen(false)} disabled={pending || hasGeneratingReply || conversationReadOnly || voiceInput.blocksSend} /> : null}
-              <form
-                className="flex items-end gap-2 py-2"
+              <ChatComposer
+                inputId={`chat-message-${id}`}
+                value={content}
+                placeholder={group ? "Message or @name…" : "Message..."}
+                disabled={conversationReadOnly}
+                readOnly={pending || voiceInput.readOnly || voiceCall.active || (groupMode && sendOutcomeUnknown)}
+                canSend={canSend}
+                generating={hasGeneratingReply}
+                stopping={stoppingReply}
+                composerRef={composerRef}
+                callButton={!groupMode ? <VoiceCallButton voice={voiceCall} open={voiceCallOpen} onToggle={() => setVoiceCallOpen(value => !value)} /> : null}
+                voiceInputButton={<VoiceInputButton voice={voiceInput} disabled={voiceCall.active || pending || speakerPending || conversationReadOnly || (groupMode && sendOutcomeUnknown)} />}
+                onChange={(next) => {
+                  setContent(next);
+                  const mentioned = group ? mentionedGroupCharacter(next, group.members) : null;
+                  if (mentioned) void changeSpeaker(mentioned);
+                }}
                 onSubmit={submit}
-              >
-                <textarea
-                  ref={composerRef}
-                  rows={1}
-                  aria-label="Message"
-                  className="min-h-12 max-h-32 min-w-0 flex-1 resize-none rounded-3xl bg-[rgb(36,36,36)] px-5 py-3 text-[14px] leading-6 font-medium caret-[#ff7ac8] outline-none placeholder:text-white/50 focus-visible:ring-2 focus-visible:ring-[#ff7ac8]"
-                  id={`chat-message-${id}`}
-                  onChange={(event) => {
-                    const next = event.target.value;
-                    setContent(next);
-                    const mentioned = group ? mentionedGroupCharacter(next, group.members) : null;
-                    if (mentioned) void changeSpeaker(mentioned);
-                  }}
-                  name="message"
-                  placeholder={group ? "Message or @name…" : "Message..."}
-                  disabled={conversationReadOnly}
-                  // Preserve one draft until its admission result is known.
-                  // Reply generation does not hold pending, so the next draft stays editable.
-                  readOnly={pending || voiceInput.readOnly || voiceCall.active || (groupMode && sendOutcomeUnknown)}
-                  onKeyDown={(event) => {
-                    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return;
-                    event.preventDefault();
-                    if (canSend) event.currentTarget.form?.requestSubmit();
-                  }}
-                  value={content}
-                />
-                {!groupMode ? <VoiceCallButton voice={voiceCall} open={voiceCallOpen} onToggle={() => setVoiceCallOpen(value => !value)} /> : null}
-                <VoiceInputButton voice={voiceInput} disabled={voiceCall.active || pending || speakerPending || conversationReadOnly || (groupMode && sendOutcomeUnknown)} />
-                {!hasGeneratingReply ? (
-                  <button
-                    aria-label="Send as paid image request"
-                    className="h-12 shrink-0 rounded-3xl bg-[rgb(36,36,36)] px-3 text-xs font-semibold text-white hover:bg-white/20 disabled:opacity-50"
-                    data-paid-image="true"
-                    disabled={!canSend}
-                    title="Send as paid image request (uses Dreamcoins)"
-                    type="submit"
-                  >
-                    Paid image
-                  </button>
-                ) : null}
-                {hasGeneratingReply ? (
-                  <button
-                    aria-label="Stop reply"
-                    className={COMPOSER_BUTTON_CLASS}
-                    disabled={stoppingReply}
-                    data-testid="chat-stop-reply"
-                    onClick={() => void delivery.stop()}
-                    title="Stop reply"
-                    type="button"
-                  >
-                    {stoppingReply
-                      ? <Loader2 className="h-4 w-4 animate-spin" />
-                      : <Square className="h-4 w-4" />}
-                  </button>
-                ) : (
-                  <button
-                    aria-label="Send message"
-                    className={COMPOSER_BUTTON_CLASS}
-                    disabled={!canSend}
-                    type="submit"
-                  >
-                    <Send className="h-4 w-4" />
-                  </button>
-                )}
-              </form>
+                onStop={() => void delivery.stop()}
+              />
               </div>
             </>
           ) : (
@@ -1729,7 +977,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
         onClose={() => setSessionsOpen(false)}
         currentSessionId={id}
         onArchived={sessionId => {
-          if (sessionId === id) { setConversationArchived(true); cancelEdit(); }
+          if (sessionId === id) { dispatchMetadata({ type: "archived" }); cancelEdit(); }
         }}
       />
       <MemoryPanel
@@ -1743,7 +991,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
         memoryEnabled={memoryEnabled}
         memoryPending={memoryPending}
         onToggleMemory={toggleMemory}
-        onProactiveChange={setProactiveEnabled}
+        onProactiveChange={(enabled) => dispatchMetadata({ type: "proactive", enabled })}
       />
       {reportDialog}
     </main>
@@ -1833,325 +1081,6 @@ function ChatSessionUnavailablePanel({
   );
 }
 
-function chatSessionFetchError(status: number) {
-  const error = new Error("Chat session fetch failed") as Error & { status: number };
-  error.status = status;
-  return error;
-}
-
-function isChatAuthError(error: unknown) {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "status" in error &&
-    (error as { status?: unknown }).status === 401
-  );
-}
-
-function replyAfterLatestUserInProgress(messages: ChatMessage[]) {
-  const latestUserIndex = findLatestUserMessageIndex(messages);
-  if (latestUserIndex < 0) return false;
-  return messages
-    .slice(latestUserIndex + 1)
-    .some(
-      (message) =>
-        message.role === "assistant" &&
-        (message.status === "generating" || message.status === "pending"),
-    );
-}
-
-function findLatestUserMessageIndex(messages: ChatMessage[]) {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index]?.role === "user") return index;
-  }
-  return -1;
-}
-
-function ChatImageAttachmentCard({
-  attachment,
-  canAddToIdentity,
-  characterId,
-  generateHref,
-  onRetry,
-  onAnimate,
-  retryPending,
-  onAddToIdentity,
-  onIdentityMatch,
-  onIdentityMismatch,
-  onMoreLikeThis,
-  moreLikeThisPending,
-  paymentHref,
-}: Readonly<{
-  attachment: ChatAttachment;
-  canAddToIdentity: boolean;
-  characterId: string | null;
-  generateHref: string | null;
-  onRetry: () => void;
-  onAnimate?: () => void;
-  retryPending: boolean;
-  onAddToIdentity?: () => void;
-  onIdentityMatch?: () => void;
-  onIdentityMismatch?: () => void;
-  onMoreLikeThis?: () => void;
-  moreLikeThisPending: boolean;
-  paymentHref: string;
-}>) {
-  const source = attachment.thumbnailUrl ?? attachment.mediaUrl;
-  const previewKey = `${attachment.id}:${source ?? ""}`;
-  const [invalidPreviewKey, setInvalidPreviewKey] = useState<string | null>(null);
-  const invalidPreview = invalidPreviewKey === previewKey;
-  const isLegacyTestAsset = attachment.isSynthetic === true;
-  const costLabel = chatAttachmentCostLabel(attachment);
-  const isSceneImage = attachment.imageSubject === "scene";
-
-  if (attachment.status === "completed" && attachment.mediaUrl && source && !invalidPreview) {
-    return (
-      // 宽度约束必须在 figure 上：过去只有图片元素带 max-w，figure 仍撑满气泡宽度，
-      // 于是图片右侧露出一大片深色底，操作条也跟着拉宽。同组件的等待/失败分支
-      // 本来就是 `w-full max-w-[260px]`，这里只是漏了。
-      <figure className="relative w-full max-w-[260px] overflow-hidden rounded-[12px] border border-white/10 bg-black/20">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          alt={isSceneImage ? "Scene image from this chat" : "Character image from this chat"}
-          className="aspect-[4/5] w-full object-cover"
-          data-asset-id={attachment.mediaAssetId ?? undefined}
-          data-testid="chat-image-attachment"
-          height={attachment.height ?? 640}
-          onError={() => setInvalidPreviewKey(previewKey)}
-          onLoad={(event) => {
-            if (isInvalidChatImagePreview(event.currentTarget)) setInvalidPreviewKey(previewKey);
-          }}
-          src={source}
-          width={attachment.width ?? 512}
-        />
-        <LegacyTestAssetBadge isSynthetic={isLegacyTestAsset} />
-        {costLabel ? (
-          <figcaption
-            className="px-2 py-1.5 text-[11px] font-bold leading-4 text-white/60"
-            data-testid="chat-image-attachment-cost"
-          >
-            {costLabel}
-          </figcaption>
-        ) : null}
-        {attachment.mediaAssetId ? (
-          <ChatImageAttachmentActions
-            canAddToIdentity={!isSceneImage && canAddToIdentity}
-            characterId={isSceneImage ? null : characterId}
-            generateHref={generateHref}
-            onAnimate={onAnimate}
-            onAddToIdentity={onAddToIdentity}
-            onIdentityMatch={onIdentityMatch}
-            onIdentityMismatch={onIdentityMismatch}
-            onMoreLikeThis={onMoreLikeThis}
-            moreLikeThisPending={moreLikeThisPending}
-          />
-        ) : null}
-      </figure>
-    );
-  }
-
-  const requiresReview = attachment.errorCode === "provider_outcome_unknown";
-  const isWaiting = chatAttachmentIsActive(attachment.status, attachment.errorCode);
-  const cancelled = attachment.status === "cancelled";
-  const failed = ["failed", "blocked", "refunded", "rejected"].includes(attachment.status);
-  const canRetry = Boolean(attachment.generationJobId) && attachment.canRetry !== false && ["failed", "refunded"].includes(attachment.status);
-  const paymentRequired = failed && attachment.errorCode === "payment_required";
-  // Main's active-job cap, not a broken image: nothing was charged or queued.
-  const tooManyActive = failed && attachment.errorCode === "rate_limited";
-  const completedUnavailable = attachment.status === "completed" && Boolean(attachment.mediaAssetId);
-  // Only a request that reached a job was charged; a failed one is refunded in
-  // full and an unconfirmed one is held, so the card says which.
-  const chargedCost = (attachment.generationJobId || attachment.status === "accepted" || attachment.status === "refunded")
-    && typeof attachment.costDreamcoins === "number" && attachment.costDreamcoins > 0
-    ? attachment.costDreamcoins : 0;
-  const refundableCost = chargedCost ? `${chargedCost} ${chargedCost === 1 ? "coin" : "coins"}` : null;
-  const queueCopy = generationQueueCopy({ mode: "image", queueAhead: attachment.queueAhead, queueEtaSeconds: attachment.queueEtaSeconds });
-  return (
-    <div
-      className="w-full max-w-[260px] rounded-[12px] border border-white/10 bg-black/20 p-3"
-      data-testid="chat-image-attachment-card"
-    >
-      <div className="flex items-start gap-2">
-        <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-white/10 text-white">
-          {isWaiting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageIcon className="h-4 w-4" />}
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="text-[12px] font-bold text-white">
-            {requiresReview
-              ? "Image result not confirmed yet"
-              : cancelled
-                ? "Image cancelled"
-              : paymentRequired
-                ? "Not enough dreamcoins"
-              : tooManyActive
-                ? "Too many images in progress"
-              : failed || attachment.status === "proposed" || completedUnavailable
-                ? "Image unavailable"
-              : attachment.deliveryStage === "sending"
-                ? "Sending photo…"
-                : "Generating image"}
-          </p>
-          {completedUnavailable ? (
-            <div
-              className="mt-2 flex flex-col items-start gap-1 text-[11px] leading-4 text-white/60"
-              data-testid="chat-image-preview-fallback"
-            >
-              <span className="font-bold text-white/80">Preview unavailable</span>
-              <span className="line-clamp-2">
-                The image is ready, but its preview could not be loaded.
-              </span>
-            </div>
-          ) : (
-            <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-white/60">
-              {requiresReview
-                ? unknownOutcomeCopy(chargedCost)
-                : cancelled
-                ? attachment.generationJobId ? "This image request was cancelled. Check your Dreamcoin history for refund details." : "Cancelled before editing. No coins used."
-                : failed || attachment.status === "proposed"
-                ? paymentRequired
-                  ? "Add dreamcoins to generate this image."
-                  : tooManyActive
-                  ? "Wait for one to finish, then ask again. No coins used."
-                  : `The image could not be completed.${refundableCost ? ` Your ${refundableCost} were returned.` : ""} ${canRetry ? "Retry uses the current image price." : attachment.canRetry === false && attachment.errorCode === "preparation_failed" ? "Change the source image or instructions and send a new request." : "You can send a new image request in this chat."}`
-                : "Your image is being prepared. You can keep chatting while it finishes."}
-            </p>
-          )}
-          {isWaiting && !requiresReview && queueCopy ? (
-            <p className="mt-1 text-[11px] font-bold leading-4 text-white/70" data-testid="chat-image-queue">
-              {queueCopy}
-            </p>
-          ) : null}
-          {costLabel ? (
-            <p
-              className="mt-1 text-[11px] font-bold leading-4 text-white/70"
-              data-testid="chat-image-attachment-cost"
-            >
-              {costLabel}
-            </p>
-          ) : null}
-        </div>
-      </div>
-      {requiresReview ? (
-        <div className="mt-3 text-[11px] text-white/70">
-          <p className="break-all">Request: {attachment.generationJobId ?? attachment.id}</p>
-        </div>
-      ) : paymentRequired ? (
-        <Link
-          className="mt-3 inline-flex h-8 items-center rounded-full bg-white px-3 text-[12px] font-bold text-[rgb(13,13,13)]"
-          href={paymentHref}
-        >
-          Get more dreamcoins
-        </Link>
-      ) : canRetry ? (
-        <button
-          className="mt-3 inline-flex h-8 items-center gap-1.5 rounded-full bg-white px-3 text-[12px] font-bold text-[rgb(13,13,13)] disabled:opacity-70"
-          disabled={retryPending}
-          onClick={onRetry}
-          type="button"
-        >
-          <RefreshCw className="h-3.5 w-3.5" />
-          {retryPending ? "Checking image request…" : "Retry image"}
-        </button>
-      ) : null}
-      {completedUnavailable ? (
-        <ChatImageAttachmentActions
-          canAddToIdentity={!isSceneImage && canAddToIdentity}
-          characterId={isSceneImage ? null : characterId}
-          generateHref={generateHref}
-          onAnimate={onAnimate}
-          onAddToIdentity={onAddToIdentity}
-          onIdentityMatch={onIdentityMatch}
-          onIdentityMismatch={onIdentityMismatch}
-          onMoreLikeThis={onMoreLikeThis}
-          moreLikeThisPending={moreLikeThisPending}
-        />
-      ) : null}
-    </div>
-  );
-}
-
-function ChatImageAttachmentActions({
-  canAddToIdentity,
-  characterId,
-  generateHref,
-  onAnimate,
-  onAddToIdentity,
-  onIdentityMatch,
-  onIdentityMismatch,
-  onMoreLikeThis,
-  moreLikeThisPending,
-}: Readonly<{
-  canAddToIdentity: boolean;
-  characterId: string | null;
-  generateHref: string | null;
-  onAnimate?: () => void;
-  onAddToIdentity?: () => void;
-  onIdentityMatch?: () => void;
-  onIdentityMismatch?: () => void;
-  onMoreLikeThis?: () => void;
-  moreLikeThisPending: boolean;
-}>) {
-  return (
-    <div className="grid gap-2 border-t border-white/10 p-2">
-      {/* 单列：卡片收窄到 260px 后，两列会让「Looks like them」在固定 h-8 的按钮里折行溢出。 */}
-      {characterId ? <div className="grid grid-cols-1 gap-2" aria-label="Character identity feedback">
-        <button
-          className="inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-emerald-400/15 px-3 text-[11px] font-bold text-emerald-100"
-          onClick={onIdentityMatch}
-          type="button"
-        >
-          <Check className="h-3.5 w-3.5" />
-          Looks like them
-        </button>
-        <button
-          className="inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-rose-400/15 px-3 text-[11px] font-bold text-rose-100"
-          onClick={onIdentityMismatch}
-          type="button"
-        >
-          <X className="h-3.5 w-3.5" />
-          Doesn&apos;t match
-        </button>
-      </div> : null}
-      <div className={`grid gap-2 ${canAddToIdentity ? "grid-cols-2" : "grid-cols-1"}`}>
-        {/* Two narrow columns wrap these labels; grow instead of clipping them. */}
-        <button
-          className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-center text-[11px] leading-tight font-black text-[rgb(13,13,13)]"
-          disabled={moreLikeThisPending}
-          onClick={onMoreLikeThis}
-          type="button"
-        >
-          {moreLikeThisPending ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <WandSparkles className="h-3.5 w-3.5" />
-          )}
-          {moreLikeThisPending
-            ? "Checking price…"
-            : "More like this"}
-        </button>
-        {canAddToIdentity && (
-          <button
-            className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-center text-[11px] leading-tight font-bold text-white"
-            onClick={onAddToIdentity}
-            type="button"
-          >
-            <ListChecks className="h-3.5 w-3.5" />
-            Use for identity
-          </button>
-        )}
-      </div>
-      {generateHref ? <Link
-        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full bg-black/30 px-3 text-[11px] font-bold text-white"
-        href={generateHref}
-      >
-        <ExternalLink className="h-3.5 w-3.5" />
-        Open in Generate
-      </Link> : null}
-      {onAnimate ? <button type="button" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-white/10 px-3 text-xs font-bold text-white" onClick={onAnimate}><Video className="size-4" />Animate</button> : null}
-    </div>
-  );
-}
-
 // SPEC: 头部下方一行小字显示当前场景（最新一条带 scene 的回复）；没有场景就不渲染。
 // 群聊每个角色各有自己的场景，只看当前发言角色的回复。
 export function currentChatScene(messages: ChatMessage[], characterId?: string) {
@@ -2221,41 +1150,4 @@ function ChatCompanionPortrait({ image, name, characterId }: { image: string | n
       </div>
     </aside>
   );
-}
-
-function isInvalidChatImagePreview(image: HTMLImageElement) {
-  if (image.naturalWidth <= 1 || image.naturalHeight <= 1) return true;
-  return isBlankChatImagePreview(image);
-}
-
-function isBlankChatImagePreview(image: HTMLImageElement) {
-  const width = Math.min(16, image.naturalWidth);
-  const height = Math.min(16, image.naturalHeight);
-  if (width <= 0 || height <= 0) return false;
-
-  try {
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) return false;
-
-    context.drawImage(image, 0, 0, width, height);
-    const data = context.getImageData(0, 0, width, height).data;
-    let min = 255;
-    let max = 0;
-    for (let index = 0; index < data.length; index += 4) {
-      const red = data[index] ?? 0;
-      const green = data[index + 1] ?? 0;
-      const blue = data[index + 2] ?? 0;
-      const luminance = Math.round(red * 0.2126 + green * 0.7152 + blue * 0.0722);
-      min = Math.min(min, luminance);
-      max = Math.max(max, luminance);
-    }
-
-    const range = max - min;
-    return range <= 1 || (range <= 4 && (min >= 250 || max <= 5));
-  } catch {
-    return false;
-  }
 }
