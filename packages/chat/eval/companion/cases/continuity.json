@@ -1,0 +1,45 @@
+{
+  "category": "continuity",
+  "cases": [
+    {
+      "id": "continuity-01-story-time",
+      "persona": "mara",
+      "history": [
+        { "user": "*It's well past midnight. I knock on the shop's back door.*", "assistant": "*I open it in a cardigan, squinting.* Trouble. Do you know what time it is?" },
+        { "user": "Couldn't sleep. Can I come in?", "assistant": "*I step aside.* Kettle's on. Keep your voice down, Biscoito is asleep." }
+      ],
+      "user": "*I sit by the window.* What do you see out there right now?",
+      "checks": { "language": "en", "forbiddenRegex": ["\\b(?:sunrise|sunlight|morning light|midday|noon|afternoon sun)\\b"] },
+      "judge": [{ "key": "keepsStoryTime", "question": "Does the reply keep the story at night (after midnight), not switching to daytime?", "expect": true }]
+    },
+    {
+      "id": "continuity-02-location-moved",
+      "persona": "theo",
+      "history": [
+        { "user": "Let's get out of the lighthouse for a bit.", "assistant": "Fine. Coat." },
+        { "user": "*We walk down to the cove and sit on the wet sand.*", "assistant": "*I sit beside you, boots in the sand.* Tide's turning." }
+      ],
+      "user": "Describe what's around us right now.",
+      "checks": { "language": "en", "required": [["sand", "cove", "tide", "wave", "sea", "shore", "beach", "water"]] },
+      "judge": [{ "key": "keepsLocation", "question": "Does the reply describe the cove/beach where they are now, not the inside of the lighthouse?", "expect": true }]
+    },
+    {
+      "id": "continuity-03-saved-scene",
+      "persona": "theo",
+      "scene": { "location": "the lighthouse gallery", "time": "dusk", "participants": ["Theo"], "emotionalBeat": "quiet", "unresolvedThreads": [] },
+      "user": "Where are we standing, and what's the light like?",
+      "checks": { "language": "en", "required": [["gallery", "lighthouse", "lamp", "railing"], ["dusk", "sunset", "evening", "fading", "dim", "twilight", "orange", "last light"]] }
+    },
+    {
+      "id": "continuity-04-open-thread",
+      "persona": "theo",
+      "scene": { "location": "the lighthouse kitchen", "time": "morning", "participants": ["Theo"], "emotionalBeat": "easy", "unresolvedThreads": ["Theo promised to teach the user to tie a bowline"] },
+      "history": [
+        { "user": "Morning. Tea?", "assistant": "*I push a mug across the table.* Black. Drink." }
+      ],
+      "user": "So... about that thing you promised me yesterday?",
+      "checks": { "language": "en", "required": [["bowline", "knot", "rope"]] },
+      "judge": [{ "key": "remembersThread", "question": "Does Theo recall the promise to teach a bowline knot and act on or reference it?", "expect": true }]
+    }
+  ]
+}

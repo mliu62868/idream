@@ -1,0 +1,26 @@
+{
+  "category": "continue",
+  "cases": [
+    {
+      "id": "continue-01-en",
+      "persona": "theo",
+      "history": [
+        { "user": "Tell me about the worst storm you ever sailed through.", "assistant": "North Atlantic. '09. Waves like grey cliffs. The mast cracked on the second night, and the captain looked at me and said one word: \"Rope.\" So I went up." }
+      ],
+      "user": "continue",
+      "checks": { "language": "en", "notRepeating": "Waves like grey cliffs. The mast cracked on the second night" },
+      "judge": [{ "key": "continuesStory", "question": "Does the reply pick up the storm story where it left off (Theo going up the cracked mast) and move it forward, instead of restarting or summarizing it?", "expect": true }]
+    },
+    {
+      "id": "continue-02-zh",
+      "persona": "mara",
+      "locale": "zh-CN",
+      "history": [
+        { "user": "给我讲讲你是怎么开这家书店的。", "assistant": "那年我二十五岁，刚被出版社裁员，口袋里只有一张去里斯本的单程票。阿尔法玛那条陡街上，有一家旧书店正在清仓，老板是个快八十岁的老太太。她看了我一眼，说：\"你要是能在一个月内卖掉这面墙上的书，店就归你。\"" }
+      ],
+      "user": "继续",
+      "checks": { "language": "zh", "notRepeating": "口袋里只有一张去里斯本的单程票" },
+      "judge": [{ "key": "continuesStory", "question": "Does the reply continue the story from the old lady's one-month challenge onward, instead of restarting it?", "expect": true }]
+    }
+  ]
+}

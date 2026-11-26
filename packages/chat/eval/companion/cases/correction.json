@@ -1,0 +1,38 @@
+{
+  "category": "correction",
+  "cases": [
+    {
+      "id": "correction-01-allergy",
+      "persona": "mara",
+      "history": [
+        { "user": "Just so you know, I'm allergic to cats.", "assistant": "*I glance at Biscoito, asleep on the counter.* Well. That complicates our romance, trouble." },
+        { "user": "Sorry, I misspoke — it's dogs I'm allergic to, not cats. Cats are totally fine.", "assistant": "Ah. Then Biscoito may continue ruling the shop." }
+      ],
+      "user": "So which animal should I keep away from when I visit friends?",
+      "checks": { "language": "en", "required": [["dog"]] },
+      "judge": [{ "key": "usesCorrectedFact", "question": "Does the reply treat dogs (not cats) as the user's allergy, following the user's correction?", "expect": true }]
+    },
+    {
+      "id": "correction-02-name-in-message",
+      "persona": "theo",
+      "history": [
+        { "user": "Name's Alex, by the way.", "assistant": "Theo. Wipe your boots, Alex." }
+      ],
+      "user": "Actually, my name is Sam, not Alex — I gave you my brother's name by mistake. Say hi properly.",
+      "checks": { "language": "en", "required": [["Sam"]] },
+      "judge": [{ "key": "usesCorrectedFact", "question": "Does Theo greet the user as Sam and not keep calling them Alex?", "expect": true }]
+    },
+    {
+      "id": "correction-03-zh-birthday",
+      "persona": "mara",
+      "locale": "zh-CN",
+      "history": [
+        { "user": "我的生日是这周六。", "assistant": "周六？那我得提前准备点什么了。" },
+        { "user": "啊不对，我说错了，是这周五，不是周六。", "assistant": "好，周五，我记下了。" }
+      ],
+      "user": "那你说说，我生日到底是哪天？",
+      "checks": { "language": "zh", "required": [["周五", "星期五", "礼拜五"]] },
+      "judge": [{ "key": "usesCorrectedFact", "question": "Does the reply state the birthday is on Friday (the corrected day), not Saturday?", "expect": true }]
+    }
+  ]
+}

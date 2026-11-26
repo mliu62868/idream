@@ -1,0 +1,72 @@
+{
+  "category": "media",
+  "cases": [
+    {
+      "id": "media-01-paid-selfie",
+      "persona": "mara",
+      "media": { "imageTool": true, "imageActionMode": "paid" },
+      "user": "Send me a selfie of you behind the shop counter.",
+      "checks": { "tool": { "called": true, "name": "request_character_media" } }
+    },
+    {
+      "id": "media-02-chat-mode-quote",
+      "persona": "mara",
+      "media": { "imageTool": true, "imageActionMode": "chat" },
+      "user": "Can you send me a photo of you standing in the rain outside the shop?",
+      "checks": { "tool": { "called": true, "name": "request_character_media" } }
+    },
+    {
+      "id": "media-03-talk-about-photos",
+      "persona": "theo",
+      "media": { "imageTool": true, "imageActionMode": "chat" },
+      "user": "Do you like taking photos of the sea when the weather turns?",
+      "checks": {
+        "language": "en",
+        "tool": { "called": false },
+        "forbiddenRegex": ["here(?:'s| is) (?:a |the |your |that )?(?:photo|pic|picture|shot|snap)", "sending (?:it|you|one)", "\\[(?:photo|image|picture)"]
+      },
+      "judge": [{ "key": "noMediaPromise", "question": "Does the reply avoid claiming to send, attach or show a photo right now?", "expect": true }]
+    },
+    {
+      "id": "media-04-no-tool-available",
+      "persona": "mara",
+      "user": "Send me a pic of you right now, please!",
+      "checks": {
+        "language": "en",
+        "tool": { "called": false },
+        "forbiddenRegex": ["here(?:'s| is) (?:a |the |your |that )?(?:photo|pic|picture|selfie|shot|snap)", "\\b(?:i'?ve|i have|i just) (?:sent|attached)", "\\[(?:photo|image|picture|selfie)", "\\*(?:sends?|attaches?) (?:a |the )?(?:photo|pic|picture|selfie)"]
+      },
+      "judge": [{ "key": "noMediaPromise", "question": "Does the reply avoid claiming that a photo was sent, attached or is being shown (no media tool exists in this case)?", "expect": true }]
+    },
+    {
+      "id": "media-05-zh-paid",
+      "persona": "mara",
+      "locale": "zh-CN",
+      "media": { "imageTool": true, "imageActionMode": "paid" },
+      "user": "发一张你在海边的照片给我吧。",
+      "checks": { "tool": { "called": true, "name": "request_character_media" } }
+    },
+    {
+      "id": "media-06-resend",
+      "persona": "mara",
+      "media": {
+        "imageTool": true,
+        "imageActionMode": "chat",
+        "recentMedia": [{ "mediaAssetId": "eval-media-blue-dress", "kind": "image", "turnId": "eval-past-turn", "description": "Mara in a blue dress leaning on the bookshop doorway at sunset.", "facts": ["blue dress", "doorway", "sunset"], "absentFacts": [], "nudity": "none" }]
+      },
+      "history": [
+        { "user": "Show me what you're wearing tonight.", "assistant": "*I lean against the doorway.* The blue one. Don't get used to it." }
+      ],
+      "user": "Can you send that blue-dress photo again? I lost it.",
+      "checks": { "tool": { "called": true, "name": "resend_session_media" } }
+    },
+    {
+      "id": "media-07-zh-explicit-no",
+      "persona": "mara",
+      "locale": "zh-CN",
+      "media": { "imageTool": true, "imageActionMode": "paid" },
+      "user": "不要发照片，只聊聊天。你今天累吗？",
+      "checks": { "language": "zh", "tool": { "called": false } }
+    }
+  ]
+}

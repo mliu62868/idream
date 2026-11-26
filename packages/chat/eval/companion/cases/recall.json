@@ -1,0 +1,55 @@
+{
+  "category": "recall",
+  "cases": [
+    {
+      "id": "recall-01-sister",
+      "persona": "mara",
+      "history": [
+        { "user": "My sister Inês is visiting next week. She's a nurse in Porto.", "assistant": "A nurse. So she'll diagnose my posture and judge my coffee intake. Bring her anyway." },
+        { "user": "Do you have anything by Pessoa?", "assistant": "*I point to the top shelf.* Three copies of Disquiet and a broken ladder. Choose wisely." },
+        { "user": "I'll take the one with the blue cover.", "assistant": "Good eye. That one has someone's pencil notes. Free annotations, trouble." }
+      ],
+      "user": "Do you remember my sister's name and what she does?",
+      "checks": { "language": "en", "required": [["Inês", "Ines"], ["nurse"]] }
+    },
+    {
+      "id": "recall-02-locker-code",
+      "persona": "theo",
+      "history": [
+        { "user": "If I leave my bag here, which locker should I use?", "assistant": "Locker 417. Bottom row. Key's on the nail." },
+        { "user": "Got it. Is the beach path safe at night?", "assistant": "No. Rocks. Take the road." },
+        { "user": "Okay, I'll take the road.", "assistant": "Good." }
+      ],
+      "user": "Wait, what was the locker number again?",
+      "checks": { "language": "en", "required": [["417"]] }
+    },
+    {
+      "id": "recall-03-zh-dog",
+      "persona": "mara",
+      "locale": "zh-CN",
+      "history": [
+        { "user": "我家有一只柯基，叫豆豆，特别爱吃苹果。", "assistant": "*我挑了挑眉。* 一只爱吃苹果的柯基？听起来比我的猫还挑剔。" },
+        { "user": "你的猫平时吃什么？", "assistant": "Biscoito 只吃最贵的那种罐头，还要我亲手端过去。" },
+        { "user": "哈哈，真是猫主子。", "assistant": "没错，在这家店里它才是老板。" }
+      ],
+      "user": "你还记得我家狗叫什么、爱吃什么吗？",
+      "checks": { "language": "zh", "required": [["豆豆"], ["苹果"]] }
+    },
+    {
+      "id": "recall-04-long-history",
+      "persona": "mara",
+      "history": [
+        { "user": "My favourite flower is the jacaranda, by the way.", "assistant": "Purple and messy. Fitting, trouble." },
+        { "user": "Do you open on Sundays?", "assistant": "Only when I forget it's Sunday." },
+        { "user": "What's the oldest book you own?", "assistant": "An 1871 almanac with a pressed fern inside." },
+        { "user": "Can I see it?", "assistant": "*I lift it from the glass case.* Gently. It bites." },
+        { "user": "It smells like a forest.", "assistant": "It smells like a century of damp. Same thing." },
+        { "user": "Do you ever travel?", "assistant": "Once a year, to Sintra. Further than that, Biscoito sulks." },
+        { "user": "What do you do in Sintra?", "assistant": "Walk until my legs complain, then eat travesseiros." },
+        { "user": "Sounds lovely.", "assistant": "It is. Don't tell anyone, they'll all go." }
+      ],
+      "user": "If you were buying me flowers, which ones would you pick? Think about what I told you.",
+      "checks": { "language": "en", "required": [["jacaranda"]] }
+    }
+  ]
+}

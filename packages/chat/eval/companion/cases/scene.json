@@ -1,0 +1,101 @@
+{
+  "category": "scene",
+  "kind": "scene",
+  "note": "Scene-light qualification (ADR-21 §9). Each case projects one committed exchange through packages/chat/src/scene-light.ts. Cases without `assistant` first run the production companion turn and project its committed reply; cases with `assistant` use that fixed text so the expected delta is unambiguous. `expect.location` / `expect.time`: list = new value must contain any of these (case-insensitive); \"unchanged\" = must equal the previous value.",
+  "cases": [
+    {
+      "id": "scene-01-rooftop",
+      "persona": "mara",
+      "scene": { "location": "the bookshop", "time": "evening", "participants": ["Mara"], "emotionalBeat": "playful", "unresolvedThreads": [] },
+      "user": "*I take your hand and we climb the narrow stairs up to the rooftop.*",
+      "assistant": "*I let you pull me up the last step onto the rooftop, the city lights spread out below us.* Fine. You win. The view is better up here.",
+      "expect": { "location": ["roof"], "time": "unchanged" }
+    },
+    {
+      "id": "scene-02-time-skip",
+      "persona": "mara",
+      "scene": { "location": "the bookshop", "time": "late night", "participants": ["Mara"], "emotionalBeat": "sleepy", "unresolvedThreads": [] },
+      "user": "Let's skip ahead — it's morning now and the shop is about to open.",
+      "assistant": "*Morning light spills through the dusty window as I flip the sign to OPEN.* Coffee first. Then customers.",
+      "expect": { "location": "unchanged", "time": ["morning"] }
+    },
+    {
+      "id": "scene-03-arrival",
+      "persona": "mara",
+      "scene": { "location": "the bookshop", "time": "afternoon", "participants": ["Mara"], "emotionalBeat": "calm", "unresolvedThreads": [] },
+      "user": "Oh look, Briar just walked in with a tray of pastries.",
+      "assistant": "*I look up as Briar shoulders the door open, balancing a tray of natas.* Briar. You're dripping custard on my poetry section.",
+      "expect": { "location": "unchanged", "participantsInclude": ["Briar"] }
+    },
+    {
+      "id": "scene-04-departure",
+      "persona": "mara",
+      "scene": { "location": "the bookshop", "time": "night", "participants": ["Mara", "Briar"], "emotionalBeat": "cozy", "unresolvedThreads": [] },
+      "user": "Briar waves goodbye and heads home for the night.",
+      "assistant": "*I wave as the door swings shut behind Briar.* And then there were two, trouble.",
+      "expect": { "participantsExclude": ["Briar"], "location": "unchanged" }
+    },
+    {
+      "id": "scene-05-promise",
+      "persona": "theo",
+      "scene": { "location": "the lighthouse kitchen", "time": "evening", "participants": ["Theo"], "emotionalBeat": "easy", "unresolvedThreads": [] },
+      "user": "Promise you'll teach me to tie a bowline tomorrow morning?",
+      "assistant": "Promise. Tomorrow. Dawn. Don't be late.",
+      "expect": { "threadsInclude": [["bowline", "knot"]], "location": "unchanged" }
+    },
+    {
+      "id": "scene-06-thread-resolved",
+      "persona": "theo",
+      "scene": { "location": "the lighthouse gallery", "time": "dawn", "participants": ["Theo"], "emotionalBeat": "focused", "unresolvedThreads": ["teach the user to tie a bowline"] },
+      "user": "*I pull the loop tight.* There — a proper bowline, finally!",
+      "assistant": "*I tug it twice.* Holds. Good. Lesson's done. You tie a bowline now.",
+      "expect": { "threadsExclude": ["bowline"] }
+    },
+    {
+      "id": "scene-07-hypothetical",
+      "persona": "mara",
+      "scene": { "location": "the bookshop", "time": "evening", "participants": ["Mara"], "emotionalBeat": "dreamy", "unresolvedThreads": [] },
+      "user": "Imagine if we were in Paris right now, walking along the Seine...",
+      "assistant": "*I rest my chin on my hand.* Paris. You'd buy every bouquinistes' worst book out of pity. I'd let you.",
+      "expect": { "location": "unchanged", "time": "unchanged" }
+    },
+    {
+      "id": "scene-08-past-memory",
+      "persona": "mara",
+      "scene": { "location": "the bookshop", "time": "night", "participants": ["Mara"], "emotionalBeat": "nostalgic", "unresolvedThreads": [] },
+      "user": "Remember last summer when we spent the whole day at the beach in Cascais?",
+      "assistant": "*I smile into my coffee.* You got sunburnt in the shape of my hat. I remember.",
+      "expect": { "location": "unchanged", "time": "unchanged" }
+    },
+    {
+      "id": "scene-09-zh-move",
+      "persona": "mara",
+      "locale": "zh-CN",
+      "scene": { "location": "书店", "time": "下午", "participants": ["Mara"], "emotionalBeat": "轻松", "unresolvedThreads": [] },
+      "user": "我们关了店，一起走到河边的咖啡馆坐下吧。",
+      "assistant": "*我锁上店门，跟你沿着坡道走到河边，在咖啡馆靠窗的位置坐下。* 好吧，就一杯。",
+      "expect": { "location": ["咖啡", "café", "cafe", "河"] }
+    },
+    {
+      "id": "scene-10-live-street",
+      "persona": "mara",
+      "scene": { "location": "the bookshop", "time": "winter evening", "participants": ["Mara"], "emotionalBeat": "quiet", "unresolvedThreads": [] },
+      "user": "*I open the door and we step out together into the snowy street.*",
+      "expect": { "location": ["street", "outside", "snow", "alfama", "road", "lane"] }
+    },
+    {
+      "id": "scene-11-live-kitchen",
+      "persona": "theo",
+      "scene": { "location": "the lighthouse gallery", "time": "evening", "participants": ["Theo"], "emotionalBeat": "calm", "unresolvedThreads": [] },
+      "user": "It's freezing up here. Let's go down to the kitchen and make tea.",
+      "expect": { "location": ["kitchen"] }
+    },
+    {
+      "id": "scene-12-live-midnight",
+      "persona": "mara",
+      "scene": { "location": "the bookshop", "time": "evening", "participants": ["Mara"], "emotionalBeat": "warm", "unresolvedThreads": [] },
+      "user": "We've talked for hours — it's almost midnight now. Should I go?",
+      "expect": { "time": ["midnight"], "location": "unchanged" }
+    }
+  ]
+}
