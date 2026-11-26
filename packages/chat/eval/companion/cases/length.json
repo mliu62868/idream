@@ -1,0 +1,45 @@
+{
+  "category": "length",
+  "cases": [
+    {
+      "id": "length-01-exactly-two",
+      "persona": "mara",
+      "user": "In exactly two sentences, tell me what you did today.",
+      "checks": { "language": "en", "sentences": { "min": 2, "max": 2 } }
+    },
+    {
+      "id": "length-02-one-sentence",
+      "persona": "theo",
+      "user": "Answer in one sentence: why did you leave the sea?",
+      "checks": { "language": "en", "sentences": { "min": 1, "max": 1 } }
+    },
+    {
+      "id": "length-03-zh-one-sentence",
+      "persona": "mara",
+      "locale": "zh-CN",
+      "user": "用一句话告诉我你现在在做什么。",
+      "checks": { "language": "zh", "sentences": { "min": 1, "max": 1 } }
+    },
+    {
+      "id": "length-04-saved-short",
+      "persona": "mara",
+      "experience": { "responseLength": "short" },
+      "user": "I had the strangest day. My boss called me into his office, praised my report, then told me the whole team is moving to Porto next month. What do you make of that?",
+      "checks": { "language": "en", "sentences": { "max": 3 } }
+    },
+    {
+      "id": "length-05-at-least-six",
+      "persona": "mara",
+      "note": "Range wording: describeRequestedReplyConstraints deliberately abstains, so this measures the model alone.",
+      "user": "Describe the shop at closing time in rich detail — at least six sentences, please.",
+      "checks": { "language": "en", "sentences": { "min": 6 } }
+    },
+    {
+      "id": "length-06-ja-three",
+      "persona": "theo",
+      "note": "The reply-form cue only parses English counts and 一句话; Japanese counts reach the model unaided.",
+      "user": "三文で、灯台から見える朝の景色を教えてください。",
+      "checks": { "language": "ja", "sentences": { "min": 3, "max": 3 } }
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+{
+  "category": "language",
+  "cases": [
+    {
+      "id": "lang-01-zh",
+      "persona": "mara",
+      "locale": "zh-CN",
+      "user": "今天下雨了，你的书店里客人多吗？我有点想过去坐坐。",
+      "checks": { "language": "zh" },
+      "judge": [{ "key": "inCharacter", "question": "Does the reply stay in character as Mara the bookshop owner?", "expect": true }]
+    },
+    {
+      "id": "lang-02-en-history-zh-switch",
+      "persona": "mara",
+      "history": [
+        { "user": "Morning! Is the shop open yet?", "assistant": "*I flip the sign with one finger.* It is now. Come in before I change my mind, trouble." },
+        { "user": "What's the best thing you've read this month?", "assistant": "A water-stained Saramago someone traded for a cookbook. Terrible trade for them. Wonderful for me." }
+      ],
+      "user": "我其实中文更顺一点，我们用中文聊吧。你推荐我先读哪本萨拉马戈？",
+      "checks": { "language": "zh" },
+      "judge": [{ "key": "answersQuestion", "question": "Does the reply recommend a specific Saramago book?", "expect": true }]
+    },
+    {
+      "id": "lang-03-ja",
+      "persona": "theo",
+      "user": "灯台の仕事って、夜はずっと起きているんですか？",
+      "checks": { "language": "ja" },
+      "judge": [{ "key": "clippedVoice", "question": "Does Theo answer briefly in short sentences, in character as a gruff lighthouse keeper?", "expect": true }]
+    },
+    {
+      "id": "lang-04-es",
+      "persona": "mara",
+      "user": "¡Hola! ¿Qué libro me recomiendas para leer en la playa este fin de semana?",
+      "checks": { "language": "es" },
+      "judge": [{ "key": "answersQuestion", "question": "Does the reply recommend at least one book?", "expect": true }]
+    },
+    {
+      "id": "lang-05-en-history-es-switch",
+      "persona": "theo",
+      "history": [
+        { "user": "How's the sea tonight?", "assistant": "Rough. Swell from the west. Stay off the rocks." }
+      ],
+      "user": "Perdona, prefiero hablar en español. ¿Anchor tiene miedo de las tormentas?",
+      "checks": { "language": "es", "required": [["Anchor"]] },
+      "judge": [{ "key": "answersQuestion", "question": "Does the reply say whether Anchor (the dog) is afraid of storms?", "expect": true }]
+    },
+    {
+      "id": "lang-06-zh-asks-english",
+      "persona": "mara",
+      "locale": "zh-CN",
+      "note": "C2 regression: describeUserLanguage keys on script only and tells the model to answer in Chinese, but the user explicitly asks for English.",
+      "user": "请用英文回答我：你今天心情怎么样？",
+      "checks": { "language": "en" },
+      "judge": [{ "key": "answersQuestion", "question": "Does the reply say how Mara feels today?", "expect": true }]
+    }
+  ]
+}

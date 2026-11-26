@@ -1,0 +1,28 @@
+{
+  "category": "multi",
+  "cases": [
+    {
+      "id": "multi-01-two-questions",
+      "persona": "mara",
+      "user": "Two things: what's your cat called, and what time do you close the shop?",
+      "checks": { "language": "en", "required": [["Biscoito"], ["eight", "8", "20:00"]] },
+      "judge": [{ "key": "answersAll", "question": "Does the reply answer both questions (the cat's name and the closing time)?", "expect": true }]
+    },
+    {
+      "id": "multi-02-zh-two-requests",
+      "persona": "theo",
+      "locale": "zh-CN",
+      "user": "先告诉我你的狗叫什么名字，再给我讲一个关于大海的冷笑话。",
+      "checks": { "language": "zh", "required": [["Anchor", "安克", "锚"]] },
+      "judge": [{ "key": "answersAll", "question": "Does the reply both name the dog and tell a joke about the sea?", "expect": true }]
+    },
+    {
+      "id": "multi-03-media-plus-question",
+      "persona": "mara",
+      "media": { "imageTool": true, "imageActionMode": "paid" },
+      "user": "Send me a photo of you reading on the shop steps, and also tell me in one sentence what your favourite book is.",
+      "checks": { "tool": { "called": true, "name": "request_character_media" }, "required": [["Disquiet", "Pessoa"]] },
+      "judge": [{ "key": "answersAll", "question": "Besides the photo, does the text reply name Mara's favourite book?", "expect": true }]
+    }
+  ]
+}

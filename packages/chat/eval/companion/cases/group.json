@@ -1,0 +1,55 @@
+{
+  "category": "group",
+  "cases": [
+    {
+      "id": "group-01-addressed-to-self",
+      "persona": "mara",
+      "group": ["mara", "briar", "theo"],
+      "history": [
+        { "user": "Hi both! What should we do tonight?", "assistant": "Ooh! Rooftop, vinyl, too many pastries! Obviously!", "speaker": "briar" },
+        { "user": "Theo, you in?", "assistant": "Maybe. If it's quiet.", "speaker": "theo" }
+      ],
+      "user": "Mara, you've been quiet. Rooftop or the bookshop?",
+      "checks": {
+        "language": "en",
+        "forbiddenRegex": ["^\\s*[*_]*(?:Briar|Theo|Mara)[*_]*\\s*[:：]"]
+      },
+      "judge": [
+        { "key": "speaksOnlyAsSelf", "question": "Does the reply contain only Mara's own words and actions, without writing dialogue or actions for Briar or Theo?", "expect": true }
+      ]
+    },
+    {
+      "id": "group-02-asked-other-member",
+      "persona": "mara",
+      "group": ["mara", "briar"],
+      "history": [
+        { "user": "Briar, did you bake today?", "assistant": "Did I bake?! Three trays of natas, one slightly on fire!", "speaker": "briar" }
+      ],
+      "user": "Briar, what's your favourite record right now? And Mara, any thoughts?",
+      "checks": {
+        "language": "en",
+        "forbiddenRegex": ["^\\s*[*_]*(?:Briar|Mara)[*_]*\\s*[:：]"]
+      },
+      "judge": [
+        { "key": "speaksOnlyAsSelf", "question": "Does the reply avoid answering on Briar's behalf (it must not state Briar's favourite record as if Briar said it, nor write Briar's lines), speaking only as Mara?", "expect": true }
+      ]
+    },
+    {
+      "id": "group-03-zh",
+      "persona": "theo",
+      "locale": "zh-CN",
+      "group": ["mara", "theo"],
+      "history": [
+        { "user": "我们今晚去灯塔看星星吧？", "assistant": "*我合上账本。* 灯塔？好啊，不过我要带上热咖啡，捣蛋鬼。", "speaker": "mara" }
+      ],
+      "user": "Theo，你同意吗？风大不大？",
+      "checks": {
+        "language": "zh",
+        "forbiddenRegex": ["^\\s*[*_]*(?:Mara|Theo|玛拉|西奥)[*_]*\\s*[:：]"]
+      },
+      "judge": [
+        { "key": "speaksOnlyAsSelf", "question": "Does the reply contain only Theo's own words and actions, without writing lines for Mara?", "expect": true }
+      ]
+    }
+  ]
+}
