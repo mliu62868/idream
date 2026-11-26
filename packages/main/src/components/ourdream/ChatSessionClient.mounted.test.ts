@@ -446,6 +446,9 @@ describe("ChatSessionClient streaming composer", () => {
       Element.prototype.scrollIntoView = () => {};
     }
     vi.stubGlobal("EventSource", FakeEventSource);
+    // Stream text is coalesced per animation frame; paint every frame at once here.
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callback(0); return 0; });
+    vi.stubGlobal("cancelAnimationFrame", () => undefined);
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -684,6 +687,74 @@ describe("ChatSessionClient streaming composer", () => {
     await waitUntil(() => !container.querySelector('[data-message-id^="local:"]'));
     expect(container.querySelector('[data-message-id="user-1"]')?.textContent)
       .toContain("hello there");
+  });
+
+  it("shows the character typing as soon as the turn is sent and skips focus reads until admission", async () => {
+    await mountSession();
+    await act(async () => typeMessage("hello there"));
+    await act(async () => submitComposer());
+
+    const placeholder = container.querySelector('[data-message-id^="local:"][data-testid="chat-message-assistant"]');
+    expect(placeholder?.querySelector('[aria-label="Assistant is typing"]')).not.toBeNull();
+    // The placeholder is not a reply Main is generating: no Stop for it.
+    expect(container.querySelector('[data-testid="chat-stop-reply"]')).toBeNull();
+    const readsBefore = sessionReads;
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    expect(sessionReads).toBe(readsBefore);
+
+    await act(async () => releaseSend?.(sendPayload()));
+    await waitUntil(() => !container.querySelector('[data-message-id^="local:"]'));
+    expect(container.querySelectorAll('[data-testid="chat-message-user"]')).toHaveLength(1);
+    expect(replyBubble()?.querySelector('[aria-label="Assistant is typing"]')).not.toBeNull();
+  });
+
+  it("drops the typing placeholder with the bubble when the send fails", async () => {
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => String(input).endsWith("/messages") && init?.method === "POST"
+      ? Response.json({ error: "rate_limited" }, { status: 429 }) : originalFetch(input, init));
+    await mountSession();
+    await act(async () => typeMessage("hello there"));
+    await act(async () => submitComposer());
+    await waitUntil(() => !container.querySelector('[data-message-id^="local:"]'));
+    expect(messageInput()?.value).toBe("hello there");
+  });
+
+  it("loads earlier messages above the latest page without duplicates", async () => {
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    const older = { id: "user-0", role: "user", content: "An older message", status: "sent", turnId: "turn-0" };
+    const latest = { id: "assistant-latest", role: "assistant", content: "The latest reply", status: "sent", turnId: "turn-1", replyToMessageId: "user-x" };
+    const earlierUrls: string[] = [];
+    let latestReads = 0;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      const base = { id: "session-1", ownerScope: "user:viewer-a", title: "Test chat", characterId: "character-1", character: { name: "Avery" } };
+      if (url === "/api/v1/chat/sessions/session-1") {
+        latestReads += 1;
+        return Response.json({ ok: true, data: { session: { ...base, messages: [latest] }, page: { hasEarlier: true, earliestTurnId: "turn-1" } } });
+      }
+      if (url.startsWith("/api/v1/chat/sessions/session-1?")) {
+        earlierUrls.push(url);
+        return Response.json({ ok: true, data: { session: { ...base, messages: [opening, older, latest] }, page: { hasEarlier: false, earliestTurnId: "turn-0" } } });
+      }
+      return originalFetch(input, init);
+    });
+    await mountSession();
+    const load = () => container.querySelector<HTMLButtonElement>('[data-testid="chat-load-earlier"]');
+    await waitUntil(() => Boolean(load()));
+    await act(async () => load()!.click());
+    await waitUntil(() => container.textContent?.includes("An older message") ?? false);
+
+    expect(earlierUrls).toEqual(["/api/v1/chat/sessions/session-1?beforeTurnId=turn-1&limit=50"]);
+    expect([...container.querySelectorAll("[data-message-id]")].map(node => node.getAttribute("data-message-id")))
+      .toEqual(["assistant-0", "user-0", "assistant-latest"]);
+    expect(load()).toBeNull();
+    // The next latest-page read keeps the earlier messages in place.
+    const readsBeforeFocus = latestReads;
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await waitUntil(() => latestReads > readsBeforeFocus);
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    expect([...container.querySelectorAll("[data-message-id]")].map(node => node.getAttribute("data-message-id")))
+      .toEqual(["assistant-0", "user-0", "assistant-latest"]);
   });
 
   it("protects the submitted draft during admission and allows the next draft while the reply streams", async () => {

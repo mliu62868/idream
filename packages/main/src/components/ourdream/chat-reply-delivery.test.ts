@@ -12,6 +12,9 @@ import {
   chatStreamMessageIsTerminal,
   chatStreamMessagesNeedReconciliation,
   chatStreamTerminalErrorMessage,
+  chatStreamVisibleText,
+  CHAT_STREAM_RECONNECT_NOTICE,
+  CHAT_STREAM_RECONNECT_NOTICE_DELAY_MS,
   useChatReplyDelivery,
 } from "./chat-reply-delivery";
 
@@ -63,6 +66,16 @@ describe("chat stream recovery", () => {
     expect(chatStreamMessagesNeedReconciliation([partial])).toBe(true);
   });
 
+});
+
+describe("chatStreamVisibleText", () => {
+  it("keeps the longer shown text while a replay catches up", () => {
+    expect(chatStreamVisibleText("The", "The rain")).toBe("The rain");
+    expect(chatStreamVisibleText("The rain falls", "The rain")).toBe("The rain falls");
+    // A divergent replay is a different text, not a catch-up.
+    expect(chatStreamVisibleText("A new", "The rain")).toBe("A new");
+    expect(chatStreamVisibleText("Any", "")).toBe("Any");
+  });
 });
 
 describe("chatStreamLatestReplyFailed", () => {
@@ -158,6 +171,8 @@ describe("reply delivery through its public hook boundary", () => {
   const onSession = vi.fn<(snapshot: ChatSession) => void>();
   const onRepliesInvalidated = vi.fn<(ids: readonly string[]) => void>();
   const onStatus = vi.fn<(status: string | null) => void>();
+  const onStatusClear = vi.fn<(status: string) => void>();
+  const onStreamUnhealthy = vi.fn<() => void>();
 
   function Harness() {
     const [rows, setMessages] = useState<ChatMessage[]>([opening]);
@@ -165,7 +180,7 @@ describe("reply delivery through its public hook boundary", () => {
     replaceMessages = setMessages;
     delivery = useChatReplyDelivery({
       conversationId: "session-1", messages: rows, setMessages, readSession, request,
-      onSession, onSessionReadError: () => undefined, onRepliesInvalidated, onStatus,
+      onSession, onSessionReadError: () => undefined, onRepliesInvalidated, onStatus, onStatusClear, onStreamUnhealthy,
     });
     return null;
   }
@@ -174,11 +189,16 @@ describe("reply delivery through its public hook boundary", () => {
     vi.useFakeTimers();
     FakeEventSource.instances = [];
     vi.stubGlobal("EventSource", FakeEventSource);
+    // Stream text is coalesced per animation frame; paint every frame at once here.
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callback(0); return 0; });
+    vi.stubGlobal("cancelAnimationFrame", () => undefined);
     readSession.mockReset().mockResolvedValue(session([opening, userTurn, streamingReply]));
     request.mockReset().mockResolvedValue(Response.json({ cancelled: true, attempt: 1 }));
     onSession.mockReset();
     onRepliesInvalidated.mockReset();
     onStatus.mockReset();
+    onStatusClear.mockReset();
+    onStreamUnhealthy.mockReset();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -647,5 +667,86 @@ describe("reply delivery through its public hook boundary", () => {
     await act(async () => current.emit("delta", { delta: " keeps streaming" }));
     expect(messages.at(-1)?.content).toBe("Current reply keeps streaming");
     expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("announces a dropped stream only after the grace period and clears it on the next delta", async () => {
+    const stream = await startReply();
+    stream.readyState = FakeEventSource.CONNECTING;
+    await act(async () => stream.emit("error", {}));
+    expect(onStatus).not.toHaveBeenCalledWith(CHAT_STREAM_RECONNECT_NOTICE);
+    expect(delivery.streamHealthy()).toBe(false);
+    // The routine 60s SSE rollover reconnects inside the grace period.
+    stream.readyState = FakeEventSource.OPEN;
+    await act(async () => stream.emit("open", {}));
+    await act(async () => { vi.advanceTimersByTime(CHAT_STREAM_RECONNECT_NOTICE_DELAY_MS + 100); });
+    expect(onStatus).not.toHaveBeenCalledWith(CHAT_STREAM_RECONNECT_NOTICE);
+    expect(delivery.streamHealthy()).toBe(true);
+
+    stream.readyState = FakeEventSource.CONNECTING;
+    await act(async () => stream.emit("error", {}));
+    await act(async () => { vi.advanceTimersByTime(CHAT_STREAM_RECONNECT_NOTICE_DELAY_MS); });
+    expect(onStatus).toHaveBeenCalledWith(CHAT_STREAM_RECONNECT_NOTICE);
+    expect(onStreamUnhealthy).toHaveBeenCalled();
+    stream.readyState = FakeEventSource.OPEN;
+    await act(async () => stream.emit("delta", { delta: "Back again" }));
+    expect(onStatusClear).toHaveBeenCalledWith(CHAT_STREAM_RECONNECT_NOTICE);
+    expect(messages.at(-1)?.content).toBe("Back again");
+  });
+
+  it("reopens a dead stream for a reply that already shows text without shrinking it", async () => {
+    const stream = await startReply();
+    await act(async () => stream.emit("delta", { delta: "The rain keeps falling" }));
+    stream.readyState = FakeEventSource.CLOSED;
+    await act(async () => stream.emit("error", {}));
+    expect(onStreamUnhealthy).toHaveBeenCalled();
+    readSession.mockResolvedValue(session([opening, userTurn, { ...streamingReply, content: "The rain" }]));
+    await act(async () => { await delivery.refresh(); });
+
+    expect(FakeEventSource.instances).toHaveLength(2);
+    const resumed = FakeEventSource.instances.at(-1)!;
+    expect(resumed.url).toContain("attempt=1");
+    // The replay starts from the beginning; the bubble keeps what it showed.
+    await act(async () => resumed.emit("delta", { delta: "The rain" }));
+    expect(messages.at(-1)?.content).toBe("The rain keeps falling");
+    await act(async () => resumed.emit("delta", { delta: " keeps falling on the roof" }));
+    expect(messages.at(-1)?.content).toBe("The rain keeps falling on the roof");
+  });
+
+  it("paints buffered deltas at most once per animation frame", async () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { frames.push(callback); return frames.length; });
+    const stream = await startReply();
+    const before = messages;
+    await act(async () => {
+      stream.emit("delta", { delta: "One" });
+      stream.emit("delta", { delta: " two" });
+      stream.emit("delta", { delta: " three" });
+    });
+    expect(messages).toBe(before);
+    expect(frames).toHaveLength(1);
+    await act(async () => frames.shift()!(0));
+    expect(messages.at(-1)?.content).toBe("One two three");
+  });
+
+  it("lets a terminal snapshot win over text still buffered for the next frame", async () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { frames.push(callback); return frames.length; });
+    const stream = await startReply();
+    await act(async () => stream.emit("delta", { delta: "Unmoderated draft" }));
+    readSession.mockResolvedValue(session([opening, userTurn, { ...streamingReply, status: "sent", content: "Final" }]));
+    await act(async () => { await delivery.refresh(); });
+    await act(async () => frames.splice(0).forEach(frame => frame(0)));
+    expect(messages.at(-1)).toMatchObject({ status: "sent", content: "Final" });
+  });
+
+  it("keeps earlier pages and drops an optimistic turn once its request key is in a snapshot", async () => {
+    const earlier: ChatMessage = { id: "user-0", role: "user", content: "earlier", turnId: "turn-0" };
+    const localUser: ChatMessage = { id: `${LOCAL_CHAT_MESSAGE_ID_PREFIX}send`, role: "user", content: "next", requestKey: "key-1" };
+    const placeholder: ChatMessage = { id: `${LOCAL_CHAT_MESSAGE_ID_PREFIX}send:reply`, role: "assistant", content: "", status: "pending", replyToMessageId: localUser.id, requestKey: "key-1" };
+    await act(async () => replaceMessages([earlier, opening, userTurn, localUser, placeholder]));
+    readSession.mockResolvedValue({ ...session([opening, userTurn, { ...userTurn, id: "user-2", content: "next", requestKey: "key-1" }]),
+      page: { hasEarlier: true, earliestTurnId: "turn-1" } });
+    await act(async () => { await delivery.refresh(); });
+    expect(messages.map(({ id }) => id)).toEqual(["user-0", "assistant-0", "user-1", "user-2"]);
   });
 });

@@ -61,6 +61,7 @@ import { ChatMessageList, type ChatEditingTarget } from "./chat/ChatMessageList"
 import type { ChatAttachmentContext, ChatMessageHandlers } from "./chat/ChatMessageItem";
 import { ChatComposer } from "./chat/ChatComposer";
 import { useStableHandlers } from "./chat/useStableHandlers";
+import { prependEarlierMessages } from "./chat/chat-session-page";
 
 export { chatAttachmentCostLabel, chatAttachmentIsActive } from "./chat/chat-attachments";
 
@@ -267,6 +268,8 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     onSessionReadError: revokeUnavailableSession,
     onRepliesInvalidated: (messageIds) => voice.invalidate(messageIds),
     onStatus: setStatus,
+    onStatusClear: (shown) => setStatus((current) => (current === shown ? null : current)),
+    onStreamUnhealthy: () => sync.wakePoll(),
   });
   const stoppingReply = delivery.stopping;
   const voiceCall = useVoiceCall({
@@ -313,14 +316,27 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     suspendReceipts: suspendGenerationReceipts,
     resumeReceipts: resumeGenerationReceipts,
     setReceiptOwnerScope,
+    onEarlierMessages: (earlier) => {
+      // Keep the reader's place: the list grows above the viewport.
+      earlierScrollAnchorRef.current = { height: document.documentElement.scrollHeight, scrollY: window.scrollY };
+      setMessages((current) => prependEarlierMessages(current, earlier));
+    },
     reconciliation: {
       hasActiveAttachment,
       hasUnconfirmedAttachment,
       hasGeneratingReply,
       proactiveEnabled,
       writing: pending || editingPending || memoryPending,
+      sending: pending,
     },
   });
+  const earlierScrollAnchorRef = useRef<{ height: number; scrollY: number } | null>(null);
+  useLayoutEffect(() => {
+    const anchor = earlierScrollAnchorRef.current;
+    if (!anchor) return;
+    earlierScrollAnchorRef.current = null;
+    window.scrollTo({ top: anchor.scrollY + document.documentElement.scrollHeight - anchor.height, behavior: "auto" });
+  }, [messages]);
   useLayoutEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -471,12 +487,17 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     // SPEC: Render the reader's own turn before the round-trip resolves — on a
     //       phone the POST costs a full reply latency, and an input that empties
     //       into nothing reads as a dropped message.
+    // The typing placeholder appears with it: the character "reads" the turn
+    // immediately instead of after the admission round-trip.
     const localMessageId = `${LOCAL_CHAT_MESSAGE_ID_PREFIX}${crypto.randomUUID()}`;
     const dropOptimisticMessage = (current: ChatMessage[]) =>
-      current.filter((message) => message.id !== localMessageId);
+      current.filter((message) => message.id !== localMessageId && message.replyToMessageId !== localMessageId);
     setMessages((current) => [
       ...current,
-      { id: localMessageId, role: "user", content: text },
+      { id: localMessageId, role: "user", content: text, requestKey: intent.idempotencyKey },
+      { id: `${localMessageId}:reply`, role: "assistant", content: "", status: "pending",
+        replyToMessageId: localMessageId, requestKey: intent.idempotencyKey,
+        ...(group ? { characterId: characterId ?? undefined, speakerName: group.members.find(member => member.characterId === characterId)?.name } : {}) },
     ]);
     sendIntentRef.current = intent;
     try {
@@ -641,6 +662,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
     }
     resumeGenerationReceipts(session.ownerScope);
     setReceiptOwnerScope(session.ownerScope);
+    sync.notePage(session);
     setDeleteConfirmMessageId(null);
     selectedSpeakerRef.current = session.characterId ?? null;
     dispatchMetadata({ type: "session", session });
@@ -882,6 +904,7 @@ function ChatSessionContent({ id, groupMode, viewer }: Readonly<{ id: string; gr
                 handlers={handlers}
                 listRef={messageListRef}
                 endRef={messagesEndRef}
+                earlier={sync.earlier}
               />
               {jumpToLatestVisible ? (
                 <button

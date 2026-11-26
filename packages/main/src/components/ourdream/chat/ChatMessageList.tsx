@@ -1,5 +1,6 @@
 "use client";
 
+import { Loader2 } from "lucide-react";
 import type { RefObject } from "react";
 import type { RuntimeChatMessage as ChatMessage, RuntimeChatSession as ChatSession } from "@/lib/public-api-contracts";
 import {
@@ -31,6 +32,12 @@ export type ChatMessageListProps = {
   readonly handlers: ChatMessageHandlers;
   readonly listRef: RefObject<HTMLDivElement | null>;
   readonly endRef: RefObject<HTMLDivElement | null>;
+  readonly earlier?: {
+    readonly available: boolean;
+    readonly loading: boolean;
+    readonly failed: boolean;
+    readonly load: () => void | Promise<void>;
+  };
 };
 
 export function ChatMessageList({
@@ -53,9 +60,25 @@ export function ChatMessageList({
   handlers,
   listRef,
   endRef,
+  earlier,
 }: ChatMessageListProps) {
   return (
     <div ref={listRef} className="mt-6 flex min-h-[55vh] flex-1 flex-col gap-3 rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4">
+      {earlier?.available ? (
+        <div className="flex flex-col items-center gap-1">
+          <button
+            className="inline-flex min-h-11 items-center gap-2 rounded-full border border-white/15 px-4 text-[13px] font-bold text-white/85 hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#ff7ac8] disabled:opacity-60"
+            data-testid="chat-load-earlier"
+            disabled={earlier.loading}
+            onClick={() => void earlier.load()}
+            type="button"
+          >
+            {earlier.loading ? <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" /> : null}
+            {earlier.loading ? "Loading earlier messages…" : "Load earlier messages"}
+          </button>
+          {earlier.failed ? <p className="text-[12px] text-white/65" role="status">Couldn&apos;t load earlier messages. Try again.</p> : null}
+        </div>
+      ) : null}
       {/* 群聊没有开场白：说清楚怎么开始，而不是替角色编一句。 */}
       {group && messages.length === 0 ? (
         <p className="m-auto max-w-md text-center text-sm leading-6 text-white/65" data-testid="group-chat-empty">

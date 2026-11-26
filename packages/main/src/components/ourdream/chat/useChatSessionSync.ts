@@ -1,17 +1,35 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, type MutableRefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type MutableRefObject } from "react";
 import {
   parseChatSessionDetailResponse,
+  type RuntimeChatMessage as ChatMessage,
   type RuntimeChatSession as ChatSession,
 } from "@/lib/public-api-contracts";
 import { UNCONFIRMED_GENERATION_POLL_MS } from "@/lib/generation-failure-copy";
 import type { ViewerGate } from "@/hooks/useViewerGate";
 import { chatStreamLatestReplyFailed, type useChatReplyDelivery } from "../chat-reply-delivery";
+import {
+  CHAT_EARLIER_PAGE_LIMIT,
+  COMPLETE_CHAT_SESSION_PAGE,
+  chatSessionPage,
+  chatSessionPageFromPayload,
+  type ChatSessionPage,
+} from "./chat-session-page";
 
 export type ChatLoadState = "loading" | "ready" | "signed-out" | "error";
 
 const PROACTIVE_POLL_MS = 60_000;
+const RECONCILE_POLL_MS = 1_500;
+const RECONCILE_MAX_BACKOFF_MS = 12_000;
+// SPEC: While the generating reply's stream is live it carries the text; the
+//       authority read is only a heartbeat for attachments and lost terminals.
+const LIVE_STREAM_HEARTBEAT_MS = 10_000;
+
+export function chatReconcilePollDelay(input: { readonly streamHealthy: boolean; readonly failureCount: number }): number {
+  if (input.streamHealthy && input.failureCount === 0) return LIVE_STREAM_HEARTBEAT_MS;
+  return Math.min(RECONCILE_MAX_BACKOFF_MS, RECONCILE_POLL_MS * 2 ** input.failureCount);
+}
 
 type SessionSyncOptions = {
   readonly id: string;
@@ -32,6 +50,8 @@ type SessionSyncOptions = {
   readonly suspendReceipts: (clear: boolean) => void;
   readonly resumeReceipts: (ownerScope: string) => void;
   readonly setReceiptOwnerScope: (ownerScope: string | null) => void;
+  /** Earlier messages arrived; the caller keeps the reader's place. */
+  readonly onEarlierMessages: (messages: readonly ChatMessage[]) => void;
   readonly reconciliation: {
     readonly hasActiveAttachment: boolean;
     readonly hasUnconfirmedAttachment: boolean;
@@ -39,6 +59,8 @@ type SessionSyncOptions = {
     readonly proactiveEnabled: boolean;
     /** A write owns the conversation; reads would race its receipt. */
     readonly writing: boolean;
+    /** A typed send is in flight; a snapshot now could duplicate its bubble. */
+    readonly sending: boolean;
   };
 };
 
@@ -49,21 +71,61 @@ export function useChatSessionSync(options: SessionSyncOptions) {
   const latest = useRef(options);
   useLayoutEffect(() => { latest.current = options; });
   const { id, groupMode, ageGateAccepted, viewer, delivery } = options;
+  // Pagination: the latest page comes with every read; older pages only on request.
+  const [latestPage, setLatestPage] = useState<ChatSessionPage>(COMPLETE_CHAT_SESSION_PAGE);
+  const [olderPage, setOlderPage] = useState<ChatSessionPage | null>(null);
+  const [earlierState, setEarlierState] = useState<"idle" | "loading" | "error">("idle");
+  const conversationEpochRef = useRef(0);
+  const pollWakeRef = useRef<(() => void) | null>(null);
+  // A complete latest page (nothing earlier) supersedes any older cursor.
+  const page = latestPage.hasEarlier ? olderPage ?? latestPage : latestPage;
 
-  async function fetchSession(signal?: AbortSignal): Promise<ChatSession> {
+  // SPEC: Reads the latest page unless a cursor is given. Page metadata is
+  //       carried on the returned session so delivery can merge partial pages.
+  async function fetchSession(signal?: AbortSignal, beforeTurnId?: string): Promise<ChatSession> {
     const { sessionPath, selectedSpeakerRef, fetchForSession } = latest.current;
-    const response = await fetchForSession(`${sessionPath}${groupMode && selectedSpeakerRef.current ? `?speaker=${encodeURIComponent(selectedSpeakerRef.current)}` : ""}`, {
+    const query = new URLSearchParams();
+    if (groupMode && selectedSpeakerRef.current) query.set("speaker", selectedSpeakerRef.current);
+    if (beforeTurnId) {
+      query.set("beforeTurnId", beforeTurnId);
+      query.set("limit", String(CHAT_EARLIER_PAGE_LIMIT));
+    }
+    const search = query.toString();
+    const response = await fetchForSession(`${sessionPath}${search ? `?${search}` : ""}`, {
       cache: "no-store",
       signal,
     });
     if (!response.ok) throw chatSessionFetchError(response.status);
-    const session = parseChatSessionDetailResponse(await response.json()).session;
+    const payload: unknown = await response.json();
+    const session = parseChatSessionDetailResponse(payload).session;
     const currentViewer = latest.current.viewer;
     if (session.id !== id) throw new Error("Chat unavailable");
     if (groupMode !== Boolean(session.group)) throw new Error("Chat unavailable");
     if (currentViewer.scope && session.ownerScope !== currentViewer.scope) throw chatSessionFetchError(403);
     if (currentViewer.identity?.kind === "anonymous" && session.ownerScope.startsWith("user:")) throw chatSessionFetchError(403);
-    return session;
+    return { ...session, page: chatSessionPageFromPayload(payload) };
+  }
+
+  /** Called with every applied latest-page snapshot. */
+  function notePage(session: ChatSession) {
+    const next = chatSessionPage(session);
+    setLatestPage((current) => current.hasEarlier === next.hasEarlier && current.earliestTurnId === next.earliestTurnId ? current : next);
+  }
+
+  async function loadEarlier() {
+    const cursor = page.hasEarlier ? page.earliestTurnId : null;
+    if (!cursor || earlierState === "loading") return;
+    const epoch = conversationEpochRef.current;
+    setEarlierState("loading");
+    try {
+      const session = await fetchSession(undefined, cursor);
+      if (epoch !== conversationEpochRef.current) return;
+      latest.current.onEarlierMessages(session.messages);
+      setOlderPage(chatSessionPage(session));
+      setEarlierState("idle");
+    } catch {
+      if (epoch === conversationEpochRef.current) setEarlierState("error");
+    }
   }
 
   useEffect(() => {
@@ -72,6 +134,10 @@ export function useChatSessionSync(options: SessionSyncOptions) {
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       delivery.reset();
+      conversationEpochRef.current += 1;
+      setLatestPage(COMPLETE_CHAT_SESSION_PAGE);
+      setOlderPage(null);
+      setEarlierState("idle");
       latest.current.onReset();
       latest.current.setLoadState("loading");
       if (viewer.identity?.kind === "anonymous") {
@@ -106,6 +172,9 @@ export function useChatSessionSync(options: SessionSyncOptions) {
     if (!ageGateAccepted || viewer.identity?.kind !== "user") return;
     let controller: AbortController | null = null;
     const focus = () => {
+      // The send's own receipt reconciles this conversation; a snapshot taken
+      // before Main records the Turn would show the reader's bubble twice.
+      if (latest.current.reconciliation.sending) return;
       controller?.abort();
       controller = new AbortController();
       const signal = controller.signal;
@@ -149,6 +218,9 @@ export function useChatSessionSync(options: SessionSyncOptions) {
     let controller: AbortController | null = null;
     let failureCount = 0;
     const settledPollMs = hasUnconfirmedAttachment ? UNCONFIRMED_GENERATION_POLL_MS : PROACTIVE_POLL_MS;
+    const nextDelay = () => reconciling
+      ? chatReconcilePollDelay({ streamHealthy: hasGeneratingReply && delivery.streamHealthy(), failureCount })
+      : settledPollMs;
 
     const schedule = (delay: number) => {
       if (cancelled) return;
@@ -177,9 +249,7 @@ export function useChatSessionSync(options: SessionSyncOptions) {
         }
       } finally {
         controller = null;
-        if (!cancelled) {
-          schedule(reconciling ? Math.min(12_000, 1_500 * 2 ** failureCount) : settledPollMs);
-        }
+        if (!cancelled) schedule(nextDelay());
       }
     };
     const onVisibilityChange = () => {
@@ -188,9 +258,16 @@ export function useChatSessionSync(options: SessionSyncOptions) {
       schedule(0);
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
-    schedule(reconciling ? 1_500 : settledPollMs);
+    // A lost stream asks for the authority read now rather than at the heartbeat.
+    pollWakeRef.current = () => {
+      if (cancelled || controller) return;
+      if (timer !== undefined) window.clearTimeout(timer);
+      schedule(0);
+    };
+    schedule(nextDelay());
     return () => {
       cancelled = true;
+      pollWakeRef.current = null;
       if (timer !== undefined) window.clearTimeout(timer);
       controller?.abort();
       document.removeEventListener("visibilitychange", onVisibilityChange);
@@ -207,7 +284,17 @@ export function useChatSessionSync(options: SessionSyncOptions) {
     writing,
   ]);
 
-  return { fetchSession };
+  return {
+    fetchSession,
+    notePage,
+    wakePoll: () => pollWakeRef.current?.(),
+    earlier: {
+      available: page.hasEarlier,
+      loading: earlierState === "loading",
+      failed: earlierState === "error",
+      load: loadEarlier,
+    },
+  };
 }
 
 export function chatSessionFetchError(status: number) {
