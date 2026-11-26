@@ -1285,6 +1285,66 @@ describe("Chat embedded companion runtime", () => {
     } finally { await runtime.shutdown(); }
   });
 
+  it("serves wake from the per-version cache until purge or promotion invalidates it", async () => {
+    const operations: string[] = [];
+    const store = new AttemptWorkspaceStore({ canonicalRoot: join(await mkdtemp(join(tmpdir(), "chat-wake-cache-")), "canonical") });
+    temporary.push(dirname(store["options"].canonicalRoot));
+    vi.spyOn(store, "promoteRelationshipRebuild").mockResolvedValue({ sessions: 0, messages: 0 });
+    const runtime = await engine(new MemoryReplyAdapter("Ready."), undefined, {
+      workspaces: store,
+      runIgrep: async (options) => {
+        operations.push(options.args[1]!);
+        return options.args[1] === "reproject"
+          ? { schema: "igrep.mem/1", provider: "igrep", action: "reproject", migrated: false }
+          : options.args[1] === "wake" ? { schema: "igrep.mem/1", provider: "igrep", action: "wake", workspaceRoot: options.args[options.args.indexOf("--workspace") + 1], markdownContext: "", warnings: [] } : { schema: "igrep.mem/1", provider: "igrep", action: "memory-search", workspaceRoot: JSON.parse(options.stdin!).workspace, warnings: [], results: [] };
+      },
+    });
+    const run = async (attempt: string) => {
+      const connection = port();
+      operations.length = 0;
+      await runtime.run({ ...normalInvocation(), invocationId: `invocation-${attempt}`, attemptId: `attempt-${attempt}` }, connection.runtimePort);
+      expect(connection.candidates).toHaveLength(1);
+      return connection.events;
+    };
+    try {
+      const first = await run("1");
+      expect(operations).toEqual(["reproject", "wake", "memory-search"]);
+      expect(first.find(event => event.type === "igrep_observation" && event.operation === "wake")).not.toHaveProperty("cache");
+      // Content-free first-token decomposition for a normal attempt.
+      expect(first.filter(event => event.type === "runtime_observation").map(event => event.type === "runtime_observation" && [event.operation, event.outcome]))
+        .toEqual([["workspace_prepare", "success"], ["workspace_copy", "success"], ["memory_reproject", "success"]]);
+
+      const second = await run("2");
+      expect(operations).toEqual(["reproject", "memory-search"]);
+      expect(second).toContainEqual(expect.objectContaining({ type: "igrep_observation", operation: "wake", outcome: "empty", resultCount: 0, cache: "hit" }));
+
+      expect(runtime["wakeCache"].size).toBe(1);
+      await runtime.purge({ scope: "relationship", userId: "user-1", characterId: "character-1" });
+      expect(runtime["wakeCache"].size).toBe(0);
+      await run("3");
+      expect(operations).toEqual(["reproject", "wake", "memory-search"]);
+
+      await run("4");
+      expect(operations).toEqual(["reproject", "memory-search"]);
+      await runtime.promoteRebuild({ scope: "relationship", userId: "user-1", characterId: "character-1", rebuildId: "00000000-0000-4000-8000-000000000000",
+        fence: { mutationId: "mutation-2", claimToken: "22222222-2222-4222-8222-222222222222", authorityVersion: "2" } });
+      await run("5");
+      expect(operations).toEqual(["reproject", "wake", "memory-search"]);
+      await runtime.purge({ scope: "user", userId: "user-1" });
+      expect(runtime["wakeCache"].size).toBe(0);
+    } finally { await runtime.shutdown(); }
+  });
+
+  it("records only the prepare timing for private attempts", async () => {
+    const runtime = await engine(new MemoryReplyAdapter("Ready."));
+    const connection = port();
+    try {
+      await runtime.run(invocation(), connection.runtimePort);
+      expect(connection.events.filter(event => event.type === "runtime_observation"))
+        .toEqual([expect.objectContaining({ operation: "workspace_prepare", outcome: "success" })]);
+    } finally { await runtime.shutdown(); }
+  });
+
   it.each(["length", "empty", "oversize"].flatMap(rejection => [true, false].map(withUsage => ({ rejection, withUsage }))))(
     "fails closed on a rejected $rejection summary while retaining its physical receipt (receipt=$withUsage)",
     async ({ rejection, withUsage }) => {

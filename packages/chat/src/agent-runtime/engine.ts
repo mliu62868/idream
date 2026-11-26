@@ -23,6 +23,7 @@ import type { AttemptWorkspace, AttemptWorkspaceStore, WorkspacePurgeRequest } f
 import { observeIgrepWake, igrepFailureCategory, recallIgrepMemory, reprojectIgrepMemory, createIgrepTools,
   type IgrepCommand, type RunJsonCommand } from "./igrep";
 import type { CompanionWorkspaceRebuildPromotion, CompanionWorkspaceRebuildSource } from "./rebuild-source";
+import { WakeProfileCache } from "./wake-cache";
 import { assertNotFenced, withDrainFence, type FenceScope } from "../fence.js";
 import { stableJson } from "../stable-json";
 import { replyCues, type ReplyCues } from "../reply-cues.js";
@@ -543,6 +544,7 @@ interface AttemptDependencies {
   cues: ReplyCues;
   instance: CompanionReadiness["instance"];
   priorityGate: InferencePriorityGate;
+  wakeCache: WakeProfileCache;
   /** Native execution finished; let a queued Turn take the agent slot. */
   releaseAgentSlot(): void;
 }
@@ -623,8 +625,17 @@ class CompanionAttempt {
     const { invocation, state } = this;
     const { options, cues } = this.deps;
     state.failurePhase = "workspace";
-    const workspace = await options.workspaces.prepare(invocation, this.signal);
+    // Content-free timings decompose the latency before the first model
+    // request (relationship lock + copy, copy alone, reproject).
+    const preparing = await timed(() => options.workspaces.prepare(invocation, this.signal));
+    void this.event({ type: "runtime_observation", operation: "workspace_prepare",
+      outcome: preparing.ok ? "success" : "failure", durationMs: preparing.durationMs });
+    if (!preparing.ok) throw preparing.error;
+    const workspace = preparing.value;
     state.workspace = workspace;
+    if (workspace.copyDurationMs !== undefined) {
+      void this.event({ type: "runtime_observation", operation: "workspace_copy", outcome: "success", durationMs: workspace.copyDurationMs });
+    }
     const knowledgePath = join(workspace.path, "knowledge");
     await mkdir(knowledgePath, { mode: 0o700 });
     const knowledgeSource = join(knowledgePath, "conversation.jsonl");
@@ -653,7 +664,19 @@ class CompanionAttempt {
     await writeFile(knowledgeSource, invocation.preparedTurn.messages
       .filter(message => message.role !== "system" && (!historyOnly || message.sourceKind === "replay"))
       .map(message => JSON.stringify(message)).join("\n") + "\n", { mode: 0o600 });
-    if (this.mode === "normal") await reprojectIgrepMemory(options.igrep, workspace.path, this.signal, options.runIgrep);
+    // INTENT: reproject stays per attempt. igrep binds each dialogue view to
+    // the physical stamp (inode/ctime) of its file, so every copy or clone is
+    // unbound until reprojected; a clone of an already reprojected tree is
+    // unbound again (verified 2026-11-26 against igrep 0.1.169). Sharing one
+    // reprojected tree would require attempts to run inside it, but each
+    // attempt writes its own knowledge/ next to .igrep and igrep rejects
+    // symlinked sources. Clone-on-copy keeps the per-attempt cost low.
+    if (this.mode === "normal") {
+      const reprojecting = await timed(() => reprojectIgrepMemory(options.igrep, workspace.path, this.signal, options.runIgrep));
+      void this.event({ type: "runtime_observation", operation: "memory_reproject",
+        outcome: reprojecting.ok ? "success" : "failure", durationMs: reprojecting.durationMs });
+      if (!reprojecting.ok) throw reprojecting.error;
+    }
     state.failurePhase = "agent";
     return { workspacePath: workspace.path, knowledgePath, knowledgeSource, current, recovered, bufferText };
   }
@@ -666,6 +689,12 @@ class CompanionAttempt {
     const workspacePath = prepared.workspacePath;
     const signal = this.signal;
     const recallQuery = prepared.current.content.trim();
+    // The resident profile depends only on the immutable version this attempt
+    // copied; a validated profile for that exact version skips the subprocess.
+    const memoryVersion = state.workspace?.memoryVersion;
+    const cacheScope = { userId: invocation.userId, characterId: invocation.characterId };
+    const cached = memoryVersion ? this.deps.wakeCache.lookup(memoryVersion, cacheScope) : undefined;
+    const cachedWake = cached?.wake;
     // Skip spawning a CLI memory-search subprocess when the canonical
     // relationship workspace has no committed dialogue files yet.
     const hasSearchableMemory = Boolean(options.runIgrep) || state.workspace?.hasCommittedDialogues !== false;
@@ -673,7 +702,7 @@ class CompanionAttempt {
     // message) are independent igrep processes; run them side by side so
     // the turn pays for the slower one, not the sum.
     const [wake, recall] = await Promise.all([
-      timed(() => observeIgrepWake(
+      timed(async () => cachedWake ?? observeIgrepWake(
         options.igrep,
         workspacePath,
         signal,
@@ -697,12 +726,14 @@ class CompanionAttempt {
       event({ type: "igrep_observation", operation: "wake", outcome: "failure", durationMs: wake.durationMs });
       throw wake.error;
     }
+    if (!cachedWake && memoryVersion && cached) this.deps.wakeCache.store(cached.token, memoryVersion, cacheScope, wake.value);
     event({
       type: "igrep_observation",
       operation: "wake",
       outcome: wake.value.outcome,
       resultCount: wake.value.resultCount,
       durationMs: wake.durationMs,
+      ...(cachedWake ? { cache: "hit" as const } : {}),
     });
     const residentProfile = wake.value.profile;
     const supportedProfileLines = await readSupportedProfileLines(join(workspacePath, ".igrep"));
@@ -1062,6 +1093,8 @@ export class CompanionEngine {
   private readonly priorityGate: InferencePriorityGate;
   /** Resolvers waiting for an active or queued invocation to leave. */
   private readonly departureWaiters = new Set<() => void>();
+  /** Validated resident profiles keyed by immutable memory version. */
+  private readonly wakeCache = new WakeProfileCache(256);
   private maintenanceTail = Promise.resolve();
   private closing = false;
 
@@ -1085,6 +1118,7 @@ export class CompanionEngine {
       cues: this.cues,
       instance: this.instance,
       priorityGate: this.priorityGate,
+      wakeCache: this.wakeCache,
       releaseAgentSlot: () => this.waitQueue.notify(mode),
     }, invocation, mode, active, port);
     try {
@@ -1194,7 +1228,14 @@ export class CompanionEngine {
       for (const entry of matchesQueued()) entry.controller.abort(new Error("invocation cancelled: user"));
       for (const active of matchesActive()) active.cancel("user");
       await this.waitForDepartures(() => matchesQueued().length === 0 && matchesActive().length === 0);
-      return this.options.workspaces.purge(request);
+      // No matching attempt is running; drop cached profile text before and
+      // after the bytes go, even if removal fails part-way.
+      this.wakeCache.invalidate(request);
+      try {
+        return await this.options.workspaces.purge(request);
+      } finally {
+        this.wakeCache.invalidate(request);
+      }
     }));
   }
 
@@ -1222,7 +1263,13 @@ export class CompanionEngine {
     signal?.throwIfAborted();
     // Attempt workspaces are immutable copies. The canonical pointer may
     // advance underneath a normal turn; private turns never read it.
-    return this.options.workspaces.promoteRelationshipRebuild(request, signal);
+    // A promotion may be a privacy rebuild: superseded profile text must not
+    // stay cached, and in-flight lookups must not re-store it.
+    try {
+      return await this.options.workspaces.promoteRelationshipRebuild(request, signal);
+    } finally {
+      this.wakeCache.invalidate({ scope: "relationship", userId: request.userId, characterId: request.characterId });
+    }
   }
 
   async discardRebuild(request: CompanionWorkspaceRebuildPromotion): Promise<void> {
@@ -1249,6 +1296,7 @@ export class CompanionEngine {
     this.waitQueue.notifyAll();
     for (const active of this.active.values()) active.cancel("shutdown");
     await this.waitForDepartures(() => this.active.size === 0 && this.queued.size === 0);
+    this.wakeCache.clear();
     await this.maintenanceTail;
   }
 }

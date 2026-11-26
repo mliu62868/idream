@@ -750,7 +750,13 @@ export function agentRunTraceEvent(
           resultCount: event.resultCount,
           evidenceMatches: event.evidenceMatches,
           durationMs: event.durationMs,
+          ...(event.cache ? { cache: event.cache } : {}),
         },
+      };
+    case "runtime_observation":
+      return {
+        kind: "pi.runtime_observation",
+        payload: { operation: event.operation, outcome: event.outcome, durationMs: event.durationMs },
       };
     case "model_request":
       return { kind: "pi.model_request", payload: { request: event.request } };

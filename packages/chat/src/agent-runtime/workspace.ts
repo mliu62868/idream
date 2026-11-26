@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import {
   chmod,
   cp,
@@ -9,6 +10,7 @@ import {
   readdir,
   readFile,
   readlink,
+  realpath,
   rename,
   rm,
   rmdir,
@@ -39,8 +41,27 @@ export interface AttemptWorkspace {
   readonly mode: "normal" | "private";
   /** True when the canonical memory snapshot contains at least one committed dialogue file. */
   readonly hasCommittedDialogues?: boolean;
+  /**
+   * Normal attempts: realpath of the immutable `.igrep.versions/<id>` directory
+   * this attempt copied. Version directories are never written after
+   * publication, so results derived only from it may be cached by this key.
+   */
+  readonly memoryVersion?: string;
+  /** Normal attempts: milliseconds spent cloning/copying the memory version. */
+  readonly copyDurationMs?: number;
   discard(): Promise<void>;
 }
+
+/**
+ * INTENT: canonical memory versions are immutable, so an attempt copy can be
+ * an APFS/btrfs/XFS copy-on-write clone instead of a byte copy. Bun (the Chat
+ * runtime) already clones on APFS; the flag states the intent for every
+ * runtime and falls back to an ordinary copy where cloning is unsupported
+ * (measured 2026-11-26: Bun 1.4.2 400 MB tree 2.7 ms cloned on APFS, byte
+ * copy fallback onto ExFAT; Node 22 performs a byte copy). Cloned files keep
+ * the source modes; callers still tighten directory modes explicitly.
+ */
+const MEMORY_COPY_OPTIONS = { recursive: true, force: false, mode: fsConstants.COPYFILE_FICLONE } as const;
 
 export interface PreparedRelationshipRebuild {
   rebuildId: string;
@@ -276,7 +297,7 @@ export class AttemptWorkspaceStore {
           const canonicalLink = join(relationshipRoot, ".igrep");
           await mkdir(versionsRoot, { recursive: true, mode: 0o700 });
           const canonicalVersion = await this.ensureCanonicalVersion(canonicalLink, versionsRoot);
-          await cp(canonicalVersion, memory, { recursive: true, force: false });
+          await cp(canonicalVersion, memory, MEMORY_COPY_OPTIONS);
         } finally {
           releaseRelationship();
         }
@@ -541,6 +562,7 @@ export class AttemptWorkspaceStore {
       await chmod(versionsRoot, 0o700);
       await chmod(attemptsRoot, 0o700);
       const canonicalVersion = await this.ensureCanonicalVersion(canonicalLink, versionsRoot);
+      const memoryVersion = await realpath(canonicalVersion);
       const hasCommittedDialogues = await hasDialogueFiles(canonicalVersion);
       const ownedAttemptRoot = join(attemptsRoot, `${safeKey(invocation.attemptId)}-${randomUUID()}`);
       attemptRoot = ownedAttemptRoot;
@@ -549,7 +571,9 @@ export class AttemptWorkspaceStore {
       assertWithin(relationshipRoot, ownedAttemptRoot);
       await mkdir(workspace, { recursive: true, mode: 0o700 });
       for (const path of [ownedAttemptRoot, workspace]) await chmod(path, 0o700);
-      await cp(canonicalVersion, attemptMemory, { recursive: true, force: false });
+      const copyStartedAt = performance.now();
+      await cp(canonicalVersion, attemptMemory, MEMORY_COPY_OPTIONS);
+      const copyDurationMs = Math.max(0, Math.round(performance.now() - copyStartedAt));
       await chmod(attemptMemory, 0o700);
       // The attempt owns an immutable copy. Holding the relationship lock for
       // model latency would make an unrelated Main projection wait for a turn.
@@ -562,7 +586,7 @@ export class AttemptWorkspaceStore {
         finished = true;
         await rm(ownedAttemptRoot, { recursive: true, force: true });
       };
-      return { path: workspace, mode: "normal", hasCommittedDialogues, discard };
+      return { path: workspace, mode: "normal", hasCommittedDialogues, memoryVersion, copyDurationMs, discard };
     } catch (error) {
       if (attemptRoot) {
         await rm(attemptRoot, { recursive: true, force: true }).catch(() => undefined);
