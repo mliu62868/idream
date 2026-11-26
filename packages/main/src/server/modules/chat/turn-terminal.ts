@@ -1,14 +1,14 @@
-// Turn terminal transitions: Chat commit, user Stop and stalled reclaim.
+// Turn terminal transitions: Chat commit, user Stop, stalled reclaim and admission expiry.
 import type { ChatTerminalCommit } from "@idream/shared/contracts";
-import { chatExecutionSnapshotSchema, chatTerminalCommitSchema, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import { chatExecutionSnapshotSchema, chatTerminalCommitSchema } from "@idream/shared/contracts";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import { recordMainToChatEvent } from "@/processes/chat-outbox";
+import { recordAgentRunCancelIntent } from "./agent-run-cancel-intent";
 import { scheduleCompanionMemoryProjection } from "./companion-memory-authority";
 import { lockChatScope } from "./turn-scope";
 import { hasChatMediaResponseAttachment } from "./tool-effect-attachment";
-import { ACTIVE_ASSISTANT_STATES, jsonEqual, sha256, toJson } from "./turn-ledger-support";
+import { ACTIVE_ASSISTANT_STATES, jsonEqual, toJson } from "./turn-ledger-support";
 import { settleChatTurnUsage } from "./turn-usage";
 import { appendChatExchangeCompleted } from "./exchange-metrics";
 import { requireTurn } from "./turn-commands";
@@ -144,13 +144,8 @@ export async function cancelChatTurn(userId: string, messageId: string, expected
   }
   const turn = await requireTurn(userId, messageId);
   return prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
-    await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${turn.sessionId} FOR UPDATE`;
-    await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${turn.id} FOR UPDATE`;
-    const current = await tx.chatTurn.findFirst({
-      where: { id: turn.id, session: { userId } },
-    });
-    if (!current) throw Errors.notFound("Chat message not found");
+    const scope = await lockChatScope(tx, { userId, at: { turn: turn.id }, allowDeletedSession: true });
+    const current = scope.turn!;
     if (current.attempt !== expectedAttempt) throw Errors.conflict("Stop belongs to a superseded Chat attempt");
     if (!ACTIVE_ASSISTANT_STATES.includes(current.assistantStatus)) {
       return {
@@ -170,14 +165,7 @@ export async function cancelChatTurn(userId: string, messageId: string, expected
       },
     });
     await settleChatTurnUsage(tx, current, "cancelled", now);
-    await recordMainToChatEvent({
-      eventId: `chat_agent_run_cancel_${sha256(`${current.id}:${current.attempt}`).slice(0, 40)}`,
-      eventType: MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1,
-      aggregateType: "chat_turn",
-      aggregateId: current.id,
-      payload: { version: 1, userId, turnId: current.id, attempt: current.attempt },
-      occurredAt: now,
-    }, tx);
+    await recordAgentRunCancelIntent(tx, { userId, turnId: current.id, attempt: current.attempt, occurredAt: now });
     return { ok: true, turnId: current.id, attempt: current.attempt, cancelled: true };
   });
 }
@@ -238,14 +226,94 @@ export async function failStalledChatTurn(turnId: string, cutoff: {
       },
     });
     await settleChatTurnUsage(tx, turn, "failed", now);
-    await recordMainToChatEvent({
-      eventId: `chat_agent_run_cancel_${sha256(`${turn.id}:${turn.attempt}`).slice(0, 40)}`,
-      eventType: MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1,
-      aggregateType: "chat_turn",
-      aggregateId: turn.id,
-      payload: { version: 1, userId, turnId: turn.id, attempt: turn.attempt },
-      occurredAt: now,
-    }, tx);
+    await recordAgentRunCancelIntent(tx, { userId, turnId: turn.id, attempt: turn.attempt, occurredAt: now });
     return { reclaimed: true as const, turnId: turn.id, attempt: turn.attempt };
+  });
+}
+
+/** Public failure code of a Turn Chat never admitted within the pending TTL. */
+export const ADMISSION_EXPIRED_FAILURE_CODE = "admission_expired";
+
+export type PendingAdmissionExpiry =
+  | { readonly expired: false }
+  | {
+    readonly expired: true;
+    readonly turnId: string;
+    readonly attempt: number;
+    readonly pendingMs: number;
+    readonly admissionAttempts: number;
+    readonly reason: "ttl" | "snapshot_invalid";
+  };
+
+/**
+ * SPEC: a Turn still `pending` after `CHAT_PENDING_ADMISSION_TTL_MS` (measured
+ * from `attemptStartedAt`) becomes `failed` with `failureCode:
+ * "admission_expired"`. A Turn whose frozen snapshot is permanently unusable
+ * takes the same exit after a bounded number of dispatcher attempts.
+ *
+ * INTENT: the dispatcher retried pending forever. While Chat was down the
+ * spinner never ended, the conversation stayed locked (one active reply per
+ * chat), the user's concurrent-reply slots stayed taken, and after recovery the
+ * Character answered a message from hours ago. Failing it releases all three;
+ * the user message stays and Regenerate starts a fresh attempt.
+ *
+ * INVARIANT: re-checked under the scope locks — an attempt that was admitted,
+ * cancelled or revised since the scan is left alone, and a live admission lease
+ * (a request to Chat in flight) waits for the next tick. Chat may still have
+ * admitted the attempt while its receipt was lost, so the durable cancel intent
+ * is written in the same transaction. Usage follows the failed-terminal rule:
+ * the unconsumed fact is voided.
+ */
+export async function expirePendingChatTurn(turnId: string, input: {
+  readonly attempt: number;
+  readonly reason: "ttl" | "snapshot_invalid";
+  readonly startedBefore?: Date;
+  readonly lastError?: string;
+}): Promise<PendingAdmissionExpiry> {
+  const owner = await prisma.chatTurn.findFirst({
+    where: { id: turnId },
+    select: { session: { select: { userId: true } } },
+  });
+  if (!owner) return { expired: false };
+  const userId = owner.session.userId;
+  return prisma.$transaction(async (tx) => {
+    const scope = await lockChatScope(tx, { userId, at: { turn: turnId }, allowDeletedSession: true });
+    const turn = scope.turn!;
+    const now = new Date();
+    if (
+      turn.assistantStatus !== "pending" || turn.terminalAt !== null || turn.attempt !== input.attempt ||
+      (turn.admissionLeaseUntil !== null && turn.admissionLeaseUntil > now) ||
+      (input.reason === "ttl" && (!input.startedBefore || turn.attemptStartedAt >= input.startedBefore))
+    ) {
+      return { expired: false as const };
+    }
+    const pendingMs = Math.max(0, now.getTime() - turn.attemptStartedAt.getTime());
+    await tx.chatTurn.update({
+      where: { id: turn.id },
+      data: {
+        assistantStatus: "failed",
+        terminalAt: now,
+        terminalEvidence: toJson({
+          authority: "main_admission_expiry",
+          failureCode: ADMISSION_EXPIRED_FAILURE_CODE,
+          reason: input.reason,
+          pendingMs,
+          admissionAttempts: turn.admissionAttempts,
+          ...(input.lastError ? { lastError: input.lastError.slice(0, 500) } : {}),
+        }),
+        admissionLeaseToken: null,
+        admissionLeaseUntil: null,
+      },
+    });
+    await settleChatTurnUsage(tx, turn, "failed", now);
+    await recordAgentRunCancelIntent(tx, { userId, turnId: turn.id, attempt: turn.attempt, occurredAt: now });
+    return {
+      expired: true as const,
+      turnId: turn.id,
+      attempt: turn.attempt,
+      pendingMs,
+      admissionAttempts: turn.admissionAttempts,
+      reason: input.reason,
+    };
   });
 }

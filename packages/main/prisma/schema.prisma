@@ -877,6 +877,9 @@ model ChatTurn {
   admissionLeaseToken           String?
   admissionLeaseUntil           DateTime?
   admissionLastError            Json?
+  /// When the current attempt entered `pending` (send, regenerate or edit).
+  /// The pending-admission TTL is measured from here, not from createdAt.
+  attemptStartedAt              DateTime             @default(now())
   admittedAt                    DateTime?
   executionDeadlineAt           DateTime?
   statsCountedAt                DateTime?

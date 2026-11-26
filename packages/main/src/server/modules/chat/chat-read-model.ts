@@ -305,6 +305,7 @@ function publicAssistantMessage(turn: {
       ? { replyLimitReached: true } : {}),
     ...(turn.assistantStatus === "failed" && jsonRecord(turn.terminalEvidence ?? null).failureCode === "agent_run_interrupted"
       ? { replyInterrupted: true } : {}),
+    ...(turn.assistantStatus === "failed" ? publicFailureCode(turn.terminalEvidence ?? null) : {}),
     attempt: turn.attempt,
     replyToMessageId: turn.userMessageId,
     sceneVersion: turn.sceneVersion,
@@ -351,6 +352,15 @@ function publicAssistantMessage(turn: {
           ? { source: jsonRecord(attachment.metadata).source } : {}),
       })),
   };
+}
+
+// SPEC: the failure codes a page may explain. Everything else in the terminal
+// evidence (provider names, model errors, timings) stays internal.
+const PUBLIC_FAILURE_CODES = new Set(["admission_expired", "agent_run_interrupted"]);
+
+function publicFailureCode(evidence: Prisma.JsonValue | null): { failureCode?: string } {
+  const code = jsonRecord(evidence).failureCode;
+  return typeof code === "string" && PUBLIC_FAILURE_CODES.has(code) ? { failureCode: code } : {};
 }
 
 async function enrichAttachmentMedia(messages: Array<Record<string, unknown>>, userId: string) {

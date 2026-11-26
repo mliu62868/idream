@@ -10,6 +10,7 @@ import {
   chatExecutionSnapshotSchema,
   type ChatExecutionSnapshot,
 } from "@idream/shared/contracts";
+import { incrementCounter } from "@idream/shared";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
@@ -24,6 +25,7 @@ import {
   regenerateChatTurn,
   type ChatTurnEditOptions,
 } from "./turn-ledger";
+import { ADMISSION_EXPIRED_FAILURE_CODE, expirePendingChatTurn, type PendingAdmissionExpiry } from "./turn-terminal";
 import { loadChatAuthoritySnapshot } from "./chat-authority-snapshot";
 
 const ADMISSION_PATH = "/internal/agent-runs";
@@ -33,6 +35,9 @@ const TERMINAL_COMMIT_GRACE_MS = 60_000;
 // Historical generating rows have no recorded Chat commitment. Retain the
 // previous watchdog only for those rows; every new admission pins its deadline.
 const LEGACY_STALLED_ATTEMPT_MS = 6 * 60_000;
+// A frozen snapshot that cannot be read is not repaired by waiting. Bound the
+// passes before the Turn takes the expired-admission exit.
+const MAX_SNAPSHOT_FAILURES = 3;
 
 export interface AgentRunAdmissionResult {
   admitted: boolean;
@@ -132,7 +137,9 @@ export async function attemptChatAgentRunAdmission(
       if (
         !turn || turn.assistantStatus !== "pending" || turn.attempt !== expected.attempt ||
         turn.session.status !== "active" || turn.admissionNextRunAt > now ||
-        (turn.admissionLeaseUntil !== null && turn.admissionLeaseUntil > now)
+        (turn.admissionLeaseUntil !== null && turn.admissionLeaseUntil > now) ||
+        // Past its TTL the attempt belongs to expiry, never to a late admission.
+        turn.attemptStartedAt < pendingAdmissionCutoff(now)
       ) return null;
       const persisted = chatExecutionSnapshotSchema.safeParse(turn.executionSnapshot);
       if (!persisted.success) throw new Error("Chat Turn has no valid frozen execution snapshot");
@@ -260,13 +267,18 @@ export async function attemptChatAgentRunAdmission(
 export async function dispatchPendingChatAgentRuns(
   batch = 50,
   signal?: AbortSignal,
-): Promise<{ admitted: number; pending: number }> {
-  if (signal?.aborted || !env.CHAT_SERVICE_URL || !env.INTERNAL_TOKEN) return { admitted: 0, pending: 0 };
+): Promise<{ admitted: number; pending: number; expired: number }> {
+  if (signal?.aborted) return { admitted: 0, pending: 0, expired: 0 };
+  // Expiry runs even when Chat is unconfigured: an unreachable runtime is
+  // exactly when pending Turns must stop holding the conversation.
+  const { expired } = await expireStalePendingChatTurns(batch, signal);
+  if (signal?.aborted || !env.CHAT_SERVICE_URL || !env.INTERNAL_TOKEN) return { admitted: 0, pending: 0, expired };
   const now = new Date();
   const rows = await prisma.chatTurn.findMany({
     where: {
       assistantStatus: "pending",
       terminalAt: null,
+      attemptStartedAt: { gte: pendingAdmissionCutoff(now) },
       admissionNextRunAt: { lte: now },
       OR: [{ admissionLeaseUntil: null }, { admissionLeaseUntil: { lte: now } }],
       session: { status: "active" },
@@ -281,7 +293,73 @@ export async function dispatchPendingChatAgentRuns(
     const result = await attemptPersistedChatAgentRunAdmission(row.id);
     if (result.admitted) admitted += 1;
   }
-  return { admitted, pending: rows.length - admitted };
+  return { admitted, pending: rows.length - admitted, expired };
+}
+
+function pendingAdmissionCutoff(now: Date): Date {
+  return new Date(now.getTime() - env.CHAT_PENDING_ADMISSION_TTL_MS);
+}
+
+/** See expirePendingChatTurn. One failing row never strands the rest. */
+export async function expireStalePendingChatTurns(
+  batch = 50,
+  signal?: AbortSignal,
+): Promise<{ expired: number }> {
+  const now = new Date();
+  const startedBefore = pendingAdmissionCutoff(now);
+  const rows = await prisma.chatTurn.findMany({
+    where: {
+      assistantStatus: "pending",
+      terminalAt: null,
+      attemptStartedAt: { lt: startedBefore },
+      OR: [{ admissionLeaseUntil: null }, { admissionLeaseUntil: { lte: now } }],
+    },
+    orderBy: [{ attemptStartedAt: "asc" }, { id: "asc" }],
+    select: { id: true, attempt: true, admissionLastError: true },
+    take: batch,
+  });
+  let expired = 0;
+  for (const row of rows) {
+    if (signal?.aborted) break;
+    try {
+      const result = await expirePendingChatTurn(row.id, {
+        attempt: row.attempt,
+        reason: "ttl",
+        startedBefore,
+        lastError: admissionErrorMessage(row.admissionLastError),
+      });
+      if (result.expired) {
+        expired += 1;
+        reportAdmissionExpiry(result);
+      }
+    } catch (err) {
+      logger.error({ err, turnId: row.id }, "failed to expire pending Chat Turn");
+    }
+  }
+  return { expired };
+}
+
+function reportAdmissionExpiry(result: Extract<PendingAdmissionExpiry, { expired: true }>) {
+  incrementCounter(
+    "chat_pending_admission_expired_total",
+    "Pending Chat Turns failed because Chat never admitted them",
+    { reason: result.reason },
+  );
+  logger.warn({
+    event: "chat_pending_admission_expired",
+    turnId: result.turnId,
+    attempt: result.attempt,
+    reason: result.reason,
+    pendingMs: result.pendingMs,
+    admissionAttempts: result.admissionAttempts,
+    failureCode: ADMISSION_EXPIRED_FAILURE_CODE,
+  }, "pending Chat Turn expired before admission");
+}
+
+function admissionErrorMessage(value: Prisma.JsonValue | null): string | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) && typeof value.message === "string"
+    ? value.message
+    : undefined;
 }
 
 /**
@@ -339,25 +417,36 @@ export async function reclaimStalledChatAgentRuns(
 async function attemptPersistedChatAgentRunAdmission(
   turnId: string,
 ): Promise<AgentRunAdmissionResult> {
+  let snapshot: ChatExecutionSnapshot;
   try {
-    return await attemptChatAgentRunAdmission(await executionSnapshot(turnId));
+    snapshot = await executionSnapshot(turnId);
   } catch (error) {
     const reason = error instanceof Error ? error.message : "invalid frozen execution snapshot";
-    // INVARIANT: one corrupt product snapshot remains visible for repair but
-    // cannot abort the rest of the due admission batch.
-    await prisma.chatTurn.updateMany({
+    // INVARIANT: one corrupt product snapshot cannot abort the rest of the due
+    // admission batch, and cannot retry forever either: after a bounded number
+    // of dispatcher passes it takes the same exit as an expired pending Turn.
+    const marked = await prisma.chatTurn.updateManyAndReturn({
       where: { id: turnId, assistantStatus: "pending" },
       data: {
         admissionAttempts: { increment: 1 },
-        // A malformed immutable snapshot needs operator repair. Keep it
-        // visible in the ledger without hot-looping every dispatcher tick.
-        admissionNextRunAt: new Date(Date.now() + admissionBackoffMs(9)),
-        admissionLastError: { message: reason },
+        admissionNextRunAt: new Date(Date.now() + admissionBackoffMs(3)),
+        admissionLastError: { message: reason, kind: "snapshot_invalid" },
       },
-    }).catch(() => undefined);
+      select: { attempt: true, admissionAttempts: true },
+    }).catch(() => []);
+    const row = marked[0];
+    if (row && row.admissionAttempts >= MAX_SNAPSHOT_FAILURES) {
+      const result = await expirePendingChatTurn(turnId, { attempt: row.attempt, reason: "snapshot_invalid", lastError: reason })
+        .catch((err: unknown) => {
+          logger.error({ err, turnId }, "failed to expire pending Chat Turn with an invalid snapshot");
+          return null;
+        });
+      if (result?.expired) reportAdmissionExpiry(result);
+    }
     logger.warn({ turnId, reason }, "skipping invalid pending Chat Turn snapshot");
     return { admitted: false, reason };
   }
+  return attemptChatAgentRunAdmission(snapshot);
 }
 
 function admissionBackoffMs(attempts: number): number {

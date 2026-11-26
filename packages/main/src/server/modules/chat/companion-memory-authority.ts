@@ -1,5 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
-import { recordMainToChatEvent } from "@/processes/chat-outbox";
+import { randomUUID } from "node:crypto";
+import { recordAgentRunCancelIntent } from "./agent-run-cancel-intent";
 import {
   COMPANION_MEMORY_PURGE_PATH,
   COMPANION_MEMORY_REBUILD_PREPARE_PATH,
@@ -403,14 +403,7 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
     // Same durable cancel as a user's Stop, so a run keeps no GPU slot when the
     // best-effort HTTP cancel below is lost and the purge has not landed yet.
     for (const turn of active) {
-      await recordMainToChatEvent({
-        eventId: `chat_agent_run_cancel_${createHash("sha256").update(`${turn.id}:${turn.attempt}`).digest("hex").slice(0, 40)}`,
-        eventType: MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1,
-        aggregateType: "chat_turn",
-        aggregateId: turn.id,
-        payload: { version: 1, userId, turnId: turn.id, attempt: turn.attempt },
-        occurredAt: now,
-      }, tx);
+      await recordAgentRunCancelIntent(tx, { userId, turnId: turn.id, attempt: turn.attempt, occurredAt: now });
     }
     // Turn.memoryEnabled is the immutable projection pin used by every later
     // canonical rebuild. Clearing only the mutable Session flag would let a
