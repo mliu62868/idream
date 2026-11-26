@@ -89,7 +89,7 @@ describe("Character media candidate ordering", () => {
     dependencies.deliveries.mockResolvedValue([
       { delivery: { entryId: "older-entry", contentHash: "hash-0" }, attachmentMetadata: { attempt: 2 }, attempt: 2 },
       { delivery: { entryId: "entry-1", contentHash: "hash-1" }, attachmentMetadata: { attempt: 1 }, attempt: 2 },
-      { delivery: { entryId: "entry-2", contentHash: "old-digest" }, attachmentMetadata: { effect: { attempt: 2 } }, attempt: 2 },
+      { delivery: { entryId: "entry-2", contentHash: "old-digest" }, attachmentMetadata: { attempt: 2 }, attempt: 2 },
     ]);
     const input = { ...identity, userId: "viewer", kind: "image" as const, query: "seaside" };
     expect((await searchCharacterMediaLibrary(input)).map(({ entry }) => entry.id)).toEqual(["entry-1"]);
