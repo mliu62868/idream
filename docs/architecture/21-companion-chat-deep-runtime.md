@@ -16,11 +16,12 @@ Companion Chat 只有两个需要独立生命周期的 module：Main 持有产�
 - 新消息、编辑与重新生成都由 Main 在用户与会话锁内确认执行资格。单聊会话或整个群聊同时最多有一个可执行回复；较新的 blocked Turn 不得绕过仍在执行的旧回复。
 - 新的修订 attempt 重新核验公共 Serving 权威，固定 Release 不能保留已撤销的执行资格；已接纳 attempt 的终态仍由原快照与 CAS 完成。
 - assistant message id 在不同 attempt 间复用，不能独自标识执行。Chat 清理旧 attempt 只删除仍指向它的本地索引；周期性过期清理在同一 Turn 锁内重读索引，避免扫描旧版本后删除新索引。
-- 编辑携带打开编辑器时观察到的 attempt，包括正文不变的回复重试。Main 在 Turn 锁内校验 attempt，并在同一事务把接受的键绑定到请求摘要和修订后的 attempt。传输结果未知时，浏览器复用原请求和同一 `Idempotency-Key`。缺少 attempt 的旧请求只可用已登记且匹配负载的键重放当前修订回执；带当前 attempt 的兼容请求可省略键；缺少版本的首次写入、已被取代的修订及异负载重用键返回 409。
+- 编辑携带打开编辑器时观察到的 attempt，包括正文不变的回复重试。Main 在 Turn 锁内校验 attempt，并在同一事务把接受的键绑定到请求摘要和修订后的 attempt。传输结果未知时，浏览器复用原请求和同一 `Idempotency-Key`。缺少 attempt 的编辑一律返回 409（无存量回执，原重放路径已删除）；带当前 attempt 的请求可省略键；已被取代的修订及异负载重用键返回 409。
 - 新浏览器发送携带 `sendProtocolVersion: "chat-send-2"`，与原发送意图一起固定并进入幂等摘要。缺少或过期协议仅可读取精确已有回执；即使旧消息已删且没有墓碑，也不得再次创建 Turn 或恢复执行。旧客户端保留草稿并提示刷新，不自动给旧意图补协议重投。内部 proactive 与绑定 voiceCall 的输入继续使用原权限。
 - Chat 首次接纳时固定并持久化 deadline，重复接纳与恢复重放同一时间；接纳回执绑定 Turn/attempt 并将该截止时间交给 Main。Main 在实际截止时间加终态提交宽限之后回收，不从另一个进程的配置或普通行更新时间猜测新运行的期限。没有该字段的历史 generating 行沿用旧回收政策。
 - 待接纳（pending）attempt 受接纳 TTL 约束，默认 180 秒。到期仍未被 Chat 接纳时，Main 将其提交为 failed `admission_expired`，void 该 Turn 的额度 fact，并写入 durable cancel intent，迟到的接纳不能再执行它。
 - Main 主动消息的无时区时间字段按 UTC 比较和推进，不继承数据库会话时区。
+- 回复版本：最新 Turn 的纯文字回复被 regenerate 取代时，保留为可选版本（`chat_turn_alternatives`，含当前回复至多 10 个，按生成顺序编号）。选回某个版本是 Main 对该 Turn 的修订：attempt 递增、不调用 Chat、不扣额度、不重放工具效果；记忆按第 6.3 节的可投影规则退休被换下的回复，未重建时为新当前回复调度普通投影。编辑用户消息或开始更新的 Turn 时版本作废；带媒体附件的回复不成为版本，也不能被换下，因为其附件、计费与交付绑定在具体 attempt 上。未被选中的版本不进入长期记忆。
 
 ### 2. 交付与 SSE
 
@@ -120,7 +121,7 @@ Companion Chat 只有两个需要独立生命周期的 module：Main 持有产�
 #### 6.2 prepare / promote 与栅栏
 
 - Chat 在独立候选 workspace 中幂等 prepare，再以单调 authority version 原子 promote。prepare/promote 不持有 relationship-wide Agent 执行锁，也不取消已经运行的 Turn；普通投影延迟不阻塞新 Turn。
-- promote 的栅栏是关系级 `companion_memory_authorities` 行的 `FOR UPDATE` 加 authority version 校验；破坏性变更同样写该行，因此仍然互斥。持有 users 行锁时不发起任何远程调用（包括 prepare/promote/purge HTTP）。
+- promote 的栅栏是关系级 `companion_memory_authorities` 行的 `FOR UPDATE` 加 authority version 校验；破坏性变更（含 clear memory）同样写该行，账号硬删除删除该行，因此仍然互斥。version 已被更新时，普通投影放弃 promote；重建仅在被撤销（clear、删号）时放弃，因为之后以 canonical 为种子的投影带不上重建的删除。memory lane 按 aggregate 分组有界并发（至多 4），同一 aggregate 内严格串行。持有 users 行锁时不发起任何远程调用（包括 prepare/promote/purge HTTP）。
 - clear/destructive rebuild 必须撤销 pending 和 processing 普通投影；后者可能已经读出旧历史，最终 promote 须在上述关系级栅栏内确认事件仍有效。
 - canonical 指针的原子切换是本地发布点。切换后隔离旧版本失败仍向 Main 报错、保留重建待完成状态，但不能回滚到可能已被隔离的旧路径。精确重放已经发布的版本也必须完成剩余旧版本与候选的隔离后才 ACK。
 - 用户完整删除由 Chat 持久 tombstone 阻止旧 prepare/promote 复活。账号删除的同一 sourceEventId 串行构造持久回执；本地 purgedAt、完成事件 ID 与请求 hash 构成不可变候选，并发投递和重试都重放同一完成信封。
@@ -140,7 +141,8 @@ Companion Chat 只有两个需要独立生命周期的 module：Main 持有产�
 #### 6.5 attempt 记忆副本与 wake
 
 - normal attempt 从不可变 canonical 版本复制自己的记忆副本，复制使用 copy-on-write 克隆。新版 igrep 的检索视图绑定来源文件的物理 witness；副本在 wake / recall 前执行官方零模型 `mem reproject`，仅在自己拥有的副本中恢复绑定，不维护 profile、不写 Main 历史。Private 不执行此步骤，也不读写跨会话记忆。
-- 普通 attempt 首轮前只执行一次可观测的官方 wake，并按当前消息执行 fast recall。`mem wake` 结果按不可变 canonical version 缓存，purge、promote 与账号擦除使缓存失效。
+- 普通 attempt 首轮前只执行一次可观测的官方 wake（可由缓存命中提供，观测带 `cache: "hit"`），并按当前消息执行 fast recall。`mem wake` 结果按不可变 canonical version 的 realpath 进程内缓存（LRU 256），relationship/user purge、账号擦除、rebuild promote 与 shutdown 使缓存失效，epoch 计数防止失效前发起的查询写回。
+- reproject 不能按版本共享：igrep 0.1.169 的检索视图绑定文件 inode/ctime，克隆出的已 reproject 副本仍会失效；共享目录又无法容纳每个 attempt 自己的 `knowledge/`（igrep 拒绝符号链接来源），因此每个 attempt 仍各自 reproject。workspace prepare、复制与 reproject 的耗时作为 content-free `runtime_observation` 进入 AgentRun journal，不发给 Main。
 - 预召回若返回检索不完整警告，必须失败，不能将缺失来源解释为记忆为空。自动预召回 empty 只记录观察，不额外指导角色声称没有记忆；去重后的空 notes 或 profile-only hit 不代表没有记忆，任何检索状态都不能否定当前原文、历史及已验证 profile。用户需要的原文仍可由 Agent 自选 `session_recall` 或 `memory_search` 取回。
 
 ### 7. 执行内核与预算
@@ -182,6 +184,7 @@ Companion Chat 只有两个需要独立生命周期的 module：Main 持有产�
 - 会话召回投影由 Main 的 seed/omitted 原文与 Pi 公共 `Conversation.entries()`、context contributions 共同构成。每块按 attempt/source/block/byte 稳定标识并保留 UTF-8 字节、原角色和 speaker；query 走公共 igrep `search --stdin-format jsonl --mode ultra`，结果 ID 必须回查当前 attempt 的不可变原文，不能信任搜索摘要冒充原文。system、plugin 上下文、reasoning、压缩摘要和 recall 自身输出不进入原文档案。
 - 每个 CLI 子进程只接收明确绑定的 LLM/ASK/final-sort、embedding、rerank 路由和必要进程环境；未配置能力（含 image embedding 路由）显式禁用；文本快照使用 `IGREP_INDEX_LEVEL=none`，不设置 `IGREP_IMAGE_AUGMENTATION_MODE`；`IGREP_NO_CACHE=1` 禁用共享结果缓存；不借用个人默认配置或临时更换 HOME。
 - 空记忆工作区及纯寒暄短语跳过 `memory-search` 子进程。
+- 检索只用于缺失的事实：system 指引说明角色描述与可见对话已知，直接据此回答，不为其中已有的事实发起检索。
 
 #### 7.5 上下文、压缩与预算
 
@@ -208,7 +211,7 @@ Companion Chat 只有两个需要独立生命周期的 module：Main 持有产�
 ### 9. Scene
 
 - Scene 由 Main Turn 权威持有。Scene v1 的持久形状由 Shared 唯一定义，Main execution snapshot / terminal、Chat、公开响应和语音快照复用同一 schema；`scene=null` 只允许 version 0，非空 Scene 的内外版本必须一致。
-- 当前不运行任何 Scene 内容投影：终态提交只把 Scene 原样推进一版（`packages/chat/src/agent-runner.ts`），terminalEvidence 不带 `sceneProjection`。`packages/chat/src/scene.ts` 的投影逻辑没有生产调用方；`packages/chat/src/scene-light.ts`（单次 JSON Schema 增量投影，含前台礼让与失败软降级）仅有测试引用，未接入 commit 或 post-commit 路径。任何投影器须先通过质量资格验证，才能以 post-commit 异步方式接入；同步 commit 保持零阻塞。
+- 当前不运行任何 Scene 内容投影：终态提交只把 Scene 原样推进一版（`packages/chat/src/agent-runner.ts`），terminalEvidence 不带 `sceneProjection`。`packages/chat/src/scene.ts` 的投影逻辑没有生产调用方；`packages/chat/src/scene-light.ts`（单次 JSON Schema 增量投影，含前台礼让与失败软降级）仅有测试引用，未接入 commit 或 post-commit 路径。任何投影器须先通过质量资格验证，才能以 post-commit 异步方式接入；同步 commit 保持零阻塞。2026-11-26 用 `packages/chat/eval/companion` 的 scene 用例验证 `scene-light`（Inkling-2-Mini）：用例通过 7/12，字段准确率 75%，p50 约 2 s；地点/时间变化只识别 1/6，根因是模型回填当前值而非按约定返回 null，未达接入资格。
 - Main 的终态接纳不只信任 Chat 或 TypeScript：新 sent 必须从匹配当前 attempt 的冻结 execution snapshot 恰好推进一版，failed/blocked/cancelled 完整保留该锚点；缺失、错 attempt 或损坏锚点拒绝。完全相同的已提交终态只重放 ACK，不再次推进，保留历史合法 null/0 终态的精确重放。该校验不改变 v1 数据格式，也不证明 Scene 自然语言内容已被正确理解。
 - edit/regenerate 都回到被丢弃回复之前的 Scene 锚点，再由新回复推进一次（启用投影后为一次 delta），因此 Scene version 不因 attempt 增加而重复推进，也不保留旧回复产生的场景内容。
 
@@ -223,7 +226,7 @@ Companion Chat 只有两个需要独立生命周期的 module：Main 持有产�
 
 ### 11. 版本、依赖与切换
 
-- 现行版本：执行 composition 79（`packages/chat/src/agent-runtime/composition.ts`）；行为契约 / 产品提示版本 `companion-product-28`（`packages/shared/src/chat/companion-agent-prompt.ts`）；`@earendil-works/pi-ai`、`pi-durable`、`chord` 精确固定 `1.5.2`；igrep CLI 固定 `0.1.169`（`scripts/setup-pi-companion.mjs`）。readiness 核验契约版本。
+- 现行版本：执行 composition 80（`packages/chat/src/agent-runtime/composition.ts`）；行为契约 / 产品提示版本 `companion-product-28`（`packages/shared/src/chat/companion-agent-prompt.ts`）；`@earendil-works/pi-ai`、`pi-durable`、`chord` 精确固定 `1.5.2`；igrep CLI 固定 `0.1.169`（`scripts/setup-pi-companion.mjs`）。readiness 核验契约版本。
 - Main 与 Chat 在排空原写入者后以同一 source revision 切换。切换是单次切换：经 PM2 wrapper 停止接纳、等待有界 drain 并停止旧 Main/Chat 写者，隔离旧 AgentRun/workspace 文件，执行 migration，再从同一源码启动服务和浏览器版本；不混跑旧写者。隔离不做不可恢复删除；历史不可变 proposal 保留原字段并精确重放，旧执行轨迹不转成新 Pi 会话；已接纳 Job 和历史精确收据保留恢复能力。
 
 ## 二、决策日志
@@ -284,7 +287,7 @@ igrep 升至 `0.1.169`，composition 73 收紧检索命中的阶段归属、预�
 
 ### 2026-11-26 恢复、记忆栅栏与热路径决策
 
-证据来自同日 Chat/Agent 静态分析（本地 `.scratch/chat-agent-analysis-20261126/REPORT.md`，基于 HEAD `b559da959`；未做延迟实测）。以下规则自本日起为现行契约，由分支 `chat-agent-improvements-20261126` 上的并行改动实施；`b559da959` 的代码尚未符合处，以本 ADR 为目标：
+证据来自同日 Chat/Agent 静态分析（本地 `.scratch/chat-agent-analysis-20261126/REPORT.md`，基于 HEAD `b559da959`；未做延迟实测）。以下规则自本日起为现行契约，已在分支 `chat-agent-improvements-20261126` 实施（composition 80）：
 
 - 瞬时失败进程内重试一次（第 7.6 节）。证据：首 token 超时、传输错误、5xx 当时直接提交 failed，Chat 计算的 `retryable` 在 Main 无消费方，本地 oMLX 偶发卡顿时用户只能手动重新生成。仅对"无输出进度"的物理请求放开"关闭自动模型重试"，每次物理请求仍单独 journal，不违反"未知结果不重放"；Pi 自动重试保持关闭。
 - 条件式破坏性重建（第 6.3 节）。证据：此前 regenerate/edit/删除无条件调度关系重建、新快照固定 `memoryEnabled=false`，重建完成前后续修订被 409 拒绝，用户感知为"重试后角色失忆""连点重新生成报错"；failed/cancelled/blocked 的 attempt 不可能已被投影。
@@ -293,4 +296,8 @@ igrep 升至 `0.1.169`，composition 73 收紧检索命中的阶段归属、预�
 - 媒体工具调用可携带逐字摘录，核验通过即跳过 `media_extraction`（第 5.6 节）。证据：媒体轮次最多串行三次 LLM 调用（工具选择 → 提取 → 正文），composition 79 快路只覆盖单句纯媒体请求。
 - 会话读取分页，默认 50 个 Turn（第 2 节）。证据：`getChatSession` 曾 include 全部 Turn 的全部列（含 executionSnapshot）并逐附件富化，叠加生成期间 1.5 s 轮询。
 - attempt 记忆副本使用 copy-on-write 克隆，`mem wake` 按 canonical version 缓存（第 6.5 节）。证据：`packages/chat/src/agent-runtime/workspace.ts` 每个 normal Turn 递归复制整份关系记忆，复制耗时随记忆规模线性增长；wake 只取决于不可变 canonical version。
-- 文档修正：Scene 投影器未接入（第 9 节）。本条不改动代码中的 composition 或产品提示版本。
+- 文档修正：Scene 投影器未接入（第 9 节）。
+- 回复版本（第 1 节），按用户选择实现完整版：可切换并选定为当前回复，限纯文字回复。
+- 检索优先级（第 7.4 节）。证据：companion 质量评测（42 例，Inkling-2-Mini，单样本）中 7 例在事实已可见时仍调用检索，额外 1–3 轮请求，其中一例检索为空后否认 Soul 事实；加入指引后物理请求 57 → 52、多轮请求用例 11 → 8，通过数不变（39/42）。关闭文本线索的对照组多失败一个保存偏好的长度用例，线索暂保留，删除须以多样本评测为据。
+- 删除无存量依赖的 legacy 分支（开发库计数为 0）：无 deadline 的 generating watchdog、无 attempt 的编辑回执重放、attachmentAttempt 的 effect 回退读取；legacy 附件 id（81 行）、缺 effect.name 的图片（9 行）、旧 send 协议（598 个 Turn）仍有存量，保留。
+- 新增 `packages/chat/eval/companion` 质量评测（`bun run --filter @idream/chat eval:companion`）：用例走生产 `prepareCompanionTurn` → `CompanionEngine` 路径，确定性检查加 judge 标签、代码判定，结果绑定 source revision。
